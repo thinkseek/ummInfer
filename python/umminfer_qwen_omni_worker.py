@@ -13,7 +13,6 @@ import queue
 import signal
 import sys
 import threading
-import time
 from types import SimpleNamespace
 import urllib.error
 import urllib.request
@@ -138,7 +137,6 @@ class QwenOmniWorker(MLXStage):
                if isinstance(item, dict)]
         if self.upstream_model not in ids:
             raise ValueError(f"upstream model {self.upstream_model!r} is not served")
-        self.tokenizer = None
         self.generate = self.generate_upstream
 
     def parse_request(self, message):

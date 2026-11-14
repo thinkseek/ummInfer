@@ -66,8 +66,6 @@ def load_reward(dotted_path):
     """
     module_name, attr = dotted_path.split(":", 1)
     obj = getattr(importlib.import_module(module_name), attr)
-    if isinstance(obj, type):
-        return obj()
     if callable(obj):
         return obj()
     return obj

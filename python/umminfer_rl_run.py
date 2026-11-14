@@ -119,8 +119,6 @@ class CappedWriter:
             data = data.encode("utf-8")
         if self.written >= self.cap:
             return len(data)
-        if self.written >= self.cap:
-            return len(data)
         # Marker and data share the cap budget, so total bytes never exceed
         # it even when remaining space is smaller than the marker itself.
         remaining = self.cap - self.written
@@ -356,12 +354,11 @@ def main(argv=None):
         worker.stdin.close()
         worker.wait(timeout=30)
     finally:
-        if worker is not None:
-            worker.terminate()
-            try:
-                worker.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                worker.kill()
+        worker.terminate()
+        try:
+            worker.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            worker.kill()
 
     manifest["environment"] = capture_environment(args.python)
     manifest["evaluations"] = eval_results

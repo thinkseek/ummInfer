@@ -53,7 +53,6 @@ def _cache_vocabulary(tokenizer):
 def _make_greedy_generate(model, tokenizer, skip_final_lookahead=True,
                           reuse_prompt_cache=True, reuse_detokenizer=True):
     """Build the temp=0 path without unused full-vocabulary logprobs."""
-    import contextlib
     import copy
     import mlx.core as mx
     from mlx_lm.models import cache
@@ -131,90 +130,89 @@ def _make_greedy_generate(model, tokenizer, skip_final_lookahead=True,
                 logits = model_call(input_tokens)[:, -1, :]
                 return mx.argmax(logits, axis=-1)
 
-        with contextlib.nullcontext():
-            tic = time.perf_counter()
-            with mx.stream(generation_stream):
-                prompt_key = tuple(prompt.tolist())
-                if (reuse_prompt_cache and prompt_snapshot is not None
-                        and prompt_snapshot[0] == prompt_key):
-                    # The master snapshot never enters a model call. Decode
-                    # mutates only this request's cloned KV arrays. The first
-                    # greedy token is immutable and safe to share.
-                    prompt_cache = clone_prompt_cache(prompt_snapshot[1])
-                    y = prompt_snapshot[2]
-                    prompt_cache_stats["hits"] += 1
-                else:
-                    prompt_cache = cache.make_prompt_cache(model)
-                    remaining = prompt
-                    prompt_cache_stats["misses"] += 1
-                    while remaining.size > 1:
-                        count = min(2048, remaining.size - 1)
-                        model_call(remaining[:count])
-                        mx.eval([item.state for item in prompt_cache])
-                        remaining = remaining[count:]
-                        mx.clear_cache()
-                    y = step(remaining)
-                    if reuse_prompt_cache:
-                        # Snapshot the whole prompt before decode mutates its
-                        # KV. Only the immutable prompt and its first greedy
-                        # token are reused, never generated output text.
-                        prompt_snapshot = (prompt_key,
-                                           copy.deepcopy(prompt_cache), y)
+        tic = time.perf_counter()
+        with mx.stream(generation_stream):
+            prompt_key = tuple(prompt.tolist())
+            if (reuse_prompt_cache and prompt_snapshot is not None
+                    and prompt_snapshot[0] == prompt_key):
+                # The master snapshot never enters a model call. Decode
+                # mutates only this request's cloned KV arrays. The first
+                # greedy token is immutable and safe to share.
+                prompt_cache = clone_prompt_cache(prompt_snapshot[1])
+                y = prompt_snapshot[2]
+                prompt_cache_stats["hits"] += 1
+            else:
+                prompt_cache = cache.make_prompt_cache(model)
+                remaining = prompt
+                prompt_cache_stats["misses"] += 1
+                while remaining.size > 1:
+                    count = min(2048, remaining.size - 1)
+                    model_call(remaining[:count])
+                    mx.eval([item.state for item in prompt_cache])
+                    remaining = remaining[count:]
+                    mx.clear_cache()
+                y = step(remaining)
+                if reuse_prompt_cache:
+                    # Snapshot the whole prompt before decode mutates its
+                    # KV. Only the immutable prompt and its first greedy
+                    # token are reused, never generated output text.
+                    prompt_snapshot = (prompt_key,
+                                       copy.deepcopy(prompt_cache), y)
 
-            mx.async_eval(y)
-            n = 0
-            while n < max_tokens:
-                # Build the lookahead lazily. Terminal tokens do not schedule it.
-                next_y = None
-                if n + 1 < max_tokens or not skip_final_lookahead:
-                    next_y = step(y)
-                if n == 0:
-                    mx.eval(y)
-                    prompt_time = time.perf_counter() - tic
-                    prompt_tps = prompt.size / prompt_time
-                    tic = time.perf_counter()
-                token = y.item()
-                finish_reason = (
-                    "stop" if token in tokenizer.eos_token_ids else None)
-                if finish_reason is None:
-                    if next_y is not None:
-                        mx.async_eval(next_y)
-                    detokenizer.add_token(token)
-                    if n + 1 == max_tokens:
-                        finish_reason = "length"
-                if finish_reason is None:
-                    yield GenerationResponse(
-                        text=detokenizer.last_segment,
-                        token=token,
-                        logprobs=None,
-                        from_draft=False,
-                        prompt_tokens=prompt.size,
-                        prompt_tps=prompt_tps,
-                        generation_tokens=n + 1,
-                        generation_tps=(n + 1) / (time.perf_counter() - tic),
-                        peak_memory=mx.get_peak_memory() / 1e9,
-                        finish_reason=None,
-                    )
-                    if n % 256 == 0:
-                        mx.clear_cache()
-                    y = next_y
-                    n += 1
-                    continue
-                break
+        mx.async_eval(y)
+        n = 0
+        while n < max_tokens:
+            # Build the lookahead lazily. Terminal tokens do not schedule it.
+            next_y = None
+            if n + 1 < max_tokens or not skip_final_lookahead:
+                next_y = step(y)
+            if n == 0:
+                mx.eval(y)
+                prompt_time = time.perf_counter() - tic
+                prompt_tps = prompt.size / prompt_time
+                tic = time.perf_counter()
+            token = y.item()
+            finish_reason = (
+                "stop" if token in tokenizer.eos_token_ids else None)
+            if finish_reason is None:
+                if next_y is not None:
+                    mx.async_eval(next_y)
+                detokenizer.add_token(token)
+                if n + 1 == max_tokens:
+                    finish_reason = "length"
+            if finish_reason is None:
+                yield GenerationResponse(
+                    text=detokenizer.last_segment,
+                    token=token,
+                    logprobs=None,
+                    from_draft=False,
+                    prompt_tokens=prompt.size,
+                    prompt_tps=prompt_tps,
+                    generation_tokens=n + 1,
+                    generation_tps=(n + 1) / (time.perf_counter() - tic),
+                    peak_memory=mx.get_peak_memory() / 1e9,
+                    finish_reason=None,
+                )
+                if n % 256 == 0:
+                    mx.clear_cache()
+                y = next_y
+                n += 1
+                continue
+            break
 
-            detokenizer.finalize()
-            yield GenerationResponse(
-                text=detokenizer.last_segment,
-                token=token,
-                logprobs=None,
-                from_draft=False,
-                prompt_tokens=prompt.size,
-                prompt_tps=prompt_tps,
-                generation_tokens=n + 1,
-                generation_tps=(n + 1) / (time.perf_counter() - tic),
-                peak_memory=mx.get_peak_memory() / 1e9,
-                finish_reason=finish_reason,
-            )
+        detokenizer.finalize()
+        yield GenerationResponse(
+            text=detokenizer.last_segment,
+            token=token,
+            logprobs=None,
+            from_draft=False,
+            prompt_tokens=prompt.size,
+            prompt_tps=prompt_tps,
+            generation_tokens=n + 1,
+            generation_tps=(n + 1) / (time.perf_counter() - tic),
+            peak_memory=mx.get_peak_memory() / 1e9,
+            finish_reason=finish_reason,
+        )
 
     generate.prompt_cache_stats = prompt_cache_stats
     generate.detokenizer_stats = detokenizer_stats

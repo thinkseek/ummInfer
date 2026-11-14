@@ -110,14 +110,11 @@ class CheckpointStore:
     def next_sequence(self):
         return self._latest_sequence + 1
 
-    def _manifest_paths(self):
-        return sorted(self.checkpoint_dir.glob("ckpt-*.json"))
-
     def _verify_chain(self):
         """Recompute every manifest hash and verify the parent linkage."""
         previous_hash = None
         latest_sequence = -1
-        for path in self._manifest_paths():
+        for path in sorted(self.checkpoint_dir.glob("ckpt-*.json")):
             sidecar = Path(str(path) + ".sha256")
             if not sidecar.exists():
                 raise ValueError(f"missing checksum sidecar for {path.name}")
