@@ -5,6 +5,33 @@ start their own server, external Python stage, and real model; argument-parsing
 checks exit before any process starts. No test below accepts a fake server or
 handwritten model response as evidence.
 
+## 0. Fast local black-box gate
+
+```sh
+python3 -I tests/blackbox_integration.py
+```
+
+This runs the local suites one after another and reuses them unchanged. It is a
+gate, not new evidence: it adds no assertions and each suite keeps its own exit
+code, printed as `REAL_EXIT <suite> <code>`. The gate exits non-zero if any
+suite fails.
+
+Included suites: `build`, `zig-test`, `unified-test`, the two realtime contract
+E2Es, the Qwen ASR and Omni worker tests, the MLX stage test, RL phase 1 and
+2, the benchmark helper test, provenance, and the Mac unified helper test. All
+of them run without H20B, CUDA, SGLang, or RL training.
+
+Behavior: suites run serially in their own session; combined output per suite
+is capped at 64 KiB (tail kept); a suite that exceeds `--timeout` (default
+1800 s) has its process group killed. Use `--deps-prefix`, `--curl-prefix`,
+and `--binary` when the defaults under `/opt/homebrew` and `zig-out/bin` do not
+match this host.
+
+Boundary. A pass proves the local contracts only. It does not replace the H20B
+runs in this document: CUDA relay and sanitizer (section 8), real Qwen3 backends
+(sections 3a, 5c, 5e, 5f), the realtime live run, or the real RL optimizer-step
+validation. Those still need their dedicated evidence directories.
+
 ## 1. Prepare the environment
 
 Use an Apple Silicon Mac, Zig 0.16.0, the Homebrew dependencies from README,

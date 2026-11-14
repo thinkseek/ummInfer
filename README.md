@@ -256,7 +256,10 @@ proxy checks passed`, `all 82 client checks passed`.
 requests, 12 concurrent SSE requests, external stages, and SIGTERM shutdown.
 
 The Python E2E and performance scripts under `tests/` are not wired into any
-`zig build` step. Run them by hand as the sections below show. The Swift client
+`zig build` step. Run them by hand as the sections below show, or run the fast
+local black-box gate `python3 -I tests/blackbox_integration.py`, which executes
+them serially. That gate is not H20B, CUDA or RL-training evidence; see
+[validation](docs/validation.md#0-fast-local-black-box-gate). The Swift client
 has its own suite, `swift test` in `clients/ummmlx`.
 
 The finite request-lifecycle model has a TLA check. It does not prove that the
