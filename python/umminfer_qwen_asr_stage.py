@@ -14,7 +14,6 @@ import signal
 import socket
 import sys
 import threading
-import time
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 import wave
@@ -220,17 +219,8 @@ class SGLangBackend:
             raise ValueError(f"SGLang does not serve {self.model!r}: {ids!r}")
 
     def transcribe(self, pcm, max_tokens, temperature, request_id):
-        payload = {
-            "text": "",
-            "audio_data": pcm16_wav_data_url(pcm),
-            "sampling_params": {
-                "temperature": temperature,
-                "max_new_tokens": max_tokens,
-            },
-            "stream": False,
-            "modalities": ["audio"],
-            "rid": request_id,
-        }
+        payload = self._generate_payload(
+            pcm, max_tokens, temperature, request_id, False)
         print(f"SGLang request {request_id} started", flush=True)
         body = self._request_json("POST", "/generate", payload)
         if not isinstance(body, dict) or not isinstance(body.get("text"), str):
@@ -302,7 +292,6 @@ class QwenASRStage(MLXStage):
         if self.generate is not None:
             return
         self.backend.check_model()
-        self.tokenizer = None
         self.generate = self._generate
 
     def close(self):

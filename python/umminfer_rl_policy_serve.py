@@ -41,7 +41,6 @@ class Policy:
         self.counter = 0
 
     def generate(self, messages, *, temperature, top_p, max_new_tokens):
-        from transformers import AutoModelForCausalLM, AutoTokenizer
         prompt = self.tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=False)
         prompt_ids = self.tokenizer(prompt, return_tensors="pt").input_ids

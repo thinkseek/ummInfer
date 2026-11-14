@@ -5,7 +5,6 @@ import argparse
 import json
 import math
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 import importlib.util
@@ -37,8 +36,6 @@ def create_model(output):
     mel_bins = 12
     frequencies = np.fft.rfftfreq(n_fft, 1.0 / sample_rate)
     mel = 2595.0 * np.log10(1.0 + frequencies / 700.0)
-    edges = np.linspace(2595.0 * np.log10(1.0 + 20.0 / 700.0),
-                        2595.0 * np.log10(1.0 + 7600.0 / 700.0), mel_bins + 2)
     filterbank = np.zeros((mel_bins, len(frequencies)), dtype=np.float32)
     for index in range(mel_bins):
         left = (mel[index + 1] - mel[index]) or 1.0
@@ -152,10 +149,6 @@ class TinyCTCModel:
             previous = token_id
         return tokens, truncated
 
-    def transcribe(self, pcm, max_tokens):
-        tokens, _ = self.decode_tokens(pcm, max_tokens)
-        return "".join(tokens).strip()
-
     def generate(self, pcm, max_tokens, temperature):
         if temperature != 0:
             raise ValueError("the tiny CTC model supports greedy decoding only")
@@ -175,7 +168,6 @@ class TinyASRStage(MLXStage):
             model = TinyCTCModel(Path(self.model_path))
             self.model = model
             self.generate = model.generate
-            self.tokenizer = None
 
     def result_metadata(self, parts, max_tokens, last_response):
         # Counts and reasons come from the CTC token sequence, not from the
