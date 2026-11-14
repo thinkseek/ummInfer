@@ -13,7 +13,6 @@
 #include <functional>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <string>
 #include <thread>
 #include <vector>

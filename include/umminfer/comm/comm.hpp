@@ -215,8 +215,6 @@ class CommRouter {
   bool cuda_ipc_peer_available(const std::string& target);
   void warn_cuda_ipc_fallback(const std::string& target, int source_gpu,
                               int target_gpu, const std::string& reason);
-  TransportKind note_transport(const std::string& direction,
-                               const std::string& target, TransportKind kind);
   std::unique_ptr<Relay> build_relay(TransportKind kind);
   // One normalization of comm_config slot_size_mb: nonpositive keeps the
   // 512 MiB default, a value above INT_MAX is a configuration error. Selection

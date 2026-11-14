@@ -12,7 +12,6 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
-#include <thread>
 
 #include "http.hpp"
 
@@ -213,19 +212,17 @@ struct WebSocket::Impl {
       if (sent == 0) throw Error(ErrorCode::kNetwork, "realtime WebSocket made no write progress");
       offset += sent;
     }
-    if (text.empty() || text.size() == 1 || partial_size > 0) {
-      size_t sent = 0;
-      const char* last = text.empty() ? "" : text.data() + text.size() - 1;
-      const size_t length = text.empty() ? 0 : 1;
-      CURLcode result;
-      do {
-        if (closed || closing) throw Error(ErrorCode::kNetwork, "realtime WebSocket is closed");
-        result = curl_ws_send(curl.get(), last, length, &sent, 0, CURLWS_TEXT);
-        if (result == CURLE_AGAIN) wait(POLLOUT, deadline);
-      } while (result == CURLE_AGAIN);
-      if (result != CURLE_OK || sent != length) {
-        throw Error(ErrorCode::kNetwork, "realtime WebSocket final write failed");
-      }
+    size_t sent = 0;
+    const char* last = text.empty() ? "" : text.data() + text.size() - 1;
+    const size_t length = text.empty() ? 0 : 1;
+    CURLcode result;
+    do {
+      if (closed || closing) throw Error(ErrorCode::kNetwork, "realtime WebSocket is closed");
+      result = curl_ws_send(curl.get(), last, length, &sent, 0, CURLWS_TEXT);
+      if (result == CURLE_AGAIN) wait(POLLOUT, deadline);
+    } while (result == CURLE_AGAIN);
+    if (result != CURLE_OK || sent != length) {
+      throw Error(ErrorCode::kNetwork, "realtime WebSocket final write failed");
     }
   }
 

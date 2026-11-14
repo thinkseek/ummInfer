@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "umminfer/comm/comm.hpp"
 
-#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -422,9 +421,8 @@ void CoordinatorControlPlane::broadcast_abort(const AbortMessage& msg) {
   {
     std::lock_guard<std::mutex> lock(stage_sockets_mu_);
     sockets.reserve(stage_sockets_.size());
-    for (const auto& [key, socket] : stage_sockets_) {
-      (void)key;
-      sockets.push_back(socket);
+    for (const auto& entry : stage_sockets_) {
+      sockets.push_back(entry.second);
     }
   }
   std::exception_ptr failure;
@@ -620,19 +618,9 @@ TransportKind CommRouter::intra_node_transport(const std::string& target) {
   return transport;
 }
 
-TransportKind CommRouter::note_transport(const std::string& direction,
-                                         const std::string& target,
-                                         TransportKind kind) {
-  // Comm tracing is a profiler feature; the port keeps the call sites so the
-  // hook has one place to land.
-  (void)direction;
-  (void)target;
-  return kind;
-}
-
 TransportKind CommRouter::outbound(const std::string& target) {
   if (same_process_targets_.count(target)) return TransportKind::LocalObject;
-  return note_transport("outbound", target, physical_outbound(target));
+  return physical_outbound(target);
 }
 
 TransportKind CommRouter::physical_outbound(const std::string& target) {
@@ -646,14 +634,14 @@ TransportKind CommRouter::physical_outbound(const std::string& target) {
 TransportKind CommRouter::outbound_stream(const std::string& target,
                                           const Tensor& data) {
   if (remote_stage_names_.count(target)) {
-    return note_transport("stream", target, TransportKind::Mooncake);
+    return TransportKind::Mooncake;
   }
   const std::string& device_type = Platform::current().device_type;
   if (data.device.substr(0, device_type.size()) != device_type) {
-    return note_transport("stream", target, TransportKind::Shm);
+    return TransportKind::Shm;
   }
   if (self_is_gpu() && gpu_stage_names_.count(target)) {
-    return note_transport("stream", target, intra_node_transport(target));
+    return intra_node_transport(target);
   }
   throw ProtocolError(device_type + " stream chunk cannot be sent from " +
                       stage_name_ + " to non-GPU target " + target);
@@ -661,21 +649,20 @@ TransportKind CommRouter::outbound_stream(const std::string& target,
 
 TransportKind CommRouter::inbound(const std::string& from_stage) {
   if (remote_stage_names_.count(from_stage)) {
-    return note_transport("inbound", from_stage, TransportKind::Mooncake);
+    return TransportKind::Mooncake;
   }
   if (self_is_gpu() && gpu_stage_names_.count(from_stage)) {
     // The sender picks the relay with the same peer check; a plain platform
     // lookup here would build a relay kind the sender never used.
-    return note_transport("inbound", from_stage,
-                          intra_node_transport(from_stage));
+    return intra_node_transport(from_stage);
   }
-  return note_transport("inbound", from_stage, TransportKind::Shm);
+  return TransportKind::Shm;
 }
 
 TransportKind CommRouter::outbound_payload(const std::string& target,
                                            const Value& payload) {
   if (remote_stage_names_.count(target)) {
-    return note_transport("payload", target, TransportKind::Mooncake);
+    return TransportKind::Mooncake;
   }
   const std::set<std::string> devices = tensor_devices(payload);
   const std::string device_type = Platform::current().device_type;
@@ -694,7 +681,7 @@ TransportKind CommRouter::outbound_payload(const std::string& target,
     throw ProtocolError("mixed or unsupported tensor devices in payload: {" + text +
                         "}");
   }
-  return note_transport("payload", target, kind);
+  return kind;
 }
 
 Relay& CommRouter::relay(TransportKind kind) {

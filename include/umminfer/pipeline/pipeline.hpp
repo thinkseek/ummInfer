@@ -73,7 +73,6 @@ class Stage {
   size_t request_count();
 
  private:
-  // Sends one payload across an edge.
   void send_payload(const std::string& request_id, const std::string& target,
                     const StagePayload& payload);
   void execute(StagePayload payload);

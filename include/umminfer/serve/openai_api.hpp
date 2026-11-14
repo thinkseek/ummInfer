@@ -9,7 +9,6 @@
 // request fields are rejected with HTTP 400 instead of being ignored.
 #pragma once
 
-#include <atomic>
 #include <memory>
 #include <string>
 

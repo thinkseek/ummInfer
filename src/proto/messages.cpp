@@ -43,7 +43,6 @@ int base64_value(unsigned char c) {
   if (c >= '0' && c <= '9') return c - '0' + 52;
   if (c == '+') return 62;
   if (c == '/') return 63;
-  if (c == '=') return -2;  // padding ends the data
   return -1;
 }
 
@@ -628,14 +627,12 @@ StreamChunkBatchMessage StreamChunkBatchMessage::from_value(const Value& v) {
   const char* columns[] = {"request_ids", "chunk_ids", "dtypes", "shapes",
                            "tensor_bytes"};
   size_t length = 0;
-  bool first = true;
   for (const char* name : columns) {
     const Value& col = require_field(v, name);
     if (!col.is_array()) {
       throw ProtocolError("stream chunk batch columns must be lists");
     }
-    if (first || col.as_array().size() > length) length = col.as_array().size();
-    first = false;
+    if (col.as_array().size() > length) length = col.as_array().size();
   }
   for (const char* name : columns) {
     if (require_field(v, name).as_array().size() != length) {

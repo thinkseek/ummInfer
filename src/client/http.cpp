@@ -17,10 +17,7 @@
 #include <ctime>
 #include <limits>
 #include <memory>
-#include <mutex>
-#include <sstream>
 #include <stdexcept>
-#include <thread>
 
 namespace umminfer::client {
 
@@ -33,9 +30,6 @@ Error::Error(ErrorCode code, std::string detail, bool retryable, int status,
       retry_after_(retry_after) {}
 
 namespace detail {
-// Defined below; declared here so the streaming callback can check the header
-// before the first body byte reaches on_body.
-bool content_type_matches(std::string_view actual, std::string_view expected);
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -423,7 +417,6 @@ void Progress::token() {
 }
 
 void Progress::data() {
-  saw_data = true;
   last_data = Clock::now();
 }
 
