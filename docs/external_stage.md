@@ -57,7 +57,7 @@ load a production model in this path.
 
 Between C++ stages, `Stage` uses `CommRouter` for payload transfer. The default
 transport is POSIX shared memory with relay acknowledgements. Optional CUDA IPC
-has its own device, peer-access, and slot-size requirements.
+has its own requirements, documented in [cuda-ipc.md](cuda-ipc.md).
 
 The C++ host path is in `src/main.cpp` (`run_stage`),
 `include/umminfer/pipeline/pipeline.hpp`, `src/pipeline/pipeline.cpp`,
@@ -65,9 +65,9 @@ The C++ host path is in `src/main.cpp` (`run_stage`),
 
 ## Demo mode
 
-`serve --demo` runs one C++ `Stage` and its echo compute function in the server
-process. The request still goes through the Coordinator and ZeroMQ. Demo mode
-tests the C++ stage host. It is not an external MLX model server.
+`serve --demo` runs one C++ `Stage` in the server process rather than an
+external one. Requests still go through the Coordinator and ZeroMQ, so demo
+mode tests the C++ stage host; it is not an external model server.
 
 ## HTTP and WebSocket endpoints
 

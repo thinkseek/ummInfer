@@ -173,10 +173,10 @@ request at a time. Concurrency 1 is the recommended mode for this deployment.
 * Cancellation latency, queue depth, and per-worker model-time attribution were
   not measured by this benchmark. Cancellation correctness is covered by the
   separate Phase 4 cancel/failure evidence.
-* Model revision and weights hashes: see [Model snapshot and
-  provenance](#model-snapshot-and-provenance). The server-reported revision
-  is `UNKNOWN` (local-path launch, no `.git` metadata); all 35 deployed files
-  are byte-identical to pinned HF `main` commits, with full SHA256 evidence.
+* Model revision and weights hashes: the server-reported revision is `UNKNOWN`
+  and the 35 deployed files are byte-identical to pinned HF `main` commits; the
+  full explanation and SHA256 evidence are in [Model snapshot and
+  provenance](#model-snapshot-and-provenance).
 * The host was not exclusive for the whole window. Other sessions ran separate
   SGLang instances on GPU 2/3 during part of the run. GPU 0/1 were used only by
   this benchmark's two backends, and GPU utilization on those two GPUs was

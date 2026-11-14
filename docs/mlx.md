@@ -181,7 +181,7 @@ cannot be used for a complete comparison.
 | `decode_tokens_per_s` | MLX-LM decode rate after the first token |
 | `output_tokens_per_s` | `generation_tokens / (total_ms / 1000)`. End-to-end throughput |
 | `prompt_tokens_per_s` | Prefill rate as MLX-LM reports it |
-| `peak_memory_gb` | `mx.get_peak_memory()`. The Metal peak of the stage process, not RSS |
+| `peak_memory_gb` | `mx.get_peak_memory()`. The Metal peak of the stage process, not RSS; the C++ server and the CLI are measured separately |
 
 `cold` is the first real request after the measured instance is ready: `/ready`
 answers 200 for `e2e`, `stage_ready` for `stage`, the model load for `direct`.
@@ -368,7 +368,7 @@ a run exists in an exclusive window.
 
 | Candidate | Source | Level | Expected effect | Correctness risk | Minimal A/B |
 | --- | --- | --- | --- | --- | --- |
-| Tokenizer vocabulary cache | `mlx_lm` builds a `StreamingDetokenizer` per `stream_generate`; its token map calls `tokenizer.vocab`, which `transformers` rebuilds per access. Cached in `python/umminfer_mlx_stage.py` at load | stage, and every level above it | Removes one fixed cost per request. Measured: 104 ms to 42.9 ms on an 8-token request | None for a fixed model. The guard makes it a no-op on another `mlx-lm` layout | Baseline stage against candidate stage |
+| Tokenizer vocabulary cache | `mlx_lm` builds a `StreamingDetokenizer` per `stream_generate`; its token map calls `tokenizer.vocab`, which `transformers` rebuilds per access. Cached in `python/umminfer_mlx_stage.py` at load | stage, and every level above it | Removes one fixed cost per request; measured evidence in "Measured stage bottleneck" above | None for a fixed model. The guard makes it a no-op on another `mlx-lm` layout | Baseline stage against candidate stage |
 | Detokenizer construction residue | Same constructor, after the vocabulary is cached | stage | Unmeasured; bounded by the former 48 ms minus the vocabulary cost. Likely a few milliseconds | Reusing a stateful detokenizer can carry partial UTF-8 state into the next request | Time the constructor alone in a probe before changing the stage |
 | Sampler construction | `make_sampler` runs per request | stage | Below 1 ms | None | Only if a profile shows it |
 | Prompt-cache reuse | `stream_generate` allocates a new KV cache per call, so prefill repeats | stage decode path | About 18 ms at the measured 1900 prompt tokens/s for this 35-token prompt | It speeds repeated requests only. The rules require a varied-prompt control run to prove the gain is not request caching | Varied prompts, same token budget |
@@ -384,8 +384,6 @@ table shows both.
 
 ### Limits
 
-- Peak memory covers the stage process only. The C++ server and the CLI are
-  measured separately.
 - One stage executes one request at a time. Concurrent wall time measures
   queueing, not throughput, and is not a target metric.
 - MLX-LM builds a fresh KV cache per `stream_generate` call. There is no

@@ -17,7 +17,7 @@ acceptance criteria name is measured from real tensors and real processes.
 | Reward | yes | Exact integer match against GSM8K gold answers; 1.0/0.0, never fabricated |
 | Training worker | yes | Separate OS process, NDJSON protocol, serving never imports optimizer code |
 | Optimizer step | yes | AdamW update (`weight_decay=0`) from a backpropagated REINFORCE loss on GPU |
-| Gradient and weight change | yes | Measured from real tensor values; the runner fails the run if a step has zero non-zero gradients or a zero weight delta, so a signal-free step cannot masquerade as training |
+| Gradient and weight change | yes | Measured from real tensor values; a signal-free step cannot be accepted (gate in [Algorithm](#algorithm)) |
 | Checkpoints | yes | At least two versioned manifests with the phase-1 content hash chain, plus real weight files |
 | Business training outcome | no | 8 prompts, 2 steps; no convergence or quality guarantee |
 
@@ -70,8 +70,8 @@ per rollout, not the reward or the optimizer mechanics.
 
 ## Worker protocol additions
 
-One new verb, no version bump (unknown fields were already ignored by
-contract):
+One new verb, no version bump. The reason unknown fields do not require a bump
+is documented in [rl.md](rl.md) (the phase-1 protocol contract):
 
 | Request | Response |
 | --- | --- |
@@ -181,7 +181,7 @@ non-weight subset is under `/tmp/umminfer-phase6-rl-h20b-evidence/run`.
 
 Measured optimizer evidence (from the two checkpoints, real tensors):
 
-| Step | loss | grad norm | non-zero grad tensors | max |Δw| | mean reward |
+| Step | loss | grad norm | non-zero grad tensors | max \|Δw\| | mean reward |
 | --- | --- | --- | --- | --- | --- |
 | 0 | -0.02543 | 1.9766 | 290 / 290 | 1.53e-05 | 0.0156 |
 | 1 | -0.01491 | 2.2656 | 290 / 290 | 1.53e-05 | 0.0469 |

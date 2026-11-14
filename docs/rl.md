@@ -212,8 +212,9 @@ is rejected rather than attributed ambiguously.
 
 ## How PPO/DPO/GRPO plug in later
 
-The phase-1 shapes already contain the slots an algorithm fills; no
-algorithm code exists now.
+The phase-1 shapes already contain the slots an algorithm fills. In phase 1 no
+algorithm code existed; phase 2 realized item 2 for REINFORCE (`rl-phase2.md`),
+while PPO/DPO/GRPO remain unbuilt.
 
 1. Implement `Reward` in an external module and load it through
    `load_reward`.
@@ -223,13 +224,13 @@ algorithm code exists now.
    `checkpoint_schema_version` if the manifest shape changes incompatibly,
    and document the migration here. Hyperparameters have no phase-1 slot;
    they arrive with the first real algorithm rather than as a reserved
-   empty field.
+   empty field. Phase 2 added this verb without a schema bump.
 3. PPO consumes `events` plus per-turn reward scores; DPO consumes paired
    records distinguished by session/request ids; GRPO groups records by
    `session_id`. The export already carries those keys. Nothing in this list
    is implemented ahead of a defined objective.
 
-## Open decisions that block real training
+## Phase-1 open decisions (historical)
 
 Phase 2 (`rl-phase2.md`) resolved these for the architecture validation with
 one concrete choice each: group-relative REINFORCE, a small real GSM8K slice,
@@ -247,7 +248,8 @@ These are user inputs. Phase 1 deliberately does not invent defaults.
 3. **Reward function.** No business reward exists. `NullReward` records the
    missing-score shape only.
 4. **Compute.** Where the worker runs, GPU allocation, and the optimizer and
-   its state are undefined. The worker currently writes metadata only.
+   its state are undefined. In phase 1 the worker writes metadata only; phase 2
+   adds the real optimizer step (`rl-phase2.md`).
 
 Two roadmap items are deferred and recorded here rather than silently
 dropped:
@@ -261,9 +263,11 @@ dropped:
    possible. A future raw-payload blob store would close this; it has no
    consumer in phase 1 and is not built.
 
-The roadmap Isolation gate (training load versus serving latency) cannot be
-measured until real training exists. No RL capability beyond recording and
-metadata should be claimed.
+The roadmap Isolation gate (training load versus serving latency) could not be
+measured in phase 1, before real training existed. Phase 2 measured training in
+a separate GPU-4-pinned worker and never started the serving engine
+(`rl-phase2.md`, Isolation). No RL capability beyond recording and metadata was
+claimed in phase 1.
 
 ## Tests
 

@@ -18,8 +18,9 @@ See [roadmap](docs/roadmap.md) for phases and acceptance gates, and
 Green means the code for that node is present in this revision; it does not mean
 a run was recorded. Amber nodes are planned. Gray nodes are the future RL
 boundary. A dashed edge is an optional or alternative path. The figure shows the
-target; the [status table](#status) gives the per-layer state, including the
-CUDA path, whose code is present but which is unbuilt and unexecuted here.
+target; the [status table](#status) gives the per-layer state. The CUDA path
+cannot be built on this Apple Silicon Mac; its H20B build and execution are
+recorded in the status table and the H20B CUDA section below.
 
 ```mermaid
 flowchart TB
@@ -375,8 +376,10 @@ Conditions that limit the claim:
 
 The real H20B unified performance baseline is in
 [Unified performance baseline](docs/performance-baseline.md): 10 scenario
-blocks, 200 successful requests, and unified concurrency 1/2/4. One Omni worker
-delivers about 20 output tokens/s; higher concurrency queues behind it.
+blocks, 200 successful requests, and unified concurrency 1/2/4. In that
+pre-change baseline one serial Omni worker delivered about 20 output tokens/s
+and higher concurrency queued behind it; the joint worker-concurrency change
+removed the queueing ([joint optimization](docs/joint-optimization.md)).
 
 ## Run real Qwen ASR -> VLM
 
@@ -556,8 +559,6 @@ for the English PCM16/16 kHz transcode of the supplied real recording. Local
 run evidence is under `/tmp/umminfer-integration-logs/h20b-final/`; it is not a
 committed artifact. `SHA256SUMS` records the evidence hashes.
 
-Phase 4 joint-input, session reuse, and realtime streaming are verified below.
-
 ### Joint image + audio and same-session reuse, recorded on 2026-11-13
 
 The Phase 4 run used the same topology on dedicated local ports: public HTTP/SSE
@@ -604,7 +605,6 @@ Input SHA256 values for this run were
 (about 120 KiB each), event timelines, worker logs (1870 bytes), the two inputs,
 and `SHA256SUMS`. It is not a committed artifact.
 
-
 ### Cancel and failure closure run recorded on 2026-11-13
 
 Branch `phase4/cancel-failure` covers two cases on the same public path. The
@@ -626,8 +626,9 @@ tests cover both cases and the cancellation test fails on the pre-fix source.
 Recorded evidence is under `/tmp/umminfer-phase4-cancel-failure-evidence/`
 (`results/`, `workers/`, `server/`, `backend/`, `tests/`, `SHA256SUMS`); it is
 not a committed artifact. `NOT_COVERED` for that run: an SGLang-side abort line
-(this backend logs none) and GPU-level confirmation that decode stopped. A real
-decode NaN failure inside model compute passed later on 2026-11-14 (see the
+(this backend logs none) and GPU-level confirmation that decode stopped, which
+reached PASS on 2026-11-14 (see the GPU hardware decode-stop section below). A
+real decode NaN failure inside model compute also passed on 2026-11-14 (see the
 section below). Both model revisions remain `UNKNOWN`.
 
 ### Unified ASR partials and VLM abort, recorded on 2026-11-13
@@ -686,9 +687,11 @@ request succeeded. Functional evidence is under
 teardown regression matrix is under
 `/tmp/umminfer-phase4-streaming-supervisor/rework/`.
 
-These cases remain `NOT_COVERED`: an SGLang-side abort log line (this backend
-logs none) and GPU-level confirmation that decode stopped. Both model revisions
-remain `UNKNOWN`.
+For this 2026-11-13 run an SGLang-side abort log line stays `NOT_COVERED`
+(this backend logs none), and both model revisions remain `UNKNOWN`. GPU-level
+confirmation that decode stopped was still open for this run and reached PASS
+on 2026-11-14; see the GPU hardware decode-stop section above and
+[validation 5e](docs/validation.md#5e-backend-decode-stop-scheduler-sse-and-gpu-hardware-evidence).
 Audio-only evidence does not complete every Phase 2 or Phase 3 gate.
 ASR partials through the unified chat route and VLM/Omni GPU abort confirmation
 are covered by the unified run above.
@@ -948,5 +951,5 @@ tests/{mlx_smoke.py,mlx_stage_test.py,mlx_*_perf.py,client_benchmark.py}
 tests/{qwen_omni_live.py,h3_live.py,h3_image_live.py,live_common.py}
 tests/rl_architecture_test.py
 tests/tla/{RequestLifecycle.tla,RequestLifecycle.cfg}
-docs/{cuda-ipc.md,external_stage.md,mlx.md,client.md,roadmap.md,validation.md,rl.md,rl-phase2.md}
+docs/{cuda-ipc.md,external_stage.md,mlx.md,client.md,roadmap.md,validation.md,rl.md,rl-phase2.md,performance-baseline.md,joint-optimization.md,mac-unified.md}
 ```

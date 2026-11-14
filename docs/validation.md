@@ -237,134 +237,6 @@ See `docs/mac-unified.md` for scope, recorded results, evidence layout, and
 limits. TinyCTC is an inference test model; it is not recognition-quality
 evidence.
 
-## 6. Manual smoke during development
-
-Start the text or audio processes as shown in README. Then check:
-
-```sh
-curl --fail-with-body http://127.0.0.1:30000/health
-curl --fail-with-body http://127.0.0.1:30000/ready
-
-curl -N http://127.0.0.1:30000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"Count to three."}],"max_tokens":32,"stream":true}'
-
-./zig-out/bin/umm-infer transcribe --url http://127.0.0.1:31000 \
-  --model tiny-ctc --file audio.wav --max-new-tokens 64
-
-./zig-out/bin/umm-infer realtime --url http://127.0.0.1:31001 --final-url http://127.0.0.1:31000 \
-  --model tiny-ctc --file audio.wav --live-result --max-new-tokens 64
-```
-
-Expected result: readiness is 200 only after the model stage is ready. SSE
-contains incremental deltas and a terminating done event. Both audio commands
-exit 0 and print the real TinyCTC output.
-
-For authentication, configure the server key through its `serve --api-key`
-option in a protected local test environment. Pass the client key only through
-`UMMINFER_API_KEY` or `OPENAI_API_KEY`. Repeat transcription and realtime with
-no key, a wrong key, and the correct key. Check the server and client logs for
-accidental key disclosure.
-
-Stop each owned server and stage with SIGTERM. Confirm that later launches can
-bind fresh IPC endpoints and that no test-owned process remains.
-
-## 7. Future model acceptance gates
-
-These gates apply to the model support plan in `roadmap.md`. They are not
-current capabilities. A passing HTTP status alone never accepts a model.
-
-Every accepted case must use this real path:
-
-```text
-real CLI or public API -> ummInfer server
-  -> real backend with a local real model, or authorized official API with a real model
-  -> decoded user artifact
-```
-
-A direct SGLang run that bypasses ummInfer is supporting backend evidence, not
-final acceptance. An unimplemented integration remains `PLANNED` or
-`IN_PROGRESS — integration planning`.
-
-Do not use a fake server, fake runtime, fake backend, handwritten model
-response, or generated artifact in place of model output. Record the exact
-model id and revision, local weights or API endpoint type, backend version,
-precision, quantization method, input and output parameters, random seed where
-applicable, and artifact SHA256. Record wall time, output duration or count,
-peak accelerator memory, host RAM, and resource limits. Mark an unexecuted
-case `NOT_COVERED` with the missing hardware, weights, backend, or API access.
-
-### Qwen3.5-Omni
-
-**PLANNED.** Only the authorized official API is planned. The verified model
-IDs are `qwen3.5-omni-plus` and `qwen3.5-omni-flash`. They accept text, image,
-audio, and video input and return text or streaming speech. Do not claim image
-or video generation. Authorized account/API access is unverified and no hosted
-execution has been accepted. Until access exists, every API execution case is
-`NOT_COVERED`.
-
-After access is verified, exercise each declared input modality through the
-complete CLI/public API-to-ummInfer-to-official-API path. Record the provider
-model identifier without exposing credentials. Check the returned text. Decode
-the streaming speech and check its format, duration, channel and sample layout,
-and SHA256.
-
-### MiniMaxAI/MiniMax-H3
-
-**IN_PROGRESS — integration planning.** Establish the full-stack BF16 baseline
-on H20B for high-precision acceptance and quality/resource comparisons. Include
-DiT, complete text encoders, VAE, activations, offload, and host RAM. Official
-Hugging Face metadata for the original H3 FL2VA partition is approximately
-144.05 GB. This disk size is not a VRAM requirement.
-
-Cover text, image, video, and audio inputs separately and in supported
-combinations. Record the actual input files, hashes, model precision, and all
-generation parameters. Decode the real 768p video output and native 32 kHz
-stereo audio output. Check video frame decoding, dimensions, frame count and
-timing; check audio decoding, sample rate, channel count, sample format and
-duration. Save both artifact hashes and the parameters needed to reproduce the
-run.
-
-The local open H3-Base acceptance plan covers only the 768p path. 2K requires
-hosted Context-IR/Regenerate-2K modules that are not fully open. Do not claim
-fully local 2K.
-
-There is no official quantized checkpoint. Official weights with runtime online
-quantization are distinct from third-party converted or pruned quantized
-packages. Verify a third-party package's revision, license, tensor completeness,
-hashes, and real outputs. Do not call it official MiniMax quantization. A trusted
-quantized run may execute before the H20B baseline, but it is a separate
-precision configuration. Compare its real outputs and resource use with the
-BF16 baseline when H20B is available. Without a trusted artifact or compatible
-hardware, mark the case `BLOCKED` or `NOT_COVERED`.
-
-There is no H3-specific Mac validation, memory guarantee, or performance
-commitment. Generic MPS or offload examples do not establish model acceptance.
-Limit Mac execution to low-resource real-model tests. Unsupported or unrun
-modalities remain `NOT_COVERED`.
-
-### MiniMaxAI/MiniMax-H3-Image
-
-**IN_PROGRESS — integration planning.** Use the same full-stack BF16 baseline
-scope as H3: DiT, complete text encoders, VAE, activations, offload, and host
-RAM. The H3-Image selective layout for SGLang/vLLM is approximately 135.38 GB.
-This disk size is not a VRAM requirement.
-
-Cover text-to-image generation, editing with one reference image, and editing
-with 16 reference images. Record each input image hash and the applicable size,
-count, seed, and generation parameters. Decode every returned image with an
-actual image decoder. Check its format, pixel dimensions, color mode, and full
-artifact SHA256. Do not accept a JSON success field or HTTP 200 as an image
-result.
-
-There is no official quantized checkpoint. Apply H3's distinction between
-runtime online quantization and third-party packages, including all verification
-and `BLOCKED`/`NOT_COVERED` rules. There is no H3-Image-specific Mac validation,
-memory guarantee, or performance commitment. Generic MPS or offload examples do
-not establish model acceptance. Limit Mac execution to low-resource real-model
-tests. Any editing, reference-count, or output-format case that was not executed
-remains `NOT_COVERED`.
-
 ## 5c. Unified ASR partials and VLM GPU abort
 
 `tests/unified_partial_abort_live.py` drives the real Qwen3-ASR and Qwen3-Omni
@@ -448,7 +320,8 @@ SHA256 values, commands, and `SHA256SUMS` are in
 ## 5e. Backend decode stop: scheduler, SSE, and GPU hardware evidence
 
 Three distinct evidence levels are recorded for one abort. They answer
-different questions and are not interchangeable.
+different questions and are not interchangeable. Before 2026-11-14 only levels
+1 and 2 existed; level 3 was the open `NOT_COVERED` gap closed by the run below.
 
 1. Scheduler abort. `tests/sglang_abort_probe.py` samples the backend
    scheduler counter `/v1/loads` before, during and after the request, then
@@ -585,6 +458,134 @@ This covers a NaN produced inside the real decode path and detected by SGLang's
 own sampler. It does not cover a CUDA hardware fault, a NaN in a tensor that
 sampling never reads, or a fault that leaves the backend alive.
 
+## 6. Manual smoke during development
+
+Start the text or audio processes as shown in README. Then check:
+
+```sh
+curl --fail-with-body http://127.0.0.1:30000/health
+curl --fail-with-body http://127.0.0.1:30000/ready
+
+curl -N http://127.0.0.1:30000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Count to three."}],"max_tokens":32,"stream":true}'
+
+./zig-out/bin/umm-infer transcribe --url http://127.0.0.1:31000 \
+  --model tiny-ctc --file audio.wav --max-new-tokens 64
+
+./zig-out/bin/umm-infer realtime --url http://127.0.0.1:31001 --final-url http://127.0.0.1:31000 \
+  --model tiny-ctc --file audio.wav --live-result --max-new-tokens 64
+```
+
+Expected result: readiness is 200 only after the model stage is ready. SSE
+contains incremental deltas and a terminating done event. Both audio commands
+exit 0 and print the real TinyCTC output.
+
+For authentication, configure the server key through its `serve --api-key`
+option in a protected local test environment. Pass the client key only through
+`UMMINFER_API_KEY` or `OPENAI_API_KEY`. Repeat transcription and realtime with
+no key, a wrong key, and the correct key. Check the server and client logs for
+accidental key disclosure.
+
+Stop each owned server and stage with SIGTERM. Confirm that later launches can
+bind fresh IPC endpoints and that no test-owned process remains.
+
+## 7. Future model acceptance gates
+
+These gates apply to the model support plan in `roadmap.md`. They are not
+current capabilities. A passing HTTP status alone never accepts a model.
+
+Every accepted case must use this real path:
+
+```text
+real CLI or public API -> ummInfer server
+  -> real backend with a local real model, or authorized official API with a real model
+  -> decoded user artifact
+```
+
+A direct SGLang run that bypasses ummInfer is supporting backend evidence, not
+final acceptance. An unimplemented integration remains `PLANNED` or
+`IN_PROGRESS — integration planning`.
+
+Do not use a fake server, fake runtime, fake backend, handwritten model
+response, or generated artifact in place of model output. Record the exact
+model id and revision, local weights or API endpoint type, backend version,
+precision, quantization method, input and output parameters, random seed where
+applicable, and artifact SHA256. Record wall time, output duration or count,
+peak accelerator memory, host RAM, and resource limits. Mark an unexecuted
+case `NOT_COVERED` with the missing hardware, weights, backend, or API access.
+
+### Qwen3.5-Omni
+
+**PLANNED.** Only the authorized official API is planned. The verified model
+IDs are `qwen3.5-omni-plus` and `qwen3.5-omni-flash`. They accept text, image,
+audio, and video input and return text or streaming speech. Do not claim image
+or video generation. Authorized account/API access is unverified and no hosted
+execution has been accepted. Until access exists, every API execution case is
+`NOT_COVERED`.
+
+After access is verified, exercise each declared input modality through the
+complete CLI/public API-to-ummInfer-to-official-API path. Record the provider
+model identifier without exposing credentials. Check the returned text. Decode
+the streaming speech and check its format, duration, channel and sample layout,
+and SHA256.
+
+### MiniMaxAI/MiniMax-H3
+
+**IN_PROGRESS — integration planning.** Establish the full-stack BF16 baseline
+on H20B for high-precision acceptance and quality/resource comparisons. Include
+DiT, complete text encoders, VAE, activations, offload, and host RAM. Official
+Hugging Face metadata for the original H3 FL2VA partition is approximately
+144.05 GB. This disk size is not a VRAM requirement.
+
+Cover text, image, video, and audio inputs separately and in supported
+combinations. Record the actual input files, hashes, model precision, and all
+generation parameters. Decode the real 768p video output and native 32 kHz
+stereo audio output. Check video frame decoding, dimensions, frame count and
+timing; check audio decoding, sample rate, channel count, sample format and
+duration. Save both artifact hashes and the parameters needed to reproduce the
+run.
+
+The local open H3-Base acceptance plan covers only the 768p path. 2K requires
+hosted Context-IR/Regenerate-2K modules that are not fully open. Do not claim
+fully local 2K.
+
+There is no official quantized checkpoint. Official weights with runtime online
+quantization are distinct from third-party converted or pruned quantized
+packages. Verify a third-party package's revision, license, tensor completeness,
+hashes, and real outputs. Do not call it official MiniMax quantization. A trusted
+quantized run may execute before the H20B baseline, but it is a separate
+precision configuration. Compare its real outputs and resource use with the
+BF16 baseline when H20B is available. Without a trusted artifact or compatible
+hardware, mark the case `BLOCKED` or `NOT_COVERED`.
+
+There is no H3-specific Mac validation, memory guarantee, or performance
+commitment. Generic MPS or offload examples do not establish model acceptance.
+Limit Mac execution to low-resource real-model tests. Unsupported or unrun
+modalities remain `NOT_COVERED`.
+
+### MiniMaxAI/MiniMax-H3-Image
+
+**IN_PROGRESS — integration planning.** Use the same full-stack BF16 baseline
+scope as H3: DiT, complete text encoders, VAE, activations, offload, and host
+RAM. The H3-Image selective layout for SGLang/vLLM is approximately 135.38 GB.
+This disk size is not a VRAM requirement.
+
+Cover text-to-image generation, editing with one reference image, and editing
+with 16 reference images. Record each input image hash and the applicable size,
+count, seed, and generation parameters. Decode every returned image with an
+actual image decoder. Check its format, pixel dimensions, color mode, and full
+artifact SHA256. Do not accept a JSON success field or HTTP 200 as an image
+result.
+
+There is no official quantized checkpoint. Apply H3's distinction between
+runtime online quantization and third-party packages, including all verification
+and `BLOCKED`/`NOT_COVERED` rules. The H3 Mac limits apply unchanged: there is
+no H3-Image-specific Mac validation, memory guarantee, or performance
+commitment, and execution stays limited to low-resource real-model tests. Any
+editing, reference-count, or output-format case that was not executed remains
+`NOT_COVERED`.
+
 ## 8. CUDA build, IPC, sanitizer and stress on H20B
 
 Run these on a CUDA host with at least two free GPUs. On a shared host, select
@@ -623,21 +624,9 @@ zero-copy device-tensor transfer, or multi-host IPC.
 
 - A first-party HTTP 429 with `Retry-After`: this server does not emit one.
   Synthetic protocol responses are not validation evidence.
-- `other_501_502_public_client`: upstream route status mapping is being changed
-  in Batch 2. This binary snapshot is not evaluated for a real public-client 501
-  or 502 response, so both remain unverified until the Batch 2 snapshot is
-  final.
+- `other_501_502_public_client`: this binary snapshot is not evaluated for a
+  real public-client 501 or 502 response, so both remain unverified.
 - Immediate cancellation inside MLX prefill or a model call.
 - CUDA execution and CUDA IPC on this Apple Silicon environment.
 - Production ASR accuracy and generalization: TinyCTC is an inference test model.
-- GPU hardware evidence for a decode stop: **PASS on H20B 2026-11-14** on
-  dedicated GPU 2. A SGLang torch.profiler/Kineto CUPTI trace shows 26 decode
-  steps and 11,573 model CUDA kernels before the abort, then a bounded
-  teardown whose two DECODE spans start about 64.33/64.39 ms after the abort
-  POST and end before the abort frame, then zero kernels for 2.83 s after the
-  frame plus a 0.2 s grace; a parallel DCGM run shows decode `sm_active` up to
-  0.033 and 55 idle post-abort samples. The scheduler counter `/v1/loads` and
-  the `finish_reason=abort` frame remain separate, weaker evidence levels
-  (section 5e). Evidence and SHA256SUMS are under
-  `/tmp/umminfer-phase6-gpu-evidence/`.
 - Full OpenAI Realtime compatibility: that API is not implemented.
