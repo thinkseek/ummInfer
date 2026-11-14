@@ -36,65 +36,53 @@ purpose.
 ### Current integration status — 2026-11-14
 
 Optional multi-turn session history landed on 2026-11-14. `session_id` remains
-a grouping label by default. A server started with `--session-history` accepts
-the per-request `session_history=true` opt-in and prepends prior completed
-turns of the same session to the next VLM prompt. The store is in-process,
-bounded to 8 turns and 16384 characters per session and 256 sessions overall,
-with oldest-first eviction, mutex-guarded, and not persisted: a process
-restart drops all history. Only successful `complete` terminals enter history; cancelled and
-failed requests leave no turn. Deterministic local contract tests cover
-ordering, session isolation, independent request id/seq/terminal, concurrency,
-cancel/error exclusion, both eviction bounds, the default-off contract, the
-non-unified HTTP 400, and restart loss. Real H20B multi-turn validation passed
-on 2026-11-14: the second `:vlm` prompt held the first transcript and answer,
-both requests kept independent request ids/seq/terminals, a cancelled and a
-failed turn left no entry, and the default gate stayed off. Evidence is in
+a grouping label by default; with `--session-history` and the per-request
+`session_history=true` opt-in, prior completed turns of the same session are
+prepended to the next VLM prompt. The store bounds, eviction, HTTP 400 contracts,
+and the full rule set are in [README](../README.md#optional-multi-turn-session-history);
+deterministic contract coverage and the real H20B validation are in
+[validation 5d](validation.md#5d-optional-multi-turn-session-history). H20B
+multi-turn validation passed on 2026-11-14, including cancel/error exclusion and
+the default-off gate; evidence is in
 `/tmp/umminfer-phase5-final-h20b-evidence/live/`. Remote `http(s)` image URLs
-were also validated on H20B with the repository image served from a local HTTP
-server.
+were validated in the same window with the repository image served from a local
+HTTP server.
 
-### Current integration status — 2026-11-13
+### Integration status — 2026-11-13 (historical snapshot)
 
-Phases 0–3 are **partial**, not complete. The integrated branch exposes the
-existing public chat route through `UnifiedEngine` to real Qwen ASR and Qwen
-Omni workers. On H20B, public HTTP/SSE and the real CLI completed ASR -> VLM with
-real Chinese and English recordings. The recorded run also passed a cancel after
-ASR final with no VLM execution, an ASR failure with no VLM execution, and a
-successful later request. Event order, parent/child request ids, one terminal,
-and `in_flight=0` are in `/tmp/umminfer-integration-logs/h20b-final/`. A later
-run cancelled while the VLM was streaming and failed the ASR leg by stopping its
-real backend; evidence is in
-`/tmp/umminfer-phase4-cancel-failure-evidence/`.
+Phases 0–3 were **partial**, not complete, as of this date. The integrated
+branch exposed the existing public chat route through `UnifiedEngine` to real
+Qwen ASR and Qwen Omni workers. On H20B, public HTTP/SSE and the real CLI
+completed ASR -> VLM with real Chinese and English recordings. The recorded run
+also passed a cancel after ASR final with no VLM execution, an ASR failure with
+no VLM execution, and a successful later request. Event order, parent/child
+request ids, one terminal, and `in_flight=0` are in
+`/tmp/umminfer-integration-logs/h20b-final/`. A later run cancelled while the
+VLM was streaming and failed the ASR leg by stopping its real backend; evidence
+is in `/tmp/umminfer-phase4-cancel-failure-evidence/`.
 
 Realtime streaming added on 2026-11-13: the Qwen ASR stage requests SGLang
 streaming, the realtime route forwards cumulative partials, the real client
 sends PING control frames during the stream, and cancellation asks SGLang to
 abort and records its `finish_reason=abort`. On 2026-11-13 the unified chat
-route also passed opt-in ASR partials and a VLM-leg GPU abort with SGLang
-`finish_reason=abort`; that evidence is in
-`/tmp/umminfer-phase5-streaming-abort-evidence/`. A later run on 2026-11-14
-added scheduler-counter evidence for that stop: `/v1/loads` reported
-`num_running_reqs` 0 -> 1 -> 0 across 10 aborts. On 2026-11-14 GPU hardware
-evidence reached `PASS` on dedicated GPU 2: a SGLang torch.profiler/Kineto
-CUPTI trace records 26 decode steps and 11,573 model kernels before the
-abort, a bounded teardown whose two DECODE spans start about 64.33/64.39 ms
-after the abort POST and end before the abort frame, then zero CUDA kernels
-for 2.83 s after the frame, and a
-parallel DCGM run records decode `sm_active` up to 0.033 followed by 55 idle
-post-abort samples. Scheduler counter, SSE frame, and GPU kernel stop are
-three separate evidence levels documented in
-[validation](validation.md#5e-backend-decode-stop-scheduler-sse-and-gpu-hardware-evidence).
-Injection of a real decode NaN passed on 2026-11-14 on dedicated GPU 3: the
-public unified path returned one `error` with the correct stage and
-`in_flight=0`, then recovered. See
-[validation 5f](validation.md#5f-real-model-compute-nan-failure-recorded-on-2026-11-14)
-and `/tmp/umminfer-phase6-compute-failure-evidence/`.
-The Mac unified profile is also `NOT_COVERED`. Model
-revisions are `UNKNOWN`; weights hashes, full resource attribution, and output
-reproducibility are not a complete Phase 3 record. CUDA build, IPC, sanitizer,
-and stress ran separately on H20B on 2026-11-14 and passed on dedicated GPUs 2
-and 3; see [H20B status](#h20b-status). No full Phase 2 or Phase 3 claim is
-made.
+route also passed opt-in ASR partials and a VLM-leg GPU abort; that evidence is
+in `/tmp/umminfer-phase5-streaming-abort-evidence/` and [validation
+5c](validation.md#5c-unified-asr-partials-and-vlm-gpu-abort).
+
+Later runs extended this record and are documented in their single fact entries,
+not restated here: scheduler-counter and GPU-hardware decode-stop evidence
+reached PASS on 2026-11-14 ([validation
+5e](validation.md#5e-backend-decode-stop-scheduler-sse-and-gpu-hardware-evidence));
+a real decode NaN injection passed the same day ([validation
+5f](validation.md#5f-real-model-compute-nan-failure-recorded-on-2026-11-14));
+CUDA build, IPC, sanitizer, and stress passed on dedicated GPUs 2 and 3 (see
+[H20B status](#h20b-status)).
+
+As of this 2026-11-13 snapshot the full Phase 3 Mac profile, weights hashes, full
+resource attribution, and output reproducibility were not a complete record. The
+Mac low-resource profile later passed on 2026-11-13 ([validation
+5b](validation.md#5b-mac-unified-low-resource-profile)); model revisions stay
+`UNKNOWN`. No full Phase 2 or Phase 3 gate claim is made.
 
 ### Phase 0 — Contract and orchestration
 
@@ -270,10 +258,13 @@ number and its conditions.
 
 The first real H20B unified baseline is recorded in
 [performance-baseline.md](performance-baseline.md): 10 scenario blocks, 200
-successful requests, and unified concurrency 1/2/4. It shows that one Omni
-worker limits the current deployment to about 20 output tokens/s; concurrency
-2/4 adds queueing rather than throughput. Mac unified performance, per-worker
-model-time attribution, and cancellation latency remain unmeasured.
+successful requests, and unified concurrency 1/2/4. In that pre-change baseline
+one serial Omni worker delivered about 20 output tokens/s and concurrency 2/4
+added queueing rather than throughput. The joint worker-concurrency change
+removed the queueing ([joint-optimization.md](joint-optimization.md): at
+concurrency 4 total p95 fell from 55.2 s to 14.9 s, aggregate throughput 3.6×).
+Mac unified performance, per-worker model-time attribution, and cancellation
+latency remain unmeasured.
 
 ### Phase 6 — RL rollout, trajectory, reward, and training
 
@@ -304,13 +295,11 @@ learning, without putting training inside the serving process.
 | No unverified claim | No phase claims an RL result that has not run on real models and recorded hardware. |
 
 **Phase 6 step 2 — real optimizer-step validation (2026-11-14).** The
-architecture above was exercised end to end on H20B GPU 4 with a real
-0.5B causal LM, real GSM8K rollouts, a verifiable exact-match reward, and
-real REINFORCE/AdamW updates in the separate worker process. Non-zero
-gradients, measured weight deltas, two hash-chained checkpoints and
-before/after evaluation are recorded as evidence. This validates the
-training architecture; it is not a business model-training result. Scope,
-limits and the replay precision boundary are in
+architecture above was exercised end to end on H20B GPU 4 with a real 0.5B
+causal LM, real GSM8K rollouts, a verifiable exact-match reward, and real
+REINFORCE/AdamW updates in the separate worker process. This validates the
+training architecture, not a business model-training result. The measured
+evidence, scope, limits, and replay precision boundary are in
 [rl-phase2](rl-phase2.md).
 
 ## Model support plan
@@ -325,16 +314,9 @@ are in [validation section 7](validation.md#7-future-model-acceptance-gates).
 | `MiniMaxAI/MiniMax-H3` | **IN_PROGRESS — integration planning** | Full-stack BF16 baseline on H20B. The open H3-Base path is limited to 768p; 2K needs hosted Context-IR/Regenerate-2K modules that are not fully open. |
 | `MiniMaxAI/MiniMax-H3-Image` | **IN_PROGRESS — integration planning** | Full-stack BF16 baseline on H20B. Text-to-image and editing with up to 16 reference images. |
 
-BF16 acceptance covers DiT, complete text encoders, VAE, activations, offload,
-and host RAM. Official Hugging Face metadata for the H3 FL2VA partition is
-approximately 144.05 GB, and the H3-Image selective layout for SGLang/vLLM is
-approximately 135.38 GB; both are disk sizes, not VRAM requirements. There are
-no official quantized checkpoints; a third-party package must be verified before
-use and must not be called official MiniMax quantization.
-
-Final generation acceptance must use the CLI or public API, the ummInfer server,
-the real backend or authorized official API, the real model, and the decoded
-artifact. A direct SGLang run that bypasses ummInfer is not final acceptance.
+The BF16 scope, the 144.05 GB / 135.38 GB disk-size figures (not VRAM), the
+no-official-quantized-checkpoint rule, and the final-acceptance path all live in
+[validation section 7](validation.md#7-future-model-acceptance-gates).
 
 ## Verification split
 
@@ -361,59 +343,48 @@ The 2026-11-13 evidence directory is
 `/tmp/umminfer-integration-logs/h20b-final/`. It contains the topology, model
 metadata, real audio hashes, transcripts, answers, event timings, Worker receive
 logs, cancellation and failure checks, GPU snapshot, and `SHA256SUMS`. The run
-is local evidence, not a committed result artifact. It does not establish a
-full BF16 baseline, image input, session reuse, or the Mac profile. Those
-remain `NOT_COVERED`.
+is local evidence, not a committed result artifact. Within this audio-only
+directory's scope it does not establish a full BF16 baseline. Joint image input
+and same-session reuse were covered by the separate `phase4-joint` run later the
+same date (see README), and the Mac low-resource profile by [validation
+5b](validation.md#5b-mac-unified-low-resource-profile).
 
 A separate window on 2026-11-14 covered the CUDA path in the same container.
 It used `CUDA_VISIBLE_DEVICES=2,3`, so the SGLang workers on GPUs 0 and 1 were
-not touched, and no benchmark ran at the same time. All four checks passed:
-
-| Check | Evidence |
-| --- | --- |
-| CUDA build | `zig build -Doptimize=ReleaseFast -Dcuda`, exit 0 in 27 s from a clean cache |
-| CUDA IPC | `cuda_ipc_test` and `cuda_pipeline_test`, exit 0, `all checks passed` |
-| Sanitizer | `tests/cuda_sanitize.py`, exit 0; 0 memcheck errors in the clean runs, and the expected 2 API reports from the corrupted-handle case |
-| Stress | `tests/cuda_stress.py --rounds 10`, 10/10 rounds |
-
-The window needed two Linux build fixes: the dependency prefix now precedes
-distro headers in `build.zig`, and `src/client/openai.cpp` names the `std::min`
-type. Evidence is in `/tmp/umminfer-phase5-cuda-stress-evidence/`. Still
-`NOT_COVERED`: CUDA relay under real model load, zero-copy device-tensor
-transfer, and multi-host IPC.
+not touched, and no benchmark ran at the same time. The CUDA build, IPC tests,
+compute-sanitizer, and a 10/10 stress run all passed; the commands and result
+table are in [validation section 8](validation.md#8-cuda-build-ipc-sanitizer-and-stress-on-h20b),
+with the run record in README. The window needed two Linux build fixes (the
+dependency prefix now precedes distro headers, and `src/client/openai.cpp`
+names the `std::min` type). Evidence is in
+`/tmp/umminfer-phase5-cuda-stress-evidence/`. CUDA relay under real model load,
+zero-copy device-tensor transfer, and multi-host IPC remain `NOT_COVERED`.
 
 A third window on 2026-11-14 covered realtime live in the same container. The
-container libcurl 8.5.0 had no `ws` protocol, so the run used libcurl 8.5.0
-built from source with `--enable-websockets` in a dedicated prefix. A dedicated
-`qwen3-asr` backend ran on GPU 5, port 31005. The real CLI, realtime server and
-Qwen3-ASR stage passed incremental partials, PING/PONG interleaving, cancel,
-GPU abort, and a later request. Evidence is in
-`/tmp/umminfer-phase6-realtime-h20b-evidence/`; the recipe and result table are
-in [Validation](validation.md) section 3a.
+real CLI, realtime server and Qwen3-ASR stage passed incremental partials,
+PING/PONG interleaving, cancel, GPU abort, and a later request. Evidence is in
+`/tmp/umminfer-phase6-realtime-h20b-evidence/`; the libcurl build recipe and
+result table are in [validation section 3a](validation.md#3a-h20b-realtime-live-run).
 
 ## Next priorities
 
-1. Run the realtime live gate on a host whose system libcurl supports
-   WebSocket, so the dedicated curl prefix is not needed.
-2. Add joint image+audio input and session reuse, then run their Phase 2 gates.
-3. Record model revisions, weights hashes, reproducibility, and complete resource
-   attribution for Phase 3; run the Mac profile separately.
-4. Repeat the H20B CUDA window under real model load, and add zero-copy
+1. Record model revisions, reproducibility, and complete Phase 3 resource
+   attribution. Weights hashes and HF byte-identity are already recorded in
+   [performance-baseline.md](performance-baseline.md#model-snapshot-and-provenance);
+   the SGLang `revision` field stays `UNKNOWN`.
+2. Repeat the H20B CUDA window under real model load, and add zero-copy
    device-tensor transfer and multi-host IPC if a use case needs them.
-5. Keep the fixed-upstream proxy independent of the local unified path.
+3. Keep the fixed-upstream proxy independent of the local unified path.
 
 ## Explicitly unverified or unsupported
-
-These are not repeated from the README limits list.
 
 - CUDA relay under real model load, zero-copy device-tensor transfer, and
   multi-host CUDA IPC. The build, IPC tests, compute-sanitizer, and stress pass
   are recorded for H20B on 2026-11-14.
-- Session reuse and the Mac unified profile. Unified ASR partials, joint
-  image+audio, and VLM/Omni GPU abort confirmation are covered by the unified
-  H20B run; realtime partials, ASR GPU abort, and real-client control-frame
-  interleaving are covered by the realtime live run on H20B 2026-11-14
-  (validation.md section 3a).
+- The full Phase 3 Mac profile and trained-ASR recognition quality. The
+  low-resource Mac unified profile passed with the TinyCTC inference test model
+  ([validation 5b](validation.md#5b-mac-unified-low-resource-profile)); TinyCTC
+  recognition quality stays `NOT_COVERED`.
 - A first-party HTTP 429 with `Retry-After` from this server.
 - A successful upstream forward through the proxy. The in-tree tests prove
   configuration, route gating, and a connect failure only.

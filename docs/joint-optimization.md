@@ -28,8 +28,8 @@ The baseline unified run confirms the queueing model. At concurrency 4 the
 Omni worker served four waves, so total p95 was 54.8 s (`unified-en`) and
 55.2 s (`unified-zh`), about 4 × 13.7 s. First-delta p95 was 41.9 s and 42.1 s,
 about 3 × 13.7 s plus one ASR leg. The baseline total-latency coefficient of
-variation at concurrency 4 was 0.45, which is a four-wave distribution, not
-measurement noise.
+variation at concurrency 4 was 0.45; the four-wave interpretation is in
+[performance-baseline.md](performance-baseline.md#results).
 
 After the change, both workers run up to 4 upstream requests in parallel. The
 public HTTP/SSE/WebSocket surface, the unified event schema, and the
@@ -70,15 +70,14 @@ No model is duplicated. No second engine, transport, or event schema is added.
   worker concurrency 1 (serial path).
 * Candidate run: this branch, `--asr-concurrency 4 --omni-concurrency 4`,
   workers started with `--perf-log`.
-* `temperature=0`, `max_new_tokens=256`, `max_new_tokens=256` for ASR,
-  3 warm-up requests per scenario, 20 successful samples per scenario.
-* Unified concurrency 1, 2, and 4, English and Chinese. A batch of `N` requests
-  is released at one barrier.
-* Percentiles are nearest-rank over successful samples.
-* Inputs are the Phase 4 real recordings:
-  `asr_en_pcm16.wav` `64fbd9f7…7eedf86d`, `asr_zh.wav` `46dbc998…1160dce50`,
-  `man_ironing.png` `e0691718…4cd060e`. The tokenizer is the served Omni
-  tokenizer `a7d41145…5d1fab`.
+* `temperature=0`, `max_new_tokens=256` for both legs,
+  3 warm-up requests per scenario, 20 successful samples per scenario. The
+  remaining sampling rules (barrier release, nearest-rank percentiles) are the
+  same as [performance-baseline.md](performance-baseline.md#method).
+* Unified concurrency 1, 2, and 4, English and Chinese.
+* Inputs are the same Phase 4 real recordings as
+  [performance-baseline.md](performance-baseline.md#inputs), which holds their
+  full SHA256. The served Omni tokenizer here is `a7d41145…5d1fab`.
 * Both SGLang backends were already running. No backend process was started or
   stopped. The local SSH control socket `/tmp/umm-bench-ssh.sock` was reused.
 
@@ -141,7 +140,6 @@ runs because ASR legs are short.
 
 Peak RSS at `unified-en` concurrency 4: server 64.3 MB → 59.8 MB, ASR worker
 39.1 MB → 42.3 MB, Omni worker 30.6 MB → 31.6 MB. Worker growth is within 10%.
-Every failure count is 0.
 
 ## Output consistency
 
@@ -167,9 +165,6 @@ identity. Text quality is not measured here.
 * Concurrency 1 is 1.0–1.5% slower in p95 for unified blocks. `asr-en` p95 is
   43 ms higher (+6.3%). These are single-run differences at the noise scale;
   causality is not established.
-* Per-request tok/s drops 5.8% at concurrency 4. Aggregate throughput rises
-  3.6×.
-* Two `unified-en` blocks are not byte-identical, as described above.
 * Control-plane event latency is not instrumented. The 15.4 s p95 at
   concurrency 4 bounds the combined ASR, batching, and control-plane overhead
   at about 1.7 s; it does not separate them.
@@ -237,12 +232,15 @@ python3 -I <evidence>/probe/analysis.py <baseline> <candidate> <evidence>
 
 ## NOT_COVERED
 
-* Mac unified profile.
+* Mac unified profile in these two A/B runs. A separate Mac low-resource
+  profile passed on 2026-11-13; see [mac-unified.md](mac-unified.md).
 * Cancellation latency and cancellation behavior under 4-way concurrency as a
-  measured quantity. The existing unit test covers concurrent abort isolation
-  indirectly; no live cancel was measured in this run.
+  measured quantity, in these two A/B runs. The regression section below records
+  a qualitative real-backend cancel re-verify, but no live cancel latency was
+  measured here.
 * Video and image+audio joint input in the A/B. The unified blocks are
   audio-only. Phase 4 joint-image evidence is unchanged.
-* Model revision and weights hashes.
-* Exclusive host use. GPUs 0 and 1 were used only by these two backends during
-  both runs, but other GPU 2/3 work may have existed.
+* Model revision and weights hashes, and exclusive host use: the same
+  constraints as [performance-baseline.md](performance-baseline.md#what-the-numbers-do-not-cover).
+  GPUs 0 and 1 were used only by these two backends during both runs, but other
+  GPU 2/3 work may have existed.

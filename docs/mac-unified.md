@@ -16,9 +16,8 @@ Two stages run in separate processes:
 | ASR | `python/umminfer_tiny_asr_stage.py` with the deterministic TinyCTC model | ASR protocol, WAV/PCM handling, stage errors, unified orchestration |
 | Text | `python/umminfer_mlx_stage.py` with a real MLX-LM model | The real text leg and SSE streaming |
 
-TinyCTC is an initialized inference test model. It is not trained, and its
-output is not recognition-quality evidence. The run proves the contract, not
-speech recognition. The MLX model proves the text leg only.
+TinyCTC is an initialized inference test model. The run proves the contract,
+not speech recognition. The MLX model proves the text leg only.
 
 The harness does not contact H20B, CUDA, SGLang, or any remote service. All
 traffic is localhost HTTP and local IPC.
@@ -151,16 +150,16 @@ Expected result: every line reports `OK` and the `find` command prints nothing.
 - TinyCTC is not a trained ASR model. Recognition quality is `NOT_COVERED`.
 - The MLX model proves the text leg. It is a 0.5B 4-bit model, not the
   production model.
-- Both stages are serial. Concurrency 2 measures queueing and isolation.
 - The harness sends no text or image instruction part. `UnifiedEngine` builds a
   content-part array for such a request, and the MLX-LM Qwen2.5 chat template
   accepts a string only, so that local text stage rejects it. This path is
   `NOT_COVERED` on this profile.
 - One request, one cancellation, and one error are tested. Sustained load,
   memory leaks, and long-run stability are not.
-- Chunked SSE partial ASR through the unified route is not covered: the engine
-  submits the ASR leg with `stream=false`. Realtime partials are covered by
-  `docs/validation.md`.
+- On this Mac profile, chunked SSE partial ASR through the unified route is not
+  covered: the engine submits the ASR leg with `stream=false`. The same route
+  with opt-in partials passed on H20B; see `docs/validation.md` section 5c.
+  Realtime partials are also covered by `docs/validation.md`.
 - The recorded run used baseline `a412d0d4` with the uncommitted harness. The
   commit adds only the harness, its unit test, and documentation. It changes no
   runtime code, and `env.json` records the binary and model hashes.

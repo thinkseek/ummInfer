@@ -57,8 +57,8 @@ Other targets have their own relay and keep working.
 
 Each credit keeps its high-water device allocation until the shared relay
 state is destroyed, so steady-state device memory can approach the sum of the
-per-credit high-water sizes. An abandoned allocation is retained until process
-exit.
+per-credit high-water sizes. The lifecycle of an abandoned allocation is in
+Ownership below.
 
 ## Ownership
 
