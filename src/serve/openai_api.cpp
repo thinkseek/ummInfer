@@ -24,7 +24,6 @@
 #include <set>
 #include <thread>
 #include <variant>
-#include <vector>
 
 namespace umminfer {
 namespace {
@@ -293,18 +292,6 @@ constexpr size_t kRelayQueueBytes = 4u << 20;
 constexpr size_t kMaxJsonUpstreamBytes = 64u << 20;
 constexpr size_t kMaxBinaryUpstreamBytes = 512u << 20;
 
-// Path segments are forwarded, so only an opaque identifier is accepted. This
-// blocks traversal, query injection and absolute-URL smuggling in one place.
-bool valid_path_id(std::string_view id) {
-  if (id.empty() || id.size() > 128) return false;
-  for (const char c : id) {
-    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9') || c == '_' || c == '-';
-    if (!ok) return false;
-  }
-  return true;
-}
-
 // One upstream transfer whose response is consumed incrementally. The handler
 // waits for the first byte before it commits the client response, so an
 // upstream error still maps to its own status code instead of a committed 200.
@@ -394,10 +381,6 @@ class UpstreamRelay {
     return started_;
   }
 
-  bool started() {
-    std::lock_guard<std::mutex> lock(mu_);
-    return started_;
-  }
   // True when the transfer ended before the first body byte: the handler must
   // map the stored error (or an empty response) instead of waiting for the
   // request timeout.
@@ -1397,13 +1380,9 @@ class OpenAIApi::Impl {
                     "application/json");
   }
 
-  std::string upstream_url(const std::string& path) const {
-    return upstream_base_url_ + path;
-  }
-
   client::detail::HttpRequest upstream_request(const std::string& path) const {
     client::detail::HttpRequest out;
-    out.url = upstream_url(path);
+    out.url = upstream_base_url_ + path;
     out.bearer = config_.upstream_api_key;
     out.timeout = client::Milliseconds{static_cast<int64_t>(
         std::max(1.0, config_.request_timeout_s) * 1000.0)};
@@ -1422,11 +1401,6 @@ class OpenAIApi::Impl {
   }
 
   // Maps an upstream failure and keeps the retry metadata the upstream sent.
-  void reject_upstream(httplib::Response& res, const client::Error& error) {
-    reject_upstream(res, error.code(), error.status(), error.what(),
-                    error.retry_after());
-  }
-
   void reject_upstream(httplib::Response& res, client::ErrorCode code, long status,
                        const std::string& text,
                        client::Milliseconds retry_after = client::Milliseconds{0}) {
@@ -1463,7 +1437,8 @@ class OpenAIApi::Impl {
       watcher.join();
       // The client is gone; there is nobody to answer.
       if (error.code() == client::ErrorCode::kCancelled) return;
-      reject_upstream(res, error);
+      reject_upstream(res, error.code(), error.status(), error.what(),
+                      error.retry_after());
     } catch (const std::exception& error) {
       done.store(true);
       watcher.join();
@@ -2007,10 +1982,6 @@ class OpenAIApi::Impl {
 
   void handle_video_status(const httplib::Request& req, const std::string& video_id,
                            httplib::Response& res) {
-    if (!valid_path_id(video_id)) {
-      reject(res, 400, "invalid video id", "invalid_request");
-      return;
-    }
     auto out = upstream_request("/v1/videos/" + video_id);
     out.method = client::detail::HttpMethod::kGet;
     out.accept = "application/json";
@@ -2019,10 +1990,6 @@ class OpenAIApi::Impl {
 
   void handle_video_content(const httplib::Request& req, const std::string& video_id,
                             httplib::Response& res) {
-    if (!valid_path_id(video_id)) {
-      reject(res, 400, "invalid video id", "invalid_request");
-      return;
-    }
     // variant selects among multiple outputs of one job. Only that key is
     // forwarded; any other query parameter is rejected rather than dropped.
     // variant is a zero-based non-negative integer. Any other value, a repeat,
@@ -2063,10 +2030,6 @@ class OpenAIApi::Impl {
 
   void handle_video_delete(const httplib::Request& req, const std::string& video_id,
                            httplib::Response& res) {
-    if (!valid_path_id(video_id)) {
-      reject(res, 400, "invalid video id", "invalid_request");
-      return;
-    }
     auto out = upstream_request("/v1/videos/" + video_id);
     out.method = client::detail::HttpMethod::kDelete;
     out.accept = "application/json";

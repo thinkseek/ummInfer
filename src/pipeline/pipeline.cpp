@@ -3,7 +3,6 @@
 
 #include <chrono>
 #include <exception>
-#include <iostream>
 #include <limits>
 
 namespace umminfer {
@@ -11,9 +10,8 @@ namespace {
 
 // One DataRef per payload. The payload is msgpack bytes, so every edge moves one
 // contiguous block through the relay and the ref names it.
-DataRef make_payload_ref(const Value& payload_value, TransportKind transport,
-                         const Value& relay_info, int64_t nbytes,
-                         const std::string& object_id) {
+DataRef make_payload_ref(TransportKind transport, const Value& relay_info,
+                         int64_t nbytes, const std::string& object_id) {
   DataRef ref;
   ref.version = 1;
   ref.kind = DataKind::StagePayload;
@@ -31,7 +29,6 @@ DataRef make_payload_ref(const Value& payload_value, TransportKind transport,
   meta.offset = 0;
   meta.size = nbytes;
   ref.tensors.push_back(std::move(meta));
-  (void)payload_value;
   return ref;
 }
 
@@ -126,9 +123,8 @@ Stage::Stage(Config config, ComputeFn compute_fn)
       router_(config_.name, config_.gpu_id, config_.gpu_id, {},
               [&] {
                 std::set<std::string> names;
-                for (const auto& [name, devices] : config_.stage_gpu_ids) {
-                  (void)devices;
-                  names.insert(name);
+                for (const auto& entry : config_.stage_gpu_ids) {
+                  names.insert(entry.first);
                 }
                 return names;
               }(),
@@ -490,8 +486,7 @@ void Stage::send_payload(const std::string& request_id, const std::string& targe
     msg.request_id = request_id;
     msg.from_stage = config_.name;
     msg.to_stage = target;
-    msg.data_ref = make_payload_ref(payload_value, transport, op->metadata(),
-                                    nbytes, object_id)
+    msg.data_ref = make_payload_ref(transport, op->metadata(), nbytes, object_id)
                        .to_value();
   } catch (...) {
     // ZMQ never saw a message, so no receiver can own this block.
@@ -569,9 +564,8 @@ void Stage::route_result(const std::string& request_id, Value result) {
     return;
   }
   StagePayload payload{request_id, request, std::move(result)};
-  for (const auto& [target, endpoint] : config_.next_stages) {
-    (void)endpoint;
-    send_payload(request_id, target, payload);
+  for (const auto& entry : config_.next_stages) {
+    send_payload(request_id, entry.first, payload);
   }
 }
 

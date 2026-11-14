@@ -23,7 +23,6 @@ struct Progress {
   Milliseconds stall{0};
   Milliseconds activity{0};
   bool saw_token = false;
-  bool saw_data = false;
   std::string expired;
 
   void token();
@@ -42,7 +41,6 @@ class MimeSource {
 
   MimeSource(Read read, uint64_t size);
   size_t pump(char* buffer, size_t max_bytes);
-  uint64_t size() const { return size_; }
   uint64_t consumed() const { return consumed_; }
 
  private:

@@ -2,7 +2,6 @@
 #include "cli.hpp"
 
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>

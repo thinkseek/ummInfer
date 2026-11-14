@@ -2,7 +2,6 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
-#include <cctype>
 #include <limits>
 #include <map>
 #include <mutex>

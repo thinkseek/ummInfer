@@ -3,8 +3,6 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
-#include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -13,7 +11,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include "umminfer/pipeline/pipeline.hpp"
 #include "umminfer/pipeline/unified.hpp"
