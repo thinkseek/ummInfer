@@ -412,13 +412,16 @@ python3 -I python/umminfer_qwen_omni_worker.py \
   --stream --max-tokens 128 --temperature 0
 ```
 
-The public request accepts exactly one WAV `input_audio` part, at most one
-`image_url` part, and at most one `text` part. Video parts are rejected. WAV must
+The public request accepts at most one WAV `input_audio` part, at most one
+`image_url` part, and at most one text unit (a plain string `content` or one
+`text` part). The audio part is optional: a text or image+text request skips
+ASR and runs the VLM leg directly. Video parts are rejected. WAV must
 be PCM16, mono, 16 kHz. The `text` part is an optional client instruction, for
-example "describe this image". ASR runs as one non-streaming request and receives
-PCM only; it never sees the image or the instruction. The VLM receives the
-instruction, the original `image_url` part, and the final transcript as the last
-`text` part. It keeps the public sampling and streaming parameters.
+example "describe this image". With audio, ASR runs as one non-streaming
+request and receives PCM only; it never sees the image or the instruction. The
+VLM receives the instruction, the original `image_url` part, and, when ASR ran,
+the final transcript as the last `text` part. It keeps the public sampling and
+streaming parameters.
 
 `image_url.url` may be a `data:` URL or a remote `http(s)` URL. The engine does
 not fetch it: it forwards the URL unchanged to the VLM worker, and the SGLang

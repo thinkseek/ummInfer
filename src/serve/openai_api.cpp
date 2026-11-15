@@ -207,17 +207,32 @@ json unified_event_json(const UnifiedEvent& event) {
 // The public chat schema carries WAV base64, an optional image URL, and one
 // optional client instruction; the real ASR worker carries PCM16 binary in
 // MessagePack. Convert only at the existing HTTP boundary. A unified request
-// accepts exactly one input_audio part, at most one image_url part, and at most
-// one text part; anything else is rejected.
-bool unified_input_parts(const json& body, std::string& pcm, std::string& error) {
+// accepts at most one input_audio part, at most one image_url part, and at
+// most one text unit (a string content or a text part); anything else is
+// rejected. A request without audio is a VLM-only turn, so audio is optional.
+// On success has_audio says whether pcm carries a decoded WAV payload.
+bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
+                         std::string& error) {
   size_t audio_count = 0;
   size_t image_count = 0;
   size_t text_count = 0;
+  has_audio = false;
   try {
     for (const auto& message : body["messages"]) {
       const json& content = message["content"];
+      if (content.is_string()) {
+        if (content.get<std::string>().empty()) {
+          error = "message content string must be nonempty";
+          return false;
+        }
+        if (++text_count > 1) {
+          error = "unified chat accepts at most one text part";
+          return false;
+        }
+        continue;
+      }
       if (!content.is_array()) {
-        error = "unified chat content must be a content part array";
+        error = "unified chat content must be a text string or content part array";
         return false;
       }
       for (const auto& part : content) {
@@ -279,9 +294,16 @@ bool unified_input_parts(const json& body, std::string& pcm, std::string& error)
     error = exc.what();
     return false;
   }
-  if (audio_count != 1 || pcm.empty()) {
-    error = "unified chat requires exactly one nonempty input_audio part";
+  if (audio_count > 1) {
+    error = "unified chat accepts at most one input_audio part";
     return false;
+  }
+  if (audio_count == 1) {
+    if (pcm.empty()) {
+      error = "unified chat input_audio part must be nonempty";
+      return false;
+    }
+    has_audio = true;
   }
   return true;
 }
@@ -1110,12 +1132,15 @@ class OpenAIApi::Impl {
       inputs["messages"] = json_to_value(body["messages"]);
       if (unified_engine_) {
         std::string pcm;
+        bool has_audio = false;
         std::string error;
-        if (!unified_input_parts(body, pcm, error)) {
+        if (!unified_input_parts(body, pcm, has_audio, error)) {
           reject(error);
           return;
         }
-        inputs["audio"] = Value::bin(std::move(pcm));
+        // The binary audio input selects the ASR leg. A text- or image-only
+        // request omits it and the unified engine runs the VLM leg directly.
+        if (has_audio) inputs["audio"] = Value::bin(std::move(pcm));
         // Opt-in ASR increment output. Absent by default, so the default event
         // contract is unchanged: one asr_final, then VLM deltas.
         if (body.contains("stream_options") &&

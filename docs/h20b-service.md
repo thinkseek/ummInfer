@@ -218,3 +218,73 @@ PID 179057 from 2026-11-14. The stopped supervisors 225970 and 226747 and the
 stopped server/worker PIDs likewise show no live process, socket, or child.
 Removing those entries needs the container to run with an init that reaps, which
 is outside this service's scope.
+
+## Public chat contract fix, 2026-11-15
+
+The real multimodal baseline exposed two public chat contract defects. A GSM8K
+request with a plain string `messages[].content` was rejected with 400
+`unified chat content must be a content part array`, and a VQA image+text
+request without an `input_audio` part was rejected with 400
+`unified chat requires exactly one nonempty input_audio part`. The fix is one
+scoped commit on top of `8ccae24`, titled "Accept string content and
+audio-free image+text in unified chat". The exact commit SHA and every hash
+below are also recorded in the deployment evidence JSON
+(`/root/umm-phase7-service/contract-fix-20261115.json` in the container and the
+Mac evidence directory); the code content is pinned directly by the source-file
+SHA256 values in that file, so the record does not depend on a self-referential
+commit hash.
+
+Behavior after the fix:
+
+- A plain string content and a text content-part array are both accepted.
+- An image+text request with no audio skips the ASR leg and runs the VLM leg
+  directly. The VLM-only leg keeps the pre-allocated HTTP request id; a
+  generated id would orphan the SSE sink and hang the stream on the role
+  frame. A streaming regression in `unified_contract_test.cpp` fails on the
+  orphaned id.
+- A request with an `input_audio` part keeps the existing ASR -> VLM path. At
+  most one audio part, one image part, and one text unit are accepted.
+
+Build and install used the same `git archive HEAD` procedure as the section
+above. The Zig build is reproducible: rebuilding the same tree yields the same
+binary SHA256 byte for byte, verified in the container. Only the `umm-infer`
+binary and its source tree were replaced; the config and supervisor were not
+overwritten (their SHA256 values are unchanged from the table above).
+
+| Item | Value |
+| --- | --- |
+| Base commit | `8ccae24` |
+| Source archive SHA256 | see deployment evidence JSON |
+| Deployed binary SHA256 | `de94ed67195244ed14f0d5aa309b8fa4c1bd4655f9b6639b26c8f590f6c25e57` |
+| Installed config SHA256 (unchanged) | `2f73ac41ac7745bc6dfd387b40a6444546e745d6f4ae28eb198726657355e12a` |
+| Installed supervisor SHA256 (unchanged) | `b2dd0450a246c6e3e7f37593b353f022f950e2445d829322fb0c1d9c4ec2240f` |
+| Container / address | `linyu-dev`, `172.17.0.2:43300`, sole `LISTEN` on `020011AC:A924` |
+| Backends | reused, PID 34134 (ASR) and 35212 (Omni), unchanged across both restarts |
+| Final supervisor | PID 228823, parent PID 1 |
+| Final children | server 228824, ASR 229009, Omni 229011, all parent 228823, restarts 0 |
+| Final health / ready | 200 / 200, `in_flight=0` |
+
+The first build of this fix (`67d27af3…`) passed the local non-streaming tests
+but its streaming canary hung: the VLM-only leg used a Coordinator-generated id
+and the SSE sink never received its events. That pre-fix evidence is retained
+under the Mac directory `umminfer-phase7-canary-before-fix/`
+(4 `public_contract`, 2 `performance`, 0 `infrastructure`). The id fix is in
+the final binary above; the post-fix canary is clean.
+
+Post-fix canary, four real cases through the Mac SSH loopback tunnel
+(`tests/multimodal_benchmark.py --cases`, subset verdict
+`BASELINE_REQUIRED`/`INELIGIBLE_SUBSET` gate semantics, judged per case, not
+claimed as a stable PASS):
+
+| Case | Route | HTTP | `[DONE]` | Result |
+| --- | --- | --- | --- | --- |
+| `gsm8k-test-0000` | VLM-only string | 200 | yes | 68 frames, metric 1.0, gold answer 18 |
+| `vqa2-val-262148000` | VLM-only image+text | 200 | yes | 4 frames, metric 1.0 |
+| `asr-en-ls-1089-134686-0000` | ASR transcriptions | 200 | n/a | WER 0.0357 |
+| `joint-speechcoco-val-0000` | ASR -> VLM joint | 200 | yes | 22 frames, WER 0.0, keyword hit 1.0 |
+
+Post-fix failure counts: `infrastructure=0`, `public_contract=0`,
+`quality=0`, `performance=0`. Raw SSE frames are in the Mac evidence directory
+`umminfer-phase7-canary-contract-fix/round-1/events/`, with `cases.jsonl`,
+`failures.json`, answers and transcripts alongside. The full 54-case
+multi-round benchmark was not run; it stays with the controlling review.
