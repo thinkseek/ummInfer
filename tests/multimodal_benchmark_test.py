@@ -635,6 +635,7 @@ class HarnessTests(unittest.TestCase):
         baseline = {
             "quality": bench.quality_snapshot(reference["aggregates"]),
             "p95_ms": bench.p95_snapshot(reference["aggregates"]),
+            "median_ms": bench.median_snapshot(reference["aggregates"]),
         }
         checks = bench.evaluate_round(report, baseline)
         self.assertEqual(checks["p95"]["gsm8k"]["tolerance"], 0.05)
@@ -699,8 +700,8 @@ class HarnessTests(unittest.TestCase):
 # ---- failure classification and gate tests --------------------------------
 
 def synthetic_report(subset=False, infra=0, contract=0, wer=0.1,
-                     vqa=0.8, gsm=0.7, p95=100.0, joint_wer=0.1,
-                     joint_hit=0.9, p95_tolerance=0.10):
+                     vqa=0.8, gsm=0.7, p95=100.0, p50=100.0,
+                     joint_wer=0.1, joint_hit=0.9, p95_tolerance=0.10):
     failures = []
     for index in range(infra):
         failures.append({"case_id": f"i{index}", "category": "infrastructure",
@@ -721,11 +722,12 @@ def synthetic_report(subset=False, infra=0, contract=0, wer=0.1,
                                "public_contract": contract,
                                "quality": 0, "performance": 0},
             "tasks": {
-                "asr": {"wer": wer, "cer": wer, "p95_ms": p95},
-                "vqa": {"vqa_accuracy": vqa, "p95_ms": p95},
-                "gsm8k": {"gsm8k_accuracy": gsm, "p95_ms": p95},
+                "asr": {"wer": wer, "cer": wer, "p95_ms": p95, "p50_ms": p50},
+                "vqa": {"vqa_accuracy": vqa, "p95_ms": p95, "p50_ms": p50},
+                "gsm8k": {"gsm8k_accuracy": gsm, "p95_ms": p95, "p50_ms": p50},
                 "joint": {"joint_asr_wer": joint_wer,
-                          "joint_keyword_hit": joint_hit, "p95_ms": p95},
+                          "joint_keyword_hit": joint_hit,
+                          "p95_ms": p95, "p50_ms": p50},
             },
         },
     }
@@ -742,6 +744,7 @@ class GateTests(unittest.TestCase):
             "case_ids": [],
             "quality": bench.quality_snapshot(report["aggregates"]),
             "p95_ms": bench.p95_snapshot(report["aggregates"]),
+            "median_ms": bench.median_snapshot(report["aggregates"]),
             "success_rate": 1.0,
         }
 
@@ -795,18 +798,33 @@ class GateTests(unittest.TestCase):
             synthetic_report(contract=1), self.baseline)
         self.assertEqual(bench.stability_verdict(checks, True, 3), "FAIL")
 
-    def test_p95_outside_ten_percent_fails(self):
-        expected = bench.evaluate_round(
-            synthetic_report(p95=110.0), self.baseline)
-        self.assertTrue(expected["p95"]["asr"]["ok"])
+    def test_p95_observation_still_flagged_but_not_blocking(self):
         outside = bench.evaluate_round(
             synthetic_report(p95=111.0), self.baseline)
         self.assertFalse(outside["p95"]["asr"]["ok"])
-        slower = bench.evaluate_round(
-            synthetic_report(p95=89.0), self.baseline)
-        self.assertFalse(slower["p95"]["asr"]["ok"])
+        self.assertFalse(outside["p95"]["asr"]["blocking"])
+        # Median unchanged -> the round still passes; p95 is observation only.
+        self.assertTrue(outside["median_ok"])
+        self.assertTrue(outside["passed"])
 
-    def test_report_p95_tolerance_controls_the_verdict(self):
+    def test_median_outside_ten_percent_blocks(self):
+        inside = bench.evaluate_round(
+            synthetic_report(p50=110.0), self.baseline)
+        self.assertTrue(inside["median"]["asr"]["ok"])
+        self.assertTrue(inside["passed"])
+        slower = bench.evaluate_round(
+            synthetic_report(p50=111.0), self.baseline)
+        self.assertFalse(slower["median"]["asr"]["ok"])
+        self.assertTrue(slower["median"]["asr"]["blocking"])
+        self.assertFalse(slower["median_ok"])
+        self.assertFalse(slower["passed"])
+        faster = bench.evaluate_round(
+            synthetic_report(p50=89.0), self.baseline)
+        self.assertFalse(faster["median"]["asr"]["ok"])
+        self.assertFalse(faster["passed"])
+        self.assertEqual(slower["latency_gate"], "median_v1")
+
+    def test_report_p95_tolerance_controls_the_observation(self):
         inside = synthetic_report(p95=105.0, p95_tolerance=0.05)
         self.assertTrue(
             bench.evaluate_round(inside, self.baseline)["p95"]["asr"]["ok"])
