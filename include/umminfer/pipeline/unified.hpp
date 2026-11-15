@@ -14,7 +14,10 @@
 // One request may carry one image_url content part and one client text
 // instruction next to the audio. The ASR leg still receives PCM only; the VLM
 // leg receives the instruction, the image part, and the final ASR transcript as
-// the last text part. Video has no worker and is rejected at submission.
+// the last text part. A request without the binary audio input skips the ASR
+// leg and runs the VLM leg directly against the original messages, so plain
+// string text and image+text requests use the same public chat route. Video
+// has no worker and is rejected at submission.
 #pragma once
 
 #include <atomic>

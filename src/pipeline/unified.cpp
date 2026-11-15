@@ -226,10 +226,17 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     }
   }
   size_t image_count = 0;
+  size_t audio_part_count = 0;
   for (const Value& message : inputs.find("messages")->as_array()) {
     if (!message.is_map()) continue;
     const Value* content = message.find("content");
-    if (content == nullptr || !content->is_array()) continue;
+    if (content == nullptr) continue;
+    // A plain string content is the OpenAI text shape and carries no parts.
+    if (content->is_str()) continue;
+    if (!content->is_array()) {
+      throw ProtocolError(
+          "message content must be a text string or a content part array");
+    }
     for (const Value& part : content->as_array()) {
       if (!part.is_map()) continue;
       const Value* type = part.find("type");
@@ -238,6 +245,9 @@ std::string UnifiedEngine::submit(StagePayload payload) {
       if (modality == UnifiedModality::kVideo) {
         throw ProtocolError(std::string("content part ") + type->as_str() +
                             " is declared but has no worker in unified engine v1");
+      }
+      if (modality == UnifiedModality::kAudio) {
+        ++audio_part_count;
       }
       if (modality == UnifiedModality::kImage) {
         const Value* image_url = part.find("image_url");
@@ -280,12 +290,21 @@ std::string UnifiedEngine::submit(StagePayload payload) {
           "session_history requires engine session history to be enabled");
     }
   }
-  if (const Value* audio = inputs.find("audio"); audio != nullptr) {
-    if (!audio->is_bin() || audio->as_bin().empty() || audio->as_bin().size() % 2 != 0) {
-      throw ProtocolError("unified audio must be nonempty PCM16 with complete samples");
+  // The route signal is the public content shape: an input_audio part selects
+  // the ASR -> VLM path, a text- or image-only request runs the VLM leg
+  // directly. The binary PCM is attached only by the real HTTP boundary;
+  // harness requests may omit it while still exercising the ASR leg.
+  const bool has_audio = audio_part_count > 0;
+  const Value* audio = inputs.find("audio");
+  if (has_audio) {
+    if (audio != nullptr &&
+        (!audio->is_bin() || audio->as_bin().empty() ||
+         audio->as_bin().size() % 2 != 0)) {
+      throw ProtocolError(
+          "unified audio must be nonempty PCM16 with complete samples");
     }
     Value::Map asr_inputs;
-    asr_inputs["audio"] = *audio;
+    if (audio != nullptr) asr_inputs["audio"] = *audio;
     payload.request.inputs = Value(std::move(asr_inputs));
     // The ASR backend streams only when the caller opted in. A partial event
     // is a delta; the final transcript still comes from the completion and
@@ -315,17 +334,42 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   if (admission_.size() >= config_.max_in_flight) {
     throw QueueFullError();
   }
-  const std::string request_id = coordinator_.submit(payload, config_.asr_stage);
-  admission_.push_back(request_id);
   Record record;
   record.session_id = std::move(session_id);
   record.history_requested = history_requested;
   record.original_inputs = std::move(original_inputs);
   record.vlm_params = std::move(vlm_params);
   record.vlm_metadata = std::move(vlm_metadata);
+
+  std::string request_id;
+  if (has_audio) {
+    request_id = coordinator_.submit(payload, config_.asr_stage);
+  } else {
+    // VLM-only turn: build the same prompt shape the ASR -> VLM handoff would
+    // produce, with an empty transcript, and submit straight to the VLM stage.
+    // Keep the entry request id: the HTTP SSE sink and every public event are
+    // keyed by it. A generated id would orphan the sink and hang the stream.
+    StagePayload vlm_payload;
+    vlm_payload.request_id = payload.request_id;
+    vlm_payload.request.inputs =
+        build_vlm_inputs("", record.original_inputs);
+    if (record.history_requested) {
+      vlm_payload.request.inputs["messages"] = Value(
+          with_session_history_locked(
+              record, vlm_payload.request.inputs["messages"].as_array()));
+    }
+    vlm_payload.request.params = record.vlm_params;
+    vlm_payload.request.metadata = record.vlm_metadata;
+    record.phase = Phase::kVlm;
+    request_id = coordinator_.submit(vlm_payload, config_.vlm_stage);
+    // The only leg is the VLM leg, keyed by the Coordinator id itself.
+    record.vlm_id = request_id;
+  }
+  admission_.push_back(request_id);
   record.public_info.request_id = request_id;
   record.public_info.state = "running";
-  record.public_info.current_stage = kAsrStageId;
+  record.public_info.current_stage =
+      has_audio ? kAsrStageId : kVlmStageId;
   records_[request_id] = std::move(record);
   return request_id;
 }
@@ -536,8 +580,9 @@ Value UnifiedEngine::build_vlm_inputs(const std::string& transcript,
   }
   // The VLM sees the original image and text parts next to the ASR transcript.
   // A text part is an optional client instruction; the transcript is appended
-  // last so the spoken request stays the final turn. With no extra part the
-  // content stays a plain string, which older workers already accept.
+  // last so the spoken request stays the final turn. A plain string content is
+  // the OpenAI text shape and becomes one text part. With no instruction the
+  // content stays the transcript string, which older workers already accept.
   Value::Array extra_parts;
   bool has_image = false;
   if (original_inputs.is_map()) {
@@ -546,7 +591,17 @@ Value UnifiedEngine::build_vlm_inputs(const std::string& transcript,
       for (const Value& message : messages->as_array()) {
         if (!message.is_map()) continue;
         const Value* content = message.find("content");
-        if (content == nullptr || !content->is_array()) continue;
+        if (content == nullptr) continue;
+        if (content->is_str()) {
+          if (!content->as_str().empty()) {
+            Value::Map text_part;
+            text_part["type"] = Value("text");
+            text_part["text"] = Value(content->as_str());
+            extra_parts.push_back(Value(std::move(text_part)));
+          }
+          continue;
+        }
+        if (!content->is_array()) continue;
         for (const Value& part : content->as_array()) {
           const Value* type = part.find("type");
           if (type == nullptr || !type->is_str()) continue;
@@ -564,10 +619,13 @@ Value UnifiedEngine::build_vlm_inputs(const std::string& transcript,
   Value::Map user_message;
   user_message["role"] = Value("user");
   if (!extra_parts.empty()) {
-    Value::Map text_part;
-    text_part["type"] = Value("text");
-    text_part["text"] = Value(transcript);
-    extra_parts.push_back(Value(std::move(text_part)));
+    // A VLM-only turn has no transcript: do not append an empty text part.
+    if (!transcript.empty()) {
+      Value::Map text_part;
+      text_part["type"] = Value("text");
+      text_part["text"] = Value(transcript);
+      extra_parts.push_back(Value(std::move(text_part)));
+    }
     user_message["content"] = Value(std::move(extra_parts));
   } else {
     user_message["content"] = Value(transcript);

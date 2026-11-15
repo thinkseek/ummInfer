@@ -8,6 +8,7 @@
 // backpressure, and duplicate/out-of-order handling. They are not real-model
 // E2E tests.
 #include <atomic>
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -1121,6 +1122,121 @@ void test_media_contract_errors() {
   rejects(std::move(empty), "a request without messages was accepted");
 }
 
+// A VLM-only request built from one public content shape. When as_string is
+// true the content is a plain OpenAI string; otherwise it is a text part plus
+// an optional image part. No binary audio input is attached.
+StagePayload vlm_only_request(bool as_string, bool with_image) {
+  StagePayload payload;
+  Value::Map message;
+  message["role"] = Value("user");
+  if (as_string) {
+    message["content"] = Value("what is two plus two");
+  } else {
+    Value::Array content;
+    Value::Map text;
+    text["type"] = Value("text");
+    text["text"] = Value("describe this image");
+    content.push_back(Value(std::move(text)));
+    if (with_image) content.push_back(image_part());
+    message["content"] = Value(std::move(content));
+  }
+  Value::Array messages;
+  messages.push_back(Value(std::move(message)));
+  Value::Map inputs;
+  inputs["messages"] = Value(std::move(messages));
+  payload.request.inputs = Value(std::move(inputs));
+  return payload;
+}
+
+// Plain string content without audio: no ASR leg exists, the VLM leg receives
+// the text directly and the event stream carries no ASR events.
+void test_vlm_only_string_content() {
+  Harness h("vlmstring");
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& event) { log.add(event); };
+
+  const std::string id = engine.submit(vlm_only_request(true, false));
+  check(h.no_submit(h.asr_recv), "a VLM-only request reached the ASR stage");
+  auto vlm_submit = h.next_submit(h.vlm_recv);
+  check(vlm_submit.has_value() && vlm_submit->request_id == id,
+        "the VLM-only request did not run under the public request id");
+  if (vlm_submit) {
+    StagePayload payload = StagePayload::from_value(vlm_submit->data);
+    check(payload.request.inputs.find("audio") == nullptr,
+          "the VLM-only payload carried an audio input");
+    const Value& content = *payload.request.inputs.find("messages")
+                                ->as_array()
+                                .at(0)
+                                .find("content");
+    check(content.is_array() && content.as_array().size() == 1 &&
+              content.as_array()[0].find("text")->as_str() ==
+                  "what is two plus two",
+          "the VLM lost the string content");
+    const Value& modalities = *payload.request.inputs.find("modalities");
+    check(modalities.as_array().size() == 1 &&
+              modalities.as_array()[0].as_str() == "text",
+          "the VLM-only request declared non-text modalities");
+    h.stream(vlm_submit->request_id, "vlm", text_chunk("four", false));
+    h.complete(vlm_submit->request_id, "vlm", true, text_result("four"));
+  }
+  check(engine.wait(id, 5.0), "VLM-only string request did not complete");
+  const auto events = log.snapshot();
+  check(!events.empty() &&
+            std::none_of(events.begin(), events.end(),
+                         [](const UnifiedEvent& event) {
+                           return event.kind ==
+                                      UnifiedEvent::Kind::kAsrFinal ||
+                                  event.kind ==
+                                      UnifiedEvent::Kind::kAsrPartial;
+                         }) &&
+            events.front().kind == UnifiedEvent::Kind::kVlmDelta &&
+            events.back().kind == UnifiedEvent::Kind::kComplete,
+        "VLM-only events must start at vlm_delta with no ASR events");
+  engine.release(id);
+}
+
+// Image + text without audio: the image rides straight to the VLM leg, the
+// modalities declare text and image, and no ASR leg is submitted.
+void test_vlm_only_image_text() {
+  Harness h("vlmimage");
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& event) { log.add(event); };
+
+  const std::string id = engine.submit(vlm_only_request(false, true));
+  check(h.no_submit(h.asr_recv), "an image+text request reached the ASR stage");
+  auto vlm_submit = h.next_submit(h.vlm_recv);
+  check(vlm_submit.has_value(), "the image+text request did not reach the VLM");
+  if (vlm_submit) {
+    StagePayload payload = StagePayload::from_value(vlm_submit->data);
+    const Value& content = *payload.request.inputs.find("messages")
+                                ->as_array()
+                                .at(0)
+                                .find("content");
+    check(content.is_array() && content.as_array().size() == 2 &&
+              content.as_array()[0].find("text")->as_str() ==
+                  "describe this image" &&
+              content.as_array()[1].find("type")->as_str() == "image_url",
+          "the VLM prompt is not instruction + image");
+    const Value& modalities = *payload.request.inputs.find("modalities");
+    check(modalities.as_array().size() == 2 &&
+              modalities.as_array()[0].as_str() == "text" &&
+              modalities.as_array()[1].as_str() == "image",
+          "the image+text request did not declare text and image");
+    h.complete(vlm_submit->request_id, "vlm", true,
+               text_result("a settings screen"));
+  }
+  check(engine.wait(id, 5.0), "image+text request did not complete");
+  const auto image_events = log.snapshot();
+  check(!image_events.empty() &&
+            image_events.back().kind == UnifiedEvent::Kind::kComplete,
+        "image+text request did not complete successfully");
+  engine.release(id);
+}
+
 // Two sequential requests in one session. session_id is a grouping label only:
 // ids, sequences and terminals stay per request, and neither request inherits
 // the other's transcript or VLM answer.
@@ -2129,6 +2245,179 @@ void test_public_http_joint_input() {
         "public SSE lost the session label");
 }
 
+// Text-only and image+text requests without an input_audio part are valid
+// unified turns: the HTTP boundary accepts both a plain string content and a
+// content part array, no ASR leg is submitted, and the VLM answers directly.
+void test_public_http_vlm_only() {
+  Harness h("publicvlmonly");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 5.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "public VLM-only server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string base =
+      "http://127.0.0.1:" + std::to_string(api.bound_port());
+
+  auto post = [&](nlohmann::json body) {
+    body["model"] = "qwen3-unified";
+    body["stream"] = false;
+    client::detail::HttpRequest request;
+    request.url = base + "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{5000};
+    return client::detail::perform(request);
+  };
+  auto body_with = [](nlohmann::json content) {
+    return nlohmann::json{{"messages", nlohmann::json::array({nlohmann::json{
+                               {"role", "user"}, {"content", std::move(content)}}})}};
+  };
+
+  // GSM8K shape: a plain string content.
+  auto string_future = std::async(std::launch::async, [&] {
+    return post(body_with("what is two plus two"));
+  });
+  check(h.no_submit(h.asr_recv), "string content submitted an ASR leg");
+  auto string_vlm = h.next_submit(h.vlm_recv);
+  check(string_vlm.has_value(), "string content did not reach the VLM");
+  if (string_vlm) {
+    StagePayload payload = StagePayload::from_value(string_vlm->data);
+    const Value& content = *payload.request.inputs.find("messages")
+                                ->as_array()
+                                .at(0)
+                                .find("content");
+    check(content.is_array() &&
+              content.as_array()[0].find("text")->as_str() ==
+                  "what is two plus two",
+          "the VLM lost the string content text");
+    h.complete(string_vlm->request_id, "vlm", true, text_result("four"));
+  }
+  const auto string_response = string_future.get();
+  check(string_response.status == 200 &&
+            string_response.body.find("\"content\":\"four\"") !=
+                std::string::npos,
+        "the string-content turn did not return the VLM answer");
+
+  // VQA shape: text part plus image part, no audio.
+  const nlohmann::json image = {{"type", "image_url"},
+                                {"image_url", {{"url", "data:image/png;base64,AA"}}}};
+  const nlohmann::json instruction = {{"type", "text"},
+                                      {"text", "describe this image"}};
+  auto image_future = std::async(std::launch::async, [&] {
+    return post(body_with(nlohmann::json::array({instruction, image})));
+  });
+  check(h.no_submit(h.asr_recv), "image+text content submitted an ASR leg");
+  auto image_vlm = h.next_submit(h.vlm_recv);
+  check(image_vlm.has_value(), "image+text content did not reach the VLM");
+  if (image_vlm) {
+    StagePayload payload = StagePayload::from_value(image_vlm->data);
+    const Value& content = *payload.request.inputs.find("messages")
+                                ->as_array()
+                                .at(0)
+                                .find("content");
+    check(content.is_array() && content.as_array().size() == 2 &&
+              content.as_array()[1].find("type")->as_str() == "image_url",
+          "the VLM lost the image part on the audio-free turn");
+    h.complete(image_vlm->request_id, "vlm", true,
+               text_result("a settings screen"));
+  }
+  const auto image_response = image_future.get();
+  check(image_response.status == 200 &&
+            image_response.body.find("a settings screen") != std::string::npos,
+        "the image+text turn did not return the VLM answer");
+
+  // Two audio parts still fail the at-most-one-audio contract before submit.
+  const std::string wav = audio::wav_from_pcm16(std::string(800, '\0'));
+  const nlohmann::json audio_part = {
+      {"type", "input_audio"},
+      {"input_audio", {{"data", client::detail::base64_encode(wav)},
+                       {"format", "wav"}}}};
+  bool two_audio_rejected = false;
+  try {
+    post(body_with(nlohmann::json::array({audio_part, audio_part})));
+  } catch (const client::Error& exc) {
+    two_audio_rejected =
+        std::string(exc.what()).find("HTTP 400") != std::string::npos;
+  }
+  check(two_audio_rejected, "two input_audio parts were accepted");
+  check(h.no_submit(h.asr_recv),
+        "a rejected two-audio request reached the ASR stage");
+
+  api.stop();
+  server_thread.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "VLM-only requests stayed in flight after completion");
+}
+
+// The streaming VLM-only path must keep the pre-allocated HTTP request id on
+// the single VLM leg. A generated id orphans the SSE sink: the client then
+// sees only the role frame and hangs until the stream timeout.
+void test_public_http_vlm_only_stream() {
+  Harness h("publicvlmstream");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 5.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "public VLM-only stream server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string base =
+      "http://127.0.0.1:" + std::to_string(api.bound_port());
+
+  nlohmann::json body = {
+      {"model", "qwen3-unified"},
+      {"messages", nlohmann::json::array({nlohmann::json{
+           {"role", "user"}, {"content", "what is two plus two"}}})},
+      {"stream", true},
+      {"max_tokens", 16}};
+  auto response_future = std::async(std::launch::async, [&] {
+    client::detail::HttpRequest request;
+    request.url = base + "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{10000};
+    return client::detail::perform(request);
+  });
+
+  check(h.no_submit(h.asr_recv), "a streaming VLM-only request reached ASR");
+  auto vlm_submit = h.next_submit(h.vlm_recv);
+  check(vlm_submit.has_value(), "the streaming VLM-only request missed the VLM");
+  if (vlm_submit) {
+    // The leg must run under the HTTP id, not a Coordinator-generated one.
+    const std::string leg_id = vlm_submit->request_id;
+    check(leg_id.rfind("http-", 0) == 0,
+          "the VLM-only leg lost the public HTTP request id");
+    h.stream(leg_id, "vlm", text_chunk("four", false));
+    auto result = text_result("four");
+    result["finish_reason"] = Value("stop");
+    h.complete(leg_id, "vlm", true, Value(std::move(result)));
+  }
+
+  const auto response = response_future.get();
+  api.stop();
+  server_thread.join();
+  check(response.status == 200,
+        "the streaming VLM-only turn returned an HTTP error");
+  check(response.body.find("\"kind\":\"vlm_delta\"") != std::string::npos &&
+            response.body.find("\"content\":\"four\"") != std::string::npos,
+        "the streaming VLM-only turn delivered no vlm_delta content");
+  check(response.body.find("\"kind\":\"complete\"") != std::string::npos &&
+            response.body.find("data: [DONE]") != std::string::npos,
+        "the streaming VLM-only turn lost its terminal or [DONE]");
+  wait_until([&] { return engine.in_flight() == 0; },
+             "the streaming VLM-only request stayed in flight");
+}
+
 // Bad unified media fields are rejected before any stage sees the work.
 void test_public_http_unified_errors() {
   Harness h("publicbad");
@@ -2917,6 +3206,8 @@ int main() {
   test_joint_image_audio();
   test_joint_image_remote_url();
   test_media_contract_errors();
+  test_vlm_only_string_content();
+  test_vlm_only_image_text();
   test_session_reuse();
   test_session_reuse_concurrent();
   test_session_history_order();
@@ -2947,6 +3238,8 @@ int main() {
   test_public_http_cancel_during_vlm();
   test_public_http_asr_model_failure();
   test_public_http_joint_input();
+  test_public_http_vlm_only();
+  test_public_http_vlm_only_stream();
   test_public_http_unified_errors();
   test_public_http_session_history();
   test_public_http_session_id_requires_unified();
