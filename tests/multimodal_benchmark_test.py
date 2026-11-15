@@ -278,6 +278,51 @@ class DownloaderTests(unittest.TestCase):
         with self.assertRaises(data.DataError):
             data.canonical_wav_bytes(out.getvalue())
 
+    def _speechcoco_fixture(self):
+        audio, image = wav_bytes(), JPEG
+        rev = "rev1"
+        case = {
+            "id": "joint-0",
+            "input": {
+                "type": "speechcoco_row", "row_index": 0, "revision": rev,
+                "audio_sha256": sha(audio), "audio_bytes": len(audio),
+                "image_sha256": sha(image), "image_bytes": len(image),
+                "audio_source": self.fixture.base + "/0.wav",
+                "image_source": self.fixture.base + "/0.jpg",
+            },
+            "reference": {"caption": "a caption"},
+        }
+        manifest = {"datasets": {"speechcoco_val": {
+            "revision": rev, "rows_api": self.fixture.base + "/rows"}}}
+        return case, manifest, audio, image
+
+    def test_speechcoco_warm_cache_skips_rows_api(self):
+        case, manifest, audio, image = self._speechcoco_fixture()
+        d = self.cache / "speechcoco_val"
+        d.mkdir(parents=True)
+        (d / "row-0000.wav").write_bytes(audio)
+        (d / "row-0000.jpg").write_bytes(image)
+        got_audio, got_image = data._speechcoco(manifest, self.cache, case)
+        self.assertEqual(got_audio, data.canonical_wav_bytes(audio))
+        self.assertEqual(got_image, image)
+        # No route is registered, so any HTTP use would have failed; hits
+        # proves the verified cache path stayed fully offline.
+        self.assertEqual(self.fixture.hits, {})
+
+    def test_speechcoco_cold_cache_falls_back_to_rows_api(self):
+        case, manifest, audio, image = self._speechcoco_fixture()
+        self.fixture.routes["/0.wav"] = audio
+        self.fixture.routes["/0.jpg"] = image
+        self.fixture.routes["/rows?revision=rev1&offset=0&length=1"] = \
+            json.dumps({"rows": [{"row": {
+                "text": "a caption",
+                "audio": [{"src": self.fixture.base + "/0.wav"}],
+                "image": {"src": self.fixture.base + "/0.jpg"},
+            }}]}).encode()
+        got_audio, got_image = data._speechcoco(manifest, self.cache, case)
+        self.assertEqual(got_image, image)
+        self.assertEqual(got_audio, data.canonical_wav_bytes(audio))
+
 
 # ---- mock model server ----------------------------------------------------
 
@@ -706,6 +751,23 @@ class GateTests(unittest.TestCase):
         self.assertFalse(checks["baseline_ok"])
         self.assertEqual(bench.stability_verdict([checks], False, 1),
                          "BASELINE_REQUIRED")
+
+    def test_joint_aggregate_tolerates_skipped_case_metric(self):
+        # A case whose input failed to resolve keeps metric value None.
+        rows = [
+            {"metric": {"name": "joint_asr_wer_keyword_hit",
+                        "value": {"asr_wer": 0.0, "keyword_hit": 1.0},
+                        "detail": {"errors": 0, "reference_words": 10}},
+             "latency": {"total_ms": 5.0}, "failures": [],
+             "tokens_per_s": None},
+            {"metric": {"name": "joint_asr_wer_keyword_hit", "value": None,
+                        "detail": {}},
+             "latency": {"total_ms": None}, "failures": [],
+             "tokens_per_s": None},
+        ]
+        agg = bench._task_aggregate("joint", rows)
+        self.assertEqual(agg["joint_asr_wer"], 0.0)
+        self.assertEqual(agg["joint_keyword_hit"], 1.0)
 
     def test_three_consecutive_clean_rounds_pass(self):
         checks = [bench.evaluate_round(synthetic_report(), self.baseline)
