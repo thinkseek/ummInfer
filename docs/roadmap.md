@@ -263,8 +263,9 @@ one serial Omni worker delivered about 20 output tokens/s and concurrency 2/4
 added queueing rather than throughput. The joint worker-concurrency change
 removed the queueing ([joint-optimization.md](joint-optimization.md): at
 concurrency 4 total p95 fell from 55.2 s to 14.9 s, aggregate throughput 3.6×).
-Mac unified performance, per-worker model-time attribution, and cancellation
-latency remain unmeasured.
+A complete Phase 5 Mac unified baseline remains unmeasured; low-resource
+latency and RSS are recorded in [mac-unified.md](mac-unified.md). Per-worker
+model-time attribution and cancellation latency remain unmeasured.
 
 ### Phase 6 — RL rollout, trajectory, reward, and training
 
