@@ -288,3 +288,70 @@ Post-fix failure counts: `infrastructure=0`, `public_contract=0`,
 `umminfer-phase7-canary-contract-fix/round-1/events/`, with `cases.jsonl`,
 `failures.json`, answers and transcripts alongside. The full 54-case
 multi-round benchmark was not run; it stays with the controlling review.
+
+## Round-1 rework: VLM-only boundary rules, 2026-11-15
+
+Review found two boundary gaps in the change above. Both are fixed in the same
+scoped commit (amended, still one commit on top of `8ccae24`, not pushed):
+
+1. An audio-free request with no text and no image — for example an empty
+   `content: []` array — previously passed the HTTP boundary and would reach
+   the VLM as an empty prompt. `unified_input_parts` now rejects it with 400
+   `unified chat without input_audio requires text or image content`. An empty
+   string content is already rejected by the nonempty-string check.
+2. Session history on a VLM-only turn recorded the empty ASR transcript as the
+   user message, so the real text was lost. The engine now extracts the current
+   turn's real user text from the string content or text parts
+   (`user_text_from_inputs`, same shape handling as `build_vlm_inputs`) and
+   stores that on a VLM-only turn; an audio turn still stores the ASR
+   transcript.
+
+New regression coverage: an HTTP 400 for the empty array and empty string, an
+engine two-turn VLM-only history test (string turn then image+text turn, same
+session) asserting the first turn's real user text and answer are carried into
+the second VLM prompt, plus the existing string/array, image+text, streaming-id
+and joint tests. Both new checks fail when the corresponding fix is reverted
+(mutation-verified). The local gate stayed green: black-box 13/13 exit 0,
+benchmark 44 tests OK, service contract 21 checks PASS, unified C++ all pass.
+
+| Item | Value |
+| --- | --- |
+| Build commit (source of the deployed binary) | `04bf1b0ede8dae95329605d308f39573378d7ab9` |
+| Build source archive SHA256 | `9ba5be1d7d6db38bd45f05d6df0002ab2922507ce4d8b8aa4068180ee46f1cc4` |
+| Deployed binary SHA256 | `980ee8720e7039808ef4c02590a54a4fb968a2d49ca4a78575ddff629a9d0fb9` |
+| Config / supervisor SHA256 | unchanged (`2f73ac41…` / `b2dd0450…`) |
+| Final supervisor | PID 229938, parent PID 1 |
+| Final children | server 229939, ASR 230124, Omni 230126, parent 229938, restarts 0 |
+| Backends | reused, PID 34134 (ASR) and 35212 (Omni), unchanged |
+| Listener | sole `LISTEN` on `172.17.0.2:43300` (`020011AC:A924`) |
+| Health / ready | 200 / 200, `in_flight=0` |
+
+Live boundary verification through the Mac tunnel against the resident service
+(Mac evidence `umminfer-phase7-canary-r1/raw-http/empty-content-400.txt`):
+
+- `content: []` (audio-free) -> HTTP 400
+  `unified chat without input_audio requires text or image content`.
+- `content: ""` -> HTTP 400 `message content string must be nonempty`.
+- A valid string request in the same run -> HTTP 200.
+
+A two-turn VLM-only history canary could not use the resident server because it
+is started without `--session-history` and the config must not change. A
+temporary, independent stack was started inside the container on port 43301 with
+its own IPC directory and the same SGLang backends, then stopped; the resident
+43300 service was never touched. Turn 1 sent plain string content
+("Remember this exact phrase: purple kumquat ledger.") and turn 2 sent
+image+text with the same `session_id` and `session_history=true`. The Omni
+worker request log for turn 2 shows turn 1's real user string, the assistant
+reply, and the current image+text turn — proving the history kept the real
+user input. Both turns returned 200 with `vlm_delta` -> `complete` and
+`[DONE]`. After stop the three canary processes are state `Z` (the container
+PID 1 never reaps, same as the documented existing zombies), hold no listener
+(port 43301 absent from `/proc/net/tcp`), and the resident 43300 listener and
+SGLang PIDs are unchanged. Evidence:
+`umminfer-phase7-canary-r1/history/{turn1-string.sse,turn2-image-text.sse,omni-worker-requests.log}`.
+
+The four-case canary was rerun on the new resident binary
+(`umminfer-phase7-canary-r1/canary4`): `infrastructure=0`, `public_contract=0`,
+`quality=0`, `performance=0`, with GSM8K and VQA metric 1.0, ASR WER 0.0357,
+joint WER 0.0 and keyword hit 1.0. The full 54-case multi-round benchmark was
+again not run and stays with the controlling review.

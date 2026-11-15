@@ -179,6 +179,10 @@ class UnifiedEngine {
     // a successful terminal; cancelled and failed requests leave no history.
     bool history_requested = false;
     std::string transcript;  // partials concatenated; final replaces them
+    // The real current-turn user text. On an audio turn transcript carries the
+    // ASR result; on a VLM-only turn transcript is empty and this holds the
+    // string/text-part input so session history keeps what the user said.
+    std::string user_text;
     std::string vlm_text;
     std::string vlm_id;
     Value original_inputs;

@@ -1237,6 +1237,61 @@ void test_vlm_only_image_text() {
   engine.release(id);
 }
 
+// Session history on VLM-only turns must keep the real user text. There is no
+// ASR transcript on these turns, so the recorded history user side is the
+// string content or text part, never an empty message.
+UnifiedConfig history_config(size_t max_turns, size_t max_chars);
+void test_vlm_only_session_history() {
+  Harness h("vlmhist");
+  UnifiedEngine engine(h.coordinator, history_config(8, 16384));
+  h.start_pump();
+
+  auto with_history = [](StagePayload request, const std::string& session) {
+    Value::Map inputs = request.request.inputs.as_map();
+    inputs["session_id"] = Value(session);
+    inputs["session_history"] = Value(true);
+    request.request.inputs = Value(std::move(inputs));
+    return request;
+  };
+  // Drives one VLM-only turn and returns its VLM leg payload.
+  auto run_turn = [&](StagePayload request, const std::string& answer) {
+    const std::string id = engine.submit(std::move(request));
+    check(h.no_submit(h.asr_recv), "a history VLM-only turn reached ASR");
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value() && vlm->request_id == id,
+          "the VLM-only history leg lost the request id");
+    StagePayload payload;
+    if (vlm) payload = StagePayload::from_value(vlm->data);
+    h.complete(id, "vlm", true, text_result(answer));
+    check(engine.wait(id, 5.0), "a VLM-only history turn did not complete");
+    engine.release(id);
+    return payload;
+  };
+
+  // Turn 1: plain string content.
+  StagePayload first = run_turn(
+      with_history(vlm_only_request(true, false), "vlm-sess"), "four");
+  check(prompt_roles(first).size() == 1,
+        "the first VLM-only turn already carried history");
+
+  // Turn 2: image+text in the same session. It must see turn 1's real user
+  // string and answer, then its own text part (the image is not user text).
+  StagePayload second = run_turn(
+      with_history(vlm_only_request(false, true), "vlm-sess"),
+      "a settings screen");
+  const auto roles = prompt_roles(second);
+  if (roles.size() != 3) {
+    check(false, "the second VLM-only turn did not carry one prior turn");
+  } else {
+    check(roles[0].first == "user" &&
+              roles[0].second == "what is two plus two" &&
+              roles[1].first == "assistant" && roles[1].second == "four" &&
+              roles[2].first == "user" &&
+              roles[2].second == "describe this image",
+          "VLM-only history lost the real user text or answer");
+  }
+}
+
 // Two sequential requests in one session. session_id is a grouping label only:
 // ids, sequences and terminals stay per request, and neither request inherits
 // the other's transcript or VLM answer.
@@ -2349,6 +2404,24 @@ void test_public_http_vlm_only() {
   check(h.no_submit(h.asr_recv),
         "a rejected two-audio request reached the ASR stage");
 
+  // An audio-free request with no text or image is an empty prompt and must be
+  // rejected before any stage sees it. Both an empty content array and an empty
+  // string content are covered.
+  auto rejected_with_400 = [&](nlohmann::json content) {
+    try {
+      post(body_with(std::move(content)));
+    } catch (const client::Error& exc) {
+      return std::string(exc.what()).find("HTTP 400") != std::string::npos;
+    }
+    return false;
+  };
+  check(rejected_with_400(nlohmann::json::array()),
+        "an empty content array was accepted as an empty prompt");
+  check(rejected_with_400(""),
+        "an empty string content was accepted as an empty prompt");
+  check(h.no_submit(h.vlm_recv),
+        "a rejected empty-prompt request reached the VLM stage");
+
   api.stop();
   server_thread.join();
   wait_until([&] { return engine.in_flight() == 0; },
@@ -3208,6 +3281,7 @@ int main() {
   test_media_contract_errors();
   test_vlm_only_string_content();
   test_vlm_only_image_text();
+  test_vlm_only_session_history();
   test_session_reuse();
   test_session_reuse_concurrent();
   test_session_history_order();

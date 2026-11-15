@@ -304,6 +304,11 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
       return false;
     }
     has_audio = true;
+  } else if (text_count == 0 && image_count == 0) {
+    // An audio-free request with neither text nor image (for example an empty
+    // content array) would reach the VLM as an empty prompt. Reject it.
+    error = "unified chat without input_audio requires text or image content";
+    return false;
   }
   return true;
 }
