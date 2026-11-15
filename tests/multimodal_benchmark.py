@@ -667,11 +667,15 @@ def _task_aggregate(task, rows):
         values = [m["value"] for m in metrics if isinstance(m.get("value"), float)]
         out["gsm8k_accuracy"] = statistics.fmean(values) if values else None
     elif task == "joint":
+        # A skipped case (for example an input that failed to resolve) keeps
+        # metric value None; it must not crash the aggregate.
+        joint_metrics = [m for m in metrics if isinstance(m.get("value"), dict)]
         wers = [(m["value"].get("asr_wer"), m.get("detail", {}).get("errors"),
-                 m.get("detail", {}).get("reference_words")) for m in metrics]
+                 m.get("detail", {}).get("reference_words"))
+                for m in joint_metrics]
         errors = sum(e or 0 for _, e, _ in wers)
         words = sum(w or 0 for _, _, w in wers)
-        hits = [m["value"].get("keyword_hit") for m in metrics
+        hits = [m["value"].get("keyword_hit") for m in joint_metrics
                 if isinstance(m["value"].get("keyword_hit"), float)]
         out["joint_asr_wer"] = errors / words if words else None
         out["joint_keyword_hit"] = statistics.fmean(hits) if hits else None

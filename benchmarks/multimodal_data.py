@@ -376,6 +376,26 @@ def _speechcoco(manifest, cache_dir, case):
     revision = source["revision"]
     if revision != dataset["revision"]:
         raise DataError(f"{case['id']}: revision does not match the dataset pin")
+    audio_dest = (Path(cache_dir) / "speechcoco_val" /
+                  f"row-{source['row_index']:04d}.wav")
+    image_dest = (Path(cache_dir) / "speechcoco_val" /
+                  f"row-{source['row_index']:04d}.jpg")
+    # Warm-cache fast path: the manifest pins the revision URLs and byte
+    # hashes, so verified local files need no live rows-API metadata call.
+    # Any miss or mismatch falls through to the rows-API path below.
+    try:
+        audio_path = download_verified(
+            source["audio_source"], audio_dest,
+            source["audio_sha256"], source["audio_bytes"])
+        image_path = download_verified(
+            source["image_source"], image_dest,
+            source["image_sha256"], source["image_bytes"])
+        audio = canonical_wav_bytes(audio_path.read_bytes())
+        image = image_path.read_bytes()
+        if image.startswith(b"\xff\xd8"):
+            return audio, image
+    except (DataError, OSError):
+        pass
     url = (f"{dataset['rows_api']}&revision={urllib.parse.quote(revision)}"
            f"&offset={int(source['row_index'])}&length=1")
     payload = fetch_json(url)["rows"]
