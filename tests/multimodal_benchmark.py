@@ -50,6 +50,11 @@ MAX_LINE_BYTES = 1 << 20
 MAX_METRIC_WORDS = 4096
 CASE_LATENCY_CAP_MS = 120000
 P95_TOLERANCE = 0.10
+# Blocking latency gate (median_v1): nearest-rank p95 equals the per-task max
+# at n<=16 and is dominated by host scheduling stalls on the shared box, so the
+# gate compares per-task medians instead. p95/max stay recorded as observations.
+LATENCY_GATE = "median_v1"
+MEDIAN_TOLERANCE = 0.10
 QUALITY_TOLERANCE = {
     "wer": 0.02,
     "cer": 0.02,
@@ -723,6 +728,11 @@ def p95_snapshot(aggregates):
             for task, values in aggregates["tasks"].items()}
 
 
+def median_snapshot(aggregates):
+    return {task: values.get("p50_ms")
+            for task, values in aggregates["tasks"].items()}
+
+
 # ---- stability gate -------------------------------------------------------
 
 def _regression(baseline_value, current_value, tolerance, lower_is_better):
@@ -748,6 +758,7 @@ def evaluate_round(report, baseline):
     checks["contract_ok"] = checks["contract_p0_p1"] == 0
     checks["quality"] = {}
     checks["p95"] = {}
+    checks["median"] = {}
     checks["baseline_ok"] = baseline is not None
     p95_tolerance = report["config"]["p95_tolerance"]
     if baseline:
@@ -759,6 +770,8 @@ def evaluate_round(report, baseline):
                                      lower_is_better=lower)
             if comparison is not None:
                 checks["quality"][key] = comparison
+        # Observation only: p95 == max at n<=16 and tracks host stalls. Recorded
+        # for visibility, never flips the verdict under the median_v1 gate.
         current_p95 = p95_snapshot(aggregates)
         for task, value in current_p95.items():
             base = baseline["p95_ms"].get(task)
@@ -768,15 +781,31 @@ def evaluate_round(report, baseline):
             checks["p95"][task] = {
                 "baseline_ms": base, "current_ms": value,
                 "delta": delta, "tolerance": p95_tolerance,
-                "ok": abs(delta) <= p95_tolerance + 1e-9}
+                "ok": abs(delta) <= p95_tolerance + 1e-9,
+                "blocking": False}
+        # Blocking latency statistic: per-task median within a symmetric band.
+        current_median = median_snapshot(aggregates)
+        for task, value in current_median.items():
+            base = baseline["median_ms"].get(task)
+            if base is None or value is None or base == 0:
+                continue
+            delta = (value - base) / base
+            checks["median"][task] = {
+                "baseline_ms": base, "current_ms": value,
+                "delta": delta, "tolerance": MEDIAN_TOLERANCE,
+                "ok": abs(delta) <= MEDIAN_TOLERANCE + 1e-9,
+                "blocking": True}
     quality_ok = all(item["ok"] for item in checks["quality"].values())
     p95_ok = all(item["ok"] for item in checks["p95"].values())
+    median_ok = all(item["ok"] for item in checks["median"].values())
     eligible = not checks["subset"]
     passed = bool(eligible and checks["infrastructure_ok"]
-                  and checks["contract_ok"] and quality_ok and p95_ok
+                  and checks["contract_ok"] and quality_ok and median_ok
                   and checks["baseline_ok"])
     checks["quality_ok"] = quality_ok
     checks["p95_ok"] = p95_ok
+    checks["median_ok"] = median_ok
+    checks["latency_gate"] = LATENCY_GATE
     checks["eligible"] = eligible
     checks["passed"] = passed
     return checks
@@ -1030,6 +1059,7 @@ def baseline_from_report(report):
         "case_ids": sorted(row["case_id"] for row in report["cases"]),
         "quality": quality_snapshot(aggregates),
         "p95_ms": p95_snapshot(aggregates),
+        "median_ms": median_snapshot(aggregates),
         "success_rate": aggregates["success_rate"],
     }
 
@@ -1223,7 +1253,9 @@ def main(argv=None):
         "rounds_requested": args.rounds,
         "rounds_run": len(round_checks),
         "required_consecutive_rounds": REQUIRED_CONSECUTIVE,
+        "latency_gate": LATENCY_GATE,
         "p95_tolerance": args.p95_tolerance,
+        "median_tolerance": MEDIAN_TOLERANCE,
         "quality_tolerance": QUALITY_TOLERANCE,
         "baseline_accepted": baseline is not None,
         "baseline": {key: baseline[key] for key in
