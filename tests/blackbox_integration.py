@@ -6,9 +6,8 @@ another, and reuses them as they are. This file adds no assertions: every suite
 keeps its own checks and its own exit code, which is reported as REAL_EXIT.
 
 Each suite runs in its own session. Its combined stdout and stderr is capped at
-LOG_CAP bytes (tail kept), and the whole process group is killed when the suite
-times out, so no child outlives the gate. The gate exits non-zero if any suite
-fails.
+LOG_CAP bytes (tail kept), and the whole process group is killed on every exit,
+so no child outlives the gate. The gate exits non-zero if any suite fails.
 
 This is a fast gate, not hardware evidence. Real H20B, CUDA and RL training
 results still need the dedicated runs in docs/validation.md.
@@ -20,6 +19,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 
@@ -45,6 +45,10 @@ def drain(stream, state):
     state["tail"] = bytes(tail)
 
 
+def _sigterm(signum, frame):
+    raise KeyboardInterrupt
+
+
 def run_suite(name, command, cwd, env, timeout):
     print(f"=== {name}: {' '.join(str(part) for part in command)}", flush=True)
     process = subprocess.Popen(command, cwd=cwd, env=env,
@@ -59,10 +63,24 @@ def run_suite(name, command, cwd, env, timeout):
         process.wait(timeout=timeout)
         code = process.returncode
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
         code = 124
-    reader.join()
+    except KeyboardInterrupt:
+        code = 130
+    finally:
+        # A suite is required to leave no descendants, including after its own
+        # main process exits or the gate is interrupted.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    reader.join(timeout=10)
+    if reader.is_alive():
+        # Do not close a pipe from another thread while read() may be blocked:
+        # close() itself can wait for that read. The daemon reader cannot keep
+        # the gate alive, and an open pipe after group cleanup is a failure.
+        if code == 0:
+            code = 125
     total, tail = state["total"], state["tail"]
     if total > len(tail):
         print(f"[blackbox] {total - len(tail)} earlier bytes dropped",
@@ -74,6 +92,8 @@ def run_suite(name, command, cwd, env, timeout):
     if code == 124:
         print(f"[blackbox] {name} exceeded {timeout}s and its group was killed",
               flush=True)
+    if code == 125:
+        print(f"[blackbox] {name} left its output pipe open", flush=True)
     print(f"REAL_EXIT {name} {code}", flush=True)
     return code, total, state["peak"]
 
@@ -94,6 +114,7 @@ def main():
     parser.add_argument("--self-check", action="store_true",
                         help="prove the streaming log cap with a 4 MiB producer")
     args = parser.parse_args()
+    signal.signal(signal.SIGTERM, _sigterm)
 
     project = args.project.resolve()
     binary = (args.binary or project / "zig-out/bin/umm-infer").resolve()
@@ -127,7 +148,26 @@ def main():
         timeout_ok = code == 124 and total > 0 and peak <= LOG_CAP and left.returncode == 1
         print(f"SELF_CHECK timeout {'PASS' if timeout_ok else 'FAIL'} "
               f"exit={code} total={total} residue_pgrep_exit={left.returncode}")
-        return 0 if ok and timeout_ok else 1
+
+        marker = f"blackbox-orphan-probe-{os.getpid()}"
+        started = time.monotonic()
+        code, total, peak = run_suite(
+            "orphan-check",
+            [sys.executable, "-I", "-c",
+             "import subprocess, sys\n"
+             "subprocess.Popen([sys.executable, '-I', '-c', "
+             f"'import time\\n# {marker}\\ntime.sleep(60)'])\n"
+             "print('parent exited; child still holds stdout', flush=True)\n"],
+            project, env, 120)
+        elapsed = time.monotonic() - started
+        left = subprocess.run(["pgrep", "-f", marker],
+                              stdout=subprocess.DEVNULL)
+        orphan_ok = (code == 0 and elapsed < 10 and peak <= LOG_CAP
+                     and left.returncode == 1)
+        print(f"SELF_CHECK orphan {'PASS' if orphan_ok else 'FAIL'} "
+              f"exit={code} elapsed={elapsed:.3f} "
+              f"residue_pgrep_exit={left.returncode}")
+        return 0 if ok and timeout_ok and orphan_ok else 1
 
     zig_flags = [f"-Ddeps-prefix={deps}", f"-Dcurl-prefix={curl}"]
     python = [sys.executable, "-I"]
@@ -160,6 +200,8 @@ def main():
     failures = []
     for name, command in suites:
         code, _, _ = run_suite(name, command, project, env, args.timeout)
+        if code == 130:
+            return 130
         if code != 0:
             failures.append((name, code))
 
@@ -170,4 +212,7 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
