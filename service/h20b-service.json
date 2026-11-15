@@ -1,0 +1,32 @@
+{
+  "name": "umminfer-h20b",
+  "run_dir": "/root/umm-phase7-service/run",
+  "log_dir": "/root/umm-phase7-service/logs",
+  "ipc_dir": "/tmp/umminfer-phase7-ipc",
+  "host": "172.17.0.2",
+  "port": 43300,
+  "binary": "/root/umm-phase7-service/bin/umm-infer",
+  "python": "/usr/bin/python3",
+  "python_dir": "/root/umm-phase7-service/python",
+  "model": "qwen3-unified",
+  "asr": {
+    "model": "qwen3-asr",
+    "url": "http://127.0.0.1:31000",
+    "concurrency": 4
+  },
+  "omni": {
+    "model": "qwen3-omni",
+    "url": "http://127.0.0.1:31001/v1",
+    "concurrency": 4
+  },
+  "env": {
+    "LD_LIBRARY_PATH": "/root/umm-c6rt-ckl/deps/lib:/root/umm-c6rt-ckl/curl-prefix/lib"
+  },
+  "health_path": "/health",
+  "health_interval_s": 2,
+  "health_grace_s": 8,
+  "health_failures": 3,
+  "stop_grace_s": 10,
+  "backoff_s": [1, 2, 4, 8, 15, 30],
+  "stable_s": 60
+}
