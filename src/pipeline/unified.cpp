@@ -22,6 +22,43 @@ std::string_view chunk_text(const Value& chunk) {
   return {};
 }
 
+// The current turn's real user text, extracted with the same shape handling as
+// build_vlm_inputs: a plain string content is one text unit, and text parts in
+// a content array keep their wire order. Used for session history on VLM-only
+// turns, where there is no ASR transcript to stand in for the user input.
+std::string user_text_from_inputs(const Value& original_inputs) {
+  std::string joined;
+  if (!original_inputs.is_map()) return joined;
+  const Value* messages = original_inputs.find("messages");
+  if (messages == nullptr || !messages->is_array()) return joined;
+  for (const Value& message : messages->as_array()) {
+    if (!message.is_map()) continue;
+    const Value* content = message.find("content");
+    if (content == nullptr) continue;
+    if (content->is_str()) {
+      if (!content->as_str().empty()) {
+        if (!joined.empty()) joined += " ";
+        joined += content->as_str();
+      }
+      continue;
+    }
+    if (!content->is_array()) continue;
+    for (const Value& part : content->as_array()) {
+      const Value* type = part.find("type");
+      if (type == nullptr || !type->is_str() ||
+          modality_of_part_type(type->as_str()) != UnifiedModality::kText) {
+        continue;
+      }
+      const Value* text = part.find("text");
+      if (text != nullptr && text->is_str() && !text->as_str().empty()) {
+        if (!joined.empty()) joined += " ";
+        joined += text->as_str();
+      }
+    }
+  }
+  return joined;
+}
+
 bool chunk_is_final(const Value& chunk) {
   if (!chunk.is_map()) return false;
   const Value* flag = chunk.find("is_final");
@@ -340,6 +377,7 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.original_inputs = std::move(original_inputs);
   record.vlm_params = std::move(vlm_params);
   record.vlm_metadata = std::move(vlm_metadata);
+  record.user_text = user_text_from_inputs(record.original_inputs);
 
   std::string request_id;
   if (has_audio) {
@@ -686,7 +724,12 @@ void UnifiedEngine::record_session_turn_locked(const Record& record) {
   const bool is_new_session =
       session_history_.find(record.session_id) == session_history_.end();
   std::deque<SessionTurn>& turns = session_history_[record.session_id];
-  turns.push_back(SessionTurn{record.transcript, record.vlm_text});
+  // An audio turn's user side is the ASR transcript. A VLM-only turn has no
+  // transcript, so use the real string/text-part input instead of an empty
+  // user message.
+  const std::string& user = record.transcript.empty() ? record.user_text
+                                                       : record.transcript;
+  turns.push_back(SessionTurn{user, record.vlm_text});
   size_t chars = 0;
   for (const SessionTurn& turn : turns) {
     chars += turn.user.size() + turn.assistant.size();
