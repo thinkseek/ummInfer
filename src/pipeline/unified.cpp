@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "umminfer/pipeline/unified.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <string_view>
+#include <vector>
 
 namespace umminfer {
 namespace {
@@ -205,6 +207,8 @@ const char* to_string(UnifiedEvent::Kind kind) {
     case UnifiedEvent::Kind::kAsrPartial: return "asr_partial";
     case UnifiedEvent::Kind::kAsrFinal: return "asr_final";
     case UnifiedEvent::Kind::kVlmDelta: return "vlm_delta";
+    case UnifiedEvent::Kind::kArtifact: return "artifact";
+    case UnifiedEvent::Kind::kLegError: return "leg_error";
     case UnifiedEvent::Kind::kComplete: return "complete";
     case UnifiedEvent::Kind::kError: return "error";
     case UnifiedEvent::Kind::kCancelled: return "cancelled";
@@ -327,6 +331,57 @@ std::string UnifiedEngine::submit(StagePayload payload) {
           "session_history requires engine session history to be enabled");
     }
   }
+  // Optional generated outputs. output_modalities selects the legs;
+  // image_options/audio_options are engine-only keys, stripped from the VLM
+  // prompt in build_vlm_inputs. The HTTP boundary validates the public shape;
+  // these checks are the engine-level backstop for direct submit() callers.
+  bool image_output = false;
+  bool audio_output = false;
+  if (const Value* requested = original_inputs.find("output_modalities");
+      requested != nullptr) {
+    if (!requested->is_array()) {
+      throw ProtocolError("output_modalities must be an array");
+    }
+    for (const Value& token : requested->as_array()) {
+      if (!token.is_str()) {
+        throw ProtocolError("output_modalities values must be strings");
+      }
+      const std::string& name = token.as_str();
+      if (name == "image") image_output = true;
+      else if (name == "audio") audio_output = true;
+      else throw ProtocolError("unknown output modality: " + name);
+    }
+  }
+  Value::Map image_options;
+  Value::Map audio_options;
+  if (const Value* options = original_inputs.find("image_options");
+      options != nullptr) {
+    if (!options->is_map()) throw ProtocolError("image_options must be a map");
+    image_options = options->as_map();
+  }
+  if (const Value* options = original_inputs.find("audio_options");
+      options != nullptr) {
+    if (!options->is_map()) throw ProtocolError("audio_options must be a map");
+    // TTS input is always the aggregated VLM answer; a client text here would
+    // bypass that rule and is rejected rather than ignored.
+    if (options->find("text") != nullptr) {
+      throw ProtocolError("audio_options must not carry text");
+    }
+    audio_options = options->as_map();
+  }
+  if (image_output && config_.image_stage.empty()) {
+    throw ProtocolError("image output is not enabled on this server");
+  }
+  if (audio_output && config_.tts_stage.empty()) {
+    throw ProtocolError("audio output is not enabled on this server");
+  }
+  if (audio_output) {
+    const Value* voice = audio_options.empty() ? nullptr
+                                               : Value(audio_options).find("voice");
+    if (voice == nullptr || !voice->is_str() || voice->as_str().empty()) {
+      throw ProtocolError("audio output requires a non-empty voice");
+    }
+  }
   // The route signal is the public content shape: an input_audio part selects
   // the ASR -> VLM path, a text- or image-only request runs the VLM leg
   // directly. The binary PCM is attached only by the real HTTP boundary;
@@ -378,6 +433,14 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.vlm_params = std::move(vlm_params);
   record.vlm_metadata = std::move(vlm_metadata);
   record.user_text = user_text_from_inputs(record.original_inputs);
+  record.image_options = std::move(image_options);
+  record.audio_options = std::move(audio_options);
+  record.image_leg.enabled = image_output;
+  record.image_leg.stage_name = config_.image_stage;
+  record.image_leg.stage_id = kImageStageId;
+  record.tts_leg.enabled = audio_output;
+  record.tts_leg.stage_name = config_.tts_stage;
+  record.tts_leg.stage_id = kTtsStageId;
 
   std::string request_id;
   if (has_audio) {
@@ -413,21 +476,28 @@ std::string UnifiedEngine::submit(StagePayload payload) {
 }
 
 bool UnifiedEngine::cancel(const std::string& request_id) {
-  std::string active_id;
+  std::vector<std::string> active_ids;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = records_.find(request_id);
     if (it == records_.end() || it->second.phase == Phase::kDone) return false;
-    // Record the intent under mu_ first. The ASR completion and the VLM start
-    // are decided under the same lock in handle_complete, so either this flag
-    // is visible there and the request settles as kCancelled, or the VLM leg
-    // already exists and its child id is what we abort.
-    it->second.cancel_requested = true;
-    active_id = it->second.vlm_id.empty() ? request_id : it->second.vlm_id;
+    // Record the intent under mu_ first. Every fan-out decision is made under
+    // this lock, so a leg not submitted yet is blocked by the flag instead of
+    // an abort broadcast for an unknown id.
+    Record& record = it->second;
+    record.cancel_requested = true;
+    if (!record.vlm_id.empty()) active_ids.push_back(record.vlm_id);
+    if (record.image_leg.submitted) active_ids.push_back(record.image_leg.child_id);
+    if (record.tts_leg.submitted) active_ids.push_back(record.tts_leg.child_id);
+    if (active_ids.empty()) {
+      // ASR/VLM-only entry leg, still keyed by the unified id.
+      active_ids.push_back(request_id);
+    }
   }
   // No engine lock held: Coordinator::abort can synchronously invoke
-  // on_complete, which needs mu_.
-  coordinator_.abort(active_id);
+  // on_complete, which needs mu_. abort() on an unknown or already terminal
+  // id is a silent no-op, so only submitted non-empty ids are listed.
+  for (const std::string& id : active_ids) coordinator_.abort(id);
   return true;
 }
 
@@ -447,13 +517,19 @@ std::optional<RequestInfo> UnifiedEngine::info(const std::string& request_id) {
 }
 
 bool UnifiedEngine::release(const std::string& request_id) {
-  std::string vlm_id;
+  std::vector<std::string> child_ids;
   bool removed = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = records_.find(request_id);
     if (it == records_.end()) return false;
-    vlm_id = it->second.vlm_id;
+    child_ids.push_back(it->second.vlm_id);
+    if (it->second.image_leg.submitted) {
+      child_ids.push_back(it->second.image_leg.child_id);
+    }
+    if (it->second.tts_leg.submitted) {
+      child_ids.push_back(it->second.tts_leg.child_id);
+    }
     records_.erase(it);
     for (auto queue_it = admission_.begin(); queue_it != admission_.end();
          ++queue_it) {
@@ -464,9 +540,13 @@ bool UnifiedEngine::release(const std::string& request_id) {
     }
     removed = true;
   }
-  // Both coordinator leg records belong to this engine request.
+  // Every coordinator leg record belongs to this engine request. Releasing an
+  // already-released id is a harmless no-op, which covers a late completion
+  // racing this cleanup.
   coordinator_.release(request_id);
-  if (!vlm_id.empty()) coordinator_.release(vlm_id);
+  for (const std::string& id : child_ids) {
+    if (!id.empty()) coordinator_.release(id);
+  }
   return removed;
 }
 
@@ -483,8 +563,12 @@ UnifiedEngine::find_record_locked(const std::string& event_request_id) {
   if (it != records_.end()) return it;
   for (auto candidate = records_.begin(); candidate != records_.end();
        ++candidate) {
-    if (!candidate->second.vlm_id.empty() &&
-        candidate->second.vlm_id == event_request_id) {
+    const Record& record = candidate->second;
+    if ((!record.vlm_id.empty() && record.vlm_id == event_request_id) ||
+        (record.image_leg.submitted &&
+         record.image_leg.child_id == event_request_id) ||
+        (record.tts_leg.submitted &&
+         record.tts_leg.child_id == event_request_id)) {
       return candidate;
     }
   }
@@ -511,6 +595,12 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
           dispatch_queue_.push_back(std::move(event));
         }
         // A VLM chunk before the VLM leg starts is out of order: drop it.
+      } else if (msg.from_stage == record.image_leg.stage_name ||
+                 msg.from_stage == record.tts_leg.stage_name) {
+        // Output legs deliver their Bin in complete.result; they emit no text
+        // stream. A stray chunk must not fall into the ASR branch below and
+        // appear as a fake transcript. It is still forwarded to any previous
+        // sink (the realtime chain) after this block.
       } else if (record.phase != Phase::kVlm) {
         const bool is_final = chunk_is_final(msg.chunk);
         bool emit = true;
@@ -611,7 +701,9 @@ Value UnifiedEngine::build_vlm_inputs(const std::string& transcript,
   if (original_inputs.is_map()) {
     for (const auto& [key, value] : original_inputs.as_map()) {
       if (key != "messages" && key != "modalities" && key != "session_id" &&
-          key != "audio" && key != "asr_partials" && key != "session_history") {
+          key != "audio" && key != "asr_partials" && key != "session_history" &&
+          key != "output_modalities" && key != "image_options" &&
+          key != "audio_options") {
         out[key] = value;
       }
     }
@@ -815,12 +907,48 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
 void UnifiedEngine::handle_complete(const RequestInfo& info) {
   {
     std::lock_guard<std::mutex> lock(mu_);
-    // The completion carries either the ASR leg id or the VLM child id.
+    // The completion carries the ASR/VLM id or an output-leg child id.
     auto it = find_record_locked(info.request_id);
     if (it != records_.end() && it->second.phase != Phase::kDone) {
       Record& record = it->second;
       const std::string& unified_id = it->first;
-      if (info.state == "aborted") {
+      const bool image_child =
+          record.image_leg.submitted &&
+          info.request_id == record.image_leg.child_id;
+      const bool tts_child =
+          record.tts_leg.submitted &&
+          info.request_id == record.tts_leg.child_id;
+      OutputLeg* output_leg = image_child ? &record.image_leg
+                              : tts_child ? &record.tts_leg : nullptr;
+      if (output_leg != nullptr) {
+        // Output-leg join. A failed or aborted leg never fails the whole
+        // request after a successful VLM: it becomes a leg_error and the
+        // request still settles with one kComplete (or kCancelled when the
+        // client asked to cancel).
+        if (info.state == "aborted" || record.cancel_requested) {
+          settle_output_leg_locked(
+              unified_id, record, *output_leg,
+              UnifiedEvent::Kind::kCancelled,
+              info.state == "failed"
+                  ? (info.error.empty() ? "stage failure" : info.error)
+                  : "request aborted");
+        } else if (info.state == "failed") {
+          settle_output_leg_locked(
+              unified_id, record, *output_leg,
+              UnifiedEvent::Kind::kLegError,
+              info.error.empty() ? "stage failure" : info.error);
+        } else {
+          try {
+            emit_artifact_locked(unified_id, record, *output_leg, info.result);
+            settle_output_leg_locked(unified_id, record, *output_leg,
+                                     UnifiedEvent::Kind::kComplete, {});
+          } catch (const std::exception& error) {
+            settle_output_leg_locked(
+                unified_id, record, *output_leg,
+                UnifiedEvent::Kind::kLegError, error.what());
+          }
+        }
+      } else if (info.state == "aborted") {
         dispatch_queue_.push_back(finish_locked(
             unified_id, record, UnifiedEvent::Kind::kCancelled, {}, {}));
       } else if (info.state == "failed") {
@@ -876,12 +1004,23 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
               "VLM stage returned no text", {}));
         } else {
           if (record.vlm_text.empty()) record.vlm_text = *text;
-          dispatch_queue_.push_back(finish_locked(
-              unified_id, record, UnifiedEvent::Kind::kComplete, {},
-              info.result));
-          // Only a successful terminal enters history. Cancelled and failed
-          // requests never reach here, so no failed output becomes context.
-          if (record.history_requested) record_session_turn_locked(record);
+          record.vlm_result = info.result;
+          if (record.image_leg.enabled || record.tts_leg.enabled) {
+            try {
+              start_outputs_locked(unified_id, record);
+            } catch (const std::exception& error) {
+              dispatch_queue_.push_back(finish_locked(
+                  unified_id, record, UnifiedEvent::Kind::kError,
+                  error.what(), {}));
+            }
+          } else {
+            dispatch_queue_.push_back(finish_locked(
+                unified_id, record, UnifiedEvent::Kind::kComplete, {},
+                info.result));
+            // Only a successful terminal enters history. Cancelled and failed
+            // requests never reach here, so no failed output becomes context.
+            if (record.history_requested) record_session_turn_locked(record);
+          }
         }
       }
     }
@@ -891,6 +1030,183 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
   }
 
   drain_dispatch();
+}
+
+Value UnifiedEngine::build_image_inputs(const Record& record) {
+  Value::Map out = record.image_options;
+  // An explicit prompt wins; otherwise the leg gets the same VLM answer.
+  auto prompt = out.find("prompt");
+  if (prompt == out.end() || !prompt->second.is_str() ||
+      prompt->second.as_str().empty()) {
+    out["prompt"] = Value(record.vlm_text);
+  }
+  return Value(std::move(out));
+}
+
+Value UnifiedEngine::build_tts_inputs(const Record& record) {
+  Value::Map out = record.audio_options;
+  // The TTS input is always the aggregated VLM answer, never a delta.
+  out["text"] = Value(record.vlm_text);
+  return Value(std::move(out));
+}
+
+void UnifiedEngine::start_image_locked(const std::string& request_id,
+                                       Record& record) {
+  OutputLeg& leg = record.image_leg;
+  leg.child_id = request_id + kImageSuffix;
+  StagePayload payload;
+  payload.request_id = leg.child_id;
+  payload.request.inputs = build_image_inputs(record);
+  payload.request.params = record.vlm_params;
+  payload.request.metadata = record.vlm_metadata;
+  leg.submitted = true;
+  coordinator_.submit(payload, leg.stage_name);
+}
+
+void UnifiedEngine::start_tts_locked(const std::string& request_id,
+                                     Record& record) {
+  OutputLeg& leg = record.tts_leg;
+  leg.child_id = request_id + kTtsSuffix;
+  StagePayload payload;
+  payload.request_id = leg.child_id;
+  payload.request.inputs = build_tts_inputs(record);
+  payload.request.params = record.vlm_params;
+  payload.request.metadata = record.vlm_metadata;
+  leg.submitted = true;
+  coordinator_.submit(payload, leg.stage_name);
+}
+
+void UnifiedEngine::start_outputs_locked(const std::string& request_id,
+                                         Record& record) {
+  record.phase = Phase::kOutputs;
+  record.public_info.current_stage = kImageStageId;
+  if (record.image_leg.enabled) start_image_locked(request_id, record);
+  if (record.tts_leg.enabled) start_tts_locked(request_id, record);
+  record.legs_remaining =
+      (record.image_leg.submitted ? 1 : 0) +
+      (record.tts_leg.submitted ? 1 : 0);
+}
+
+void UnifiedEngine::emit_artifact_locked(const std::string& request_id,
+                                         Record& record,
+                                         const OutputLeg& leg,
+                                         const Value& result) {
+  if (!result.is_map()) {
+    throw ProtocolError(std::string(leg.stage_id) +
+                        " stage returned a non-map artifact result");
+  }
+  const Value* data = result.find("data");
+  if (data == nullptr || !data->is_bin() || data->as_bin().empty()) {
+    throw ProtocolError(std::string(leg.stage_id) +
+                        " stage returned no artifact bytes");
+  }
+  const Value* media_type = result.find("media_type");
+  if (media_type == nullptr || !media_type->is_str()) {
+    throw ProtocolError(std::string(leg.stage_id) +
+                        " stage returned no media_type");
+  }
+  const std::string& media = media_type->as_str();
+  const size_t size = data->as_bin().size();
+  const size_t per_leg_limit = media == "image" ? kMaxArtifactImageBytes
+                                                : kMaxArtifactAudioBytes;
+  if (media != "image" && media != "audio") {
+    throw ProtocolError("artifact media_type must be image or audio");
+  }
+  if (size > per_leg_limit) {
+    throw ProtocolError(std::string(leg.stage_id) +
+                        " artifact exceeds its decoded size limit");
+  }
+  if (record.artifact_bytes_total + size > kMaxArtifactAggregateBytes) {
+    throw ProtocolError("mixed output artifacts exceed the aggregate limit");
+  }
+  record.artifact_bytes_total += size;
+
+  // Descriptor: every worker-provided key except the inline Bin, plus delivery
+  // ordering and chunk bookkeeping.
+  Value::Map descriptor;
+  for (const auto& [key, value] : result.as_map()) {
+    if (key != "data") descriptor[key] = value;
+  }
+  const std::string artifact_id =
+      "art-" + std::to_string(record.next_artifact++);
+  descriptor["artifact_id"] = Value(artifact_id);
+  const size_t total =
+      (size + kArtifactChunkTargetBytes - 1) / kArtifactChunkTargetBytes;
+  descriptor["total"] = Value(static_cast<int64_t>(total));
+
+  auto bytes = std::make_shared<const std::string>(data->as_bin());
+  for (size_t index = 0; index < total; ++index) {
+    const size_t offset = index * kArtifactChunkTargetBytes;
+    const size_t length = std::min(kArtifactChunkTargetBytes, size - offset);
+    Value::Map chunk_descriptor = descriptor;
+    chunk_descriptor["index"] = Value(static_cast<int64_t>(index));
+    UnifiedEvent event;
+    event.request_id = request_id;
+    event.session_id = record.session_id;
+    event.stage_id = leg.stage_id;
+    event.kind = UnifiedEvent::Kind::kArtifact;
+    event.seq = record.next_seq++;
+    event.is_final = true;
+    event.artifact = Value(std::move(chunk_descriptor));
+    event.artifact_bytes = bytes;
+    event.artifact_offset = offset;
+    event.artifact_length = length;
+    dispatch_queue_.push_back(std::move(event));
+  }
+}
+
+void UnifiedEngine::settle_output_leg_locked(
+    const std::string& request_id, Record& record, OutputLeg& leg,
+    UnifiedEvent::Kind kind, std::string error) {
+  leg.state = kind == UnifiedEvent::Kind::kComplete ? "completed"
+            : kind == UnifiedEvent::Kind::kCancelled ? "aborted"
+                                                     : "failed";
+  leg.error = error;
+  if (kind != UnifiedEvent::Kind::kComplete) {
+    UnifiedEvent event;
+    event.request_id = request_id;
+    event.session_id = record.session_id;
+    event.stage_id = leg.stage_id;
+    event.kind = kind == UnifiedEvent::Kind::kCancelled
+                     ? UnifiedEvent::Kind::kLegError
+                     : kind;
+    event.seq = record.next_seq++;
+    event.error = std::move(error);
+    dispatch_queue_.push_back(std::move(event));
+  }
+  --record.legs_remaining;
+  if (record.legs_remaining == 0) on_legs_drained_locked(request_id, record);
+}
+
+Value UnifiedEngine::legs_value_locked(const Record& record) const {
+  Value::Array legs;
+  const auto add = [&](const OutputLeg& leg) {
+    if (!leg.enabled) return;
+    Value::Map item;
+    item["stage"] = Value(leg.stage_id);
+    item["state"] = Value(leg.state);
+    if (!leg.error.empty()) item["error"] = Value(leg.error);
+    legs.push_back(Value(std::move(item)));
+  };
+  add(record.image_leg);
+  add(record.tts_leg);
+  return Value(std::move(legs));
+}
+
+void UnifiedEngine::on_legs_drained_locked(const std::string& request_id,
+                                           Record& record) {
+  // A client-requested cancel still settles as one kCancelled even when some
+  // artifacts were delivered; ordinary leg failures keep kComplete.
+  const UnifiedEvent::Kind kind = record.cancel_requested
+                                      ? UnifiedEvent::Kind::kCancelled
+                                      : UnifiedEvent::Kind::kComplete;
+  UnifiedEvent event = finish_locked(request_id, record, kind, {},
+                                     record.vlm_result);
+  event.legs = legs_value_locked(record);
+  dispatch_queue_.push_back(std::move(event));
+  if (kind == UnifiedEvent::Kind::kComplete && record.history_requested) {
+    record_session_turn_locked(record);
+  }
 }
 
 }  // namespace umminfer
