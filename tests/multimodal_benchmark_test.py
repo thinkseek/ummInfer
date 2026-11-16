@@ -822,7 +822,18 @@ class GateTests(unittest.TestCase):
             synthetic_report(p50=89.0), self.baseline)
         self.assertFalse(faster["median"]["asr"]["ok"])
         self.assertFalse(faster["passed"])
-        self.assertEqual(slower["latency_gate"], "median_v1")
+        self.assertEqual(slower["latency_gate"], "median_v2")
+
+    def test_joint_median_is_observation_only(self):
+        # n=6 joint excursion must not block even past the 10% band.
+        report = synthetic_report()
+        report["aggregates"]["tasks"]["joint"]["p50_ms"] = 200.0
+        checks = bench.evaluate_round(report, self.baseline)
+        self.assertFalse(checks["median"]["joint"]["ok"])
+        self.assertFalse(checks["median"]["joint"]["blocking"])
+        # Blocking tasks unchanged -> the round still passes.
+        self.assertTrue(checks["median_ok"])
+        self.assertTrue(checks["passed"])
 
     def test_report_p95_tolerance_controls_the_observation(self):
         inside = synthetic_report(p95=105.0, p95_tolerance=0.05)

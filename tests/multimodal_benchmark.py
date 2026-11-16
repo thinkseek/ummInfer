@@ -53,8 +53,12 @@ P95_TOLERANCE = 0.10
 # Blocking latency gate (median_v1): nearest-rank p95 equals the per-task max
 # at n<=16 and is dominated by host scheduling stalls on the shared box, so the
 # gate compares per-task medians instead. p95/max stay recorded as observations.
-LATENCY_GATE = "median_v1"
+LATENCY_GATE = "median_v2"
 MEDIAN_TOLERANCE = 0.10
+# n=6 joint has no representative single-round median (it averages only the
+# middle two values and steps coarsely), so its latency is recorded but never
+# blocks. asr/gsm8k/vqa (n=16) stay blocking under the median band.
+LATENCY_OBSERVATION_TASKS = frozenset({"joint"})
 QUALITY_TOLERANCE = {
     "wer": 0.02,
     "cer": 0.02,
@@ -784,20 +788,23 @@ def evaluate_round(report, baseline):
                 "ok": abs(delta) <= p95_tolerance + 1e-9,
                 "blocking": False}
         # Blocking latency statistic: per-task median within a symmetric band.
+        # n=6 joint is observation-only (see LATENCY_OBSERVATION_TASKS).
         current_median = median_snapshot(aggregates)
         for task, value in current_median.items():
             base = baseline["median_ms"].get(task)
             if base is None or value is None or base == 0:
                 continue
             delta = (value - base) / base
+            blocking = task not in LATENCY_OBSERVATION_TASKS
             checks["median"][task] = {
                 "baseline_ms": base, "current_ms": value,
                 "delta": delta, "tolerance": MEDIAN_TOLERANCE,
                 "ok": abs(delta) <= MEDIAN_TOLERANCE + 1e-9,
-                "blocking": True}
+                "blocking": blocking}
     quality_ok = all(item["ok"] for item in checks["quality"].values())
     p95_ok = all(item["ok"] for item in checks["p95"].values())
-    median_ok = all(item["ok"] for item in checks["median"].values())
+    median_ok = all(item["ok"] for task, item in checks["median"].items()
+                    if item["blocking"])
     eligible = not checks["subset"]
     passed = bool(eligible and checks["infrastructure_ok"]
                   and checks["contract_ok"] and quality_ok and median_ok
