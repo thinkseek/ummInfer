@@ -202,6 +202,7 @@ json unified_event_json(const UnifiedEvent& event) {
               {"session_id", event.session_id},
               {"is_final", event.is_final},
               {"text", event.text}};
+  if (!event.error.empty()) out["error"] = event.error;
   if (event.kind == UnifiedEvent::Kind::kArtifact) {
     out["artifact"] = value_to_json(event.artifact);
   }

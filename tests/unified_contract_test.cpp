@@ -3788,6 +3788,73 @@ void test_public_http_mixed_artifact_stream() {
              "mixed HTTP request stayed in flight");
 }
 
+// HTTP edge for partial failure: the image artifact is delivered while the tts
+// leg fails. The SSE stream must carry leg_error, keep the artifact, and end
+// with one complete terminal naming both leg states.
+void test_public_http_mixed_partial_failure() {
+  Harness h("publicmixedfail");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "partial-failure server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  nlohmann::json body = {
+      {"model", "qwen3-unified"},
+      {"messages", nlohmann::json::array(
+                       {nlohmann::json{{"role", "user"}, {"content", "hi"}}})},
+      {"stream", true},
+      {"modalities", nlohmann::json::array({"text", "image", "audio"})},
+      {"image", nlohmann::json::object()},
+      {"audio", {{"voice", "Tina"}, {"format", "wav"}}}};
+  auto response_future = std::async(std::launch::async, [&] {
+    client::detail::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{15000};
+    return client::detail::perform(request);
+  });
+
+  auto vlm = h.next_submit(h.vlm_recv);
+  h.complete(vlm->request_id, "vlm", true, text_result("answer"));
+  auto image_submit = h.next_submit(h.image_recv);
+  auto tts_submit = h.next_submit(h.tts_recv);
+  if (image_submit) {
+    h.complete(image_submit->request_id, "image", true,
+               artifact_result("image", "image/png", std::string(40, '\x90')));
+  }
+  if (tts_submit) {
+    h.complete(tts_submit->request_id, "tts", false, Value(),
+               std::string("tts unavailable"));
+  }
+
+  const auto response = response_future.get();
+  api.stop();
+  server_thread.join();
+  check(response.status == 200, "partial-failure SSE returned an HTTP error");
+  check(response.body.find("\"kind\":\"leg_error\"") != std::string::npos &&
+            response.body.find("tts unavailable") != std::string::npos,
+        "the tts leg_error did not reach the public SSE stream");
+  check(response.body.find("\"kind\":\"artifact\"") != std::string::npos,
+        "the successful image artifact was dropped on partial failure");
+  check(occurrences(response.body, "\"kind\":\"complete\"") == 1 &&
+            occurrences(response.body, "data: [DONE]") == 1,
+        "partial failure did not end with one complete and one [DONE]");
+  check(response.body.find("\"state\":\"failed\"") != std::string::npos &&
+            response.body.find("\"state\":\"completed\"") != std::string::npos,
+        "the terminal legs do not name both states");
+  wait_until([&] { return engine.in_flight() == 0; },
+             "partial-failure request stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -3859,5 +3926,6 @@ int main() {
   test_mixed_chunk_seq_reservation();
   test_mixed_previous_stream_tolerates_bin_chunk();
   test_public_http_mixed_artifact_stream();
+  test_public_http_mixed_partial_failure();
   return g_failures == 0 ? 0 : 1;
 }
