@@ -130,7 +130,7 @@ struct IpcDir {
     }
     IpcDir dir;
     dir.path = made;  // mkdtemp itself applies 0700
-    for (const char* name : {"asr", "vlm", "done", "abort"}) {
+    for (const char* name : {"asr", "vlm", "image", "tts", "done", "abort"}) {
       dir.files.push_back(dir.path + "/" + name);
     }
     return dir;
@@ -256,12 +256,61 @@ Value::Map text_result(const std::string& text) {
   return result;
 }
 
+// A VLM-only request that opts into image and/or tts output legs.
+StagePayload mixed_request(bool want_image, bool want_audio,
+                           const std::string& image_prompt = "",
+                           const std::string& voice = "Tina") {
+  StagePayload payload;
+  Value::Map message;
+  message["role"] = Value("user");
+  message["content"] = Value("describe the scene");
+  Value::Array messages;
+  messages.push_back(Value(std::move(message)));
+  Value::Array selected;
+  selected.push_back(Value("text"));
+  if (want_image) selected.push_back(Value("image"));
+  if (want_audio) selected.push_back(Value("audio"));
+  Value::Map inputs;
+  inputs["messages"] = Value(std::move(messages));
+  inputs["output_modalities"] = Value(std::move(selected));
+  if (want_image) {
+    Value::Map options;
+    if (!image_prompt.empty()) options["prompt"] = Value(image_prompt);
+    options["size"] = Value("1024x1024");
+    options["output_format"] = Value("png");
+    inputs["image_options"] = Value(std::move(options));
+  }
+  if (want_audio) {
+    Value::Map options;
+    options["voice"] = Value(voice);
+    options["format"] = Value("wav");
+    options["sample_rate"] = Value(int64_t{24000});
+    inputs["audio_options"] = Value(std::move(options));
+  }
+  payload.request.inputs = Value(std::move(inputs));
+  return payload;
+}
+
+// A worker result carrying an inline Bin artifact, as the frozen contract
+// specifies. The bytes are fake stage output, never a real model artifact.
+Value artifact_result(const std::string& media_type,
+                      const std::string& mime_type, std::string bytes,
+                      Value::Map extra = {}) {
+  Value::Map result = std::move(extra);
+  result["media_type"] = Value(media_type);
+  result["mime_type"] = Value(mime_type);
+  result["data"] = Value::bin(std::move(bytes));
+  return Value(std::move(result));
+}
+
 // Real Coordinator with two fake stage inboxes and one event pusher. No
 // compute runs anywhere.
 struct Harness {
   IpcDir dir;
   PullSocket asr_recv;
   PullSocket vlm_recv;
+  PullSocket image_recv;
+  PullSocket tts_recv;
   PushSocket event_push;
   Coordinator coordinator;
   std::thread pump;
@@ -275,15 +324,30 @@ struct Harness {
       : dir(IpcDir::create(tag)),
         asr_recv(dir.endpoint("asr"), true),
         vlm_recv(dir.endpoint("vlm"), true),
+        image_recv(dir.endpoint("image"), true),
+        tts_recv(dir.endpoint("tts"), true),
         event_push(dir.endpoint("done")),
         coordinator(dir.endpoint("done"), dir.endpoint("abort")) {
     asr_recv.start();
     vlm_recv.start();
+    image_recv.start();
+    tts_recv.start();
     coordinator.register_stage("asr", dir.endpoint("asr"));
     coordinator.register_stage("vlm", dir.endpoint("vlm"));
+    // Optional legs stay out of the readiness gate, matching production wiring.
+    coordinator.register_stage("image", dir.endpoint("image"));
+    coordinator.register_stage("tts", dir.endpoint("tts"));
     coordinator.start();
     if (start_pump_thread) start_pump();
     event_push.connect();
+  }
+
+  // Config with both optional output stages enabled.
+  UnifiedConfig mixed_config() const {
+    UnifiedConfig config;
+    config.image_stage = "image";
+    config.tts_stage = "tts";
+    return config;
   }
 
   void start_pump() {
@@ -3256,6 +3320,474 @@ void test_public_http_session_id_requires_unified() {
   server_thread.join();
 }
 
+// ---- Mixed output (image + tts) contract tests ---------------------------
+//
+// The image and tts "stages" are the same bound PULL/PUSH fakes as ASR/VLM.
+// Their Bin results are contract fixtures, not real model artifacts.
+
+// Drives a VLM-only mixed request to the output barrier and returns the two
+// leg submit payloads in arrival order. A VLM-only turn keeps the unified id
+// on its single VLM leg, so the completion uses the observed submit id.
+std::vector<StagePayload> reach_output_barrier(
+    Harness& h, UnifiedEngine& engine, const std::string& id,
+    const std::string& answer) {
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "mixed request did not reach the VLM");
+  h.complete(vlm ? vlm->request_id : id, "vlm", true,
+             text_result(answer));
+  std::vector<StagePayload> legs;
+  for (PullSocket* socket : {&h.image_recv, &h.tts_recv}) {
+    auto submit = h.next_submit(*socket);
+    if (submit) legs.push_back(StagePayload::from_value(submit->data));
+  }
+  return legs;
+}
+
+void test_mixed_fanout_join_and_prompt_rules() {
+  Harness h("mixedjoin");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id =
+      engine.submit(mixed_request(true, true, "explicit prompt"));
+  auto vlm_submit = h.next_submit(h.vlm_recv);
+  check(vlm_submit.has_value(), "no VLM submit");
+  h.complete(vlm_submit->request_id, "vlm", true, text_result("the answer"));
+  auto image_submit = h.next_submit(h.image_recv);
+  auto tts_submit = h.next_submit(h.tts_recv);
+  check(image_submit && image_submit->request_id == id + ":image",
+        "image leg id is not the derived :image child id");
+  check(tts_submit && tts_submit->request_id == id + ":tts",
+        "tts leg id is not the derived :tts child id");
+  if (image_submit) {
+    StagePayload p = StagePayload::from_value(image_submit->data);
+    check(p.request.inputs.find("prompt")->as_str() == "explicit prompt",
+          "explicit image prompt did not win over the VLM answer");
+    check(p.request.inputs.find("messages") == nullptr,
+          "image leg received VLM-only messages");
+  }
+  if (tts_submit) {
+    StagePayload p = StagePayload::from_value(tts_submit->data);
+    check(p.request.inputs.find("text")->as_str() == "the answer",
+          "tts input is not the aggregated VLM answer");
+    check(p.request.inputs.find("voice")->as_str() == "Tina" &&
+              p.request.inputs.find("sample_rate")->as_int() == 24000,
+          "tts options were not forwarded");
+  }
+
+  const std::string image_bytes(10, '\x89');
+  const std::string audio_bytes(20, '\x52');
+  h.complete(id + ":image", "image", true,
+             artifact_result("image", "image/png", image_bytes));
+  h.complete(id + ":tts", "tts", true,
+             artifact_result("audio", "audio/wav", audio_bytes));
+  check(engine.wait(id, 5.0), "mixed request did not complete");
+
+  const auto events = log.snapshot();
+  int64_t expected_seq = 0;
+  size_t artifacts = 0;
+  for (const UnifiedEvent& e : events) {
+    check(e.seq == expected_seq++, "mixed event seq has a gap");
+    if (e.kind == UnifiedEvent::Kind::kArtifact) {
+      ++artifacts;
+      check(e.artifact_bytes != nullptr &&
+                e.artifact_bytes->substr(e.artifact_offset,
+                                         e.artifact_length)
+                        .size() == e.artifact_length,
+            "artifact chunk does not cover its declared slice");
+      check(e.artifact.find("artifact_id") != nullptr,
+            "artifact descriptor missing artifact_id");
+    }
+  }
+  check(artifacts == 2, "expected one artifact event per small artifact");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+            terminal->legs.is_array() &&
+            terminal->legs.as_array().size() == 2,
+        "mixed terminal is not one kComplete with a two-entry legs array");
+  if (terminal) {
+    for (const Value& leg : terminal->legs.as_array()) {
+      check(leg.find("state")->as_str() == "completed",
+            "a successful leg is not marked completed");
+    }
+  }
+  check(engine.in_flight() == 0, "mixed request stayed in flight");
+  engine.release(id);
+}
+
+void test_mixed_image_prompt_falls_back_to_answer() {
+  Harness h("mixedprompt");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  const std::string id = engine.submit(mixed_request(true, false));
+  auto vlm_submit = h.next_submit(h.vlm_recv);
+  h.complete(vlm_submit->request_id, "vlm", true,
+             text_result("fallback answer"));
+  auto image_submit = h.next_submit(h.image_recv);
+  check(image_submit.has_value(), "image leg did not start");
+  if (image_submit) {
+    StagePayload p = StagePayload::from_value(image_submit->data);
+    check(p.request.inputs.find("prompt")->as_str() == "fallback answer",
+          "image leg did not fall back to the VLM answer");
+  }
+  h.complete(id + ":image", "image", true,
+             artifact_result("image", "image/png", std::string(5, 'x')));
+  check(engine.wait(id, 5.0), "image-only mixed request did not complete");
+  engine.release(id);
+}
+
+void test_mixed_partial_leg_failure_keeps_artifacts() {
+  Harness h("mixedpartial");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id = engine.submit(mixed_request(true, true));
+  reach_output_barrier(h, engine, id, "answer");
+  h.complete(id + ":image", "image", true,
+             artifact_result("image", "image/png", std::string(7, 'p')));
+  h.complete(id + ":tts", "tts", false, Value(),
+             std::string("tts worker down"));
+  check(engine.wait(id, 5.0), "partial-failure request did not settle");
+
+  const auto events = log.snapshot();
+  size_t leg_errors = 0;
+  size_t artifacts = 0;
+  for (const UnifiedEvent& e : events) {
+    if (e.kind == UnifiedEvent::Kind::kLegError) {
+      ++leg_errors;
+      check(e.stage_id == kTtsStageId && e.error == "tts worker down",
+            "leg_error does not name the failed tts leg");
+    }
+    if (e.kind == UnifiedEvent::Kind::kArtifact) ++artifacts;
+  }
+  check(leg_errors == 1 && artifacts == 1,
+        "partial failure did not keep the delivered image artifact");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+            log.terminal_count(id) == 1,
+        "a leg failure produced the wrong terminal or more than one");
+  if (terminal) {
+    const auto& legs = terminal->legs.as_array();
+    check(legs.size() == 2, "terminal legs array does not cover both legs");
+    bool tts_failed = false;
+    for (const Value& leg : legs) {
+      if (leg.find("stage")->as_str() == kTtsStageId) {
+        tts_failed = leg.find("state")->as_str() == "failed" &&
+                     leg.find("error") != nullptr;
+      }
+    }
+    check(tts_failed, "terminal does not report the failed tts leg");
+  }
+  engine.release(id);
+}
+
+void test_mixed_cancel_aborts_every_submitted_leg() {
+  Harness h("mixedcancel");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id = engine.submit(mixed_request(true, true));
+  reach_output_barrier(h, engine, id, "answer");
+  check(engine.cancel(id), "cancel rejected an active mixed request");
+  check(h.wait_abort(id + ":image"), "image leg never received abort");
+  check(h.wait_abort(id + ":tts"), "tts leg never received abort");
+  // Abort completions arrive through the same pump; both legs must settle
+  // before the single terminal.
+  h.complete(id + ":image", "image", false, Value(),
+             std::string("request aborted"));
+  h.complete(id + ":tts", "tts", false, Value(),
+             std::string("request aborted"));
+  check(engine.wait(id, 5.0), "cancelled mixed request did not settle");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kCancelled &&
+            log.terminal_count(id) == 1,
+        "mixed cancel did not produce exactly one cancelled terminal");
+  engine.release(id);
+  check(engine.in_flight() == 0, "in_flight nonzero after cancel and release");
+}
+
+void test_mixed_cancel_before_fanout_blocks_legs() {
+  Harness h("mixednofanout");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  const std::string id = engine.submit(mixed_request(true, true));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(engine.cancel(id), "cancel rejected the VLM-phase request");
+  check(h.wait_abort(vlm ? vlm->request_id : id),
+        "the VLM leg never received abort");
+  h.complete(vlm->request_id, "vlm", false, Value(),
+             std::string("request aborted"));
+  check(engine.wait(id, 5.0), "pre-fanout cancel did not settle");
+  check(h.no_submit(h.image_recv), "an image leg started after cancel");
+  check(h.no_submit(h.tts_recv), "a tts leg started after cancel");
+  engine.release(id);
+}
+
+void test_mixed_join_release_then_late_complete() {
+  Harness h("mixedrelease");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  const std::string id = engine.submit(mixed_request(true, true));
+  reach_output_barrier(h, engine, id, "answer");
+  // Release while legs are still running, then let both complete late. The
+  // orphan completions must be ignored without a crash and the engine stays
+  // usable with in_flight at zero.
+  check(engine.release(id), "release rejected the in-flight record");
+  h.complete(id + ":image", "image", true,
+             artifact_result("image", "image/png", std::string(4, 'q')));
+  h.complete(id + ":tts", "tts", true,
+             artifact_result("audio", "audio/wav", std::string(6, 'w')));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  check(engine.in_flight() == 0, "late completions resurrected a record");
+  const std::string next = engine.submit(mixed_request(false, false));
+  auto next_vlm = h.next_submit(h.vlm_recv);
+  h.complete(next_vlm->request_id, "vlm", true, text_result("recovered"));
+  check(engine.wait(next, 5.0), "the request after release did not settle");
+  check(engine.in_flight() == 0, "in_flight nonzero after recovery");
+  engine.release(next);
+}
+
+void test_mixed_artifact_limits_become_leg_errors() {
+  Harness h("mixedlimits");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id = engine.submit(mixed_request(true, false));
+  reach_output_barrier(h, engine, id, "answer");
+  h.complete(id + ":image", "image", true,
+             artifact_result("image", "image/png",
+                             std::string(kMaxArtifactImageBytes + 1, '\x01')));
+  check(engine.wait(id, 5.0), "oversized request did not settle");
+  bool saw_limit_error = false;
+  for (const UnifiedEvent& e : log.snapshot()) {
+    if (e.kind == UnifiedEvent::Kind::kLegError &&
+        e.error.find("limit") != std::string::npos) {
+      saw_limit_error = true;
+    }
+  }
+  check(saw_limit_error, "an oversized artifact was not rejected");
+  engine.release(id);
+}
+
+void test_mixed_chunk_seq_reservation() {
+  Harness h("mixedchunks");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id = engine.submit(mixed_request(true, false));
+  reach_output_barrier(h, engine, id, "answer");
+  // 5 MiB of fake bytes must split into three 2 MiB-target chunks.
+  const std::string bytes(5u << 20, '\xab');
+  h.complete(id + ":image", "image", true,
+             artifact_result("image", "image/png", bytes));
+  check(engine.wait(id, 5.0), "chunked request did not complete");
+  std::vector<UnifiedEvent> chunks;
+  for (const UnifiedEvent& e : log.snapshot()) {
+    if (e.kind == UnifiedEvent::Kind::kArtifact) chunks.push_back(e);
+  }
+  check(chunks.size() == 3, "5 MiB did not produce three artifact chunks");
+  if (chunks.size() == 3) {
+    check(chunks[0].seq + 1 == chunks[1].seq &&
+              chunks[1].seq + 1 == chunks[2].seq,
+          "artifact chunk seq values are not contiguous");
+    size_t reassembled = 0;
+    for (size_t i = 0; i < chunks.size(); ++i) {
+      check(chunks[i].artifact.find("index")->as_int() ==
+                    static_cast<int64_t>(i) &&
+                chunks[i].artifact.find("total")->as_int() == 3,
+            "artifact chunk index/total is wrong");
+      reassembled += chunks[i].artifact_length;
+    }
+    check(reassembled == bytes.size(),
+          "artifact chunks do not reassemble to the full byte count");
+  }
+  engine.release(id);
+}
+
+void test_mixed_previous_stream_tolerates_bin_chunk() {
+  Harness h("mixedbin");
+  std::promise<const StreamMessage*> forwarded;
+  auto future = forwarded.get_future();
+  // Attached before engine construction, exactly like the realtime listener:
+  // the engine exchanges sinks and this probe becomes its previous_stream.
+  h.coordinator.on_stream = [&](const StreamMessage& msg) {
+    forwarded.set_value(&msg);
+  };
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+
+  const std::string id = engine.submit(mixed_request(true, false));
+  reach_output_barrier(h, engine, id, "answer");
+  h.stream(id + ":image", "image", Value::bin(std::string(12, '\x7f')));
+  check(future.wait_for(std::chrono::seconds(2)) ==
+            std::future_status::ready,
+        "a Bin chunk did not pass through the previous_stream chain");
+  h.complete(id + ":image", "image", true,
+             artifact_result("image", "image/png", std::string(3, 'z')));
+  check(engine.wait(id, 5.0), "bin-tolerance request did not complete");
+  engine.release(id);
+}
+
+// Splits an SSE response body into its data payload strings.
+using nlohmann::json;
+
+std::vector<std::string> sse_data_payloads(const std::string& body) {
+  std::vector<std::string> payloads;
+  size_t pos = 0;
+  while (pos < body.size()) {
+    const size_t line_end = body.find('\n', pos);
+    std::string line = body.substr(
+        pos, line_end == std::string::npos ? std::string::npos
+                                          : line_end - pos);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("data: ", 0) == 0) {
+      std::string data = line.substr(6);
+      if (data != "[DONE]") payloads.push_back(std::move(data));
+    }
+    if (line_end == std::string::npos) break;
+    pos = line_end + 1;
+  }
+  return payloads;
+}
+
+// Full HTTP path: real OpenAIApi plus the fake image/tts PULL stages. The raw
+// SSE body is parsed to prove chunking, base64, sha256, gap-free seq and the
+// single terminal end to end.
+void test_public_http_mixed_artifact_stream() {
+  Harness h("publicmixed");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "mixed HTTP server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  // 5 MiB image forces three chunks; the audio stays in one small chunk.
+  const std::string image_bytes(5u << 20, '\x89');
+  const std::string audio_bytes(4096, '\x52');
+  nlohmann::json body = {
+      {"model", "qwen3-unified"},
+      {"messages", nlohmann::json::array(
+                       {nlohmann::json{{"role", "user"}, {"content", "hi"}}})},
+      {"stream", true},
+      {"modalities", nlohmann::json::array({"text", "image", "audio"})},
+      {"image", {{"output_format", "png"}, {"size", "1024x1024"}}},
+      {"audio", {{"voice", "Tina"}, {"format", "wav"},
+                 {"sample_rate", 24000}}}};
+
+  auto response_future = std::async(std::launch::async, [&] {
+    client::detail::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{15000};
+    return client::detail::perform(request);
+  });
+
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "mixed HTTP request did not reach the VLM");
+  h.complete(vlm->request_id, "vlm", true, text_result("the answer"));
+  auto image_submit = h.next_submit(h.image_recv);
+  auto tts_submit = h.next_submit(h.tts_recv);
+  if (image_submit) {
+    StagePayload p = StagePayload::from_value(image_submit->data);
+    check(p.request.inputs.find("prompt")->as_str() == "the answer",
+          "HTTP image leg did not use the VLM answer as its prompt");
+    h.complete(image_submit->request_id, "image", true,
+               artifact_result("image", "image/png", image_bytes));
+  }
+  if (tts_submit) {
+    StagePayload p = StagePayload::from_value(tts_submit->data);
+    check(p.request.inputs.find("text")->as_str() == "the answer",
+          "HTTP tts leg did not receive the aggregated VLM answer");
+    Value::Map extra;
+    extra["sample_rate"] = Value(int64_t{24000});
+    extra["channels"] = Value(int64_t{1});
+    h.complete(tts_submit->request_id, "tts", true,
+               artifact_result("audio", "audio/wav", audio_bytes,
+                               std::move(extra)));
+  }
+
+  const auto response = response_future.get();
+  api.stop();
+  server_thread.join();
+  check(response.status == 200, "mixed SSE returned an HTTP error");
+  check(response.body.rfind("data: [DONE]") != std::string::npos &&
+            occurrences(response.body, "data: [DONE]") == 1,
+        "mixed SSE does not end with exactly one [DONE]");
+
+  std::map<std::string, std::string> reassembled;
+  std::map<std::string, std::string> digests;
+  std::map<std::string, int64_t> expected_bytes;
+  int64_t last_seq = -1;
+  size_t terminals = 0;
+  size_t artifact_frames = 0;
+  for (const std::string& payload : sse_data_payloads(response.body)) {
+    const json frame = json::parse(payload);
+    if (!frame.contains("unified")) continue;
+    const json& unified = frame["unified"];
+    const int64_t seq = unified["seq"].get<int64_t>();
+    check(seq == last_seq + 1, "HTTP unified seq is not gap-free");
+    last_seq = seq;
+    const std::string kind = unified["kind"].get<std::string>();
+    if (kind == "artifact") {
+      ++artifact_frames;
+      const json& a = unified["artifact"];
+      const std::string id = a["artifact_id"].get<std::string>();
+      const std::string data = a["data"].get<std::string>();
+      check(data.size() % 4 == 0, "an artifact chunk is not aligned base64");
+      reassembled[id] += client::detail::base64_decode(
+          data, kArtifactChunkTargetBytes + 16);
+      if (a.contains("sha256")) {
+        digests[id] = a["sha256"].get<std::string>();
+        expected_bytes[id] = a["bytes"].get<int64_t>();
+      }
+    }
+    if (kind == "complete" || kind == "error" || kind == "cancelled") {
+      ++terminals;
+      check(unified.contains("legs") &&
+                unified["legs"].size() == 2,
+            "the mixed terminal does not carry two legs");
+    }
+  }
+  check(terminals == 1, "mixed SSE has not exactly one terminal");
+  check(artifact_frames == 4, "expected 3 image chunks plus 1 audio chunk");
+  check(reassembled.size() == 2, "expected two artifacts");
+  for (auto& [id, bytes] : reassembled) {
+    check(digests.count(id) == 1 &&
+              digests[id] == client::detail::sha256_hex(bytes),
+          "an artifact sha256 does not match its reassembled bytes");
+    check(expected_bytes[id] == static_cast<int64_t>(bytes.size()),
+          "an artifact byte count does not match");
+  }
+  check(reassembled.begin()->second.size() == image_bytes.size() ||
+            reassembled.rbegin()->second.size() == image_bytes.size(),
+        "the 5 MiB image was not reassembled intact");
+  wait_until([&] { return engine.in_flight() == 0; },
+             "mixed HTTP request stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -3317,5 +3849,15 @@ int main() {
   test_public_http_unified_errors();
   test_public_http_session_history();
   test_public_http_session_id_requires_unified();
+  test_mixed_fanout_join_and_prompt_rules();
+  test_mixed_image_prompt_falls_back_to_answer();
+  test_mixed_partial_leg_failure_keeps_artifacts();
+  test_mixed_cancel_aborts_every_submitted_leg();
+  test_mixed_cancel_before_fanout_blocks_legs();
+  test_mixed_join_release_then_late_complete();
+  test_mixed_artifact_limits_become_leg_errors();
+  test_mixed_chunk_seq_reservation();
+  test_mixed_previous_stream_tolerates_bin_chunk();
+  test_public_http_mixed_artifact_stream();
   return g_failures == 0 ? 0 : 1;
 }

@@ -347,6 +347,9 @@ std::string UnifiedEngine::submit(StagePayload payload) {
         throw ProtocolError("output_modalities values must be strings");
       }
       const std::string& name = token.as_str();
+      // Text is the implicit primary output; only the two optional legs are
+      // tracked here.
+      if (name == "text") continue;
       if (name == "image") image_output = true;
       else if (name == "audio") audio_output = true;
       else throw ProtocolError("unknown output modality: " + name);
@@ -376,9 +379,9 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     throw ProtocolError("audio output is not enabled on this server");
   }
   if (audio_output) {
-    const Value* voice = audio_options.empty() ? nullptr
-                                               : Value(audio_options).find("voice");
-    if (voice == nullptr || !voice->is_str() || voice->as_str().empty()) {
+    auto voice = audio_options.find("voice");
+    if (voice == audio_options.end() || !voice->second.is_str() ||
+        voice->second.as_str().empty()) {
       throw ProtocolError("audio output requires a non-empty voice");
     }
   }

@@ -932,6 +932,7 @@ std::string sha256_hex(std::string_view bytes) {
     offset += 64;
   }
   const size_t tail = bytes.size() - offset;
+  std::memset(block, 0, sizeof(block));
   std::memcpy(block, bytes.data() + offset, tail);
   block[tail] = 0x80;
   if (tail >= 56) {
@@ -955,6 +956,19 @@ std::string sha256_hex(std::string_view bytes) {
     out[i * 8 + 6] = hex[(state[i] >> 4) & 0xf];
     out[i * 8 + 7] = hex[state[i] & 0xf];
   }
+  return out;
+}
+
+std::string summarize_artifact(std::string_view media_type,
+                               std::string_view bytes) {
+  std::string out;
+  out.reserve(media_type.size() + 80);
+  out += "media=";
+  out.append(media_type.data(), media_type.size());
+  out += " bytes=";
+  out += std::to_string(bytes.size());
+  out += " sha256=";
+  out += sha256_hex(bytes);
   return out;
 }
 
