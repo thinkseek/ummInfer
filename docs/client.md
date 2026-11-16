@@ -65,6 +65,44 @@ returns 400, not 500. The client sends `top_p` and `seed` only when the caller
 sets them. It never adds `stream_options`, and it never drops a caller field and
 retries: an unsupported field is reported as an error.
 
+## Mixed output (generated image and audio)
+
+A unified server can return generated image and audio artifacts alongside the
+text answer. The request opts in with `modalities` plus an `image` and/or
+`audio` object, and requires `stream=true`; non-streaming mixed output is
+rejected with 400.
+
+```sh
+./zig-out/bin/umm-infer chat \
+  --url http://127.0.0.1:30000/v1 --model omni --prompt 'Draw this' --stream \
+  --image-out /tmp/picture.png --image-prompt 'a red cube' \
+  --image-size 1024x1024 --image-seed 7 --image-format png
+
+./zig-out/bin/umm-infer chat \
+  --url http://127.0.0.1:30000/v1 --model omni --prompt 'Say hello' --stream \
+  --audio-out /tmp/hello.wav --voice Tina
+```
+
+- `image` accepts `prompt` (absent means the full aggregated text answer is
+  used), `size` (default `1024x1024`), integer `seed`, and `output_format`
+  (`png` or `jpeg`).
+- `audio` requires `voice`, accepts only `format=wav` and `sample_rate=24000`
+  (WAV, PCM16, mono).
+- A modality whose stage is not registered on the server is rejected with 400
+  before submission: `image output is not enabled on this server` /
+  `audio output is not enabled on this server`.
+
+Artifacts arrive as base64 `artifact` SSE events in independently decodable
+chunks whose decoded target is 2 MiB. The C++ client reassembles them in
+order, verifies the final-chunk `sha256` against the decoded bytes, and rejects
+a mismatch, out-of-order chunks, non-aligned base64, or a truncated stream.
+Decoded limits are 48 MiB per image, 48 MiB per audio, and 60 MiB aggregated
+per request; one SSE wire frame is capped at 3 MiB (the parser ceiling is
+4 MiB). The CLI writes each output through an atomic part file and refuses to
+overwrite an existing path. Session history stores text only; artifact bytes
+are never persisted in history, and logs never contain prompts, TTS text,
+base64 or Bin payloads.
+
 ## Final ASR
 
 ```sh
