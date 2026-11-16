@@ -194,6 +194,10 @@ class UnifiedEngine {
   // Returns only unified state: unified id, public stage id, and unified result.
   std::optional<RequestInfo> info(const std::string& request_id);
   size_t in_flight() const;
+  // Whether the optional output stage was configured. The HTTP boundary uses
+  // these to reject an unregistered modality with 400 before submit.
+  bool image_output_enabled() const { return !config_.image_stage.empty(); }
+  bool tts_output_enabled() const { return !config_.tts_stage.empty(); }
   // Whether the engine was constructed with session history enabled.
   bool history_enabled() const { return config_.session_history.enabled; }
   // Whether an optional output stage is registered in this process. The HTTP

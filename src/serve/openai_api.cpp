@@ -196,12 +196,19 @@ struct SseSink {
 };
 
 json unified_event_json(const UnifiedEvent& event) {
-  return {{"kind", to_string(event.kind)},
-          {"stage", event.stage_id},
-          {"seq", event.seq},
-          {"session_id", event.session_id},
-          {"is_final", event.is_final},
-          {"text", event.text}};
+  json out = {{"kind", to_string(event.kind)},
+              {"stage", event.stage_id},
+              {"seq", event.seq},
+              {"session_id", event.session_id},
+              {"is_final", event.is_final},
+              {"text", event.text}};
+  if (event.kind == UnifiedEvent::Kind::kArtifact) {
+    out["artifact"] = value_to_json(event.artifact);
+  }
+  if (event.legs.type() == Value::Type::Array) {
+    out["legs"] = value_to_json(event.legs);
+  }
+  return out;
 }
 
 // The public chat schema carries WAV base64, an optional image URL, and one
@@ -309,6 +316,136 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
     // content array) would reach the VLM as an empty prompt. Reject it.
     error = "unified chat without input_audio requires text or image content";
     return false;
+  }
+  return true;
+}
+
+// Validates the opt-in mixed-output keys (modalities/image/audio). Runs only
+// on the local unified chat route; the fixed-upstream proxy keeps its own
+// separate validator. On success fills output_modalities and the two option
+// maps as engine-only inputs.
+bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
+                        Value::Map& engine_inputs, std::string& error) {
+  bool image_output = false;
+  bool audio_output = false;
+  if (body.contains("modalities") && !body["modalities"].is_null()) {
+    const json& modalities = body["modalities"];
+    if (!modalities.is_array() || modalities.empty()) {
+      error = "modalities must be a non-empty array";
+      return false;
+    }
+    for (const auto& token : modalities) {
+      if (!token.is_string()) {
+        error = "modalities values must be strings";
+        return false;
+      }
+      const std::string name = token.get<std::string>();
+      if (name == "text") continue;
+      if (name == "image") image_output = true;
+      else if (name == "audio") audio_output = true;
+      else {
+        error = "modalities values must be text, image or audio";
+        return false;
+      }
+    }
+  }
+  if (body.contains("image") && !body["image"].is_null()) {
+    const json& image = body["image"];
+    if (!image.is_object()) {
+      error = "image must be an object";
+      return false;
+    }
+    if (image.contains("prompt") && !image["prompt"].is_null()) {
+      if (!image["prompt"].is_string() ||
+          image["prompt"].get_ref<const std::string&>().empty()) {
+        error = "image.prompt must be a non-empty string";
+        return false;
+      }
+    }
+    if (image.contains("size") && !image["size"].is_null()) {
+      if (!image["size"].is_string() || image["size"].get<std::string>().empty()) {
+        error = "image.size must be a non-empty string";
+        return false;
+      }
+    }
+    if (image.contains("seed") && !image["seed"].is_null() &&
+        !image["seed"].is_number_integer()) {
+      error = "image.seed must be an integer";
+      return false;
+    }
+    if (image.contains("output_format") && !image["output_format"].is_null()) {
+      if (!image["output_format"].is_string() ||
+          (image["output_format"].get<std::string>() != "png" &&
+           image["output_format"].get<std::string>() != "jpeg")) {
+        error = "image.output_format must be png or jpeg";
+        return false;
+      }
+    }
+    image_output = true;
+  }
+  if (body.contains("audio") && !body["audio"].is_null()) {
+    const json& audio = body["audio"];
+    if (!audio.is_object() || !audio.contains("voice") ||
+        !audio["voice"].is_string() ||
+        audio["voice"].get_ref<const std::string&>().empty()) {
+      error = "audio requires a non-empty voice";
+      return false;
+    }
+    if (!audio.contains("format") || !audio["format"].is_string() ||
+        audio["format"].get<std::string>() != "wav") {
+      error = "audio.format must be wav: it is the only documented format";
+      return false;
+    }
+    if (audio.contains("sample_rate") && !audio["sample_rate"].is_null()) {
+      if (!audio["sample_rate"].is_number_integer() ||
+          audio["sample_rate"].get<int64_t>() != 24000) {
+        error = "audio.sample_rate must be 24000";
+        return false;
+      }
+    }
+    audio_output = true;
+  }
+  if (!image_output && !audio_output) return true;  // default text path
+  if (!body.value("stream", false)) {
+    error = "image and audio output require stream=true";
+    return false;
+  }
+  if (image_output && !image_enabled) {
+    error = "image output is not enabled on this server";
+    return false;
+  }
+  if (audio_output && !tts_enabled) {
+    error = "audio output is not enabled on this server";
+    return false;
+  }
+  Value::Array selected;
+  if (image_output) selected.push_back(Value("image"));
+  if (audio_output) selected.push_back(Value("audio"));
+  engine_inputs["output_modalities"] = Value(std::move(selected));
+  if (image_output) {
+    Value::Map options;
+    const json empty_image = json::object();
+    const json& image = body.contains("image") && body["image"].is_object()
+                            ? body["image"]
+                            : empty_image;
+    if (image.contains("prompt") && !image["prompt"].is_null()) {
+      options["prompt"] = Value(image["prompt"].get<std::string>());
+    }
+    options["size"] = Value(image.value("size", std::string("1024x1024")));
+    if (image.contains("seed") && !image["seed"].is_null()) {
+      options["seed"] = Value(image["seed"].get<int64_t>());
+    }
+    options["output_format"] =
+        Value(image.value("output_format", std::string("png")));
+    engine_inputs["image_options"] = Value(std::move(options));
+  }
+  if (audio_output) {
+    Value::Map options;
+    const json& audio = body["audio"];
+    options["voice"] = Value(audio["voice"].get<std::string>());
+    options["format"] = Value("wav");
+    options["sample_rate"] = Value(int64_t{24000});
+    engine_inputs["audio_options"] = Value(std::move(options));
   }
   return true;
 }
@@ -1036,7 +1173,8 @@ class OpenAIApi::Impl {
     static const std::set<std::string> kAllowedFields = {
         "model", "messages", "stream", "temperature", "max_tokens",
         "max_completion_tokens", "top_p", "seed", "stop", "response_format",
-        "stream_options", "session_id", "session_history"};
+        "stream_options", "session_id", "session_history", "modalities",
+        "image", "audio"};
     for (auto it = body.begin(); it != body.end(); ++it) {
       if (!kAllowedFields.count(it.key()) && !it.value().is_null()) {
         reject("unsupported field: " + it.key());
@@ -1133,6 +1271,23 @@ class OpenAIApi::Impl {
     }
     StagePayload payload;
     Value::Map inputs;
+    Value::Map mixed_engine_inputs;
+    if (unified_engine_) {
+      std::string mixed_error;
+      if (!valid_mixed_output(
+              body, unified_engine_->image_output_enabled(),
+              unified_engine_->tts_output_enabled(), mixed_engine_inputs,
+              mixed_error)) {
+        reject(mixed_error);
+        return;
+      }
+    } else if (body.contains("modalities") || body.contains("image") ||
+               body.contains("audio")) {
+      // The fixed proxy has its own routes; the local non-unified path has no
+      // output stages, so the keys are rejected instead of silently dropped.
+      reject("mixed output requires unified mode");
+      return;
+    }
     try {
       inputs["messages"] = json_to_value(body["messages"]);
       if (unified_engine_) {
@@ -1181,6 +1336,11 @@ class OpenAIApi::Impl {
     } catch (const std::exception& exc) {
       reject(exc.what());
       return;
+    }
+    // Engine-only mixed-output keys. They are stripped again inside the
+    // engine before the VLM worker sees the prompt.
+    for (auto& [key, value] : mixed_engine_inputs) {
+      inputs[key] = std::move(value);
     }
     payload.request.inputs = Value(std::move(inputs));
     Value::Map params;
@@ -1341,6 +1501,34 @@ class OpenAIApi::Impl {
                                           {"delta", std::move(delta)},
                                           {"finish_reason", nullptr}}};
                 chunk_body["unified"] = unified_event_json(event);
+                if (event.kind == UnifiedEvent::Kind::kArtifact) {
+                  // Base64 and hashing run here, on the httplib provider
+                  // thread; the Coordinator pump only counted and queued raw
+                  // bytes, so one slow client cannot stall other requests.
+                  json& artifact = chunk_body["unified"]["artifact"];
+                  const std::string& raw = *event.artifact_bytes;
+                  const std::string slice =
+                      raw.substr(event.artifact_offset, event.artifact_length);
+                  artifact["encoding"] = "base64";
+                  artifact["data"] = client::detail::base64_encode(slice);
+                  const int64_t index =
+                      artifact.value("index", int64_t{-1});
+                  const int64_t total =
+                      artifact.value("total", int64_t{-1});
+                  if (index + 1 == total) {
+                    artifact["bytes"] = static_cast<int64_t>(raw.size());
+                    artifact["sha256"] =
+                        client::detail::sha256_hex(raw);
+                  }
+                }
+              }
+              // Defensive wire ceiling: the 2 MiB chunk target keeps normal
+              // frames around 2.7 MiB, but reject anything over the frozen
+              // 3 MiB SSE frame limit instead of tripping the client parser.
+              const std::string frame_payload = chunk_body.dump();
+              if (frame_payload.size() + 8 > kMaxSseFrameWireBytes) {
+                stream_error = "artifact SSE frame exceeds its size limit";
+                break;
               }
               if (!send_chunk(chunk_body)) {
                 disconnected = true;
@@ -2081,7 +2269,12 @@ class OpenAIApi::Impl {
     if (!sink) return;
     if (event.kind == UnifiedEvent::Kind::kAsrPartial ||
         event.kind == UnifiedEvent::Kind::kAsrFinal ||
-        event.kind == UnifiedEvent::Kind::kVlmDelta) {
+        event.kind == UnifiedEvent::Kind::kVlmDelta ||
+        event.kind == UnifiedEvent::Kind::kArtifact ||
+        event.kind == UnifiedEvent::Kind::kLegError) {
+      // New kinds must stay on the incremental-event path. Routing them into
+      // the terminal block below would finish the sink on the first artifact
+      // and silently drop every later event.
       if (event.kind == UnifiedEvent::Kind::kVlmDelta) {
         std::lock_guard<std::mutex> lock(sink->mu);
         sink->has_deltas = true;

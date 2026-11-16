@@ -52,7 +52,8 @@ CommandOptions command_options(const std::string& command) {
     return {{"port", "host", "model", "api-key", "entry", "entry-endpoint", "completion",
              "abort", "realtime-port", "ipc-dir", "upstream-kind", "upstream-base-url",
              "upstream-model", "upstream-api-key", "upstream-variant", "vlm-entry",
-             "vlm-entry-endpoint"},
+             "vlm-entry-endpoint", "image-entry", "image-entry-endpoint",
+             "tts-entry", "tts-entry-endpoint"},
             {"demo", "session-history"},
             {}};
   }
@@ -183,6 +184,8 @@ void print_usage(std::ostream& out) {
       << "      [--entry name --entry-endpoint ipc:///tmp/x/in] "
          "[--completion ipc:///tmp/x/done] [--abort ipc:///tmp/x/abort]\n"
          "      [--vlm-entry name --vlm-entry-endpoint ipc:///tmp/x/vlm]  ASR -> VLM chat\n"
+         "      [--image-entry name --image-entry-endpoint ipc:///tmp/x/image]\n"
+         "      [--tts-entry name --tts-entry-endpoint ipc:///tmp/x/tts]  optional mixed-output legs (never gate /ready)\n"
          "      [--session-history]  enable opt-in multi-turn history (in-process, 256 sessions x 8 turns / 16384 chars)\n"
          "      [--realtime-port 30001]  enable the ASR WebSocket listener\n"
       << "      [--demo]  run one in-process echo stage (development only)\n"
@@ -192,6 +195,7 @@ void print_usage(std::ostream& out) {
       << "  umm-infer chat --prompt TEXT [--url URL --model M --stream]\n"
       << "      [--image-url URL ...] [--video-url URL ...] [--audio PATH]\n"
       << "      [--audio-out PATH --voice NAME]  speech output, requires --stream\n"
+      << "      [--image-out PATH [--image-prompt TEXT]]  generated image, requires --stream\n"
       << "  umm-infer transcribe --url URL --model M --file audio.wav\n"
       << "  umm-infer realtime --url URL --model M --file audio.wav [--live-result]\n"
       << "  umm-infer image generate --url URL --model M --prompt TEXT --out PATH\n"
@@ -302,9 +306,22 @@ int run_serve(const Flags& flags) {
   const std::string entry_ep = flag(flags, "entry-endpoint");
   const std::string vlm_name = flag(flags, "vlm-entry", "vlm");
   const std::string vlm_ep = flag(flags, "vlm-entry-endpoint");
+  const std::string image_name = flag(flags, "image-entry", "image");
+  const std::string image_ep = flag(flags, "image-entry-endpoint");
+  const std::string tts_name = flag(flags, "tts-entry", "tts");
+  const std::string tts_ep = flag(flags, "tts-entry-endpoint");
   const bool unified = !vlm_ep.empty();
   if (flags.count("vlm-entry") && !unified) {
     std::cerr << "--vlm-entry requires --vlm-entry-endpoint\n";
+    return usage();
+  }
+  if ((flags.count("image-entry") > 0) != (!image_ep.empty()) ||
+      (flags.count("tts-entry") > 0) != (!tts_ep.empty())) {
+    std::cerr << "optional output stages need both --*-entry and --*-entry-endpoint\n";
+    return usage();
+  }
+  if ((!image_ep.empty() || !tts_ep.empty()) && !unified) {
+    std::cerr << "--image-entry/--tts-entry require the unified VLM entry\n";
     return usage();
   }
   if (unified && fixed_upstream) {
@@ -360,11 +377,23 @@ int run_serve(const Flags& flags) {
     ensure_ipc_parent(vlm_ep);
     coordinator.register_stage(vlm_name, vlm_ep, true);
   }
+  // Optional output stages never gate /ready: a deployment without the image
+  // or tts worker stays a healthy text server. require_ready stays false.
+  if (!image_ep.empty()) {
+    ensure_ipc_parent(image_ep);
+    coordinator.register_stage(image_name, image_ep, false);
+  }
+  if (!tts_ep.empty()) {
+    ensure_ipc_parent(tts_ep);
+    coordinator.register_stage(tts_name, tts_ep, false);
+  }
   std::unique_ptr<UnifiedEngine> unified_engine;
   if (unified) {
     UnifiedConfig unified_config;
     unified_config.asr_stage = entry_name;
     unified_config.vlm_stage = vlm_name;
+    if (!image_ep.empty()) unified_config.image_stage = image_name;
+    if (!tts_ep.empty()) unified_config.tts_stage = tts_name;
     // Off by default: without this switch session_id stays a grouping label.
     unified_config.session_history.enabled = flags.count("session-history") != 0;
     unified_engine = std::make_unique<UnifiedEngine>(coordinator, unified_config);

@@ -29,6 +29,15 @@ constexpr size_t kMaxImageBytes = 64u << 20;
 constexpr size_t kMaxImageTotalBytes = 256u << 20;
 constexpr size_t kMaxAudioBytes = 128u << 20;
 constexpr size_t kMaxVideoBytes = 512u << 20;
+// Mixed-output chat mirrors the server's frozen decoded-byte contract.
+constexpr size_t kMixedMaxImageBytes = 48u << 20;
+constexpr size_t kMixedMaxAudioBytes = 48u << 20;
+constexpr size_t kMixedMaxAggregateBytes = 60u << 20;
+// The largest legal mixed stream on the wire: 60 MiB decoded is ~80 MiB of
+// base64; this leaves envelope headroom. Text-only streams keep the 64 MiB
+// transport cap, so their behavior is unchanged.
+constexpr size_t kMixedStreamWireBytes = 96u << 20;
+constexpr size_t kMixedChunkDecodedBytes = (2u << 20) + 16;
 
 bool blank(std::string_view text) {
   return std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isspace(c); });
@@ -339,11 +348,33 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
   const bool stream = request.stream || static_cast<bool>(request.on_delta) ||
                       request.first_token_timeout.count() > 0 || request.stall_timeout.count() > 0;
   bool audio_output = false;
+  bool image_output = false;
   for (const auto& modality : request.modalities) {
-    if (modality != "text" && modality != "audio") {
-      throw Error(ErrorCode::kConfig, "modalities values must be text or audio");
+    if (modality != "text" && modality != "audio" && modality != "image") {
+      throw Error(ErrorCode::kConfig,
+                  "modalities values must be text, image or audio");
     }
     audio_output = audio_output || modality == "audio";
+    image_output = image_output || modality == "image";
+  }
+  if (request.image) {
+    if (!image_output) {
+      throw Error(ErrorCode::kConfig,
+                  "image output requires modalities to include image");
+    }
+    if (request.image->output_format != "png" &&
+        request.image->output_format != "jpeg") {
+      throw Error(ErrorCode::kConfig, "image.output_format must be png or jpeg");
+    }
+    if (request.image->size.empty()) {
+      throw Error(ErrorCode::kConfig, "image.size must be non-empty");
+    }
+    if (request.image->seed && *request.image->seed < 0) {
+      throw Error(ErrorCode::kConfig, "image.seed must not be negative");
+    }
+    if (!stream) {
+      throw Error(ErrorCode::kConfig, "image output requires stream");
+    }
   }
   if (request.audio) {
     if (!audio_output) {
@@ -355,12 +386,16 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     if (request.audio->format != "wav") {
       throw Error(ErrorCode::kConfig, "audio.format must be wav");
     }
+    if (request.audio->sample_rate != 24000) {
+      throw Error(ErrorCode::kConfig, "audio.sample_rate must be 24000");
+    }
     if (!stream) {
       throw Error(ErrorCode::kConfig, "audio output requires stream");
     }
   } else if (audio_output) {
     throw Error(ErrorCode::kConfig, "audio output requires audio.voice");
   }
+  const bool mixed_output = image_output || audio_output;
   const Milliseconds timeout = request.timeout.count() > 0 ? request.timeout : config_.timeout;
   bool emitted_delta = false;
 
@@ -380,7 +415,18 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     }
     if (!request.modalities.empty()) body["modalities"] = request.modalities;
     if (request.audio) {
-      body["audio"] = {{"voice", request.audio->voice}, {"format", request.audio->format}};
+      body["audio"] = {{"voice", request.audio->voice},
+                       {"format", request.audio->format},
+                       {"sample_rate", request.audio->sample_rate}};
+    }
+    if (request.image) {
+      json image = {{"size", request.image->size},
+                    {"output_format", request.image->output_format}};
+      if (!request.image->prompt.empty()) {
+        image["prompt"] = request.image->prompt;
+      }
+      if (request.image->seed) image["seed"] = *request.image->seed;
+      body["image"] = std::move(image);
     }
     if (request.temperature) body["temperature"] = *request.temperature;
     if (request.top_p) body["top_p"] = *request.top_p;
@@ -402,7 +448,8 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
   auto complete = [&](ChatResponse out, int attempt) {
     if (out.model.empty()) out.model = model;
     out.attempts = attempt;
-    const bool empty = out.text.empty() && out.audio.empty() && out.audio_transcript.empty();
+    const bool empty = out.text.empty() && out.audio.empty() &&
+                       out.audio_transcript.empty() && out.artifacts.empty();
     if (out.finish_reason == "content_filter" && empty) {
       throw Error(ErrorCode::kContentFilter, "the model refused the request");
     }
@@ -434,7 +481,8 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
         // Both paths share one bound, but a stream limit requires a body
         // callback, so each branch sets only its own.
         if (stream) {
-          http.stream_limit = kMaxJsonResponseBytes;
+          http.stream_limit = mixed_output ? kMixedStreamWireBytes
+                                           : kMaxJsonResponseBytes;
         } else {
           http.body_limit = kMaxJsonResponseBytes;
         }
@@ -484,6 +532,21 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
           // past the non-stream JSON limit.
           size_t aggregated = 0;
           bool done = false;
+          // Mixed-output artifact reassembly. Chunks of one artifact_id must
+          // arrive in index order; the final chunk carries bytes and sha256.
+          struct IncomingArtifact {
+            Artifact artifact;
+            std::string bytes;
+            int64_t next_index = 0;
+            int64_t total = -1;
+          };
+          std::map<std::string, IncomingArtifact> incoming;
+          size_t artifact_decoded_total = 0;
+          int64_t last_unified_seq = -1;
+          bool seq_started = false;
+          auto fail_artifact = [](const std::string& detail) {
+            throw Error(ErrorCode::kBadResponse, detail);
+          };
           auto event = [&](std::string_view data) {
             if (data == "[DONE]") {
               done = true;
@@ -541,6 +604,114 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                 if (!reason.empty()) out.finish_reason = normalized_finish(reason);
               }
             }
+            const auto unified = root.find("unified");
+            if (unified != root.end() && !unified->is_null()) {
+              if (!unified->is_object()) bad_response(data, config_.api_key);
+              const auto kind_it = unified->find("kind");
+              if (kind_it == unified->end() || !kind_it->is_string()) {
+                bad_response(data, config_.api_key);
+              }
+              const auto seq_it = unified->find("seq");
+              if (seq_it == unified->end() || !seq_it->is_number_integer()) {
+                bad_response(data, config_.api_key);
+              }
+              const int64_t seq = seq_it->get<int64_t>();
+              if (seq_started && seq != last_unified_seq + 1) {
+                fail_artifact("unified event seq is not gap-free");
+              }
+              seq_started = true;
+              last_unified_seq = seq;
+              if (unified->contains("legs") && !(*unified)["legs"].is_null()) {
+                out.legs = (*unified)["legs"];
+              }
+              if (kind_it->get<std::string>() == "artifact") {
+                const auto& a = (*unified)["artifact"];
+                if (!a.is_object()) bad_response(data, config_.api_key);
+                for (const char* key :
+                     {"artifact_id", "media_type", "mime_type", "encoding",
+                      "data", "index", "total"}) {
+                  if (!a.contains(key)) fail_artifact(
+                      std::string("artifact missing field: ") + key);
+                }
+                const std::string id = a["artifact_id"].get<std::string>();
+                const std::string media = a["media_type"].get<std::string>();
+                const std::string mime = a["mime_type"].get<std::string>();
+                if (media != "image" && media != "audio") {
+                  fail_artifact("artifact media_type must be image or audio");
+                }
+                if (a["encoding"].get<std::string>() != "base64") {
+                  fail_artifact("artifact encoding must be base64");
+                }
+                const int64_t index = a["index"].get<int64_t>();
+                const int64_t total = a["total"].get<int64_t>();
+                if (index < 0 || total < 1 || index >= total) {
+                  fail_artifact("artifact chunk index is out of range");
+                }
+                auto& slot = incoming[id];
+                if (slot.artifact.artifact_id.empty()) {
+                  slot.artifact.artifact_id = id;
+                  slot.artifact.media_type = media;
+                  slot.artifact.mime_type = mime;
+                } else if (slot.artifact.media_type != media ||
+                           slot.artifact.mime_type != mime) {
+                  fail_artifact("artifact descriptor changed between chunks");
+                }
+                if (index != slot.next_index) {
+                  fail_artifact("artifact chunks arrived out of order");
+                }
+                const std::string encoded = a["data"].get<std::string>();
+                if (encoded.size() % 4 != 0) {
+                  fail_artifact("artifact chunk is not legal base64");
+                }
+                std::string decoded = detail::base64_decode(
+                    encoded, kMixedChunkDecodedBytes);
+                const size_t per_leg = media == "image"
+                                           ? kMixedMaxImageBytes
+                                           : kMixedMaxAudioBytes;
+                if (slot.bytes.size() + decoded.size() > per_leg) {
+                  throw Error(ErrorCode::kBadResponse,
+                              media + " artifact exceeds its size limit");
+                }
+                if (artifact_decoded_total + decoded.size() >
+                    kMixedMaxAggregateBytes) {
+                  throw Error(ErrorCode::kBadResponse,
+                              "mixed output artifacts exceed the aggregate limit");
+                }
+                artifact_decoded_total += decoded.size();
+                slot.bytes += decoded;
+                slot.next_index = index + 1;
+                if (slot.total == -1) slot.total = total;
+                else if (slot.total != total) {
+                  fail_artifact("artifact total changed between chunks");
+                }
+                aggregated += encoded.size();
+                if (aggregated > kMaxJsonResponseBytes && !mixed_output) {
+                  throw Error(ErrorCode::kBadResponse,
+                              "streamed response exceeds its size limit");
+                }
+                if (index + 1 == total) {
+                  if (!a.contains("sha256") || !a["sha256"].is_string() ||
+                      !a.contains("bytes") || !a["bytes"].is_number_integer()) {
+                    fail_artifact(
+                        "final artifact chunk requires sha256 and bytes");
+                  }
+                  if (a["bytes"].get<int64_t>() !=
+                      static_cast<int64_t>(slot.bytes.size())) {
+                    fail_artifact("artifact byte count does not match");
+                  }
+                  const std::string digest =
+                      detail::sha256_hex(slot.bytes);
+                  if (digest != a["sha256"].get<std::string>()) {
+                    fail_artifact("artifact sha256 mismatch");
+                  }
+                  slot.artifact.data = std::move(slot.bytes);
+                  slot.artifact.sha256 = digest;
+                  slot.artifact.descriptor = a;
+                  out.artifacts.push_back(std::move(slot.artifact));
+                  incoming.erase(id);
+                }
+              }
+            }
             return true;
           };
           http.on_body = [&](std::string_view bytes) { return parser.feed(bytes, event); };
@@ -551,6 +722,10 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
           // can still be cut after it, so a missing terminator is a truncation.
           if (!done) {
             throw Error(ErrorCode::kNetwork, "stream ended before [DONE]", true);
+          }
+          if (!incoming.empty()) {
+            throw Error(ErrorCode::kBadResponse,
+                        "an artifact stream ended before its final chunk");
           }
           if (out.text.empty() && !refusal.empty()) out.finish_reason = "content_filter";
           return complete(std::move(out), attempt);

@@ -161,5 +161,7 @@ std::string base64_encode(std::string_view bytes);
 // trailing bits, and output larger than `max_bytes`.
 std::string base64_decode(std::string_view text, size_t max_bytes);
 std::string url_encode(std::string_view text);
+// Lowercase hex SHA-256. Self-contained: the build links no crypto library.
+std::string sha256_hex(std::string_view bytes);
 
 }  // namespace umminfer::client::detail

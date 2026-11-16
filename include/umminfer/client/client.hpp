@@ -92,14 +92,36 @@ struct OpenAIConfig {
 struct AudioOutput {
   std::string voice;
   std::string format = "wav";
+  int64_t sample_rate = 24000;
+};
+
+// Requested generated image. An empty prompt makes the server use the full
+// aggregated text answer. Requires stream.
+struct ImageOutput {
+  std::string prompt;
+  std::string size = "1024x1024";
+  std::optional<int64_t> seed;
+  std::string output_format = "png";
+};
+
+// One delivered generated artifact, fully decoded and checksum-verified.
+struct Artifact {
+  std::string artifact_id;
+  std::string media_type;  // image | audio
+  std::string mime_type;
+  std::string data;
+  std::string sha256;
+  // Every other descriptor field (format, size, seed, sample_rate, ...).
+  nlohmann::json descriptor = nlohmann::json::object();
 };
 
 struct ChatRequest {
   std::string model;
   std::vector<Message> messages;
-  // "text" and/or "audio". Empty keeps the server default.
+  // "text", "image" and/or "audio". Empty keeps the server default.
   std::vector<std::string> modalities;
   std::optional<AudioOutput> audio;
+  std::optional<ImageOutput> image;
   std::optional<double> temperature;
   std::optional<double> top_p;
   int max_tokens = 0;
@@ -120,6 +142,10 @@ struct ChatResponse {
   // Decoded WAV bytes when the request asked for audio output.
   std::string audio;
   std::string audio_transcript;
+  // Decoded, checksum-verified generated artifacts in delivery order.
+  std::vector<Artifact> artifacts;
+  // Terminal legs array when the request used optional output legs.
+  nlohmann::json legs = nlohmann::json::array();
   std::string finish_reason;
   std::string model;
   Usage usage;
