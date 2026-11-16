@@ -49,6 +49,23 @@ std::optional<UnifiedModality> modality_from_string(const std::string& token);
 // Coordinator stage names: deployed stages keep their configured names.
 inline constexpr const char* kAsrStageId = "asr";
 inline constexpr const char* kVlmStageId = "vlm";
+inline constexpr const char* kImageStageId = "image";
+inline constexpr const char* kTtsStageId = "tts";
+
+// Child request id suffixes submitted after the VLM barrier. Like ":vlm" they
+// never advance the Coordinator id counter.
+inline constexpr const char* kImageSuffix = ":image";
+inline constexpr const char* kTtsSuffix = ":tts";
+
+// Mixed-output byte contract (frozen). The HTTP boundary rejects anything past
+// these limits; the client library mirrors the same values.
+inline constexpr size_t kMaxArtifactImageBytes = 48u << 20;
+inline constexpr size_t kMaxArtifactAudioBytes = 48u << 20;
+inline constexpr size_t kMaxArtifactAggregateBytes = 60u << 20;
+// Raw bytes per artifact chunk. Its base64 line stays around 2.7 MiB, below
+// both the 3 MiB wire ceiling and the 4 MiB SSE parser limit.
+inline constexpr size_t kArtifactChunkTargetBytes = 2u << 20;
+inline constexpr size_t kMaxSseFrameWireBytes = 3u << 20;
 
 // One event of a unified request. The sequence number is gap-free per request
 // and starts at 0, so a consumer verifies ordering directly.
@@ -57,6 +74,8 @@ struct UnifiedEvent {
     kAsrPartial,  // streaming ASR transcript, is_final == false
     kAsrFinal,    // terminal ASR transcript, is_final == true
     kVlmDelta,    // streaming VLM token
+    kArtifact,    // one generated image/audio chunk (see artifact fields)
+    kLegError,    // an optional output leg failed; the request still completes
     kComplete,    // terminal success
     kError,       // terminal failure
     kCancelled,   // terminal cancellation
@@ -64,7 +83,9 @@ struct UnifiedEvent {
 
   std::string request_id;
   std::string session_id;
-  std::string stage_id;  // kAsrStageId / kVlmStageId; empty on kCancelled
+  // kAsrStageId / kVlmStageId / kImageStageId / kTtsStageId; empty on
+  // kCancelled.
+  std::string stage_id;
   Kind kind = Kind::kError;
   int64_t seq = 0;
   bool is_final = false;
@@ -74,6 +95,21 @@ struct UnifiedEvent {
   Value result;
   // Present on kError.
   std::string error;
+
+  // kArtifact only. Descriptor map without inline bytes or hashes:
+  // artifact_id, media_type, mime_type, index, total, and the format-specific
+  // fields (image: format/size/seed, audio: sample_rate/channels). The raw
+  // chunk lives in artifact_bytes; the HTTP layer base64-encodes it, and adds
+  // sha256/bytes on the final chunk, on its provider thread.
+  Value artifact;
+  std::shared_ptr<const std::string> artifact_bytes;
+  size_t artifact_offset = 0;
+  size_t artifact_length = 0;
+
+  // Terminal only, and only for requests that used optional output legs:
+  // [{stage, state ("completed"|"failed"|"aborted"), error?}]. Absent on the
+  // default text path so the public event stream stays byte-identical.
+  Value legs;
 };
 
 const char* to_string(UnifiedEvent::Kind kind);
@@ -82,6 +118,12 @@ struct UnifiedConfig {
   // Coordinator stage names the two deployed stages registered under.
   std::string asr_stage = "asr";
   std::string vlm_stage = "vlm";
+  // Optional output stages. Empty means the stage is not registered and a
+  // request asking for that modality is rejected at the HTTP boundary. They
+  // never enter the /ready gate: a zero-optional-worker deployment stays a
+  // text-only server.
+  std::string image_stage;
+  std::string tts_stage;
   // Hard backpressure: requests past this many in-flight are rejected at
   // submission instead of being buffered without limit.
   size_t max_in_flight = 32;
@@ -154,6 +196,10 @@ class UnifiedEngine {
   size_t in_flight() const;
   // Whether the engine was constructed with session history enabled.
   bool history_enabled() const { return config_.session_history.enabled; }
+  // Whether an optional output stage is registered in this process. The HTTP
+  // boundary turns a false into a 400 before any submit.
+  bool image_enabled() const { return !config_.image_stage.empty(); }
+  bool tts_enabled() const { return !config_.tts_stage.empty(); }
 
   // Fires for every ASR partial/final and VLM delta, in sequence order.
   std::function<void(const UnifiedEvent&)> on_event;
@@ -161,9 +207,21 @@ class UnifiedEngine {
   std::function<void(const UnifiedEvent&)> on_terminal;
 
  private:
-  enum class Phase { kAsr, kVlm, kDone };
+  enum class Phase { kAsr, kVlm, kOutputs, kDone };
   struct CallbackGate;
   friend bool unified_retirement_waiting_for_test(const UnifiedEngine& engine);
+
+  // One optional output leg's runtime state.
+  struct OutputLeg {
+    std::string stage_name;  // Coordinator stage, empty when unused
+    std::string child_id;    // request_id + kImageSuffix / kTtsSuffix
+    std::string stage_id;    // kImageStageId / kTtsStageId
+    bool enabled = false;
+    bool submitted = false;
+    // completed, failed, or aborted; empty while running.
+    std::string state;
+    std::string error;
+  };
 
   struct Record {
     std::string session_id;
@@ -188,6 +246,22 @@ class UnifiedEngine {
     Value original_inputs;
     Value::Map vlm_params;
     Value::Map vlm_metadata;
+    // Options the HTTP boundary attached for the optional output legs. They
+    // are stripped from the VLM prompt and consumed only by the legs.
+    Value::Map image_options;
+    Value::Map audio_options;
+    // Opt-in generated outputs. The legs exist only when the request named
+    // the modality; legs_remaining counts submitted legs that have not
+    // reached a terminal state yet.
+    OutputLeg image_leg;
+    OutputLeg tts_leg;
+    int legs_remaining = 0;
+    // VLM result held across the output join; it is the terminal result.
+    Value vlm_result;
+    // Artifact delivery order ("art-0", "art-1") and the decoded-byte budget
+    // of everything already delivered for this request.
+    int next_artifact = 0;
+    size_t artifact_bytes_total = 0;
   };
 
   // One completed user/assistant turn kept in process-local session history.
@@ -200,6 +274,26 @@ class UnifiedEngine {
   void handle_complete(const RequestInfo& info);
   void drain_dispatch();
   void start_vlm_locked(const std::string& request_id, Record& record);
+  // Optional output legs, submitted together at the single VLM barrier.
+  void start_outputs_locked(const std::string& request_id, Record& record);
+  void start_image_locked(const std::string& request_id, Record& record);
+  void start_tts_locked(const std::string& request_id, Record& record);
+  // Builds the inputs of one output leg from the VLM answer and the options
+  // the HTTP boundary attached to the original request.
+  static Value build_image_inputs(const Record& record);
+  static Value build_tts_inputs(const Record& record);
+  // Turns a successful output-leg completion into kArtifact events with
+  // reserved gap-free seq values.
+  void emit_artifact_locked(const std::string& request_id, Record& record,
+                            const OutputLeg& leg, const Value& result);
+  // Records a failed/aborted output leg as a kLegError event and advances the
+  // join; a VLM failure settles the whole request through finish_locked.
+  void settle_output_leg_locked(const std::string& request_id, Record& record,
+                                OutputLeg& leg, UnifiedEvent::Kind kind,
+                                std::string error);
+  void on_legs_drained_locked(const std::string& request_id, Record& record);
+  // The legs array carried by the terminal event; nil when no output leg ran.
+  Value legs_value_locked(const Record& record) const;
   // Returns the current messages with prior completed turns of
   // record.session_id prepended as user/assistant messages.
   Value::Array with_session_history_locked(
