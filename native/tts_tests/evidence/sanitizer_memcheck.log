@@ -1,0 +1,4 @@
+========= COMPUTE-SANITIZER
+samples=3840 duration_s=0.16 rms=0.00944518 peak=0.102251 non_silence=0.675521
+========= ERROR SUMMARY: 0 errors
+memcheck_exit=0

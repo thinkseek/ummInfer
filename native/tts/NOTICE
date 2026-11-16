@@ -1,0 +1,69 @@
+# NOTICE — native Qwen3-TTS 0.6B CustomVoice executor
+
+## 1. Specifications implemented from upstream references
+
+No upstream source file was copied into `native/tts/`, `native/tts_cli/` or
+`native/tts_tests/`. The math, tensor names, shapes and constants were derived
+by reading the following Apache-2.0 sources on the build host and
+cross-checking numeric outputs against them. The C++/CUDA implementation is
+original work in this repository.
+
+- `qwen_tts` Python package, Apache-2.0
+  - `qwen_tts/core/models/modeling_qwen3_tts.py` — talker and code-predictor
+    transformer, GQA, half-rotation mRoPE, RMSNorm, SiLU-gated MLP, greedy
+    generation, repetition penalty, prompt/frame embedding assembly.
+  - `qwen_tts/core/tokenizer_12hz/modeling_qwen3_tts_tokenizer_v2.py` —
+    speech codec decoder: split residual vector quantizer, causal Conv1d
+    padding, ConvTranspose1d right-trim, ConvNeXt block, SnakeBeta activation,
+    dilated residual units, waveform decoder block order.
+- HuggingFace Transformers, Apache-2.0
+  - Qwen2 byte-level BPE tokenizer conventions, GPT-2 `bytes_to_unicode`
+    mapping, safetensors tensor loading, `RepetitionPenaltyLogitsProcessor`
+    semantics, causal mask and RoPE helpers.
+- safetensors file format specification, Apache-2.0 — header and
+  `data_offsets` byte layout only.
+
+Only formulas, identifiers and dimensional conventions were taken. No code
+text was reproduced.
+
+## 2. Code reused from the in-repository ASR slice
+
+Three files are byte-for-byte copies of the repository's own native ASR
+implementation under `native/umm_asr_native/`, which is original Apache-2.0
+work produced for the earlier ASR vertical slice and carries the
+`SPDX-License-Identifier: Apache-2.0` header in every file:
+
+- `native/tts/bf16.hpp`        (identical to `native/umm_asr_native/bf16.hpp`)
+- `native/tts/safetensors.hpp` (identical to `native/umm_asr_native/safetensors.hpp`)
+- `native/tts/safetensors.cpp` (identical to `native/umm_asr_native/safetensors.cpp`)
+
+These are generic, model-independent primitives (BF16 round-to-nearest-even
+storage and the safetensors container reader). They contain no ASR-specific
+logic. All TTS-specific CUDA kernels in `native/tts/cuda_kernels.cu` were
+written for this slice; `cuda_kernels.hpp` differs from the ASR counterpart.
+
+## 3. Runtime dependencies (linked, not embedded)
+
+- NVIDIA CUDA 12.4 runtime (`libcudart.so.12`) — system-provided on the build
+  host under the NVIDIA EULA. Only the runtime library is linked; no CUDA
+  sample or SDK source is embedded.
+- ICU (`libicuuc`, `libicui18n`, `libicudata`) — ICU License (permissive,
+  Unicode/IBM). Used for NFC normalization and the Unicode regex in the BPE
+  tokenizer. Linked dynamically; no ICU source is included.
+- nlohmann/json — MIT License. Header-only, consumed for `config.json`
+  parsing.
+- C++ standard library, libc, pthreads, dl/rt — platform system libraries.
+
+No Python, PyTorch, SGLang or the `qwen_tts` package is linked or invoked at
+run time. `ldd umm-tts-native` lists only the libraries above.
+
+## 4. Determinism statement
+
+The talker token trajectory (group-0 and groups 1-15 codec ids) is
+deterministic run to run for a fixed input and is byte-identical across
+repeated executions. The FP32 speech codec performs nondeterministic-order
+floating-point reductions that produce sub-LSB waveform differences across
+runs (well below 0.5% of samples, magnitude around 1e-3 of full scale); the
+PCM16 stats (RMS, peak, non-silence ratio, duration, sample count) are stable
+and ASR transcription is unaffected. This is documented as a known limitation
+in `TTS_NATIVE.md`.
