@@ -97,7 +97,9 @@ void usage(const std::string& command, std::ostream& out) {
            "[--top-p X] [--timeout-ms N] [--first-token-ms N] [--stall-ms N] "
            "[--max-attempts N]\n"
            "       [--image-url URL ...] [--video-url URL ...] [--audio PATH]\n"
-           "       [--audio-out PATH --voice NAME]  speech output, requires --stream\n";
+           "       [--audio-out PATH --voice NAME]  speech output, requires --stream\n"
+           "       [--image-out PATH --image-prompt TEXT --image-size WxH\n"
+           "        --image-seed N --image-format png|jpeg]  generated image, requires --stream\n";
   } else if (command == "transcribe") {
     out << "usage: umm-infer transcribe --url http://127.0.0.1:8000 --model M --file PATH "
            "[--format wav|pcm] [--language L] [--prompt TEXT] [--max-new-tokens N] "
@@ -377,7 +379,8 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   Options options(argc, argv, 2,
                   {"url", "model", "prompt", "system", "max-tokens", "temperature",
                    "top-p", "timeout-ms", "first-token-ms", "stall-ms", "max-attempts",
-                   "audio", "audio-out", "voice"},
+                   "audio", "audio-out", "voice", "image-out", "image-prompt",
+                   "image-size", "image-seed", "image-format"},
                   {"stream"}, {"image-url", "video-url"});
   if (options.help) {
     usage("chat", std::cout);
@@ -462,6 +465,31 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
     throw UsageError("--voice requires --audio-out");
   }
 
+  const std::string image_out = options.get("image-out");
+  if (options.has("image-out") && image_out.empty()) {
+    throw UsageError("--image-out requires a path");
+  }
+  if (!image_out.empty()) {
+    ImageOutput output;
+    output.prompt = options.get("image-prompt");
+    if (options.has("image-size")) output.size = options.get("image-size");
+    if (options.has("image-seed")) {
+      output.seed = integer(options, "image-seed", 0, 0,
+                            std::numeric_limits<int64_t>::max());
+    }
+    if (options.has("image-format")) output.output_format = options.get("image-format");
+    if (output.output_format != "png" && output.output_format != "jpeg") {
+      throw UsageError("--image-format must be png or jpeg");
+    }
+    if (!request.stream) throw UsageError("--image-out requires --stream");
+    check_output(image_out);
+    request.modalities.push_back("image");
+    request.image = std::move(output);
+  } else if (options.has("image-prompt") || options.has("image-size") ||
+             options.has("image-seed") || options.has("image-format")) {
+    throw UsageError("image options require --image-out");
+  }
+
   if (request.stream) {
     request.on_delta = [](const std::string& delta) {
       std::cout << delta << std::flush;
@@ -471,13 +499,37 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   if (!request.stream) std::cout << response.text;
   std::cout << '\n';
   if (!audio_out.empty()) {
-    if (response.audio.empty()) {
+    // The unified TTS leg delivers audio as an artifact; the fixed upstream
+    // proxy still uses the legacy delta audio field.
+    const Artifact* audio_artifact = nullptr;
+    for (const auto& artifact : response.artifacts) {
+      if (artifact.media_type == "audio") {
+        audio_artifact = &artifact;
+        break;
+      }
+    }
+    const std::string& audio_bytes =
+        audio_artifact != nullptr ? audio_artifact->data : response.audio;
+    if (audio_bytes.empty()) {
       throw Error(ErrorCode::kEmpty, "the server returned no audio");
     }
-    write_output(audio_out, response.audio);
+    write_output(audio_out, audio_bytes);
     if (!response.audio_transcript.empty()) {
       std::cerr << "transcript: " << response.audio_transcript << '\n';
     }
+  }
+  if (!image_out.empty()) {
+    const Artifact* image_artifact = nullptr;
+    for (const auto& artifact : response.artifacts) {
+      if (artifact.media_type == "image") {
+        image_artifact = &artifact;
+        break;
+      }
+    }
+    if (image_artifact == nullptr) {
+      throw Error(ErrorCode::kEmpty, "the server returned no image");
+    }
+    write_output(image_out, image_artifact->data);
   }
   return 0;
 }
