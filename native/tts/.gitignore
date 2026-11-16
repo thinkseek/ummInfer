@@ -1,0 +1,7 @@
+# Build products and local evidence (never committed)
+build-host/
+cuda-build/
+*.wav
+*.npy
+*.f32
+*.log

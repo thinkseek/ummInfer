@@ -1,0 +1,3 @@
+CMD: tts_host_tests /tmp/tts-test-data
+all tts host tests passed
+host_tests_exit=0
