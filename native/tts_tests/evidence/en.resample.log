@@ -1,0 +1,3 @@
+CMD: /root/umm-mixed-output-20261116/venvs/tts/bin/python /tmp/resample16.py /root/umm-native-tts-20261116/evidence/final/en.wav /root/umm-native-tts-20261116/evidence/final/en.16k.wav
+wrote /root/umm-native-tts-20261116/evidence/final/en.16k.wav 112640 samples
+resample_exit=0

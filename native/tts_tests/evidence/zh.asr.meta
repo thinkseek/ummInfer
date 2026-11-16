@@ -1,0 +1,3 @@
+input_text=其实我真的有发现，我是一个特别善于观察别人情绪的人。
+CMD: CUDA_VISIBLE_DEVICES=5 /root/umm-native-asr-20261116/native/cuda-build/umm-asr-native /root/omniinfer-model-validation-20261111-k3/models/asr /root/umm-native-tts-20261116/evidence/final/zh.16k.wav 0
+asr_exit=0
