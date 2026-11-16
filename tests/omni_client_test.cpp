@@ -17,8 +17,10 @@
 
 #include "client/cli.hpp"
 #include "client/http.hpp"
+#include "umminfer/audio/audio.hpp"
 #include "umminfer/client/client.hpp"
 #include "umminfer/serve/openai_api.hpp"
+#include <httplib.h>
 
 using namespace umminfer;
 namespace detail = umminfer::client::detail;
@@ -604,6 +606,12 @@ void test_cli_usage() {
              "p", "--out", out, "--n", "11"}) == 2);
   CHECK(cli({"umm-infer", "image", "edit", "--url", url, "--model", "m", "--prompt", "p",
              "--image", input, "--out", out, "--n", "0"}) == 2);
+
+  // Mixed-output flag table is closed and validated before any connection.
+  CHECK(cli({"umm-infer", "chat", "--prompt", "hi", "--image-out", out,
+             "--image-format", "gif"}) == 2);
+  CHECK(cli({"umm-infer", "chat", "--prompt", "hi", "--image-prompt", "p"}) == 2);
+  CHECK(cli({"umm-infer", "chat", "--prompt", "hi", "--image-out", out}) == 2);
 }
 
 // Without a fixed upstream the local routes keep their previous behavior.
@@ -620,6 +628,321 @@ void test_no_upstream() {
   CHECK(status == 503);
 }
 
+// Minimal local SSE server returning hand-built unified frames, so the client
+// parser can be exercised without a real engine or worker. The frames use the
+// exact frozen artifact envelope.
+struct ArtifactMockServer {
+  httplib::Server server;
+  int port = 0;
+  std::string frames;
+  bool serve_frames = true;
+
+  void start() {
+    server.Post("/v1/chat/completions", [this](const httplib::Request&,
+                                              httplib::Response& res) {
+      res.set_chunked_content_provider(
+          "text/event-stream",
+          [this](size_t, httplib::DataSink& sink) {
+            if (serve_frames) {
+              sink.write(frames.data(), frames.size());
+            }
+            sink.done();
+            return true;
+          });
+    });
+    port = server.bind_to_any_port("127.0.0.1");
+    thread = std::thread([this] { server.listen_after_bind(); });
+    for (int i = 0; i < 100 && !server.is_running(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  ~ArtifactMockServer() {
+    server.stop();
+    if (thread.joinable()) thread.join();
+  }
+
+  std::thread thread;
+};
+
+// Builds a complete artifact SSE stream for one artifact of `raw` bytes, split
+// into base64 chunks of at most `raw_chunk` decoded bytes. Seq values are
+// gap-free starting at 0; the last chunk carries bytes and sha256.
+std::string artifact_stream(const std::string& raw, size_t raw_chunk,
+                            const std::string& media,
+                            const std::string& mime) {
+  std::string out;
+  int64_t seq = 0;
+  const int64_t total =
+      static_cast<int64_t>((raw.size() + raw_chunk - 1) / raw_chunk);
+  const std::string digest = detail::sha256_hex(raw);
+  size_t offset = 0;
+  for (int64_t index = 0; index < total; ++index) {
+    const size_t length = std::min(raw_chunk, raw.size() - offset);
+    nlohmann::json artifact = {
+        {"artifact_id", "art-0"},
+        {"media_type", media},
+        {"mime_type", mime},
+        {"encoding", "base64"},
+        {"data", detail::base64_encode(raw.substr(offset, length))},
+        {"index", index},
+        {"total", total}};
+    if (index + 1 == total) {
+      artifact["bytes"] = static_cast<int64_t>(raw.size());
+      artifact["sha256"] = digest;
+    }
+    nlohmann::json frame = {
+        {"id", "http-1"},
+        {"object", "chat.completion.chunk"},
+        {"choices", nlohmann::json::array()},
+        {"unified", {{"kind", "artifact"},
+                     {"stage", media},
+                     {"seq", seq++},
+                     {"session_id", "s"},
+                     {"is_final", true},
+                     {"text", ""},
+                     {"artifact", artifact}}}};
+    out += "data: " + frame.dump() + "\n\n";
+    offset += length;
+  }
+  nlohmann::json terminal = {
+      {"id", "http-1"},
+      {"object", "chat.completion.chunk"},
+      {"choices", nlohmann::json::array(
+                       {nlohmann::json{{"delta", nlohmann::json::object()},
+                                       {"finish_reason", "stop"}}})},
+      {"unified", {{"kind", "complete"},
+                   {"stage", "vlm"},
+                   {"seq", seq},
+                   {"session_id", "s"},
+                   {"is_final", true},
+                   {"text", ""},
+                   {"legs", nlohmann::json::array()}}}};
+  out += "data: " + terminal.dump() + "\n\n";
+  out += "data: [DONE]\n\n";
+  return out;
+}
+
+client::OpenAIConfig mock_config(int port) {
+  client::OpenAIConfig config;
+  config.base_url = "http://127.0.0.1:" + std::to_string(port) + "/v1";
+  config.model = "m";
+  config.max_attempts = 1;
+  config.timeout = client::Milliseconds{10000};
+  config.connect_timeout = client::Milliseconds{2000};
+  return config;
+}
+
+void test_client_artifact_reassembly_and_checksum() {
+  const std::string raw(3u << 20, '\x33');
+  ArtifactMockServer mock;
+  mock.frames = artifact_stream(raw, 1u << 20, "image", "image/png");
+  mock.start();
+  client::OpenAIClient openai(mock_config(mock.port));
+  client::ChatRequest request;
+  request.messages.push_back(text_message("hi"));
+  request.stream = true;
+  request.modalities = {"text", "image"};
+  client::ImageOutput image;
+  request.image = image;
+
+  client::ChatResponse response = openai.chat(request);
+  CHECK(response.artifacts.size() == 1);
+  if (response.artifacts.size() == 1) {
+    CHECK(response.artifacts[0].data == raw);
+    CHECK(response.artifacts[0].sha256 == detail::sha256_hex(raw));
+    CHECK(response.artifacts[0].media_type == "image");
+  }
+}
+
+void test_client_rejects_bad_checksum_and_base64() {
+  const std::string raw(1024, '\x44');
+  // Corrupt the digest on the final chunk.
+  std::string bad = artifact_stream(raw, 512, "audio", "audio/wav");
+  const std::string good_digest = detail::sha256_hex(raw);
+  bad.replace(bad.find(good_digest), good_digest.size(),
+              std::string(64, '0'));
+  ArtifactMockServer mock;
+  mock.frames = std::move(bad);
+  mock.start();
+  client::OpenAIClient openai(mock_config(mock.port));
+  client::ChatRequest request;
+  request.messages.push_back(text_message("hi"));
+  request.stream = true;
+  request.modalities = {"text", "audio"};
+  request.audio = client::AudioOutput{"Tina", "wav"};
+  int status = 0;
+  CHECK(error_code([&] { openai.chat(request); }, &status) ==
+        client::ErrorCode::kBadResponse);
+
+  // Non-aligned base64 in a chunk.
+  std::string broken = artifact_stream(raw, 512, "audio", "audio/wav");
+  broken.replace(broken.find("\"data\":\"") + 8, 1, "!");
+  ArtifactMockServer mock2;
+  mock2.frames = std::move(broken);
+  mock2.start();
+  client::OpenAIClient openai2(mock_config(mock2.port));
+  CHECK(error_code([&] { openai2.chat(request); }) ==
+        client::ErrorCode::kBadResponse);
+}
+
+void test_client_artifact_size_limits() {
+  // Just over the 48 MiB per-artifact limit must fail deterministically.
+  const std::string raw((48u << 20) + 1, '\x55');
+  ArtifactMockServer mock;
+  mock.frames = artifact_stream(raw, 2u << 20, "image", "image/png");
+  mock.start();
+  client::OpenAIClient openai(mock_config(mock.port));
+  client::ChatRequest request;
+  request.messages.push_back(text_message("hi"));
+  request.stream = true;
+  request.modalities = {"text", "image"};
+  request.image = client::ImageOutput{};
+  int status = 0;
+  const auto code = error_code([&] { openai.chat(request); }, &status);
+  CHECK(code == client::ErrorCode::kBadResponse);
+  CHECK(status == 0);  // transport-level parser rejection, no HTTP status
+}
+
+void test_client_sse_line_limit_symmetric() {
+  // One SSE data line over the shared 4 MiB parser ceiling must fail in the
+  // client exactly as the server rejects an over-limit frame.
+  ArtifactMockServer mock;
+  nlohmann::json frame = {
+      {"id", "http-1"},
+      {"unified", {{"kind", "vlm_delta"}, {"seq", 0},
+                   {"text", std::string(4u << 20, 'x')}}}};
+  mock.frames = "data: " + frame.dump() + "\n\ndata: [DONE]\n\n";
+  mock.start();
+  client::OpenAIClient openai(mock_config(mock.port));
+  client::ChatRequest request;
+  request.messages.push_back(text_message("hi"));
+  request.stream = true;
+  CHECK(error_code([&] { openai.chat(request); }) ==
+        client::ErrorCode::kBadResponse);
+}
+
+// The CLI writes a delivered image artifact atomically through PartWriter and
+// refuses to overwrite an existing path.
+void test_cli_image_output_atomic_write() {
+  const std::string raw(2048, '\x66');
+  ArtifactMockServer mock;
+  mock.frames = artifact_stream(raw, 1024, "image", "image/png");
+  mock.start();
+  const std::string url =
+      "http://127.0.0.1:" + std::to_string(mock.port) + "/v1";
+  const std::string dir = "/tmp/omni-cli-mixed-" + std::to_string(::getpid());
+  std::error_code ignored;
+  std::filesystem::create_directories(dir, ignored);
+  const std::string out = dir + "/generated.png";
+
+  const int code = cli({"umm-infer", "chat", "--url", url, "--model", "m",
+                        "--prompt", "hi", "--stream", "--image-out", out});
+  CHECK(code == 0);
+  CHECK(std::filesystem::exists(out));
+  if (std::filesystem::exists(out)) {
+    std::ifstream in(out, std::ios::binary);
+    const std::string content((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+    CHECK(content == raw);
+  }
+  // A second run must fail before the request rather than replace the file.
+  const std::string before = "keep-this-content";
+  {
+    std::ofstream guard(out, std::ios::binary);
+    guard << before;
+  }
+  CHECK(cli({"umm-infer", "chat", "--url", url, "--model", "m",
+             "--prompt", "hi", "--stream", "--image-out", out}) == 1);
+  std::ifstream in(out, std::ios::binary);
+  const std::string kept((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+  CHECK(kept == before);
+  std::filesystem::remove_all(dir, ignored);
+}
+
+// A reassembled WAV artifact must be accepted by the WAV parser; the
+// descriptor echoes the 24 kHz mono contract.
+void test_client_audio_artifact_is_parseable_wav() {
+  const std::string pcm(4800, '\x01');  // 2400 mono samples
+  const std::string wav = audio::wav_from_pcm16(pcm, 24000);
+  ArtifactMockServer mock;
+  std::string frames = artifact_stream(wav, 2048, "audio", "audio/wav");
+  mock.frames = std::move(frames);
+  mock.start();
+  client::OpenAIClient openai(mock_config(mock.port));
+  client::ChatRequest request;
+  request.messages.push_back(text_message("hi"));
+  request.stream = true;
+  request.modalities = {"text", "audio"};
+  request.audio = client::AudioOutput{"Tina", "wav"};
+  client::ChatResponse response = openai.chat(request);
+  CHECK(response.artifacts.size() == 1);
+  if (response.artifacts.size() == 1) {
+    const std::string& delivered = response.artifacts[0].data;
+    CHECK(delivered == wav);
+    // The concatenated chunks must form one structurally valid RIFF/WAVE
+    // container whose data section holds exactly the original PCM. The shared
+    // pcm16_from_wav helper is pinned to the 16 kHz ASR contract, so it cannot
+    // parse a 24 kHz artifact; assert the WAV framing directly instead.
+    bool parseable = delivered.size() >= 44 &&
+                     delivered.substr(0, 4) == "RIFF" &&
+                     delivered.substr(8, 4) == "WAVE" &&
+                     delivered.find("fmt ") != std::string::npos &&
+                     delivered.find("data") != std::string::npos;
+    CHECK(parseable);
+    CHECK(delivered.find(pcm) != std::string::npos);
+  }
+}
+
+// A stream whose total wire size crosses the existing 64 MiB transport hard
+// limit must fail deterministically, never truncate. The artifact path raises
+// its stream ceiling to 96 MiB, so a plain text delta stream still enforces
+// the original 64 MiB bound.
+void test_client_text_stream_64mib_hard_limit() {
+  ArtifactMockServer mock;
+  nlohmann::json frame = {
+      {"id", "http-1"},
+      {"object", "chat.completion.chunk"},
+      {"choices",
+       nlohmann::json::array({nlohmann::json{
+           {"delta", {{"content", std::string(1u << 20, 'x')}}},
+           {"finish_reason", nullptr}}})}};
+  std::string frames;
+  for (int i = 0; i < 70; ++i) frames += "data: " + frame.dump() + "\n\n";
+  frames += "data: [DONE]\n\n";
+  mock.frames = std::move(frames);
+  mock.start();
+  client::OpenAIClient openai(mock_config(mock.port));
+  client::ChatRequest request;
+  request.messages.push_back(text_message("hi"));
+  request.stream = true;
+  int status = 0;
+  const auto code = error_code([&] { openai.chat(request); }, &status);
+  CHECK(code == client::ErrorCode::kBadResponse);
+  CHECK(status == 0);
+}
+
+// The artifact summary is the only log-safe representation: it must never
+// contain the raw bytes or prompt text, only media type, length and hash.
+void test_artifact_log_summary_redacts_payload() {
+  const std::string secret_prompt = "do-not-log-this-prompt";
+  const std::string bytes = secret_prompt + std::string(32, '\x00');
+  const std::string summary =
+      detail::summarize_artifact("image", bytes);
+  CHECK(summary.find(secret_prompt) == std::string::npos);
+  CHECK(summary.find("do-not-log") == std::string::npos);
+  CHECK(summary.find("media=image") != std::string::npos);
+  CHECK(summary.find("bytes=" + std::to_string(bytes.size())) !=
+        std::string::npos);
+  CHECK(summary.find(detail::sha256_hex(bytes)) != std::string::npos);
+  // Known SHA-256 vector guards the self-contained implementation.
+  CHECK(detail::sha256_hex("abc") ==
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  CHECK(detail::sha256_hex("") ==
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+}
+
 }  // namespace
 
 int main() {
@@ -629,6 +952,14 @@ int main() {
   test_image_server();
   test_video_server();
   test_no_upstream();
+  test_client_artifact_reassembly_and_checksum();
+  test_client_rejects_bad_checksum_and_base64();
+  test_client_artifact_size_limits();
+  test_client_sse_line_limit_symmetric();
+  test_client_audio_artifact_is_parseable_wav();
+  test_client_text_stream_64mib_hard_limit();
+  test_cli_image_output_atomic_write();
+  test_artifact_log_summary_redacts_payload();
   if (failures != 0) {
     std::cerr << failures << " of " << checks << " checks failed\n";
     return 1;

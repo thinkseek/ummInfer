@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "client/http.hpp"
+#include "umminfer/pipeline/unified.hpp"
 #include "umminfer/serve/openai_api.hpp"
 
 using namespace umminfer;
@@ -515,6 +516,134 @@ void test_relay_ownership() {
   CHECK_EQ(call(server.port, "GET", "/health").status, 200L);
 }
 
+// Local unified server with optional output stages configured but no worker
+// processes. The 400 validation tests never submit, so the absent stages do not
+// matter; an enabled stage only changes what the boundary accepts.
+struct UnifiedTestServer {
+  explicit UnifiedTestServer(bool image, bool tts)
+      : coordinator("ipc:///tmp/omni-mixed-serve-" +
+                        std::to_string(::getpid()) + "-" +
+                        std::to_string(++counter()) + "/done",
+                    "ipc:///tmp/omni-mixed-serve-" +
+                        std::to_string(::getpid()) + "-" +
+                        std::to_string(counter()) + "/abort"),
+        api(coordinator, base_config()),
+        engine(coordinator, make_config(image, tts)) {
+    api.set_unified_engine(engine, "vlm");
+  }
+
+  static UnifiedConfig make_config(bool image, bool tts) {
+    UnifiedConfig config;
+    if (image) config.image_stage = "image";
+    if (tts) config.tts_stage = "tts";
+    return config;
+  }
+
+  ~UnifiedTestServer() {
+    api.stop();
+    if (worker.joinable()) worker.join();
+  }
+
+  bool start() {
+    if (!api.bind()) return false;
+    port = api.bound_port();
+    worker = std::thread([this] { api.listen(); });
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      if (call(port, "GET", "/health").status == 200) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  }
+
+  static int& counter() {
+    static int value = 0;
+    return value;
+  }
+
+  Coordinator coordinator;
+  OpenAIApi api;
+  UnifiedEngine engine;
+  std::thread worker;
+  int port = 0;
+};
+
+long chat_status(int port, const std::string& body) {
+  return call(port, "POST", "/v1/chat/completions", body).status;
+}
+
+// Mixed-output boundary validation. Every case is answered before any stage
+// submission, so no worker process or Coordinator pump is required.
+void test_mixed_output_validation() {
+  UnifiedTestServer server(true, true);
+  CHECK(server.start());
+  if (server.port == 0) return;
+  const std::string base =
+      R"({"messages":[{"role":"user","content":"hi"}],"stream":true)";
+  auto with = [&](std::string extra) {
+    std::string body = base;
+    body.insert(body.size() - 1, "," + extra);
+    return chat_status(server.port, body);
+  };
+
+  // Modality vocabulary.
+  CHECK_EQ(with(R"("modalities":["video"])"), 400L);
+  // Stream is mandatory for optional outputs.
+  CHECK_EQ(chat_status(
+               server.port,
+               R"({"messages":[{"role":"user","content":"hi"}],"stream":false,
+                  "modalities":["image"],"image":{}})"),
+           400L);
+  // Audio is wav-only and needs a voice.
+  CHECK_EQ(with(R"("modalities":["audio"],"audio":{"voice":"Tina","format":"mp3"}})"),
+           400L);
+  CHECK_EQ(with(R"("modalities":["audio"],"audio":{"voice":"","format":"wav"}})"),
+           400L);
+  CHECK_EQ(with(R"("modalities":["audio"],
+                  "audio":{"voice":"Tina","format":"wav","sample_rate":16000}})"),
+           400L);
+  // Image format vocabulary and seed type.
+  CHECK_EQ(with(R"("modalities":["image"],
+                  "image":{"output_format":"gif"}})"),
+           400L);
+  CHECK_EQ(with(R"("modalities":["image"],"image":{"seed":"x"}})"),
+           400L);
+  // An empty prompt string is rejected rather than treated as absent.
+  CHECK_EQ(with(R"("modalities":["image"],"image":{"prompt":""}})"),
+           400L);
+  // Unknown top-level field stays on the closed allowlist.
+  CHECK_EQ(with(R"("modalities":["image"],"image":{},"bogus":1)"),
+           400L);
+}
+
+// A modality whose stage was never registered is rejected with the documented
+// 400 before submit.
+void test_mixed_output_unregistered_stage() {
+  UnifiedTestServer image_only(true, false);
+  CHECK(image_only.start());
+  if (image_only.port == 0) return;
+  const std::string body =
+      R"({"messages":[{"role":"user","content":"hi"}],"stream":true,
+         "modalities":["audio"],"audio":{"voice":"Tina","format":"wav"}})";
+  const Result result =
+      call(image_only.port, "POST", "/v1/chat/completions", body);
+  CHECK_EQ(result.status, 400L);
+  // call() surfaces a 4xx through its exception path, so the message is in
+  // result.error rather than result.body.
+  CHECK(result.error.find("audio output is not enabled on this server") !=
+        std::string::npos);
+
+  UnifiedTestServer none(false, false);
+  CHECK(none.start());
+  if (none.port == 0) return;
+  const Result image = call(
+      none.port, "POST", "/v1/chat/completions",
+      R"({"messages":[{"role":"user","content":"hi"}],"stream":true,
+         "modalities":["image"],"image":{}})");
+  CHECK_EQ(image.status, 400L);
+  CHECK(image.error.find("image output is not enabled on this server") !=
+        std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -525,6 +654,8 @@ int main() {
   test_qwen_server();
   test_no_upstream_unchanged();
   test_relay_ownership();
+  test_mixed_output_validation();
+  test_mixed_output_unregistered_stage();
   if (failures != 0) {
     std::cerr << failures << " checks failed\n";
     return 1;
