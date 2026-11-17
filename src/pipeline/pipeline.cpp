@@ -5,8 +5,30 @@
 #include <exception>
 #include <limits>
 
+#include "umminfer/obs/metrics.hpp"
+
 namespace umminfer {
 namespace {
+
+// Label for the request-type dimension. Derived from the payload shape, so no
+// caller has to declare it and no request content is ever read.
+const char* request_type_of(const StagePayload& payload) {
+  // The unified engine marks every leg it submits. The shape fallback covers
+  // requests that arrive without the marker (the transcription route).
+  const auto marked = payload.request.metadata.find("request_type");
+  if (marked != payload.request.metadata.end() && marked->second.is_str()) {
+    return marked->second.as_str() == "chat" ? "chat" : "other";
+  }
+  const Value& inputs = payload.request.inputs;
+  if (inputs.is_map() && inputs.find("messages") != nullptr) return "chat";
+  if (inputs.is_map() && inputs.find("audio") != nullptr) return "transcription";
+  return "other";
+}
+
+double seconds_since(std::chrono::steady_clock::time_point started) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+      .count();
+}
 
 // One DataRef per payload. The payload is msgpack bytes, so every edge moves one
 // contiguous block through the relay and the ref names it.
@@ -681,7 +703,7 @@ void Coordinator::stop() {
     }
   }
   // Wake every HTTP or embedded caller before its coordinator disappears.
-  for (const auto& id : ids) abort(id);
+  for (const auto& id : ids) abort(id, "shutdown");
   // run() receives with a 100 ms timeout. Leave the sockets open until the
   // destructor, after the caller has joined the run thread.
 }
@@ -735,6 +757,15 @@ std::string Coordinator::submit(StagePayload payload,
   info.current_stage = entry_stage;
   requests_[request_id] = std::move(info);
 
+  // Metrics are keyed by the stage this coordinator submitted to, not by the
+  // stage that eventually reports the terminal event.
+  const char* request_type = request_type_of(payload);
+  request_stages_[request_id] = entry_stage;
+  request_types_[request_id] = request_type;
+  submit_times_[request_id] = std::chrono::steady_clock::now();
+  obs::Metrics::instance().stage_submit(entry_stage, request_type);
+  obs::Metrics::instance().stage_in_flight(entry_stage, 1);
+
   const bool wait_for_ready = stages_requiring_ready_.count(entry_stage) != 0 &&
                               ready_stages_.count(entry_stage) == 0;
   if (wait_for_ready) {
@@ -747,10 +778,41 @@ std::string Coordinator::submit(StagePayload payload,
     control_plane_->submit_to_stage(entry_stage, it->second, Message{msg});
     requests_.at(request_id).state = "running";
   } catch (...) {
+    finish_metrics_locked(request_id, "failed");
     requests_.erase(request_id);
     throw;
   }
   return request_id;
+}
+
+double Coordinator::finish_metrics_locked(const std::string& request_id,
+                                          const std::string& status) {
+  const auto stage_it = request_stages_.find(request_id);
+  if (stage_it == request_stages_.end()) return -1;
+  const std::string stage = stage_it->second;
+  request_stages_.erase(stage_it);
+
+  std::string request_type = "other";
+  if (const auto type_it = request_types_.find(request_id);
+      type_it != request_types_.end()) {
+    request_type = type_it->second;
+    request_types_.erase(type_it);
+  }
+  double seconds = -1;
+  if (const auto time_it = submit_times_.find(request_id);
+      time_it != submit_times_.end()) {
+    seconds = seconds_since(time_it->second);
+    submit_times_.erase(time_it);
+  }
+  obs::Metrics::instance().stage_in_flight(stage, -1);
+  if (seconds >= 0) {
+    obs::Metrics::instance().stage_finish(stage, request_type, status, seconds);
+  }
+  // Requests admitted but not yet handed to a stage are the coordinator backlog.
+  size_t pending = 0;
+  for (const auto& [name, queue] : pending_submits_) pending += queue.size();
+  obs::Metrics::instance().queue_depth("coordinator_pending", pending);
+  return seconds;
 }
 
 void Coordinator::handle_event(const Message& msg) {
@@ -777,6 +839,7 @@ void Coordinator::handle_event(const Message& msg) {
         } catch (const std::exception& error) {
           request->second.state = "failed";
           request->second.error = error.what();
+          finish_metrics_locked(submit.request_id, "failed");
           failed.push_back(request->second);
         }
       }
@@ -804,6 +867,7 @@ void Coordinator::handle_event(const Message& msg) {
       if (done->error) it->second.error = *done->error;
       it->second.current_stage = done->from_stage;
       snapshot = it->second;
+      finish_metrics_locked(done->request_id, snapshot.state);
     }
     cv_.notify_all();
     if (on_complete) on_complete(snapshot);
@@ -847,8 +911,9 @@ size_t Coordinator::in_flight() const {
   return n;
 }
 
-void Coordinator::abort(const std::string& request_id) {
+void Coordinator::abort(const std::string& request_id, const char* source) {
   std::optional<RequestInfo> snapshot;
+  double seconds = -1;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = requests_.find(request_id);
@@ -858,6 +923,7 @@ void Coordinator::abort(const std::string& request_id) {
     it->second.state = "aborted";
     it->second.error = "request aborted";
     snapshot = it->second;
+    seconds = finish_metrics_locked(request_id, "aborted");
     const auto queued = pending_submits_.find(stage);
     if (queued != pending_submits_.end()) {
       std::erase_if(queued->second, [&](const SubmitMessage& submit) {
@@ -866,6 +932,9 @@ void Coordinator::abort(const std::string& request_id) {
       if (queued->second.empty()) pending_submits_.erase(queued);
     }
   }
+  // An abort latency is measured from submission, so a request aborted before
+  // its stage was reachable still reports a real number.
+  if (seconds >= 0) obs::Metrics::instance().abort(source, seconds);
   if (control_plane_) {
     try {
       control_plane_->broadcast_abort(AbortMessage{request_id});
@@ -881,6 +950,10 @@ void Coordinator::abort(const std::string& request_id) {
 
 bool Coordinator::release(const std::string& request_id) {
   std::lock_guard<std::mutex> lock(mu_);
+  // A caller may release a request it never saw terminate, for example when a
+  // client disconnects while the stage still runs. Closing its metric record
+  // here keeps the in-flight gauge from drifting.
+  finish_metrics_locked(request_id, "aborted");
   return requests_.erase(request_id) > 0;
 }
 

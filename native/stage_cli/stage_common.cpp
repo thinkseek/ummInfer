@@ -410,16 +410,20 @@ Value asr_result(const std::string& text, int generated_tokens,
   return Value(std::move(out));
 }
 
-Value omni_result(const std::string& text, int generated_tokens) {
+Value omni_result(const std::string& text, int generated_tokens,
+                  double prefill_ms, double decode_ms) {
   Value::Map out;
   out["content"] = Value(text);
   out["generated_token_count"] = Value(static_cast<int64_t>(generated_tokens));
   out["finish_reason"] = Value("stop");
+  if (prefill_ms >= 0) out["prefill_ms"] = Value(prefill_ms);
+  if (decode_ms >= 0) out["decode_ms"] = Value(decode_ms);
   return Value(std::move(out));
 }
 
 Value tts_result(std::string wav_bytes, int sample_rate, int channels,
-                 const std::string& voice) {
+                 const std::string& voice, double first_frame_ms,
+                 double total_ms) {
   if (wav_bytes.empty()) bad("TTS produced no audio");
   Value::Map out;
   out["media_type"] = Value("audio");
@@ -428,12 +432,14 @@ Value tts_result(std::string wav_bytes, int sample_rate, int channels,
   out["sample_rate"] = Value(static_cast<int64_t>(sample_rate));
   out["channels"] = Value(static_cast<int64_t>(channels));
   out["voice"] = Value(voice);
+  if (first_frame_ms >= 0) out["first_frame_ms"] = Value(first_frame_ms);
+  if (total_ms >= 0) out["total_ms"] = Value(total_ms);
   out["data"] = Value::bin(std::move(wav_bytes));
   return Value(std::move(out));
 }
 
 Value image_result(std::string png_bytes, int width, int height,
-                   uint64_t seed, int steps) {
+                   uint64_t seed, int steps, double denoise_ms) {
   if (png_bytes.empty()) bad("image produced no PNG bytes");
   Value::Map out;
   out["media_type"] = Value("image");
@@ -444,6 +450,7 @@ Value image_result(std::string png_bytes, int width, int height,
   out["height"] = Value(static_cast<int64_t>(height));
   out["seed"] = Value(static_cast<int64_t>(seed));
   out["steps"] = Value(static_cast<int64_t>(steps));
+  if (denoise_ms >= 0) out["denoise_ms"] = Value(denoise_ms);
   out["data"] = Value::bin(std::move(png_bytes));
   return Value(std::move(out));
 }

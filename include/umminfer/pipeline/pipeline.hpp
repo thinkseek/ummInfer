@@ -153,7 +153,8 @@ class Coordinator {
   // Drops a terminal request record. The caller owns the result by then.
   bool release(const std::string& request_id);
   size_t in_flight() const;
-  void abort(const std::string& request_id);
+  // source labels the abort metric: "client", "timeout" or "shutdown".
+  void abort(const std::string& request_id, const char* source = "client");
 
   using StreamSink = std::function<void(const StreamMessage&)>;
   using CompleteSink = std::function<void(const RequestInfo&)>;
@@ -169,6 +170,11 @@ class Coordinator {
  private:
   std::string next_request_id();
   void handle_event(const Message& msg);
+  // Applies the terminal half of the metrics bookkeeping. Caller holds mu_.
+  // Returns the submit-to-terminal seconds, or a negative value when the
+  // request was not measured (already settled, or never submitted).
+  double finish_metrics_locked(const std::string& request_id,
+                               const std::string& status);
 
   std::string completion_endpoint_;
   std::string abort_endpoint_;
@@ -181,6 +187,12 @@ class Coordinator {
   mutable std::mutex mu_;
   std::condition_variable cv_;
   std::map<std::string, RequestInfo> requests_;
+  // Metrics bookkeeping, guarded by mu_. The entry stage is kept separate from
+  // RequestInfo::current_stage because that field follows the request through
+  // a stage chain while in-flight counts the stage the request entered.
+  std::map<std::string, std::string> request_stages_;
+  std::map<std::string, std::string> request_types_;
+  std::map<std::string, std::chrono::steady_clock::time_point> submit_times_;
   std::atomic<uint64_t> counter_{0};
   std::atomic<bool> running_{false};
   bool pump_started_ = false;  // guarded by mu_

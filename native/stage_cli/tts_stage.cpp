@@ -60,9 +60,10 @@ CancellableComputeFn make_compute(const StageOptions& options) {
                                 "<|im_end|>\n<|im_start|>assistant\n";
     const std::vector<int> text_ids = tokenizer->encode(wrapped);
     std::vector<float> samples;
+    native::TtsEngine::SynthTimings timings;
     try {
       samples = engine->synthesize(text_ids, language, speaker, max_frames,
-                                   [&tracker] { return tracker(); });
+                                   [&tracker] { return tracker(); }, &timings);
     } catch (const native::RequestAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);
@@ -84,7 +85,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " wav_bytes=" << wav.size()
               << " elapsed_ms=" << elapsed.count() << "\n";
     if (stats.samples == 0) throw ProtocolError("TTS produced no samples");
-    return tts_result(std::move(wav), kSampleRate, 1, voice);
+    return tts_result(std::move(wav), kSampleRate, 1, voice,
+                      timings.first_frame_ms, timings.total_ms);
   };
 }
 

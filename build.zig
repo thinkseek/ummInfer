@@ -20,6 +20,13 @@ fn configure(mod: *std.Build.Module, b: *std.Build, deps_prefix: ?[]const u8, cu
         mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib64" }) });
     }
     if (cuda) mod.addCMacro("UMMINFER_WITH_CUDA", "1");
+    // The metrics module dlopen()s libnvidia-ml. glibc before 2.34 keeps
+    // dlopen in libdl; macOS has it in libSystem, so only Linux links it.
+    if (mod.resolved_target) |resolved| {
+        if (resolved.result.os.tag == .linux) {
+            mod.linkSystemLibrary("dl", .{ .use_pkg_config = .no });
+        }
+    }
     if (link_deps) {
         mod.linkSystemLibrary("zmq", .{ .use_pkg_config = .no });
         mod.linkSystemLibrary("msgpackc", .{ .use_pkg_config = .no });
@@ -57,6 +64,7 @@ pub fn build(b: *std.Build) void {
         .files = &.{
             "src/proto/wire.cpp",
             "src/proto/messages.cpp",
+            "src/obs/metrics.cpp",
             "src/relay/relay.cpp",
             "src/comm/comm.cpp",
             "src/scheduling/simple_scheduler.cpp",
@@ -99,6 +107,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "unified_contract_test", .source = "tests/unified_contract_test.cpp" },
         .{ .name = "omni_serve_test", .source = "tests/omni_serve_test.cpp" },
         .{ .name = "omni_client_test", .source = "tests/omni_client_test.cpp" },
+        .{ .name = "metrics_test", .source = "tests/metrics_test.cpp" },
         .{ .name = "cuda_ipc_test", .source = "tests/cuda_ipc_test.cpp", .cuda = true },
         .{ .name = "cuda_pipeline_test", .source = "tests/cuda_pipeline_test.cpp", .cuda = true },
     };

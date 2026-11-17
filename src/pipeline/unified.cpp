@@ -2,12 +2,27 @@
 #include "umminfer/pipeline/unified.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <string_view>
 #include <vector>
 
+#include "umminfer/obs/metrics.hpp"
+
 namespace umminfer {
 namespace {
+
+double ms_since(std::chrono::steady_clock::time_point started) {
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now() - started)
+      .count();
+}
+
+int64_t epoch_millis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
 
 // Content-part "type" values the client contract uses (client.hpp ContentPart).
 UnifiedModality modality_of_part_type(const std::string& type) {
@@ -431,6 +446,9 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   }
   Record record;
   record.session_id = std::move(session_id);
+  record.started = std::chrono::steady_clock::now();
+  record.start_epoch_ms = epoch_millis();
+  if (has_audio) record.asr_started = record.started;
   record.history_requested = history_requested;
   record.original_inputs = std::move(original_inputs);
   record.vlm_params = std::move(vlm_params);
@@ -444,6 +462,12 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.tts_leg.enabled = audio_output;
   record.tts_leg.stage_name = config_.tts_stage;
   record.tts_leg.stage_id = kTtsStageId;
+  // Every leg this engine submits carries the request type, so the coordinator
+  // labels a leg's stage metrics without guessing from the payload shape. The
+  // value is an identifier, never request content.
+  for (Value::Map* metadata : {&record.vlm_metadata, &payload.request.metadata}) {
+    (*metadata)["request_type"] = Value("chat");
+  }
 
   std::string request_id;
   if (has_audio) {
@@ -468,6 +492,7 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     request_id = coordinator_.submit(vlm_payload, config_.vlm_stage);
     // The only leg is the VLM leg, keyed by the Coordinator id itself.
     record.vlm_id = request_id;
+    record.vlm_started = record.started;
   }
   admission_.push_back(request_id);
   record.public_info.request_id = request_id;
@@ -475,10 +500,12 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.public_info.current_stage =
       has_audio ? kAsrStageId : kVlmStageId;
   records_[request_id] = std::move(record);
+  // Admission depth is the backpressure queue the HTTP boundary sees.
+  obs::Metrics::instance().queue_depth("unified_admission", admission_.size());
   return request_id;
 }
 
-bool UnifiedEngine::cancel(const std::string& request_id) {
+bool UnifiedEngine::cancel(const std::string& request_id, const char* source) {
   std::vector<std::string> active_ids;
   {
     std::lock_guard<std::mutex> lock(mu_);
@@ -500,7 +527,7 @@ bool UnifiedEngine::cancel(const std::string& request_id) {
   // No engine lock held: Coordinator::abort can synchronously invoke
   // on_complete, which needs mu_. abort() on an unknown or already terminal
   // id is a silent no-op, so only submitted non-empty ids are listed.
-  for (const std::string& id : active_ids) coordinator_.abort(id);
+  for (const std::string& id : active_ids) coordinator_.abort(id, source);
   return true;
 }
 
@@ -792,6 +819,7 @@ void UnifiedEngine::start_vlm_locked(const std::string& request_id,
   vlm_payload.request.metadata = record.vlm_metadata;
   record.phase = Phase::kVlm;
   record.public_info.current_stage = kVlmStageId;
+  record.vlm_started = std::chrono::steady_clock::now();
   coordinator_.submit(vlm_payload, config_.vlm_stage);
 }
 
@@ -904,6 +932,29 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
       break;
     }
   }
+  // Engine-level end to end. The opt-in trace record carries the same values
+  // plus the per-leg durations; it has no field that can hold request content.
+  const double total_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - record.started)
+          .count();
+  obs::Metrics::instance().request(record.request_type, record.public_info.state,
+                                   total_seconds);
+  obs::Metrics::instance().queue_depth("unified_admission", admission_.size());
+  if (obs::Metrics::instance().trace_enabled()) {
+    obs::TraceRecord trace;
+    trace.request_id = request_id;
+    trace.stage = event.stage_id;
+    trace.request_type = record.request_type;
+    trace.start_epoch_ms = record.start_epoch_ms;
+    trace.end_epoch_ms = epoch_millis();
+    trace.status = record.public_info.state;
+    trace.duration_ms = total_seconds * 1000.0;
+    trace.asr_ms = record.asr_ms;
+    trace.vlm_ms = record.vlm_ms;
+    trace.image_ms = record.image_ms;
+    trace.tts_ms = record.tts_ms;
+    obs::Metrics::instance().trace(trace);
+  }
   return event;
 }
 
@@ -923,6 +974,41 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
           info.request_id == record.tts_leg.child_id;
       OutputLeg* output_leg = image_child ? &record.image_leg
                               : tts_child ? &record.tts_leg : nullptr;
+      // The primary leg is ASR until the VLM leg is submitted, then VLM. Each
+      // terminal records exactly one sample.
+      const auto record_primary_leg = [&record](const std::string& status) {
+        const bool vlm = !record.vlm_id.empty();
+        const double ms =
+            ms_since(vlm ? record.vlm_started : record.asr_started);
+        if (vlm) {
+          record.vlm_ms = ms;
+        } else {
+          record.asr_ms = ms;
+        }
+        obs::Metrics::instance().leg(vlm ? "vlm" : "asr", record.request_type,
+                                     status, ms / 1000.0);
+      };
+      // Stage-reported phases, converted from milliseconds to seconds. A stage
+      // that omits a phase records nothing instead of a fabricated zero.
+      const auto record_output_phases = [](const OutputLeg& leg,
+                                           const Value& result) {
+        if (leg.stage_id == kImageStageId) {
+          const double denoise = obs::result_ms(result, "denoise_ms");
+          const double steps = obs::result_ms(result, "steps");
+          if (denoise >= 0 && steps > 0) {
+            obs::Metrics::instance().image_denoise_step(denoise / steps / 1000.0);
+          }
+        } else if (leg.stage_id == kTtsStageId) {
+          const double first = obs::result_ms(result, "first_frame_ms");
+          if (first >= 0) {
+            obs::Metrics::instance().tts_phase("first_frame", first / 1000.0);
+          }
+          const double total = obs::result_ms(result, "total_ms");
+          if (total >= 0) {
+            obs::Metrics::instance().tts_phase("total", total / 1000.0);
+          }
+        }
+      };
       if (output_leg != nullptr) {
         // Output-leg join. A failed or aborted leg never fails the whole
         // request after a successful VLM: it becomes a leg_error and the
@@ -942,6 +1028,7 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
               info.error.empty() ? "stage failure" : info.error);
         } else {
           try {
+            record_output_phases(*output_leg, info.result);
             emit_artifact_locked(unified_id, record, *output_leg, info.result);
             settle_output_leg_locked(unified_id, record, *output_leg,
                                      UnifiedEvent::Kind::kComplete, {});
@@ -952,9 +1039,11 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
           }
         }
       } else if (info.state == "aborted") {
+        record_primary_leg("aborted");
         dispatch_queue_.push_back(finish_locked(
             unified_id, record, UnifiedEvent::Kind::kCancelled, {}, {}));
       } else if (info.state == "failed") {
+        record_primary_leg("failed");
         dispatch_queue_.push_back(finish_locked(
             unified_id, record, UnifiedEvent::Kind::kError,
             info.error.empty() ? "stage failure" : info.error, {}));
@@ -968,6 +1057,7 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
       } else if (record.vlm_id.empty()) {
         // ASR leg succeeded. A non-streaming stage sends no final chunk, so
         // synthesize the ASR final from the result text.
+        record_primary_leg("completed");
         if (!record.asr_final_seen) {
           const auto text = asr_result_text(info.result);
           if (!text) {
@@ -1001,11 +1091,24 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
         }
       } else {
         const auto text = vlm_result_text(info.result);
+        // The leg ended whatever the result holds, so its duration is recorded
+        // before the result-shape check can turn it into a failure.
+        record_primary_leg(text ? "completed" : "failed");
         if (!text) {
           dispatch_queue_.push_back(finish_locked(
               unified_id, record, UnifiedEvent::Kind::kError,
               "VLM stage returned no text", {}));
         } else {
+          // Phase times the native VLM stage measured itself. They are absent
+          // for a stage that does not report them.
+          const double prefill = obs::result_ms(info.result, "prefill_ms");
+          if (prefill >= 0) {
+            obs::Metrics::instance().vlm_phase("prefill", prefill / 1000.0);
+          }
+          const double decode = obs::result_ms(info.result, "decode_ms");
+          if (decode >= 0) {
+            obs::Metrics::instance().vlm_phase("decode", decode / 1000.0);
+          }
           if (record.vlm_text.empty()) record.vlm_text = *text;
           record.vlm_result = info.result;
           if (record.image_leg.enabled || record.tts_leg.enabled) {
@@ -1063,6 +1166,7 @@ void UnifiedEngine::start_image_locked(const std::string& request_id,
   payload.request.params = record.vlm_params;
   payload.request.metadata = record.vlm_metadata;
   leg.submitted = true;
+  leg.started = std::chrono::steady_clock::now();
   coordinator_.submit(payload, leg.stage_name);
 }
 
@@ -1076,6 +1180,7 @@ void UnifiedEngine::start_tts_locked(const std::string& request_id,
   payload.request.params = record.vlm_params;
   payload.request.metadata = record.vlm_metadata;
   leg.submitted = true;
+  leg.started = std::chrono::steady_clock::now();
   coordinator_.submit(payload, leg.stage_name);
 }
 
@@ -1165,6 +1270,16 @@ void UnifiedEngine::settle_output_leg_locked(
             : kind == UnifiedEvent::Kind::kCancelled ? "aborted"
                                                      : "failed";
   leg.error = error;
+  // Server-observed leg duration: submit to terminal. The stage-reported
+  // phases (denoise, first frame) are recorded separately from the result.
+  {
+    const double ms = ms_since(leg.started);
+    const bool is_tts = leg.stage_id == kTtsStageId;
+    if (is_tts) record.tts_ms = ms;
+    else record.image_ms = ms;
+    obs::Metrics::instance().leg(is_tts ? "tts" : "image", record.request_type,
+                                 leg.state, ms / 1000.0);
+  }
   if (kind != UnifiedEvent::Kind::kComplete) {
     UnifiedEvent event;
     event.request_id = request_id;

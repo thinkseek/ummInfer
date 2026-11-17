@@ -38,6 +38,7 @@ find_library(MSGPACK_LIBRARY NAMES msgpackc REQUIRED)
 add_library(umm_stage_core STATIC
   ${UMM_ROOT}/src/proto/wire.cpp
   ${UMM_ROOT}/src/proto/messages.cpp
+  ${UMM_ROOT}/src/obs/metrics.cpp
   ${UMM_ROOT}/src/relay/relay.cpp
   ${UMM_ROOT}/src/comm/comm.cpp
   ${UMM_ROOT}/src/scheduling/simple_scheduler.cpp
@@ -46,7 +47,10 @@ add_library(umm_stage_core STATIC
 target_include_directories(umm_stage_core PUBLIC
   ${UMM_ROOT}/include ${UMM_ROOT}/src
   ${ZMQ_INCLUDE_DIR} ${MSGPACK_INCLUDE_DIR})
-target_link_libraries(umm_stage_core PUBLIC ${ZMQ_LIBRARY} ${MSGPACK_LIBRARY})
+# The metrics module dlopen()s libnvidia-ml; CMAKE_DL_LIBS is empty on macOS,
+# where dlopen lives in libSystem.
+target_link_libraries(umm_stage_core PUBLIC ${ZMQ_LIBRARY} ${MSGPACK_LIBRARY}
+  ${CMAKE_DL_LIBS})
 if(nlohmann_json_FOUND)
   target_link_libraries(umm_stage_core PUBLIC nlohmann_json::nlohmann_json)
 else()
