@@ -12,6 +12,10 @@ the same `Coordinator`, external workers, and HTTP/SSE chat contract. The
 
 See [roadmap](docs/roadmap.md) for phases and acceptance gates, and
 [validation](docs/validation.md) for the user journeys that exist today.
+The multimodal benchmark contract (datasets, metrics, failure classes, stability
+gate) is in [benchmark system](docs/benchmark-system.md). The frozen text +
+image + audio output contract (request keys, artifact events, byte limits) is in
+[mixed output contract](docs/mixed-output-contract.md).
 
 ## Target architecture
 
@@ -954,5 +958,5 @@ tests/{mlx_smoke.py,mlx_stage_test.py,mlx_*_perf.py,client_benchmark.py}
 tests/{qwen_omni_live.py,h3_live.py,h3_image_live.py,live_common.py}
 tests/rl_architecture_test.py
 tests/tla/{RequestLifecycle.tla,RequestLifecycle.cfg}
-docs/{cuda-ipc.md,external_stage.md,mlx.md,client.md,roadmap.md,validation.md,rl.md,rl-phase2.md,performance-baseline.md,joint-optimization.md,mac-unified.md}
+docs/{cuda-ipc.md,external_stage.md,mlx.md,client.md,roadmap.md,validation.md,rl.md,rl-phase2.md,performance-baseline.md,joint-optimization.md,mac-unified.md,benchmark-system.md,mixed-output-contract.md}
 ```

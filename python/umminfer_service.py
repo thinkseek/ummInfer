@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Resident supervisor for ummInfer servers and their model workers.
+"""Resident supervisor for ummInfer servers and their native model stages.
 
-The default configuration owns three children: the C++ server, a Python ASR
-worker and a Python Omni worker. A configuration with `native_stages` owns the
-C++ server plus each listed native stage and needs no Python worker or SGLang
-URL. It records each child's PID and kernel start time, restarts a dead or
-unhealthy child with bounded backoff, keeps at most 64 KiB of each log, and
-refuses to signal a PID whose start time no longer matches the recorded one.
+The configuration owns the C++ server plus each listed `native_stages` entry.
+There is no Python worker or SGLang URL on the serving path. It records each
+child's PID and kernel start time, restarts a dead or unhealthy child with
+bounded backoff, keeps at most 64 KiB of each log, and refuses to signal a PID
+whose start time no longer matches the recorded one.
 
 It uses only the Python standard library and detaches from the controlling
 terminal, so it survives the SSH session that started it.
@@ -181,65 +180,31 @@ class Supervisor:
     def _build_children(self):
         cfg = self.config
         ipc = cfg["ipc_dir"]
-        if "native_stages" in cfg:
-            children = [Child("server", [
-                cfg["binary"], "serve",
-                "--host", cfg["host"], "--port", str(cfg["port"]),
-                "--model", cfg["model"],
-                "--entry", "asr", "--entry-endpoint", f"ipc://{ipc}/asr",
-                "--vlm-entry", "omni", "--vlm-entry-endpoint", f"ipc://{ipc}/omni",
-                "--image-entry", "image", "--image-entry-endpoint", f"ipc://{ipc}/image",
-                "--tts-entry", "tts", "--tts-entry-endpoint", f"ipc://{ipc}/tts",
-                "--completion", f"ipc://{ipc}/done",
-                "--abort", f"ipc://{ipc}/abort",
-            ] + list(cfg.get("server_args", [])))]
-            binary_dir = cfg["stage_binary_dir"]
-            for stage in cfg["native_stages"]:
-                name = stage["name"]
-                kind = stage.get("kind", name)
-                argv = [
-                    str(Path(binary_dir) / f"umm-native-stage-{kind}"),
-                    "--kind", kind, "--name", name,
-                    "--model", stage["model"], "--gpu", str(stage["gpu"]),
-                    "--recv-endpoint", f"ipc://{ipc}/{name}",
-                    "--coordinator-endpoint", f"ipc://{ipc}/done",
-                    "--abort-endpoint", f"ipc://{ipc}/abort",
-                ] + list(stage.get("args", []))
-                children.append(Child(name, argv, depends_on="server"))
-            return children
-
-        python = cfg["python"]
-        worker_dir = cfg["python_dir"]
-        asr = cfg["asr"]
-        omni = cfg["omni"]
-        server = Child("server", [
+        children = [Child("server", [
             cfg["binary"], "serve",
             "--host", cfg["host"], "--port", str(cfg["port"]),
             "--model", cfg["model"],
             "--entry", "asr", "--entry-endpoint", f"ipc://{ipc}/asr",
-            "--vlm-entry", "vlm", "--vlm-entry-endpoint", f"ipc://{ipc}/vlm",
+            "--vlm-entry", "omni", "--vlm-entry-endpoint", f"ipc://{ipc}/omni",
+            "--image-entry", "image", "--image-entry-endpoint", f"ipc://{ipc}/image",
+            "--tts-entry", "tts", "--tts-entry-endpoint", f"ipc://{ipc}/tts",
             "--completion", f"ipc://{ipc}/done",
             "--abort", f"ipc://{ipc}/abort",
-        ] + list(cfg.get("server_args", [])))
-        asr_worker = Child("asr", [
-            python, "-I", str(Path(worker_dir) / "umminfer_qwen_asr_stage.py"),
-            "serve",
-            "--name", "asr", "--recv", f"ipc://{ipc}/asr",
-            "--coordinator", f"ipc://{ipc}/done",
-            "--abort", f"ipc://{ipc}/abort",
-            "--model", asr["model"], "--backend-url", asr["url"],
-            "--concurrency", str(asr.get("concurrency", 1)),
-        ], cwd=worker_dir, depends_on="server")
-        omni_worker = Child("omni", [
-            python, "-I", str(Path(worker_dir) / "umminfer_qwen_omni_worker.py"),
-            "--name", "vlm", "--recv", f"ipc://{ipc}/vlm",
-            "--coordinator", f"ipc://{ipc}/done",
-            "--abort", f"ipc://{ipc}/abort",
-            "--upstream-base-url", omni["url"],
-            "--upstream-model", omni["model"],
-            "--concurrency", str(omni.get("concurrency", 1)),
-        ], cwd=worker_dir, depends_on="server")
-        return [server, asr_worker, omni_worker]
+        ] + list(cfg.get("server_args", [])))]
+        binary_dir = cfg["stage_binary_dir"]
+        for stage in cfg["native_stages"]:
+            name = stage["name"]
+            kind = stage.get("kind", name)
+            argv = [
+                str(Path(binary_dir) / f"umm-native-stage-{kind}"),
+                "--kind", kind, "--name", name,
+                "--model", stage["model"], "--gpu", str(stage["gpu"]),
+                "--recv-endpoint", f"ipc://{ipc}/{name}",
+                "--coordinator-endpoint", f"ipc://{ipc}/done",
+                "--abort-endpoint", f"ipc://{ipc}/abort",
+            ] + list(stage.get("args", []))
+            children.append(Child(name, argv, depends_on="server"))
+        return children
 
     def log(self, message):
         line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} supervisor {message}\n"
@@ -319,12 +284,15 @@ class Supervisor:
         child.starttime = None
 
     def restart_workers(self, reason):
-        for name in ("asr", "omni"):
-            child = self.by_name[name]
+        # A server restart drops every stage's one-shot stage_ready, so each
+        # stage child must restart, not only the first two.
+        for child in self.children:
+            if child.name == "server":
+                continue
             self.terminate(child)
             child.failures = 0
             child.next_start = 0.0
-        self.log(f"workers restarted because server {reason}")
+        self.log(f"stages restarted because server {reason}")
 
     def check_health(self):
         url = (f"http://{self.config['host']}:{self.config['port']}"
@@ -336,9 +304,8 @@ class Supervisor:
                 status = response.status
                 body = json.loads(response.read().decode("utf-8", "replace"))
                 in_flight = body.get("in_flight")
-        except (urllib.error.URLError, OSError, ValueError) as error:
+        except (urllib.error.URLError, OSError, ValueError):
             status = None
-            self.last_health_error = str(error)
         self.health_checked_mono = time.monotonic()
         self.health_checked_at = time.time()
         if status == 200:
@@ -475,19 +442,14 @@ def load_config(path):
     for key in ("run_dir", "log_dir", "ipc_dir", "binary", "model"):
         if key not in config:
             raise SystemExit(f"config is missing {key}")
-    if "native_stages" in config:
-        if "stage_binary_dir" not in config:
-            raise SystemExit("config is missing stage_binary_dir")
-        if not isinstance(config["native_stages"], list) or not config["native_stages"]:
-            raise SystemExit("native_stages must be a nonempty array")
-        for stage in config["native_stages"]:
-            for key in ("name", "model", "gpu"):
-                if key not in stage:
-                    raise SystemExit(f"native stage is missing {key}")
-        return config
-    for key in ("python", "python_dir", "asr", "omni"):
-        if key not in config:
-            raise SystemExit(f"config is missing {key}")
+    if "stage_binary_dir" not in config:
+        raise SystemExit("config is missing stage_binary_dir")
+    if not isinstance(config.get("native_stages"), list) or not config["native_stages"]:
+        raise SystemExit("native_stages must be a nonempty array")
+    for stage in config["native_stages"]:
+        for key in ("name", "model", "gpu"):
+            if key not in stage:
+                raise SystemExit(f"native stage is missing {key}")
     return config
 
 
