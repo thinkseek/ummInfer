@@ -276,13 +276,42 @@ reproduction run stopped PID 543292 the same way. The final check after the
 reproduction run: no live `umm-infer` or stage process, GPU0-GPU7 all 0 MiB,
 ports 43300 and 43301 both `000`.
 
+The timed rework run stopped PID 545144 the same way. After that stop, a helper
+scan found one live sampler left by the ad-hoc run 5 script:
+
+| Item | Value |
+| --- | --- |
+| PID / PPID | 545513 / 1 |
+| Started | Tue Nov 17 05:49:05 2026 (UTC); `/proc/545513/stat` starttime 525357957 |
+| Command | `sh /root/umm-e2e/gpu_sampler.sh /root/umm-e2e/out/run5/gpu.csv 0.2` |
+| Match | command line names the run 5 output file; no other task artifact matched |
+| Action | `kill -TERM 545513` |
+| Result | process stopped; entry is now state `Z` with PPID 1 |
+
+The committed reproduction script does not start `gpu_sampler.sh`
+(`grep gpu_sampler docs/cases/0001_repro.sh` is empty), so it needs no trap;
+the sampler came from the ad-hoc run scripts used to record GPU peaks.
+
+Full live-process check, excluding state `Z`:
+
+```sh
+docker exec linyu-dev bash -lc "ps -eo pid,ppid,stat,args \
+  | awk '\$3 !~ /Z/' \
+  | grep -E 'gpu_sampler|e2e_client|/root/umm-e2e|/root/case0001|umm-infer serve|umm-native-stage|umminfer_service|nvidia-smi' \
+  | grep -v grep || echo NONE-LIVE"
+NONE-LIVE
+```
+
+The host namespace scan for the same helper names also printed `NONE-LIVE`.
+
 | Check | Result |
 | --- | --- |
 | Live `umm-infer` / stage / supervisor processes | none |
-| GPU2, GPU3, GPU4, GPU5, GPU6 | 0 MiB each; GPU0/1 and GPU7 also 0 MiB |
+| Live helpers (sampler, client, run scripts) | none in the container and none on the host |
+| Zombie entries from this task | supervisors 529298, 538151, 543292, 545144; sampler shell 545513; its two `nvidia-smi` children 542302 and 552177. All are state `Z`, hold no CPU, GPU, socket or child, and cannot be removed because container PID 1 does not reap. |
+| GPU2, GPU3, GPU4, GPU5, GPU6 | 0 MiB each after the earlier stops; after the rework and sampler stop, GPU3-GPU6 read 3 MiB and GPU2 read 54,803 MiB held by another container, with no task process live |
 | Port 43301 | `000` (closed) |
 | Port 43300 | `000` (see section 7) |
-| Orphans | the stopped supervisors (PIDs 529298, 538151, 543292) remain as zombie `python3` entries; container PID 1 does not reap, so they stay in `ps` with state `Z`. They hold no GPU, socket or child. |
 
 No process outside this task was signalled at any point.
 
