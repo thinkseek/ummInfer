@@ -229,6 +229,78 @@ def pcm_from_wav(path):
         return wav.readframes(wav.getnframes())
 
 
+def vad_case(port_ws):
+    """Server endpoint detection over the real WebSocket and real stage.
+
+    Digital silence must never start a turn. A real tone must report
+    speech_started, and silence_ms of quiet must commit the turn without a
+    transcription.done. The session then stays open for the next turn.
+    """
+    def append(pcm):
+        return json.dumps({"type": "input_audio_buffer.append",
+                           "audio": base64.b64encode(pcm).decode()})
+
+    with websocket(port_ws, f"intent=transcription&model={MODEL_NAME}") as ws:
+        effective = update_session(
+            ws, {"input_audio_format": "pcm16",
+                 "turn_detection": {"type": "server_vad", "silence_ms": 300}})
+        require(effective.get("turn_detection") ==
+                {"type": "server_vad", "silence_ms": 300},
+                f"server_vad was not echoed: {effective!r}")
+        print("PASS vad_session_updated", flush=True)
+
+        # Two seconds of silence, sent before any speech.
+        ws.send(append(b"\x00\x00" * 16000))
+        try:
+            event = recv_event(ws, timeout=0.8)
+            raise AssertionError(f"silence triggered VAD: {event!r}")
+        except TimeoutError:
+            pass
+        print("PASS vad_silence_no_trigger ms=2000", flush=True)
+
+        rate = 16000
+        samples = [int(0.2 * 32767 * math.sin(2 * math.pi * 440 * i / rate))
+                   for i in range(rate * 2 // 5)]
+        voiced = struct.pack(f"<{len(samples)}h", *samples)
+        for offset in range(0, len(voiced), 3200):
+            ws.send(append(voiced[offset:offset + 3200]))
+
+        kinds = []
+        while "input_audio_buffer.speech_started" not in kinds:
+            event = recv_event(ws, timeout=REQUEST_TIMEOUT_S)
+            require(event.get("type") != "error", f"VAD speech failed: {event!r}")
+            kinds.append(event.get("type"))
+        print(f"PASS vad_speech_started events={kinds}", flush=True)
+
+        ws.send(append(b"\x00\x00" * (rate * 3 // 10)))
+        segments = []
+        completed = None
+        while completed is None:
+            event = recv_event(ws, timeout=REQUEST_TIMEOUT_S)
+            kind = event.get("type")
+            require(kind != "error", f"VAD turn failed: {event!r}")
+            if kind == "transcription.segment":
+                segments.append(event)
+            kinds.append(kind)
+            if kind == "transcription.completed":
+                completed = event
+        require("input_audio_buffer.speech_stopped" in kinds,
+                f"no speech_stopped before the commit: {kinds}")
+        require(any(segment.get("is_final") for segment in segments),
+                f"no final segment in {segments!r}")
+        require(isinstance(completed.get("text"), str) and completed["text"],
+                f"VAD completed text was {completed.get('text')!r}")
+        print(f"PASS vad_endpoint events={kinds} text={completed['text']!r}", flush=True)
+
+        # Server VAD keeps the socket open after a committed turn. Only the
+        # absence of a close proves it: no event is owed for the quiet turn.
+        try:
+            event = recv_event(ws, timeout=0.5)
+            raise AssertionError(f"event after a committed VAD turn: {event!r}")
+        except TimeoutError:
+            pass
+    print("PASS vad_session_stays_open", flush=True)
+
 def run_contract(port_http, port_ws, audio_path, wav_bytes, binary, env):
     # Handshake rejection is checked with a real handshake and the server's
     # actual response bytes. Successful handshakes use a real WebSocket client.
@@ -269,8 +341,14 @@ def run_contract(port_http, port_ws, audio_path, wav_bytes, binary, env):
     rejections = [
         ({"type": "session.update", "session": {"input_audio_format": "pcm16", "bogus": 1}},
          "unsupported session field: bogus"),
-        ({"type": "session.update", "session": {"turn_detection": {"type": "server_vad"}}},
-         "turn_detection must be null"),
+        ({"type": "session.update", "session": {"turn_detection": {"type": "semantic"}}},
+         "turn_detection type must be server_vad"),
+        ({"type": "session.update", "session": {"turn_detection": {"type": "server_vad",
+                                                                   "silence_ms": 50}}},
+         "silence_ms must be between 100 and 5000"),
+        ({"type": "session.update", "session": {"turn_detection": {"type": "server_vad",
+                                                                   "bogus": 1}}},
+         "unsupported turn_detection field: bogus"),
         ({"type": "session.update", "session": {"audio_layout": "mono16k"}},
          "audio_layout is not supported"),
         ({"type": "session.update", "session": {"input_audio_format": "g711"}},
@@ -299,6 +377,8 @@ def run_contract(port_http, port_ws, audio_path, wav_bytes, binary, env):
     ]
     for event, needle in rejections:
         expect_error(port_ws, event, needle)
+
+
 
     def done_then_reject(followup, needle):
         with websocket(port_ws, f"intent=transcription&model={MODEL_NAME}") as ws:
@@ -335,12 +415,29 @@ def run_contract(port_http, port_ws, audio_path, wav_bytes, binary, env):
         print("PASS session_updated_effective", flush=True)
 
         pcm = pcm_from_wav(audio_path)
+        started = time.monotonic()
         for offset in range(0, len(pcm), 3200):
             ws.send(json.dumps({"type": "input_audio_buffer.append",
                                 "audio": base64.b64encode(
                                     pcm[offset:offset + 3200]).decode()}))
+            time.sleep(0.03)
+        # Incremental submission: a preview must arrive before transcription.done
+        # is sent, not only at the end of the turn.
+        previews = []
+        while not previews:
+            event = recv_event(ws, timeout=REQUEST_TIMEOUT_S)
+            kind = event.get("type")
+            if kind == "transcription.segment":
+                require(event.get("is_final") is False,
+                        f"segment before done was final: {event!r}")
+                previews.append(event)
+            elif kind == "error":
+                raise AssertionError(f"live preview failed: {event!r}")
+            else:
+                raise AssertionError(f"unexpected event before preview: {event!r}")
+        first_preview_ms = int((time.monotonic() - started) * 1000)
         ws.send(json.dumps({"type": "transcription.done"}))
-        segments = []
+        segments = list(previews)
         completed = None
         while completed is None:
             event = recv_event(ws, timeout=REQUEST_TIMEOUT_S)
@@ -353,14 +450,23 @@ def run_contract(port_http, port_ws, audio_path, wav_bytes, binary, env):
                 raise AssertionError(f"live transcription failed: {event!r}")
             else:
                 raise AssertionError(f"unexpected live event before completed: {event!r}")
-        require(len(segments) == 1,
-                f"expected exactly one segment before completed, got {segments!r}")
-        require(segments[0].get("is_final") is True, "live segment is not final")
-        require(segments[0].get("event_index") == 1 and
-                segments[0].get("segment_id") == 0,
-                f"live segment identifiers were {segments[0]!r}")
+        require(len(segments) >= 2,
+                f"expected previews and one final segment, got {segments!r}")
+        require(all(not segment.get("is_final") for segment in segments[:-1]),
+                f"a preview was marked final: {segments!r}")
+        texts = [segment.get("text", "") for segment in segments[:-1]]
+        require(all(texts[index].startswith(texts[index - 1])
+                    for index in range(1, len(texts))),
+                f"preview text was not cumulative: {texts!r}")
+        final = segments[-1]
+        require(final.get("is_final") is True, "live final segment is not final")
+        require(final.get("event_index") == 1 and final.get("segment_id") == 0,
+                f"live final identifiers were {final!r}")
         require(isinstance(completed.get("text"), str) and completed["text"],
                 f"live completed text was {completed.get('text')!r}")
+        require(completed["text"] == final["text"],
+                f"completed text {completed['text']!r} differs from "
+                f"final segment {final['text']!r}")
         # Nothing was ignored, so the result reports no language it never used.
         require("language" not in completed,
                 f"completed language was {completed.get('language')!r}")
@@ -380,6 +486,8 @@ def run_contract(port_http, port_ws, audio_path, wav_bytes, binary, env):
             require(exc.rcvd is not None and exc.rcvd.code == 1000,
                     f"server closed with {exc.rcvd!r}, expected 1000")
     print(f"PASS live_completed text={live_text!r} metadata={live_metadata!r}", flush=True)
+
+    vad_case(port_ws)
 
     status, content_type, body = multipart_transcription(
         port_http, {"model": MODEL_NAME}, wav_bytes)

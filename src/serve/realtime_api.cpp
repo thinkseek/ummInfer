@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cstring>
 #include <deque>
+#include <iostream>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
@@ -18,6 +20,7 @@
 #include <vector>
 
 #include "asr_common.hpp"
+#include "energy_vad.hpp"
 
 namespace umminfer {
 namespace {
@@ -27,9 +30,14 @@ using Clock = std::chrono::steady_clock;
 
 constexpr size_t kMaxMessageBytes = 1u << 20;
 constexpr size_t kMaxAudioBytes = 64u << 20;
+// 200 ms of PCM16 mono 16 kHz. A preview request is submitted for every window
+// of new audio while no request is in flight.
+constexpr size_t kPreviewWindowBytes = 6400;
 
 struct RealtimeSession {
   std::string incoming;
+  // PCM appended by the client. With server VAD the completed turns are
+  // erased, so this holds the current turn only.
   std::string audio;
   std::string request_id;
   // Cumulative text the stage has streamed so far. Partial events carry the
@@ -40,6 +48,20 @@ struct RealtimeSession {
   int64_t max_tokens = 128;
   bool ready = false;
   bool close_after_write = false;
+
+  // Incremental submission and interruption state.
+  bool request_is_final = false;
+  size_t committed_audio = 0;  // bytes already sent in the last submit
+  size_t turn_audio_start = 0; // offset of the current turn in `audio`
+  int64_t segment_id = 0;      // increments per turn under server VAD
+  int64_t partial_count = 0;
+  bool speech_open = false;
+  std::unique_ptr<serve_detail::EnergyVad> vad;
+  Clock::time_point first_audio_at;
+  bool have_first_audio = false;
+  bool first_partial_logged = false;
+  long long turn_started_ms = 0;
+  long long last_interrupt_ms = 0;
 };
 
 std::string header(lws* wsi, lws_token_indexes token) {
@@ -93,9 +115,19 @@ bool valid_handshake(lws* wsi, const std::string& served_model,
 // The session.update reply must describe the configuration the server now
 // enforces, not echo fields that were ignored.
 json effective_session(const RealtimeSession& session) {
+  json turn = nullptr;
+  if (session.vad) {
+    turn = {{"type", "server_vad"}, {"silence_ms", session.vad->silence_ms()}};
+  }
   return {{"input_audio_format", "pcm16"},
-          {"turn_detection", nullptr},
+          {"turn_detection", turn},
           {"max_new_tokens", session.max_tokens}};
+}
+
+long long epoch_millis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
 // Copies only metadata the stage actually reported. A stage that reports a
@@ -235,7 +267,7 @@ class RealtimeApi::Impl {
         if (session->outbound.size() >= 512) break;
         send(wsi, session, {{"type", "transcription.segment"},
                             {"event_index", 0},
-                            {"segment_id", 0},
+                            {"segment_id", session->segment_id},
                             {"text", session->partial_text},
                             {"is_final", false}});
         break;
@@ -324,28 +356,189 @@ class RealtimeApi::Impl {
     session->close_after_write = true;
   }
 
-  void submit(lws* wsi, RealtimeSession* session) {
-    if (!session->ready || session->audio.empty() || session->audio.size() % 2 != 0 ||
-        !session->request_id.empty() || session->close_after_write) {
-      fail(wsi, session, "transcription.done requires an accepted session and PCM16 audio");
+  // Stops the in-flight request at the stage's next boundary and drops its
+  // record. libwebsockets thread only.
+  void interrupt_request(RealtimeSession* session, const char* reason) {
+    if (session->request_id.empty()) return;
+    const std::string request_id = session->request_id;
+    session->last_interrupt_ms = epoch_millis();
+    coordinator_.abort(request_id);
+    coordinator_.release(request_id);
+    session->request_id.clear();
+    session->request_is_final = false;
+    std::cerr << "realtime interrupt reason=" << reason
+              << " request=" << request_id
+              << " epoch_ms=" << session->last_interrupt_ms << "\n";
+  }
+
+  // transcription.done: the caller explicitly ends the turn. This stays the
+  // compatibility path for clients that do not enable server VAD.
+  void submit_final(lws* wsi, RealtimeSession* session) {
+    const size_t length = session->audio.size() - session->turn_audio_start;
+    if (!session->ready || length == 0 || length % 2 != 0 ||
+        session->request_is_final || session->close_after_write) {
+      fail(wsi, session,
+           "transcription.done requires an accepted session and PCM16 audio");
       return;
     }
+    submit_request(wsi, session, true);
+  }
+
+  // Starts one ASR request over the current turn's audio. Returns false when
+  // the session cannot accept it. A final request preempts a preview.
+  bool submit_request(lws* wsi, RealtimeSession* session, bool final) {
+    if (!session->ready || session->close_after_write) return false;
+    if (!session->request_id.empty()) {
+      if (!final) return false;
+      interrupt_request(session, "final_commit");
+    }
+    const size_t length = session->audio.size() - session->turn_audio_start;
+    if (length == 0 || length % 2 != 0) return false;
     try {
       StagePayload payload = serve_detail::make_asr_payload(
-          session->audio, session->max_tokens, "", "");
+          session->audio.substr(session->turn_audio_start), session->max_tokens,
+          "", "");
       // Ask the stage to stream. A stage that ignores stream sends no chunk;
       // this listener then emits only the final segment, as before.
       payload.request.params["stream"] = Value(true);
-      session->request_id = "realtime-" + std::to_string(++next_request_id_);
+      // Previews are internal and are aborted independently, so they use
+      // their own id space. Turn ids stay consecutive for clients and logs.
+      session->request_id = final
+                                ? "realtime-" + std::to_string(++next_request_id_)
+                                : "realtime-preview-" + std::to_string(++next_preview_id_);
       payload.request_id = session->request_id;
+      session->request_is_final = final;
+      session->committed_audio = session->audio.size();
       session->deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
           std::chrono::duration<double>(config_.request_timeout_s));
       coordinator_.submit(std::move(payload), config_.entry_stage);
+      return true;
     } catch (const std::exception& error) {
       if (!session->request_id.empty()) coordinator_.release(session->request_id);
       session->request_id.clear();
-      fail(wsi, session, error.what());
+      session->request_is_final = false;
+      if (final) fail(wsi, session, error.what());
+      return false;
     }
+  }
+
+  // Emits one cumulative provisional segment for a completed preview.
+  void emit_preview(lws* wsi, RealtimeSession* session, const Value& result) {
+    session->partial_text = serve_detail::asr_result_text(result);
+    ++session->partial_count;
+    if (!session->first_partial_logged) {
+      session->first_partial_logged = true;
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          Clock::now() - session->first_audio_at);
+      std::cerr << "realtime first_partial_ms=" << elapsed.count()
+                << " segment=" << session->segment_id << "\n";
+    }
+    send(wsi, session, {{"type", "transcription.segment"},
+                        {"event_index", 0},
+                        {"segment_id", session->segment_id},
+                        {"text", session->partial_text},
+                        {"is_final", false}});
+  }
+
+  // Prepares the session for the next turn. Audio that arrived after the final
+  // submit belongs to that turn and is kept.
+  void reset_turn(RealtimeSession* session) {
+    session->partial_text.clear();
+    session->partial_count = 0;
+    session->speech_open = false;
+    session->first_partial_logged = false;
+    session->segment_id += 1;
+    session->audio.erase(0, session->turn_audio_start);
+    session->turn_audio_start = 0;
+    session->committed_audio = 0;
+    if (!session->audio.empty()) {
+      session->first_audio_at = Clock::now();
+      session->have_first_audio = true;
+    } else {
+      session->have_first_audio = false;
+    }
+  }
+
+  // Submits a preview once a new 200 ms window accumulated. Only one request
+  // runs at a time; a slower stage therefore coalesces windows instead of
+  // queueing them.
+  void maybe_submit_preview(lws* wsi, RealtimeSession* session) {
+    if (!session->ready || session->close_after_write) return;
+    if (!session->request_id.empty()) return;
+    if (session->vad && !session->speech_open) return;
+    const size_t turn_bytes = session->audio.size() - session->turn_audio_start;
+    if (turn_bytes < kPreviewWindowBytes) return;
+    if (session->audio.size() - session->committed_audio < kPreviewWindowBytes) {
+      return;
+    }
+    submit_request(wsi, session, false);
+  }
+
+  // Clears the provisional segment the client shows for the abandoned turn.
+  void clear_preview(lws* wsi, RealtimeSession* session) {
+    session->partial_text.clear();
+    session->partial_count = 0;
+    send(wsi, session, {{"type", "transcription.segment"},
+                        {"event_index", 0},
+                        {"segment_id", session->segment_id},
+                        {"text", ""},
+                        {"is_final", false}});
+  }
+
+  void on_speech_started(lws* wsi, RealtimeSession* session,
+                         size_t speech_offset) {
+    // Barge-in: a new utterance while the previous turn still computes.
+    if (!session->request_id.empty()) {
+      interrupt_request(session, "barge_in");
+      session->segment_id += 1;
+      // Keep the whole onset frame: it is the first audio of the new turn.
+      session->turn_audio_start =
+          speech_offset >= session->vad->frame_bytes()
+              ? speech_offset - session->vad->frame_bytes()
+              : 0;
+      session->committed_audio = session->audio.size();
+      session->first_audio_at = Clock::now();
+      session->have_first_audio = true;
+      clear_preview(wsi, session);
+    }
+    session->speech_open = true;
+    send(wsi, session, {{"type", "input_audio_buffer.speech_started"},
+                        {"segment_id", session->segment_id}});
+  }
+
+  void on_speech_stopped(lws* wsi, RealtimeSession* session) {
+    session->speech_open = false;
+    send(wsi, session, {{"type", "input_audio_buffer.speech_stopped"},
+                        {"segment_id", session->segment_id},
+                        {"audio_ms", static_cast<int64_t>(
+                             (session->audio.size() - session->turn_audio_start) /
+                             32)}});
+    // Endpoint: commit the turn without waiting for transcription.done.
+    submit_request(wsi, session, true);
+  }
+
+  void append_audio(lws* wsi, RealtimeSession* session, const std::string& pcm) {
+    if (pcm.size() > kMaxAudioBytes - std::min(session->audio.size(), kMaxAudioBytes)) {
+      throw ProtocolError("realtime audio exceeds the server limit");
+    }
+    if (!session->have_first_audio) {
+      session->first_audio_at = Clock::now();
+      session->have_first_audio = true;
+      session->turn_started_ms = epoch_millis();
+    }
+    session->audio.append(pcm);
+    if (session->vad) {
+      const size_t base = session->audio.size() - pcm.size();
+      for (const auto& frame : session->vad->push(pcm.data(), pcm.size())) {
+        if (frame.event == serve_detail::EnergyVad::Event::kSpeechStarted) {
+          on_speech_started(wsi, session, base + frame.bytes_consumed);
+        } else if (frame.event ==
+                   serve_detail::EnergyVad::Event::kSpeechStopped) {
+          on_speech_stopped(wsi, session);
+        }
+      }
+    }
+    maybe_submit_preview(wsi, session);
   }
 
   // Accepts only fields this server actually applies. Validation completes
@@ -381,10 +574,43 @@ class RealtimeApi::Impl {
         throw ProtocolError("input_audio_format must be pcm16");
       }
     }
-    if (settings.contains("turn_detection") &&
-        !settings["turn_detection"].is_null()) {
-      throw ProtocolError(
-          "turn_detection must be null: server-side VAD is not implemented");
+    // turn_detection: null disables the server endpoint detector; a
+    // {"type":"server_vad","silence_ms":N} object enables it. Absence keeps the
+    // current setting, so a max_new_tokens-only update does not turn VAD off.
+    const bool apply_turn_detection = settings.contains("turn_detection");
+    bool vad_enabled = false;
+    serve_detail::VadConfig vad_config;
+    if (apply_turn_detection && !settings["turn_detection"].is_null()) {
+      const json& turn = settings["turn_detection"];
+      if (!turn.is_object()) {
+        throw ProtocolError("turn_detection must be null or a server_vad object");
+      }
+      for (auto it = turn.begin(); it != turn.end(); ++it) {
+        if (it.key() != "type" && it.key() != "silence_ms") {
+          throw ProtocolError("unsupported turn_detection field: " + it.key());
+        }
+      }
+      if (!turn.contains("type") || !turn["type"].is_string() ||
+          turn["type"].get<std::string>() != "server_vad") {
+        throw ProtocolError("turn_detection type must be server_vad");
+      }
+      if (turn.contains("silence_ms")) {
+        const json& silence = turn["silence_ms"];
+        const bool valid =
+            silence.is_number_integer() &&
+            (silence.is_number_unsigned()
+                 ? silence.get<uint64_t>() >= 100 && silence.get<uint64_t>() <= 5000
+                 : silence.get<int64_t>() >= 100 && silence.get<int64_t>() <= 5000);
+        if (!valid) {
+          throw ProtocolError(
+              "turn_detection silence_ms must be between 100 and 5000");
+        }
+        vad_config.silence_ms = static_cast<int>(
+            silence.is_number_unsigned()
+                ? silence.get<uint64_t>()
+                : static_cast<uint64_t>(silence.get<int64_t>()));
+      }
+      vad_enabled = true;
     }
     int64_t max_tokens = session->max_tokens;
     if (settings.contains("max_new_tokens")) {
@@ -404,6 +630,14 @@ class RealtimeApi::Impl {
                        : limit.get<int64_t>();
     }
     session->max_tokens = max_tokens;
+    if (apply_turn_detection) {
+      if (vad_enabled) {
+        session->vad = std::make_unique<serve_detail::EnergyVad>(vad_config);
+      } else {
+        session->vad.reset();
+        session->speech_open = false;
+      }
+    }
     session->ready = true;
     send(wsi, session,
          {{"type", "transcription_session.updated"},
@@ -432,7 +666,11 @@ class RealtimeApi::Impl {
         }
         update_session(wsi, session, event["session"]);
       } else if (type == "input_audio_buffer.append") {
-        if (!session->request_id.empty()) {
+        // A preview in flight does not block appends: that is what makes the
+        // input continuous. With server VAD a final turn must also keep
+        // reading, because the next utterance is what interrupts it. Only the
+        // legacy no-VAD session refuses audio after its final commit.
+        if (session->request_is_final && !session->vad) {
           throw ProtocolError(
               "audio append is not accepted after transcription.done");
         }
@@ -441,12 +679,9 @@ class RealtimeApi::Impl {
         }
         std::string pcm = decode_base64(event["audio"].get_ref<const std::string&>());
         if (pcm.empty() || pcm.size() % 2 != 0) throw ProtocolError("invalid PCM16 audio append");
-        if (pcm.size() > kMaxAudioBytes - std::min(session->audio.size(), kMaxAudioBytes)) {
-          throw ProtocolError("realtime audio exceeds the server limit");
-        }
-        session->audio.append(pcm);
+        append_audio(wsi, session, pcm);
       } else if (type == "transcription.done") {
-        submit(wsi, session);
+        submit_final(wsi, session);
       } else {
         throw ProtocolError("unsupported realtime event type");
       }
@@ -462,34 +697,66 @@ class RealtimeApi::Impl {
       auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
       if (!session || session->request_id.empty()) continue;
       const std::string request_id = session->request_id;
-      if (coordinator_.wait(request_id, 0)) {
-        auto info = coordinator_.info(request_id);
-        coordinator_.release(request_id);
-        session->request_id.clear();
-        if (!info || info->state != "completed") {
-          fail(wsi, session, info ? info->error : "request result disappeared");
-          continue;
-        }
-        try {
-          const std::string text = serve_detail::asr_result_text(info->result);
-          send(wsi, session, {{"type", "transcription.segment"},
-                              {"event_index", 1}, {"segment_id", 0},
-                              {"text", text}, {"is_final", true}});
-          json completed = {{"type", "transcription.completed"},
-                            {"text", text}};
-          if (const auto metadata = live_generation_metadata(info->result)) {
-            completed["generation_metadata"] = *metadata;
+      if (!coordinator_.wait(request_id, 0)) {
+        if (now >= session->deadline) {
+          coordinator_.abort(request_id);
+          coordinator_.release(request_id);
+          session->request_id.clear();
+          // A preview that overruns its deadline is dropped; only a committed
+          // final turn times the session out.
+          if (session->request_is_final) {
+            session->request_is_final = false;
+            fail(wsi, session, "realtime transcription timed out");
           }
-          send(wsi, session, completed);
-        } catch (const std::exception& error) {
-          fail(wsi, session, error.what());
         }
+        continue;
+      }
+      auto info = coordinator_.info(request_id);
+      coordinator_.release(request_id);
+      session->request_id.clear();
+      if (!session->request_is_final) {
+        // A preview failure is not a turn failure: the next window retries.
+        if (info && info->state == "completed") {
+          try {
+            emit_preview(wsi, session, info->result);
+          } catch (const std::exception& error) {
+            std::cerr << "realtime preview dropped: " << error.what() << "\n";
+          }
+        }
+        maybe_submit_preview(wsi, session);
+        continue;
+      }
+      session->request_is_final = false;
+      if (!info || info->state != "completed") {
+        fail(wsi, session, info ? info->error : "request result disappeared");
+        continue;
+      }
+      try {
+        const std::string text = serve_detail::asr_result_text(info->result);
+        send(wsi, session, {{"type", "transcription.segment"},
+                            {"event_index", 1},
+                            {"segment_id", session->segment_id},
+                            {"text", text},
+                            {"is_final", true}});
+        json completed = {{"type", "transcription.completed"},
+                          {"text", text},
+                          {"segment_id", session->segment_id}};
+        if (const auto metadata = live_generation_metadata(info->result)) {
+          completed["generation_metadata"] = *metadata;
+        }
+        send(wsi, session, completed);
+        std::cerr << "realtime turn_done segment=" << session->segment_id
+                  << " previews=" << session->partial_count
+                  << " chars=" << text.size() << "\n";
+      } catch (const std::exception& error) {
+        fail(wsi, session, error.what());
+        continue;
+      }
+      if (session->vad) {
+        // Server VAD keeps the session open; the next utterance is a new turn.
+        reset_turn(session);
+      } else {
         session->close_after_write = true;
-      } else if (now >= session->deadline) {
-        coordinator_.abort(request_id);
-        coordinator_.release(request_id);
-        session->request_id.clear();
-        fail(wsi, session, "realtime transcription timed out");
       }
     }
   }
@@ -505,6 +772,7 @@ class RealtimeApi::Impl {
   std::mutex partial_mu_;
   std::deque<std::pair<std::string, std::string>> partial_queue_;
   uint64_t next_request_id_ = 0;
+  uint64_t next_preview_id_ = 0;
   int bound_port_ = -1;
 };
 

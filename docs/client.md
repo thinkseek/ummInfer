@@ -262,13 +262,21 @@ The same request sent to the HTTP Final route returns 400, so both paths
 refuse the field. `transcription_session.updated` and `transcription.completed`
 therefore carry no language. Any other session field returns an `error` event.
 
-The bundled server sends no partial preview events. After the stage returns, it
-sends exactly one `transcription.segment` with `is_final: true`, then one
-`transcription.completed`, and closes the WebSocket. That completed event is a
-single-shot result over the whole retained audio, not a concatenation of the
-segments. The client does handle several segments: it groups them by
-`event_index` and `segment_id` and passes non-final text to `on_partial`. That
-assembly path is library capability, not behavior the bundled server exercises.
+`turn_detection` accepts `null` (no server endpointing) or
+`{"type": "server_vad", "silence_ms": N}` with N between 100 and 5000. See
+[full duplex](full-duplex.md) for the measured behavior and its limits.
+
+The bundled server submits a preview request for every 200 ms of new audio.
+Each completed preview sends one `transcription.segment` with `is_final: false`
+and the cumulative text of the turn. The client groups segments by
+`event_index` and `segment_id` and passes non-final text to `on_partial`. With
+`server_vad`, the server also sends `input_audio_buffer.speech_started` and
+`input_audio_buffer.speech_stopped`; the stop event commits the turn, and the
+WebSocket stays open for the next turn. A new utterance aborts a computing
+turn. Without `turn_detection`, `transcription.done` commits the whole turn,
+the server sends one final segment and one `transcription.completed`, then
+closes the WebSocket. The bundled CLI client still treats the first
+`transcription.completed` as terminal.
 
 By default, `finish()` sends no `transcription.done`. It closes the WebSocket
 and performs one HTTP Final ASR request with the retained PCM. Only the PCM is
