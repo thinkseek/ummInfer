@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 
 #include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -118,6 +119,10 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " image_tokens=" << result.image_tokens
               << " generated_tokens=" << result.token_ids.size()
               << " chars=" << result.text.size()
+              << " prefill_ms=" << std::fixed << std::setprecision(1)
+              << result.prefill_ms
+              << " decode_ms=" << std::fixed << std::setprecision(1)
+              << result.decode_ms
               << " elapsed_ms=" << elapsed.count() << "\n";
     return omni_result(result.text, static_cast<int>(result.token_ids.size()));
   };

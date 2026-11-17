@@ -311,6 +311,9 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
   gemv_bf16_f32(im.weights.get("thinker.lm_head.weight"), s.norm, s.logits,
                 kVocab, kTextH, s.stream);
   int next = argmax_f32(s.logits, kVocab, s.argmax_scratch, s.stream);
+  // The prefill boundary must be a device-complete point: without the sync the
+  // wall clock would measure kernel launches, not the prefill itself.
+  UMM_CUDA_CHECK(cudaStreamSynchronize(s.stream));
   const double prefill_ms =
       std::chrono::duration<double, std::milli>(wall() - t_prefill).count();
 
