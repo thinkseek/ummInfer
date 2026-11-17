@@ -1,0 +1,30 @@
+{
+ "request_id": "http-7",
+ "abort_epoch_ms": 1794890298367,
+ "abort_status": 200,
+ "abort_body": {
+  "success": true
+ },
+ "kinds": [
+  "leg_error",
+  "cancelled"
+ ],
+ "terminal": {
+  "is_final": true,
+  "kind": "cancelled",
+  "legs": [
+   {
+    "error": "request aborted",
+    "stage": "tts",
+    "state": "aborted"
+   }
+  ],
+  "seq": 1,
+  "session_id": "session-8",
+  "stage": "",
+  "text": ""
+ },
+ "omni_completions_before": 6,
+ "omni_completions_after": 7,
+ "in_flight_after": 0
+}

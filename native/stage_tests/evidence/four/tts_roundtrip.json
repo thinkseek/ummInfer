@@ -1,0 +1,11 @@
+{
+ "result": {
+  "generation_metadata": {
+   "finish_reason": "stop",
+   "generated_token_count": 13
+  },
+  "text": "Hello, welcome to the native inference engine test."
+ },
+ "seconds": 0.279,
+ "expected": "Hello, welcome to the native inference engine test."
+}

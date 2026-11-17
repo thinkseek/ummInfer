@@ -39,10 +39,17 @@ const float kLatStd[16] = {2.8184f, 1.4541f, 2.3275f, 2.6558f, 1.2196f, 1.7708f,
 ImageEngine::ImageEngine(int gpu_id, const std::string& model_dir)
     : gpu_(gpu_id), model_dir_(model_dir) {}
 
-GenerateResult ImageEngine::generate(const GenerateParams& gp) {
+GenerateResult ImageEngine::generate(const GenerateParams& gp, const AbortCheck& abort) {
   using clock = std::chrono::steady_clock;
   const auto t_start = clock::now();
   CudaRuntime rt(gpu_);
+  auto check_abort = [&](const char* boundary) {
+    if (abort && abort()) {
+      // Do not leave queued CUDA work running after the request exits.
+      rt.sync();
+      throw RequestAborted(boundary);
+    }
+  };
 
   // ---- tokenize (host) ----
   Qwen2BpeTokenizer tokenizer(model_dir_ + "/tokenizer");
@@ -63,11 +70,13 @@ GenerateResult ImageEngine::generate(const GenerateParams& gp) {
   DiT dit(rt, model_dir_ + "/transformer");
   VaeDecoder vae(rt, model_dir_ + "/vae");
   const auto t_after_load = clock::now();
+  check_abort("model load");
 
   // ---- text encode ----
   DeviceTensor cond_embed = te.forward(cond_ids);
   DeviceTensor neg_embed = te.forward(neg_ids);
   const auto t_after_te = clock::now();
+  check_abort("text encoder");
 
   // ---- initial packed latent ----
   const int latent_h = 2 * (gp.height / 16);
@@ -96,6 +105,10 @@ GenerateResult ImageEngine::generate(const GenerateParams& gp) {
     cfg_combine(vc.data, vc.data, neg_v.data, gp.guidance, packed_tokens, 64, rt.stream);
     const float dt = sched.sigmas[step + 1] - sched.sigmas[step];
     euler_step_bf16(latent.data, vc.data, dt, packed_tokens * 64, rt.stream);
+    // One synchronized boundary per step prevents the host from queueing the
+    // whole trajectory past an abort request.
+    rt.sync();
+    check_abort("denoise step");
   }
   rt.sync();
   const auto t_after_denoise = clock::now();
@@ -125,6 +138,8 @@ GenerateResult ImageEngine::generate(const GenerateParams& gp) {
                    rt.stream);
   }
   DeviceTensor rgb = vae.decode(lat_denorm, latent_h, latent_w);
+  rt.sync();
+  check_abort("VAE decode");
   const auto t_after_vae = clock::now();
 
   // ---- to uint8 RGB HWC ----

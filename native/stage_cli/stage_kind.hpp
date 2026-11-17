@@ -20,9 +20,10 @@ struct StageOptions {
   int max_new_tokens = 0;
   int max_frames = 0;  // TTS only
   int max_seq = 0;     // Omni only
+  int steps = 0;       // Image only
 };
 
-// The kind this executable was built for: "asr", "omni" or "tts".
+// The kind this executable was built for: "asr", "omni", "tts" or "image".
 const char* compiled_kind();
 
 // Loads the model synchronously and returns the function the Stage runs. The

@@ -89,6 +89,7 @@ if(UMM_STAGE_CUDA)
     ${NATIVE_DIR}/omni/image_preprocess.cpp
     ${NATIVE_DIR}/omni/tokenizer.cpp
     ${NATIVE_DIR}/omni/cuda_kernels_omni.cu
+    ${NATIVE_DIR}/omni/omni_gemm.cu
     ${NATIVE_DIR}/omni/vision_forward.cu
     ${NATIVE_DIR}/omni/merger.cu
     ${NATIVE_DIR}/omni/text_decoder.cu
@@ -125,4 +126,26 @@ if(UMM_STAGE_CUDA)
   target_link_libraries(umm-native-stage-tts PRIVATE
     umm_stage_common ICU::uc ICU::i18n CUDA::cudart)
   set_target_properties(umm-native-stage-tts PROPERTIES CUDA_ARCHITECTURES 90)
+
+  # ---- Image ----
+  find_package(ZLIB REQUIRED)
+  add_executable(umm-native-stage-image
+    main.cpp image_stage.cpp
+    ${NATIVE_DIR}/image/scheduler.cpp
+    ${NATIVE_DIR}/image/png.cpp
+    ${NATIVE_DIR}/image/safetensors_shard.cpp
+    ${NATIVE_DIR}/image/tokenizer.cpp
+    ${NATIVE_DIR}/image/packing.cpp
+    ${NATIVE_DIR}/image/tensor.cpp
+    ${NATIVE_DIR}/image/weights.cpp
+    ${NATIVE_DIR}/image/text_encoder.cpp
+    ${NATIVE_DIR}/image/dit.cpp
+    ${NATIVE_DIR}/image/vae.cpp
+    ${NATIVE_DIR}/image/engine.cpp
+    ${NATIVE_DIR}/image/cuda_kernels.cu
+  )
+  target_include_directories(umm-native-stage-image PRIVATE ${NATIVE_DIR}/image)
+  target_link_libraries(umm-native-stage-image PRIVATE
+    umm_stage_common CUDA::cudart CUDA::cublas CUDA::cublasLt ZLIB::ZLIB)
+  set_target_properties(umm-native-stage-image PROPERTIES CUDA_ARCHITECTURES 90)
 endif()

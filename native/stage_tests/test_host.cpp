@@ -225,6 +225,43 @@ void test_tts_parsing() {
         "Chinese sentence detected");
 }
 
+void test_image_parsing() {
+  using namespace umminfer::stage;
+  umminfer::Value::Map inputs;
+  inputs["prompt"] = umminfer::Value("a fox");
+  inputs["negative_prompt"] = umminfer::Value("blurred");
+  inputs["size"] = umminfer::Value("512x512");
+  inputs["seed"] = umminfer::Value(static_cast<int64_t>(42));
+  inputs["steps"] = umminfer::Value(static_cast<int64_t>(50));
+  inputs["guidance"] = umminfer::Value(4.0);
+  inputs["output_format"] = umminfer::Value("png");
+  const ImageWork parsed = parse_image_work(umminfer::Value(std::move(inputs)));
+  check(parsed.prompt == "a fox" && parsed.negative_prompt == "blurred",
+        "image prompts parsed");
+  check(parsed.width == 512 && parsed.height == 512, "image size parsed");
+  check(parsed.seed == 42 && parsed.steps == 50 && parsed.guidance == 4.0f,
+        "image generation options parsed");
+
+  auto with = [](const char* key, umminfer::Value value) {
+    umminfer::Value::Map map;
+    map["prompt"] = umminfer::Value("x");
+    map[key] = std::move(value);
+    return umminfer::Value(std::move(map));
+  };
+  check(parse_image_work(with("size", umminfer::Value("512x512"))).steps == 0,
+        "image default steps preserved");
+  check_throws([&] { parse_image_work(with("size", umminfer::Value("1024x1024"))); },
+               "unvalidated image size rejected");
+  check_throws([&] { parse_image_work(with("output_format", umminfer::Value("jpeg"))); },
+               "unsupported image format rejected");
+  check_throws([&] { parse_image_work(with("steps", umminfer::Value(static_cast<int64_t>(201)))); },
+               "excessive image steps rejected");
+  check_throws([&] { parse_image_work(with("seed", umminfer::Value(static_cast<int64_t>(-1)))); },
+               "negative image seed rejected");
+  check_throws([] { parse_image_work(umminfer::Value(umminfer::Value::Map{})); },
+               "missing image prompt rejected");
+}
+
 void test_result_shapes() {
   using namespace umminfer::stage;
   const umminfer::Value asr = asr_result("text", 7, "stop");
@@ -243,6 +280,16 @@ void test_result_shapes() {
         "tts artifact bytes");
   check(tts.find("sample_rate")->as_int() == 24000, "tts artifact sample rate");
   check_throws([] { tts_result("", 24000, 1, "vivian"); }, "empty TTS output rejected");
+
+  const umminfer::Value image = image_result("PNGdata", 512, 512, 42, 50);
+  check(image.find("media_type")->as_str() == "image", "image media type");
+  check(image.find("mime_type")->as_str() == "image/png", "image mime type");
+  check(image.find("size")->as_str() == "512x512", "image descriptor size");
+  check(image.find("seed")->as_int() == 42 && image.find("steps")->as_int() == 50,
+        "image generation metadata");
+  check(image.find("data")->is_bin() && image.find("data")->as_bin() == "PNGdata",
+        "image artifact bytes");
+  check_throws([] { image_result("", 512, 512, 0, 50); }, "empty image output rejected");
 }
 
 // The scheduler must hand each request its own abort check: a running request
@@ -309,6 +356,7 @@ int main() {
   test_omni_parsing();
   test_base64_and_data_url();
   test_tts_parsing();
+  test_image_parsing();
   test_result_shapes();
   test_scheduler_cancellation();
   if (g_failures != 0) {

@@ -3,10 +3,20 @@
 
 #include "tensor.hpp"
 
+#include <functional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace umminfer::image {
+
+using AbortCheck = std::function<bool()>;
+
+class RequestAborted : public std::runtime_error {
+ public:
+  explicit RequestAborted(const std::string& boundary)
+      : std::runtime_error(boundary) {}
+};
 
 struct GenerateParams {
   std::string prompt;
@@ -29,7 +39,7 @@ struct GenerateResult {
 class ImageEngine {
  public:
   ImageEngine(int gpu_id, const std::string& model_dir);
-  GenerateResult generate(const GenerateParams& p);
+  GenerateResult generate(const GenerateParams& p, const AbortCheck& abort = {});
 
  private:
   int gpu_;
