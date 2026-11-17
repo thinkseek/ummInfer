@@ -647,9 +647,14 @@ void run_layer(Engine::Impl& im, int layer, int m, int history,
 
 GenResult Engine::generate(const std::vector<int>& prompt_ids,
                            const PreprocessedImage* image, int max_new_tokens,
-                           const std::string& dump_dir) {
+                           const std::string& dump_dir, const AbortCheck& abort,
+                           const TokenCallback& on_token) {
   Impl& im = *impl_;
   auto& st = im.stream;
+  // Checked on the host between kernel launches, so it changes no result.
+  auto check_abort = [&abort](const char* boundary) {
+    if (abort && abort()) throw GenerationAborted(boundary);
+  };
   const int P = static_cast<int>(prompt_ids.size());
   if (P <= 0) throw std::runtime_error("empty prompt");
   if (P + max_new_tokens > im.max_seq)
@@ -666,6 +671,7 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   int n_img = 0;
   int img_start = -1;
   if (image) {
+    check_abort("vision");
     const auto t0 = Clock::now();
     vision_forward(im, *image, dump_dir);
     vision_ms = ms_since(t0);
@@ -680,6 +686,14 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   result.vision_ms = vision_ms;
 
   const auto t_prefill = Clock::now();
+  // The linear-attention recurrent state and the conv history are cumulative.
+  // They are allocated once for the process, so every request must start from
+  // zero: otherwise request N+1 continues from request N's history. The KV
+  // cache needs no reset because prefill rewrites positions [0, P).
+  UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(
+      im.rec_state, 0, sizeof(float) * kLayers * kLVH * kLVD * kLVD, st));
+  UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(
+      im.conv_state, 0, sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1), st));
   UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, prompt_ids.data(),
                                         P * sizeof(int), cudaMemcpyHostToDevice,
                                         st));
@@ -714,7 +728,10 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     write_file(dump_dir, "meta.txt", meta.data(), meta.size());
   }
 
-  for (int l = 0; l < kLayers; ++l) run_layer(im, l, P, 0, dump_dir);
+  for (int l = 0; l < kLayers; ++l) {
+    check_abort("prefill");
+    run_layer(im, l, P, 0, dump_dir);
+  }
 
   rms_norm_zero_centered(im.hidden + static_cast<size_t>(P - 1) * kHidden,
                          im.bf("model.language_model.norm.weight"), im.norm, 1,
@@ -733,7 +750,9 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   const auto t_decode = Clock::now();
   while (static_cast<int>(result.ids.size()) < max_new_tokens && !is_eos(next)) {
     result.ids.push_back(next);
+    if (on_token) on_token(next);
     if (static_cast<int>(result.ids.size()) >= max_new_tokens) break;
+    check_abort("decode");
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, &next, sizeof(int),
                                           cudaMemcpyHostToDevice, st));
     index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,

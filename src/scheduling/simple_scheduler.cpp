@@ -6,6 +6,18 @@
 #include <iostream>
 
 namespace umminfer {
+namespace {
+
+// Valid only while one compute function runs on this thread.
+thread_local const StreamFn* g_stream_sink = nullptr;
+thread_local std::string g_stream_request;
+
+}  // namespace
+
+void emit_stage_stream(Value chunk) {
+  if (g_stream_sink == nullptr || !*g_stream_sink) return;
+  (*g_stream_sink)(g_stream_request, std::move(chunk));
+}
 
 SimpleScheduler::SimpleScheduler(ComputeFn compute_fn,
                                  BatchComputeFn batch_compute_fn,
@@ -160,8 +172,26 @@ void SimpleScheduler::set_cancellable_compute(CancellableComputeFn fn) {
   cancellable_fn_ = std::move(fn);
 }
 
+void SimpleScheduler::set_stream_fn(StreamFn fn) {
+  stream_fn_ = std::move(fn);
+}
+
 void SimpleScheduler::run_single(const IncomingMessage& msg) {
   if (consume_if_aborted(msg.request_id)) return;
+  // Bind emit_stage_stream() to this request for the duration of the call.
+  // A compute function that streams never sees another request's id.
+  struct StreamBinding {
+    StreamBinding(const StreamFn* fn, const std::string& request_id,
+                  const StreamFn** slot, std::string* name) {
+      *slot = fn;
+      *name = request_id;
+    }
+    ~StreamBinding() {
+      g_stream_sink = nullptr;
+      g_stream_request.clear();
+    }
+  } binding(stream_fn_ ? &stream_fn_ : nullptr, msg.request_id,
+            &g_stream_sink, &g_stream_request);
   Value result;
   try {
     if (cancellable_fn_) {

@@ -28,6 +28,13 @@ EXPECTED_ASR = ("Oh yeah, yeah. He wasn't even that big when I started listening
 # short sentence; the round-trip check compares against that answer.
 TTS_TEXT = ("Reply with exactly this sentence and nothing else: "
             "Hello, welcome to the native inference engine test.")
+# A prompt whose answer runs to the token cap on both VLM stages, so the
+# cancel test lands inside the decode loop instead of after a short answer.
+LONG_VLM_PROMPT = ("List the integers from 1 to 200 as digits, separated by "
+                   "commas, and write nothing else.")
+# Long enough that both VLM engines are still decoding at the 0.5 s abort.
+VLM_CANCEL_PROMPT = ("List the integers from 1 to 200 as digits, separated by "
+                     "commas, and write nothing else.")
 
 
 class Failure(Exception):
@@ -274,18 +281,19 @@ def normalize(text):
                             for ch in text).split())
 
 
-def count_omni_requests(directory):
-    """Counts completed Omni requests. The stage log is truncated at start but
-    stays sparse, so NUL padding is stripped before decoding."""
+def count_vlm_requests(directory, stage):
+    """Counts completed VLM requests of one stage (omni or qwen38). The stage
+    log is truncated at start but stays sparse, so NUL padding is stripped."""
     try:
-        with open(os.path.join(directory, "omni.log"), "rb") as handle:
+        with open(os.path.join(directory, stage + ".log"), "rb") as handle:
             data = handle.read().replace(b"\x00", b"")
     except OSError:
         return 0
     # Only completed requests count: an aborted request writes a line that
     # starts the same way but reports a boundary instead of token counts.
+    prefix = stage + " request "
     return sum(1 for line in data.decode("utf-8", "replace").splitlines()
-               if line.startswith("omni request ") and
+               if line.startswith(prefix) and
                "generated_tokens=" in line and "boundary=" not in line)
 
 
@@ -353,6 +361,8 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--stage-log-dir", default="/root/umm-native-service/logs")
+    parser.add_argument("--vlm-stage", default="omni",
+                        help="VLM stage name: omni or qwen38")
     parser.add_argument("--ready-timeout", type=float, default=900)
     args = parser.parse_args()
     base = args.base_url.rstrip("/")
@@ -396,6 +406,31 @@ def main():
         content = answer["choices"][0]["message"]["content"]
         expect(status == 200 and content.strip(), "text-only VLM returns content")
         print("VLM text:", content[:160])
+
+        # 2b. stream=true must deliver incremental deltas (one per generated
+        # token at most), not a single aggregate frame at the end.
+        streamed = ""
+        delta_frames = 0
+        stream_terminal = None
+        for frame in chat_stream(base, "Name three colors, one per line.",
+                                 max_tokens=64):
+            choice = (frame.get("choices") or [{}])[0]
+            piece = (choice.get("delta") or {}).get("content") or ""
+            if piece:
+                delta_frames += 1
+                streamed += piece
+            unified = frame.get("unified") or {}
+            if unified.get("kind") in ("complete", "error", "cancelled"):
+                stream_terminal = unified
+        record(args.out_dir, "vlm_stream.json", json.dumps({
+            "delta_frames": delta_frames, "text": streamed,
+            "terminal": stream_terminal}, ensure_ascii=False, indent=1))
+        expect(stream_terminal is not None and
+               stream_terminal.get("kind") == "complete",
+               "text stream ends with complete")
+        expect(delta_frames >= 2 and streamed.strip(),
+               "stream=true returns incremental VLM deltas")
+        print("VLM stream deltas:", delta_frames)
 
         # 3. Image -> VLM.
         status, body, elapsed = request(base + "/v1/chat/completions", {
@@ -543,9 +578,10 @@ def main():
         expect(health_asr.get("in_flight") == 0, "in_flight 0 after ASR cancel")
         print("cancel ASR:", kinds[-1])
 
-        # 8b. Omni: tensor-core decode is much faster than the original slice.
-        # Abort at 0.5 s, inside the token loop of a 96-token response.
-        stream = chat_stream(base, "Write a long paragraph about the sea.")
+        # 8b. VLM: abort at 0.5 s, inside the token loop of a 96-token
+        # response. The prompt must not reach EOS early, or the request would
+        # finish before the abort and settle as complete on either engine.
+        stream = chat_stream(base, VLM_CANCEL_PROMPT)
         omni_cancel_id = next(stream)["id"]
         time.sleep(0.5)
         sent, abort_status, abort_body = abort_now(omni_cancel_id)
@@ -585,9 +621,9 @@ def main():
         print("cancel Image:", terminal.get("kind") if terminal else None)
 
         # 8d. TTS: the leg emits nothing until its artifact, so wait for the
-        # VLM leg to finish (the omni stage logs one line per completed
+        # VLM leg to finish (the VLM stage logs one line per completed
         # request), then abort 5 s into synthesis.
-        omni_done = count_omni_requests(args.stage_log_dir)
+        omni_done = count_vlm_requests(args.stage_log_dir, args.vlm_stage)
         stream = chat_stream(base, TTS_TEXT, extra={
             "modalities": ["text", "audio"],
             "audio": {"voice": "ryan", "format": "wav", "sample_rate": 24000},
@@ -595,9 +631,9 @@ def main():
         tts_cancel_id = next(stream)["id"]
         deadline = time.time() + 240
         while (time.time() < deadline and
-               count_omni_requests(args.stage_log_dir) <= omni_done):
+               count_vlm_requests(args.stage_log_dir, args.vlm_stage) <= omni_done):
             time.sleep(0.5)
-        omni_after = count_omni_requests(args.stage_log_dir)
+        omni_after = count_vlm_requests(args.stage_log_dir, args.vlm_stage)
         # The VLM leg is done; synthesis is under way. The talker loop takes
         # about 3 s and the waveform decoder about 30 s, so 10 s lands inside
         # the decoder with many boundaries left.

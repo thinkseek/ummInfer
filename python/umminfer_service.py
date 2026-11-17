@@ -180,12 +180,15 @@ class Supervisor:
     def _build_children(self):
         cfg = self.config
         ipc = cfg["ipc_dir"]
+        # The VLM leg is whichever started stage the config names, so the
+        # deployment can run omni or qwen38 on the same server binary.
+        vlm = cfg.get("vlm_stage", "omni")
         children = [Child("server", [
             cfg["binary"], "serve",
             "--host", cfg["host"], "--port", str(cfg["port"]),
             "--model", cfg["model"],
             "--entry", "asr", "--entry-endpoint", f"ipc://{ipc}/asr",
-            "--vlm-entry", "omni", "--vlm-entry-endpoint", f"ipc://{ipc}/omni",
+            "--vlm-entry", vlm, "--vlm-entry-endpoint", f"ipc://{ipc}/{vlm}",
             "--image-entry", "image", "--image-entry-endpoint", f"ipc://{ipc}/image",
             "--tts-entry", "tts", "--tts-entry-endpoint", f"ipc://{ipc}/tts",
             "--completion", f"ipc://{ipc}/done",
@@ -430,6 +433,30 @@ class Supervisor:
                 pass
 
 
+STAGE_KINDS = ("asr", "omni", "qwen38", "tts", "image")
+
+
+def validate_stage(stage, where):
+    if not isinstance(stage, dict):
+        raise SystemExit(f"{where} must be an object")
+    for key in ("name", "model", "gpu"):
+        if key not in stage:
+            raise SystemExit(f"{where} is missing {key}")
+    name = stage["name"]
+    if not isinstance(name, str) or not name:
+        raise SystemExit(f"{where} name must be a nonempty string")
+    kind = stage.get("kind", name)
+    if kind not in STAGE_KINDS:
+        raise SystemExit(f"{where} {name} has unknown kind '{kind}'")
+    if not isinstance(stage["model"], str) or not stage["model"]:
+        raise SystemExit(f"{where} {name} model must be a nonempty string")
+    gpu = stage["gpu"]
+    if not isinstance(gpu, int) or isinstance(gpu, bool) or gpu < 0:
+        raise SystemExit(f"{where} {name} gpu must be a non-negative integer")
+    if not isinstance(stage.get("args", []), list):
+        raise SystemExit(f"{where} {name} args must be an array")
+
+
 def load_config(path):
     config = read_json(path)
     if config is None:
@@ -446,10 +473,33 @@ def load_config(path):
         raise SystemExit("config is missing stage_binary_dir")
     if not isinstance(config.get("native_stages"), list) or not config["native_stages"]:
         raise SystemExit("native_stages must be a nonempty array")
+    names = set()
+    kinds = {}
     for stage in config["native_stages"]:
-        for key in ("name", "model", "gpu"):
-            if key not in stage:
-                raise SystemExit(f"native stage is missing {key}")
+        validate_stage(stage, "native stage")
+        if stage["name"] in names:
+            raise SystemExit(f"duplicate native stage name: {stage['name']}")
+        names.add(stage["name"])
+        kinds[stage["name"]] = stage.get("kind", stage["name"])
+
+    # Configured-but-not-started stages. They are validated the same way so an
+    # entry can be re-enabled by moving it into native_stages.
+    optional = config.get("optional_stages", [])
+    if not isinstance(optional, list):
+        raise SystemExit("optional_stages must be an array")
+    for stage in optional:
+        validate_stage(stage, "optional stage")
+        if stage["name"] in names:
+            raise SystemExit(
+                f"stage {stage['name']} is both started and optional")
+
+    # The server needs exactly one VLM entry, and it must be a started stage
+    # that implements the text/image VLM contract.
+    vlm = config.get("vlm_stage", "omni")
+    if not isinstance(vlm, str) or vlm not in names:
+        raise SystemExit(f"vlm_stage '{vlm}' must name a started native stage")
+    if kinds[vlm] not in ("omni", "qwen38"):
+        raise SystemExit(f"vlm_stage '{vlm}' must have kind omni or qwen38")
     return config
 
 

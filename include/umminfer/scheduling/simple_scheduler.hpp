@@ -92,6 +92,12 @@ using ComputeFn = std::function<Value(const Value&)>;
 using BatchComputeFn = std::function<std::vector<Value>(const std::vector<Value>&)>;
 using RequestCostFn = std::function<int64_t(const Value&)>;
 using RequestArrivalHook = std::function<void(const Value&)>;
+// One incremental chunk of the request the scheduler is computing now.
+using StreamFn = std::function<void(const std::string& request_id, Value chunk)>;
+
+// Sends one incremental chunk for the current request. Callable only from
+// inside a compute function; outside one it does nothing.
+void emit_stage_stream(Value chunk);
 
 class SimpleScheduler {
  public:
@@ -113,6 +119,8 @@ class SimpleScheduler {
   // Installs the compute path that can observe its own cancellation. It takes
   // precedence over the plain compute function; an empty value restores it.
   void set_cancellable_compute(CancellableComputeFn fn);
+  // Installs the sink for emit_stage_stream. Empty drops every chunk.
+  void set_stream_fn(StreamFn fn);
   void start();  // blocks the calling thread
   void stop();
   void abort(const std::string& request_id);
@@ -133,6 +141,7 @@ class SimpleScheduler {
 
   ComputeFn fn_;
   CancellableComputeFn cancellable_fn_;
+  StreamFn stream_fn_;
   BatchComputeFn batch_fn_;
   int max_batch_size_;
   double max_batch_wait_s_;

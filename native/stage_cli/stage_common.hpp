@@ -60,6 +60,11 @@ struct OmniWork {
 // one image_url part is accepted.
 OmniWork parse_omni_work(const Value& work);
 
+// Same message shape for the qwen38 stage, with the fields that engine cannot
+// consume rejected instead of ignored: audio/video parts, an audio/video
+// modality claim, and more than one image.
+OmniWork parse_qwen38_work(const Value& work);
+
 // Chat turn exactly as native/omni_cli renders it. The vision block is two
 // adjacent special tokens; the caller expands the image pads between them.
 std::string render_omni_chat(const std::string& text, bool has_image);

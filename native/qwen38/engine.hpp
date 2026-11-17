@@ -1,13 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "image_preprocess.hpp"
 
 namespace umminfer::qwen38 {
+
+// Thrown when the abort check fires. The caller decides the terminal state;
+// the engine stops at the boundary it reached, so no partial result escapes.
+struct GenerationAborted : std::runtime_error {
+  explicit GenerationAborted(std::string boundary)
+      : std::runtime_error(std::move(boundary)) {}
+};
+
+using AbortCheck = std::function<bool()>;
+// Receives each generated token id before the next forward pass.
+using TokenCallback = std::function<void(int)>;
 
 struct GenResult {
   std::vector<int> ids;        // generated token ids, EOS excluded
@@ -30,9 +43,12 @@ class Engine {
 
   // prompt_ids must already contain one image_pad id per merged vision token.
   // dump_dir, when non-empty, receives per-layer bf16 tensors for parity tests.
+  // An empty abort check and an empty token callback keep the original run.
   GenResult generate(const std::vector<int>& prompt_ids,
                      const PreprocessedImage* image, int max_new_tokens,
-                     const std::string& dump_dir = "");
+                     const std::string& dump_dir = "",
+                     const AbortCheck& abort = {},
+                     const TokenCallback& on_token = {});
 
   // Opaque state; public only so the translation-unit helpers can name it.
   struct Impl;

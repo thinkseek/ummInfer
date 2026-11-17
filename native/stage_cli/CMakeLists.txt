@@ -98,6 +98,21 @@ if(UMM_STAGE_CUDA)
   target_link_libraries(umm-native-stage-omni PRIVATE umm_stage_common CUDA::cudart)
   set_target_properties(umm-native-stage-omni PROPERTIES CUDA_ARCHITECTURES 90)
 
+  # ---- Qwen3.8-27B ----
+  add_executable(umm-native-stage-qwen38
+    main.cpp qwen38_stage.cpp
+    ${NATIVE_DIR}/qwen38/safetensors_mmap.cpp
+    ${NATIVE_DIR}/qwen38/image_preprocess.cpp
+    ${NATIVE_DIR}/qwen38/tokenizer.cpp
+    ${NATIVE_DIR}/qwen38/prompt.cpp
+    ${NATIVE_DIR}/qwen38/engine.cu
+    ${NATIVE_DIR}/qwen38/qwen38_kernels.cu
+    ${NATIVE_DIR}/qwen38/qwen38_gemm.cu
+  )
+  target_include_directories(umm-native-stage-qwen38 PRIVATE ${NATIVE_DIR})
+  target_link_libraries(umm-native-stage-qwen38 PRIVATE umm_stage_common CUDA::cudart)
+  set_target_properties(umm-native-stage-qwen38 PROPERTIES CUDA_ARCHITECTURES 90)
+
   # ---- TTS ----
   find_package(ICU QUIET COMPONENTS uc i18n)
   if(NOT TARGET ICU::uc)

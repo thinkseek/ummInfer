@@ -134,6 +134,18 @@ Stage::Stage(Config config, ComputeFn compute_fn)
 Stage::Stage(Config config, CancellableComputeFn compute_fn)
     : Stage(std::move(config), ComputeFn{}) {
   scheduler_->set_cancellable_compute(std::move(compute_fn));
+  // emit_stage_stream() reaches the coordinator as the existing stream
+  // message. The control plane exists only after start(), and no compute runs
+  // before it, so this capture is safe for the stage's whole lifetime.
+  const std::string name = config_.name;
+  scheduler_->set_stream_fn([this, name](const std::string& request_id, Value chunk) {
+    if (!control_plane_) return;
+    StreamMessage msg;
+    msg.request_id = request_id;
+    msg.from_stage = name;
+    msg.chunk = std::move(chunk);
+    control_plane_->send_stream(msg);
+  });
 }
 
 Stage::~Stage() {

@@ -29,7 +29,7 @@ std::atomic<bool> g_running{true};
 void on_signal(int) { g_running = false; }
 
 void usage() {
-  std::cerr << "usage: umm-native-stage-<asr|omni|tts|image> --kind KIND --model DIR "
+  std::cerr << "usage: umm-native-stage-<asr|omni|qwen38|tts|image> --kind KIND --model DIR "
                "--recv-endpoint EP --coordinator-endpoint EP --abort-endpoint EP "
                "[--name NAME] [--gpu N] [--max-new-tokens N] [--max-frames N] "
                "[--max-seq N] [--steps N] [--next name=EP] [--peer name=EP]\n";
