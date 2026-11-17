@@ -100,11 +100,12 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     auto emit_token = [&tokenizer, &generated, &emitted](int id) {
       generated.push_back(id);
       const std::string text = tokenizer->decode(generated);
-      if (text.size() <= emitted.size()) return;
+      const size_t safe = utf8_complete_prefix(text);
+      if (safe <= emitted.size()) return;
       Value::Map chunk;
-      chunk["text"] = Value(text.substr(emitted.size()));
+      chunk["text"] = Value(text.substr(emitted.size(), safe - emitted.size()));
       emit_stage_stream(Value(std::move(chunk)));
-      emitted = text;
+      emitted = text.substr(0, safe);
     };
 
     qwen38::GenResult result;

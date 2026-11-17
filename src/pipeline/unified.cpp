@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "umminfer/obs/metrics.hpp"
+#include "umminfer/pipeline/sentence_split.hpp"
 
 namespace umminfer {
 namespace {
@@ -459,9 +460,21 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.image_leg.enabled = image_output;
   record.image_leg.stage_name = config_.image_stage;
   record.image_leg.stage_id = kImageStageId;
-  record.tts_leg.enabled = audio_output;
-  record.tts_leg.stage_name = config_.tts_stage;
-  record.tts_leg.stage_id = kTtsStageId;
+  record.tts_enabled = audio_output;
+  if (audio_output) {
+    const auto voice = record.audio_options.find("voice");
+    if (voice != record.audio_options.end() && voice->second.is_str()) {
+      record.tts_voice = voice->second.as_str();
+    }
+    // Streamed audio opts into the sentence pipeline. Without the flag the
+    // frozen single-leg path is unchanged. Image+audio together keep the
+    // single-shot leg because the mixed-output contract orders image
+    // artifacts before audio ones, and a sentence leg can finish first.
+    const auto stream = record.audio_options.find("stream");
+    record.tts_stream = stream != record.audio_options.end() &&
+                        stream->second.is_bool() && stream->second.as_bool() &&
+                        !image_output;
+  }
   // Every leg this engine submits carries the request type, so the coordinator
   // labels a leg's stage metrics without guessing from the payload shape. The
   // value is an identifier, never request content.
@@ -481,6 +494,7 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     vlm_payload.request_id = payload.request_id;
     vlm_payload.request.inputs =
         build_vlm_inputs("", record.original_inputs);
+    vlm_payload.request.inputs["session_id"] = Value(record.session_id);
     if (record.history_requested) {
       vlm_payload.request.inputs["messages"] = Value(
           with_session_history_locked(
@@ -518,7 +532,9 @@ bool UnifiedEngine::cancel(const std::string& request_id, const char* source) {
     record.cancel_requested = true;
     if (!record.vlm_id.empty()) active_ids.push_back(record.vlm_id);
     if (record.image_leg.submitted) active_ids.push_back(record.image_leg.child_id);
-    if (record.tts_leg.submitted) active_ids.push_back(record.tts_leg.child_id);
+    for (const OutputLeg& leg : record.tts_legs) {
+      if (leg.submitted) active_ids.push_back(leg.child_id);
+    }
     if (active_ids.empty()) {
       // ASR/VLM-only entry leg, still keyed by the unified id.
       active_ids.push_back(request_id);
@@ -557,8 +573,8 @@ bool UnifiedEngine::release(const std::string& request_id) {
     if (it->second.image_leg.submitted) {
       child_ids.push_back(it->second.image_leg.child_id);
     }
-    if (it->second.tts_leg.submitted) {
-      child_ids.push_back(it->second.tts_leg.child_id);
+    for (const OutputLeg& leg : it->second.tts_legs) {
+      if (leg.submitted) child_ids.push_back(leg.child_id);
     }
     records_.erase(it);
     for (auto queue_it = admission_.begin(); queue_it != admission_.end();
@@ -594,12 +610,15 @@ UnifiedEngine::find_record_locked(const std::string& event_request_id) {
   for (auto candidate = records_.begin(); candidate != records_.end();
        ++candidate) {
     const Record& record = candidate->second;
-    if ((!record.vlm_id.empty() && record.vlm_id == event_request_id) ||
-        (record.image_leg.submitted &&
-         record.image_leg.child_id == event_request_id) ||
-        (record.tts_leg.submitted &&
-         record.tts_leg.child_id == event_request_id)) {
+    if (!record.vlm_id.empty() && record.vlm_id == event_request_id) {
       return candidate;
+    }
+    if (record.image_leg.submitted &&
+        record.image_leg.child_id == event_request_id) {
+      return candidate;
+    }
+    for (const OutputLeg& leg : record.tts_legs) {
+      if (leg.submitted && leg.child_id == event_request_id) return candidate;
     }
   }
   return records_.end();
@@ -614,23 +633,32 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
       const std::string& unified_id = record_it->first;
       if (msg.from_stage == config_.vlm_stage) {
         if (record.phase == Phase::kVlm) {
-          record.vlm_text += chunk_text(msg.chunk);
+          const std::string delta(chunk_text(msg.chunk));
+          record.vlm_text += delta;
+          if (record.tts_stream) {
+            record.sentence_buf += delta;
+            drain_sentences_locked(unified_id, record);
+          }
           UnifiedEvent event;
           event.request_id = unified_id;  // contract id, never the child id
           event.session_id = record.session_id;
           event.stage_id = kVlmStageId;
           event.kind = UnifiedEvent::Kind::kVlmDelta;
           event.seq = record.next_seq++;
-          event.text = chunk_text(msg.chunk);
+          event.text = delta;
           dispatch_queue_.push_back(std::move(event));
         }
         // A VLM chunk before the VLM leg starts is out of order: drop it.
-      } else if (msg.from_stage == record.image_leg.stage_name ||
-                 msg.from_stage == record.tts_leg.stage_name) {
-        // Output legs deliver their Bin in complete.result; they emit no text
-        // stream. A stray chunk must not fall into the ASR branch below and
-        // appear as a fake transcript. It is still forwarded to any previous
-        // sink (the realtime chain) after this block.
+      } else if (msg.from_stage == config_.tts_stage && record.tts_enabled) {
+        // A streaming audio request turns each codec-frame chunk into an
+        // artifact event. A non-streaming leg emits nothing here: its Bin is
+        // delivered in complete.result.
+        if (record.tts_stream) emit_tts_chunk_locked(unified_id, record, msg.chunk);
+        // A stray chunk must not fall into the ASR branch below and appear as
+        // a fake transcript. It is still forwarded to any previous sink (the
+        // realtime chain) after this block.
+      } else if (msg.from_stage == record.image_leg.stage_name) {
+        // The image leg delivers its Bin in complete.result.
       } else if (record.phase != Phase::kVlm) {
         const bool is_final = chunk_is_final(msg.chunk);
         bool emit = true;
@@ -810,6 +838,9 @@ void UnifiedEngine::start_vlm_locked(const std::string& request_id,
   vlm_payload.request_id = record.vlm_id;
   vlm_payload.request.inputs =
       build_vlm_inputs(record.transcript, record.original_inputs);
+  // The VLM stage keeps a per-session prefill cache. The id is an opaque key:
+  // the stage never renders it into the prompt.
+  vlm_payload.request.inputs["session_id"] = Value(record.session_id);
   if (record.history_requested) {
     vlm_payload.request.inputs["messages"] = Value(
         with_session_history_locked(
@@ -969,11 +1000,15 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
       const bool image_child =
           record.image_leg.submitted &&
           info.request_id == record.image_leg.child_id;
-      const bool tts_child =
-          record.tts_leg.submitted &&
-          info.request_id == record.tts_leg.child_id;
-      OutputLeg* output_leg = image_child ? &record.image_leg
-                              : tts_child ? &record.tts_leg : nullptr;
+      OutputLeg* output_leg = image_child ? &record.image_leg : nullptr;
+      if (output_leg == nullptr) {
+        for (OutputLeg& leg : record.tts_legs) {
+          if (leg.submitted && leg.child_id == info.request_id) {
+            output_leg = &leg;
+            break;
+          }
+        }
+      }
       // The primary leg is ASR until the VLM leg is submitted, then VLM. Each
       // terminal records exactly one sample.
       const auto record_primary_leg = [&record](const std::string& status) {
@@ -1029,7 +1064,15 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
         } else {
           try {
             record_output_phases(*output_leg, info.result);
-            emit_artifact_locked(unified_id, record, *output_leg, info.result);
+            // A streamed leg already delivered its audio as chunks. Its
+            // terminal WAV would duplicate that audio, so only the phase
+            // numbers are kept.
+            const Value* streamed = info.result.find("streamed");
+            const bool was_streamed =
+                streamed != nullptr && streamed->is_bool() && streamed->as_bool();
+            if (!was_streamed) {
+              emit_artifact_locked(unified_id, record, *output_leg, info.result);
+            }
             settle_output_leg_locked(unified_id, record, *output_leg,
                                      UnifiedEvent::Kind::kComplete, {});
           } catch (const std::exception& error) {
@@ -1044,6 +1087,7 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
             unified_id, record, UnifiedEvent::Kind::kCancelled, {}, {}));
       } else if (info.state == "failed") {
         record_primary_leg("failed");
+        abort_tts_legs_locked(record);
         dispatch_queue_.push_back(finish_locked(
             unified_id, record, UnifiedEvent::Kind::kError,
             info.error.empty() ? "stage failure" : info.error, {}));
@@ -1111,7 +1155,8 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
           }
           if (record.vlm_text.empty()) record.vlm_text = *text;
           record.vlm_result = info.result;
-          if (record.image_leg.enabled || record.tts_leg.enabled) {
+          record.vlm_done = true;
+          if (record.image_leg.enabled || record.tts_enabled) {
             try {
               start_outputs_locked(unified_id, record);
             } catch (const std::exception& error) {
@@ -1149,10 +1194,12 @@ Value UnifiedEngine::build_image_inputs(const Record& record) {
   return Value(std::move(out));
 }
 
-Value UnifiedEngine::build_tts_inputs(const Record& record) {
+Value UnifiedEngine::build_tts_inputs(const Record& record,
+                                     const std::string& text) {
   Value::Map out = record.audio_options;
-  // The TTS input is always the aggregated VLM answer, never a delta.
-  out["text"] = Value(record.vlm_text);
+  // One leg speaks one complete sentence, never a raw delta.
+  out["text"] = Value(text);
+  if (record.tts_stream) out["stream"] = Value(true);
   return Value(std::move(out));
 }
 
@@ -1168,20 +1215,75 @@ void UnifiedEngine::start_image_locked(const std::string& request_id,
   leg.submitted = true;
   leg.started = std::chrono::steady_clock::now();
   coordinator_.submit(payload, leg.stage_name);
+  ++record.legs_remaining;
 }
 
 void UnifiedEngine::start_tts_locked(const std::string& request_id,
-                                     Record& record) {
-  OutputLeg& leg = record.tts_leg;
-  leg.child_id = request_id + kTtsSuffix;
+                                     Record& record, std::string text,
+                                     bool first) {
+  OutputLeg leg;
+  leg.enabled = true;
+  leg.stage_name = config_.tts_stage;
+  leg.stage_id = kTtsStageId;
+  // The single-shot path keeps the frozen :tts child id. Sentence legs are
+  // numbered in answer order; the suffix never advances the Coordinator
+  // counter because it is not of the form req-N.
+  leg.child_id = (!record.tts_stream && first)
+                     ? request_id + kTtsSuffix
+                     : request_id + kTtsSuffix + ":" +
+                           std::to_string(record.tts_legs.size());
   StagePayload payload;
   payload.request_id = leg.child_id;
-  payload.request.inputs = build_tts_inputs(record);
+  payload.request.inputs = build_tts_inputs(record, text);
   payload.request.params = record.vlm_params;
   payload.request.metadata = record.vlm_metadata;
   leg.submitted = true;
   leg.started = std::chrono::steady_clock::now();
   coordinator_.submit(payload, leg.stage_name);
+  record.tts_legs.push_back(std::move(leg));
+  ++record.legs_remaining;
+}
+
+void UnifiedEngine::drain_sentences_locked(const std::string& request_id,
+                                           Record& record) {
+  constexpr size_t kMaxSentenceCodepoints = 48;
+  // The first leg may start at a clause break once it has 8 codepoints. A
+  // long opening sentence would otherwise hold all audio until its
+  // terminator. Later legs keep the sentence rule.
+  constexpr size_t kFirstClauseCodepoints = 8;
+  while (true) {
+    size_t cut = sentence_cut(record.sentence_buf, kMaxSentenceCodepoints);
+    if (cut == 0 && record.tts_legs.empty()) {
+      cut = clause_cut(record.sentence_buf, kFirstClauseCodepoints);
+    }
+    if (cut == 0) break;
+    std::string sentence = record.sentence_buf.substr(0, cut);
+    record.sentence_buf.erase(0, cut);
+    // Trim surrounding whitespace; a punctuation-only piece is not spoken.
+    const size_t begin = sentence.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) continue;
+    sentence = sentence.substr(begin, sentence.find_last_not_of(" \t\r\n") - begin + 1);
+    start_tts_locked(request_id, record, std::move(sentence), false);
+  }
+}
+
+void UnifiedEngine::flush_sentences_locked(const std::string& request_id,
+                                           Record& record) {
+  std::string tail = record.sentence_buf;
+  record.sentence_buf.clear();
+  const size_t begin = tail.find_first_not_of(" \t\r\n");
+  char tail_ok = 0;
+  (void)tail_ok;
+  if (begin == std::string::npos) {
+    // No complete sentence ever arrived (a non-streaming VLM, or an answer
+    // without punctuation): speak the whole answer as one leg.
+    if (!record.tts_legs.empty()) return;
+    tail = record.vlm_text;
+  } else {
+    tail = tail.substr(begin, tail.find_last_not_of(" \t\r\n") - begin + 1);
+  }
+  if (tail.empty()) return;
+  start_tts_locked(request_id, record, std::move(tail), record.tts_legs.empty());
 }
 
 void UnifiedEngine::start_outputs_locked(const std::string& request_id,
@@ -1189,10 +1291,67 @@ void UnifiedEngine::start_outputs_locked(const std::string& request_id,
   record.phase = Phase::kOutputs;
   record.public_info.current_stage = kImageStageId;
   if (record.image_leg.enabled) start_image_locked(request_id, record);
-  if (record.tts_leg.enabled) start_tts_locked(request_id, record);
-  record.legs_remaining =
-      (record.image_leg.submitted ? 1 : 0) +
-      (record.tts_leg.submitted ? 1 : 0);
+  if (record.tts_enabled) {
+    if (record.tts_stream) {
+      flush_sentences_locked(request_id, record);
+    } else {
+      start_tts_locked(request_id, record, record.vlm_text, true);
+    }
+  }
+  // A short first sentence can settle before the VLM terminal; the last
+  // settle completes the request in that case. With no pending leg the
+  // request completes here.
+  if (record.legs_remaining == 0) on_legs_drained_locked(request_id, record);
+}
+
+void UnifiedEngine::emit_tts_chunk_locked(const std::string& request_id,
+                                          Record& record,
+                                          const Value& chunk) {
+  const Value* audio = chunk.find("audio");
+  if (audio == nullptr || !audio->is_bin() || audio->as_bin().empty()) return;
+  const size_t size = audio->as_bin().size();
+  if (size > kMaxArtifactAudioBytes ||
+      record.tts_bytes + size > kMaxArtifactAggregateBytes) {
+    if (!record.tts_failed) {
+      record.tts_failed = true;
+      record.tts_error = "streamed audio exceeds the artifact limit";
+    }
+    return;
+  }
+  record.tts_bytes += size;
+  Value::Map descriptor;
+  descriptor["artifact_id"] =
+      Value("art-" + std::to_string(record.next_artifact++));
+  descriptor["media_type"] = Value("audio");
+  descriptor["mime_type"] = Value("audio/pcm");
+  descriptor["format"] = Value("pcm16");
+  descriptor["sample_rate"] = Value(static_cast<int64_t>(24000));
+  descriptor["channels"] = Value(static_cast<int64_t>(1));
+  descriptor["index"] = Value(static_cast<int64_t>(0));
+  descriptor["total"] = Value(static_cast<int64_t>(1));
+  if (const Value* index = chunk.find("index")) {
+    descriptor["stream_index"] = *index;
+  }
+  UnifiedEvent event;
+  event.request_id = request_id;
+  event.session_id = record.session_id;
+  event.stage_id = kTtsStageId;
+  event.kind = UnifiedEvent::Kind::kArtifact;
+  event.seq = record.next_seq++;
+  event.is_final = true;
+  event.artifact = Value(std::move(descriptor));
+  event.artifact_bytes = std::make_shared<const std::string>(audio->as_bin());
+  event.artifact_offset = 0;
+  event.artifact_length = size;
+  dispatch_queue_.push_back(std::move(event));
+}
+
+void UnifiedEngine::abort_tts_legs_locked(Record& record) {
+  for (OutputLeg& leg : record.tts_legs) {
+    if (leg.submitted && leg.state.empty()) {
+      coordinator_.abort(leg.child_id, "vlm_failure");
+    }
+  }
 }
 
 void UnifiedEngine::emit_artifact_locked(const std::string& request_id,
@@ -1281,6 +1440,10 @@ void UnifiedEngine::settle_output_leg_locked(
                                  leg.state, ms / 1000.0);
   }
   if (kind != UnifiedEvent::Kind::kComplete) {
+    if (leg.stage_id == kTtsStageId) {
+      record.tts_failed = true;
+      if (record.tts_error.empty()) record.tts_error = error;
+    }
     UnifiedEvent event;
     event.request_id = request_id;
     event.session_id = record.session_id;
@@ -1293,7 +1456,9 @@ void UnifiedEngine::settle_output_leg_locked(
     dispatch_queue_.push_back(std::move(event));
   }
   --record.legs_remaining;
-  if (record.legs_remaining == 0) on_legs_drained_locked(request_id, record);
+  if (record.vlm_done && record.legs_remaining == 0) {
+    on_legs_drained_locked(request_id, record);
+  }
 }
 
 Value UnifiedEngine::legs_value_locked(const Record& record) const {
@@ -1307,7 +1472,21 @@ Value UnifiedEngine::legs_value_locked(const Record& record) const {
     legs.push_back(Value(std::move(item)));
   };
   add(record.image_leg);
-  add(record.tts_leg);
+  if (record.tts_enabled) {
+    Value::Map item;
+    item["stage"] = Value(kTtsStageId);
+    bool all_aborted = !record.tts_legs.empty();
+    for (const OutputLeg& leg : record.tts_legs) {
+      if (leg.state != "aborted") all_aborted = false;
+    }
+    item["state"] = Value(record.tts_failed ? "failed"
+                        : all_aborted      ? "aborted"
+                                           : "completed");
+    if (record.tts_failed && !record.tts_error.empty()) {
+      item["error"] = Value(record.tts_error);
+    }
+    legs.push_back(Value(std::move(item)));
+  }
   return Value(std::move(legs));
 }
 

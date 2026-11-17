@@ -217,12 +217,20 @@ OmniEngine::~OmniEngine() {
 OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
                                         const PreprocessedImage* image,
                                         int max_new_tokens,
-                                        const AbortCheck& abort) {
+                                        const AbortCheck& abort,
+                                        const TokenCallback& on_token,
+                                        int prefix_tokens) {
   Impl& im = *impl_;
   auto& s = im.scratch;
   const int S = static_cast<int>(prompt_ids.size());
   if (S + max_new_tokens > im.max_seq)
     throw std::runtime_error("sequence exceeds bounded KV capacity");
+  // A cached prefix is only valid for a text prompt; vision writes its own
+  // rows and must start from slot 0.
+  if (image != nullptr || prefix_tokens < 0 || prefix_tokens >= S) {
+    prefix_tokens = 0;
+  }
+  const int M = S - prefix_tokens;
 
   // Vision tower, then replace the image_pad rows.
   int img_start = -1, n_img = 0;
@@ -270,12 +278,13 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
       throw std::runtime_error("image placeholder/feature count mismatch");
   }
 
-  // Embedding gather.
+  // Embedding gather. A reused prefix already has its KV and its rows; only
+  // the suffix is embedded and prefilled.
   const auto t_prefill = wall();
-  UMM_CUDA_CHECK(cudaMemcpy(s.d_vis_pos, prompt_ids.data(),
-                            S * sizeof(int), cudaMemcpyHostToDevice));
+  UMM_CUDA_CHECK(cudaMemcpy(s.d_vis_pos, prompt_ids.data() + prefix_tokens,
+                            M * sizeof(int), cudaMemcpyHostToDevice));
   index_embeddings(im.weights.get("thinker.model.embed_tokens.weight"),
-                   s.d_vis_pos, s.hidden, S, kTextH, s.stream);
+                   s.d_vis_pos, s.hidden, M, kTextH, s.stream);
   if (image)
     replace_rows(s.hidden, s.pooler, img_start, n_img, kTextH, s.stream);
 
@@ -285,7 +294,9 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
       prompt_ids, Qwen2BpeTokenizer::kImagePad,
       Qwen2BpeTokenizer::kVisionStart, Qwen2BpeTokenizer::kVisionEnd,
       has_image ? image->grid_h : 0, has_image ? image->grid_w : 0, has_image);
-  build_text_rope_table(pos.t.data(), pos.h.data(), pos.w.data(), S, s);
+  build_text_rope_table(pos.t.data() + prefix_tokens,
+                        pos.h.data() + prefix_tokens,
+                        pos.w.data() + prefix_tokens, M, s);
 
   // Visual row indices for deepstack injection.
   std::vector<int> vis_rows;
@@ -301,12 +312,12 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
     if (abort && abort()) {
       throw RequestAborted("aborted in prefill layer " + std::to_string(l));
     }
-    text_layer(im.weights, s, l, S, 0);
+    text_layer(im.weights, s, l, M, prefix_tokens);
     if (has_image && l < 3)
       add_deepstack(s.hidden, s.deepstack[l], s.d_vis_pos, n_img, kTextH,
                     s.stream);
   }
-  rms_norm(s.hidden + static_cast<size_t>(S - 1) * kTextH,
+  rms_norm(s.hidden + static_cast<size_t>(M - 1) * kTextH,
            im.weights.get("thinker.model.norm.weight"), s.norm, 1, kTextH,
            kRmsEps, s.stream);
   gemv_bf16_f32(im.weights.get("thinker.lm_head.weight"), s.norm, s.logits,
@@ -319,7 +330,8 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
       std::chrono::duration<double, std::milli>(wall() - t_prefill).count();
 
   Result result;
-  result.prefill_tokens = S;
+  result.prefill_tokens = M;
+  result.reused_tokens = prefix_tokens;
   result.image_tokens = n_img;
   result.vision_ms = vision_ms;
   result.prefill_ms = prefill_ms;
@@ -332,6 +344,7 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
       throw RequestAborted("aborted at token " + std::to_string(step));
     }
     result.token_ids.push_back(next);
+    if (on_token) on_token(next);
     UMM_CUDA_CHECK(cudaMemcpy(s.d_vis_pos, &next, sizeof(int),
                               cudaMemcpyHostToDevice));
     index_embeddings(im.weights.get("thinker.model.embed_tokens.weight"),

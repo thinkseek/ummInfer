@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -333,7 +334,8 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
                                          int language_id, int speaker_id,
                                          int max_frames,
                                          const AbortCheck& abort,
-                                         SynthTimings* timings) {
+                                         SynthTimings* timings,
+                                         const StreamSink& on_chunk) {
   Impl& im = *impl_;
   const auto started = std::chrono::steady_clock::now();
   const auto elapsed_ms = [&started] {
@@ -473,6 +475,26 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   int c0 = select_c0(/*allow_eos=*/false, /*n_hist=*/0, /*ban_id=*/-1);
   std::vector<int> frames;
   std::vector<int> c0_trace;
+  // Streaming policy: the first chunk is short so audio starts early, later
+  // chunks are longer to keep the repeated prefix decode cheap. Every chunk
+  // ends on a codec-frame boundary.
+  constexpr int kSamplesPerFrame = 1920;
+  constexpr int kFirstChunkFrames = 2;
+  constexpr int kChunkFrames = 8;
+  size_t emitted_samples = 0;
+  int next_stream_frame = kFirstChunkFrames;
+  auto flush = [&](int frame_count) {
+    if (frame_count <= 0 || !on_chunk) return;
+    std::vector<float> all = im.codec->decode(frames, frame_count, abort);
+    const size_t start = emitted_samples;
+    if (all.size() <= start) return;
+    const int first_frame = static_cast<int>(start / kSamplesPerFrame);
+    std::vector<float> chunk(all.begin() + static_cast<long>(start), all.end());
+    if (timings != nullptr && timings->first_audio_ms < 0)
+      timings->first_audio_ms = elapsed_ms();
+    on_chunk(chunk, first_frame, frame_count - first_frame);
+    emitted_samples = all.size();
+  };
   c0_trace.push_back(c0);
   for (int step = 0; step < max_frames; ++step) {
     if (abort && abort()) {
@@ -488,6 +510,11 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
     frames.push_back(c0);
     if (step == 0 && timings != nullptr) timings->first_frame_ms = elapsed_ms();
     for (int x : rest) frames.push_back(x);
+    const int frame_count = static_cast<int>(frames.size() / kGroups);
+    if (on_chunk && frame_count >= next_stream_frame) {
+      flush(frame_count);
+      next_stream_frame = frame_count + kChunkFrames;
+    }
 
     // Frame vector: codec_embed(c0) + 15 predictor embeddings + tts_pad.
     UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, &c0, sizeof(int), cudaMemcpyHostToDevice,
@@ -541,8 +568,29 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   }
   if (frames.size() % kGroups != 0)
     throw std::runtime_error("codec frames not divisible by 16");
-  std::vector<float> samples =
-      im.codec->decode(frames, static_cast<int>(frames.size() / kGroups), abort);
+  const int total_frames = static_cast<int>(frames.size() / kGroups);
+  // Decode the remainder (or the whole utterance without a sink). Reusing the
+  // last prefix decode would return stale samples when the frame count did not
+  // advance, so decode the exact final count.
+  std::vector<float> samples = im.codec->decode(frames, total_frames, abort);
+  if (on_chunk && std::getenv("UMM_TTS_REPEAT_CHECK")) {
+    // Diagnostic: is a decode of the same frames repeatable at all?
+    std::vector<float> again = im.codec->decode(frames, total_frames, abort);
+    size_t fd = 0;
+    while (fd < again.size() && fd < samples.size() && again[fd] == samples[fd]) ++fd;
+    float md = 0.0f;
+    for (size_t i = 0; i < std::min(again.size(), samples.size()); ++i)
+      md = std::max(md, std::fabs(again[i] - samples[i]));
+    std::cerr << "tts repeat_check same_size=" << (again.size() == samples.size())
+              << " first_diff=" << fd << " max_abs_diff=" << md << "\n";
+  }
+  if (on_chunk && samples.size() > emitted_samples) {
+    std::vector<float> chunk(samples.begin() + emitted_samples, samples.end());
+    on_chunk(chunk, static_cast<int>(emitted_samples / kSamplesPerFrame),
+             static_cast<int>(chunk.size() / kSamplesPerFrame));
+    if (timings != nullptr && timings->first_audio_ms < 0)
+      timings->first_audio_ms = elapsed_ms();
+  }
   if (timings != nullptr) timings->total_ms = elapsed_ms();
   return samples;
 }

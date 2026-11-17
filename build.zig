@@ -109,6 +109,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "omni_client_test", .source = "tests/omni_client_test.cpp" },
         .{ .name = "metrics_test", .source = "tests/metrics_test.cpp" },
         .{ .name = "realtime_vad_test", .source = "tests/realtime_vad_test.cpp" },
+        .{ .name = "sentence_split_test", .source = "tests/sentence_split_test.cpp" },
         .{ .name = "cuda_ipc_test", .source = "tests/cuda_ipc_test.cpp", .cuda = true },
         .{ .name = "cuda_pipeline_test", .source = "tests/cuda_pipeline_test.cpp", .cuda = true },
     };

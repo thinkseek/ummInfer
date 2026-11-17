@@ -9,6 +9,7 @@
 // request fields are rejected with HTTP 400 instead of being ignored.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -17,6 +18,7 @@
 namespace umminfer {
 
 class UnifiedEngine;
+struct UnifiedEvent;
 
 struct ApiConfig {
   std::string host = "0.0.0.0";
@@ -58,6 +60,9 @@ class OpenAIApi {
   // Call after construction and before Coordinator::run. Chat then uses the
   // unified ASR -> VLM engine; transcription and realtime stay on the ASR stage.
   void set_unified_engine(UnifiedEngine& engine, std::string vlm_stage);
+  // Chains an extra consumer in front of the HTTP SSE path. The realtime
+  // listener uses it to forward VLM text and streamed audio to its WebSocket.
+  void set_unified_forwarder(std::function<void(const UnifiedEvent&)> forwarder);
 
   bool bind();     // reserves the configured port without accepting requests
   bool listen();   // binds if needed, then blocks

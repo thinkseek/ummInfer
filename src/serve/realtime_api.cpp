@@ -21,6 +21,7 @@
 
 #include "asr_common.hpp"
 #include "energy_vad.hpp"
+#include "umminfer/pipeline/unified.hpp"
 
 namespace umminfer {
 namespace {
@@ -52,6 +53,11 @@ struct RealtimeSession {
   // Incremental submission and interruption state.
   bool request_is_final = false;
   size_t committed_audio = 0;  // bytes already sent in the last submit
+  // Bytes owned by the turn that was just committed. reset_turn erases
+  // exactly these; audio appended after the final submit starts the next
+  // turn. Without this the buffer grew across turns (turn_audio_start is 0
+  // on a normal turn, so erase(0, 0) kept everything).
+  size_t final_committed = 0;
   size_t turn_audio_start = 0; // offset of the current turn in `audio`
   int64_t segment_id = 0;      // increments per turn under server VAD
   int64_t partial_count = 0;
@@ -62,6 +68,14 @@ struct RealtimeSession {
   bool first_partial_logged = false;
   long long turn_started_ms = 0;
   long long last_interrupt_ms = 0;
+
+  // Spoken response. The realtime listener stays a pure ASR surface unless
+  // session.update enables audio_output and a unified engine is attached.
+  bool audio_output = false;
+  std::string voice = "vivian";
+  std::string unified_session;
+  std::string response_request_id;
+  int64_t response_segment = -1;
 };
 
 std::string header(lws* wsi, lws_token_indexes token) {
@@ -119,9 +133,44 @@ json effective_session(const RealtimeSession& session) {
   if (session.vad) {
     turn = {{"type", "server_vad"}, {"silence_ms", session.vad->silence_ms()}};
   }
-  return {{"input_audio_format", "pcm16"},
-          {"turn_detection", turn},
-          {"max_new_tokens", session.max_tokens}};
+  json effective = {{"input_audio_format", "pcm16"},
+                    {"turn_detection", turn},
+                    {"max_new_tokens", session.max_tokens}};
+  if (session.audio_output) effective["audio_output"] = {{"voice", session.voice}};
+  return effective;
+}
+
+std::string encode_base64(std::string_view input) {
+  static constexpr char kTable[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((input.size() + 2) / 3 * 4);
+  size_t index = 0;
+  while (index + 3 <= input.size()) {
+    const uint32_t v = (static_cast<uint32_t>(static_cast<unsigned char>(input[index])) << 16) |
+                       (static_cast<uint32_t>(static_cast<unsigned char>(input[index + 1])) << 8) |
+                       static_cast<uint32_t>(static_cast<unsigned char>(input[index + 2]));
+    out.push_back(kTable[(v >> 18) & 63]);
+    out.push_back(kTable[(v >> 12) & 63]);
+    out.push_back(kTable[(v >> 6) & 63]);
+    out.push_back(kTable[v & 63]);
+    index += 3;
+  }
+  const size_t tail = input.size() - index;
+  if (tail == 1) {
+    const uint32_t v = static_cast<uint32_t>(static_cast<unsigned char>(input[index])) << 16;
+    out.push_back(kTable[(v >> 18) & 63]);
+    out.push_back(kTable[(v >> 12) & 63]);
+    out += "==";
+  } else if (tail == 2) {
+    const uint32_t v = (static_cast<uint32_t>(static_cast<unsigned char>(input[index])) << 16) |
+                       (static_cast<uint32_t>(static_cast<unsigned char>(input[index + 1])) << 8);
+    out.push_back(kTable[(v >> 18) & 63]);
+    out.push_back(kTable[(v >> 12) & 63]);
+    out.push_back(kTable[(v >> 6) & 63]);
+    out.push_back('=');
+  }
+  return out;
 }
 
 long long epoch_millis() {
@@ -332,6 +381,7 @@ class RealtimeApi::Impl {
 
   void established(lws* wsi, RealtimeSession* session) {
     new (session) RealtimeSession;
+    session->unified_session = "realtime-" + std::to_string(++next_session_no_);
     sessions_.insert(wsi);
   }
 
@@ -339,6 +389,10 @@ class RealtimeApi::Impl {
     if (!session->request_id.empty()) {
       coordinator_.abort(session->request_id);
       coordinator_.release(session->request_id);
+    }
+    if (!session->response_request_id.empty() && unified_ != nullptr) {
+      unified_->cancel(session->response_request_id, "shutdown");
+      session->response_request_id.clear();
     }
     sessions_.erase(wsi);
     session->~RealtimeSession();
@@ -359,6 +413,10 @@ class RealtimeApi::Impl {
   // Stops the in-flight request at the stage's next boundary and drops its
   // record. libwebsockets thread only.
   void interrupt_request(RealtimeSession* session, const char* reason) {
+    if (unified_ != nullptr && !session->response_request_id.empty()) {
+      unified_->cancel(session->response_request_id, "barge_in");
+      session->response_request_id.clear();
+    }
     if (session->request_id.empty()) return;
     const std::string request_id = session->request_id;
     session->last_interrupt_ms = epoch_millis();
@@ -409,6 +467,7 @@ class RealtimeApi::Impl {
       payload.request_id = session->request_id;
       session->request_is_final = final;
       session->committed_audio = session->audio.size();
+      if (final) session->final_committed = session->audio.size();
       session->deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
           std::chrono::duration<double>(config_.request_timeout_s));
       coordinator_.submit(std::move(payload), config_.entry_stage);
@@ -448,7 +507,9 @@ class RealtimeApi::Impl {
     session->speech_open = false;
     session->first_partial_logged = false;
     session->segment_id += 1;
-    session->audio.erase(0, session->turn_audio_start);
+    const size_t drop = std::min(session->final_committed, session->audio.size());
+    session->audio.erase(0, drop);
+    session->final_committed = 0;
     session->turn_audio_start = 0;
     session->committed_audio = 0;
     if (!session->audio.empty()) {
@@ -548,7 +609,7 @@ class RealtimeApi::Impl {
       throw ProtocolError("session.update is not accepted after transcription.done");
     }
     static const std::set<std::string> kAllowed = {
-        "input_audio_format", "turn_detection", "max_new_tokens"};
+        "input_audio_format", "turn_detection", "max_new_tokens", "audio_output"};
     for (auto it = settings.begin(); it != settings.end(); ++it) {
       // The stage never reads these, so accepting them would report a
       // configuration that is not in effect. Presence alone is rejected,
@@ -629,7 +690,45 @@ class RealtimeApi::Impl {
                        ? static_cast<int64_t>(limit.get<uint64_t>())
                        : limit.get<int64_t>();
     }
+    // audio_output: null disables the spoken response; an object enables it
+    // and may name a voice. It is rejected when this process has no TTS stage.
+    bool audio_output = session->audio_output;
+    std::string voice = session->voice;
+    if (settings.contains("audio_output")) {
+      const json& audio = settings["audio_output"];
+      if (audio.is_null()) {
+        audio_output = false;
+      } else {
+        if (!audio.is_object()) {
+          throw ProtocolError("audio_output must be null or an object");
+        }
+        for (auto it = audio.begin(); it != audio.end(); ++it) {
+          if (it.key() != "voice") {
+            throw ProtocolError("unsupported audio_output field: " + it.key());
+          }
+        }
+        if (audio.contains("voice")) {
+          if (!audio["voice"].is_string() ||
+              audio["voice"].get<std::string>().empty()) {
+            throw ProtocolError("audio_output voice must be a non-empty string");
+          }
+          voice = audio["voice"].get<std::string>();
+        }
+        if (unified_ == nullptr || !unified_->tts_enabled()) {
+          throw ProtocolError("audio output is not enabled on this server");
+        }
+        audio_output = true;
+      }
+    }
+    // A spoken response needs the server to know where the turn ended; the
+    // legacy transcription.done path closes the socket after one result.
+    if (audio_output &&
+        !(apply_turn_detection ? vad_enabled : session->vad != nullptr)) {
+      throw ProtocolError("audio_output requires turn_detection server_vad");
+    }
     session->max_tokens = max_tokens;
+    session->audio_output = audio_output;
+    session->voice = voice;
     if (apply_turn_detection) {
       if (vad_enabled) {
         session->vad = std::make_unique<serve_detail::EnergyVad>(vad_config);
@@ -692,6 +791,7 @@ class RealtimeApi::Impl {
 
   void poll_sessions() {
     drain_partials();
+    drain_unified();
     const auto now = Clock::now();
     for (lws* wsi : sessions_) {
       auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
@@ -745,6 +845,7 @@ class RealtimeApi::Impl {
           completed["generation_metadata"] = *metadata;
         }
         send(wsi, session, completed);
+        start_response(session, text);
         std::cerr << "realtime turn_done segment=" << session->segment_id
                   << " previews=" << session->partial_count
                   << " chars=" << text.size() << "\n";
@@ -761,6 +862,116 @@ class RealtimeApi::Impl {
     }
   }
 
+  // Starts the VLM -> TTS turn for the transcript just completed. The audio
+  // arrives as audio.delta events through drain_unified().
+  void start_response(RealtimeSession* session, const std::string& text) {
+    if (unified_ == nullptr || !session->audio_output || text.empty()) return;
+    if (!session->response_request_id.empty()) {
+      unified_->cancel(session->response_request_id, "barge_in");
+      session->response_request_id.clear();
+    }
+    Value::Map inputs;
+    Value::Array messages;
+    Value::Map message;
+    message["role"] = Value("user");
+    message["content"] = Value(text);
+    messages.push_back(Value(std::move(message)));
+    inputs["messages"] = Value(std::move(messages));
+    Value::Array modalities;
+    modalities.push_back(Value("text"));
+    modalities.push_back(Value("audio"));
+    inputs["output_modalities"] = Value(std::move(modalities));
+    Value::Map audio;
+    audio["voice"] = Value(session->voice);
+    audio["stream"] = Value(true);
+    inputs["audio_options"] = Value(std::move(audio));
+    // No session_history: a spoken turn must not grow the VLM prompt with
+    // every earlier answer, or first-audio latency grows with the session.
+    // The session id still keys the VLM's prefill cache.
+    inputs["session_id"] = Value(session->unified_session);
+    StagePayload payload;
+    payload.request.inputs = Value(std::move(inputs));
+    payload.request.metadata["request_type"] = Value("chat");
+    try {
+      session->response_request_id = unified_->submit(std::move(payload));
+      session->response_segment = session->segment_id;
+      std::cerr << "realtime response_start segment=" << session->segment_id
+                << " request=" << session->response_request_id << "\n";
+    } catch (const std::exception& error) {
+      session->response_request_id.clear();
+      std::cerr << "realtime response_start failed: " << error.what() << "\n";
+    }
+  }
+
+  // Converts queued unified events into WebSocket events. libwebsockets
+  // thread only.
+  void drain_unified() {
+    std::deque<UnifiedEvent> batch;
+    {
+      std::lock_guard<std::mutex> lock(unified_mu_);
+      batch.swap(unified_queue_);
+    }
+    for (const UnifiedEvent& event : batch) {
+      for (lws* wsi : sessions_) {
+        auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
+        if (session == nullptr ||
+            session->response_request_id != event.request_id ||
+            session->close_after_write) {
+          continue;
+        }
+        const int64_t segment = session->response_segment;
+        switch (event.kind) {
+          case UnifiedEvent::Kind::kVlmDelta:
+            if (!event.text.empty()) {
+              send(wsi, session, {{"type", "response.text.delta"},
+                                  {"segment_id", segment},
+                                  {"text", event.text}});
+            }
+            break;
+          case UnifiedEvent::Kind::kArtifact: {
+            if (event.artifact_bytes == nullptr || event.artifact_length == 0) break;
+            const std::string pcm = event.artifact_bytes->substr(
+                event.artifact_offset, event.artifact_length);
+            send(wsi, session, {{"type", "audio.delta"},
+                                {"segment_id", segment},
+                                {"format", "pcm16"},
+                                {"sample_rate", 24000},
+                                {"channels", 1},
+                                {"audio", encode_base64(pcm)}});
+            break;
+          }
+          case UnifiedEvent::Kind::kComplete:
+            send(wsi, session, {{"type", "audio.done"}, {"segment_id", segment}});
+            send(wsi, session,
+                 {{"type", "response.completed"}, {"segment_id", segment}});
+            session->response_request_id.clear();
+            break;
+          case UnifiedEvent::Kind::kError:
+            send(wsi, session, {{"type", "response.failed"},
+                                {"segment_id", segment},
+                                {"error", event.error}});
+            session->response_request_id.clear();
+            break;
+          case UnifiedEvent::Kind::kCancelled:
+            session->response_request_id.clear();
+            break;
+          default:
+            break;
+        }
+        break;
+      }
+    }
+  }
+
+  void forward_event(const UnifiedEvent& event) {
+    std::lock_guard<std::mutex> lock(unified_mu_);
+    // ponytail: fixed cap; a stalled WebSocket must not grow the queue.
+    if (unified_queue_.size() >= 4096) return;
+    unified_queue_.push_back(event);
+  }
+
+  void attach_unified(UnifiedEngine& engine) { unified_ = &engine; }
+
   Coordinator& coordinator_;
   ApiConfig config_;
   lws_context* context_ = nullptr;
@@ -773,6 +984,10 @@ class RealtimeApi::Impl {
   std::deque<std::pair<std::string, std::string>> partial_queue_;
   uint64_t next_request_id_ = 0;
   uint64_t next_preview_id_ = 0;
+  uint64_t next_session_no_ = 0;
+  UnifiedEngine* unified_ = nullptr;
+  std::mutex unified_mu_;
+  std::deque<UnifiedEvent> unified_queue_;
   int bound_port_ = -1;
 };
 
@@ -836,6 +1051,12 @@ RealtimeApi::RealtimeApi(Coordinator& coordinator, ApiConfig config)
     : impl_(std::make_unique<Impl>(coordinator, std::move(config))) {}
 RealtimeApi::~RealtimeApi() = default;
 void RealtimeApi::install_stream_sink() { impl_->install_stream_sink(); }
+void RealtimeApi::attach_unified(UnifiedEngine& engine) {
+  impl_->attach_unified(engine);
+}
+void RealtimeApi::forward_event(const UnifiedEvent& event) {
+  impl_->forward_event(event);
+}
 bool RealtimeApi::bind() { return impl_->bind(); }
 bool RealtimeApi::listen() { return impl_->listen(); }
 void RealtimeApi::stop() { impl_->stop(); }

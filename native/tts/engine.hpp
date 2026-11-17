@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <memory>
+#include <vector>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -23,21 +24,31 @@ class TtsEngine {
   TtsEngine& operator=(const TtsEngine&) = delete;
 
   // Optional phase times, measured by the engine in milliseconds. first_frame
-  // is the time to the first generated codec frame; the decoder is
-  // non-streaming, so it is not a time to first audio sample.
+  // is the time to the first generated codec frame; first_audio is the time to
+  // the first emitted sample when a stream sink is installed.
   struct SynthTimings {
     double first_frame_ms = -1;
+    double first_audio_ms = -1;
     double total_ms = -1;
   };
+
+  // Receives the newly decoded samples at a codec-frame boundary. first_frame
+  // is the index of the first codec frame in this chunk; the concatenation of
+  // every chunk equals the vector synthesize returns, bit for bit.
+  using StreamSink = std::function<void(const std::vector<float>& samples,
+                                        int first_frame, int frames)>;
 
   // text_ids is the full wrapped prompt; language/speaker are codec ids.
   // Greedy synthesis returning 24 kHz mono float samples in [-1, 1]. The abort
   // check runs at every frame boundary; an aborted request raises
   // RequestAborted. An empty check keeps the original behaviour bit for bit.
+  // With a stream sink, each chunk decodes the frame prefix produced so far;
+  // the decoder is causal, so a prefix decode equals the head of the full one.
   std::vector<float> synthesize(const std::vector<int>& text_ids, int language_id,
                                 int speaker_id, int max_frames,
                                 const AbortCheck& abort = {},
-                                SynthTimings* timings = nullptr);
+                                SynthTimings* timings = nullptr,
+                                const StreamSink& on_chunk = {});
 
  private:
   struct Impl;

@@ -412,6 +412,16 @@ int run_serve(const Flags& flags) {
     unified_config.session_history.enabled = flags.count("session-history") != 0;
     unified_engine = std::make_unique<UnifiedEngine>(coordinator, unified_config);
     api.set_unified_engine(*unified_engine, vlm_name);
+    if (realtime) {
+      // The realtime listener forwards VLM text and streamed TTS audio to its
+      // WebSocket. It stays transcription-only until session.update asks for
+      // audio_output.
+      realtime->attach_unified(*unified_engine);
+      api.set_unified_forwarder([listener = realtime.get()](
+                                    const UnifiedEvent& event) {
+        listener->forward_event(event);
+      });
+    }
   }
   // Realtime partials share the one Coordinator event stream. Chain after the
   // HTTP and unified sinks so every consumer still receives the same chunk.

@@ -117,16 +117,29 @@ OmniWork parse_omni_work(const Value& work) {
     bad("omni inputs require a nonempty messages array");
   }
   OmniWork out;
+  if (const Value* session = inputs.find("session_id");
+      session != nullptr && session->is_str()) {
+    out.session_id = session->as_str();
+  }
   bool have_text = false;
   for (const Value& message : messages->as_array()) {
     if (!message.is_map()) bad("each message must be a map");
+    OmniMessage turn;
+    if (const Value* role = message.find("role");
+        role != nullptr && role->is_str() && !role->as_str().empty()) {
+      turn.role = role->as_str();
+    } else {
+      turn.role = "user";
+    }
     const Value* content = message.find("content");
     if (content == nullptr) continue;
     if (content->is_str()) {
+      turn.text = content->as_str();
       if (!content->as_str().empty()) {
         out.text = content->as_str();
         have_text = true;
       }
+      out.messages.push_back(std::move(turn));
       continue;
     }
     if (!content->is_array()) {
@@ -139,9 +152,11 @@ OmniWork parse_omni_work(const Value& work) {
       if (type->as_str() == "image_url") take_image_part(part, out);
     }
     if (has_text) {
-      out.text = std::move(joined);
+      out.text = joined;
       have_text = true;
+      turn.text = std::move(joined);
     }
+    out.messages.push_back(std::move(turn));
   }
   if (!have_text && out.image_url.empty()) {
     bad("omni inputs require text or an image");
@@ -228,6 +243,21 @@ std::string render_omni_chat(const std::string& text, bool has_image) {
   return rendered;
 }
 
+std::string render_omni_chat(const std::vector<OmniMessage>& messages,
+                             bool has_image) {
+  std::string rendered;
+  for (size_t i = 0; i < messages.size(); ++i) {
+    rendered += "<|im_start|>" + messages[i].role + "\n";
+    if (has_image && i + 1 == messages.size()) {
+      rendered += "<|vision_start|><|vision_end|>";
+    }
+    rendered += messages[i].text;
+    rendered += "<|im_end|>\n";
+  }
+  rendered += "<|im_start|>assistant\n";
+  return rendered;
+}
+
 TtsWork parse_tts_work(const Value& work) {
   const Value& inputs = unwrap_inputs(work);
   TtsWork out;
@@ -250,6 +280,10 @@ TtsWork parse_tts_work(const Value& work) {
       bad("TTS sample_rate must be 24000");
     }
     out.sample_rate = 24000;
+  }
+  if (const Value* stream = inputs.find("stream"); stream != nullptr) {
+    if (!stream->is_bool()) bad("TTS stream must be a boolean");
+    out.stream = stream->as_bool();
   }
   return out;
 }

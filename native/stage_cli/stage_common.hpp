@@ -51,13 +51,23 @@ struct AsrWork {
 // (what a client may hand to the stage directly).
 AsrWork parse_asr_work(const Value& work);
 
-struct OmniWork {
+struct OmniMessage {
+  std::string role;
   std::string text;
-  std::string image_url;  // empty when the turn has no image
 };
 
-// The last user turn wins. Content is either a string or a part array; at most
-// one image_url part is accepted.
+struct OmniWork {
+  std::string text;       // last text-bearing message
+  std::string image_url;  // empty when the turn has no image
+  // Every message in wire order, for the multi-turn prompt. The omni stage
+  // renders all of them so session history is part of the prompt.
+  std::vector<OmniMessage> messages;
+  // Opt-in prefix-cache key. Empty disables reuse for this request.
+  std::string session_id;
+};
+
+// Every message is kept; content is either a string or a part array; at most
+// one image_url part is accepted, in the last message.
 OmniWork parse_omni_work(const Value& work);
 
 // Same message shape for the qwen38 stage, with the fields that engine cannot
@@ -68,11 +78,40 @@ OmniWork parse_qwen38_work(const Value& work);
 // Chat turn exactly as native/omni_cli renders it. The vision block is two
 // adjacent special tokens; the caller expands the image pads between them.
 std::string render_omni_chat(const std::string& text, bool has_image);
+// Multi-turn rendering: one <|im_start|>role block per message and a final
+// assistant header. With one message it is byte-identical to the call above.
+std::string render_omni_chat(const std::vector<OmniMessage>& messages,
+                             bool has_image);
+
+// Longest prefix of `text` that ends on a complete UTF-8 sequence. A token
+// decode can end mid-character; stream deltas must not, or the JSON layer
+// rejects the chunk.
+inline size_t utf8_complete_prefix(const std::string& text) {
+  size_t index = text.size();
+  size_t continue_bytes = 0;
+  while (index > 0 && continue_bytes < 4) {
+    const unsigned char byte = static_cast<unsigned char>(text[index - 1]);
+    if ((byte & 0xC0) == 0x80) {
+      ++continue_bytes;
+      --index;
+      continue;
+    }
+    size_t need = 1;
+    if ((byte & 0xE0) == 0xC0) need = 2;
+    else if ((byte & 0xF0) == 0xE0) need = 3;
+    else if ((byte & 0xF8) == 0xF0) need = 4;
+    return (continue_bytes + 1 == need) ? text.size() : index - 1;
+  }
+  return continue_bytes < 4 ? text.size() : text.size() - continue_bytes;
+}
 
 struct TtsWork {
   std::string text;
   std::string voice;  // lowercased request value, possibly unsupported
   int sample_rate = 24000;
+  // Emit PCM16 chunks over the stage stream while the codec decodes, instead
+  // of one WAV artifact at the end. The terminal result still carries the WAV.
+  bool stream = false;
 };
 
 TtsWork parse_tts_work(const Value& work);

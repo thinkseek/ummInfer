@@ -154,6 +154,12 @@ std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T,
       throw RequestAborted("aborted in codec " + stage);
   };
   im.ensure(static_cast<size_t>(kDecoderDim) * T * 480);  // biggest conv stream
+  // The generic scratch buffers are reused across calls. Zero them so any
+  // in-bounds padding read sees a defined value; without this, two identical
+  // decodes could differ on uninitialized contents.
+  for (float* p : {im.a, im.b, im.c, im.d, im.e}) {
+    UMM_CUDA_CHECK(cudaMemsetAsync(p, 0, im.cap * sizeof(float), st));
+  }
   UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_codes_all, codes.data(),
                                  T * kGroups * sizeof(int), cudaMemcpyHostToDevice,
                                  st));

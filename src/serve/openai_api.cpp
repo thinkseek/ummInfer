@@ -491,9 +491,15 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
   if (audio_output) {
     Value::Map options;
     const json& audio = body["audio"];
+    if (audio.contains("stream") && !audio["stream"].is_null() &&
+        !audio["stream"].is_boolean()) {
+      error = "audio.stream must be a boolean";
+      return false;
+    }
     options["voice"] = Value(audio["voice"].get<std::string>());
     options["format"] = Value("wav");
     options["sample_rate"] = Value(int64_t{24000});
+    if (audio.value("stream", false)) options["stream"] = Value(true);
     engine_inputs["audio_options"] = Value(std::move(options));
   }
   return true;
@@ -940,6 +946,10 @@ class OpenAIApi::Impl {
   void stop() { server_.stop(); }
 
   int bound_port() const { return bound_port_; }
+
+  void set_unified_forwarder(std::function<void(const UnifiedEvent&)> forwarder) {
+    unified_forwarder_ = std::move(forwarder);
+  }
 
   void set_unified_engine(UnifiedEngine& engine, std::string vlm_stage) {
     unified_engine_ = &engine;
@@ -2350,6 +2360,13 @@ class OpenAIApi::Impl {
 
  public:
   void on_unified_event(const UnifiedEvent& event) {
+    if (unified_forwarder_) {
+      try {
+        unified_forwarder_(event);
+      } catch (...) {
+        // A foreign consumer must not break the HTTP event path.
+      }
+    }
     std::shared_ptr<SseSink> sink;
     {
       std::lock_guard<std::mutex> lock(streams_mu_);
@@ -2448,6 +2465,7 @@ class OpenAIApi::Impl {
  private:
   Coordinator& coordinator_;
   UnifiedEngine* unified_engine_ = nullptr;
+  std::function<void(const UnifiedEvent&)> unified_forwarder_;
   std::string unified_vlm_stage_;
   ApiConfig config_;
   std::string upstream_base_url_;
@@ -2467,6 +2485,11 @@ OpenAIApi::OpenAIApi(Coordinator& coordinator, ApiConfig config)
 }
 
 OpenAIApi::~OpenAIApi() = default;
+
+void OpenAIApi::set_unified_forwarder(
+    std::function<void(const UnifiedEvent&)> forwarder) {
+  impl_->set_unified_forwarder(std::move(forwarder));
+}
 
 void OpenAIApi::set_unified_engine(UnifiedEngine& engine, std::string vlm_stage) {
   impl_->set_unified_engine(engine, std::move(vlm_stage));

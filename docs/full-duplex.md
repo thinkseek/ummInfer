@@ -120,25 +120,191 @@ Residuals observed in the same run:
   start a turn.
 - The preview window is not configurable on the wire.
 
+## L2: streaming output, sentence pipeline, prefix reuse
+
+L2 closes the two product gaps that L1 left: the answer waited for the whole
+text before audio started, and every turn re-prefilled the whole prompt.
+
+### Streaming TTS
+
+`TtsEngine::synthesize` takes an optional `StreamSink`. The talker emits its
+first chunk after 2 codec frames (160 ms of audio) and later chunks every 8
+frames (640 ms). A chunk decodes the frame prefix generated so far and returns
+only the samples not yet emitted. The codec is causal, so a prefix decode has
+the same mathematical value as the head of the full decode.
+
+The TTS stage runs this path when the request sets `stream=true` and emits one
+stage-stream chunk per codec boundary:
+`{"audio": <PCM16>, "index": i, "first_frame": f, "frames": n,
+"sample_rate": 24000, "channels": 1, "format": "pcm16"}`. The terminal result
+still carries the complete WAV and the phase times. Every streamed request logs
+`tts stream_check`, the largest absolute difference between the concatenated
+chunks and the one-shot waveform. That difference is not zero: the F32 engine is not
+bit-repeatable. Two identical CLI runs of the same text produce waveforms that
+first differ at sample 19422 with a maximum of 9 PCM16 units (2.7e-4 of full
+scale), and a repeat decode inside one process differs too (`tts
+repeat_check`). Across the 141 streamed legs of the measured run, the largest
+chunk-versus-whole difference was 9.0e-2 absolute (about -21 dBFS). No
+listening test was run, so this page does not claim the seams are inaudible.
+
+### Sentence pipeline
+
+`include/umminfer/pipeline/sentence_split.hpp` cuts the VLM delta stream:
+
+- strong terminators end a sentence: `。 ！ ？ ! ? ； ;`, newline and `…`;
+- closing quotes/brackets and repeated terminators stay with the sentence;
+- `.` ends a sentence only when the next codepoint is whitespace, end of text
+  or CJK, and the previous codepoint is not a digit, so `3.14` stays whole;
+- weak breaks are `， , 、 : ：` and space;
+- with no terminator, a 48-codepoint window cuts at a weak break in its second
+  half, otherwise at the window edge;
+- the first TTS leg may cut at a weak break after 8 codepoints, so a long
+  opening sentence does not delay all audio;
+- a cut never splits a UTF-8 sequence.
+
+Uncertain boundaries are not handled: abbreviations (`Mr. Smith`, `e.g.`) cut
+after the period, `U.S. Army` becomes `U.S.` plus ` Army`, and a comma inside a
+number is a weak break only at the length window. This is punctuation, not a
+semantic end-of-turn model (that is L3).
+
+The unified engine submits one TTS child leg per cut, `<id>:tts:0`,
+`<id>:tts:1`, ... in answer order. A non-streaming request keeps the frozen
+single `<id>:tts` leg and the one-shot artifact. A request that asks for image
+and audio together keeps one leg too, because the frozen contract orders image
+artifacts before audio. The request completes only when the VLM leg is
+terminal and every output leg is terminal.
+
+Each streamed chunk becomes one `artifact` event with `media_type: "audio"`,
+`format: "pcm16"`, `mime_type: "audio/pcm"`, `sample_rate: 24000`,
+`channels: 1` and `index: 0, total: 1`. The SSE frame carries the PCM16 base64.
+The terminal WAV is not re-emitted.
+
+### Realtime spoken response
+
+`session.update` accepts `audio_output: {"voice": "vivian"}`. It needs a
+unified engine with a registered TTS stage and server VAD; otherwise the
+server rejects it. After `transcription.completed`, the listener submits a
+VLM+TTS request for the transcript and forwards its events on the same socket:
+
+- `response.text.delta` (`text`);
+- `audio.delta` (`audio` base64 PCM16, `sample_rate`, `channels`, `format`);
+- `audio.done`;
+- `response.completed` or `response.failed`.
+
+A new utterance cancels the response request through the unified engine, so
+barge-in stops both the VLM and the TTS stage at their existing checkpoints.
+Events that arrive after the cancel are dropped by the cleared request id.
+The spoken path does not opt into session history: the prompt would grow with
+every answer and first-audio latency with it. The session id still keys the
+VLM prefill cache.
+
+The turn buffer now drops exactly the committed turn on reset. Before this
+fix, `reset_turn` erased `turn_audio_start` bytes, which is 0 on a normal turn,
+so the audio of every turn accumulated. Multi-turn ASR then saw the whole
+session and could return empty text.
+
+### Incremental prefill
+
+The omni stage keeps one prefix cache per process: the session id, the prompt
+ids of the last request, and how many of its KV slots came from prefill. A
+request in the same session reuses `min(longest common prefix, cached prefill
+length)` tokens, embeds only the suffix, and prefills it with `history=prefix`
+and the position ids sliced from the full prompt. Only prefill-written slots
+are reusable; slots written by decode are not, because decode uses a different
+reduction path.
+
+The cache is on by default; `UMM_OMNI_PREFIX_CACHE=0` disables it. The stage
+renders every message of the request, so `session_history` is part of the
+prompt instead of being dropped. The stage reports `prefix_reused`,
+`prefill_tokens` and `prefill_ms` per request.
+
+## Measured on H20B, 2026-11-17 (L2)
+
+Environment: container `linyu-dev`, native ASR on GPU 2, native Omni thinker on
+GPU 7, native Qwen3-TTS on GPU 5, model directories
+`/root/omniinfer-model-validation-20261111-k3/models/{asr,omni}` and
+`/root/umm-mixed-output-20261116/models/qwen3-tts`, real speech
+`asr_en_pcm16.wav`, server and stages built from this commit. Ports were
+ephemeral; the resident services and GPU 0/1 were not touched.
+
+Command, inside the container:
+
+```sh
+python3 -I tests/full_duplex_l2_live.py --mode all \
+  --bin-dir bin --asr-model .../models/asr --omni-model .../models/omni \
+  --tts-model .../qwen3-tts --audio .../asr_en_pcm16.wav \
+  --out evidence/full --log-dir logs/full \
+  --gpu-asr 2 --gpu-vlm 7 --gpu-tts 5 --turns 20
+```
+
+Raw evidence: `evidence/full/l2-evidence.json` for the realtime and pipeline
+modes, `evidence/prefix/l2-evidence.json` for the prefill rerun (the first-turn
+prompt is longer there, so the shared prefix is measurable), and the stage logs
+next to them. They are not committed artifacts. The prefill rerun used the same
+command with `--mode prefix` and a longer first-turn prompt.
+
+### First audio, 20 spoken turns over one WebSocket
+
+Each turn streams 2 s of real speech in 100 ms chunks, then 600 ms of silence;
+`silence_ms` is 400. The measurement starts at the last speech chunk and ends
+at the first `audio.delta`.
+
+| Metric | Value |
+| --- | --- |
+| samples | 20 |
+| p50 | 903.4 ms |
+| p95 | 1088.2 ms |
+| min / max | 726.6 / 1095.2 ms |
+
+### Sentence pipeline advance
+
+Same prompt, two HTTP requests with `stream=true` and audio output. In
+`sentence_stream` the request sets `audio.stream=true`; `single_leg` omits it,
+so one TTS leg starts after the VLM answer ends.
+
+| Metric | sentence_stream | single_leg |
+| --- | --- | --- |
+| submit to first audio | 466.4 ms | 28540.8 ms |
+| last VLM delta to first audio | -157.8 ms | 27954.5 ms |
+| first audio before last VLM delta | true | false |
+| audio chunks | 45 | 1 |
+
+End-to-end first-audio advance: **28112.3 ms**.
+
+The single-leg baseline synthesizes the whole answer before its first sample,
+by construction. In this run the one-shot leg produced 512 codec frames (the
+stage cap) for the same text, so its 27.9 s is what that path does for this
+input, not a typical answer length. The comparison is end-to-end and includes
+that cost. The streaming run's first audio arrived 157.8 ms before the last VLM
+delta.
+
+### Incremental prefill, two-turn session with `session_history`
+
+The same two-turn conversation runs once with `UMM_OMNI_PREFIX_CACHE=1` and
+once with `=0`. Stage-reported numbers for the second turn:
+
+| Metric | cache off | cache on |
+| --- | --- | --- |
+| second-turn prefill | 127.9 ms | 88.4 ms |
+| reused prompt tokens | 0 | 71 |
+| answers identical | - | true |
+
+Prefill time reduction: **30.9%**. The cached and
+uncached answers are compared byte for byte and are equal.
+
 ## What L2 still needs
 
-**Concurrent encoding and generation.** L1 uses one serial stage: a preview and
-a turn request never run together, and each request re-encodes all audio so
-far. L2 needs an incremental audio encoder with cached state and an incremental
-decoder that emits tokens for new audio only. That removes the O(n²) cost and
-lowers the first-token latency below the current ~600 ms. It also needs a
-replacement policy for the in-flight request: today it is aborted and
-restarted, which discards its work.
+**Incremental ASR encoding.** The realtime path still re-encodes the whole turn
+for each preview and each final, so ASR cost grows with the square of turn
+length. An encoder with cached state would remove that, and a replacement
+policy would keep the work of an in-flight request instead of aborting it.
 
-**TTS frame streaming.** The native TTS stage returns one WAV artifact. L2
-needs the codec to emit frames as they decode, a wire event that carries those
-frames, and a client that plays them while the LLM still generates. The TTS
-codec already checks abort between decoder blocks, so barge-in can stop it at
-frame boundaries.
+**Client playback.** The server sends `audio.delta`; the bundled CLI client
+does not play it or stop playback on `speech_started` yet. A client must keep
+one socket open across turns and play PCM16 at 24 kHz.
 
-**Client session lifecycle.** The bundled client must keep one socket open
-across turns, handle several `transcription.completed` events, and stop
-playback on `speech_started`. The server side is ready; the client is not.
+**More than one cached session.** The omni stage caches one session's prefix.
+Concurrent sessions each need their own KV snapshot.
 
 ## What L3 still needs
 

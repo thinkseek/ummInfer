@@ -272,7 +272,18 @@ class UnifiedEngine {
     // the modality; legs_remaining counts submitted legs that have not
     // reached a terminal state yet.
     OutputLeg image_leg;
-    OutputLeg tts_leg;
+    std::vector<OutputLeg> tts_legs;
+    bool tts_enabled = false;
+    std::string tts_voice;
+    // Sentence pipeline and per-chunk audio delivery (audio_options.stream).
+    bool tts_stream = false;
+    std::string sentence_buf;
+    size_t tts_bytes = 0;
+    bool tts_failed = false;
+    std::string tts_error;
+    // The VLM leg reached its terminal. An output leg may finish earlier, so
+    // the request completes only when this is true and legs_remaining is 0.
+    bool vlm_done = false;
     int legs_remaining = 0;
     // VLM result held across the output join; it is the terminal result.
     Value vlm_result;
@@ -295,11 +306,23 @@ class UnifiedEngine {
   // Optional output legs, submitted together at the single VLM barrier.
   void start_outputs_locked(const std::string& request_id, Record& record);
   void start_image_locked(const std::string& request_id, Record& record);
-  void start_tts_locked(const std::string& request_id, Record& record);
+  // Submits one TTS leg. `first` keeps the contract child id <id>:tts for the
+  // single-leg (non-streaming) request; streamed sentences use :tts:0, :tts:1.
+  void start_tts_locked(const std::string& request_id, Record& record,
+                        std::string text, bool first);
+  // Cuts every complete sentence out of sentence_buf and submits it.
+  void drain_sentences_locked(const std::string& request_id, Record& record);
+  // Submits the tail of sentence_buf; called at the VLM terminal.
+  void flush_sentences_locked(const std::string& request_id, Record& record);
+  // Turns one streamed TTS chunk into a PCM16 artifact event.
+  void emit_tts_chunk_locked(const std::string& request_id, Record& record,
+                             const Value& chunk);
+  // Aborts every submitted TTS leg; used when the VLM leg fails.
+  void abort_tts_legs_locked(Record& record);
   // Builds the inputs of one output leg from the VLM answer and the options
   // the HTTP boundary attached to the original request.
   static Value build_image_inputs(const Record& record);
-  static Value build_tts_inputs(const Record& record);
+  static Value build_tts_inputs(const Record& record, const std::string& text);
   // Turns a successful output-leg completion into kArtifact events with
   // reserved gap-free seq values.
   void emit_artifact_locked(const std::string& request_id, Record& record,
