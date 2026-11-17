@@ -1,18 +1,18 @@
 # Native stages behind the UnifiedEngine
 
-The three accepted native executors run as external stage processes. At
+The four accepted native executors run as external stage processes. At
 runtime the deployment loads no Python, PyTorch or SGLang: the stage binary
 holds the engine, the server holds the `Coordinator` and `UnifiedEngine`.
 
 ```
 HTTP / SSE client -> umm-infer serve (Coordinator + UnifiedEngine)
                         |  ZeroMQ control edges + SHM payload relay
-        +---------------+----------------+----------------+
-        |               |                |                |
-  umm-native-stage-asr  umm-native-stage-omni  umm-native-stage-tts
-  (GPU 2)               (GPU 3)                (GPU 5)
-        |               |                |
-  native/umm_asr_native native/omni      native/tts
+        +---------------+----------------+----------------+----------------+
+        |               |                |                |                |
+  umm-native-stage-asr  umm-native-stage-omni  umm-native-stage-image  umm-native-stage-tts
+  (GPU 2)               (GPU 3)                (GPU 4)                 (GPU 5)
+        |               |                |                |                |
+  native/umm_asr_native native/omni      native/image      native/tts
 ```
 
 Each process loads one model on one GPU and registers with the existing
@@ -26,6 +26,7 @@ wire message, endpoint type or payload schema is new.
 | `umm-native-stage-asr` | `asr` | `native::AsrEngine` | 256 |
 | `umm-native-stage-omni` | `omni` | `omni::OmniEngine` | 512 (`--max-new-tokens`); the H20B launcher sets 96 |
 | `umm-native-stage-tts` | `tts` | `native::TtsEngine` | 8192 (`--max-frames`) |
+| `umm-native-stage-image` | `image` | `image::ImageEngine` | 50 (`--steps`) |
 
 The compute function runs on the `Stage` scheduler thread, whose CUDA current
 device defaults to 0. Every kind calls `cudaSetDevice(--gpu)` at the start of
@@ -84,6 +85,20 @@ label falls back to `vivian` with a warning, and the descriptor reports the
 voice actually used. The codec language id is chosen from the text script
 (CJK -> chinese, otherwise english).
 
+Image (the image leg, from `UnifiedEngine::build_image_inputs`):
+
+```
+{"prompt", "negative_prompt"?, "size": "512x512", "seed"?, "steps"?,
+ "guidance"?, "output_format": "png"}
+-> {"media_type": "image", "mime_type": "image/png", "format": "png",
+    "size": "512x512", "width": 512, "height": 512, "seed": N,
+    "steps": N, "data": <Bin PNG>}
+```
+
+The accepted image slice currently supports only `512x512` PNG. Other sizes
+and JPEG are rejected explicitly. `steps` defaults to 50; zero selects the
+process default.
+
 ## Cancellation
 
 `POST /abort` broadcasts the existing `AbortMessage`; the wire protocol is
@@ -96,6 +111,7 @@ checks it at its own boundary and raises `RequestAborted`:
 | ASR | every audio-tower layer, every prefill layer, every generated token |
 | Omni | every vision block, every prefill layer, every generated token |
 | TTS | every generated codec frame; inside the waveform decoder: after the pre-conv, every pre-transformer layer, every upsample stage, every decoder block and every residual unit |
+| Image | after model load and text encoding, every denoise step, after VAE decode |
 
 The exception takes the existing abort path: the Coordinator has already
 settled the request as `cancelled`, the scheduler consumes the tombstone and
@@ -136,9 +152,9 @@ cmake --build build -j
 ## Run
 
 ```sh
-service/h20b-native-service.sh start     # server + three stages
+service/h20b-native-service.sh start     # server + four stages
 python3 -I native/stage_tests/native_stage_smoke.py \
-  --base-url http://172.17.0.2:43400 --wav asr_en_pcm16.wav \
+  --base-url http://172.17.0.2:43301 --wav asr_en_pcm16.wav \
   --image man_ironing.png --out-dir native/stage_tests/evidence/live
 service/h20b-native-service.sh stop
 ```

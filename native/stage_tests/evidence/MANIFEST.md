@@ -124,3 +124,46 @@ While loaded (`deploy/gpu_while_loaded.txt`): GPU2 2387 MiB, GPU3 78427 MiB,
 GPU5 5201 MiB, GPU0/1 unchanged. After `stop`
 (`deploy/gpu_after_stop.txt`): GPU2/3/5 back to 0 MiB; GPU0/1 keep their
 existing backends. `deploy/processes_after_stop.txt` lists no live stage.
+
+## Four-stage update: native Image on 43301
+
+The later `four/` run adds `umm-native-stage-image` on GPU4 and moves the
+candidate server to `172.17.0.2:43301`. The original three-stage evidence above
+is kept unchanged. The four-stage launcher starts ASR, Omni, Image and TTS; the
+candidate was stopped after acceptance.
+
+`four/checks.json` records 22 passing checks. `four/mixed_all.json` is one
+request with text, image and audio inputs and with text, image and audio
+outputs. Its native PNG is 512x512 with 15,130 colors and 501,668 bytes. Its
+native audio is 24 kHz mono PCM16, 374,400 samples (15.6 s), RMS 0.0416.
+
+| Binary | SHA-256 |
+| --- | --- |
+| `umm-infer` | `7a547c0c1e7da76c6adb243b887fdf46b386ccd2611b4d50c77a27ea813e3226` |
+| `umm-native-stage-asr` | `52e760c5a94675ce95d5e6fa8caef42a3d56d6e226f537e37bbaece1d57ff9ba` |
+| `umm-native-stage-image` | `92b1836eb6f2287c3297449383558bf44ad3273a48166ff99cac0f652c6d619e` |
+| `umm-native-stage-omni` | `a1a693bcc478054c8b14426095b460cf56e896d02bdb3cea19449f61ebb9171c` |
+| `umm-native-stage-tts` | `0b7fb87df20197391be24bcce60352495edd7221ed97083c89b81920adf12211` |
+
+`four/deploy/ldd.txt` lists no Python, PyTorch or SGLang runtime dependency.
+The public wire shape is unchanged: the Image stage returns a map with
+`media_type=image`, `mime_type=image/png`, `format=png`, size, seed, steps and a
+`data` Bin. The accepted Image slice currently supports 512x512 PNG only.
+
+| Cancellation | Boundary | compute_ms at abort | abort -> compute exit |
+| --- | --- | --- | --- |
+| ASR | `aborted in prefill layer 0` | 193 | 0 ms |
+| Omni | `aborted at token 26` | 512 | 0 ms |
+| Image | `denoise step` | 18,262 | 1,107 ms |
+| TTS | `aborted in codec decoder block 1` | 12,637 | 0 ms |
+
+All four cancellations settled as `cancelled`, produced no artifact, returned
+`in_flight` to 0, and a later request returned `OK.` See
+`four/deploy/abort_boundaries.txt` and `four/cancel_*.json`. The Image boundary
+synchronizes once per denoise step, so an abort cannot leave a fully queued
+trajectory running behind it.
+
+After the candidate stop, `four/deploy/gpu_after_stop.txt` records GPU2/3/4/5
+at 0 MiB. GPU0/1 were not changed by the candidate. PNG and WAV artifacts are
+kept on H20B, not committed; their parsed statistics and event descriptors are
+in `four/`.

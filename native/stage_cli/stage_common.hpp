@@ -72,6 +72,19 @@ struct TtsWork {
 
 TtsWork parse_tts_work(const Value& work);
 
+struct ImageWork {
+  std::string prompt;
+  std::string negative_prompt = " ";
+  std::string output_format = "png";
+  uint64_t seed = 0;
+  int steps = 0;  // zero selects the stage default
+  float guidance = 4.0f;
+  int width = 512;
+  int height = 512;
+};
+
+ImageWork parse_image_work(const Value& work);
+
 // Selects the codec language id from the text script.
 bool text_is_mostly_cjk(const std::string& text);
 
@@ -87,5 +100,7 @@ Value omni_result(const std::string& text, int generated_tokens);
 // Artifact map the unified engine expects: media_type + Bin under "data".
 Value tts_result(std::string wav_bytes, int sample_rate, int channels,
                  const std::string& voice);
+Value image_result(std::string png_bytes, int width, int height,
+                   uint64_t seed, int steps);
 
 }  // namespace umminfer::stage

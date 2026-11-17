@@ -2,6 +2,7 @@
 #include "stage_common.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -182,6 +183,64 @@ TtsWork parse_tts_work(const Value& work) {
   return out;
 }
 
+ImageWork parse_image_work(const Value& work) {
+  const Value& inputs = unwrap_inputs(work);
+  ImageWork out;
+  const Value* prompt = inputs.find("prompt");
+  if (prompt == nullptr || !prompt->is_str() || prompt->as_str().empty()) {
+    bad("image inputs require a nonempty prompt");
+  }
+  out.prompt = prompt->as_str();
+  if (const Value* negative = inputs.find("negative_prompt"); negative != nullptr) {
+    if (!negative->is_str()) bad("image negative_prompt must be a string");
+    out.negative_prompt = negative->as_str();
+  }
+  if (const Value* format = inputs.find("output_format"); format != nullptr) {
+    if (!format->is_str() || format->as_str() != "png") {
+      bad("native image output_format must be png");
+    }
+    out.output_format = "png";
+  }
+  if (const Value* seed = inputs.find("seed"); seed != nullptr) {
+    if (!seed->is_int() || seed->as_int() < 0) {
+      bad("image seed must be a non-negative integer");
+    }
+    out.seed = static_cast<uint64_t>(seed->as_int());
+  }
+  if (const Value* steps = inputs.find("steps"); steps != nullptr) {
+    if (!steps->is_int() || steps->as_int() < 0 || steps->as_int() > 200) {
+      bad("image steps must be between 0 and 200");
+    }
+    out.steps = static_cast<int>(steps->as_int());
+  }
+  if (const Value* guidance = inputs.find("guidance"); guidance != nullptr) {
+    if ((!guidance->is_float() && !guidance->is_int()) ||
+        !std::isfinite(guidance->as_double()) || guidance->as_double() <= 0.0) {
+      bad("image guidance must be a finite positive number");
+    }
+    out.guidance = static_cast<float>(guidance->as_double());
+  }
+  if (const Value* size = inputs.find("size"); size != nullptr) {
+    if (!size->is_str()) bad("image size must be a string");
+    const std::string& text = size->as_str();
+    const size_t split = text.find('x');
+    if (split == std::string::npos || split == 0 || split + 1 == text.size() ||
+        text.find('x', split + 1) != std::string::npos) {
+      bad("image size must be WIDTHxHEIGHT");
+    }
+    try {
+      out.width = std::stoi(text.substr(0, split));
+      out.height = std::stoi(text.substr(split + 1));
+    } catch (const std::exception&) {
+      bad("image size must be WIDTHxHEIGHT");
+    }
+    if (out.width != 512 || out.height != 512) {
+      bad("native image currently supports only 512x512");
+    }
+  }
+  return out;
+}
+
 bool text_is_mostly_cjk(const std::string& text) {
   size_t cjk = 0;
   size_t latin = 0;
@@ -299,6 +358,22 @@ Value tts_result(std::string wav_bytes, int sample_rate, int channels,
   out["channels"] = Value(static_cast<int64_t>(channels));
   out["voice"] = Value(voice);
   out["data"] = Value::bin(std::move(wav_bytes));
+  return Value(std::move(out));
+}
+
+Value image_result(std::string png_bytes, int width, int height,
+                   uint64_t seed, int steps) {
+  if (png_bytes.empty()) bad("image produced no PNG bytes");
+  Value::Map out;
+  out["media_type"] = Value("image");
+  out["mime_type"] = Value("image/png");
+  out["format"] = Value("png");
+  out["size"] = Value(std::to_string(width) + "x" + std::to_string(height));
+  out["width"] = Value(static_cast<int64_t>(width));
+  out["height"] = Value(static_cast<int64_t>(height));
+  out["seed"] = Value(static_cast<int64_t>(seed));
+  out["steps"] = Value(static_cast<int64_t>(steps));
+  out["data"] = Value::bin(std::move(png_bytes));
   return Value(std::move(out));
 }
 

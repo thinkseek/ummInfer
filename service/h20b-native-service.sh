@@ -1,13 +1,14 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
-# Native-only deployment on H20B (container linyu-dev). Four processes:
+# Native-only deployment on H20B (container linyu-dev). Five processes:
 # one umm-infer server and one native stage per model. No Python, PyTorch or
 # SGLang on the serving path.
 #
-#   ASR   GPU 2, stage name asr,  ipc:///tmp/umminfer-native-ipc/asr
-#   Omni  GPU 3, stage name omni, ipc:///tmp/umminfer-native-ipc/omni
-#   TTS   GPU 5, stage name tts,  ipc:///tmp/umminfer-native-ipc/tts
-#   Server 172.17.0.2:43400, completion/abort under the same ipc dir.
+#   ASR   GPU 2, stage name asr,   ipc:///tmp/umminfer-native-ipc/asr
+#   Omni  GPU 3, stage name omni,  ipc:///tmp/umminfer-native-ipc/omni
+#   Image GPU 4, stage name image, ipc:///tmp/umminfer-native-ipc/image
+#   TTS   GPU 5, stage name tts,   ipc:///tmp/umminfer-native-ipc/tts
+#   Server 172.17.0.2:43301, completion/abort under the same ipc dir.
 #
 # GPU0/1 hold the existing SGLang backends and are never touched. The port is
 # distinct from the phase7 service on 43300.
@@ -20,11 +21,12 @@ RUN_DIR=$ROOT/run
 LOG_DIR=$ROOT/logs
 IPC_DIR=${UMM_NATIVE_IPC:-/tmp/umminfer-native-ipc}
 HOST=${UMM_NATIVE_HOST:-172.17.0.2}
-PORT=${UMM_NATIVE_PORT:-43400}
+PORT=${UMM_NATIVE_PORT:-43301}
 MODELS=${UMM_NATIVE_MODELS:-/root/omniinfer-model-validation-20261111-k3/models}
 ASR_MODEL=${UMM_NATIVE_ASR_MODEL:-$MODELS/asr}
 OMNI_MODEL=${UMM_NATIVE_OMNI_MODEL:-$MODELS/omni}
 TTS_MODEL=${UMM_NATIVE_TTS_MODEL:-/root/umm-mixed-output-20261116/models/qwen3-tts}
+IMAGE_MODEL=${UMM_NATIVE_IMAGE_MODEL:-/root/umm-mixed-output-20261116/models/Qwen-Image-2512}
 BIN=$ROOT/bin
 
 started() {
@@ -42,6 +44,7 @@ start() {
       --model qwen3-native \
       --entry asr --entry-endpoint "ipc://$IPC_DIR/asr" \
       --vlm-entry omni --vlm-entry-endpoint "ipc://$IPC_DIR/omni" \
+      --image-entry image --image-entry-endpoint "ipc://$IPC_DIR/image" \
       --tts-entry tts --tts-entry-endpoint "ipc://$IPC_DIR/tts" \
       --completion "ipc://$IPC_DIR/completion" \
       --abort "ipc://$IPC_DIR/abort" \
@@ -58,6 +61,7 @@ start() {
   done
   start_stage asr asr "$BIN/umm-native-stage-asr" "$ASR_MODEL" 2 ""
   start_stage omni omni "$BIN/umm-native-stage-omni" "$OMNI_MODEL" 3 "--max-new-tokens 96"
+  start_stage image image "$BIN/umm-native-stage-image" "$IMAGE_MODEL" 4 ""
   start_stage tts tts "$BIN/umm-native-stage-tts" "$TTS_MODEL" 5 ""
 }
 
@@ -75,7 +79,7 @@ start_stage() {
 }
 
 stop() {
-  for name in asr omni tts server; do
+  for name in asr omni image tts server; do
     [ -f "$RUN_DIR/$name.pid" ] || continue
     pid=$(cat "$RUN_DIR/$name.pid")
     kill "$pid" 2>/dev/null || true
@@ -94,7 +98,7 @@ stop() {
 }
 
 status() {
-  for name in server asr omni tts; do
+  for name in server asr omni image tts; do
     if started "$name"; then
       echo "$name running pid $(cat "$RUN_DIR/$name.pid")"
     else

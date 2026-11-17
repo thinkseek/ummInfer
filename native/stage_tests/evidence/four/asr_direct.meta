@@ -1,0 +1,5 @@
+cmd: curl -sS -o /root/umm-native-service/evidence-four/asr_direct.stdout -w %{http_code} -F model=qwen3-native -F file=@/root/umm-c6rt-ckl/input/asr_en_16k.wav http://172.17.0.2:43301/v1/audio/transcriptions
+process_exit: 0
+http_status: 200
+seconds: 1.029
+input: /root/umm-c6rt-ckl/input/asr_en_16k.wav

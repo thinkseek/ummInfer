@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Live smoke for the native stage deployment.
 
-Drives the real HTTP surface of umm-infer serve with native ASR/Omni/TTS
+Drives the real HTTP surface of umm-infer serve with native ASR/Omni/Image/TTS
 stages and writes every command result under --out-dir. Stdlib only.
 
-  python3 -I native_stage_smoke.py --base-url http://172.17.0.2:43400 \
+  python3 -I native_stage_smoke.py --base-url http://172.17.0.2:43301 \
       --wav asr_en_pcm16.wav --image man_ironing.png --out-dir evidence
 """
 
@@ -19,6 +19,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zlib
 
 EXPECTED_ASR = ("Oh yeah, yeah. He wasn't even that big when I started listening "
                 "to him. But in his solo music, didn't do overly well, but he did "
@@ -157,6 +158,36 @@ def decode_artifact(chunks, out_path):
     with open(out_path, "wb") as handle:
         handle.write(raw)
     return raw
+
+
+def png_stats(raw):
+    """Validate the stage's non-interlaced, filter-0 RGB PNG artifact."""
+    if raw[:8] != b"\x89PNG\r\n\x1a\n":
+        raise Failure("image artifact is not a PNG")
+    width = int.from_bytes(raw[16:20], "big")
+    height = int.from_bytes(raw[20:24], "big")
+    offset = 8
+    compressed = bytearray()
+    while offset + 12 <= len(raw):
+        size = int.from_bytes(raw[offset:offset + 4], "big")
+        kind = raw[offset + 4:offset + 8]
+        body = raw[offset + 8:offset + 8 + size]
+        if kind == b"IDAT":
+            compressed += body
+        offset += 12 + size
+    scanlines = zlib.decompress(bytes(compressed))
+    stride = 1 + width * 3
+    if len(scanlines) != stride * height:
+        raise Failure("PNG scanline size mismatch")
+    pixels = bytearray()
+    for row in range(height):
+        start = row * stride
+        if scanlines[start] != 0:
+            raise Failure("unexpected PNG row filter")
+        pixels += scanlines[start + 1:start + stride]
+    colors = len(set(zip(pixels[0::3], pixels[1::3], pixels[2::3])))
+    return {"width": width, "height": height, "colors": colors,
+            "png_bytes": len(raw)}
 
 
 def wav_stats(raw):
@@ -396,7 +427,50 @@ def main():
         expect(text.strip(), "audio->text stream returns VLM text")
         print("audio->text:", text[:160])
 
-        # 5. Text -> TTS, streamed artifact.
+        # 5. One request carries text, image and audio inputs and asks for all
+        # three outputs. This exercises ASR -> VLM -> native Image + TTS.
+        mixed_id, mixed_text, mixed_artifacts, mixed_terminal = collect(
+            chat_stream(base, [
+                audio_part(args.wav),
+                image_part(args.image),
+                {"type": "text", "text": "Use the audio and image; answer briefly."},
+            ], extra={
+                "modalities": ["text", "image", "audio"],
+                "image": {"prompt": "A red fox beside a chair in snow",
+                          "size": "512x512", "seed": 42,
+                          "output_format": "png"},
+                "audio": {"voice": "vivian", "format": "wav",
+                          "sample_rate": 24000},
+            }, max_tokens=64), args.out_dir, "mixed_all")
+        mixed_images = [item for item in mixed_artifacts
+                        if item.get("media_type") == "image"]
+        mixed_audio = [item for item in mixed_artifacts
+                       if item.get("media_type") == "audio"]
+        mixed_png = decode_artifact(
+            mixed_images, os.path.join(args.out_dir, "mixed_image.png"))
+        mixed_wav = decode_artifact(
+            mixed_audio, os.path.join(args.out_dir, "mixed_audio.wav"))
+        png_summary = png_stats(mixed_png)
+        mixed_wav_summary = wav_stats(mixed_wav)
+        mixed_wav_summary = {key: mixed_wav_summary[key] for key in
+                             ("samples", "duration_s", "rms", "non_silence_ratio",
+                              "peak", "wav_bytes", "fmt")}
+        record(args.out_dir, "mixed_all.json", json.dumps({
+            "request_id": mixed_id, "answer": mixed_text,
+            "terminal": mixed_terminal, "image": png_summary,
+            "audio": mixed_wav_summary}, ensure_ascii=False, indent=1))
+        expect(mixed_terminal is not None and
+               mixed_terminal.get("kind") == "complete" and mixed_text.strip(),
+               "mixed text+image+audio request completes with text")
+        expect(png_summary["width"] == 512 and png_summary["height"] == 512 and
+               png_summary["colors"] > 100,
+               "mixed request returns a real non-monochrome native image")
+        expect(mixed_wav_summary["fmt"]["rate"] == 24000 and
+               mixed_wav_summary["rms"] > 0.01,
+               "mixed request returns native non-silent audio")
+        print("mixed all:", mixed_text[:120], json.dumps(png_summary))
+
+        # 6. Text -> TTS, streamed artifact.
         # The TTS leg speaks the aggregated VLM answer, not the client text.
         tts_request, spoken, artifacts, terminal = collect(
             chat_stream(base, TTS_TEXT, extra={
@@ -420,7 +494,7 @@ def main():
                "TTS artifact is not silent")
         print("TTS:", json.dumps(summary))
 
-        # 6. Native ASR round-trip of the generated WAV (24k -> 16k test resample).
+        # 7. Native ASR round-trip of the generated WAV (24k -> 16k test resample).
         resampled = os.path.join(args.out_dir, "tts_16k.wav")
         write_wav_16k(resampled, stats["pcm"])
         round_trip, round_elapsed = transcribe(base, resampled)
@@ -431,7 +505,7 @@ def main():
                "native ASR recognizes the synthesized speech")
         print("round-trip:", round_trip.get("text"))
 
-        # 7. Cooperative cancel at each engine's own boundary.
+        # 8. Cooperative cancel at each engine's own boundary.
         def abort_now(request_id):
             sent = int(time.time() * 1000)
             status, payload, _ = request(base + "/abort", {"request_id": request_id})
@@ -448,7 +522,7 @@ def main():
                         terminal = unified
             return kinds, terminal
 
-        # 7a. ASR: abort as soon as the request id is known, so the stage stops
+        # 8a. ASR: abort as soon as the request id is known, so the stage stops
         # inside the audio tower or the prefill.
         stream = chat_stream(base, [audio_part(args.wav),
                                     {"type": "text", "text": "Repeat the transcript."}])
@@ -469,12 +543,11 @@ def main():
         expect(health_asr.get("in_flight") == 0, "in_flight 0 after ASR cancel")
         print("cancel ASR:", kinds[-1])
 
-        # 7b. Omni: the stage returns one result, so there are no deltas to
-        # key on. Prefill of a short prompt takes ~10 s here, so aborting at
-        # 15 s lands in the token loop.
+        # 8b. Omni: tensor-core decode is much faster than the original slice.
+        # Abort at 0.5 s, inside the token loop of a 96-token response.
         stream = chat_stream(base, "Write a long paragraph about the sea.")
         omni_cancel_id = next(stream)["id"]
-        time.sleep(15.0)
+        time.sleep(0.5)
         sent, abort_status, abort_body = abort_now(omni_cancel_id)
         kinds, terminal = drain(stream)
         _, health_omni = get_json(base + "/health")
@@ -488,7 +561,30 @@ def main():
         expect(health_omni.get("in_flight") == 0, "in_flight 0 after Omni cancel")
         print("cancel Omni:", kinds[-1])
 
-        # 7c. TTS: the leg emits nothing until its artifact, so wait for the
+        # 8c. Image: abort after model load and the first denoise steps.
+        stream = chat_stream(base, TTS_TEXT, extra={
+            "modalities": ["text", "image"],
+            "image": {"prompt": "A red fox beside a chair in snow",
+                      "size": "512x512", "seed": 42, "output_format": "png"},
+        }, max_tokens=64)
+        image_cancel_id = next(stream)["id"]
+        time.sleep(15.0)
+        sent, abort_status, abort_body = abort_now(image_cancel_id)
+        kinds, terminal = drain(stream)
+        _, health_image = get_json(base + "/health")
+        record(args.out_dir, "cancel_image.json", json.dumps({
+            "request_id": image_cancel_id, "abort_epoch_ms": sent,
+            "abort_status": abort_status, "abort_body": abort_body,
+            "kinds": kinds, "terminal": terminal,
+            "in_flight_after": health_image.get("in_flight")}, indent=1))
+        expect(abort_status == 200 and "artifact" not in kinds and
+               terminal is not None and terminal.get("kind") == "cancelled",
+               "Image cancel settles as cancelled without an artifact")
+        expect(health_image.get("in_flight") == 0,
+               "in_flight 0 after Image cancel")
+        print("cancel Image:", terminal.get("kind") if terminal else None)
+
+        # 8d. TTS: the leg emits nothing until its artifact, so wait for the
         # VLM leg to finish (the omni stage logs one line per completed
         # request), then abort 5 s into synthesis.
         omni_done = count_omni_requests(args.stage_log_dir)
@@ -522,7 +618,7 @@ def main():
         expect(health_tts.get("in_flight") == 0, "in_flight 0 after TTS cancel")
         print("cancel TTS:", terminal.get("kind") if terminal else None)
 
-        # 8. The service still answers after the cancel.
+        # 9. The service still answers after the cancel.
         status, body, _ = request(base + "/v1/chat/completions", {
             "model": "qwen3-native", "max_tokens": 32,
             "messages": [{"role": "user", "content": "Say OK."}],
