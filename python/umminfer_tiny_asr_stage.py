@@ -87,6 +87,8 @@ class TinyCTCModel:
         if self.config["alphabet"] != ALPHABET:
             raise ValueError("unsupported tiny model alphabet")
         self.weights = mx.load(path / "model.safetensors")
+        # Materialize weights before request threads use them on another stream.
+        mx.eval(self.weights)
         vocab_size = len(ALPHABET) + 1
         expected = {
             "filterbank": (self.config["mel_bins"], self.config["n_fft"] // 2 + 1),
@@ -123,16 +125,17 @@ class TinyCTCModel:
             samples, shape=(frame_count, self.config["n_fft"]),
             strides=(samples.strides[0] * hop, samples.strides[0])).copy()
         window = np.hanning(self.config["n_fft"] + 1)[:-1].astype(np.float32)
-        spectrum = mx.fft.rfft(mx.array(frames * window), axis=1)
-        power = mx.square(mx.abs(spectrum)) / self.config["n_fft"]
-        features = mx.log(mx.maximum(
-            power @ self.weights["filterbank"].T, 1e-7))
-        hidden = mx.tanh(features @ self.weights["encoder.weight"].T +
-                         self.weights["encoder.bias"])
-        hidden = mx.tanh(hidden @ self.weights["decoder.weight"].T +
-                         self.weights["decoder.bias"])
-        logits = hidden @ self.weights["classifier.weight"].T + self.weights["classifier.bias"]
-        token_ids = np.asarray(mx.argmax(logits, axis=1))
+        with mx.stream(mx.new_stream(mx.cpu)):
+            spectrum = mx.fft.rfft(mx.array(frames * window), axis=1)
+            power = mx.square(mx.abs(spectrum)) / self.config["n_fft"]
+            features = mx.log(mx.maximum(
+                power @ self.weights["filterbank"].T, 1e-7))
+            hidden = mx.tanh(features @ self.weights["encoder.weight"].T +
+                             self.weights["encoder.bias"])
+            hidden = mx.tanh(hidden @ self.weights["decoder.weight"].T +
+                             self.weights["decoder.bias"])
+            logits = hidden @ self.weights["classifier.weight"].T + self.weights["classifier.bias"]
+            token_ids = np.asarray(mx.argmax(logits, axis=1))
         tokens = []
         truncated = False
         previous = 0
