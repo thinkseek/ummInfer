@@ -494,8 +494,15 @@ void gelu_tanh_inplace(Bf16* x, int n, cudaStream_t stream) {
 }
 
 // One block per token row. Softmax over 128 logits in fp32, then stable top-8.
+// top_k is a template parameter so the top-k arrays stay in registers. With a
+// runtime bound the compiler spills vals[]/idxs[] to local memory and the scan
+// costs about twice as much. The comparison order is unchanged: experts are
+// visited in increasing index order and a value replaces a slot only on a
+// strict >, so ties keep the lower index.
+template <int TK>
 __global__ void moe_route_kernel(const float* logits, int* top_idx, float* top_w,
                                  int rows, int num_experts, int top_k) {
+  (void)top_k;
   extern __shared__ float smem[];  // num_experts floats
   const int row = blockIdx.x;
   const float* lr = logits + static_cast<size_t>(row) * num_experts;
@@ -522,17 +529,20 @@ __global__ void moe_route_kernel(const float* logits, int* top_idx, float* top_w
   __syncthreads();
   if (threadIdx.x != 0) return;
   // Sequential top-k on 128 values; strict > keeps the lower index on ties.
-  float vals[8];
-  int idxs[8];
-  for (int k = 0; k < top_k; ++k) {
+  float vals[TK];
+  int idxs[TK];
+  #pragma unroll
+  for (int k = 0; k < TK; ++k) {
     vals[k] = -1.0f;
     idxs[k] = -1;
   }
   for (int e = 0; e < num_experts; ++e) {
     const float v = smem[e];
-    for (int k = 0; k < top_k; ++k) {
+    #pragma unroll
+    for (int k = 0; k < TK; ++k) {
       if (v > vals[k]) {
-        for (int j = top_k - 1; j > k; --j) {
+        #pragma unroll
+        for (int j = TK - 1; j > k; --j) {
           vals[j] = vals[j - 1];
           idxs[j] = idxs[j - 1];
         }
@@ -543,10 +553,12 @@ __global__ void moe_route_kernel(const float* logits, int* top_idx, float* top_w
     }
   }
   float wsum = 0.0f;
-  for (int k = 0; k < top_k; ++k) wsum += vals[k];
-  int* ti = top_idx + static_cast<size_t>(row) * top_k;
-  float* tw = top_w + static_cast<size_t>(row) * top_k;
-  for (int k = 0; k < top_k; ++k) {
+  #pragma unroll
+  for (int k = 0; k < TK; ++k) wsum += vals[k];
+  int* ti = top_idx + static_cast<size_t>(row) * TK;
+  float* tw = top_w + static_cast<size_t>(row) * TK;
+  #pragma unroll
+  for (int k = 0; k < TK; ++k) {
     ti[k] = idxs[k];
     tw[k] = vals[k] / wsum;
   }
@@ -554,8 +566,16 @@ __global__ void moe_route_kernel(const float* logits, int* top_idx, float* top_w
 
 void moe_route(const float* logits, int* top_idx, float* top_w, int rows,
                int num_experts, int top_k, cudaStream_t stream) {
-  moe_route_kernel<<<rows, 128, num_experts * sizeof(float), stream>>>(
-      logits, top_idx, top_w, rows, num_experts, top_k);
+  const size_t smem = static_cast<size_t>(num_experts) * sizeof(float);
+  switch (top_k) {
+    case 8:
+      moe_route_kernel<8><<<rows, 128, smem, stream>>>(
+          logits, top_idx, top_w, rows, num_experts, top_k);
+      return;
+    default:
+      throw std::runtime_error("moe_route: unsupported top_k " +
+                               std::to_string(top_k));
+  }
 }
 
 __global__ void add_deepstack_kernel(Bf16* hidden, const Bf16* feature,

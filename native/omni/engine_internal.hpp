@@ -44,6 +44,11 @@ struct EngineWeights {
   // process lifetime because the mmap is held by the ShardedSafetensors owner.
   std::unordered_map<std::string, const Bf16*> ptr;
   const Bf16* get(const std::string& name) const;
+  // Per-layer expert projection pointers, laid out [layer * kNumExperts + e].
+  // Built once after loading: resolving them per token cost a string
+  // concatenation and a hash lookup 3 * kNumExperts times per layer.
+  std::vector<const Bf16*> expert_gate, expert_up, expert_down;
+  void cache_expert_pointers();
 };
 
 // Device-side scratch buffers and caches, sized once at construction.
@@ -68,6 +73,9 @@ struct EngineScratch {
   float *moe_y = nullptr;     // [pairs, kTextH] per-pair down projection
   MoeGroupPlan moe_plan;      // host-side routing plan, reused every layer
   MoeDeviceTables moe_tab;    // device copy of the plan tables
+  // Host staging for the per-layer route round trip; reused across layers.
+  std::vector<int> h_route_idx;
+  std::vector<float> h_route_w;
 
   // Vision tower workspaces (864-token image).
   Bf16 *v_hidden = nullptr, *v_norm = nullptr, *v_qkv = nullptr, *v_proj = nullptr;
