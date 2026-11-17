@@ -66,7 +66,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " vae_ms=" << generated.vae_ms
               << " elapsed_ms=" << elapsed.count() << "\n";
     return image_result(std::move(png), generated.width, generated.height,
-                        params.seed, params.steps);
+                        params.seed, params.steps, generated.denoise_ms);
   };
 }
 

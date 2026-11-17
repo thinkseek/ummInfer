@@ -184,8 +184,9 @@ class UnifiedEngine {
   std::string submit(StagePayload payload);
 
   // Cancels the request on both stages via the Coordinator abort broadcast.
-  // Returns false when the request is unknown or already terminal.
-  bool cancel(const std::string& request_id);
+  // Returns false when the request is unknown or already terminal. source
+  // labels the abort metric: "client", "timeout" or "shutdown".
+  bool cancel(const std::string& request_id, const char* source = "client");
 
   // Returns false for an unknown id or timeout, true only for a terminal record.
   bool wait(const std::string& request_id, double timeout_s);
@@ -225,11 +226,24 @@ class UnifiedEngine {
     // completed, failed, or aborted; empty while running.
     std::string state;
     std::string error;
+    std::chrono::steady_clock::time_point started;
   };
 
   struct Record {
     std::string session_id;
     Phase phase = Phase::kAsr;
+    // Metrics and tracing. steady_clock measures durations; start_epoch_ms is
+    // the wall-clock start the trace record carries. A negative leg value means
+    // that leg did not run for this request.
+    std::string request_type = "chat";
+    std::chrono::steady_clock::time_point started;
+    int64_t start_epoch_ms = 0;
+    std::chrono::steady_clock::time_point asr_started;
+    std::chrono::steady_clock::time_point vlm_started;
+    double asr_ms = -1;
+    double vlm_ms = -1;
+    double image_ms = -1;
+    double tts_ms = -1;
     RequestInfo public_info;
     int64_t next_seq = 0;
     bool asr_final_seen = false;

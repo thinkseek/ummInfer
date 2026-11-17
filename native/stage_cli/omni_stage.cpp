@@ -124,7 +124,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " decode_ms=" << std::fixed << std::setprecision(1)
               << result.decode_ms
               << " elapsed_ms=" << elapsed.count() << "\n";
-    return omni_result(result.text, static_cast<int>(result.token_ids.size()));
+    return omni_result(result.text, static_cast<int>(result.token_ids.size()),
+                       result.prefill_ms, result.decode_ms);
   };
 }
 

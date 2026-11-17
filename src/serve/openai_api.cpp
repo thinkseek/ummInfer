@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include "umminfer/client/client.hpp"
+#include "umminfer/obs/metrics.hpp"
 #include "umminfer/pipeline/unified.hpp"
 #include "asr_common.hpp"
 #include "client/http.hpp"
@@ -29,6 +30,53 @@ namespace umminfer {
 namespace {
 
 using json = nlohmann::json;
+
+int64_t now_epoch_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+double elapsed_seconds(std::chrono::steady_clock::time_point started) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+      .count();
+}
+
+// Counts one HTTP response by route and status. The destructor keeps every
+// early return accounted for, including rejections.
+struct RouteMetric {
+  const char* route;
+  const httplib::Response* response;
+  ~RouteMetric() {
+    obs::Metrics::instance().http(route, std::to_string(response->status));
+  }
+};
+
+// Engine-level metric and trace for a non-unified ASR request. It counts only
+// after the request reached the coordinator, so a rejected form adds nothing.
+struct AsrRequestMetric {
+  std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
+  int64_t start_epoch_ms = now_epoch_ms();
+  std::string request_id;
+  std::string status;
+  bool counted = false;
+
+  ~AsrRequestMetric() {
+    if (!counted) return;
+    const double seconds = elapsed_seconds(started);
+    obs::Metrics::instance().request("transcription", status, seconds);
+    obs::TraceRecord trace;
+    trace.request_id = request_id;
+    trace.stage = "asr";
+    trace.request_type = "transcription";
+    trace.start_epoch_ms = start_epoch_ms;
+    trace.end_epoch_ms = now_epoch_ms();
+    trace.status = status;
+    trace.duration_ms = seconds * 1000.0;
+    trace.asr_ms = seconds * 1000.0;
+    obs::Metrics::instance().trace(trace);
+  }
+};
 
 // Multipart values are raw bytes, not JSON strings. nlohmann's dump() throws on
 // invalid UTF-8, which would turn an intended 400 into a 500. Replace each
@@ -718,6 +766,13 @@ class OpenAIApi::Impl {
       res.set_content(body.dump(), "application/json");
     });
 
+    // Prometheus text exposition. Labels are fixed identifier sets: stage, leg,
+    // request type, status, source and GPU index. No request content is read.
+    server_.Get("/metrics", [](const httplib::Request&, httplib::Response& res) {
+      res.set_content(obs::Metrics::instance().render(),
+                      "text/plain; version=0.0.4; charset=utf-8");
+    });
+
     // Admission only: 503 until the configured external entry stage has sent
     // stage_ready. This is not a heartbeat and not a liveness probe.
     server_.Get("/ready", [this](const httplib::Request&, httplib::Response& res) {
@@ -905,9 +960,9 @@ class OpenAIApi::Impl {
     return unified_engine_ ? unified_engine_->info(request_id)
                            : coordinator_.info(request_id);
   }
-  void cancel_chat(const std::string& request_id) {
-    if (unified_engine_) unified_engine_->cancel(request_id);
-    else coordinator_.abort(request_id);
+  void cancel_chat(const std::string& request_id, const char* source = "client") {
+    if (unified_engine_) unified_engine_->cancel(request_id, source);
+    else coordinator_.abort(request_id, source);
   }
   void release_chat(const std::string& request_id) {
     if (unified_engine_) unified_engine_->release(request_id);
@@ -915,6 +970,8 @@ class OpenAIApi::Impl {
   }
 
   void handle_transcription(const httplib::Request& req, httplib::Response& res) {
+    RouteMetric route_metric{"transcriptions", &res};
+    AsrRequestMetric request_metric;
     auto reject = [&res](int status, const std::string& message) {
       res.status = status;
       res.set_content(json{{"error", {{"message", utf8_sanitized(message)},
@@ -1038,6 +1095,11 @@ class OpenAIApi::Impl {
       reject(503, error.what());
       return;
     }
+    // From here the request exists in the engine, so its metric and trace are
+    // owed whatever the outcome. The status is filled in at each terminal.
+    request_metric.request_id = request_id;
+    request_metric.counted = true;
+    request_metric.status = "aborted";
     bool settled = false;
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::duration<double>(config_.request_timeout_s);
@@ -1049,18 +1111,20 @@ class OpenAIApi::Impl {
           std::min(0.1, std::chrono::duration<double>(remaining).count()));
     }
     if (req.is_connection_closed()) {
-      coordinator_.abort(request_id);
+      coordinator_.abort(request_id, "client");
       coordinator_.release(request_id);
       return;
     }
     auto info = coordinator_.info(request_id);
     if (!settled || !info) {
-      coordinator_.abort(request_id);
+      request_metric.status = "timeout";
+      coordinator_.abort(request_id, "timeout");
       coordinator_.release(request_id);
       reject(504, "transcription timed out");
       return;
     }
     coordinator_.release(request_id);
+    request_metric.status = info->state;
     if (info->state != "completed") {
       reject(500, info->error);
       return;
@@ -1098,6 +1162,7 @@ class OpenAIApi::Impl {
   }
 
   void handle_chat(const httplib::Request& req, httplib::Response& res) {
+    RouteMetric route_metric{"chat", &res};
     const json body = json::parse(req.body, nullptr, false);
     auto reject = [&res](const std::string& message) {
       res.status = 400;
@@ -1381,7 +1446,7 @@ class OpenAIApi::Impl {
       }
       auto info = info_chat(request_id);
       if (!settled || !info) {
-        cancel_chat(request_id);
+        cancel_chat(request_id, "timeout");
         release_chat(request_id);
         res.status = 504;
         res.set_content(json{{"error", {{"message", "request timed out"}}}}.dump(),

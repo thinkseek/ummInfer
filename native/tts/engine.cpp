@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -331,8 +332,15 @@ TtsEngine::~TtsEngine() {
 std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
                                          int language_id, int speaker_id,
                                          int max_frames,
-                                         const AbortCheck& abort) {
+                                         const AbortCheck& abort,
+                                         SynthTimings* timings) {
   Impl& im = *impl_;
+  const auto started = std::chrono::steady_clock::now();
+  const auto elapsed_ms = [&started] {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - started)
+        .count();
+  };
   const PromptPlan plan = build_prompt_plan(text_ids, language_id, speaker_id);
   const int L = static_cast<int>(plan.rows.size());
   if (L > 200) throw std::runtime_error("prompt too long");
@@ -478,6 +486,7 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
                                    cudaMemcpyHostToDevice, im.stream));
     const std::vector<int> rest = run_predictor(im.hidden + (seq_len - 1) * kH, c0);
     frames.push_back(c0);
+    if (step == 0 && timings != nullptr) timings->first_frame_ms = elapsed_ms();
     for (int x : rest) frames.push_back(x);
 
     // Frame vector: codec_embed(c0) + 15 predictor embeddings + tts_pad.
@@ -532,7 +541,10 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   }
   if (frames.size() % kGroups != 0)
     throw std::runtime_error("codec frames not divisible by 16");
-  return im.codec->decode(frames, static_cast<int>(frames.size() / kGroups), abort);
+  std::vector<float> samples =
+      im.codec->decode(frames, static_cast<int>(frames.size() / kGroups), abort);
+  if (timings != nullptr) timings->total_ms = elapsed_ms();
+  return samples;
 }
 
 }  // namespace umminfer::native

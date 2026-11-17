@@ -101,11 +101,15 @@ std::string load_image_bytes(const std::string& url);
 
 Value asr_result(const std::string& text, int generated_tokens,
                  const std::string& finish_reason);
-Value omni_result(const std::string& text, int generated_tokens);
+// Optional phase times are milliseconds the stage measured itself. A negative
+// value omits the field, so the server records nothing instead of a zero.
+Value omni_result(const std::string& text, int generated_tokens,
+                  double prefill_ms = -1, double decode_ms = -1);
 // Artifact map the unified engine expects: media_type + Bin under "data".
 Value tts_result(std::string wav_bytes, int sample_rate, int channels,
-                 const std::string& voice);
+                 const std::string& voice, double first_frame_ms = -1,
+                 double total_ms = -1);
 Value image_result(std::string png_bytes, int width, int height,
-                   uint64_t seed, int steps);
+                   uint64_t seed, int steps, double denoise_ms = -1);
 
 }  // namespace umminfer::stage

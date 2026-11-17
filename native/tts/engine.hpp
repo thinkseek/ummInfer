@@ -22,13 +22,22 @@ class TtsEngine {
   TtsEngine(const TtsEngine&) = delete;
   TtsEngine& operator=(const TtsEngine&) = delete;
 
+  // Optional phase times, measured by the engine in milliseconds. first_frame
+  // is the time to the first generated codec frame; the decoder is
+  // non-streaming, so it is not a time to first audio sample.
+  struct SynthTimings {
+    double first_frame_ms = -1;
+    double total_ms = -1;
+  };
+
   // text_ids is the full wrapped prompt; language/speaker are codec ids.
   // Greedy synthesis returning 24 kHz mono float samples in [-1, 1]. The abort
   // check runs at every frame boundary; an aborted request raises
   // RequestAborted. An empty check keeps the original behaviour bit for bit.
   std::vector<float> synthesize(const std::vector<int>& text_ids, int language_id,
                                 int speaker_id, int max_frames,
-                                const AbortCheck& abort = {});
+                                const AbortCheck& abort = {},
+                                SynthTimings* timings = nullptr);
 
  private:
   struct Impl;
