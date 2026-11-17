@@ -10,6 +10,7 @@
 #include "bf16.hpp"
 #include "cuda_kernels_omni.hpp"
 #include "image_preprocess.hpp"
+#include "omni_gemm.hpp"
 #include "safetensors_mmap.hpp"
 
 namespace umminfer::omni {
@@ -52,11 +53,20 @@ struct EngineScratch {
   // Text decoder workspaces.
   Bf16 *hidden = nullptr, *norm = nullptr;
   Bf16 *q = nullptr, *k = nullptr, *v = nullptr;
-  Bf16 *gate = nullptr, *up = nullptr, *moe_acc = nullptr;
+  Bf16 *moe_acc = nullptr;
   float *router_logits = nullptr, *router_w = nullptr, *logits = nullptr;
   int *router_idx = nullptr, *argmax_scratch = nullptr, *d_vis_pos = nullptr;
   float *mrope_cos = nullptr, *mrope_sin = nullptr;  // [max_seq, 128]
   Bf16 *kv = nullptr;  // [layers][2][max_seq][kv_heads][head_dim]
+
+  // MoE grouped-GEMM workspaces, `pairs` = max_seq * kTopK rows.
+  Bf16 *moe_x = nullptr;      // [pairs, kTextH] rows gathered in pair order
+  float *moe_gate = nullptr;  // [pairs, kExpertInter]
+  float *moe_up = nullptr;    // [pairs, kExpertInter]
+  float *moe_act = nullptr;   // [pairs, kExpertInter] FP32 expert activation
+  float *moe_y = nullptr;     // [pairs, kTextH] per-pair down projection
+  MoeGroupPlan moe_plan;      // host-side routing plan, reused every layer
+  MoeDeviceTables moe_tab;    // device copy of the plan tables
 
   // Vision tower workspaces (864-token image).
   Bf16 *v_hidden = nullptr, *v_norm = nullptr, *v_qkv = nullptr, *v_proj = nullptr;

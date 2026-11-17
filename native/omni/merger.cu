@@ -43,11 +43,11 @@ void run_merger(const EngineWeights& w, EngineScratch& s, const Bf16* hidden,
                w.get(prefix + ".ln_q.bias"), sh, merged, 4 * kVisionH, 1e-6f, st);
   }
   constexpr int kH4 = 4 * kVisionH;  // 4608
-  gemm_bf16_tiled(s.v_proj, s.v_shuffle, w.get(prefix + ".mlp.0.weight"),
-                  w.get(prefix + ".mlp.0.bias"), merged, kH4, kH4, st);
+  gemm_bf16_mma(s.v_proj, s.v_shuffle, w.get(prefix + ".mlp.0.weight"),
+                w.get(prefix + ".mlp.0.bias"), merged, kH4, kH4, st);
   gelu_inplace(s.v_proj, merged * kH4, st);  // merger uses exact erf GELU
-  gemm_bf16_tiled(out, s.v_proj, w.get(prefix + ".mlp.2.weight"),
-                  w.get(prefix + ".mlp.2.bias"), merged, kH4, kVisionOut, st);
+  gemm_bf16_mma(out, s.v_proj, w.get(prefix + ".mlp.2.weight"),
+                w.get(prefix + ".mlp.2.bias"), merged, kH4, kVisionOut, st);
 }
 
 }  // namespace umminfer::omni

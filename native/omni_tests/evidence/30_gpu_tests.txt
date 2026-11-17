@@ -1,0 +1,32 @@
+$ ctest --test-dir /tmp/omni-perf/build -R omni_moe_down_test --output-on-failure
+exit=0
+Internal ctest changing into directory: /tmp/omni-perf/build
+Test project /tmp/omni-perf/build
+    Start 2: omni_moe_down_test
+1/1 Test #2: omni_moe_down_test ...............   Passed    0.30 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.30 sec
+
+$ /tmp/omni-perf/build/omni_cli/omni_moe_down_test
+exit=0
+fixture: rel gap between FP32-act and BF16-act references = 2.678e-03
+grouped pair 0: rel_err_vs_fp32=4.204e-07 rel_err_vs_bf16act=2.686e-03
+grouped pair 1: rel_err_vs_fp32=4.204e-07 rel_err_vs_bf16act=2.686e-03
+grouped pair 2: rel_err_vs_fp32=4.204e-07 rel_err_vs_bf16act=2.686e-03
+grouped pair 3: rel_err_vs_fp32=4.204e-07 rel_err_vs_bf16act=2.686e-03
+grouped pair 4: rel_err_vs_fp32=4.204e-07 rel_err_vs_bf16act=2.686e-03
+grouped pair 5: rel_err_vs_fp32=4.327e-07 rel_err_vs_bf16act=2.686e-03
+grouped pair 6: rel_err_vs_fp32=4.327e-07 rel_err_vs_bf16act=2.686e-03
+grouped pair 7: rel_err_vs_fp32=4.327e-07 rel_err_vs_bf16act=2.686e-03
+gemv    pair 0: rel_err_vs_fp32=3.579e-08 rel_err_vs_bf16act=2.686e-03
+gemv    pair 1: rel_err_vs_fp32=3.579e-08 rel_err_vs_bf16act=2.686e-03
+gemv    pair 2: rel_err_vs_fp32=3.579e-08 rel_err_vs_bf16act=2.686e-03
+gemv    pair 3: rel_err_vs_fp32=3.579e-08 rel_err_vs_bf16act=2.686e-03
+gemv    pair 4: rel_err_vs_fp32=3.579e-08 rel_err_vs_bf16act=2.686e-03
+gemv    pair 5: rel_err_vs_fp32=3.470e-08 rel_err_vs_bf16act=2.686e-03
+gemv    pair 6: rel_err_vs_fp32=3.470e-08 rel_err_vs_bf16act=2.686e-03
+gemv    pair 7: rel_err_vs_fp32=3.470e-08 rel_err_vs_bf16act=2.686e-03
+RESULT: PASS
+

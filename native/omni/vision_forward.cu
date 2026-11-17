@@ -64,8 +64,8 @@ void vision_forward(const EngineWeights& w, EngineScratch& s,
   cudaStream_t st = s.stream;
 
   // Patch embed: conv3d is a dense linear over the 1536-vector.
-  gemm_bf16_tiled(s.v_hidden, d_pixels_bf16, w.get(p + "patch_embed.proj.weight"),
-                  w.get(p + "patch_embed.proj.bias"), tokens, 1536, kVisionH, st);
+  gemm_bf16_mma(s.v_hidden, d_pixels_bf16, w.get(p + "patch_embed.proj.weight"),
+                w.get(p + "patch_embed.proj.bias"), tokens, 1536, kVisionH, st);
 
   // Absolute position embedding with bilinear interpolation.
   // Computed on host for clarity; table is only 2304x1152.
@@ -117,9 +117,9 @@ void vision_forward(const EngineWeights& w, EngineScratch& s,
     layer_norm(s.v_hidden, w.get(bp + ".norm1.weight"),
                w.get(bp + ".norm1.bias"), s.v_norm, tokens, kVisionH, 1e-6f, st);
     // qkv [tokens, 3456], split into contiguous q/k/v [tokens, 1152].
-    gemm_bf16_tiled(s.v_qkv, s.v_norm, w.get(bp + ".attn.qkv.weight"),
-                    w.get(bp + ".attn.qkv.bias"), tokens, kVisionH,
-                    3 * kVisionH, st);
+    gemm_bf16_mma(s.v_qkv, s.v_norm, w.get(bp + ".attn.qkv.weight"),
+                  w.get(bp + ".attn.qkv.bias"), tokens, kVisionH,
+                  3 * kVisionH, st);
     split_qkv(s.v_qkv, s.v_qp, s.v_kp, s.v_vp, tokens, kVisionH, st);
     Bf16 *vq = s.v_qp, *vk = s.v_kp, *vv = s.v_vp;
     vision_rope(vq, s.v_rope_cos, s.v_rope_sin, tokens, kVisionHeads,
@@ -129,20 +129,20 @@ void vision_forward(const EngineWeights& w, EngineScratch& s,
     // Bidirectional MHA over the single image: window_len = tokens.
     gqa_attention(vq, vk, vv, s.v_proj, tokens, tokens, kVisionHeads,
                   kVisionHeads, kVisionHeadDim, false, tokens, 0, st);
-    gemm_bf16_tiled(s.v_qkv, s.v_proj, w.get(bp + ".attn.proj.weight"),
-                    w.get(bp + ".attn.proj.bias"), tokens, kVisionH, kVisionH,
-                    st);
+    gemm_bf16_mma(s.v_qkv, s.v_proj, w.get(bp + ".attn.proj.weight"),
+                  w.get(bp + ".attn.proj.bias"), tokens, kVisionH, kVisionH,
+                  st);
     add_residual(s.v_hidden, s.v_qkv, tokens * kVisionH, st);
 
     layer_norm(s.v_hidden, w.get(bp + ".norm2.weight"),
                w.get(bp + ".norm2.bias"), s.v_norm, tokens, kVisionH, 1e-6f, st);
-    gemm_bf16_tiled(s.v_mlp, s.v_norm, w.get(bp + ".mlp.linear_fc1.weight"),
-                    w.get(bp + ".mlp.linear_fc1.bias"), tokens, kVisionH,
-                    kVisionInter, st);
+    gemm_bf16_mma(s.v_mlp, s.v_norm, w.get(bp + ".mlp.linear_fc1.weight"),
+                  w.get(bp + ".mlp.linear_fc1.bias"), tokens, kVisionH,
+                  kVisionInter, st);
     gelu_tanh_inplace(s.v_mlp, tokens * kVisionInter, st);
-    gemm_bf16_tiled(s.v_norm, s.v_mlp, w.get(bp + ".mlp.linear_fc2.weight"),
-                    w.get(bp + ".mlp.linear_fc2.bias"), tokens, kVisionInter,
-                    kVisionH, st);
+    gemm_bf16_mma(s.v_norm, s.v_mlp, w.get(bp + ".mlp.linear_fc2.weight"),
+                  w.get(bp + ".mlp.linear_fc2.bias"), tokens, kVisionInter,
+                  kVisionH, st);
     add_residual(s.v_hidden, s.v_norm, tokens * kVisionH, st);
 
     // Deepstack mergers after blocks 8, 16, 24.
