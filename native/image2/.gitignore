@@ -1,0 +1,9 @@
+# Build artifacts (local and on H20B)
+build/
+cuda-build/
+*.o
+*.so
+# No model weights, reference dumps or generated images are ever committed.
+*.png
+*.bin
+*.safetensors
