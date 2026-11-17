@@ -79,3 +79,39 @@ No PyTorch, vLLM, SGLang, TensorRT or cuDNN runtime is linked by
 `umm-image-native`; Python/diffusers is used only offline to generate golden
 reference tensors.
 
+
+---
+
+# Third-party notices — native Qwen-Image-2.1 slice
+
+## Copied source code
+
+None. The engine under `native/image2/`, the CLI under `native/image2_cli/`
+and the tests under `native/image2_tests/` were written from scratch. The
+tensor, safetensors, PNG and kernel files are adapted from the
+`native/image/` slice in this repository, also original code.
+
+## Specifications implemented from upstream references (read-only, not copied)
+
+Tensor layouts, block-causal attention, `causal_condition` modulation, mRoPE
+indexing, the VAE decoder and the scheduler math were derived by reading these
+packages on the development host and cross-checking numeric output against
+reference blobs they produce:
+
+- HuggingFace Transformers 5.6 (Qwen3-VL text encoder, mRoPE, per-head q/k
+  RMSNorm), Apache-2.0.
+- diffusers 0.43 (`QwenImage21Pipeline`, `QwenImage21Transformer2DModel`,
+  `AutoencoderKLQwenImage21`, `FlowMatchEulerDiscreteScheduler`,
+  AdaLayerNormContinuous), Apache-2.0.
+- Qwen byte-level BPE tokenizer and the safetensors format specification,
+  Apache-2.0.
+
+Only formulas, constants and tensor name/shape conventions were taken; the
+C++/CUDA implementation is original. Python and diffusers are used offline
+only to produce golden reference tensors and are not runtime dependencies.
+
+## Runtime dependencies (linked, not embedded)
+
+Same set as the Qwen-Image-2512 slice: CUDA 12.4 runtime, cuBLAS and cuBLASLt,
+zlib, nlohmann/json and the C++20 standard library. `umm-image2-native` links
+no PyTorch, vLLM, SGLang, TensorRT or cuDNN runtime.
