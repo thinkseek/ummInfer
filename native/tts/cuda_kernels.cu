@@ -313,11 +313,16 @@ __global__ void gqa_kernel(const T* q, const T* k, const T* v, T* out, int nq,
 }
 
 // in [ci, L], w [co, ci/g, K], out [co, L].
+// One thread per output element.  The previous launch gave each element its own
+// block and let every thread of that block run the same serial reduction, so
+// kBlock threads computed and stored identical values.  The arithmetic below is
+// unchanged: each element still accumulates in (k, then input channel) order.
 __global__ void conv1d_kernel(const float* in, const float* w, const float* bias,
                               float* out, int ci, int co, int L, int K, int dilation,
                               int groups) {
-  const int t = blockIdx.x, c = blockIdx.y;
-  if (t >= L || c >= co) return;
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= co * L) return;
+  const int c = idx / L, t = idx - c * L;
   const int pad = (K - 1) * dilation;
   const int in_per_group = ci / groups;
   const int g = c / (co / groups);
@@ -341,8 +346,10 @@ __global__ void conv1d_kernel(const float* in, const float* w, const float* bias
 __global__ void transconv_kernel(const float* in, const float* w, const float* bias,
                                  float* out, int ci, int co, int L, int K,
                                  int stride) {
-  const int o = blockIdx.x, c = blockIdx.y;
-  if (o >= L * stride || c >= co) return;
+  const int out_len = L * stride;
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= co * out_len) return;
+  const int c = idx / out_len, o = idx - c * out_len;
   float acc = bias ? bias[c] : 0.0f;
   for (int kk = 0; kk < K; ++kk) {
     const int rem = o - kk;
@@ -513,16 +520,16 @@ void gqa_attention_t(const T* q, const T* k, const T* v, T* out, int nq, int nkv
 void conv1d_causal_f32(const float* in, const float* w, const float* bias,
                        float* out, int ci, int co, int L, int kernel, int dilation,
                        int groups, cudaStream_t st) {
-  dim3 grid(L, co);
-  conv1d_kernel<<<grid, kBlock, 0, st>>>(in, w, bias, out, ci, co, L, kernel,
-                                         dilation, groups);
+  const int n = co * L;
+  conv1d_kernel<<<(n + kBlock - 1) / kBlock, kBlock, 0, st>>>(
+      in, w, bias, out, ci, co, L, kernel, dilation, groups);
 }
 void conv_transpose1d_f32(const float* in, const float* w, const float* bias,
                           float* out, int ci, int co, int L, int kernel, int stride,
                           cudaStream_t st) {
-  dim3 grid(L * stride, co);
-  transconv_kernel<<<grid, kBlock, 0, st>>>(in, w, bias, out, ci, co, L, kernel,
-                                            stride);
+  const int n = co * L * stride;
+  transconv_kernel<<<(n + kBlock - 1) / kBlock, kBlock, 0, st>>>(
+      in, w, bias, out, ci, co, L, kernel, stride);
 }
 void codebook_dequant_f32(const float* sum, const float* usage, float* emb,
                           int codes, int dim, float eps, cudaStream_t st) {

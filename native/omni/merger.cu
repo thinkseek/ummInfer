@@ -12,6 +12,27 @@ const Bf16* EngineWeights::get(const std::string& name) const {
   return it->second;
 }
 
+// The MoE layer resolves three projection pointers for each of 128 experts on
+// every token. Doing that through the name map cost a string build and a hash
+// lookup per pointer; the addresses never change, so resolve them once.
+void EngineWeights::cache_expert_pointers() {
+  const size_t n = static_cast<size_t>(kTextLayers) * kNumExperts;
+  expert_gate.assign(n, nullptr);
+  expert_up.assign(n, nullptr);
+  expert_down.assign(n, nullptr);
+  for (int l = 0; l < kTextLayers; ++l) {
+    const std::string lp =
+        "thinker.model.layers." + std::to_string(l) + ".mlp.experts.";
+    for (int e = 0; e < kNumExperts; ++e) {
+      const std::string ep = lp + std::to_string(e);
+      const size_t i = static_cast<size_t>(l) * kNumExperts + e;
+      expert_gate[i] = get(ep + ".gate_proj.weight");
+      expert_up[i] = get(ep + ".up_proj.weight");
+      expert_down[i] = get(ep + ".down_proj.weight");
+    }
+  }
+}
+
 size_t kv_cache_offset(int layer, bool is_v, int slot) {
   return ((((static_cast<size_t>(layer) * 2) + (is_v ? 1 : 0)) * 2048 + slot) *
           kKvHeads) * kHeadDim;

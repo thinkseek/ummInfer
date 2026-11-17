@@ -153,6 +153,7 @@ OmniEngine::OmniEngine(const std::string& model_dir, int gpu_id, int max_seq) {
   impl_->max_seq = max_seq;
   UMM_CUDA_CHECK(cudaSetDevice(gpu_id));
   impl_->load_weights(model_dir);
+  impl_->weights.cache_expert_pointers();
   impl_->alloc_scratch();
   impl_->tokenizer = std::make_unique<Qwen2BpeTokenizer>(
       model_dir + "/vocab.json", model_dir + "/merges.txt",
