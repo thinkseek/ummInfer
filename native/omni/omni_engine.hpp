@@ -24,6 +24,12 @@ class OmniEngine {
     std::string text;                    // decoded, specials skipped
     int prefill_tokens = 0;
     int image_tokens = 0;
+    // Wall-clock phases (host timed, every phase boundary is already a stream
+    // synchronisation point).  prefill covers the text decoder only; vision is
+    // the image tower ahead of it.
+    double vision_ms = 0.0;
+    double prefill_ms = 0.0;
+    double decode_ms = 0.0;
   };
 
   // Full prompt + optional one image. When image is null the run is pure text.
