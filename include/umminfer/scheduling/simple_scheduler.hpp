@@ -74,6 +74,20 @@ class MessageQueue {
   std::deque<T> items_;
 };
 
+// Raised by a cancellable compute function when the request was aborted. The
+// scheduler settles the request on its existing abort path instead of
+// reporting the exception as a failure.
+class RequestAborted : public std::runtime_error {
+ public:
+  explicit RequestAborted(std::string message = "request aborted")
+      : std::runtime_error(std::move(message)) {}
+};
+
+// Bound to one request id: true once that id was aborted. A late abort for a
+// different id never affects it.
+using AbortCheck = std::function<bool()>;
+using CancellableComputeFn = std::function<Value(const Value&, const AbortCheck&)>;
+
 using ComputeFn = std::function<Value(const Value&)>;
 using BatchComputeFn = std::function<std::vector<Value>(const std::vector<Value>&)>;
 using RequestCostFn = std::function<int64_t(const Value&)>;
@@ -96,6 +110,9 @@ class SimpleScheduler {
   MessageQueue<OutgoingMessage>& outbox() { return outbox_; }
 
   void enqueue(IncomingMessage msg);
+  // Installs the compute path that can observe its own cancellation. It takes
+  // precedence over the plain compute function; an empty value restores it.
+  void set_cancellable_compute(CancellableComputeFn fn);
   void start();  // blocks the calling thread
   void stop();
   void abort(const std::string& request_id);
@@ -115,6 +132,7 @@ class SimpleScheduler {
   void emit_error(const std::string& request_id, const std::string& error);
 
   ComputeFn fn_;
+  CancellableComputeFn cancellable_fn_;
   BatchComputeFn batch_fn_;
   int max_batch_size_;
   double max_batch_wait_s_;

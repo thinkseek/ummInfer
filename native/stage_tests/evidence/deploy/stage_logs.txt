@@ -1,0 +1,19 @@
+$ for f in server asr omni tts; do tail -c 40000 logs/$f.log | tr -d NUL; done
+== server ==
+== asr ==
+asr request audio_samples=240820 generated_tokens=46 chars=180 elapsed_ms=1018
+asr request audio_samples=240820 generated_tokens=46 chars=180 elapsed_ms=1013
+asr request audio_samples=74240 generated_tokens=13 chars=51 elapsed_ms=277
+asr request aborted boundary="aborted in prefill layer 0" abort_epoch_ms=1794883971407 exit_epoch_ms=1794883971407 compute_ms=194
+== omni ==
+omni request prompt_tokens=17 image_tokens=0 generated_tokens=19 chars=84 elapsed_ms=38196
+omni request prompt_tokens=236 image_tokens=216 generated_tokens=27 chars=113 elapsed_ms=258925
+omni request prompt_tokens=57 image_tokens=0 generated_tokens=47 chars=201 elapsed_ms=108721
+omni request prompt_tokens=27 image_tokens=0 generated_tokens=10 chars=51 elapsed_ms=37382
+omni request aborted boundary="aborted at token 0" abort_epoch_ms=1794883986789 exit_epoch_ms=1794883986789 compute_ms=15425
+omni request prompt_tokens=27 image_tokens=0 generated_tokens=10 chars=51 elapsed_ms=37382
+omni request prompt_tokens=11 image_tokens=0 generated_tokens=2 chars=3 elapsed_ms=12960
+== tts ==
+tts request voice=vivian language=english samples=111360 duration_s=4.64 rms=0.0710603 peak=0.61909 non_silence=0.620878 wav_bytes=222764 elapsed_ms=25696
+tts request aborted boundary="aborted in codec decoder block 1" abort_epoch_ms=1794884036850 exit_epoch_ms=1794884036850 compute_ms=12677
+exit=0

@@ -1,0 +1,8 @@
+$ sh -c du -sh /root/omniinfer-model-validation-20261111-k3/models/asr   /root/omniinfer-model-validation-20261111-k3/models/omni   /root/umm-mixed-output-20261116/models/qwen3-tts;   sha256sum /root/umm-mixed-output-20261116/models/qwen3-tts/config.json   /root/omniinfer-model-validation-20261111-k3/models/asr/config.json   /root/omniinfer-model-validation-20261111-k3/models/omni/config.json
+1.8G	/root/omniinfer-model-validation-20261111-k3/models/asr
+66G	/root/omniinfer-model-validation-20261111-k3/models/omni
+2.4G	/root/umm-mixed-output-20261116/models/qwen3-tts
+81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455  /root/umm-mixed-output-20261116/models/qwen3-tts/config.json
+76d3ae4601ce939830b2517f4a6cadb86cc51316c3900af6b020b051c21a478c  /root/omniinfer-model-validation-20261111-k3/models/asr/config.json
+eab5093d47807aaf894119506b238b2b1cee70d08456e894fee9a012d88f2e0d  /root/omniinfer-model-validation-20261111-k3/models/omni/config.json
+exit=0

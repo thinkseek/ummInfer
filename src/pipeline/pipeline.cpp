@@ -131,6 +131,11 @@ Stage::Stage(Config config, ComputeFn compute_fn)
               config_.stage_gpu_ids, {}, config_.comm_config,
               config_.injected_relay) {}
 
+Stage::Stage(Config config, CancellableComputeFn compute_fn)
+    : Stage(std::move(config), ComputeFn{}) {
+  scheduler_->set_cancellable_compute(std::move(compute_fn));
+}
+
 Stage::~Stage() {
   stop();
   // Closing the relay map destroys in-flight operations. The caller must have

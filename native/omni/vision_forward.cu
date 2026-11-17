@@ -57,7 +57,8 @@ void build_vision_rope(int grid_h, int grid_w, Bf16* cos, Bf16* sin,
 // Vision tower forward. Input pixels [tokens, 1536] f32 already on host.
 // Writes pooler [tokens/4, 2048] and the three deepstack matrices.
 void vision_forward(const EngineWeights& w, EngineScratch& s,
-                    const PreprocessedImage& img, Bf16* d_pixels_bf16) {
+                    const PreprocessedImage& img, Bf16* d_pixels_bf16,
+                    const AbortCheck& abort) {
   const int tokens = img.rows();
   if (tokens > kMaxImgTokens) throw std::runtime_error("image too large for slice");
   const std::string p = "thinker.visual.";
@@ -113,6 +114,9 @@ void vision_forward(const EngineWeights& w, EngineScratch& s,
   build_vision_rope(gh, gw, s.v_rope_cos, s.v_rope_sin, st);
 
   for (int blk = 0; blk < kVisionBlocks; ++blk) {
+    if (abort && abort()) {
+      throw RequestAborted("aborted in vision block " + std::to_string(blk));
+    }
     const std::string bp = p + "blocks." + std::to_string(blk);
     layer_norm(s.v_hidden, w.get(bp + ".norm1.weight"),
                w.get(bp + ".norm1.bias"), s.v_norm, tokens, kVisionH, 1e-6f, st);

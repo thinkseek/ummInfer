@@ -1,0 +1,2 @@
+$ curl -s http://172.17.0.2:43300/health
+{"in_flight":0,"status":"ok"}exit=0

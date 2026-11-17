@@ -111,7 +111,7 @@ struct AsrEngine::Impl {
   }
 
   // Whisper-style audio tower. Returns the token count N; d_audio holds [N,1024].
-  int audio_forward(int valid_frames) {
+  int audio_forward(int valid_frames, const AbortCheck& abort) {
     const int chunks = std::max(1, (valid_frames + 99) / 100);
     const int valid_tokens = AsrEngine::audio_token_count(valid_frames);
     mel_to_chunks(d_mel, d_conv_in, chunks, valid_frames, stream);
@@ -159,7 +159,12 @@ struct AsrEngine::Impl {
              valid_tokens);
       add_residual(d_audio, d_au_norm, valid_tokens * kAudioD, stream);
     };
-    for (int l = 0; l < kAudioLayers; ++l) attn(l);
+    for (int l = 0; l < kAudioLayers; ++l) {
+      if (abort && abort()) {
+        throw RequestAborted("aborted in audio tower layer " + std::to_string(l));
+      }
+      attn(l);
+    }
 
     layer_norm(d_audio, w(p + "ln_post.weight"), w(p + "ln_post.bias"), d_au_norm,
                valid_tokens, kAudioD, 1e-5f, stream);
@@ -347,11 +352,12 @@ AsrEngine::~AsrEngine() {
   if (im.stream) cudaStreamDestroy(im.stream);
 }
 
-std::vector<int> AsrEngine::transcribe_tokens(const MelFeatures& mel, int max_new_tokens) {
+std::vector<int> AsrEngine::transcribe_tokens(const MelFeatures& mel, int max_new_tokens,
+                                              const AbortCheck& abort) {
   Impl& im = *impl_;
   UMM_CUDA_CHECK(cudaMemcpy(im.d_mel, mel.data.data(),
                             mel.data.size() * sizeof(float), cudaMemcpyHostToDevice));
-  const int n_audio = im.audio_forward(mel.valid_frames);
+  const int n_audio = im.audio_forward(mel.valid_frames, abort);
   const auto prompt = QwenTokenizer::build_asr_prompt(n_audio);
   const int S = static_cast<int>(prompt.size());
   if (S + max_new_tokens > kMaxSeq)
@@ -368,7 +374,12 @@ std::vector<int> AsrEngine::transcribe_tokens(const MelFeatures& mel, int max_ne
   // prompt[3] is audio_start; placeholders start at offset 4.
   replace_rows(im.d_hidden, im.d_audio, 4, n_audio, kTextH, im.stream);
   im.seq_len = S;
-  for (int l = 0; l < kTextLayers; ++l) im.text_layer(l, S, 0);
+  for (int l = 0; l < kTextLayers; ++l) {
+    if (abort && abort()) {
+      throw RequestAborted("aborted in prefill layer " + std::to_string(l));
+    }
+    im.text_layer(l, S, 0);
+  }
 
   auto lm_head = [&](int row) {
     // Only the final token's logits are needed.
@@ -382,6 +393,9 @@ std::vector<int> AsrEngine::transcribe_tokens(const MelFeatures& mel, int max_ne
 
   std::vector<int> generated;
   for (int step = 0; step < max_new_tokens && !QwenTokenizer::is_eos(next); ++step) {
+    if (abort && abort()) {
+      throw RequestAborted("aborted at token " + std::to_string(step));
+    }
     generated.push_back(next);
     UMM_CUDA_CHECK(cudaMemcpy(im.d_ids, &next, sizeof(int), cudaMemcpyHostToDevice));
     const int pos = im.seq_len;
