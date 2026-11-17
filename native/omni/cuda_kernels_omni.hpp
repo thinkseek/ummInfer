@@ -75,22 +75,6 @@ void gqa_attention(const Bf16* q, const Bf16* k, const Bf16* v, Bf16* out, int n
 // the caller; the chosen index is returned synchronously.
 int argmax_f32(const float* logits, int n, int* scratch_idx, cudaStream_t stream);
 
-// Matrix-vector for the tied lm head: out[j] = sum_k W[j,k] x[k], fp32
-// accumulators. Used instead of cuBLAS GEMM because cuBLAS 12.4 on this host
-// returns CUBLAS_STATUS_NOT_SUPPORTED for GEMMs with m above 1024 (no usable
-// precompiled kernel; libcuLTO absent), and the head is 151936x1024.
-void gemv_bf16(const Bf16* w, const Bf16* x, float* out, int n_out, int k,
-               cudaStream_t stream);
-
-// General fallback GEMM for shapes cuBLAS rejects here:
-// y[n, m_out] = x[n, k] * W^T[m_out, k] + bias[m_out], BF16 throughout with
-// fp32 accumulation. One thread per output element; the model is 0.6B and the
-// widest failing dimension is 3584, so L2 reuse is sufficient.
-// ponytail: naive global-memory GEMM, replace with a tiled kernel if the
-// decoder for longer audio needs the throughput.
-void gemm_bf16_naive(Bf16* y, const Bf16* x, const Bf16* w, const Bf16* bias,
-                     int n_tokens, int k, int m_out, cudaStream_t stream);
-
 // Text mRoPE, GPT-NeoX half rotation. cos/sin are precomputed [n, head_dim]
 // fp32 tables (duplicated halves already included); x is [n, heads, head_dim].
 void mrope_half(Bf16* x, const float* cos, const float* sin, int n,
@@ -109,18 +93,6 @@ void gelu_tanh_inplace(Bf16* x, int n, cudaStream_t stream);
 // weights [rows, 8] fp32.
 void moe_route(const float* logits, int* top_idx, float* top_w, int rows,
                int num_experts, int top_k, cudaStream_t stream);
-
-// One expert GEMV chain for one token, fp32 accumulation.
-//   gate[k768] = Wg[768,2048] x[2048]; up likewise;
-//   a = silu(gate)*up; y[2048] = Wd[2048,768] a; acc += routing_w * y
-void expert_gemv_acc(const Bf16* x, const Bf16* wg, const Bf16* wu,
-                     const Bf16* wd, Bf16* acc, float routing_w, int hidden,
-                     int inter, cudaStream_t stream);
-
-// Tiled BF16 GEMM with shared-memory tiles and fp32 accumulation.
-// y[n, m_out] = x[n, k] * W^T[m_out, k] + optional bias.
-void gemm_bf16_tiled(Bf16* y, const Bf16* x, const Bf16* w, const Bf16* bias,
-                     int n_tokens, int k, int m_out, cudaStream_t stream);
 
 // Add a deepstack feature into the visual placeholder rows of hidden.
 // hidden [seq, 2048], feature [n_vis, 2048]; vis_pos[0..n_vis-1] are the

@@ -46,14 +46,25 @@ void text_layer(const EngineWeights& w, EngineScratch& s, int layer, int m,
                 int history) {
   cudaStream_t st = s.stream;
   const std::string lp = "thinker.model.layers." + std::to_string(layer);
+  const bool one = (m == 1);
+
+  // Batch-1 tokens are bound by weight bytes, so they take the GEMV path;
+  // prefill takes the tensor-core GEMM.
+  auto lin = [&](Bf16* y, const Bf16* x, const Bf16* wt, int k, int n) {
+    if (one)
+      gemv_bf16_bf16(wt, x, y, n, k, st);
+    else
+      gemm_bf16_mma(y, x, wt, nullptr, m, k, n, st);
+  };
+
   rms_norm(s.hidden, w.get(lp + ".input_layernorm.weight"), s.norm, m,
            kTextH, kRmsEps, st);
-  gemm_bf16_tiled(s.q, s.norm, w.get(lp + ".self_attn.q_proj.weight"), nullptr,
-                  m, kTextH, kQHeads * kHeadDim, st);
-  gemm_bf16_tiled(s.k, s.norm, w.get(lp + ".self_attn.k_proj.weight"), nullptr,
-                  m, kTextH, kKvHeads * kHeadDim, st);
-  gemm_bf16_tiled(s.v, s.norm, w.get(lp + ".self_attn.v_proj.weight"), nullptr,
-                  m, kTextH, kKvHeads * kHeadDim, st);
+  lin(s.q, s.norm, w.get(lp + ".self_attn.q_proj.weight"), kTextH,
+      kQHeads * kHeadDim);
+  lin(s.k, s.norm, w.get(lp + ".self_attn.k_proj.weight"), kTextH,
+      kKvHeads * kHeadDim);
+  lin(s.v, s.norm, w.get(lp + ".self_attn.v_proj.weight"), kTextH,
+      kKvHeads * kHeadDim);
   rms_norm(s.q, w.get(lp + ".self_attn.q_norm.weight"), s.q,
            m * kQHeads, kHeadDim, kRmsEps, st);
   rms_norm(s.k, w.get(lp + ".self_attn.k_norm.weight"), s.k,
@@ -70,21 +81,23 @@ void text_layer(const EngineWeights& w, EngineScratch& s, int layer, int m,
   gqa_attention(s.q, s.kv + kv_cache_offset(layer, false, 0),
                 s.kv + kv_cache_offset(layer, true, 0), s.norm, m,
                 history + m, kQHeads, kKvHeads, kHeadDim, true, 0, history, st);
-  gemm_bf16_tiled(s.q, s.norm, w.get(lp + ".self_attn.o_proj.weight"), nullptr,
-                  m, kQHeads * kHeadDim, kTextH, st);
+  lin(s.q, s.norm, w.get(lp + ".self_attn.o_proj.weight"), kQHeads * kHeadDim,
+      kTextH);
   add_residual(s.hidden, s.q, m * kTextH, st);
 
-  // MoE block (every layer).
+  // ---- MoE block (every layer) ----
   rms_norm(s.hidden, w.get(lp + ".post_attention_layernorm.weight"), s.norm, m,
            kTextH, kRmsEps, st);
-  // Router GEMV/GEMM -> fp32 logits.
   const Bf16* gate_w = w.get(lp + ".mlp.gate.weight");
-  for (int r = 0; r < m; ++r)
-    gemv_bf16(gate_w, s.norm + static_cast<size_t>(r) * kTextH,
-              s.router_logits + static_cast<size_t>(r) * kNumExperts,
-              kNumExperts, kTextH, st);
+  if (one)
+    gemv_bf16_f32(gate_w, s.norm, s.router_logits, kNumExperts, kTextH, st);
+  else
+    gemm_bf16_mma_f32(s.router_logits, s.norm, gate_w, m, kTextH, kNumExperts,
+                      st);
   moe_route(s.router_logits, s.router_idx, s.router_w, m, kNumExperts, kTopK, st);
 
+  // The reference implementation resolves experts on the host per layer, so
+  // this round trip is not new; it is what makes the grouped launch possible.
   std::vector<int> h_idx(m * kTopK);
   std::vector<float> h_w(m * kTopK);
   cudaMemcpyAsync(h_idx.data(), s.router_idx, h_idx.size() * sizeof(int),
@@ -92,24 +105,47 @@ void text_layer(const EngineWeights& w, EngineScratch& s, int layer, int m,
   cudaMemcpyAsync(h_w.data(), s.router_w, h_w.size() * sizeof(float),
                   cudaMemcpyDeviceToHost, st);
   cudaStreamSynchronize(st);
-  // Zero the accumulator rows.
-  cudaMemsetAsync(s.moe_acc, 0, static_cast<size_t>(m) * kTextH * sizeof(Bf16), st);
-  for (int r = 0; r < m; ++r) {
-    const Bf16* x = s.norm + static_cast<size_t>(r) * kTextH;
-    Bf16* acc = s.moe_acc + static_cast<size_t>(r) * kTextH;
-    // Ascending expert id matches the HF nonzero() visit order.
-    std::vector<std::pair<int, float>> chosen;
-    for (int k = 0; k < kTopK; ++k)
-      chosen.emplace_back(h_idx[r * kTopK + k], h_w[r * kTopK + k]);
-    std::sort(chosen.begin(), chosen.end());
-    for (const auto& [e, rw] : chosen) {
-      const std::string ep = lp + ".mlp.experts." + std::to_string(e);
-      expert_gemv_acc(x, w.get(ep + ".gate_proj.weight"),
-                      w.get(ep + ".up_proj.weight"),
-                      w.get(ep + ".down_proj.weight"), acc, rw, kTextH,
-                      kExpertInter, st);
-    }
+
+  MoeGroupPlan& plan = s.moe_plan;
+  plan.build(h_idx.data(), h_w.data(), m, kTopK, kNumExperts);
+  std::vector<const Bf16*> wg(kNumExperts), wu(kNumExperts), wd(kNumExperts);
+  for (int e = 0; e < kNumExperts; ++e) {
+    const std::string ep = lp + ".mlp.experts." + std::to_string(e);
+    wg[e] = w.get(ep + ".gate_proj.weight");
+    wu[e] = w.get(ep + ".up_proj.weight");
+    wd[e] = w.get(ep + ".down_proj.weight");
   }
+  const int pairs = plan.total_pairs;
+  const int gate_blocks = (plan.build_blocks(kExpertInter / kGemmTileN),
+                           static_cast<int>(plan.blk_expert.size()));
+  const int down_blocks = (plan.build_down_blocks(kTextH / kGemmTileN),
+                           static_cast<int>(plan.down_e.size()));
+  moe_upload_tables(plan, wg.data(), wu.data(), wd.data(), kNumExperts, &s.moe_tab,
+                    st);
+
+  // Expert inputs in pair order (rows of the same token repeat once per expert).
+  gather_rows(s.moe_x, s.norm, s.moe_tab.pair_token, pairs, kTextH, st);
+  if (one) {
+    gemv_grouped_f32(s.moe_tab.pair_weights, s.moe_x, s.moe_gate, kExpertInter,
+                     kTextH, pairs, st);
+    gemv_grouped_f32(s.moe_tab.pair_weights + pairs, s.moe_x, s.moe_up,
+                     kExpertInter, kTextH, pairs, st);
+    moe_act(s.moe_act, s.moe_gate, s.moe_up, pairs * kExpertInter, st);
+    gemv_grouped_f32act(s.moe_tab.pair_weights + 2 * pairs, s.moe_act,
+                        s.moe_y, kTextH, kExpertInter, pairs, st);
+  } else {
+    moe_gemm_grouped_f32(s.moe_gate, s.moe_x, s.moe_tab, 0, gate_blocks,
+                         kExpertInter, kTextH, st);
+    moe_gemm_grouped_f32(s.moe_up, s.moe_x, s.moe_tab, kNumExperts, gate_blocks,
+                         kExpertInter, kTextH, st);
+    moe_act(s.moe_act, s.moe_gate, s.moe_up, pairs * kExpertInter, st);
+    moe_down_f32(s.moe_y, s.moe_act, s.moe_tab, 2 * kNumExperts, down_blocks,
+                 kTextH, kExpertInter, st);
+  }
+  // Combine in ascending expert order, rounding to bf16 after each add, exactly
+  // as the reference single-expert accumulator chain did.
+  moe_accumulate(s.moe_acc, s.moe_y, s.moe_tab.pair_of, s.moe_tab.pair_w, m,
+                 kTopK, kTextH, st);
   add_residual(s.hidden, s.moe_acc, m * kTextH, st);
 }
 
