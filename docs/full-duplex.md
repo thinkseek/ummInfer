@@ -244,11 +244,14 @@ python3 -I tests/full_duplex_l2_live.py --mode all \
 
 Raw evidence: `evidence/rt-fix/l2-evidence.json` for the realtime mode,
 `evidence/fix2/l2-evidence.json` for the pipeline mode,
-`evidence/prefix/l2-evidence.json` for the prefill rerun (the first-turn prompt
-is longer there, so the shared prefix is measurable), and the stage logs next to
-them. They are not committed artifacts. Each mode was rerun after the streaming
-waveform change with the same command and `--mode realtime`, `--mode pipeline`
-or `--mode prefix`.
+`evidence/prefix/l2-evidence.json` for the prefill measurement (the first-turn
+prompt is longer there, so the shared prefix is measurable), and the stage logs
+next to them. They are not committed artifacts.
+
+The realtime and pipeline modes were rerun after the streaming waveform change
+in commit `291a540`, with the same command and `--mode realtime` or
+`--mode pipeline`. The prefix evidence predates that change: the prefill code
+was not touched, so `evidence/prefix` is reused and was not rerun.
 
 ### First audio, 20 spoken turns over one WebSocket
 
