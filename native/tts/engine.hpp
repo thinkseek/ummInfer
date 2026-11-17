@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "abort.hpp"
 
 namespace umminfer::native {
 
@@ -18,9 +23,12 @@ class TtsEngine {
   TtsEngine& operator=(const TtsEngine&) = delete;
 
   // text_ids is the full wrapped prompt; language/speaker are codec ids.
-  // Greedy synthesis returning 24 kHz mono float samples in [-1, 1].
+  // Greedy synthesis returning 24 kHz mono float samples in [-1, 1]. The abort
+  // check runs at every frame boundary; an aborted request raises
+  // RequestAborted. An empty check keeps the original behaviour bit for bit.
   std::vector<float> synthesize(const std::vector<int>& text_ids, int language_id,
-                                int speaker_id, int max_frames);
+                                int speaker_id, int max_frames,
+                                const AbortCheck& abort = {});
 
  private:
   struct Impl;

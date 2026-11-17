@@ -10,6 +10,7 @@
 #include "bf16.hpp"
 #include "cuda_kernels_omni.hpp"
 #include "image_preprocess.hpp"
+#include "omni_engine.hpp"
 #include "safetensors_mmap.hpp"
 
 namespace umminfer::omni {
@@ -73,8 +74,11 @@ void run_merger(const EngineWeights& w, EngineScratch& s, const Bf16* hidden,
                 Bf16* out, const std::string& prefix, int tokens,
                 bool postshuffle, cudaStream_t st);
 
+// The abort check runs before every vision block; RequestAborted is raised
+// there. An empty check keeps the original behaviour.
 void vision_forward(const EngineWeights& w, EngineScratch& s,
-                    const PreprocessedImage& img, Bf16* d_pixels_bf16);
+                    const PreprocessedImage& img, Bf16* d_pixels_bf16,
+                    const AbortCheck& abort = {});
 
 void text_layer(const EngineWeights& w, EngineScratch& s, int layer, int m,
                 int history);
