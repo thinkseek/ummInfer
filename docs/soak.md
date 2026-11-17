@@ -38,7 +38,7 @@ over the previous deployment, and the supervisor was restarted through its own
 
 The 30 minute soak numbers come from that `889b727` build. The three fault
 injections were re-measured after the stage-death fix, on a server built from
-the fix tree on top of `origin/main` (`c7ac443` + `b917eb0` + this commit):
+the fix tree on top of `origin/main` (`960d51a` + this commit):
 
 | Build | `umm-infer` SHA256 | Used for |
 | --- | --- | --- |
@@ -214,7 +214,7 @@ stage excursion is the image model load/unload above.
 Each fault ran alone against the fixed build, with the service otherwise
 idle. The soak numbers above are from `889b727`; the fault numbers are from
 the server built from this commit on top of `origin/main` (binary SHA256
-`58b45a7d2ecd8d704df8498e1a7fd6c4ef5b18257ff9b9caf14d5a42850123e2`). The stage
+`9d4a87d68bea1e8e3d8e203fbcf60e6e5b6183b34954782f9fb349298a6a8f4f`). The stage
 binaries are unchanged.
 
 ### (a) Kill a stage during a request
