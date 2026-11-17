@@ -255,6 +255,35 @@ def do_run(args):
             "http_status": abort_status, "response": abort_body,
         }
 
+    # Stage timings are written by the stage itself. The omni log has no request
+    # id, so the last completed line is the request that just ended.
+    stage_timings = None
+    if args.stage_log:
+        try:
+            tail = Path(args.stage_log).read_text(errors="replace").splitlines()
+        except OSError:
+            tail = []
+        for line in reversed(tail):
+            if not line.startswith("omni request prompt_tokens="):
+                continue
+            if "prefill_ms=" not in line:
+                continue
+            fields = {}
+            for token in line.split():
+                if "=" in token:
+                    key, value = token.split("=", 1)
+                    fields[key] = value
+            stage_timings = {
+                "source": args.stage_log,
+                "line": line,
+                "prompt_tokens": int(fields.get("prompt_tokens", 0)),
+                "generated_tokens": int(fields.get("generated_tokens", 0)),
+                "prefill_ms": float(fields.get("prefill_ms", 0)),
+                "decode_ms": float(fields.get("decode_ms", 0)),
+                "elapsed_ms": int(fields.get("elapsed_ms", 0)),
+            }
+            break
+
     result = {
         "http_status": status,
         "request_id": request_id,
@@ -272,6 +301,7 @@ def do_run(args):
                         "sha256": sha256_bytes(audio_bytes)},
         "image_prompt": IMAGE_PROMPT, "text_prompt": args.prompt,
         "voice": VOICE, "seed": 42, "max_tokens": args.max_tokens,
+        "stage_timings": stage_timings,
         "started_epoch_s": round(t_submit, 3),
     }
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -290,6 +320,9 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--timeout", type=float, default=1200)
     parser.add_argument("--max-tokens", type=int, default=64)
+    parser.add_argument("--stage-log", default="",
+                        help="omni stage log; its last completed request line "
+                             "supplies the stage-measured prefill_ms and decode_ms")
     parser.add_argument("--abort-after-first-event", action="store_true")
     parser.add_argument("--abort-delay", type=float, default=0.3)
     args = parser.parse_args()
