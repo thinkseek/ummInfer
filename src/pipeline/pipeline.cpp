@@ -657,7 +657,23 @@ void Coordinator::start() {
   if (control_plane_) return;
   control_plane_ = std::make_unique<CoordinatorControlPlane>(completion_endpoint_,
                                                              abort_endpoint_);
+  // A stage process that dies closes its submit connection. The transport
+  // monitor turns that into a terminal failure for the requests assigned to
+  // that stage and clears its readiness, so neither hangs until the HTTP
+  // deadline nor keeps /ready at 200.
+  control_plane_->set_stage_down_handler(
+      [this](const std::string& stage) { stage_down(stage); });
   control_plane_->start();
+  std::map<std::string, std::string> endpoints;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    endpoints = endpoints_;
+  }
+  // Watch every registered stage before the first submit: a stage that dies
+  // with no request in flight must still leave the ready set.
+  for (const auto& [name, endpoint] : endpoints) {
+    control_plane_->watch_stage(name, endpoint);
+  }
   running_ = true;
 }
 
@@ -704,6 +720,10 @@ void Coordinator::stop() {
   }
   // Wake every HTTP or embedded caller before its coordinator disappears.
   for (const auto& id : ids) abort(id, "shutdown");
+  // Join the transport monitor threads now. Their callback reaches into this
+  // object, and member destruction (mu_, cv_, requests_) happens after this
+  // call, so stopping them later in the destructor would be too late.
+  if (control_plane_) control_plane_->stop_watching();
   // run() receives with a 100 ms timeout. Leave the sockets open until the
   // destructor, after the caller has joined the run thread.
 }
@@ -946,6 +966,48 @@ void Coordinator::abort(const std::string& request_id, const char* source) {
   // An aborted request is terminal, so stream sinks need the same finish signal
   // a completion gives them.
   if (on_complete && snapshot) on_complete(*snapshot);
+}
+
+void Coordinator::stage_down(const std::string& stage) {
+  std::vector<RequestInfo> failed;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    ready_stages_.erase(stage);
+    // Requests still queued for this stage never reached it.
+    const auto queued = pending_submits_.find(stage);
+    if (queued != pending_submits_.end()) {
+      for (const auto& submit : queued->second) {
+        auto it = requests_.find(submit.request_id);
+        if (it == requests_.end()) continue;
+        if (it->second.state != "pending" && it->second.state != "running") continue;
+        if (it->second.current_stage != stage) continue;
+        it->second.state = "failed";
+        it->second.error = "stage exited: " + stage;
+        finish_metrics_locked(submit.request_id, "failed");
+        failed.push_back(it->second);
+      }
+      pending_submits_.erase(queued);
+    }
+    // Requests the stage had received. Marking the state under mu_ is what
+    // makes the terminal exactly once: a late completion from the dead
+    // process, or a duplicate disconnect event, finds a non-running record.
+    for (auto& [id, info] : requests_) {
+      if (info.state != "pending" && info.state != "running") continue;
+      if (info.current_stage != stage) continue;
+      info.state = "failed";
+      info.error = "stage exited: " + stage;
+      finish_metrics_locked(id, "failed");
+      failed.push_back(info);
+    }
+  }
+  if (failed.empty()) return;
+  std::fprintf(stderr,
+               "coordinator: stage %s disconnected; failed %zu request(s)\n",
+               stage.c_str(), failed.size());
+  cv_.notify_all();
+  for (const auto& request : failed) {
+    if (on_complete) on_complete(request);
+  }
 }
 
 bool Coordinator::release(const std::string& request_id) {

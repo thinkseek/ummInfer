@@ -170,6 +170,9 @@ class Coordinator {
  private:
   std::string next_request_id();
   void handle_event(const Message& msg);
+  // Transport monitor callback: the stage process behind this endpoint is
+  // gone. Fails the requests assigned to it and clears its readiness.
+  void stage_down(const std::string& stage);
   // Applies the terminal half of the metrics bookkeeping. Caller holds mu_.
   // Returns the submit-to-terminal seconds, or a negative value when the
   // request was not measured (already settled, or never submitted).

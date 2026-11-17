@@ -703,9 +703,19 @@ def fault_kill_stage(client, args):
                 {"model": "qwen3-native", "stream": True, "max_tokens": 96,
                  "messages": [{"role": "user", "content":
                                "List the integers from 1 to 200, comma separated."}]},
-                timeout=90, on_event=on_event)
+                # Must fail from the server's death notification, not from this
+                # timeout. 30 s is longer than any real detection latency.
+                timeout=30, on_event=on_event)
         except (OSError, urllib.error.URLError) as error:
             terminal["client_error"] = str(error)[:200]
+
+    ready_before = None
+    try:
+        status, _, _ = client.json_request("/ready", None, 5)
+        ready_before = status
+    except (OSError, urllib.error.URLError):
+        pass
+    result["ready_before"] = ready_before
 
     thread = threading.Thread(target=request, daemon=True)
     thread.start()
@@ -719,12 +729,11 @@ def fault_kill_stage(client, args):
     os.kill(pid, signal.SIGKILL)
     result["killed_at_epoch"] = round(killed_at, 3)
 
-    # Recovery is watched concurrently with the in-flight request. The
-    # supervisor can restart the stage long before the HTTP client gives up, so
-    # polling only after the client timeout would inflate every recovery number
-    # by that timeout.
+    # Recovery is watched concurrently with the in-flight request, so the
+    # numbers are not inflated by the client timeout.
     recovery = {"new_pid": None, "restart_detected_s": None,
-                "ready_s": None, "first_success_s": None}
+                "ready_down_s": None, "ready_back_s": None,
+                "first_success_s": None}
 
     def probe_success(timeout):
         try:
@@ -746,34 +755,52 @@ def fault_kill_stage(client, args):
                     and process_starttime(candidate) == current.get("starttime")):
                 recovery["new_pid"] = candidate
                 recovery["restart_detected_s"] = round(now() - killed_at, 3)
-            if recovery["ready_s"] is None:
-                try:
-                    status, _, _ = client.json_request("/ready", None, 5)
-                except (OSError, urllib.error.URLError):
-                    status = 0
-                if status == 200:
-                    recovery["ready_s"] = round(now() - killed_at, 3)
+            try:
+                status, _, _ = client.json_request("/ready", None, 5)
+            except (OSError, urllib.error.URLError):
+                status = 0
+            if status == 503 and recovery["ready_down_s"] is None:
+                recovery["ready_down_s"] = round(now() - killed_at, 3)
+            if (status == 200 and recovery["ready_down_s"] is not None
+                    and recovery["ready_back_s"] is None):
+                recovery["ready_back_s"] = round(now() - killed_at, 3)
             if (recovery["first_success_s"] is None
                     and recovery["new_pid"] is not None
                     and probe_success(10)):
                 recovery["first_success_s"] = round(now() - killed_at, 3)
-            if recovery["new_pid"] and recovery["first_success_s"] is not None:
+            if (recovery["new_pid"] and recovery["ready_down_s"] is not None
+                    and recovery["ready_back_s"] is not None
+                    and recovery["first_success_s"] is not None):
                 break
-            time.sleep(0.5)
+            time.sleep(0.2)
 
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
-    thread.join(100)
+    thread.join(60)
     result["request_returned"] = not thread.is_alive()
     result["terminal"] = terminal
     if terminal["epoch"]:
         result["terminal_latency_s"] = round(terminal["epoch"] - killed_at, 3)
     else:
         result["terminal_latency_s"] = None
-        result["hang_within_s"] = 100
+        result["hang_within_s"] = 60
     watcher.join(300)
     result.update(recovery)
+    # The HTTP cleanup releases the record right after the terminal; allow it a
+    # moment before reading the gauge.
+    zero_at = wait_in_flight_zero(client, 10)
+    result["in_flight_zero_s"] = (
+        round(zero_at - killed_at, 3) if zero_at else None)
     result["in_flight_after"] = health_in_flight(client)
+    result["ok"] = (
+        ready_before == 200
+        and terminal["kind"] == "error"
+        and result.get("terminal_latency_s") is not None
+        and result["terminal_latency_s"] <= 10.0
+        and recovery["ready_down_s"] is not None
+        and recovery["ready_back_s"] is not None
+        and recovery["first_success_s"] is not None
+        and result["in_flight_after"] == 0)
     return result
 
 
@@ -813,6 +840,10 @@ def fault_timeout(client, args):
     success_at = next_text_ok(client, 120)
     result["first_success_s"] = (
         round(success_at - started, 3) if success_at else None)
+    result["ok"] = (
+        result["in_flight_zero_s"] is not None
+        and result["aborts_client_delta"] >= 1
+        and result["first_success_s"] is not None)
     return result
 
 
@@ -861,6 +892,11 @@ def fault_queue(client, args, concurrency=48):
     result["first_success_s"] = (
         round(success_at - burst_end, 3) if success_at else None)
     result["in_flight_after"] = health_in_flight(client)
+    result["ok"] = (
+        bool(rejected)
+        and all(outcome["http"] in (200, 503) for outcome in outcomes)
+        and result["in_flight_after"] == 0
+        and result["first_success_s"] is not None)
     return result
 
 
@@ -1045,8 +1081,16 @@ def main():
         summary["faults"] = faults
         write_json(os.path.join(args.out, "fault-report.json"), faults)
 
+    failed_faults = []
+    if "faults" in summary:
+        failed_faults = [fault.get("fault") for fault in summary["faults"]
+                         if not fault.get("ok")]
+        summary["faults_ok"] = not failed_faults
     write_json(os.path.join(args.out, "soak-summary.json"), summary)
     print("summary: " + os.path.join(args.out, "soak-summary.json"))
+    if failed_faults:
+        print("FAILED faults: " + ", ".join(failed_faults))
+        return 1
     return 0
 
 

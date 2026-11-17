@@ -4,12 +4,15 @@
 
 #include <zmq.h>
 
+#include <atomic>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "umminfer/proto/messages.hpp"
@@ -33,12 +36,19 @@ class PushSocket {
   explicit PushSocket(std::string endpoint);
   ~PushSocket();
   void connect();
+  // Watches the transport for a disconnect. The callback runs on a monitor
+  // thread, at most once per dropped connection. Call after connect().
+  void on_disconnect(std::function<void()> callback);
   void send(const Message& msg);
   void close();
 
  private:
   std::string endpoint_;
   void* socket_ = nullptr;
+  void* monitor_ = nullptr;
+  std::thread monitor_thread_;
+  std::atomic<bool> monitor_running_{false};
+  std::function<void()> disconnect_callback_;
   std::mutex mu_;
 };
 
@@ -133,6 +143,16 @@ class CoordinatorControlPlane {
   ~CoordinatorControlPlane();
 
   void start();
+  // Called once per transport disconnect of one stage's submit socket. Set the
+  // handler before start().
+  void set_stage_down_handler(std::function<void(const std::string&)> handler);
+  // Opens (or returns) the submit socket for this stage and arms its monitor.
+  // Call for every registered stage before the first submit, so a stage that
+  // dies with no request in flight still clears its readiness.
+  void watch_stage(const std::string& stage_name, const std::string& endpoint);
+  // Closes every submit socket and joins its monitor thread. Must run while
+  // the handler and the object it points at are still alive.
+  void stop_watching();
   void submit_to_stage(const std::string& stage_name, const std::string& endpoint,
                        const Message& msg);
   Message recv_event();
@@ -151,6 +171,7 @@ class CoordinatorControlPlane {
   std::string abort_endpoint_;
   std::unique_ptr<PullSocket> completion_socket_;
   std::unique_ptr<PubSocket> abort_socket_;
+  std::function<void(const std::string&)> stage_down_handler_;
   // httplib serves requests on several threads, so submits race on this map.
   std::mutex stage_sockets_mu_;
   std::map<std::string, std::shared_ptr<PushSocket>> stage_sockets_;

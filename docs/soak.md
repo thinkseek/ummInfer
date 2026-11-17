@@ -36,6 +36,18 @@ over the previous deployment, and the supervisor was restarted through its own
 `stop` / `start` commands. The previous binaries are kept in
 `/root/umm-native-service/bin/pre-soak-20261117/`.
 
+The 30 minute soak numbers come from that `889b727` build. The three fault
+injections were re-measured after the stage-death fix, on a server built from
+the fix tree on top of `origin/main` (`c7ac443` + `b917eb0` + this commit):
+
+| Build | `umm-infer` SHA256 | Used for |
+| --- | --- | --- |
+| `889b727` | `64581317b2764f2c87228e61b63ec72e5e7f6075cb44a14d035dbaeeb2eb6dd1` | 30 min soak, memory series |
+| fix tree | `9d4a87d68bea1e8e3d8e203fbcf60e6e5b6183b34954782f9fb349298a6a8f4f` | three fault injections |
+
+The stage binaries are unchanged by the fix and stayed at the `889b727` hashes
+in the table above.
+
 ## Load model
 
 `tests/soak_native.py --duration-s 1800 --concurrency 4` drives five request
@@ -107,9 +119,17 @@ to become ready.
 
 ## Memory
 
-Start, middle and end medians (first, middle and last thirds of the run):
+Two different statistics appear in the raw output and must not be mixed up:
 
-| Process | Start | Mid | End | Delta |
+- **Point samples** are the first, middle and last row of
+  `soak-samples.csv` (x of 92 samples).
+- **Three-segment medians** are what `soak-summary.json` reports under `rss`
+  and `gpu_memory`: the median of the first third, middle third and last third
+  of the series. That report compares medians, not points.
+
+Point samples:
+
+| Process | First | Middle | Last | Delta |
 | --- | --- | --- | --- | --- |
 | server | 550.4 MiB | 650.6 MiB | 679.8 MiB | +129.4 MiB |
 | stage asr | 155.8 MiB | 155.8 MiB | 155.8 MiB | 0.0 MiB |
@@ -117,22 +137,38 @@ Start, middle and end medians (first, middle and last thirds of the run):
 | stage tts | 195.3 MiB | 195.3 MiB | 195.3 MiB | 0.0 MiB |
 | stage image | 315.8 MiB | 52770.5 MiB | 316.0 MiB | oscillates |
 
-GPU memory follows the same shape:
+Three-segment medians (the summary's own statistic):
 
-| GPU | Start | Mid | End |
+| Process | First third | Middle third | Last third | Delta |
+| --- | --- | --- | --- | --- |
+| server | 592.0 MiB | 649.6 MiB | 673.3 MiB | +81.3 MiB |
+| stage asr | 155.8 MiB | 155.8 MiB | 155.8 MiB | 0.0 MiB |
+| stage qwen38 | 52378.2 MiB | 52378.2 MiB | 52378.2 MiB | 0.0 MiB |
+| stage tts | 195.3 MiB | 195.3 MiB | 195.3 MiB | 0.0 MiB |
+| stage image | 26543.2 MiB | 52770.5 MiB | 52766.9 MiB | +26223.8 MiB |
+
+The image stage is not leaking. It loads the model at the start of every
+image request and releases it at the end, so its host RSS and GPU memory step
+between 316 MiB / 329 MiB and 52.8 GB / 53.0 GB once per 240 s gate. It
+returned to the same baseline after all six requests. That alternation is why
+the first point (315.8) and the first-third median (26543.2) disagree, and why
+the three-segment report calls GPU 4 monotonic: the first third contains the
+model load, the middle and last thirds are already on the plateau. The other
+three stages are flat to 0.1 MiB.
+
+GPU point samples:
+
+| GPU | First | Middle | Last |
 | --- | --- | --- | --- |
 | 2 (asr) | 65301 MiB | 62922 MiB | 62920 MiB |
 | 3 (qwen38) | 55773 MiB | 55773 MiB | 55773 MiB |
 | 4 (image) | 329 MiB | 53039 MiB | 329 MiB |
 | 5 (tts) | 30100 MiB | 20846 MiB | 15385 MiB |
 
-The image stage is not leaking. It loads the model at the start of every
-image request and releases it at the end, so its host RSS and GPU memory step
-between 316 MiB / 329 MiB and 52.8 GB / 53.0 GB once per 240 s gate. It
-returned to the same baseline after all six requests. The other three stages
-are flat to 0.1 MiB.
+### Server growth attribution
 
-The server grew by 129 MiB, so the growth was attributed by request type:
+The server grew by 81.3 MiB (medians) or 129.4 MiB (points) over the run. A
+request-type experiment on the live server:
 
 | Sequence | Server RSS |
 | --- | --- |
@@ -142,18 +178,44 @@ The server grew by 129 MiB, so the growth was attributed by request type:
 | +100 asr | 705.0 MiB |
 | +100 text | 705.0 MiB |
 
-Text requests do not move RSS. ASR requests add about 0.25 MiB each. The
-allocation is not retained: `malloc_trim(0)` on the live server returned
-20.6 MiB, and the process then stayed flat at 711.6 MiB for the idle
-observation. The per-request growth is glibc arena retention of the 481 KB
-multipart/PCM buffers, freed but not returned to the kernel. Conclusion: no
-heap growth attributable to a retained object in any stage or in the server.
-Heap attribution stopped at RSS plus `malloc_trim` because valgrind and
-heaptrack are not installed in the container.
+Text requests do not move RSS; one 100-request ASR round added 25.2 MiB;
+`malloc_trim(0)` returned 20.6 MiB and the idle process then stayed flat at
+711.6 MiB.
+
+That single trim does not prove the memory is free. Two more rounds were run
+on a fresh server (after the fault fix restart), each round 100 ASR requests
+then `malloc_trim(0)`:
+
+| Round | Before | After ASR | After trim | Net after trim |
+| --- | --- | --- | --- | --- |
+| 1 | 23.4 MiB | 128.7 MiB | 88.9 MiB | +65.5 MiB |
+| 2 | 88.9 MiB | 154.8 MiB | 122.3 MiB | +33.4 MiB |
+| 3 | 122.3 MiB | 172.5 MiB | 139.5 MiB | +17.2 MiB |
+| 4 | 139.5 MiB | 183.2 MiB | 148.4 MiB | +8.9 MiB |
+| 5 | 148.4 MiB | 186.6 MiB | 149.7 MiB | +1.3 MiB |
+| text 400 | 155.3 MiB | — | 154.5 MiB | −0.8 MiB |
+| text 400 | 154.5 MiB | — | 154.0 MiB | −0.5 MiB |
+
+The thread count stayed at 188 in every round, so this is not arena
+multiplication from new threads. The post-trim high-water mark converges
+(+65.5, +33.4, +17.2, +8.9, +1.3 MiB), and text-only rounds are flat.
+
+Conclusion: the evidence supports the ASR multipart/PCM path (a 481718-byte
+multipart body per request) as the source of the server's RSS growth, and the
+growth is a heap high-water mark rather than a linearly growing live set.
+Heap-level attribution — which allocation, owned by which object — is **not
+complete**. `malloc_trim` separates free-but-retained memory from the rest,
+but valgrind and heaptrack are not installed in the container, so the exact
+allocation site is unproven. No stage shows host or device growth; the only
+stage excursion is the image model load/unload above.
 
 ## Fault injection
 
-Each fault ran alone after the soak, with the service otherwise idle.
+Each fault ran alone against the fixed build, with the service otherwise
+idle. The soak numbers above are from `889b727`; the fault numbers are from
+the server built from this commit on top of `origin/main` (binary SHA256
+`58b45a7d2ecd8d704df8498e1a7fd6c4ef5b18257ff9b9caf14d5a42850123e2`). The stage
+binaries are unchanged.
 
 ### (a) Kill a stage during a request
 
@@ -163,28 +225,39 @@ before signalling, so it cannot signal a reused PID or a foreign process.
 
 | Measurement | Value |
 | --- | --- |
-| Supervisor detected the death and started a new PID | 2.503 s |
-| First successful chat request after the kill | 12.264 s |
-| `/ready` returned 200 after the kill | 0.002 s |
-| Terminal event for the in-flight request | none |
-| Client outcome | read timeout at 90 s |
-| `in_flight` after the client disconnected | 0 |
+| `/ready` before the kill | 200 |
+| `/ready` 503 after the kill | 0.804 s |
+| Terminal event for the in-flight request | `error` at 0.746 s |
+| Terminal error text | `stage exited: qwen38` |
+| Supervisor started a new PID | 2.007 s |
+| `/ready` back to 200 | 11.806 s |
+| First successful chat request | 11.606 s |
+| `in_flight` back to 0 | 11.807 s |
+| Uncaught exception in the server log | none |
 
-The supervisor recovers the stage quickly: a new PID in 2.5 s and a real
-answer after 12.3 s, which is the 51 GB model load. Subsequent requests
-recover with no user action.
+The fix is in this commit. The Coordinator arms a ZMQ transport monitor on
+the submit socket of every registered stage at `start()`. When the stage
+process dies the connection drops, the monitor thread calls
+`Coordinator::stage_down`, which under the coordinator lock erases the stage
+from the ready set and marks every `pending`/`running` request whose
+`current_stage` is that stage as `failed` with `stage exited: <stage>`. The
+state transition under the lock is what makes the terminal exactly once: a
+late completion from the dead process, or a duplicate disconnect event, finds
+a non-running record and changes nothing. `on_complete` then delivers one
+`error` event to the HTTP stream. Readiness is recomputed from the live ready
+set, so `/ready` answers 503 until the restarted stage sends `stage_ready`
+again.
 
-The in-flight request is the problem. It never received `error` or
-`cancelled`. The Coordinator has no notice that a stage died, so it kept the
-record until the client closed the socket; the client saw a socket timeout,
-not an explicit error. The server-side deadline is 600 s, so without a client
-timeout the same request would have hung for ten minutes. Requirement (a) is
-therefore not met. See [Problems found](#problems-found) for the proposed fix,
-which is a design change and was not made here.
+Two boundaries:
 
-`/ready` also stayed 200 for the whole outage: the readiness flag is a
-one-shot `stage_ready` registration that is never cleared when the stage dies.
-A load balancer would keep sending traffic to a server whose VLM stage is gone.
+- An optional output leg (image, TTS) that dies still settles as `leg_error`
+  followed by `complete`, per the frozen mixed-output contract. That is a
+  single terminal `complete`, not a hang. Requirement (a) targets the
+  ASR/VLM stage, which produces `error`.
+- The previous build, without the monitor, produced no terminal event at all:
+  the client saw its own read timeout at 90 s and `/ready` stayed 200. Those
+  numbers are kept under [Problems found](#problems-found) as the defect this
+  commit fixes.
 
 ### (b) Request timeout
 
@@ -196,7 +269,7 @@ timeout) and closed the connection.
 | Client read timeout | 20 s |
 | `in_flight` back to 0 | 20.426 s |
 | `umm_aborts_total{source="client"}` delta | +1 |
-| Next successful request | 20.618 s |
+| Next successful request | 20.617 s |
 
 The server detected the closed peer through the HTTP sink's liveness check,
 cancelled the image leg, and reclaimed the record within one sample of the
@@ -217,35 +290,34 @@ covered.
 | --- | --- |
 | HTTP 200 | 32 |
 | HTTP 503 | 16 |
-| Rejection latency (median) | 0.011 s |
-| Rejection body | `{"error":{"message":"unified engine queue is full","type":"pipeline_error"}}` |
+| Rejection latency (median) | 0.009 s |
+| Rejection body | `{"error":{"message":"server is at capacity","type":"overloaded"}}` |
+| `Retry-After` | `1` |
 | `in_flight` after the burst | 0 |
-| Next successful request | 0.181 s |
+| Next successful request | 0.180 s |
 
 The rejection is explicit and immediate: the excess requests fail at submit
 time instead of being buffered, and the server is healthy again as soon as the
 accepted requests drain. The status is 503 for every rejected request.
 
-On `origin/main` (`c7ac443`) the same path returns a dedicated
-`QueueFullError` response with `Retry-After: 1` and the body `server is at
-capacity`. That commit was merged after this build; the response body above is
-what `889b727` returns.
+These three measurements were taken on the fixed build (which includes
+`c7ac443`). The `889b727` soak build returned the same 503 with the message
+`unified engine queue is full` and no `Retry-After`.
 
 ## Problems found
 
-1. **An in-flight request does not fail when its stage dies.** It hangs until
-   the client disconnects or the 600 s deadline expires. Measured: no terminal
-   in 90 s; recovery of the stage at 12.3 s did not settle the request. This
-   needs a design decision, not a local patch. Two options:
-   (a) treat a repeated `stage_ready` from an already-ready stage as a restart
-   and fail every pending request whose `current_stage` is that stage, or
-   (b) add a stage-death detector in the Coordinator. Option (a) reuses the
-   existing registration message and is the smaller change, but it changes
-   protocol semantics, so it is left to the owner.
+1. **FIXED — an in-flight request did not fail when its stage died.** On the
+   pre-fix build it hung until the client disconnected or the 600 s deadline
+   expired (measured: no terminal in 90 s; `/ready` stayed 200).
+   `Coordinator::stage_down` now settles those requests with one
+   `error` (`stage exited: <stage>`) and clears readiness. Measured after the
+   fix: terminal error at 0.746 s, `/ready` 503 at 0.804 s, back to 200 at
+   11.806 s, `in_flight` 0. See [fault (a)](#a-kill-a-stage-during-a-request).
 
-2. **`/ready` does not become 503 when a required stage dies.** The ready set
-   is written once by `stage_ready` and never cleared. Same root cause as
-   problem 1 and the same decision applies.
+2. **FIXED — `/ready` did not become 503 when a required stage died.** The
+   ready set is now cleared by the same disconnect path and repopulated by the
+   restarted stage's `stage_ready`. Measured 200 → 503 in 0.804 s and back to
+   200 in 11.806 s.
 
 3. **The previously deployed binaries were older than `HEAD`.** The resident
    `umm-infer` had SHA256 `6e7fbbce…` and its source tree had no `src/obs/`,
@@ -290,9 +362,9 @@ what `889b727` returns.
   carried another session's stack.
 - **Commits merged to `origin/main` after `889b727`.** `c7ac443` (dedicated
   overload response) and `b917eb0` (TTS per-sentence streaming, VLM prefill
-  reuse) landed while this test ran. The numbers here are for `889b727`; the
-  merged changes were not re-measured. The TTS latency and the overload body
-  are the values most likely to move.
+  reuse) landed while this test ran. The soak numbers are for `889b727`; the
+  fault numbers are from the fix build, which includes both. The TTS latency
+  under the newer tree was not soaked separately.
 - **The realtime WebSocket path under soak.** The load model covers HTTP and
   SSE only; full-duplex L1 is covered by `docs/full-duplex.md`.
 
@@ -308,5 +380,6 @@ python3 -I tests/soak_native.py --self-check
 
 Raw output of the reported run: `/root/soak-out-run2/` on the H20B host
 (`soak-summary.json`, `soak-samples.csv`, `soak-requests.jsonl`,
-`console.log`), fault rerun `/root/soak-faults-run3/`. Neither directory is
-committed.
+`console.log`); faults after the fix: `/root/soak-faults-fix2/`
+(`fault-report.json`, `soak-summary.json`); the pre-fix fault run is
+`/root/soak-faults-run3/`. None of these directories is committed.

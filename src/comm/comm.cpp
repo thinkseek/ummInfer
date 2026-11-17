@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "umminfer/comm/comm.hpp"
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <set>
@@ -91,6 +94,49 @@ void PushSocket::connect() {
   must(zmq_connect(socket_, endpoint_.c_str()), "zmq_connect");
 }
 
+void PushSocket::on_disconnect(std::function<void()> callback) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (socket_ == nullptr) throw ProtocolError("Socket not connected");
+  if (monitor_ != nullptr || monitor_thread_.joinable()) return;
+  disconnect_callback_ = std::move(callback);
+  // The inproc name must never be reused: a destroyed PushSocket can be
+  // replaced at the same address while the context still holds the old name.
+  static std::atomic<uint64_t> next_monitor{0};
+  char address[96];
+  std::snprintf(address, sizeof(address), "inproc://push-monitor-%llu",
+                static_cast<unsigned long long>(next_monitor.fetch_add(1)));
+  must(zmq_socket_monitor(socket_, address, ZMQ_EVENT_DISCONNECTED),
+       "zmq_socket_monitor");
+  // A PAIR socket receives one event message per state change. Its queue is
+  // unbounded enough for the single DISCONNECTED event we subscribe to, and the
+  // thread polls, so a slow callback cannot block the transport.
+  monitor_ = make_socket(ZMQ_PAIR);
+  must(zmq_connect(monitor_, address), "zmq_connect monitor");
+  monitor_running_ = true;
+  monitor_thread_ = std::thread([this] {
+    while (monitor_running_) {
+      zmq_pollitem_t item{monitor_, 0, ZMQ_POLLIN, 0};
+      const int ready = zmq_poll(&item, 1, 100);
+      if (ready <= 0) continue;
+      zmq_msg_t msg;
+      zmq_msg_init(&msg);
+      const int rc = zmq_msg_recv(&msg, monitor_, ZMQ_DONTWAIT);
+      if (rc < 0) {
+        zmq_msg_close(&msg);
+        continue;
+      }
+      uint16_t event = 0;
+      if (zmq_msg_size(&msg) >= sizeof(event)) {
+        std::memcpy(&event, zmq_msg_data(&msg), sizeof(event));
+      }
+      zmq_msg_close(&msg);
+      if (event == ZMQ_EVENT_DISCONNECTED && disconnect_callback_) {
+        disconnect_callback_();
+      }
+    }
+  });
+}
+
 void PushSocket::send(const Message& msg) {
   std::lock_guard<std::mutex> lock(mu_);
   if (socket_ == nullptr) throw ProtocolError("Socket not connected");
@@ -98,7 +144,13 @@ void PushSocket::send(const Message& msg) {
 }
 
 void PushSocket::close() {
+  monitor_running_ = false;
+  if (monitor_thread_.joinable()) monitor_thread_.join();
   std::lock_guard<std::mutex> lock(mu_);
+  if (monitor_ != nullptr) {
+    zmq_close(monitor_);
+    monitor_ = nullptr;
+  }
   if (socket_ != nullptr) {
     zmq_close(socket_);
     socket_ = nullptr;
@@ -358,11 +410,29 @@ CoordinatorControlPlane::CoordinatorControlPlane(std::string completion_endpoint
       abort_endpoint_(std::move(abort_endpoint)) {}
 CoordinatorControlPlane::~CoordinatorControlPlane() { close(); }
 
+// A stage that restarts gets a fresh connection; the handler is armed once per
+// socket and the socket is reused for the new process.
+
 void CoordinatorControlPlane::start() {
   completion_socket_ = std::make_unique<PullSocket>(completion_endpoint_, true);
   completion_socket_->start();
   abort_socket_ = std::make_unique<PubSocket>(abort_endpoint_);
   abort_socket_->bind();
+}
+
+void CoordinatorControlPlane::set_stage_down_handler(
+    std::function<void(const std::string&)> handler) {
+  stage_down_handler_ = std::move(handler);
+}
+
+void CoordinatorControlPlane::watch_stage(const std::string& stage_name,
+                                          const std::string& endpoint) {
+  if (!stage_down_handler_) return;
+  auto socket = stage_socket(stage_name, endpoint);
+  const std::string name = stage_name;
+  socket->on_disconnect([this, name] {
+    if (stage_down_handler_) stage_down_handler_(name);
+  });
 }
 
 std::shared_ptr<PushSocket> CoordinatorControlPlane::stage_socket(
@@ -376,6 +446,15 @@ std::shared_ptr<PushSocket> CoordinatorControlPlane::stage_socket(
     it = stage_sockets_.emplace(key, std::move(created)).first;
   }
   return it->second;
+}
+
+void CoordinatorControlPlane::stop_watching() {
+  std::map<std::string, std::shared_ptr<PushSocket>> sockets;
+  {
+    std::lock_guard<std::mutex> lock(stage_sockets_mu_);
+    sockets.swap(stage_sockets_);
+  }
+  for (auto& [key, socket] : sockets) socket->close();
 }
 
 void CoordinatorControlPlane::submit_to_stage(const std::string& stage_name,
