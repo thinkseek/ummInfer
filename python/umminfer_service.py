@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Resident supervisor for the ummInfer server and its two model workers.
+"""Resident supervisor for ummInfer servers and their model workers.
 
-The supervisor owns exactly three child processes: the C++ server, the Qwen
-ASR worker, and the Qwen Omni worker. It records each child's PID and kernel
-start time, restarts a dead or unhealthy child with bounded backoff, keeps at
-most 64 KiB of each log, and refuses to signal a PID whose start time no
-longer matches the recorded one.
+The default configuration owns three children: the C++ server, a Python ASR
+worker and a Python Omni worker. A configuration with `native_stages` owns the
+C++ server plus each listed native stage and needs no Python worker or SGLang
+URL. It records each child's PID and kernel start time, restarts a dead or
+unhealthy child with bounded backoff, keeps at most 64 KiB of each log, and
+refuses to signal a PID whose start time no longer matches the recorded one.
 
 It uses only the Python standard library and detaches from the controlling
 terminal, so it survives the SSH session that started it.
@@ -180,6 +181,33 @@ class Supervisor:
     def _build_children(self):
         cfg = self.config
         ipc = cfg["ipc_dir"]
+        if "native_stages" in cfg:
+            children = [Child("server", [
+                cfg["binary"], "serve",
+                "--host", cfg["host"], "--port", str(cfg["port"]),
+                "--model", cfg["model"],
+                "--entry", "asr", "--entry-endpoint", f"ipc://{ipc}/asr",
+                "--vlm-entry", "omni", "--vlm-entry-endpoint", f"ipc://{ipc}/omni",
+                "--image-entry", "image", "--image-entry-endpoint", f"ipc://{ipc}/image",
+                "--tts-entry", "tts", "--tts-entry-endpoint", f"ipc://{ipc}/tts",
+                "--completion", f"ipc://{ipc}/done",
+                "--abort", f"ipc://{ipc}/abort",
+            ] + list(cfg.get("server_args", [])))]
+            binary_dir = cfg["stage_binary_dir"]
+            for stage in cfg["native_stages"]:
+                name = stage["name"]
+                kind = stage.get("kind", name)
+                argv = [
+                    str(Path(binary_dir) / f"umm-native-stage-{kind}"),
+                    "--kind", kind, "--name", name,
+                    "--model", stage["model"], "--gpu", str(stage["gpu"]),
+                    "--recv-endpoint", f"ipc://{ipc}/{name}",
+                    "--coordinator-endpoint", f"ipc://{ipc}/done",
+                    "--abort-endpoint", f"ipc://{ipc}/abort",
+                ] + list(stage.get("args", []))
+                children.append(Child(name, argv, depends_on="server"))
+            return children
+
         python = cfg["python"]
         worker_dir = cfg["python_dir"]
         asr = cfg["asr"]
@@ -444,8 +472,20 @@ def load_config(path):
         raise SystemExit(
             f"refusing to bind {host}: use the container private address "
             "or loopback")
-    for key in ("run_dir", "log_dir", "ipc_dir", "binary", "python",
-                "python_dir", "model", "asr", "omni"):
+    for key in ("run_dir", "log_dir", "ipc_dir", "binary", "model"):
+        if key not in config:
+            raise SystemExit(f"config is missing {key}")
+    if "native_stages" in config:
+        if "stage_binary_dir" not in config:
+            raise SystemExit("config is missing stage_binary_dir")
+        if not isinstance(config["native_stages"], list) or not config["native_stages"]:
+            raise SystemExit("native_stages must be a nonempty array")
+        for stage in config["native_stages"]:
+            for key in ("name", "model", "gpu"):
+                if key not in stage:
+                    raise SystemExit(f"native stage is missing {key}")
+        return config
+    for key in ("python", "python_dir", "asr", "omni"):
         if key not in config:
             raise SystemExit(f"config is missing {key}")
     return config

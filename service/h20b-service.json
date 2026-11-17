@@ -1,24 +1,36 @@
 {
-  "name": "umminfer-h20b",
-  "run_dir": "/root/umm-phase7-service/run",
-  "log_dir": "/root/umm-phase7-service/logs",
-  "ipc_dir": "/tmp/umminfer-phase7-ipc",
+  "name": "umminfer-h20b-native",
+  "run_dir": "/root/umm-native-service/run",
+  "log_dir": "/root/umm-native-service/logs",
+  "ipc_dir": "/tmp/umminfer-native-ipc",
   "host": "172.17.0.2",
-  "port": 43300,
-  "binary": "/root/umm-phase7-service/bin/umm-infer",
-  "python": "/usr/bin/python3",
-  "python_dir": "/root/umm-phase7-service/python",
-  "model": "qwen3-unified",
-  "asr": {
-    "model": "qwen3-asr",
-    "url": "http://127.0.0.1:31000",
-    "concurrency": 4
-  },
-  "omni": {
-    "model": "qwen3-omni",
-    "url": "http://127.0.0.1:31001/v1",
-    "concurrency": 4
-  },
+  "port": 43301,
+  "binary": "/root/umm-native-service/bin/umm-infer",
+  "stage_binary_dir": "/root/umm-native-service/bin",
+  "model": "qwen3-native",
+  "native_stages": [
+    {
+      "name": "asr",
+      "model": "/root/omniinfer-model-validation-20261111-k3/models/asr",
+      "gpu": 2
+    },
+    {
+      "name": "omni",
+      "model": "/root/omniinfer-model-validation-20261111-k3/models/omni",
+      "gpu": 3,
+      "args": ["--max-new-tokens", "96"]
+    },
+    {
+      "name": "image",
+      "model": "/root/umm-mixed-output-20261116/models/Qwen-Image-2512",
+      "gpu": 4
+    },
+    {
+      "name": "tts",
+      "model": "/root/umm-mixed-output-20261116/models/qwen3-tts",
+      "gpu": 5
+    }
+  ],
   "env": {
     "LD_LIBRARY_PATH": "/root/umm-c6rt-ckl/deps/lib:/root/umm-c6rt-ckl/curl-prefix/lib"
   },

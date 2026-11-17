@@ -167,3 +167,26 @@ After the candidate stop, `four/deploy/gpu_after_stop.txt` records GPU2/3/4/5
 at 0 MiB. GPU0/1 were not changed by the candidate. PNG and WAV artifacts are
 kept on H20B, not committed; their parsed statistics and event descriptors are
 in `four/`.
+
+## Resident native supervisor
+
+`resident/` records the final resident deployment on 43301. `umminfer_service.py`
+starts one server and four native stages from `resident/supervisor_config.json`;
+there are no `python`, `python_dir`, SGLang URL or Python worker fields. The
+service reports `ready`, `health.ok=true` and `in_flight=0` in
+`resident/supervisor_status.json`.
+
+After this service was healthy, the previous Python supervisor on 43300 and the
+SGLang backends on 31000/31001 were stopped. Both backend ports then refused
+connections. The complete 22-check smoke was run again with only the native
+resident service: all 22 checks passed, including the mixed request, all four
+cancellation paths and the follow-up `OK.` request.
+
+`resident/supervisor_binaries.txt` records the installed binary hashes and
+`resident/supervisor_gpu.txt` the resident GPU state. `resident/abort_boundaries.txt`
+contains the four measured cancellation boundaries.
+
+The local Web viewer now has a real-generation page at
+`http://127.0.0.1:8765/native-live.html`. Its PNG, WAV, VLM text and 22-check
+evidence were fetched over HTTP with status 200. The viewer files live outside
+the repository in `/tmp/umminfer-case-viewer/`; no binary artifact is committed.

@@ -149,6 +149,37 @@ def main():
     }
     config_path = work / "config.json"
     config_path.write_text(json.dumps(config, indent=2))
+
+    # The native configuration needs no Python worker or SGLang settings.
+    native_config = dict(config)
+    native_config["model"] = "qwen3-native"
+    native_config["stage_binary_dir"] = "/root/umm-native-service/bin"
+    native_config["native_stages"] = [
+        {"name": "asr", "model": "/models/asr", "gpu": 2},
+        {"name": "omni", "model": "/models/omni", "gpu": 3,
+         "args": ["--max-new-tokens", "96"]},
+        {"name": "image", "model": "/models/image", "gpu": 4},
+        {"name": "tts", "model": "/models/tts", "gpu": 5},
+    ]
+    for obsolete in ("python", "python_dir", "asr", "omni"):
+        native_config.pop(obsolete, None)
+    native_supervisor = umminfer_service.Supervisor(native_config)
+    native_children = {child.name: child for child in native_supervisor.children}
+    check("native supervisor builds four stages and server",
+          set(native_children) == {"server", "asr", "omni", "image", "tts"})
+    check("native server exposes all output stages",
+          "--image-entry" in native_children["server"].argv and
+          "--tts-entry" in native_children["server"].argv)
+    check("native stages use binaries not Python workers",
+          native_children["image"].argv[0].endswith("umm-native-stage-image") and
+          "--max-new-tokens" in native_children["omni"].argv and
+          all("python" not in " ".join(child.argv).lower()
+              for child in native_children.values()))
+    native_config_path = work / "native-config.json"
+    native_config_path.write_text(json.dumps(native_config))
+    check("native config loads without Python or SGLang keys",
+          umminfer_service.load_config(native_config_path)["native_stages"][2]["gpu"] == 4)
+
     env = {"FAKE_HEALTH_FLAG": str(flag), "FAKE_BIG_LOG": "1"}
     decoy = None
     started = False

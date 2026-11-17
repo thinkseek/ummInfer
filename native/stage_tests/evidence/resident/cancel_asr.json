@@ -1,0 +1,20 @@
+{
+ "request_id": "http-4",
+ "abort_epoch_ms": 1794891467129,
+ "abort_status": 200,
+ "abort_body": {
+  "success": true
+ },
+ "kinds": [
+  "cancelled"
+ ],
+ "terminal": {
+  "is_final": true,
+  "kind": "cancelled",
+  "seq": 0,
+  "session_id": "session-5",
+  "stage": "",
+  "text": ""
+ },
+ "in_flight_after": 0
+}
