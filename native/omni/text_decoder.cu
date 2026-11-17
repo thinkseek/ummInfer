@@ -98,30 +98,34 @@ void text_layer(const EngineWeights& w, EngineScratch& s, int layer, int m,
 
   // The reference implementation resolves experts on the host per layer, so
   // this round trip is not new; it is what makes the grouped launch possible.
-  std::vector<int> h_idx(m * kTopK);
-  std::vector<float> h_w(m * kTopK);
-  cudaMemcpyAsync(h_idx.data(), s.router_idx, h_idx.size() * sizeof(int),
+  // The route buffers live in the scratch object: reallocating two vectors per
+  // layer per token was measurable host time.
+  const size_t route_n = static_cast<size_t>(m) * kTopK;
+  if (s.h_route_idx.size() < route_n) {
+    s.h_route_idx.resize(route_n);
+    s.h_route_w.resize(route_n);
+  }
+  int* h_idx = s.h_route_idx.data();
+  float* h_w = s.h_route_w.data();
+  cudaMemcpyAsync(h_idx, s.router_idx, route_n * sizeof(int),
                   cudaMemcpyDeviceToHost, st);
-  cudaMemcpyAsync(h_w.data(), s.router_w, h_w.size() * sizeof(float),
+  cudaMemcpyAsync(h_w, s.router_w, route_n * sizeof(float),
                   cudaMemcpyDeviceToHost, st);
   cudaStreamSynchronize(st);
 
   MoeGroupPlan& plan = s.moe_plan;
-  plan.build(h_idx.data(), h_w.data(), m, kTopK, kNumExperts);
-  std::vector<const Bf16*> wg(kNumExperts), wu(kNumExperts), wd(kNumExperts);
-  for (int e = 0; e < kNumExperts; ++e) {
-    const std::string ep = lp + ".mlp.experts." + std::to_string(e);
-    wg[e] = w.get(ep + ".gate_proj.weight");
-    wu[e] = w.get(ep + ".up_proj.weight");
-    wd[e] = w.get(ep + ".down_proj.weight");
-  }
+  plan.build(h_idx, h_w, m, kTopK, kNumExperts);
+  // Expert pointers are resolved once at load time.
+  const size_t eb = static_cast<size_t>(layer) * kNumExperts;
+  const Bf16* const* wg = w.expert_gate.data() + eb;
+  const Bf16* const* wu = w.expert_up.data() + eb;
+  const Bf16* const* wd = w.expert_down.data() + eb;
   const int pairs = plan.total_pairs;
   const int gate_blocks = (plan.build_blocks(kExpertInter / kGemmTileN),
                            static_cast<int>(plan.blk_expert.size()));
   const int down_blocks = (plan.build_down_blocks(kTextH / kGemmTileN),
                            static_cast<int>(plan.down_e.size()));
-  moe_upload_tables(plan, wg.data(), wu.data(), wd.data(), kNumExperts, &s.moe_tab,
-                    st);
+  moe_upload_tables(plan, wg, wu, wd, kNumExperts, &s.moe_tab, st);
 
   // Expert inputs in pair order (rows of the same token repeat once per expert).
   gather_rows(s.moe_x, s.norm, s.moe_tab.pair_token, pairs, kTextH, st);
