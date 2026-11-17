@@ -8,6 +8,7 @@
   "binary": "/root/umm-native-service/bin/umm-infer",
   "stage_binary_dir": "/root/umm-native-service/bin",
   "model": "qwen3-native",
+  "vlm_stage": "qwen38",
   "native_stages": [
     {
       "name": "asr",
@@ -15,8 +16,9 @@
       "gpu": 2
     },
     {
-      "name": "omni",
-      "model": "/root/omniinfer-model-validation-20261111-k3/models/omni",
+      "name": "qwen38",
+      "kind": "qwen38",
+      "model": "/root/models/qwen3.8-27b",
       "gpu": 3,
       "args": ["--max-new-tokens", "96"]
     },
@@ -29,6 +31,15 @@
       "name": "tts",
       "model": "/root/umm-mixed-output-20261116/models/qwen3-tts",
       "gpu": 5
+    }
+  ],
+  "optional_stages": [
+    {
+      "name": "omni",
+      "kind": "omni",
+      "model": "/root/omniinfer-model-validation-20261111-k3/models/omni",
+      "gpu": 3,
+      "args": ["--max-new-tokens", "96"]
     }
   ],
   "env": {

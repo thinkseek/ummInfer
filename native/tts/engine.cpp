@@ -30,6 +30,10 @@ constexpr int kGroups = 16;
 constexpr int kEps = 1e-6;
 constexpr float kRopeTheta = 1000000.0f;
 constexpr int kMaxSlots = 8704;       // 8192 frames + prompt headroom
+// Talker activation rows: the prompt (at most 200 rows) plus every decoded
+// frame. Decode writes row seq_len of im.hidden after each frame, so this must
+// match the KV capacity, not just the prefill length.
+constexpr int kTalkerRows = kMaxSlots + 256;
 constexpr int kCpSlots = 32;
 
 std::string read_file(const std::string& path) {
@@ -207,7 +211,7 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
 
   // Workspaces (sized for prefill up to a few hundred tokens).
   auto mk = [&](Bf16*& p, size_t n) { UMM_CUDA_CHECK(cudaMalloc(&p, n * sizeof(Bf16))); };
-  const size_t W = 256;
+  const size_t W = kTalkerRows;
   mk(im.hidden, W * kH);
   mk(im.norm, W * kH);
   mk(im.q, W * kQH * kHD);
@@ -468,6 +472,8 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
     }
     if (c0 < 0 || c0 >= kCodecVocab)
       throw std::runtime_error("talker produced out-of-range codec id");
+    if (seq_len + 1 > kTalkerRows)
+      throw std::runtime_error("tts text too long for the talker buffers");
     UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_hist + step, &c0, sizeof(int),
                                    cudaMemcpyHostToDevice, im.stream));
     const std::vector<int> rest = run_predictor(im.hidden + (seq_len - 1) * kH, c0);

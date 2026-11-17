@@ -149,6 +149,77 @@ OmniWork parse_omni_work(const Value& work) {
   return out;
 }
 
+OmniWork parse_qwen38_work(const Value& work) {
+  const Value& inputs = unwrap_inputs(work);
+  // Qwen3.8 has no audio tower. The unified engine never routes audio here
+  // (it runs ASR first), so an audio field at this point is a caller error and
+  // must fail loudly instead of producing an answer from the text half.
+  if (inputs.find("audio") != nullptr) {
+    bad("qwen38 stage does not accept audio input; audio goes through the ASR "
+        "stage and reaches the VLM as text");
+  }
+  if (const Value* declared = inputs.find("modalities"); declared != nullptr) {
+    if (!declared->is_array()) bad("qwen38 modalities must be an array");
+    for (const Value& token : declared->as_array()) {
+      if (!token.is_str()) bad("qwen38 modality must be a string");
+      const std::string& name = token.as_str();
+      if (name == "audio" || name == "video") {
+        bad("qwen38 stage does not accept modality '" + name +
+            "': text and image only; audio goes through the ASR stage");
+      }
+      if (name != "text" && name != "image") {
+        bad("unknown modality for qwen38 stage: " + name);
+      }
+    }
+  }
+  const Value* messages = inputs.find("messages");
+  if (messages == nullptr || !messages->is_array() || messages->as_array().empty()) {
+    bad("qwen38 inputs require a nonempty messages array");
+  }
+  OmniWork out;
+  bool have_text = false;
+  for (const Value& message : messages->as_array()) {
+    if (!message.is_map()) bad("each message must be a map");
+    const Value* content = message.find("content");
+    if (content == nullptr) continue;
+    if (content->is_str()) {
+      if (!content->as_str().empty()) {
+        out.text = content->as_str();
+        have_text = true;
+      }
+      continue;
+    }
+    if (!content->is_array()) {
+      bad("message content must be a text string or a content part array");
+    }
+    // Validate every part before joining: join_text_parts skips non-text
+    // parts, which would silently drop an audio or video part.
+    for (const Value& part : content->as_array()) {
+      if (!part.is_map()) bad("content part must be a map");
+      const Value* type = part.find("type");
+      if (type == nullptr || !type->is_str()) bad("content part requires a type");
+      const std::string& kind = type->as_str();
+      if (kind == "text" || kind == "image_url") continue;
+      bad("qwen38 stage does not support content part type '" + kind +
+          "': text and image_url only; audio goes through the ASR stage");
+    }
+    std::string joined;
+    const bool has_text = join_text_parts(*content, joined);
+    for (const Value& part : content->as_array()) {
+      const Value* type = part.find("type");
+      if (type->as_str() == "image_url") take_image_part(part, out);
+    }
+    if (has_text) {
+      out.text = std::move(joined);
+      have_text = true;
+    }
+  }
+  if (!have_text && out.image_url.empty()) {
+    bad("qwen38 inputs require text or an image");
+  }
+  return out;
+}
+
 std::string render_omni_chat(const std::string& text, bool has_image) {
   std::string rendered = "<|im_start|>user\n";
   if (has_image) rendered += "<|vision_start|><|vision_end|>";

@@ -172,6 +172,85 @@ def main():
     check("native config loads without Python or SGLang keys",
           umminfer_service.load_config(config_path)["native_stages"][2]["gpu"] == 4)
 
+    # VLM selection and the declared-but-not-started stages.
+    def config_variant(**changes):
+        variant = json.loads(json.dumps(config))
+        variant.update(changes)
+        path = work / ("config-%d.json" % len(list(work.glob("config-*.json"))))
+        path.write_text(json.dumps(variant, indent=2))
+        return path
+
+    def loads(path):
+        try:
+            umminfer_service.load_config(path)
+            return True
+        except SystemExit:
+            return False
+
+    qwen38 = {"name": "qwen38", "kind": "qwen38", "model": "/models/q38",
+              "gpu": 3, "args": ["--max-new-tokens", "96"]}
+    omni = {"name": "omni", "kind": "omni", "model": "/models/omni", "gpu": 3}
+    base_stages = [s for s in config["native_stages"] if s["name"] != "omni"]
+    check("vlm_stage selects a started qwen38 stage",
+          loads(config_variant(vlm_stage="qwen38",
+                               native_stages=base_stages + [qwen38])))
+    check("vlm_stage naming a missing stage is refused",
+          not loads(config_variant(vlm_stage="qwen38")))
+    check("optional stage is validated but not started",
+          loads(config_variant(optional_stages=[qwen38])) and
+          "qwen38" not in {child.name for child in
+                           umminfer_service.Supervisor(
+                               umminfer_service.load_config(
+                                   config_variant(optional_stages=[qwen38])))
+                           .children})
+    check("a stage cannot be both started and optional",
+          not loads(config_variant(optional_stages=[
+              {"name": "omni", "model": "/models/omni", "gpu": 3}])))
+    check("unknown stage kind is refused",
+          not loads(config_variant(native_stages=base_stages + [
+              {"name": "vlm2", "kind": "sglang", "model": "/m", "gpu": 3}])))
+    check("a non-integer gpu is refused",
+          not loads(config_variant(native_stages=base_stages + [
+              {"name": "omni", "model": "/m", "gpu": "3"}])))
+
+    # VLM stage selection and optional stages. The default stays "omni"; a
+    # config may name a started qwen38 stage instead, and must not name one
+    # that is not started.
+    def load_variant(mutate):
+        variant = json.loads(json.dumps(config))
+        mutate(variant)
+        path = work / "variant.json"
+        path.write_text(json.dumps(variant))
+        try:
+            umminfer_service.load_config(path)
+            return None
+        except SystemExit as error:
+            return str(error)
+
+    def select_qwen38(cfg):
+        cfg["vlm_stage"] = "qwen38"
+        cfg["native_stages"][1] = {"name": "qwen38", "kind": "qwen38",
+                                   "model": "/models/qwen38", "gpu": 3}
+        cfg["optional_stages"] = [
+            {"name": "omni", "kind": "omni", "model": "/models/omni", "gpu": 3}]
+
+    check("vlm_stage=qwen38 with omni optional loads", load_variant(select_qwen38) is None)
+    check("vlm_stage must name a started stage",
+          "must name a started native stage" in
+          (load_variant(lambda cfg: cfg.update({"vlm_stage": "qwen38"})) or ""))
+    check("optional stage cannot repeat a started name",
+          "both started and optional" in
+          (load_variant(lambda cfg: cfg.update({"optional_stages": [
+              {"name": "omni", "model": "/m", "gpu": 3}]})) or ""))
+    check("unknown stage kind is refused",
+          "unknown kind" in
+          (load_variant(lambda cfg: cfg["native_stages"][1].update(
+              {"kind": "llama"})) or ""))
+    check("duplicate stage names are refused",
+          "duplicate native stage name" in
+          (load_variant(lambda cfg: cfg["native_stages"].append(
+              {"name": "omni", "model": "/m", "gpu": 6})) or ""))
+
     env = {"FAKE_HEALTH_FLAG": str(flag), "FAKE_BIG_LOG": "1"}
     decoy = None
     started = False

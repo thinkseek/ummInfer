@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -173,6 +174,120 @@ void test_omni_parsing() {
   empty_inputs["messages"] = umminfer::Value(umminfer::Value::Array{});
   check_throws([&] { parse_omni_work(umminfer::Value(std::move(empty_inputs))); },
                "empty messages rejected");
+}
+
+// The qwen38 stage accepts the omni message shape but must fail on every field
+// Qwen3.8 cannot consume, instead of answering from the text half.
+void test_qwen38_parsing() {
+  using namespace umminfer::stage;
+  const OmniWork text_only = parse_qwen38_work(messages_input(umminfer::Value("hi")));
+  check(text_only.text == "hi" && text_only.image_url.empty(),
+        "qwen38 string content parsed");
+
+  umminfer::Value::Array parts;
+  parts.push_back(image_part("data:image/png;base64,aGVsbG8="));
+  parts.push_back(text_part("describe"));
+  const OmniWork with_image = parse_qwen38_work(messages_input(umminfer::Value(parts)));
+  check(with_image.text == "describe" &&
+            with_image.image_url == "data:image/png;base64,aGVsbG8=",
+        "qwen38 image and text parts parsed");
+
+  umminfer::Value::Array two_images;
+  two_images.push_back(image_part("data:image/png;base64,aGVsbG8="));
+  two_images.push_back(image_part("data:image/png;base64,aGVsbG8="));
+  check_throws([&] {
+    parse_qwen38_work(messages_input(umminfer::Value(two_images)));
+  }, "qwen38 two images rejected");
+
+  umminfer::Value::Map audio_part;
+  audio_part["type"] = umminfer::Value("input_audio");
+  umminfer::Value::Array with_audio;
+  with_audio.push_back(umminfer::Value(std::move(audio_part)));
+  with_audio.push_back(text_part("what is said"));
+  check_throws([&] {
+    parse_qwen38_work(messages_input(umminfer::Value(with_audio)));
+  }, "qwen38 audio content part rejected");
+
+  umminfer::Value::Map video_part;
+  video_part["type"] = umminfer::Value("video_url");
+  umminfer::Value::Array with_video;
+  with_video.push_back(umminfer::Value(std::move(video_part)));
+  check_throws([&] {
+    parse_qwen38_work(messages_input(umminfer::Value(with_video)));
+  }, "qwen38 video content part rejected");
+
+  umminfer::Value::Map audio_modality;
+  audio_modality["messages"] = umminfer::Value(umminfer::Value::Array{
+      umminfer::Value(umminfer::Value::Map{
+          {"role", umminfer::Value("user")},
+          {"content", umminfer::Value("hi")}})});
+  audio_modality["modalities"] = umminfer::Value(umminfer::Value::Array{
+      umminfer::Value("text"), umminfer::Value("audio")});
+  check_throws([&] { parse_qwen38_work(umminfer::Value(audio_modality)); },
+               "qwen38 audio modality rejected");
+
+  umminfer::Value::Map audio_field;
+  audio_field["messages"] = umminfer::Value(umminfer::Value::Array{
+      umminfer::Value(umminfer::Value::Map{
+          {"role", umminfer::Value("user")},
+          {"content", umminfer::Value("hi")}})});
+  audio_field["audio"] = umminfer::Value::bin(std::string("\0\0", 2));
+  check_throws([&] { parse_qwen38_work(umminfer::Value(audio_field)); },
+               "qwen38 audio input field rejected");
+
+  // The text+image modality list the unified engine sends is accepted.
+  umminfer::Value::Map image_modality;
+  image_modality["messages"] = umminfer::Value(umminfer::Value::Array{
+      umminfer::Value(umminfer::Value::Map{
+          {"role", umminfer::Value("user")},
+          {"content", umminfer::Value("hi")}})});
+  image_modality["modalities"] = umminfer::Value(umminfer::Value::Array{
+      umminfer::Value("text"), umminfer::Value("image")});
+  check(parse_qwen38_work(umminfer::Value(image_modality)).text == "hi",
+        "qwen38 text+image modalities accepted");
+}
+
+// A stage compute function streams through emit_stage_stream(); the chunk must
+// carry this request's id and reach the installed sink.
+void test_scheduler_stream() {
+  using namespace umminfer;
+  std::mutex mu;
+  std::string seen_id;
+  int seen = 0;
+  SimpleScheduler scheduler(ComputeFn{});
+  scheduler.set_stream_fn([&](const std::string& request_id, Value chunk) {
+    std::lock_guard<std::mutex> lock(mu);
+    seen_id = request_id;
+    if (chunk.is_map() && chunk.find("text") != nullptr) ++seen;
+  });
+  scheduler.set_cancellable_compute([&](const Value&, const AbortCheck&) {
+    for (int index = 0; index < 3; ++index) {
+      Value::Map chunk;
+      chunk["text"] = Value(std::string("x"));
+      emit_stage_stream(Value(std::move(chunk)));
+    }
+    return Value(std::string("done"));
+  });
+  std::thread runner([&] { scheduler.start(); });
+  scheduler.enqueue(IncomingMessage{"req-stream", "new_request", Value()});
+  const auto result = scheduler.outbox().get(2.0);
+  check(result.has_value() && result->data.as_str() == "done",
+        "streaming request still completes");
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    check(seen == 3, "three chunks reached the sink");
+    check(seen_id == "req-stream", "chunks carry the request id");
+  }
+  // Outside a compute call there is no binding.
+  Value::Map outside;
+  outside["text"] = Value(std::string("y"));
+  emit_stage_stream(Value(std::move(outside)));
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    check(seen == 3, "a chunk outside a compute call is dropped");
+  }
+  scheduler.stop();
+  runner.join();
 }
 
 void test_base64_and_data_url() {
@@ -354,6 +469,8 @@ void test_scheduler_cancellation() {
 int main() {
   test_asr_parsing();
   test_omni_parsing();
+  test_qwen38_parsing();
+  test_scheduler_stream();
   test_base64_and_data_url();
   test_tts_parsing();
   test_image_parsing();
