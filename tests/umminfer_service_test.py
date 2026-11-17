@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Local contract test for python/umminfer_service.py.
 
-Runs the real supervisor CLI against three fake children: a fake HTTP server
-that answers /health and can be told to fail, and two fake workers that sleep.
-It covers start/status/stop, child and server crash restart, health-failure
-restart, the 64 KiB log cap, and the rule that stop never signals a PID whose
-start time does not match the recorded one.
+Runs the real supervisor CLI against a fake HTTP server and four fake native
+stage binaries that sleep. It covers start/status/stop, child and server crash
+restart, health-failure restart, the 64 KiB log cap, and the rule that stop
+never signals a PID whose start time does not match the recorded one.
 """
 
 import json
@@ -54,10 +53,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer((host, port), Handler).serve_forever()
 '''
 
-FAKE_WORKER = '''\
+FAKE_STAGE = '''\
+#!/usr/bin/env python3
 import os, sys, time
 if os.environ.get("FAKE_BIG_LOG"):
-    sys.stdout.write("worker-start " + "y" * 300000 + "\\n")
+    sys.stdout.write("stage-start " + "y" * 300000 + "\\n")
     sys.stdout.flush()
 while True:
     time.sleep(0.2)
@@ -123,8 +123,12 @@ def main():
     fake_server = work / "fake_server.py"
     fake_server.write_text("#!/usr/bin/env python3\n" + FAKE_SERVER)
     os.chmod(fake_server, 0o755)
-    for name in ("umminfer_qwen_asr_stage.py", "umminfer_qwen_omni_worker.py"):
-        (work / name).write_text(FAKE_WORKER)
+    bin_dir = work / "bin"
+    bin_dir.mkdir()
+    for kind in ("asr", "omni", "image", "tts"):
+        stage = bin_dir / f"umm-native-stage-{kind}"
+        stage.write_text("#!/usr/bin/env python3\n" + FAKE_STAGE)
+        os.chmod(stage, 0o755)
     config = {
         "name": "test-service",
         "run_dir": str(work / "run"),
@@ -132,14 +136,16 @@ def main():
         "ipc_dir": str(work / "ipc"),
         "host": "127.0.0.1",
         "port": port,
-        "binary": str(work / "fake_server.py"),
-        "python": sys.executable,
-        "python_dir": str(work),
-        "model": "qwen3-unified",
-        "asr": {"model": "qwen3-asr", "url": "http://127.0.0.1:1",
-                "concurrency": 2},
-        "omni": {"model": "qwen3-omni", "url": "http://127.0.0.1:1/v1",
-                 "concurrency": 2},
+        "binary": str(fake_server),
+        "model": "qwen3-native",
+        "stage_binary_dir": str(bin_dir),
+        "native_stages": [
+            {"name": "asr", "model": "/models/asr", "gpu": 2},
+            {"name": "omni", "model": "/models/omni", "gpu": 3,
+             "args": ["--max-new-tokens", "96"]},
+            {"name": "image", "model": "/models/image", "gpu": 4},
+            {"name": "tts", "model": "/models/tts", "gpu": 5},
+        ],
         "health_interval_s": 0.2,
         "health_failures": 3,
         "stop_grace_s": 2,
@@ -151,19 +157,7 @@ def main():
     config_path.write_text(json.dumps(config, indent=2))
 
     # The native configuration needs no Python worker or SGLang settings.
-    native_config = dict(config)
-    native_config["model"] = "qwen3-native"
-    native_config["stage_binary_dir"] = "/root/umm-native-service/bin"
-    native_config["native_stages"] = [
-        {"name": "asr", "model": "/models/asr", "gpu": 2},
-        {"name": "omni", "model": "/models/omni", "gpu": 3,
-         "args": ["--max-new-tokens", "96"]},
-        {"name": "image", "model": "/models/image", "gpu": 4},
-        {"name": "tts", "model": "/models/tts", "gpu": 5},
-    ]
-    for obsolete in ("python", "python_dir", "asr", "omni"):
-        native_config.pop(obsolete, None)
-    native_supervisor = umminfer_service.Supervisor(native_config)
+    native_supervisor = umminfer_service.Supervisor(config)
     native_children = {child.name: child for child in native_supervisor.children}
     check("native supervisor builds four stages and server",
           set(native_children) == {"server", "asr", "omni", "image", "tts"})
@@ -175,10 +169,8 @@ def main():
           "--max-new-tokens" in native_children["omni"].argv and
           all("python" not in " ".join(child.argv).lower()
               for child in native_children.values()))
-    native_config_path = work / "native-config.json"
-    native_config_path.write_text(json.dumps(native_config))
     check("native config loads without Python or SGLang keys",
-          umminfer_service.load_config(native_config_path)["native_stages"][2]["gpu"] == 4)
+          umminfer_service.load_config(config_path)["native_stages"][2]["gpu"] == 4)
 
     env = {"FAKE_HEALTH_FLAG": str(flag), "FAKE_BIG_LOG": "1"}
     decoy = None
@@ -193,8 +185,8 @@ def main():
                          if status(config_path)["running"] else None)
         live = wait_for(lambda: all(child["alive"] for child in
                                     children(status(config_path)["state"]).values())
-                        and len(children(status(config_path)["state"])) == 3)
-        check("three children alive", bool(live))
+                        and len(children(status(config_path)["state"])) == 5)
+        check("five children alive", bool(live))
         check("health ok", wait_for(lambda: (health(config) or {}).get("status") == "ok"))
 
         first = children(status(config_path)["state"])
@@ -207,8 +199,8 @@ def main():
         restarted = wait_for(lambda: (
             lambda current: current["asr"]["alive"] and current["asr"]["pid"] != old_asr
             and current["asr"]["restarts"] >= 1)(children(status(config_path)["state"])))
-        check("killed worker restarts", bool(restarted))
-        check("killed worker pid is gone", not umminfer_service.pid_alive(old_asr))
+        check("killed stage restarts", bool(restarted))
+        check("killed stage pid is gone", not umminfer_service.pid_alive(old_asr))
 
         first = children(status(config_path)["state"])
         old_server, old_omni = first["server"]["pid"], first["omni"]["pid"]
@@ -218,7 +210,16 @@ def main():
             and current["server"]["pid"] != old_server
             and current["omni"]["alive"]
             and current["omni"]["pid"] != old_omni)(children(status(config_path)["state"])))
-        check("server crash restarts server and workers", bool(cascaded))
+        check("server crash restarts server and stages", bool(cascaded))
+
+        # Every stage must come back after a server restart, not only asr/omni.
+        after = wait_for(lambda: (
+            lambda current: all(current[name]["alive"] for name in
+                                ("asr", "omni", "image", "tts"))
+            and current["image"]["pid"] != first["image"]["pid"]
+            and current["tts"]["pid"] != first["tts"]["pid"])(
+                children(status(config_path)["state"])))
+        check("server crash restarts image and tts stages", bool(after))
 
         first = children(status(config_path)["state"])
         old_server = first["server"]["pid"]
@@ -236,7 +237,7 @@ def main():
         worker_log = work / "logs" / "asr.log"
         check("server log capped at 64 KiB", server_log.stat().st_size <= CAP,
               str(server_log.stat().st_size))
-        check("worker log capped at 64 KiB", worker_log.stat().st_size <= CAP,
+        check("stage log capped at 64 KiB", worker_log.stat().st_size <= CAP,
               str(worker_log.stat().st_size))
         check("log keeps the newest tail",
               server_log.read_bytes().endswith(b"\n")
