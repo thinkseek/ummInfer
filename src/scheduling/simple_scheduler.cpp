@@ -156,11 +156,29 @@ void SimpleScheduler::emit_error(const std::string& request_id,
   outbox_.put(OutgoingMessage{request_id, "error", Value(error)});
 }
 
+void SimpleScheduler::set_cancellable_compute(CancellableComputeFn fn) {
+  cancellable_fn_ = std::move(fn);
+}
+
 void SimpleScheduler::run_single(const IncomingMessage& msg) {
   if (consume_if_aborted(msg.request_id)) return;
   Value result;
   try {
-    result = fn_(msg.data);
+    if (cancellable_fn_) {
+      // The check is bound to this request id: an abort for another id, or a
+      // late abort for an id that already finished, cannot stop this work.
+      const std::string request_id = msg.request_id;
+      result = cancellable_fn_(msg.data, [this, request_id] {
+        return is_aborted(request_id);
+      });
+    } else {
+      result = fn_(msg.data);
+    }
+  } catch (const RequestAborted&) {
+    // The request already has a terminal event from the abort path. Drop the
+    // tombstone so the id can be reaped, and emit nothing.
+    consume_if_aborted(msg.request_id);
+    return;
   } catch (const std::exception& e) {
     if (!consume_if_aborted(msg.request_id)) emit_error(msg.request_id, e.what());
     return;

@@ -132,7 +132,8 @@ CodecDecoder::~CodecDecoder() {
   for (float* p : {im.a, im.b, im.c, im.d, im.e}) cudaFree(p);
 }
 
-std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T) {
+std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T,
+                                       const AbortCheck& abort) {
   Impl& im = *impl_;
   cudaStream_t st = im.stream;
   if (T <= 0 || T > kMaxFrames)
@@ -142,6 +143,16 @@ std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T) {
   for (int id : codes)
     if (id < 0 || id >= kCodebook)
       throw std::runtime_error("codec id outside [0,2047]");
+  // Cancellation boundaries between decoder stages. No numeric effect: every
+  // check runs on the host between kernel launches.
+  // The host launch path runs ahead of the GPU, so a check without a sync
+  // would all fire before the decoder work completes. Drain the stream first:
+  // the boundary then reflects real progress, and no kernel is left queued.
+  auto check = [&abort, st](const std::string& stage) {
+    UMM_CUDA_CHECK(cudaStreamSynchronize(st));
+    if (abort && abort())
+      throw RequestAborted("aborted in codec " + stage);
+  };
   im.ensure(static_cast<size_t>(kDecoderDim) * T * 480);  // biggest conv stream
   UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_codes_all, codes.data(),
                                  T * kGroups * sizeof(int), cudaMemcpyHostToDevice,
@@ -205,6 +216,7 @@ std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T) {
   }
 
   // ---- pre_conv then pre-transformer ----------------------------------------
+  check("pre_conv");
   conv1d_causal_f32(im.d, im.wt("decoder.pre_conv.conv.weight"),
                     im.wt("decoder.pre_conv.conv.bias"), im.c, kLatent, kHidden, T,
                     3, 1, 1, st);  // [1024,T]
@@ -234,6 +246,7 @@ std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T) {
 
   float* hidden = im.ffn_out;  // reuse as the transformer residual stream
   for (int l = 0; l < kTrLayers; ++l) {
+    check("pre_transformer layer " + std::to_string(l));
     const std::string p = "decoder.pre_transformer.layers." + std::to_string(l);
     rms_norm_t<float>(hidden, im.wt(p + ".input_layernorm.weight"), im.a, T,
                       kTrHidden, kRmsEps, st);
@@ -305,6 +318,7 @@ std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T) {
   // ---- two ConvNeXt x2 upsample stages --------------------------------------
   int len = T;
   for (int s = 0; s < 2; ++s) {
+    check("upsample " + std::to_string(s));
     const std::string up = "decoder.upsample." + std::to_string(s) + ".0";
     const std::string cx = "decoder.upsample." + std::to_string(s) + ".1";
     conv_transpose1d_f32(im.a, im.wt(up + ".conv.weight"),
@@ -350,6 +364,7 @@ std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T) {
   const int rates[4] = {8, 5, 4, 3};
   int in_ch = kDecoderDim;
   for (int i = 0; i < 4; ++i) {
+    check("decoder block " + std::to_string(i));
     const int out_ch = kDecoderDim / (1 << (i + 1));
     const std::string blk = "decoder.decoder." + std::to_string(i + 1);
     snake_beta_f32(im.b, im.wt(blk + ".block.0.alpha"),
@@ -360,6 +375,7 @@ std::vector<float> CodecDecoder::decode(const std::vector<int>& codes, int T) {
     len *= rates[i];
     const int dilations[3] = {1, 3, 9};
     for (int u = 0; u < 3; ++u) {
+      check("decoder block " + std::to_string(i) + " unit " + std::to_string(u));
       const std::string ru = blk + ".block." + std::to_string(u + 2);
       // Preserve the residual in im.d; snake_beta is in-place so the unit path
       // works on copies: im.c -> im.a (act1+conv1) -> im.e (act2+conv2).

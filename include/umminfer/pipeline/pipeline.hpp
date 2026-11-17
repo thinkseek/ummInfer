@@ -63,6 +63,9 @@ class Stage {
   };
 
   Stage(Config config, ComputeFn compute_fn);
+  // Compute path that receives an abort check bound to the request id. The
+  // function must stop at its next boundary and throw RequestAborted.
+  Stage(Config config, CancellableComputeFn compute_fn);
   ~Stage();
 
   void start();

@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "abort.hpp"
 #include "cuda_kernels.hpp"
 
 namespace umminfer::native {
@@ -23,8 +24,10 @@ class CodecDecoder {
   CodecDecoder& operator=(const CodecDecoder&) = delete;
 
   // codes [frames, 16] row-major, values in [0,2047]. Returns frames*1920
-  // mono samples.
-  std::vector<float> decode(const std::vector<int>& codes, int frames);
+  // mono samples. The abort check runs between the decoder stages; an aborted
+  // request raises RequestAborted and leaves no queued work.
+  std::vector<float> decode(const std::vector<int>& codes, int frames,
+                            const AbortCheck& abort = {});
 
  private:
   struct Impl;

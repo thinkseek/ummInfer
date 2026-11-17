@@ -326,7 +326,8 @@ TtsEngine::~TtsEngine() {
 
 std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
                                          int language_id, int speaker_id,
-                                         int max_frames) {
+                                         int max_frames,
+                                         const AbortCheck& abort) {
   Impl& im = *impl_;
   const PromptPlan plan = build_prompt_plan(text_ids, language_id, speaker_id);
   const int L = static_cast<int>(plan.rows.size());
@@ -462,6 +463,9 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   std::vector<int> c0_trace;
   c0_trace.push_back(c0);
   for (int step = 0; step < max_frames; ++step) {
+    if (abort && abort()) {
+      throw RequestAborted("aborted at frame " + std::to_string(step));
+    }
     if (c0 < 0 || c0 >= kCodecVocab)
       throw std::runtime_error("talker produced out-of-range codec id");
     UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_hist + step, &c0, sizeof(int),
@@ -514,9 +518,15 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
             c0_trace.size() * sizeof(int));
   }
   UMM_CUDA_CHECK(cudaStreamSynchronize(im.stream));
+  // The waveform decoder checks between its own stages too; this boundary
+  // covers the hand-off.
+  if (abort && abort()) {
+    throw RequestAborted("aborted before codec decode at frame " +
+                         std::to_string(frames.size() / kGroups));
+  }
   if (frames.size() % kGroups != 0)
     throw std::runtime_error("codec frames not divisible by 16");
-  return im.codec->decode(frames, static_cast<int>(frames.size() / kGroups));
+  return im.codec->decode(frames, static_cast<int>(frames.size() / kGroups), abort);
 }
 
 }  // namespace umminfer::native
