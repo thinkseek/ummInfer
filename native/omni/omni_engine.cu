@@ -215,7 +215,8 @@ OmniEngine::~OmniEngine() {
 
 OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
                                         const PreprocessedImage* image,
-                                        int max_new_tokens) {
+                                        int max_new_tokens,
+                                        const AbortCheck& abort) {
   Impl& im = *impl_;
   auto& s = im.scratch;
   const int S = static_cast<int>(prompt_ids.size());
@@ -236,7 +237,7 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
     UMM_CUDA_CHECK(cudaMalloc(&d_pix, pix_n * sizeof(Bf16)));
     UMM_CUDA_CHECK(cudaMemcpy(d_pix, h_pix.data(), pix_n * sizeof(Bf16),
                               cudaMemcpyHostToDevice));
-    vision_forward(im.weights, s, *image, d_pix);
+    vision_forward(im.weights, s, *image, d_pix, abort);
     UMM_CUDA_CHECK(cudaStreamSynchronize(s.stream));
     vision_ms = std::chrono::duration<double, std::milli>(wall() - t_vision).count();
     cudaFree(d_pix);  // implicit device synchronisation
@@ -296,6 +297,9 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
 
   // ---- prefill ----
   for (int l = 0; l < kTextLayers; ++l) {
+    if (abort && abort()) {
+      throw RequestAborted("aborted in prefill layer " + std::to_string(l));
+    }
     text_layer(im.weights, s, l, S, 0);
     if (has_image && l < 3)
       add_deepstack(s.hidden, s.deepstack[l], s.d_vis_pos, n_img, kTextH,
@@ -320,6 +324,9 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
   const auto t_decode = wall();
   for (int step = 0;
        step < max_new_tokens && !im.tokenizer->is_eos(next); ++step) {
+    if (abort && abort()) {
+      throw RequestAborted("aborted at token " + std::to_string(step));
+    }
     result.token_ids.push_back(next);
     UMM_CUDA_CHECK(cudaMemcpy(s.d_vis_pos, &next, sizeof(int),
                               cudaMemcpyHostToDevice));

@@ -1,0 +1,10 @@
+$ nvidia-smi --query-gpu=driver_version --format=csv,noheader
+535.161.08
+535.161.08
+535.161.08
+535.161.08
+535.161.08
+535.161.08
+535.161.08
+535.161.08
+exit=0
