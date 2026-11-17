@@ -1,0 +1,76 @@
+{
+  "pidfile": "/root/umm-native-service/run/supervisor.pid",
+  "running": true,
+  "state": {
+    "address": "172.17.0.2:43301",
+    "children": [
+      {
+        "alive": true,
+        "log": "/root/umm-native-service/logs/server.log",
+        "log_bytes": 38,
+        "name": "server",
+        "pid": 525135,
+        "restarts": 0,
+        "starttime": "proc:525003813",
+        "uptime_s": 525.5
+      },
+      {
+        "alive": true,
+        "log": "/root/umm-native-service/logs/asr.log",
+        "log_bytes": 591,
+        "name": "asr",
+        "pid": 525338,
+        "restarts": 0,
+        "starttime": "proc:525004645",
+        "uptime_s": 517.2
+      },
+      {
+        "alive": true,
+        "log": "/root/umm-native-service/logs/omni.log",
+        "log_bytes": 1047,
+        "name": "omni",
+        "pid": 525340,
+        "restarts": 0,
+        "starttime": "proc:525004645",
+        "uptime_s": 517.2
+      },
+      {
+        "alive": true,
+        "log": "/root/umm-native-service/logs/image.log",
+        "log_bytes": 404,
+        "name": "image",
+        "pid": 525342,
+        "restarts": 0,
+        "starttime": "proc:525004646",
+        "uptime_s": 517.2
+      },
+      {
+        "alive": true,
+        "log": "/root/umm-native-service/logs/tts.log",
+        "log_bytes": 590,
+        "name": "tts",
+        "pid": 525344,
+        "restarts": 0,
+        "starttime": "proc:525004646",
+        "uptime_s": 517.2
+      }
+    ],
+    "health": {
+      "age_s": 1.4,
+      "checked_at": 1794891528.5005906,
+      "in_flight": 0,
+      "ok": true
+    },
+    "ipc_dir": "/tmp/umminfer-native-ipc",
+    "service": "umminfer-h20b-native",
+    "stopped": false,
+    "supervisor": {
+      "pid": 525134,
+      "starttime": "proc:525003813"
+    }
+  },
+  "supervisor": {
+    "pid": 525134,
+    "starttime": "proc:525003813"
+  }
+}
