@@ -1421,6 +1421,18 @@ class OpenAIApi::Impl {
       std::string request_id;
       try {
         request_id = submit_chat(std::move(payload));
+      } catch (const QueueFullError&) {
+        // Admission is full: fail fast with a retryable status instead of
+        // queueing the request behind an unbounded wait.
+        res.status = 503;
+        res.set_header("Retry-After", "1");
+        res.set_content(
+            json{{"error",
+                  {{"message", "server is at capacity"},
+                   {"type", "overloaded"}}}}
+                .dump(),
+            "application/json");
+        return;
       } catch (const std::exception& exc) {
         res.status = 503;
         res.set_content(
@@ -1487,6 +1499,22 @@ class OpenAIApi::Impl {
     }
     try {
       submit_chat(std::move(payload));
+    } catch (const QueueFullError&) {
+      {
+        std::lock_guard<std::mutex> lock(streams_mu_);
+        streams_.erase(request_id);
+      }
+      // The stream is claimed before submit, so an overloaded engine must
+      // release it here and answer 503 before any SSE frame is written.
+      res.status = 503;
+      res.set_header("Retry-After", "1");
+      res.set_content(
+          json{{"error",
+                {{"message", "server is at capacity"},
+                 {"type", "overloaded"}}}}
+              .dump(),
+          "application/json");
+      return;
     } catch (const std::exception& exc) {
       {
         std::lock_guard<std::mutex> lock(streams_mu_);

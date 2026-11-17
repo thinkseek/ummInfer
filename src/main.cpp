@@ -53,7 +53,7 @@ CommandOptions command_options(const std::string& command) {
              "abort", "realtime-port", "ipc-dir", "upstream-kind", "upstream-base-url",
              "upstream-model", "upstream-api-key", "upstream-variant", "vlm-entry",
              "vlm-entry-endpoint", "image-entry", "image-entry-endpoint",
-             "tts-entry", "tts-entry-endpoint"},
+             "tts-entry", "tts-entry-endpoint", "max-in-flight"},
             {"demo", "session-history"},
             {}};
   }
@@ -139,6 +139,14 @@ int parse_gpu_id(const std::string& text, const std::string& option) {
   return id;
 }
 
+// Admission bounds are hard limits, so zero is not a valid value: it would
+// reject every request instead of meaning "unbounded".
+int parse_positive_int(const std::string& text, const std::string& option) {
+  const int value = parse_gpu_id(text, option);
+  if (value < 1) throw ProtocolError("invalid " + option + ": " + text);
+  return value;
+}
+
 // ZMQ binds an ipc path but never creates its parent directory.
 void ensure_ipc_parent(const std::string& endpoint) {
   const std::string prefix = "ipc://";
@@ -187,6 +195,7 @@ void print_usage(std::ostream& out) {
          "      [--image-entry name --image-entry-endpoint ipc:///tmp/x/image]\n"
          "      [--tts-entry name --tts-entry-endpoint ipc:///tmp/x/tts]  optional mixed-output legs (never gate /ready)\n"
          "      [--session-history]  enable opt-in multi-turn history (in-process, 256 sessions x 8 turns / 16384 chars)\n"
+         "      [--max-in-flight N]  admitted unified requests before overload answers 503 (default 32)\n"
          "      [--realtime-port 30001]  enable the ASR WebSocket listener\n"
       << "      [--demo]  run one in-process echo stage (development only)\n"
       << "  umm-infer stage --name N --recv EP --coordinator EP --abort EP "
@@ -276,6 +285,10 @@ int run_demo(const Flags& flags) {
 }
 
 int run_serve(const Flags& flags) {
+  // Validated for every serve mode: an invalid admission bound is a usage
+  // error even when the demo path would never use it.
+  const int max_in_flight =
+      parse_positive_int(flag(flags, "max-in-flight", "32"), "--max-in-flight");
   if (flags.count("demo")) return run_demo(flags);
 
   ApiConfig api_config;
@@ -392,6 +405,7 @@ int run_serve(const Flags& flags) {
     UnifiedConfig unified_config;
     unified_config.asr_stage = entry_name;
     unified_config.vlm_stage = vlm_name;
+    unified_config.max_in_flight = static_cast<size_t>(max_in_flight);
     if (!image_ep.empty()) unified_config.image_stage = image_name;
     if (!tts_ep.empty()) unified_config.tts_stage = tts_name;
     // Off by default: without this switch session_id stays a grouping label.

@@ -1020,6 +1020,135 @@ void test_queue_cap_backpressure() {
   engine.release(c);
 }
 
+// Concurrent submissions share one engine mutex. The admission cap must stay a
+// hard bound under a burst, and every admitted request must still complete with
+// the same result the serial path produces.
+void test_queue_cap_concurrent_submit() {
+  Harness h("queueburst");
+  UnifiedConfig config;
+  config.max_in_flight = 2;
+  UnifiedEngine engine(h.coordinator, config);
+  h.start_pump();
+
+  constexpr int kBurst = 8;
+  std::atomic<int> admitted{0};
+  std::atomic<int> rejected{0};
+  std::atomic<bool> go{false};
+  std::mutex ids_mu;
+  std::vector<std::string> ids;
+  std::vector<std::thread> threads;
+  threads.reserve(kBurst);
+  for (int i = 0; i < kBurst; ++i) {
+    threads.emplace_back([&] {
+      while (!go.load()) std::this_thread::yield();
+      try {
+        const std::string id = engine.submit(mixed_request(false, false));
+        {
+          std::lock_guard<std::mutex> lock(ids_mu);
+          ids.push_back(id);
+        }
+        ++admitted;
+      } catch (const QueueFullError&) {
+        ++rejected;
+      }
+    });
+  }
+  go = true;
+  for (auto& thread : threads) thread.join();
+
+  check(admitted.load() == 2, "the admission cap admitted more than its limit");
+  check(rejected.load() == kBurst - 2,
+        "a burst over the cap did not reject the excess requests");
+  check(engine.in_flight() == 2, "the admission count does not match the cap");
+
+  for (int i = 0; i < 2; ++i) {
+    auto submit = h.next_submit(h.vlm_recv);
+    check(submit.has_value(), "an admitted request never reached the VLM stage");
+    if (!submit) continue;
+    h.stream(submit->request_id, "vlm", text_chunk("ok", false));
+    h.complete(submit->request_id, "vlm", true, text_result("ok"));
+  }
+  for (const auto& id : ids) {
+    check(engine.wait(id, 5.0), "an admitted request did not complete");
+    const auto info = engine.info(id);
+    check(info && info->state == "completed",
+          "an admitted request did not reach the completed state");
+    check(info && info->result.find("text") != nullptr &&
+              info->result.find("text")->as_str() == "ok",
+          "a concurrent request returned a different result than the serial path");
+  }
+  for (const auto& id : ids) engine.release(id);
+  wait_until([&] { return engine.in_flight() == 0; },
+             "released requests did not free their admission slots");
+}
+
+// Overload contract: when every admission slot is in use, the HTTP boundary
+// answers 503 with Retry-After instead of queueing the request without bound.
+void test_public_http_overload_503() {
+  Harness h("publicoverload");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 5.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedConfig engine_config;
+  engine_config.max_in_flight = 1;
+  UnifiedEngine engine(h.coordinator, engine_config);
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "overload server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  const std::string body =
+      R"({"model":"qwen3-unified","messages":[{"role":"user","content":"hello"}],"stream":false})";
+  auto send = [&] {
+    client::detail::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = body;
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{10000};
+    return client::detail::perform(request);
+  };
+
+  // The first request holds the only slot until its VLM leg completes.
+  auto first = std::async(std::launch::async, send);
+  auto submit = h.next_submit(h.vlm_recv);
+  check(submit.has_value(), "the first request did not reach the VLM stage");
+
+  // The HTTP client turns a non-2xx into client::Error, so the 503 contract is
+  // read from the error object: status, overloaded marker and Retry-After.
+  bool overloaded_503 = false;
+  bool named_overload = false;
+  bool retry_after = false;
+  try {
+    const auto response = send();
+    overloaded_503 = response.status == 503L;
+    named_overload =
+        response.body.find("\"type\":\"overloaded\"") != std::string::npos;
+    retry_after = client::detail::retry_after(response.headers).count() > 0;
+  } catch (const client::Error& error) {
+    overloaded_503 = error.status() == 503;
+    named_overload = std::string(error.what()).find("overloaded") != std::string::npos;
+    retry_after = error.retry_after().count() > 0;
+  }
+  check(overloaded_503, "an overloaded engine did not answer 503");
+  check(named_overload, "the overload response did not name the overload type");
+  check(retry_after, "the overload response did not carry Retry-After");
+
+  if (submit) {
+    h.complete(submit->request_id, "vlm", true, text_result("answer"));
+  }
+  const auto completed = first.get();
+  api.stop();
+  server_thread.join();
+  check(completed.status == 200L,
+        "the admitted request did not complete after the overload was rejected");
+  wait_until([&] { return engine.in_flight() == 0; },
+             "the admitted request did not free its slot");
+}
+
 // A repeated ASR final is idempotent; an out-of-order chunk is dropped.
 void test_duplicate_final_and_out_of_order() {
   Harness h("dup");
@@ -3874,6 +4003,7 @@ int main() {
   test_vlm_failure();
   test_vlm_result_text_contract();
   test_queue_cap_backpressure();
+  test_queue_cap_concurrent_submit();
   test_duplicate_final_and_out_of_order();
   test_joint_image_audio();
   test_joint_image_remote_url();
@@ -3908,6 +4038,7 @@ int main() {
   test_retired_reentry_exception_drains();
   test_destructor_suppresses_previous_sink_exception();
   test_public_http_unified_sse();
+  test_public_http_overload_503();
   test_public_http_cancel_during_vlm();
   test_public_http_asr_model_failure();
   test_public_http_joint_input();
