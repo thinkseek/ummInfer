@@ -42,8 +42,11 @@ class TtsEngine {
   // Greedy synthesis returning 24 kHz mono float samples in [-1, 1]. The abort
   // check runs at every frame boundary; an aborted request raises
   // RequestAborted. An empty check keeps the original behaviour bit for bit.
-  // With a stream sink, each chunk decodes the frame prefix produced so far;
-  // the decoder is causal, so a prefix decode equals the head of the full one.
+  // With a stream sink, each chunk decodes the frame prefix produced so far
+  // and only its new tail samples are kept, so the returned vector is the
+  // concatenation of the chunks by construction. The codec is not
+  // bit-repeatable across calls, so a second decode of the same frames does
+  // not reproduce them; no code path relies on that.
   std::vector<float> synthesize(const std::vector<int>& text_ids, int language_id,
                                 int speaker_id, int max_frames,
                                 const AbortCheck& abort = {},
@@ -54,5 +57,13 @@ class TtsEngine {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+// True when the chunks a stream sink received, concatenated in order, equal
+// the waveform the same synthesize call returned. `first_diff` receives the
+// index of the first unequal sample, or the common length when one vector is a
+// prefix of the other.
+bool stream_matches(const std::vector<float>& streamed,
+                    const std::vector<float>& terminal,
+                    size_t* first_diff = nullptr);
 
 }  // namespace umminfer::native

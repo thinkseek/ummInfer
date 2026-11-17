@@ -129,23 +129,28 @@ text before audio started, and every turn re-prefilled the whole prompt.
 
 `TtsEngine::synthesize` takes an optional `StreamSink`. The talker emits its
 first chunk after 2 codec frames (160 ms of audio) and later chunks every 8
-frames (640 ms). A chunk decodes the frame prefix generated so far and returns
-only the samples not yet emitted. The codec is causal, so a prefix decode has
-the same mathematical value as the head of the full decode.
+frames (640 ms). A chunk decodes the frame prefix generated so far; only the
+samples past the frames already emitted are kept, and they are appended to the
+one vector the engine returns. The codec is causal, so a prefix decode has the
+same mathematical value as the head of the full decode.
 
 The TTS stage runs this path when the request sets `stream=true` and emits one
 stage-stream chunk per codec boundary:
 `{"audio": <PCM16>, "index": i, "first_frame": f, "frames": n,
 "sample_rate": 24000, "channels": 1, "format": "pcm16"}`. The terminal result
-still carries the complete WAV and the phase times. Every streamed request logs
-`tts stream_check`, the largest absolute difference between the concatenated
-chunks and the one-shot waveform. That difference is not zero: the F32 engine is not
-bit-repeatable. Two identical CLI runs of the same text produce waveforms that
-first differ at sample 19422 with a maximum of 9 PCM16 units (2.7e-4 of full
-scale), and a repeat decode inside one process differs too (`tts
-repeat_check`). Across the 141 streamed legs of the measured run, the largest
-chunk-versus-whole difference was 9.0e-2 absolute (about -21 dBFS). No
-listening test was run, so this page does not claim the seams are inaudible.
+still carries the complete WAV and the phase times.
+
+Within one streamed request the concatenated chunks and the terminal WAV come
+from the same buffer, so they are equal bit for bit. The stage checks this on
+every streamed request (`tts stream_check identical=1`) and raises a protocol
+error if it ever fails, so a regression cannot pass silently.
+
+Across requests the F32 codec is not bit-repeatable. Two identical CLI runs of
+the same text produce waveforms that first differ at sample 19422 with a
+maximum difference of 9 PCM16 units (2.7e-4 of full scale); a repeat decode of
+the same frames inside one process also differs (`tts repeat_check`). The
+implementation therefore decodes each frame prefix once and never replays a
+decode. No cross-run bit equality is claimed, and no listening test was run.
 
 ### Sentence pipeline
 
@@ -237,11 +242,13 @@ python3 -I tests/full_duplex_l2_live.py --mode all \
   --gpu-asr 2 --gpu-vlm 7 --gpu-tts 5 --turns 20
 ```
 
-Raw evidence: `evidence/full/l2-evidence.json` for the realtime and pipeline
-modes, `evidence/prefix/l2-evidence.json` for the prefill rerun (the first-turn
-prompt is longer there, so the shared prefix is measurable), and the stage logs
-next to them. They are not committed artifacts. The prefill rerun used the same
-command with `--mode prefix` and a longer first-turn prompt.
+Raw evidence: `evidence/rt-fix/l2-evidence.json` for the realtime mode,
+`evidence/fix2/l2-evidence.json` for the pipeline mode,
+`evidence/prefix/l2-evidence.json` for the prefill rerun (the first-turn prompt
+is longer there, so the shared prefix is measurable), and the stage logs next to
+them. They are not committed artifacts. Each mode was rerun after the streaming
+waveform change with the same command and `--mode realtime`, `--mode pipeline`
+or `--mode prefix`.
 
 ### First audio, 20 spoken turns over one WebSocket
 
@@ -252,9 +259,13 @@ at the first `audio.delta`.
 | Metric | Value |
 | --- | --- |
 | samples | 20 |
-| p50 | 903.4 ms |
-| p95 | 1088.2 ms |
-| min / max | 726.6 / 1095.2 ms |
+| p50 | 771.9 ms |
+| p95 | 954.3 ms |
+| min / max | 716.8 / 1033.6 ms |
+
+The same run produced 157 streamed TTS legs. Every one logged
+`tts stream_check identical=1`: the chunks concatenated in order equaled the
+terminal WAV bit for bit, with no tolerance.
 
 ### Sentence pipeline advance
 
@@ -264,18 +275,18 @@ so one TTS leg starts after the VLM answer ends.
 
 | Metric | sentence_stream | single_leg |
 | --- | --- | --- |
-| submit to first audio | 466.4 ms | 28540.8 ms |
-| last VLM delta to first audio | -157.8 ms | 27954.5 ms |
+| submit to first audio | 302.1 ms | 23091.0 ms |
+| last VLM delta to first audio | -317.8 ms | 22507.9 ms |
 | first audio before last VLM delta | true | false |
 | audio chunks | 45 | 1 |
 
-End-to-end first-audio advance: **28112.3 ms**.
+End-to-end first-audio advance: **22825.7 ms**.
 
 The single-leg baseline synthesizes the whole answer before its first sample,
 by construction. In this run the one-shot leg produced 512 codec frames (the
-stage cap) for the same text, so its 27.9 s is what that path does for this
+stage cap) for the same text, so its 22.5 s is what that path does for this
 input, not a typical answer length. The comparison is end-to-end and includes
-that cost. The streaming run's first audio arrived 157.8 ms before the last VLM
+that cost. The streaming run's first audio arrived 317.8 ms before the last VLM
 delta.
 
 ### Incremental prefill, two-turn session with `session_history`

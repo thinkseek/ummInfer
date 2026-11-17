@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
   if (model.empty() || text.empty() || out.empty()) {
     std::cerr << "usage: umm-tts-native --model DIR --text TEXT --out WAV "
                  "[--speaker vivian|ryan] [--language chinese|english] [--gpu N] "
-                 "[--max-frames N]\n";
+                 "[--max-frames N] [--stream 1]\n";
     return 2;
   }
   try {
@@ -49,8 +49,33 @@ int main(int argc, char** argv) {
     const std::vector<int> text_ids = tok.encode(wrapped);
 
     TtsEngine engine(model, gpu);
-    const std::vector<float> wav =
-        engine.synthesize(text_ids, lang, spk, max_frames);
+    // --stream installs a sink that accumulates the chunks, then asserts the
+    // streamed contract: the chunks in order equal the returned waveform.
+    const bool stream = flag(argc, argv, "--stream", "0") == "1";
+    std::vector<float> streamed;
+    TtsEngine::SynthTimings timings;
+    TtsEngine::StreamSink sink;
+    if (stream) {
+      sink = [&streamed](const std::vector<float>& chunk, int, int) {
+        streamed.insert(streamed.end(), chunk.begin(), chunk.end());
+      };
+    }
+    const std::vector<float> wav = engine.synthesize(
+        text_ids, lang, spk, max_frames, {}, &timings,
+        stream ? sink : TtsEngine::StreamSink());
+    if (stream) {
+      size_t first_diff = 0;
+      const bool identical = stream_matches(streamed, wav, &first_diff);
+      std::cerr << "tts stream_check identical=" << (identical ? 1 : 0)
+                << " samples=" << wav.size()
+                << " streamed=" << streamed.size()
+                << " first_diff=" << first_diff
+                << " first_audio_ms=" << timings.first_audio_ms << "\n";
+      if (!identical) {
+        std::cerr << "stream chunks differ from the terminal waveform\n";
+        return 1;
+      }
+    }
     const std::string bytes = write_wav_pcm16_mono(wav, 24000);
     std::ofstream f(out, std::ios::binary);
     if (!f) throw std::runtime_error("cannot open output " + out);

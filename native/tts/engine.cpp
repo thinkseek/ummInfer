@@ -478,22 +478,31 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   // Streaming policy: the first chunk is short so audio starts early, later
   // chunks are longer to keep the repeated prefix decode cheap. Every chunk
   // ends on a codec-frame boundary.
+  //
+  // One waveform copy serves the whole request: a chunk decode returns a
+  // prefix of the waveform, and only the samples past `decoded_frames` are
+  // kept, so `samples` is by construction the concatenation of the chunks in
+  // order. The function returns that same vector. The codec is not
+  // bit-repeatable across decodes, so the terminal waveform is never decoded
+  // a second time.
   constexpr int kSamplesPerFrame = 1920;
   constexpr int kFirstChunkFrames = 2;
   constexpr int kChunkFrames = 8;
-  size_t emitted_samples = 0;
+  std::vector<float> samples;
+  int decoded_frames = 0;
   int next_stream_frame = kFirstChunkFrames;
-  auto flush = [&](int frame_count) {
-    if (frame_count <= 0 || !on_chunk) return;
-    std::vector<float> all = im.codec->decode(frames, frame_count, abort);
-    const size_t start = emitted_samples;
+  // Takes a decode of the first `frame_count` frames and keeps the samples
+  // that are past the frames already emitted.
+  auto take = [&](std::vector<float>&& all, int frame_count) {
+    const size_t start = static_cast<size_t>(decoded_frames) * kSamplesPerFrame;
     if (all.size() <= start) return;
-    const int first_frame = static_cast<int>(start / kSamplesPerFrame);
     std::vector<float> chunk(all.begin() + static_cast<long>(start), all.end());
+    const int first_frame = decoded_frames;
+    samples.insert(samples.end(), chunk.begin(), chunk.end());
+    decoded_frames = frame_count;
     if (timings != nullptr && timings->first_audio_ms < 0)
       timings->first_audio_ms = elapsed_ms();
     on_chunk(chunk, first_frame, frame_count - first_frame);
-    emitted_samples = all.size();
   };
   c0_trace.push_back(c0);
   for (int step = 0; step < max_frames; ++step) {
@@ -512,7 +521,7 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
     for (int x : rest) frames.push_back(x);
     const int frame_count = static_cast<int>(frames.size() / kGroups);
     if (on_chunk && frame_count >= next_stream_frame) {
-      flush(frame_count);
+      take(im.codec->decode(frames, frame_count, abort), frame_count);
       next_stream_frame = frame_count + kChunkFrames;
     }
 
@@ -569,12 +578,16 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   if (frames.size() % kGroups != 0)
     throw std::runtime_error("codec frames not divisible by 16");
   const int total_frames = static_cast<int>(frames.size() / kGroups);
-  // Decode the remainder (or the whole utterance without a sink). Reusing the
-  // last prefix decode would return stale samples when the frame count did not
-  // advance, so decode the exact final count.
-  std::vector<float> samples = im.codec->decode(frames, total_frames, abort);
+  if (!on_chunk) {
+    samples = im.codec->decode(frames, total_frames, abort);
+  } else if (decoded_frames < total_frames) {
+    // Emit the tail frames the loop did not reach.
+    take(im.codec->decode(frames, total_frames, abort), total_frames);
+  }
   if (on_chunk && std::getenv("UMM_TTS_REPEAT_CHECK")) {
-    // Diagnostic: is a decode of the same frames repeatable at all?
+    // Diagnostic only: decodes of the same frames are not bit-repeatable, so a
+    // separate decode differs from the emitted waveform. This is a codec
+    // property, not a streaming bug.
     std::vector<float> again = im.codec->decode(frames, total_frames, abort);
     size_t fd = 0;
     while (fd < again.size() && fd < samples.size() && again[fd] == samples[fd]) ++fd;
@@ -584,15 +597,18 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
     std::cerr << "tts repeat_check same_size=" << (again.size() == samples.size())
               << " first_diff=" << fd << " max_abs_diff=" << md << "\n";
   }
-  if (on_chunk && samples.size() > emitted_samples) {
-    std::vector<float> chunk(samples.begin() + emitted_samples, samples.end());
-    on_chunk(chunk, static_cast<int>(emitted_samples / kSamplesPerFrame),
-             static_cast<int>(chunk.size() / kSamplesPerFrame));
-    if (timings != nullptr && timings->first_audio_ms < 0)
-      timings->first_audio_ms = elapsed_ms();
-  }
   if (timings != nullptr) timings->total_ms = elapsed_ms();
   return samples;
+}
+
+bool stream_matches(const std::vector<float>& streamed,
+                    const std::vector<float>& terminal,
+                    size_t* first_diff) {
+  size_t i = 0;
+  const size_t common = std::min(streamed.size(), terminal.size());
+  while (i < common && streamed[i] == terminal[i]) ++i;
+  if (first_diff != nullptr) *first_diff = i;
+  return streamed.size() == terminal.size() && i == common;
 }
 
 }  // namespace umminfer::native

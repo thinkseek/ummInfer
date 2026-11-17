@@ -300,7 +300,7 @@ def run_realtime(args, http_port, ws_port, pcm, evidence):
                 "end_to_first_audio_ms": round(latency, 1),
                 "end_to_first_text_ms": round((first_text[0] - t_end) * 1000, 1)
                 if first_text else None,
-                "first_audio_bytes": len(first_audio[1].get("audio", "")),
+                "first_audio_base64_chars": len(first_audio[1].get("audio", "")),
                 "turn_total_ms": round((done[0] - t_end) * 1000, 1),
                 "segment_id": first_audio[1].get("segment_id"),
             }

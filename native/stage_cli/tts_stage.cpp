@@ -5,7 +5,6 @@
 
 #include <chrono>
 #include <cmath>
-#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -62,9 +61,11 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const std::string wrapped = "<|im_start|>assistant\n" + input.text +
                                 "<|im_end|>\n<|im_start|>assistant\n";
     const std::vector<int> text_ids = tokenizer->encode(wrapped);
-    // Streaming chunks are raw PCM16 on codec-frame boundaries. Each chunk is
-    // the next slice of the same waveform the terminal WAV carries, so a
-    // consumer may play them in order and ignore the terminal artifact.
+    // Streaming chunks are raw PCM16 on codec-frame boundaries. The engine
+    // keeps one waveform per request, so the chunks concatenated in order are
+    // that waveform: a consumer may play them and ignore the terminal
+    // artifact. That equality is checked below and a mismatch fails the
+    // request.
     int chunks = 0;
     std::vector<float> streamed_samples;
     auto sink = [&chunks, &streamed_samples](const std::vector<float>& chunk,
@@ -107,31 +108,25 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       throw RequestAborted(error.what());
     }
     if (input.stream) {
-      // The streaming contract is that the concatenated chunks equal the
-      // terminal waveform bit for bit. This runs on every streamed request.
+      // Contract: the concatenated chunks equal the terminal waveform bit for
+      // bit, because both come from the same buffer. A mismatch is a bug, not
+      // a float tolerance, so it fails the request. This runs on every
+      // streamed request.
       size_t first_diff = 0;
-      float max_diff = 0.0f;
-      const size_t common =
-          std::min(streamed_samples.size(), samples.size());
-      while (first_diff < common &&
-             streamed_samples[first_diff] == samples[first_diff]) {
-        ++first_diff;
-      }
-      for (size_t i = 0; i < common; ++i) {
-        max_diff = std::max(max_diff,
-                            std::fabs(streamed_samples[i] - samples[i]));
-      }
-      const bool identical = streamed_samples.size() == samples.size() &&
-                             first_diff == common;
+      const bool identical =
+          native::stream_matches(streamed_samples, samples, &first_diff);
       std::cerr << "tts stream_check identical=" << (identical ? 1 : 0)
                 << " chunks=" << chunks << " samples=" << samples.size()
                 << " streamed=" << streamed_samples.size()
                 << " first_diff=" << first_diff
-                << " max_abs_diff=" << max_diff
                 << " first_audio_ms=" << timings.first_audio_ms << "\n";
-      // The codec itself is not bit-repeatable (two decodes of the same
-      // frames differ), so the chunked and one-shot waveforms are compared
-      // for a gross divergence only. The value is logged as evidence.
+      if (!identical) {
+        throw ProtocolError(
+            "stream chunk concatenation differs from the terminal waveform at "
+            "sample " + std::to_string(first_diff) + " (streamed=" +
+            std::to_string(streamed_samples.size()) + " terminal=" +
+            std::to_string(samples.size()) + ")");
+      }
     }
     std::string wav = native::write_wav_pcm16_mono(samples, kSampleRate);
     const native::WavStats stats = native::pcm_stats(samples, kSampleRate);

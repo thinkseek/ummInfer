@@ -160,6 +160,37 @@ def wait_submit(events, expected, timeout_s=10):
     raise AssertionError(f"did not observe real stage submit {expected}; saw {observed}")
 
 
+def next_turn_abort(events, timeout_s=10):
+    """Returns the next non-preview turn id the stage reported as aborted.
+
+    A request queued while the stage was stopped may be dropped before the
+    stage logs its submit, so the abort is the id both sides agree on.
+    """
+    for _ in range(int(timeout_s * 100)):
+        try:
+            actual = events.get(timeout=0.01)
+        except queue.Empty:
+            continue
+        if "-preview-" in actual or not actual.startswith("realtime-"):
+            continue
+        if actual in wait_abort.seen:
+            continue
+        wait_abort.seen.add(actual)
+        return actual
+    raise AssertionError("did not observe a turn abort")
+
+def drain_aborts(events):
+    """Removes every queued abort and marks it seen; returns the ids."""
+    seen = []
+    while True:
+        try:
+            actual = events.get_nowait()
+        except queue.Empty:
+            return seen
+        seen.append(actual)
+        wait_abort.seen.add(actual)
+
+
 
 def run_observed_stage(argv):
     parser = argparse.ArgumentParser(description="Run real TinyASR with abort-call logging")
@@ -751,7 +782,7 @@ def main():
                             "--observed-stage", str(tiny_stage), "--name", "asr",
                             "--recv", entry, "--coordinator", completion,
                             "--abort", abort_endpoint, "--model", str(work / "model"),
-                            "--omit-metadata-request", "realtime-6",
+                            "--omit-metadata-request", "realtime-7",
                             "--omit-metadata-request", "req-4"],
                   project, env, processes, logs, readers, stage_ready, abort_events, submit_events)
             wait_for(stage_ready.is_set, processes["stage"], 120)
@@ -824,14 +855,49 @@ def main():
             active_output, _ = finish_cli(active)
             active_events = active_proxy.close()
             require(active_output == b"b\n", f"unexpected Final output: {active_output!r}")
-            active_abort = wait_abort(abort_events, "realtime-1")
             final_submit = wait_submit(submit_events, "req-1")
             verify_handshake(active_events, client_first=True)
             wait_for(lambda: in_flight(http_port) == 0, timeout_s=10)
+            # The HTTP fallback returns as soon as the stage answers, so the
+            # WebSocket turn may already be complete when the socket closes.
+            # The server then has nothing to abort, by design. Any abort this
+            # teardown did produce is dropped here so the deterministic case
+            # below sees only its own id.
+            raced_aborts = drain_aborts(abort_events)
             print(f"PASS real_active_close_handshake wire_events={active_events} "
-                  f"abort={active_abort} final_output=b in_flight=0", flush=True)
+                  f"final_output=b in_flight=0 raced_aborts={raced_aborts}", flush=True)
             print(f"PASS real_live_timeout_http_final_fallback final_submit={final_submit} "
                   "live_result=true final_timeout_ms=1 output=b", flush=True)
+
+            # Close with a turn provably in flight. The stage is stopped, so
+            # the turn request cannot finish; the socket close is the only
+            # thing that can end it, which makes the abort deterministic.
+            stop_stage()
+            try:
+                with connect(
+                        f"ws://127.0.0.1:{ws_port}/v1/realtime"
+                        "?intent=transcription&model=tiny-ctc",
+                        compression=None, open_timeout=5, close_timeout=5,
+                        ping_interval=None, max_size=1 << 20) as abort_ws:
+                    abort_ws.send(json.dumps({"type": "session.update", "session": {
+                        "input_audio_format": "pcm16", "turn_detection": None}}))
+                    require(json.loads(abort_ws.recv(timeout=5)).get("type") ==
+                            "transcription_session.updated",
+                            "close-abort session.update was not accepted")
+                    for offset in range(0, len(base_pcm), 3200):
+                        abort_ws.send(json.dumps({
+                            "type": "input_audio_buffer.append",
+                            "audio": base64.b64encode(
+                                base_pcm[offset:offset + 3200]).decode()}))
+                    abort_ws.send(json.dumps({"type": "transcription.done"}))
+                    wait_for(lambda: in_flight(http_port) >= 1, timeout_s=10)
+                    time.sleep(0.2)
+            finally:
+                resume_stage()
+            close_abort = next_turn_abort(abort_events)
+            wait_for(lambda: in_flight(http_port) == 0, timeout_s=10)
+            print(f"PASS real_close_aborts_in_flight_turn abort={close_abort} "
+                  "stage_stopped=true in_flight=0", flush=True)
 
             after_active = start_cli(transcribe_command(binary, http_port, audio), env, children)
             require(finish_cli(after_active)[0] == b"b\n", "request after active close failed")
@@ -853,7 +919,7 @@ def main():
             require(killed.wait(timeout=5) == -signal.SIGKILL, "SIGKILL exit mismatch")
             wait_for(lambda: in_flight(http_port) == 0, timeout_s=10)
             resume_stage()
-            killed_abort = wait_abort(abort_events, "realtime-2")
+            killed_abort = next_turn_abort(abort_events)
             killed_events = kill_proxy.close()
             require(all(direction != "client" for direction, _ in killed_events),
                     f"SIGKILL produced a normal client Close: {killed_events}")
