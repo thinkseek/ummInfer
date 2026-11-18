@@ -20,6 +20,15 @@ without them is byte-identical to the current text path.
   - `voice`: non-empty string.
   - `format`: only `"wav"`.
   - `sample_rate`: integer, default and contract value `24000`.
+  - `stream`: optional boolean, default `false`. When `true`, the TTS leg
+    synthesizes sentence by sentence and each finished sentence is delivered
+    immediately as an `artifact` event with `mime_type: "audio/pcm"`,
+    `format: "pcm16"`, `sample_rate: 24000`, `channels: 1`, and a
+    `stream_index` that counts the sentence. The stage marks its result
+    `"streamed": true`, so the engine does not append the whole WAV afterwards:
+    a streamed request yields only `audio/pcm` artifacts. When `false`, the
+    request yields exactly one `audio/wav` artifact after synthesis completes.
+    Measured on H20B: first `audio/pcm` chunk at 0.36-0.39 s of a 9.1 s request.
 - Any request with `image` or `audio` output must set `stream=true` or the
   server answers 400. Non-streaming mixed output is not implemented.
 - When the matching optional stage is not registered in this process, the

@@ -87,7 +87,13 @@ rejected with 400.
   used), `size` (default `512x512`), integer `seed`, and `output_format`
   (`png` or `jpeg`).
 - `audio` requires `voice`, accepts only `format=wav` and `sample_rate=24000`
-  (WAV, PCM16, mono).
+  (WAV, PCM16, mono). The CLI does not expose `audio.stream`, so it always
+  receives one complete WAV and writes it after the request finishes.
+- A client that wants audio before synthesis ends sends `"stream": true` in the
+  `audio` object (see the mixed output contract). The server then delivers
+  `mime_type: audio/pcm` artifacts, one per finished sentence, and sends no WAV
+  at the end. The `ummmlx` macOS client does this and plays each chunk as it
+  arrives; its first chunk arrived 0.36 s into a 9.1 s request on H20B.
 - A modality whose stage is not registered on the server is rejected with 400
   before submission: `image output is not enabled on this server` /
   `audio output is not enabled on this server`.
