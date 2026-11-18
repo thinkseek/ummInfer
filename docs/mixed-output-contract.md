@@ -13,7 +13,7 @@ without them is byte-identical to the current text path.
 - `image`: object, optional.
   - `prompt`: optional non-empty string. When absent the image prompt is the
     full aggregated VLM answer. Never a transcript or a streaming delta.
-  - `size`: string, default `"512x512"` (matching the native Qwen-Image-2512 stage).
+  - `size`: string, default `"1024x1024"`.
   - `seed`: optional integer.
   - `output_format`: `"png"` (default) or `"jpeg"`.
 - `audio`: object, required when `modalities` includes `audio`.

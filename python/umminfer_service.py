@@ -103,11 +103,10 @@ def tail_bytes(path, cap=LOG_CAP):
 
 
 class CappedLog:
-    """Write a child's merged output, keeping only the last `cap` bytes."""
+    """Write a child's merged output, keeping only the last LOG_CAP bytes."""
 
-    def __init__(self, path, cap=LOG_CAP):
+    def __init__(self, path):
         self.path = Path(path)
-        self.cap = cap
         self.bytes = bytearray()
         self.lock = threading.Lock()
         self.thread = None
@@ -128,8 +127,8 @@ class CappedLog:
                 break
             with self.lock:
                 self.bytes.extend(data)
-                if len(self.bytes) > self.cap:
-                    del self.bytes[:len(self.bytes) - self.cap]
+                if len(self.bytes) > LOG_CAP:
+                    del self.bytes[:len(self.bytes) - LOG_CAP]
                 self._flush()
 
     def _flush(self):
@@ -137,8 +136,7 @@ class CappedLog:
         tmp.write_bytes(bytes(self.bytes))
         os.replace(tmp, self.path)
 
-    def text(self, limit=None):
-        limit = self.cap if limit is None else limit
+    def text(self, limit=LOG_CAP):
         with self.lock:
             return bytes(self.bytes[-limit:]).decode("utf-8", "replace")
 
@@ -171,11 +169,8 @@ class Supervisor:
         self.state_path = self.run_dir / "state.json"
         self.pid_path = self.run_dir / "supervisor.pid"
         self.stop_requested = False
-        self.log_cap = int(config.get("log_cap_bytes", LOG_CAP))
         self.health_ok = None
-        self.ready_ok = None
         self.health_failures = 0
-        self.ready_failures = 0
         self.health_checked_mono = 0.0
         self.health_checked_at = None
         self.in_flight = None
@@ -217,15 +212,15 @@ class Supervisor:
     def log(self, message):
         line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} supervisor {message}\n"
         path = self.log_dir / "supervisor.log"
-        data = tail_bytes(path, self.log_cap) + line.encode()
-        if len(data) > self.log_cap:
-            data = data[-self.log_cap:]
+        data = tail_bytes(path) + line.encode()
+        if len(data) > LOG_CAP:
+            data = data[-LOG_CAP:]
         tmp = Path(str(path) + ".tmp")
         tmp.write_bytes(data)
         os.replace(tmp, path)
 
     def spawn(self, child):
-        child.log = CappedLog(self.log_dir / f"{child.name}.log", self.log_cap)
+        child.log = CappedLog(self.log_dir / f"{child.name}.log")
         env = dict(os.environ)
         env.update(self.config.get("env", {}))
         try:
@@ -320,33 +315,6 @@ class Supervisor:
             self.health_ok = True
             self.health_failures = 0
             self.in_flight = in_flight
-            ready_path = self.config.get("ready_path")
-            if ready_path:
-                server = self.by_name["server"]
-                ready_grace = self.config.get("ready_grace_s", 180)
-                if server.started_at and time.time() - server.started_at >= ready_grace:
-                    ready_url = (f"http://{self.config['host']}:{self.config['port']}"
-                                 f"{ready_path}")
-                    ready_status = None
-                    try:
-                        with urllib.request.urlopen(ready_url, timeout=2) as resp:
-                            ready_status = resp.status
-                    except urllib.error.HTTPError as err:
-                        ready_status = err.code
-                    except (urllib.error.URLError, OSError):
-                        ready_status = None
-                    if ready_status == 200:
-                        self.ready_ok = True
-                        self.ready_failures = 0
-                    else:
-                        self.ready_ok = False
-                        self.ready_failures += 1
-                        self.log(f"ready check failed ({self.ready_failures}) "
-                                 f"status={ready_status} url={ready_url}")
-                        if self.ready_failures >= self.config.get("ready_failures", 5):
-                            self.ready_failures = 0
-                            self.log("ready threshold reached, restarting stages")
-                            self.restart_workers("remained unready past grace")
             return
         self.health_ok = False
         self.health_failures += 1
@@ -404,13 +372,7 @@ class Supervisor:
     def run(self):
         os.makedirs(self.run_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
-        ipc_existed = os.path.exists(self.config["ipc_dir"])
-        os.makedirs(self.config["ipc_dir"], mode=0o700, exist_ok=True)
-        if not ipc_existed:
-            try:
-                os.chmod(self.config["ipc_dir"], 0o700)
-            except OSError:
-                pass
+        os.makedirs(self.config["ipc_dir"], exist_ok=True)
         self.pid_path.write_text(json.dumps({
             "pid": os.getpid(),
             "starttime": process_starttime(os.getpid()),
@@ -651,8 +613,7 @@ def cmd_status(config):
 
 
 def cmd_logs(config, name, size):
-    cap = int(config.get("log_cap_bytes", LOG_CAP))
-    size = min(max(size, 1), cap)
+    size = min(max(size, 1), LOG_CAP)
     path = Path(config["log_dir"]) / f"{name}.log"
     sys.stdout.write(tail_bytes(path, size).decode("utf-8", "replace"))
     return 0 if path.exists() else 1

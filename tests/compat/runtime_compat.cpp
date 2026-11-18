@@ -1052,7 +1052,7 @@ void test_sse_content_and_timeout(int& failures) {
   ApiConfig api_config;
   api_config.host = "127.0.0.1";
   api_config.port = 0;
-  api_config.request_timeout_s = 0.5;
+  api_config.request_timeout_s = 0.2;
   OpenAIApi api(coordinator, api_config);
   const bool bound = api.bind();
   check(bound, "HTTP test server did not bind", failures);

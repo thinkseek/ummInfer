@@ -533,6 +533,10 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
                                           UnifiedEvent::Kind kind,
                                           std::string error, Value result) {
   record.phase = Phase::kDone;
+  if (dispatching_) {
+    record.terminal_dispatched = true;
+    cv_.notify_all();
+  }
   UnifiedEvent event;
   event.request_id = request_id;
   event.session_id = record.session_id;

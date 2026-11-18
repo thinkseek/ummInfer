@@ -65,12 +65,8 @@ start() {
     fi
     sleep 0.2
   done
-  VLM_EXTRA="--max-new-tokens 96"
-  if [ "$VLM_STAGE" = "qwen38" ]; then
-    VLM_EXTRA="$VLM_EXTRA --batch-size ${UMM_QWEN38_BATCH_SIZE:-8}"
-  fi
   start_stage asr asr "$BIN/umm-native-stage-asr" "$ASR_MODEL" 2 ""
-  start_stage "$VLM_STAGE" "$VLM_STAGE" "$BIN/umm-native-stage-$VLM_STAGE" "$VLM_MODEL" 3 "$VLM_EXTRA"
+  start_stage "$VLM_STAGE" "$VLM_STAGE" "$BIN/umm-native-stage-$VLM_STAGE" "$VLM_MODEL" 3 "--max-new-tokens 96"
   start_stage image image "$BIN/umm-native-stage-image" "$IMAGE_MODEL" 4 ""
   start_stage tts tts "$BIN/umm-native-stage-tts" "$TTS_MODEL" 5 ""
 }

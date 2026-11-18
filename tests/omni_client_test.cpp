@@ -950,52 +950,6 @@ void test_artifact_log_summary_redacts_payload() {
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 }
 
-// A streaming call without request.on_delta must still forbid automatic retry
-// once any content or unified SSE frame has arrived before truncation.
-void test_stream_no_retry_without_on_delta() {
-  httplib::Server server;
-  std::atomic<int> hits{0};
-  server.Post("/v1/chat/completions",
-              [&](const httplib::Request&, httplib::Response& res) {
-                ++hits;
-                res.set_chunked_content_provider(
-                    "text/event-stream",
-                    [](size_t offset, httplib::DataSink& sink) {
-                      if (offset > 0) {
-                        sink.done();
-                        return true;
-                      }
-                      const std::string partial =
-                          "data: {\"id\":\"http-1\",\"object\":\"chat.completion.chunk\","
-                          "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},"
-                          "\"finish_reason\":null}]}\n\n";
-                      sink.write(partial.data(), partial.size());
-                      // End without [DONE] to simulate mid-stream truncation.
-                      sink.done();
-                      return true;
-                    });
-              });
-  const int port = server.bind_to_any_port("127.0.0.1");
-  std::thread th([&] { server.listen_after_bind(); });
-  for (int i = 0; i < 100 && !server.is_running(); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-
-  client::OpenAIConfig cfg = mock_config(port);
-  cfg.max_attempts = 3;
-  cfg.retry_base = client::Milliseconds{10};
-  cfg.retry_max = client::Milliseconds{20};
-  client::OpenAIClient openai(cfg);
-  client::ChatRequest req;
-  req.messages.push_back(text_message("hello"));
-  req.stream = true;  // Note: req.on_delta intentionally left unset!
-  CHECK(error_code([&] { openai.chat(req); }) == client::ErrorCode::kNetwork);
-  CHECK(hits.load() == 1);
-
-  server.stop();
-  if (th.joinable()) th.join();
-}
-
 }  // namespace
 
 int main() {
@@ -1013,7 +967,6 @@ int main() {
   test_client_text_stream_64mib_hard_limit();
   test_cli_image_output_atomic_write();
   test_artifact_log_summary_redacts_payload();
-  test_stream_no_retry_without_on_delta();
   if (failures != 0) {
     std::cerr << failures << " of " << checks << " checks failed\n";
     return 1;

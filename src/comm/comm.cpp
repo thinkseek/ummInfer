@@ -64,7 +64,7 @@ void* make_socket(int type) {
   if (type == ZMQ_PUSH) {
     // Full send queue means the peer is gone or far behind. Fail the send
     // rather than block a worker that stop() is waiting to join.
-    int sndtimeo = 1500;
+    int sndtimeo = 5000;
     zmq_setsockopt(s, ZMQ_SNDTIMEO, &sndtimeo, sizeof(sndtimeo));
   }
   return s;
@@ -257,9 +257,8 @@ void PubSocket::bind() {
   if (socket_ != nullptr) return;
   socket_ = make_socket(ZMQ_PUB);
   must(zmq_bind(socket_, endpoint_.c_str()), "zmq_bind");
-  // Brief local-joiner settle window; CoordinatorControlPlane::broadcast_abort
-  // also pushes over PUSH sockets for reliable ordered delivery.
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  // Give ZMQ_SUB peers a brief joiner settle window after bind.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
 void PubSocket::publish(const AbortMessage& msg) {
