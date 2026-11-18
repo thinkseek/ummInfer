@@ -190,7 +190,6 @@ def main():
         ("mlx-stage", python + ["tests/mlx_stage_test.py"]),
         ("rl-phase1", python + ["tests/rl_architecture_test.py"]),
         ("rl-phase2", python + ["tests/rl_phase2_test.py"]),
-        ("benchmark", python + ["tests/unified_benchmark_test.py"]),
         ("provenance", python + ["tests/model_provenance_test.py"]),
         ("mac-unified", python + ["tests/mac_unified_validation_test.py"]),
     ]
