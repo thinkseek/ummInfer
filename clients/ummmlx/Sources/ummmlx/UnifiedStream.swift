@@ -29,6 +29,33 @@ struct ArtifactChunk {
     let data: Data
     let sha256: String?
     let bytes: Int?
+    let format: String?
+    let sampleRate: Int?
+    let channels: Int?
+
+    init(artifactID: String, mediaType: String, mimeType: String,
+         encoding: String, index: Int, total: Int, data: Data,
+         sha256: String?, bytes: Int?, format: String? = nil,
+         sampleRate: Int? = nil, channels: Int? = nil) {
+        self.artifactID = artifactID
+        self.mediaType = mediaType
+        self.mimeType = mimeType
+        self.encoding = encoding
+        self.index = index
+        self.total = total
+        self.data = data
+        self.sha256 = sha256
+        self.bytes = bytes
+        self.format = format
+        self.sampleRate = sampleRate
+        self.channels = channels
+    }
+}
+
+struct AudioStreamChunk: Equatable, Sendable {
+    let pcm16: Data
+    let sampleRate: Int
+    let channels: Int
 }
 
 struct UnifiedEvent {
@@ -49,6 +76,19 @@ struct GeneratedArtifact: Identifiable, Equatable {
     let mimeType: String
     let data: Data
     let sha256: String
+    let sampleRate: Int?
+    let channels: Int?
+
+    init(id: String, mediaType: String, mimeType: String, data: Data,
+         sha256: String, sampleRate: Int? = nil, channels: Int? = nil) {
+        self.id = id
+        self.mediaType = mediaType
+        self.mimeType = mimeType
+        self.data = data
+        self.sha256 = sha256
+        self.sampleRate = sampleRate
+        self.channels = channels
+    }
 }
 
 enum UnifiedDecode {
@@ -142,10 +182,18 @@ enum UnifiedDecode {
         }
         let sha = try raw["sha256"].map { try string($0, "artifact.sha256") }
         let bytes = try raw["bytes"].map { try integer($0, "artifact.bytes") }
+        let format = try raw["format"].map { try string($0, "artifact.format") }
+        let sampleRate = try raw["sample_rate"].map {
+            try integer($0, "artifact.sample_rate")
+        }
+        let channels = try raw["channels"].map {
+            try integer($0, "artifact.channels")
+        }
         return ArtifactChunk(
             artifactID: artifactID, mediaType: mediaType, mimeType: mimeType,
             encoding: encoding, index: index, total: total, data: decoded,
-            sha256: sha, bytes: bytes
+            sha256: sha, bytes: bytes, format: format,
+            sampleRate: sampleRate, channels: channels
         )
     }
 }
@@ -183,7 +231,7 @@ struct ArtifactCollector {
     }
 
     static let supportedMimeTypes: Set<String> = [
-        "image/png", "image/jpeg", "audio/wav"
+        "image/png", "image/jpeg", "audio/wav", "audio/pcm"
     ]
 
     private var slots: [String: Slot] = [:]
@@ -201,9 +249,26 @@ struct ArtifactCollector {
             throw ChatClientError.invalidResponse(
                 "artifact media_type must be image or audio")
         }
-        guard Self.supportedMimeTypes.contains(chunk.mimeType) else {
+        guard Self.supportedMimeTypes.contains(chunk.mimeType),
+              chunk.mimeType.hasPrefix(chunk.mediaType + "/") else {
             throw ChatClientError.invalidResponse(
                 "artifact mime_type '\(chunk.mimeType)' is not supported")
+        }
+        var pcmSampleRate: Int?
+        var pcmChannels: Int?
+        if chunk.mimeType == "audio/pcm" {
+            if let format = chunk.format, format != "pcm16" {
+                throw ChatClientError.invalidResponse(
+                    "audio/pcm artifact format '\(format)' is not pcm16")
+            }
+            let rate = chunk.sampleRate ?? 24_000
+            let ch = chunk.channels ?? 1
+            guard rate > 0, ch >= 1, ch <= 8 else {
+                throw ChatClientError.invalidResponse(
+                    "audio/pcm artifact carries invalid sample_rate or channels")
+            }
+            pcmSampleRate = rate
+            pcmChannels = ch
         }
         guard chunk.encoding == "base64" else {
             throw ChatClientError.invalidResponse("artifact encoding must be base64")
@@ -255,6 +320,13 @@ struct ArtifactCollector {
             throw ChatClientError.invalidResponse(
                 "artifact byte count \(reportedBytes) does not match \(slot.data.count) decoded bytes")
         }
+        if let ch = pcmChannels {
+            let frameBytes = ch * 2
+            guard !slot.data.isEmpty, slot.data.count % frameBytes == 0 else {
+                throw ChatClientError.invalidResponse(
+                    "audio/pcm artifact does not contain whole PCM16 samples")
+            }
+        }
         let digest = Self.sha256Hex(slot.data)
         guard digest == reportedSha.lowercased() else {
             throw ChatClientError.invalidResponse("artifact sha256 mismatch")
@@ -262,7 +334,8 @@ struct ArtifactCollector {
         slots.removeValue(forKey: chunk.artifactID)
         return GeneratedArtifact(
             id: chunk.artifactID, mediaType: chunk.mediaType,
-            mimeType: chunk.mimeType, data: slot.data, sha256: digest
+            mimeType: chunk.mimeType, data: slot.data, sha256: digest,
+            sampleRate: pcmSampleRate, channels: pcmChannels
         )
     }
 
@@ -271,5 +344,104 @@ struct ArtifactCollector {
 
     static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+enum WAVCodec {
+    static let headerByteCount = 44
+
+    static func wrapPCM16(_ pcm: Data, sampleRate: Int = 24_000,
+                          channels: Int = 1) throws -> Data {
+        guard sampleRate > 0, channels >= 1, channels <= 8 else {
+            throw ChatClientError.invalidResponse("invalid WAV sample rate or channel count")
+        }
+        let blockAlign = channels * 2
+        guard !pcm.isEmpty, pcm.count % blockAlign == 0 else {
+            throw ChatClientError.invalidResponse("PCM16 audio must contain whole samples")
+        }
+        let byteRate64 = UInt64(sampleRate) * UInt64(blockAlign)
+        let riffPayload64 = UInt64(pcm.count) + 36
+        guard byteRate64 <= UInt64(UInt32.max),
+              riffPayload64 <= UInt64(UInt32.max) else {
+            throw ChatClientError.invalidResponse("PCM16 audio exceeds WAV container limits")
+        }
+
+        var wav = Data()
+        wav.reserveCapacity(headerByteCount + pcm.count)
+        func appendU16(_ value: UInt16) {
+            var le = value.littleEndian
+            withUnsafeBytes(of: &le) { wav.append(contentsOf: $0) }
+        }
+        func appendU32(_ value: UInt32) {
+            var le = value.littleEndian
+            withUnsafeBytes(of: &le) { wav.append(contentsOf: $0) }
+        }
+        wav.append(contentsOf: "RIFF".utf8)
+        appendU32(UInt32(riffPayload64))
+        wav.append(contentsOf: "WAVEfmt ".utf8)
+        appendU32(16)
+        appendU16(1)  // PCM
+        appendU16(UInt16(channels))
+        appendU32(UInt32(sampleRate))
+        appendU32(UInt32(byteRate64))
+        appendU16(UInt16(blockAlign))
+        appendU16(16)
+        wav.append(contentsOf: "data".utf8)
+        appendU32(UInt32(pcm.count))
+        wav.append(pcm)
+        return wav
+    }
+}
+
+/// Coalesces incremental `audio/pcm` chunks of one chat turn into a single
+/// replayable `audio/wav` artifact while forwarding each chunk immediately for
+/// live playback.
+struct StreamedAudioAccumulator {
+    private let perArtifactLimit: Int
+    private var firstArtifactID: String?
+    private var sampleRate: Int?
+    private var channels: Int?
+    private var pcm = Data()
+
+    init(perArtifactLimit: Int = 48 << 20) {
+        self.perArtifactLimit = perArtifactLimit
+    }
+
+    var isEmpty: Bool { pcm.isEmpty }
+
+    mutating func append(_ artifact: GeneratedArtifact) throws -> AudioStreamChunk {
+        let rate = artifact.sampleRate ?? 24_000
+        let ch = artifact.channels ?? 1
+        if let existingRate = sampleRate, let existingChannels = channels {
+            guard existingRate == rate, existingChannels == ch else {
+                throw ChatClientError.invalidResponse(
+                    "streamed audio format changed between chunks")
+            }
+        } else {
+            firstArtifactID = artifact.id
+            sampleRate = rate
+            channels = ch
+        }
+        guard WAVCodec.headerByteCount + pcm.count + artifact.data.count <= perArtifactLimit else {
+            throw ChatClientError.invalidResponse("audio artifact exceeds its size limit")
+        }
+        pcm.append(artifact.data)
+        return AudioStreamChunk(pcm16: artifact.data, sampleRate: rate, channels: ch)
+    }
+
+    mutating func finalizeWAV() throws -> GeneratedArtifact? {
+        guard !pcm.isEmpty,
+              let id = firstArtifactID,
+              let rate = sampleRate,
+              let ch = channels else {
+            return nil
+        }
+        let wav = try WAVCodec.wrapPCM16(pcm, sampleRate: rate, channels: ch)
+        pcm.removeAll(keepingCapacity: false)
+        return GeneratedArtifact(
+            id: id, mediaType: "audio", mimeType: "audio/wav",
+            data: wav, sha256: ArtifactCollector.sha256Hex(wav),
+            sampleRate: rate, channels: ch
+        )
     }
 }

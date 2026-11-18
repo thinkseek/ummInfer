@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import AVFoundation
 import CryptoKit
 import XCTest
 @testable import ummmlx
@@ -235,5 +236,83 @@ final class ArtifactCollectorTests: XCTestCase {
             artifactID: "art-0", mediaType: "image", mimeType: "image/webp",
             encoding: "base64", index: 0, total: 1, data: Data([1]),
             sha256: shaHex(Data([1])), bytes: 1)))
+        XCTAssertThrowsError(try collector.ingest(ArtifactChunk(
+            artifactID: "art-0", mediaType: "image", mimeType: "audio/wav",
+            encoding: "base64", index: 0, total: 1, data: Data([1, 2]),
+            sha256: shaHex(Data([1, 2])), bytes: 2)))
+    }
+
+    func testAudioPCMChunkValidatesAlignmentAndFormat() throws {
+        var collector = ArtifactCollector()
+        let pcm = Data([0x00, 0x80, 0xFF, 0x7F])
+        let artifact = try collector.ingest(ArtifactChunk(
+            artifactID: "art-0", mediaType: "audio", mimeType: "audio/pcm",
+            encoding: "base64", index: 0, total: 1, data: pcm,
+            sha256: shaHex(pcm), bytes: pcm.count, format: "pcm16",
+            sampleRate: 24_000, channels: 1))
+        XCTAssertEqual(artifact?.mimeType, "audio/pcm")
+        XCTAssertEqual(artifact?.sampleRate, 24_000)
+        XCTAssertEqual(artifact?.channels, 1)
+
+        let odd = Data([0x01, 0x02, 0x03])
+        XCTAssertThrowsError(try collector.ingest(ArtifactChunk(
+            artifactID: "art-1", mediaType: "audio", mimeType: "audio/pcm",
+            encoding: "base64", index: 0, total: 1, data: odd,
+            sha256: shaHex(odd), bytes: odd.count, format: "pcm16",
+            sampleRate: 24_000, channels: 1)))
+
+        XCTAssertThrowsError(try collector.ingest(ArtifactChunk(
+            artifactID: "art-2", mediaType: "audio", mimeType: "audio/pcm",
+            encoding: "base64", index: 0, total: 1, data: pcm,
+            sha256: shaHex(pcm), bytes: pcm.count, format: "mulaw",
+            sampleRate: 24_000, channels: 1)))
+    }
+
+    func testWAVCodecAndStreamedAccumulatorProducePlayableWAV() throws {
+        // 2400 mono samples = 0.1 s at 24 kHz.
+        let c0 = Data(repeating: 0x01, count: 2400)
+        let c1 = Data(repeating: 0x02, count: 2400)
+        var acc = StreamedAudioAccumulator()
+        let s0 = try acc.append(GeneratedArtifact(
+            id: "art-0", mediaType: "audio", mimeType: "audio/pcm",
+            data: c0, sha256: shaHex(c0), sampleRate: 24_000, channels: 1))
+        let s1 = try acc.append(GeneratedArtifact(
+            id: "art-1", mediaType: "audio", mimeType: "audio/pcm",
+            data: c1, sha256: shaHex(c1), sampleRate: 24_000, channels: 1))
+        XCTAssertEqual(s0.pcm16, c0)
+        XCTAssertEqual(s1.pcm16, c1)
+
+        let wav = try XCTUnwrap(try acc.finalizeWAV())
+        XCTAssertEqual(wav.id, "art-0")
+        XCTAssertEqual(wav.mimeType, "audio/wav")
+        XCTAssertEqual(wav.data.count, 44 + c0.count + c1.count)
+        XCTAssertEqual(wav.data.subdata(in: 44..<wav.data.count), c0 + c1)
+        let player = try AVAudioPlayer(data: wav.data)
+        XCTAssertEqual(player.duration, 0.1, accuracy: 0.01)
+    }
+
+    func testStreamedAccumulatorRejectsMidStreamFormatChange() throws {
+        let pcm = Data([0, 0, 1, 0])
+        var acc = StreamedAudioAccumulator()
+        _ = try acc.append(GeneratedArtifact(
+            id: "art-0", mediaType: "audio", mimeType: "audio/pcm",
+            data: pcm, sha256: shaHex(pcm), sampleRate: 24_000, channels: 1))
+        XCTAssertThrowsError(try acc.append(GeneratedArtifact(
+            id: "art-1", mediaType: "audio", mimeType: "audio/pcm",
+            data: pcm, sha256: shaHex(pcm), sampleRate: 16_000, channels: 1)))
+    }
+
+    @MainActor
+    func testMakePCMBufferConvertsLittleEndianInt16ToFloat32() throws {
+        // Stereo frame: left = -32768 (0x8000), right = 16384 (0x4000).
+        let bytes = Data([0x00, 0x80, 0x00, 0x40])
+        let chunk = AudioStreamChunk(pcm16: bytes, sampleRate: 24_000, channels: 2)
+        let buffer = try XCTUnwrap(LiveAudioStreamPlayer.makePCMBuffer(chunk))
+        XCTAssertEqual(buffer.frameLength, 1)
+        XCTAssertEqual(buffer.format.channelCount, 2)
+        XCTAssertEqual(buffer.format.sampleRate, 24_000)
+        let channels = try XCTUnwrap(buffer.floatChannelData)
+        XCTAssertEqual(channels[0][0], -1.0, accuracy: 1e-6)
+        XCTAssertEqual(channels[1][0], 0.5, accuracy: 1e-6)
     }
 }

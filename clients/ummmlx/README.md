@@ -11,7 +11,10 @@ No third-party runtime dependencies.
 - Strict `unified.seq`: must start at 0 and advance by 1. A gap or repeat fails
   the request; the client never continues silently.
 - Generated PNG/JPEG artifacts show as thumbnails; click opens the full image.
-- Generated WAV artifacts play inline with Play, Stop, and duration.
+- Audio turns enable `audio.stream: true`, schedule verified `audio/pcm`
+  (PCM16) chunks onto `AVAudioPlayerNode` as they arrive, and coalesce the turn
+  into one inline WAV card with Play, Stop, and duration for replay. Image +
+  audio multimodal turns continue to accept whole `audio/wav` artifacts.
 - Artifact chunks are merged by `artifact_id`, then checked against the final
   chunk's `bytes` and `sha256`. A mismatch fails the request.
 - Local voice input with Apple's on-device speech model: microphone and audio

@@ -44,10 +44,13 @@ final class ChatModel: ObservableObject {
     @Published var partialTranscript = ""
     @Published private(set) var isListening = false
     @Published private(set) var speechStatus = ""
+    @Published private(set) var streamingAudioTurnID: UUID?
+    @Published private(set) var isStreamingAudioPlaying = false
 
     let speech: SpeechController
+    let audioStream: AudioStreamPlaying
 
-    private let client = ChatClient()
+    private let client: ChatClient
     private var requestTask: Task<Void, Never>?
     private var activeTurn: UUID?
     private var stopping = false
@@ -57,12 +60,28 @@ final class ChatModel: ObservableObject {
     /// Automation hook: the exact messages sent for one request.
     var onRequest: (([ChatMessage]) -> Void)?
 
-    init(speech: SpeechController = SpeechController()) {
+    init(speech: SpeechController = SpeechController(),
+         client: ChatClient? = nil,
+         audioStream: AudioStreamPlaying? = nil) {
         self.speech = speech
+        self.client = client ?? ChatClient()
+        let resolvedAudio = audioStream ?? (
+            ProcessInfo.processInfo.arguments.contains("--automation")
+                ? NoOpAudioStreamPlayer()
+                : LiveAudioStreamPlayer()
+        )
+        self.audioStream = resolvedAudio
         let defaults = UserDefaults.standard
         endpoint = defaults.string(forKey: "endpoint") ?? "http://127.0.0.1:30000/v1"
         model = defaults.string(forKey: "model") ?? "Qwen2.5-0.5B-Instruct-4bit"
         requestSessionID = Self.newSessionID()
+        resolvedAudio.onStateChange = { [weak self] playing in
+            guard let self else { return }
+            self.isStreamingAudioPlaying = playing
+            if !playing {
+                self.streamingAudioTurnID = nil
+            }
+        }
     }
 
     static func newSessionID() -> String {
@@ -115,6 +134,11 @@ final class ChatModel: ObservableObject {
             options.audio = AudioOptions(voice: audioVoice)
         }
 
+        stopStreamingAudio()
+        if audioOutput {
+            audioStream.beginStream()
+        }
+
         turns.append(ChatTurn(role: .user, text: text, state: .complete))
         let assistant = ChatTurn(role: .assistant, text: "", state: .streaming)
         turns.append(assistant)
@@ -164,11 +188,16 @@ final class ChatModel: ObservableObject {
                         return
                     }
                     self.turns[index].artifacts.append(artifact)
+                } onAudioChunk: { chunk in
+                    guard self.activeTurn == assistant.id else { return }
+                    self.streamingAudioTurnID = assistant.id
+                    self.audioStream.enqueue(chunk)
                 }
                 guard self.activeTurn == assistant.id,
                       let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
                     return
                 }
+                self.audioStream.finishStream()
                 self.turns[index].text = result.text
                 self.turns[index].state = .complete
                 if !result.sessionID.isEmpty { self.sessionID = result.sessionID }
@@ -177,6 +206,7 @@ final class ChatModel: ObservableObject {
                 self.finish(assistant.id)
             } catch {
                 guard self.activeTurn == assistant.id else { return }
+                self.stopStreamingAudio()
                 let cancelled = self.stopping || Task.isCancelled ||
                     (error as? URLError)?.code == .cancelled || error is CancellationError
                 if let index = self.turns.firstIndex(where: { $0.id == assistant.id }) {
@@ -220,6 +250,7 @@ final class ChatModel: ObservableObject {
 
     func startListening() {
         guard !isRunning, !isListening else { return }
+        stopStreamingAudio()
         speech.onPartial = { [weak self] text in
             self?.partialTranscript = text
         }
@@ -268,7 +299,14 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    func stopStreamingAudio() {
+        audioStream.stop()
+        isStreamingAudioPlaying = false
+        streamingAudioTurnID = nil
+    }
+
     func stop() {
+        stopStreamingAudio()
         guard isRunning else { return }
         stopping = true
         status = "Stopping…"
@@ -276,6 +314,7 @@ final class ChatModel: ObservableObject {
     }
 
     func newChat() {
+        stopStreamingAudio()
         requestTask?.cancel()
         requestTask = nil
         activeTurn = nil

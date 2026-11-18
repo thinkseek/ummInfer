@@ -28,6 +28,7 @@ struct ImageOptions: Equatable {
 struct AudioOptions: Equatable {
     var voice: String
     var format = "wav"
+    var stream = true
 }
 
 struct ChatStreamOptions: Equatable {
@@ -257,7 +258,15 @@ final class ChatClient {
         }
         if let audio = options.audio {
             body["modalities"] = options.modalities
-            body["audio"] = ["voice": audio.voice, "format": audio.format]
+            var object: [String: Any] = [
+                "voice": audio.voice, "format": audio.format
+            ]
+            // Image + audio requests keep the server's ordered single-leg WAV
+            // path; audio-only turns stream PCM16 chunks as sentences complete.
+            if audio.stream && options.image == nil {
+                object["stream"] = true
+            }
+            body["audio"] = object
         }
         return body
     }
@@ -270,7 +279,8 @@ final class ChatClient {
                 options: ChatStreamOptions = ChatStreamOptions(),
                 onDelta: (String) -> Void,
                 onEvent: ((UnifiedEvent) -> Void)? = nil,
-                onArtifact: ((GeneratedArtifact) -> Void)? = nil) async throws -> ChatCompletion {
+                onArtifact: ((GeneratedArtifact) -> Void)? = nil,
+                onAudioChunk: ((AudioStreamChunk) -> Void)? = nil) async throws -> ChatCompletion {
         var shape = options
         var wire = messages
         var historyUnavailable = false
@@ -279,7 +289,8 @@ final class ChatClient {
             do {
                 return try await attempt(
                     base: base, model: model, messages: wire, options: shape,
-                    onDelta: onDelta, onEvent: onEvent, onArtifact: onArtifact)
+                    onDelta: onDelta, onEvent: onEvent, onArtifact: onArtifact,
+                    onAudioChunk: onAudioChunk)
             } catch let ChatClientError.http(status, detail)
                         where status == 400 && attempts < 3 {
                 attempts += 1
@@ -315,7 +326,8 @@ final class ChatClient {
                          options: ChatStreamOptions,
                          onDelta: (String) -> Void,
                          onEvent: ((UnifiedEvent) -> Void)?,
-                         onArtifact: ((GeneratedArtifact) -> Void)?) async throws -> ChatCompletion {
+                         onArtifact: ((GeneratedArtifact) -> Void)?,
+                         onAudioChunk: ((AudioStreamChunk) -> Void)?) async throws -> ChatCompletion {
         let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw ChatClientError.modelRequired }
         let url = try Self.chatURL(base: base)
@@ -347,6 +359,7 @@ final class ChatClient {
         var parser = SSEParser()
         var sequence = UnifiedSequenceGuard()
         var collector = ArtifactCollector()
+        var streamedAudio = StreamedAudioAccumulator()
         var text = ""
         var finishReason = ""
         var sessionID = ""
@@ -386,8 +399,18 @@ final class ChatClient {
                 if !unified.sessionID.isEmpty { sessionID = unified.sessionID }
                 if unified.kind == .artifact, let chunk = unified.artifact,
                    let completed = try collector.ingest(chunk) {
-                    artifacts.append(completed)
-                    onArtifact?(completed)
+                    if completed.mimeType == "audio/pcm" {
+                        let streamChunk = try streamedAudio.append(completed)
+                        onAudioChunk?(streamChunk)
+                    } else {
+                        artifacts.append(completed)
+                        onArtifact?(completed)
+                    }
+                }
+                if unified.kind == .complete,
+                   let wavArtifact = try streamedAudio.finalizeWAV() {
+                    artifacts.append(wavArtifact)
+                    onArtifact?(wavArtifact)
                 }
                 onEvent?(unified)
                 switch unified.kind {

@@ -225,10 +225,18 @@ struct RootView: View {
                         .foregroundStyle(theme.secondary)
                         .accessibilityIdentifier("server-transcript")
                 }
-                if !turn.artifacts.isEmpty {
+                let liveAudioActive = model.streamingAudioTurnID == turn.id && model.isStreamingAudioPlaying
+                let hasAudioArtifact = turn.artifacts.contains { $0.mediaType == "audio" }
+                if !turn.artifacts.isEmpty || liveAudioActive {
                     HStack(alignment: .top, spacing: 10) {
                         ForEach(turn.artifacts) { artifact in
-                            artifactView(artifact).id(artifact.id)
+                            artifactView(artifact, liveStreaming: liveAudioActive && artifact.mediaType == "audio")
+                                .id(artifact.id)
+                        }
+                        if liveAudioActive && !hasAudioArtifact {
+                            StreamingAudioView(theme: theme) {
+                                model.stopStreamingAudio()
+                            }
                         }
                     }
                 }
@@ -246,7 +254,8 @@ struct RootView: View {
     }
 
     @ViewBuilder
-    private func artifactView(_ artifact: GeneratedArtifact) -> some View {
+    private func artifactView(_ artifact: GeneratedArtifact,
+                              liveStreaming: Bool = false) -> some View {
         if artifact.mediaType == "image",
            let image = NSImage(data: artifact.data) {
             Button {
@@ -265,7 +274,12 @@ struct RootView: View {
             .accessibilityIdentifier("artifact-image")
             .help("Open the full image")
         } else if artifact.mediaType == "audio" {
-            AudioPlayerView(artifact: artifact, theme: theme)
+            AudioPlayerView(
+                artifact: artifact,
+                theme: theme,
+                liveStreaming: liveStreaming,
+                onStopLiveStream: { model.stopStreamingAudio() }
+            )
         } else {
             Text("Unsupported artifact \(artifact.mimeType)")
                 .font(.system(size: theme.captionSize))
@@ -420,9 +434,35 @@ final class AudioPlayerModel: NSObject, ObservableObject, AVAudioPlayerDelegate 
     }
 }
 
+struct StreamingAudioView: View {
+    let theme: Theme
+    let onStop: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button("Stop") { onStop() }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("audio-stream-stop")
+            Text("Playing stream…")
+                .font(.system(size: theme.captionSize, design: .monospaced))
+                .foregroundStyle(theme.accent)
+                .accessibilityIdentifier("audio-stream-status")
+            Text("PCM16")
+                .font(.system(size: theme.captionSize))
+                .foregroundStyle(theme.tertiary)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .background(theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+    }
+}
+
 struct AudioPlayerView: View {
     let artifact: GeneratedArtifact
     let theme: Theme
+    var liveStreaming = false
+    var onStopLiveStream: () -> Void = {}
     @StateObject private var player = AudioPlayerModel()
 
     private var durationText: String {
@@ -431,16 +471,22 @@ struct AudioPlayerView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(player.isPlaying ? "Pause" : "Play") { player.toggle() }
-                .buttonStyle(.bordered)
-                .disabled(player.duration <= 0)
-                .accessibilityIdentifier("audio-play")
-            Button("Stop") { player.stop() }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("audio-stop")
-            Text(durationText)
+            Button(player.isPlaying ? "Pause" : "Play") {
+                onStopLiveStream()
+                player.toggle()
+            }
+            .buttonStyle(.bordered)
+            .disabled(player.duration <= 0 || liveStreaming)
+            .accessibilityIdentifier("audio-play")
+            Button("Stop") {
+                onStopLiveStream()
+                player.stop()
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("audio-stop")
+            Text(liveStreaming ? "Live · \(durationText)" : durationText)
                 .font(.system(size: theme.captionSize, design: .monospaced))
-                .foregroundStyle(theme.secondary)
+                .foregroundStyle(liveStreaming ? theme.accent : theme.secondary)
                 .accessibilityIdentifier("audio-duration")
             Text("WAV")
                 .font(.system(size: theme.captionSize))

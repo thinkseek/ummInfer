@@ -39,6 +39,22 @@ private func frame(
 private let artifactBytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3])
 private let artifactSHA = SHA256.hash(data: artifactBytes)
     .map { String(format: "%02x", $0) }.joined()
+private let pcmChunk0 = Data([0x01, 0x02, 0x03, 0x04])
+private let pcmChunk0SHA = SHA256.hash(data: pcmChunk0)
+    .map { String(format: "%02x", $0) }.joined()
+private let pcmChunk1 = Data([0x05, 0x06, 0x07, 0x08])
+private let pcmChunk1SHA = SHA256.hash(data: pcmChunk1)
+    .map { String(format: "%02x", $0) }.joined()
+
+private func pcmFrame(id: String, seq: Int, data: Data, sha: String) -> [String: Any] {
+    frame(kind: "artifact", seq: seq, artifact: [
+        "artifact_id": id, "media_type": "audio", "mime_type": "audio/pcm",
+        "format": "pcm16", "sample_rate": 24_000, "channels": 1,
+        "encoding": "base64", "index": 0, "total": 1,
+        "data": data.base64EncodedString(),
+        "sha256": sha, "bytes": data.count
+    ])
+}
 
 private func artifactFrame(seq: Int) -> [String: Any] {
     frame(kind: "artifact", seq: seq, artifact: [
@@ -84,6 +100,13 @@ private final class UnifiedSSEProtocol: URLProtocol {
         "10.1.2.8": sse([
             frame(kind: "complete", seq: 0, text: "a"),
             frame(kind: "complete", seq: 1, text: "b")
+        ]),
+        // Streamed TTS PCM16 chunks coalesce into one WAV artifact on complete.
+        "10.1.2.10": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Hi."),
+            pcmFrame(id: "art-0", seq: 1, data: pcmChunk0, sha: pcmChunk0SHA),
+            pcmFrame(id: "art-1", seq: 2, data: pcmChunk1, sha: pcmChunk1SHA),
+            frame(kind: "complete", seq: 3, text: "Hi.")
         ])
     ]
 
@@ -380,5 +403,120 @@ final class ChatClientUnifiedTests: XCTestCase {
     @MainActor
     func testImageSizeDefaultMatchesTheContract() {
         XCTAssertEqual(ImageOptions().size, "512x512")
+    }
+
+    @MainActor
+    func testAudioRequestBodyStreamsAudioOnlyTurnsAndKeepsMultimodalOrdered() {
+        var audioOnly = ChatStreamOptions()
+        audioOnly.audio = AudioOptions(voice: "vivian")
+        let audioBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "hi")],
+            options: audioOnly)
+        let audioObject = audioBody["audio"] as? [String: Any]
+        XCTAssertEqual(audioObject?["voice"] as? String, "vivian")
+        XCTAssertEqual(audioObject?["format"] as? String, "wav")
+        XCTAssertEqual(audioObject?["stream"] as? Bool, true)
+
+        var multimodal = ChatStreamOptions()
+        multimodal.image = ImageOptions()
+        multimodal.audio = AudioOptions(voice: "vivian")
+        let mmBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "hi")],
+            options: multimodal)
+        let mmAudio = mmBody["audio"] as? [String: Any]
+        XCTAssertNil(mmAudio?["stream"])
+    }
+
+    @MainActor
+    func testStreamedAudioChunksFeedLiveCallbackAndCoalesceIntoOneWAVArtifact() async throws {
+        var chunks: [AudioStreamChunk] = []
+        var deliveredArtifacts: [GeneratedArtifact] = []
+        let result = try await makeClient().stream(
+            base: "http://10.1.2.10", model: "m", messages: [],
+            options: ChatStreamOptions(audio: AudioOptions(voice: "vivian"))
+        ) { _ in } onArtifact: {
+            deliveredArtifacts.append($0)
+        } onAudioChunk: {
+            chunks.append($0)
+        }
+        XCTAssertEqual(chunks, [
+            AudioStreamChunk(pcm16: pcmChunk0, sampleRate: 24_000, channels: 1),
+            AudioStreamChunk(pcm16: pcmChunk1, sampleRate: 24_000, channels: 1)
+        ])
+        XCTAssertEqual(deliveredArtifacts.count, 1)
+        XCTAssertEqual(result.artifacts.count, 1)
+        let wav = try XCTUnwrap(result.artifacts.first)
+        XCTAssertEqual(wav.id, "art-0")
+        XCTAssertEqual(wav.mimeType, "audio/wav")
+        XCTAssertEqual(wav.data.subdata(in: 44..<wav.data.count), pcmChunk0 + pcmChunk1)
+    }
+
+    @MainActor
+    func testChatModelDrainsLiveAudioAfterSSECompleteAndStopsOnDemand() async throws {
+        final class FakeAudioStreamPlayer: AudioStreamPlaying {
+            var onStateChange: ((Bool) -> Void)?
+            private(set) var isPlaying = false {
+                didSet {
+                    if oldValue != isPlaying { onStateChange?(isPlaying) }
+                }
+            }
+            var beganCount = 0
+            var finishedStream = false
+            var stoppedCount = 0
+            var chunks: [AudioStreamChunk] = []
+
+            func beginStream() {
+                beganCount += 1
+                finishedStream = false
+            }
+
+            func enqueue(_ chunk: AudioStreamChunk) {
+                chunks.append(chunk)
+                isPlaying = true
+            }
+
+            func finishStream() {
+                finishedStream = true
+                // Simulate queued speaker buffers still draining after SSE ends.
+            }
+
+            func drainPlayback() {
+                isPlaying = false
+            }
+
+            func stop() {
+                stoppedCount += 1
+                isPlaying = false
+            }
+        }
+
+        let player = FakeAudioStreamPlayer()
+        let model = ChatModel(client: makeClient(), audioStream: player)
+        model.endpoint = "http://10.1.2.10/v1"
+        model.model = "m"
+        model.audioOutput = true
+        model.prompt = "say hi"
+        model.send()
+
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(model.isRunning)
+        XCTAssertTrue(player.finishedStream)
+        XCTAssertEqual(player.chunks.count, 2)
+        // Live playback stays active until queued buffers finish playing.
+        XCTAssertTrue(model.isStreamingAudioPlaying)
+        XCTAssertEqual(model.turns.last?.artifacts.count, 1)
+        XCTAssertEqual(model.turns.last?.artifacts.first?.mimeType, "audio/wav")
+
+        player.drainPlayback()
+        XCTAssertFalse(model.isStreamingAudioPlaying)
+        XCTAssertNil(model.streamingAudioTurnID)
+
+        // Starting another streamed turn and calling stopStreamingAudio halts immediately.
+        player.enqueue(AudioStreamChunk(pcm16: pcmChunk0, sampleRate: 24_000, channels: 1))
+        XCTAssertTrue(model.isStreamingAudioPlaying)
+        model.stopStreamingAudio()
+        XCTAssertFalse(model.isStreamingAudioPlaying)
     }
 }
