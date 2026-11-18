@@ -6,12 +6,19 @@
 
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace umminfer::image2 {
 
 using AbortCheck = std::function<bool()>;
+
+class RequestAborted : public std::runtime_error {
+ public:
+  explicit RequestAborted(const std::string& boundary)
+      : std::runtime_error(boundary) {}
+};
 
 struct GenerateParams {
   std::string prompt;

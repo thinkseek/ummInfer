@@ -46,12 +46,21 @@ GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck&
   auto t = Clock::now();
   GenerateResult res;
 
-  int width = (p.width / 32) * 32;
-  int height = (p.height / 32) * 32;
-  if (width <= 0 || height <= 0) throw std::invalid_argument("bad image size");
+  if (p.width <= 0 || p.height <= 0 || p.width % 32 != 0 || p.height % 32 != 0) {
+    throw std::invalid_argument(
+        "bad image size: width and height must be positive multiples of 32");
+  }
+  const int width = p.width;
+  const int height = p.height;
   const int gh = height / 16, gw = width / 16;
 
   CudaRuntime rt(gpu_);
+  auto check_abort = [&](const char* boundary) {
+    if (abort && abort()) {
+      rt.sync();
+      throw RequestAborted(boundary);
+    }
+  };
   size_t min_free = free_bytes();
 
   // ---- tokenizer + text encoder -------------------------------------------
@@ -67,6 +76,7 @@ GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck&
     auto t_load = Clock::now();
     TextEncoder te(rt, model_dir_ + "/text_encoder");
     res.load_ms += ms_since(t_load);
+    check_abort("text encoder load");
     auto t_enc = Clock::now();
     DeviceTensor hidden = te.forward(ids);
     txt_len = static_cast<int>(ids.size()) - drop;
@@ -77,6 +87,7 @@ GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck&
     rt.sync();
     res.encode_ms = ms_since(t_enc);
     min_free = std::min(min_free, free_bytes());
+    check_abort("text encoder");
   }
 
   // ---- scheduler + noise ---------------------------------------------------
@@ -93,10 +104,14 @@ GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck&
     DiT dit(rt, model_dir_ + "/transformer");
     res.load_ms += ms_since(t_load);
     min_free = std::min(min_free, free_bytes());
+    check_abort("transformer load");
 
     auto t_den = Clock::now();
     for (int i = 0; i < p.steps; ++i) {
-      if (abort && abort()) throw std::runtime_error("aborted");
+      if (abort && abort()) {
+        rt.sync();
+        throw RequestAborted("denoise step " + std::to_string(i));
+      }
       // diffusers rounds the timestep to bf16, divides by 1000 in bf16, then
       // the model multiplies it back by 1000 in fp32. Mirror both roundings.
       const float t_bf = bits_to_bf16_float(bf16_to_bits(sched.timesteps[i]));

@@ -21,6 +21,8 @@ struct StageOptions {
   int max_frames = 0;  // TTS only
   int max_seq = 0;     // Omni and Qwen3.8
   int steps = 0;       // Image only
+  std::string image_backend;  // Image only: "" / "2512" (default) or "2.1"
+  std::string image_size;     // Image only: optional startup WxH gate
   // Requests decoded together. 0 or 1 keeps the single-request executor.
   int batch_size = 0;
 };

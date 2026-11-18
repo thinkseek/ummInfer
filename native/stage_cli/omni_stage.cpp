@@ -113,17 +113,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     }
     AbortTracker tracker(aborted);
     const OmniWork input = parse_omni_work(work);
-
-    int req_max_new_tokens = max_new_tokens;
-    const Value::Map& params = bound_request_params();
-    if (const auto it = params.find("max_new_tokens");
-        it != params.end() && !it->second.is_nil()) {
-      if (!it->second.is_int() || it->second.as_int() <= 0) {
-        throw ProtocolError("max_new_tokens must be a positive integer");
-      }
-      req_max_new_tokens = static_cast<int>(
-          std::min<int64_t>(it->second.as_int(), max_seq));
-    }
+    const int req_max_new_tokens =
+        resolve_max_new_tokens(bound_request_params(), max_new_tokens, max_seq);
 
     std::unique_ptr<omni::PreprocessedImage> image;
     if (!input.image_url.empty()) {

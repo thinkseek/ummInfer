@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "umminfer/proto/wire.hpp"
@@ -76,6 +77,11 @@ OmniWork parse_omni_work(const Value& work);
 // modality claim, and more than one image.
 OmniWork parse_qwen38_work(const Value& work);
 
+// Resolves per-request `max_new_tokens` from Stage request params, validating
+// positivity and clamping to `max_seq` when provided.
+int resolve_max_new_tokens(const Value::Map& params, int default_tokens,
+                           int max_seq);
+
 // Chat turn exactly as native/omni_cli renders it. The vision block is two
 // adjacent special tokens; the caller expands the image pads between them.
 std::string render_omni_chat(const std::string& text, bool has_image);
@@ -116,6 +122,18 @@ struct TtsWork {
 };
 
 TtsWork parse_tts_work(const Value& work);
+
+enum class ImageBackend { kQwen2512, kQwen21 };
+
+// Selects the native image backend. Empty or "2512" / "qwen-image-2512" keeps
+// the default Qwen-Image-2512 executor; "2.1" / "qwen-image-2.1" selects
+// Qwen-Image-2.1. Any other value fails loudly.
+ImageBackend parse_image_backend(const std::string& value);
+const char* image_backend_name(ImageBackend backend);
+
+// Validates a WIDTHxHEIGHT string against the validated serving size (512x512).
+// Never rounds or falls back to a different resolution.
+std::pair<int, int> parse_supported_image_size(const std::string& size);
 
 struct ImageWork {
   std::string prompt;

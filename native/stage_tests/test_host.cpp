@@ -174,6 +174,19 @@ void test_omni_parsing() {
   empty_inputs["messages"] = umminfer::Value(umminfer::Value::Array{});
   check_throws([&] { parse_omni_work(umminfer::Value(std::move(empty_inputs))); },
                "empty messages rejected");
+
+  check(resolve_max_new_tokens({}, 96, 8192) == 96,
+        "omitted max_new_tokens keeps stage default");
+  check(resolve_max_new_tokens({{"max_new_tokens", umminfer::Value(int64_t{32})}}, 96, 8192) == 32,
+        "explicit max_new_tokens overrides stage default");
+  check(resolve_max_new_tokens({{"max_new_tokens", umminfer::Value(int64_t{99999})}}, 96, 2048) == 2048,
+        "max_new_tokens clamps to max_seq");
+  check_throws([] {
+    (void)resolve_max_new_tokens({{"max_new_tokens", umminfer::Value(int64_t{0})}}, 96, 2048);
+  }, "zero max_new_tokens rejected");
+  check_throws([] {
+    (void)resolve_max_new_tokens({{"max_new_tokens", umminfer::Value("32")}}, 96, 2048);
+  }, "non-integer max_new_tokens rejected");
 }
 
 // The qwen38 stage accepts the omni message shape but must fail on every field
@@ -422,6 +435,26 @@ void test_image_parsing() {
                "negative image seed rejected");
   check_throws([] { parse_image_work(umminfer::Value(umminfer::Value::Map{})); },
                "missing image prompt rejected");
+
+  // Image backend selector and startup size gate.
+  check(parse_image_backend("") == ImageBackend::kQwen2512,
+        "empty image backend defaults to 2512");
+  check(parse_image_backend("2512") == ImageBackend::kQwen2512 &&
+            parse_image_backend("Qwen-Image-2512") == ImageBackend::kQwen2512,
+        "2512 backend aliases accepted");
+  check(parse_image_backend("2.1") == ImageBackend::kQwen21 &&
+            parse_image_backend("Qwen-Image-2.1") == ImageBackend::kQwen21,
+        "2.1 backend aliases accepted");
+  check_throws([] { (void)parse_image_backend("2.0"); },
+               "unknown image backend rejected");
+  check(parse_supported_image_size("512x512") == std::make_pair(512, 512),
+        "startup 512x512 size accepted");
+  check_throws([] { (void)parse_supported_image_size("1024x1024"); },
+               "startup unsupported 1024x1024 rejected");
+  check_throws([] { (void)parse_supported_image_size("500x500"); },
+               "startup non-multiple-of-32 500x500 rejected instead of rounded");
+  check_throws([] { (void)parse_supported_image_size("512x512extra"); },
+               "startup trailing garbage size rejected");
 }
 
 void test_result_shapes() {
