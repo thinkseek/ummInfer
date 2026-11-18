@@ -4035,8 +4035,8 @@ void test_public_http_mixed_partial_failure() {
 }  // namespace
 
 int main() {
-  // Hard stop for a wedged run. Measured wall time for the whole suite: 53.7 s
-  // idle and 58 s under 13 CPU-bound processes; 300 s leaves 5x headroom for a
+  // Hard stop for a wedged run. Measured wall time for the whole suite: 38 s
+  // idle and 41 s under 13 CPU-bound processes; 300 s leaves 7x headroom for a
   // parallel `zig build test` run. Each individual wait is bounded by
   // kStateWait, so this only catches a run that stops making progress.
   alarm(300);
