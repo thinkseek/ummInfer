@@ -50,7 +50,7 @@ start() {
     sleep 0.2
   done
   stage asr asr "$ASR_MODEL" 2 ""
-  stage qwen38 qwen38 "$QWEN38_MODEL" 2 "--max-new-tokens 96"
+  stage qwen38 qwen38 "$QWEN38_MODEL" 2 "--max-new-tokens 96 --batch-size ${QWEN38_BATCH_SIZE:-8}"
   stage image image "$IMAGE_MODEL" 6 "--steps $IMAGE_STEPS"
   stage tts tts "$TTS_MODEL" 7 "--max-frames $TTS_FRAMES"
   i=0

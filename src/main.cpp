@@ -51,7 +51,8 @@ CommandOptions command_options(const std::string& command) {
   if (command == "serve") {
     return {{"port", "host", "model", "api-key", "entry", "entry-endpoint", "completion",
              "abort", "realtime-port", "ipc-dir", "upstream-kind", "upstream-base-url",
-             "upstream-model", "upstream-api-key", "upstream-variant", "vlm-entry",
+             "upstream-model", "upstream-api-key", "upstream-variant",
+             "upstream-cb-failures", "upstream-cb-cooldown", "vlm-entry",
              "vlm-entry-endpoint", "image-entry", "image-entry-endpoint",
              "tts-entry", "tts-entry-endpoint", "max-in-flight"},
             {"demo", "session-history"},
@@ -147,16 +148,24 @@ int parse_positive_int(const std::string& text, const std::string& option) {
   return value;
 }
 
-// ZMQ binds an ipc path but never creates its parent directory.
+// ZMQ binds an ipc path but never creates its parent directory. Restrict newly
+// created directories to the owner (0700) so unprivileged local users cannot
+// connect to internal ZMQ sockets.
 void ensure_ipc_parent(const std::string& endpoint) {
   const std::string prefix = "ipc://";
   if (endpoint.rfind(prefix, 0) != 0) return;
   const size_t slash = endpoint.rfind('/');
   if (slash == std::string::npos || slash <= prefix.size()) return;
-  std::error_code ignored;
-  std::filesystem::create_directories(endpoint.substr(prefix.size(),
-                                                      slash - prefix.size()),
-                                      ignored);
+  const std::filesystem::path dir(
+      endpoint.substr(prefix.size(), slash - prefix.size()));
+  std::error_code ec;
+  const bool existed = std::filesystem::exists(dir, ec);
+  std::filesystem::create_directories(dir, ec);
+  if (!existed && !ec) {
+    std::filesystem::permissions(
+        dir, std::filesystem::perms::owner_all,
+        std::filesystem::perm_options::replace, ec);
+  }
 }
 
 // Reference compute function: echoes the last user message. Replace it with a
@@ -296,6 +305,9 @@ int run_serve(const Flags& flags) {
   api_config.port = parse_port(flags);
   api_config.model = flag(flags, "model", api_config.model);
   api_config.api_key = flag(flags, "api-key", "");
+  if (flags.count("max-in-flight")) {
+    api_config.max_in_flight = static_cast<size_t>(max_in_flight);
+  }
   // Fixed upstream: one process serves one upstream, one model and one
   // variant. The upstream key is read from the environment when the flag is
   // absent, so it does not have to appear in the process arguments.
@@ -304,6 +316,15 @@ int run_serve(const Flags& flags) {
   api_config.upstream_model = flag(flags, "upstream-model");
   api_config.upstream_variant = flag(flags, "upstream-variant");
   api_config.upstream_api_key = flag(flags, "upstream-api-key");
+  if (flags.count("upstream-cb-failures")) {
+    api_config.upstream_circuit_breaker_failures = parse_positive_int(
+        flag(flags, "upstream-cb-failures"), "--upstream-cb-failures");
+  }
+  if (flags.count("upstream-cb-cooldown")) {
+    api_config.upstream_circuit_breaker_cooldown_s = static_cast<double>(
+        parse_positive_int(flag(flags, "upstream-cb-cooldown"),
+                           "--upstream-cb-cooldown"));
+  }
   if (api_config.upstream_api_key.empty()) {
     const char* key = std::getenv("UMMINFER_UPSTREAM_API_KEY");
     if (key != nullptr) api_config.upstream_api_key = key;

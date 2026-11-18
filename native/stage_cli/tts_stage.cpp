@@ -38,6 +38,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
   return [tokenizer, engine, max_frames, gpu](
              const Value& work, const AbortCheck& aborted) {
     const auto started = std::chrono::steady_clock::now();
+    const std::string req_id = bound_request_id();
     // The compute function runs on the Stage scheduler thread, whose CUDA
     // current device defaults to 0. The engine's buffers belong to --gpu.
     if (cudaSetDevice(gpu) != cudaSuccess) {
@@ -101,7 +102,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     } catch (const native::RequestAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);
-      std::cerr << "tts request aborted boundary=\"" << error.what() << "\""
+      std::cerr << "tts request aborted request_id=" << req_id
+                << " boundary=\"" << error.what() << "\""
                 << " abort_epoch_ms=" << tracker.detected_epoch_ms()
                 << " exit_epoch_ms=" << epoch_millis()
                 << " compute_ms=" << elapsed.count() << "\n";
@@ -115,7 +117,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       size_t first_diff = 0;
       const bool identical =
           native::stream_matches(streamed_samples, samples, &first_diff);
-      std::cerr << "tts stream_check identical=" << (identical ? 1 : 0)
+      std::cerr << "tts stream_check request_id=" << req_id
+                << " identical=" << (identical ? 1 : 0)
                 << " chunks=" << chunks << " samples=" << samples.size()
                 << " streamed=" << streamed_samples.size()
                 << " first_diff=" << first_diff
@@ -132,7 +135,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const native::WavStats stats = native::pcm_stats(samples, kSampleRate);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
-    std::cerr << "tts request voice=" << voice
+    std::cerr << "tts request request_id=" << req_id
+              << " voice=" << voice
               << " language=" << (language == native::kLangChinese ? "chinese" : "english")
               << " samples=" << stats.samples << " duration_s=" << stats.duration_s
               << " rms=" << stats.rms << " peak=" << stats.peak
@@ -141,7 +145,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " elapsed_ms=" << elapsed.count() << "\n";
     if (stats.samples == 0) throw ProtocolError("TTS produced no samples");
     return tts_result(std::move(wav), kSampleRate, 1, voice,
-                      timings.first_frame_ms, timings.total_ms);
+                      timings.first_frame_ms, timings.total_ms, input.stream);
   };
 }
 

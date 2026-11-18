@@ -238,16 +238,13 @@ void Stage::run() {
   while (running_) {
     std::optional<Message> msg;
     try {
-      msg = control_plane_->recv_nowait();
+      msg = control_plane_->recv_timeout(20);
     } catch (const ProtocolError&) {
       if (!running_) break;
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       continue;
     }
-    if (!msg) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-      continue;
-    }
+    if (!msg) continue;
     handle_message(std::move(*msg));
   }
 }
@@ -373,7 +370,8 @@ void Stage::execute(StagePayload payload) {
   // The entry stage converts a request into work: when the caller sent no data,
   // the request inputs are the compute input.
   const Value work = payload.data.is_nil() ? payload.request.inputs : payload.data;
-  scheduler_->enqueue(IncomingMessage{payload.request_id, "new_request", work});
+  scheduler_->enqueue(IncomingMessage{payload.request_id, "new_request", work,
+                                      std::move(payload.request.params)});
 }
 
 void Stage::on_data_ready(const DataReadyMessage& msg) {
@@ -746,61 +744,66 @@ std::string Coordinator::submit(StagePayload payload,
                                 const std::string& entry_stage) {
   const bool explicit_id = !payload.request_id.empty();
   std::string request_id = payload.request_id;
-  std::lock_guard<std::mutex> lock(mu_);
-  if (!running_) throw ProtocolError("coordinator is stopping");
-  auto it = endpoints_.find(entry_stage);
-  if (it == endpoints_.end()) {
-    throw ProtocolError("unknown entry stage: " + entry_stage);
-  }
-  if (explicit_id) {
-    if (requests_.find(request_id) != requests_.end()) {
-      throw ProtocolError("duplicate request_id: " + request_id);
-    }
-    // An explicit id in the generated namespace must not be reissued later by
-    // the counter. The abort tombstone outlives the request record, so a reuse
-    // would be dropped by the stage. The counter only moves forward.
-    if (const auto number = generated_id_number(request_id)) {
-      uint64_t current = counter_.load();
-      while (*number > current &&
-             !counter_.compare_exchange_weak(current, *number)) {
-      }
-    }
-  } else {
-    do {
-      request_id = next_request_id();
-    } while (requests_.find(request_id) != requests_.end());
-  }
-  payload.request_id = request_id;
   SubmitMessage msg;
-  msg.request_id = request_id;
-  msg.data = payload.to_value();
-  RequestInfo info;
-  info.request_id = request_id;
-  info.state = "pending";
-  info.current_stage = entry_stage;
-  requests_[request_id] = std::move(info);
+  std::string endpoint;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!running_) throw ProtocolError("coordinator is stopping");
+    auto it = endpoints_.find(entry_stage);
+    if (it == endpoints_.end()) {
+      throw ProtocolError("unknown entry stage: " + entry_stage);
+    }
+    endpoint = it->second;
+    if (explicit_id) {
+      if (requests_.find(request_id) != requests_.end()) {
+        throw ProtocolError("duplicate request_id: " + request_id);
+      }
+      // An explicit id in the generated namespace must not be reissued later by
+      // the counter. The abort tombstone outlives the request record, so a reuse
+      // would be dropped by the stage. The counter only moves forward.
+      if (const auto number = generated_id_number(request_id)) {
+        uint64_t current = counter_.load();
+        while (*number > current &&
+               !counter_.compare_exchange_weak(current, *number)) {
+        }
+      }
+    } else {
+      do {
+        request_id = next_request_id();
+      } while (requests_.find(request_id) != requests_.end());
+    }
+    payload.request_id = request_id;
+    msg.request_id = request_id;
+    msg.data = payload.to_value();
 
-  // Metrics are keyed by the stage this coordinator submitted to, not by the
-  // stage that eventually reports the terminal event.
-  const char* request_type = request_type_of(payload);
-  request_stages_[request_id] = entry_stage;
-  request_types_[request_id] = request_type;
-  submit_times_[request_id] = std::chrono::steady_clock::now();
-  obs::Metrics::instance().stage_submit(entry_stage, request_type);
-  obs::Metrics::instance().stage_in_flight(entry_stage, 1);
+    const bool wait_for_ready = stages_requiring_ready_.count(entry_stage) != 0 &&
+                                ready_stages_.count(entry_stage) == 0;
+    RequestInfo info;
+    info.request_id = request_id;
+    info.state = wait_for_ready ? "pending" : "running";
+    info.current_stage = entry_stage;
+    requests_[request_id] = std::move(info);
 
-  const bool wait_for_ready = stages_requiring_ready_.count(entry_stage) != 0 &&
-                              ready_stages_.count(entry_stage) == 0;
-  if (wait_for_ready) {
-    pending_submits_[entry_stage].push_back(std::move(msg));
-    return request_id;
+    // Metrics are keyed by the stage this coordinator submitted to, not by the
+    // stage that eventually reports the terminal event.
+    const char* request_type = request_type_of(payload);
+    request_stages_[request_id] = entry_stage;
+    request_types_[request_id] = request_type;
+    submit_times_[request_id] = std::chrono::steady_clock::now();
+    obs::Metrics::instance().stage_submit(entry_stage, request_type);
+    obs::Metrics::instance().stage_in_flight(entry_stage, 1);
+
+    if (wait_for_ready) {
+      pending_submits_[entry_stage].push_back(std::move(msg));
+      return request_id;
+    }
   }
+  // Send outside mu_ so a saturated or dying stage socket never blocks
+  // Coordinator::info/wait/abort or completions from healthy stages.
   try {
-    // Keep the request lock across send and the state transition. abort() uses
-    // the same lock, so a ready flush cannot overtake an abort transition.
-    control_plane_->submit_to_stage(entry_stage, it->second, Message{msg});
-    requests_.at(request_id).state = "running";
+    control_plane_->submit_to_stage(entry_stage, endpoint, Message{msg});
   } catch (...) {
+    std::lock_guard<std::mutex> lock(mu_);
     finish_metrics_locked(request_id, "failed");
     requests_.erase(request_id);
     throw;
@@ -840,7 +843,8 @@ double Coordinator::finish_metrics_locked(const std::string& request_id,
 
 void Coordinator::handle_event(const Message& msg) {
   if (const auto* ready = std::get_if<StageReadyMessage>(&msg)) {
-    std::vector<RequestInfo> failed;
+    std::string endpoint_url;
+    std::vector<SubmitMessage> to_send;
     {
       std::lock_guard<std::mutex> lock(mu_);
       const auto endpoint = endpoints_.find(ready->from_stage);
@@ -848,25 +852,34 @@ void Coordinator::handle_event(const Message& msg) {
       if (!ready_stages_.insert(ready->from_stage).second) return;
       const auto queued = pending_submits_.find(ready->from_stage);
       if (queued == pending_submits_.end()) return;
-      for (const auto& submit : queued->second) {
+      endpoint_url = endpoint->second;
+      for (auto& submit : queued->second) {
         auto request = requests_.find(submit.request_id);
         if (request == requests_.end() || request->second.state != "pending" ||
             request->second.current_stage != ready->from_stage) {
           continue;
         }
-        try {
-          // Serialize every flush send with abort()'s terminal transition.
-          control_plane_->submit_to_stage(ready->from_stage, endpoint->second,
-                                          Message{submit});
-          request->second.state = "running";
-        } catch (const std::exception& error) {
+        request->second.state = "running";
+        to_send.push_back(std::move(submit));
+      }
+      pending_submits_.erase(queued);
+    }
+    std::vector<RequestInfo> failed;
+    for (const auto& submit : to_send) {
+      try {
+        control_plane_->submit_to_stage(ready->from_stage, endpoint_url,
+                                        Message{submit});
+      } catch (const std::exception& error) {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto request = requests_.find(submit.request_id);
+        if (request != requests_.end() && request->second.state == "running" &&
+            request->second.current_stage == ready->from_stage) {
           request->second.state = "failed";
           request->second.error = error.what();
           finish_metrics_locked(submit.request_id, "failed");
           failed.push_back(request->second);
         }
       }
-      pending_submits_.erase(queued);
     }
     if (!failed.empty()) cv_.notify_all();
     for (const auto& request : failed) {

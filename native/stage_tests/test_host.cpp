@@ -235,16 +235,32 @@ void test_qwen38_parsing() {
   check_throws([&] { parse_qwen38_work(umminfer::Value(audio_field)); },
                "qwen38 audio input field rejected");
 
-  // The text+image modality list the unified engine sends is accepted.
+  // The text+image modality list the unified engine sends is accepted, and
+  // multi-turn history plus session_id are preserved for qwen38 prompt rendering.
   umminfer::Value::Map image_modality;
+  image_modality["session_id"] = umminfer::Value("sess-q38");
   image_modality["messages"] = umminfer::Value(umminfer::Value::Array{
       umminfer::Value(umminfer::Value::Map{
+          {"role", umminfer::Value("system")},
+          {"content", umminfer::Value("be concise")}}),
+      umminfer::Value(umminfer::Value::Map{
           {"role", umminfer::Value("user")},
-          {"content", umminfer::Value("hi")}})});
+          {"content", umminfer::Value("hi")}}),
+      umminfer::Value(umminfer::Value::Map{
+          {"role", umminfer::Value("assistant")},
+          {"content", umminfer::Value("hello")}}),
+      umminfer::Value(umminfer::Value::Map{
+          {"role", umminfer::Value("user")},
+          {"content", umminfer::Value("follow up")}})});
   image_modality["modalities"] = umminfer::Value(umminfer::Value::Array{
       umminfer::Value("text"), umminfer::Value("image")});
-  check(parse_qwen38_work(umminfer::Value(image_modality)).text == "hi",
-        "qwen38 text+image modalities accepted");
+  const OmniWork multi = parse_qwen38_work(umminfer::Value(image_modality));
+  check(multi.text == "follow up", "qwen38 text+image modalities accepted");
+  check(multi.session_id == "sess-q38", "qwen38 session_id preserved");
+  check(multi.messages.size() == 4 && multi.messages[0].role == "system" &&
+            multi.messages[2].role == "assistant" &&
+            multi.messages[2].text == "hello",
+        "qwen38 multi-turn history preserved");
 }
 
 // A stage compute function streams through emit_stage_stream(); the chunk must
@@ -288,6 +304,29 @@ void test_scheduler_stream() {
   }
   scheduler.stop();
   runner.join();
+
+  // bound_request_id() and bound_request_params() work even without a stream
+  // sink installed, and clear once compute returns.
+  SimpleScheduler plain(ComputeFn{});
+  std::string plain_id;
+  int64_t plain_tokens = 0;
+  plain.set_cancellable_compute([&](const Value&, const AbortCheck&) {
+    plain_id = bound_request_id();
+    const auto it = bound_request_params().find("max_new_tokens");
+    if (it != bound_request_params().end()) plain_tokens = it->second.as_int();
+    return Value(std::string("ok"));
+  });
+  std::thread plain_runner([&] { plain.start(); });
+  Value::Map params;
+  params["max_new_tokens"] = Value(int64_t{64});
+  plain.enqueue(IncomingMessage{"req-plain", "new_request", Value(), std::move(params)});
+  check(plain.outbox().get(2.0).has_value(), "plain scheduler completed");
+  check(plain_id == "req-plain", "bound_request_id populated without stream sink");
+  check(plain_tokens == 64, "bound_request_params populated inside compute");
+  check(bound_request_id().empty() && bound_request_params().empty(),
+        "thread-local bindings cleared outside compute");
+  plain.stop();
+  plain_runner.join();
 }
 
 void test_base64_and_data_url() {
@@ -303,6 +342,14 @@ void test_base64_and_data_url() {
                "http image URL rejected");
   check_throws([] { decode_data_url("data:image/png,hello"); },
                "non-base64 data URL rejected");
+  check(load_image_bytes("data:image/png;base64,aGVsbG8=") == "hello",
+        "load_image_bytes accepts base64 data URL");
+  check_throws([] { load_image_bytes("/etc/passwd"); },
+               "load_image_bytes rejects bare local path");
+  check_throws([] { load_image_bytes("file:///etc/passwd"); },
+               "load_image_bytes rejects file:// URL");
+  check_throws([] { load_image_bytes("https://example.com/a.png"); },
+               "load_image_bytes rejects https:// URL");
 }
 
 void test_tts_parsing() {
@@ -394,6 +441,12 @@ void test_result_shapes() {
   check(tts.find("data")->is_bin() && tts.find("data")->as_bin() == "RIFFdata",
         "tts artifact bytes");
   check(tts.find("sample_rate")->as_int() == 24000, "tts artifact sample rate");
+  check(tts.find("streamed") == nullptr, "non-streamed tts omits streamed flag");
+  const umminfer::Value tts_streamed =
+      tts_result("RIFFdata", 24000, 1, "vivian", 12.0, 34.0, /*streamed=*/true);
+  check(tts_streamed.find("streamed") != nullptr &&
+            tts_streamed.find("streamed")->as_bool(),
+        "streamed tts sets streamed=true");
   check_throws([] { tts_result("", 24000, 1, "vivian"); }, "empty TTS output rejected");
 
   const umminfer::Value image = image_result("PNGdata", 512, 512, 42, 50);

@@ -54,6 +54,7 @@ AsrWork parse_asr_work(const Value& work);
 struct OmniMessage {
   std::string role;
   std::string text;
+  bool has_image = false;
 };
 
 struct OmniWork {
@@ -132,10 +133,10 @@ ImageWork parse_image_work(const Value& work);
 // Selects the codec language id from the text script.
 bool text_is_mostly_cjk(const std::string& text);
 
-// data: URLs only. Returns the decoded bytes; throws on any other scheme.
+// data: URLs only (capped at 48 MiB decoded). Returns the decoded bytes;
+// throws on any other scheme or local file path.
 std::string decode_data_url(const std::string& url);
 std::string base64_decode(const std::string& text);
-// data: URL or a local file path.
 std::string load_image_bytes(const std::string& url);
 
 Value asr_result(const std::string& text, int generated_tokens,
@@ -145,9 +146,11 @@ Value asr_result(const std::string& text, int generated_tokens,
 Value omni_result(const std::string& text, int generated_tokens,
                   double prefill_ms = -1, double decode_ms = -1);
 // Artifact map the unified engine expects: media_type + Bin under "data".
+// When streamed is true, marks "streamed": true so UnifiedEngine skips
+// re-emitting the full WAV artifact after PCM16 chunks have been streamed.
 Value tts_result(std::string wav_bytes, int sample_rate, int channels,
                  const std::string& voice, double first_frame_ms = -1,
-                 double total_ms = -1);
+                 double total_ms = -1, bool streamed = false);
 Value image_result(std::string png_bytes, int width, int height,
                    uint64_t seed, int steps, double denoise_ms = -1);
 

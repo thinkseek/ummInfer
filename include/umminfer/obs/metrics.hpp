@@ -121,6 +121,11 @@ class Metrics {
   void http(const std::string& route, const std::string& status);
 
   bool trace_enabled();
+  void trace_start(const std::string& request_id,
+                   const std::string& request_type, const std::string& stage,
+                   int64_t start_epoch_ms);
+  void trace_leg(const std::string& request_id, const std::string& leg_name,
+                 const std::string& status, double duration_ms);
   void trace(const TraceRecord& record);
   // Test seam: forgets the cached UMM_TRACE value so the next call re-reads the
   // environment. Not used by the server.

@@ -23,6 +23,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
   const int gpu = options.gpu;
   return [engine, default_steps, gpu](const Value& work, const AbortCheck& aborted) {
     const auto started = std::chrono::steady_clock::now();
+    const std::string req_id = bound_request_id();
     if (cudaSetDevice(gpu) != cudaSuccess) {
       throw ProtocolError("cudaSetDevice(" + std::to_string(gpu) + ") failed");
     }
@@ -43,7 +44,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     } catch (const image::RequestAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);
-      std::cerr << "image request aborted boundary=\"" << error.what() << "\""
+      std::cerr << "image request aborted request_id=" << req_id
+                << " boundary=\"" << error.what() << "\""
                 << " abort_epoch_ms=" << tracker.detected_epoch_ms()
                 << " exit_epoch_ms=" << epoch_millis()
                 << " compute_ms=" << elapsed.count() << "\n";
@@ -57,7 +59,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     std::string png = image::encode_png(rgb);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
-    std::cerr << "image request size=" << generated.width << "x" << generated.height
+    std::cerr << "image request request_id=" << req_id
+              << " size=" << generated.width << "x" << generated.height
               << " steps=" << params.steps << " seed=" << params.seed
               << " png_bytes=" << png.size()
               << " load_ms=" << generated.load_ms

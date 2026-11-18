@@ -36,6 +36,7 @@ find_library(MSGPACK_LIBRARY NAMES msgpackc REQUIRED)
 
 # The Stage/Coordinator subset of the C++ runtime: no HTTP, no client library.
 add_library(umm_stage_core STATIC
+  ${UMM_ROOT}/src/util/codec.cpp
   ${UMM_ROOT}/src/proto/wire.cpp
   ${UMM_ROOT}/src/proto/messages.cpp
   ${UMM_ROOT}/src/obs/metrics.cpp

@@ -18,6 +18,8 @@
 
 namespace umminfer {
 
+inline constexpr int64_t kControlProtocolVersion = 1;
+
 // ---- data_ref.py ---------------------------------------------------------
 
 enum class TransportKind { LocalObject, CudaIpc, Shm, Mooncake };

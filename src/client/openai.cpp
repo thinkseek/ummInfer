@@ -568,11 +568,11 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                   if (!delta->is_object()) bad_response(data, config_.api_key);
                   const std::string text = response_string(*delta, "content", data, config_.api_key);
                   if (!text.empty()) {
+                    emitted_delta = true;
                     progress.token();
                     aggregated += text.size();
                     out.text += text;
                     if (request.on_delta) {
-                      emitted_delta = true;
                       request.on_delta(text);
                     }
                     detail::check_cancelled(request.cancel);
@@ -582,6 +582,7 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                   const std::string refusal_delta =
                       response_string(*delta, "refusal", data, config_.api_key);
                   if (!refusal_delta.empty()) {
+                    emitted_delta = true;
                     progress.token();
                     aggregated += refusal_delta.size();
                     refusal += refusal_delta;
@@ -591,6 +592,7 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                                    config_.api_key);
                   const size_t gained = out.audio.size() + out.audio_transcript.size() - before;
                   if (gained > 0) {
+                    emitted_delta = true;
                     progress.token();
                     aggregated += gained;
                   }
@@ -606,6 +608,7 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
             }
             const auto unified = root.find("unified");
             if (unified != root.end() && !unified->is_null()) {
+              emitted_delta = true;
               if (!unified->is_object()) bad_response(data, config_.api_key);
               const auto kind_it = unified->find("kind");
               if (kind_it == unified->end() || !kind_it->is_string()) {

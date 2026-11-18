@@ -5,11 +5,11 @@
 #include <cmath>
 #include <cctype>
 #include <cstdint>
-#include <fstream>
 #include <stdexcept>
 #include <string_view>
 
 #include "umm_asr_native/wav.hpp"
+#include "umminfer/util/codec.hpp"
 
 namespace umminfer::stage {
 namespace {
@@ -149,7 +149,10 @@ OmniWork parse_omni_work(const Value& work) {
     const bool has_text = join_text_parts(*content, joined);
     for (const Value& part : content->as_array()) {
       const Value* type = part.find("type");
-      if (type->as_str() == "image_url") take_image_part(part, out);
+      if (type->as_str() == "image_url") {
+        take_image_part(part, out);
+        turn.has_image = true;
+      }
     }
     if (has_text) {
       out.text = joined;
@@ -192,16 +195,29 @@ OmniWork parse_qwen38_work(const Value& work) {
     bad("qwen38 inputs require a nonempty messages array");
   }
   OmniWork out;
+  if (const Value* session = inputs.find("session_id");
+      session != nullptr && session->is_str()) {
+    out.session_id = session->as_str();
+  }
   bool have_text = false;
   for (const Value& message : messages->as_array()) {
     if (!message.is_map()) bad("each message must be a map");
+    OmniMessage turn;
+    if (const Value* role = message.find("role");
+        role != nullptr && role->is_str() && !role->as_str().empty()) {
+      turn.role = role->as_str();
+    } else {
+      turn.role = "user";
+    }
     const Value* content = message.find("content");
     if (content == nullptr) continue;
     if (content->is_str()) {
+      turn.text = content->as_str();
       if (!content->as_str().empty()) {
         out.text = content->as_str();
         have_text = true;
       }
+      out.messages.push_back(std::move(turn));
       continue;
     }
     if (!content->is_array()) {
@@ -222,12 +238,17 @@ OmniWork parse_qwen38_work(const Value& work) {
     const bool has_text = join_text_parts(*content, joined);
     for (const Value& part : content->as_array()) {
       const Value* type = part.find("type");
-      if (type->as_str() == "image_url") take_image_part(part, out);
+      if (type->as_str() == "image_url") {
+        take_image_part(part, out);
+        turn.has_image = true;
+      }
     }
     if (has_text) {
-      out.text = std::move(joined);
+      out.text = joined;
       have_text = true;
+      turn.text = std::move(joined);
     }
+    out.messages.push_back(std::move(turn));
   }
   if (!have_text && out.image_url.empty()) {
     bad("qwen38 inputs require text or an image");
@@ -245,10 +266,15 @@ std::string render_omni_chat(const std::string& text, bool has_image) {
 
 std::string render_omni_chat(const std::vector<OmniMessage>& messages,
                              bool has_image) {
+  bool any_marked = false;
+  for (const auto& m : messages) {
+    if (m.has_image) any_marked = true;
+  }
   std::string rendered;
   for (size_t i = 0; i < messages.size(); ++i) {
     rendered += "<|im_start|>" + messages[i].role + "\n";
-    if (has_image && i + 1 == messages.size()) {
+    if (has_image &&
+        (any_marked ? messages[i].has_image : (i + 1 == messages.size()))) {
       rendered += "<|vision_start|><|vision_end|>";
     }
     rendered += messages[i].text;
@@ -372,43 +398,12 @@ bool text_is_mostly_cjk(const std::string& text) {
   return cjk > 0 && cjk >= latin;
 }
 
+namespace {
+constexpr size_t kMaxImageBytes = 48u << 20;
+}  // namespace
+
 std::string base64_decode(const std::string& text) {
-  auto value_of = [](char ch) -> int {
-    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
-    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
-    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
-    if (ch == '+') return 62;
-    if (ch == '/') return 63;
-    return -1;
-  };
-  if (text.empty() || text.size() % 4 != 0) bad("base64 payload has an invalid length");
-  std::string out;
-  out.reserve(text.size() / 4 * 3);
-  for (size_t index = 0; index < text.size(); index += 4) {
-    int quad[4];
-    int padding = 0;
-    for (int slot = 0; slot < 4; ++slot) {
-      const char ch = text[index + static_cast<size_t>(slot)];
-      if (ch == '=') {
-        // Padding is only legal in the last quad, at its end.
-        if (index + 4 != text.size() || slot < 2) bad("base64 padding is malformed");
-        quad[slot] = 0;
-        ++padding;
-        continue;
-      }
-      if (padding > 0) bad("base64 padding is malformed");
-      quad[slot] = value_of(ch);
-      if (quad[slot] < 0) bad("base64 payload has an invalid character");
-    }
-    const uint32_t packed = static_cast<uint32_t>(quad[0]) << 18 |
-                            static_cast<uint32_t>(quad[1]) << 12 |
-                            static_cast<uint32_t>(quad[2]) << 6 |
-                            static_cast<uint32_t>(quad[3]);
-    out.push_back(static_cast<char>((packed >> 16) & 0xFF));
-    if (padding < 2) out.push_back(static_cast<char>((packed >> 8) & 0xFF));
-    if (padding < 1) out.push_back(static_cast<char>(packed & 0xFF));
-  }
-  return out;
+  return util::base64_decode(text, kMaxImageBytes, /*require_nonempty=*/true);
 }
 
 std::string decode_data_url(const std::string& url) {
@@ -419,20 +414,15 @@ std::string decode_data_url(const std::string& url) {
   if (header.find(";base64") == std::string::npos) {
     bad("data URL must carry a base64 payload");
   }
-  return base64_decode(url.substr(comma + 1));
+  return base64_decode(std::string(
+      std::string_view(url).substr(comma + 1)));
 }
 
 std::string load_image_bytes(const std::string& url) {
-  if (starts_with(url, "data:")) return decode_data_url(url);
-  if (starts_with(url, "http://") || starts_with(url, "https://")) {
-    bad("http image URLs are not supported by the native stage; send a data: URL");
+  if (!starts_with(url, "data:")) {
+    bad("image url must be a base64 data: URL; http(s) and local file paths are rejected");
   }
-  std::string path = url;
-  if (starts_with(path, "file://")) path = path.substr(7);
-  std::ifstream file(path, std::ios::binary);
-  if (!file) bad("cannot open image file: " + path);
-  return std::string((std::istreambuf_iterator<char>(file)),
-                     std::istreambuf_iterator<char>());
+  return decode_data_url(url);
 }
 
 Value asr_result(const std::string& text, int generated_tokens,
@@ -457,7 +447,7 @@ Value omni_result(const std::string& text, int generated_tokens,
 
 Value tts_result(std::string wav_bytes, int sample_rate, int channels,
                  const std::string& voice, double first_frame_ms,
-                 double total_ms) {
+                 double total_ms, bool streamed) {
   if (wav_bytes.empty()) bad("TTS produced no audio");
   Value::Map out;
   out["media_type"] = Value("audio");
@@ -466,6 +456,7 @@ Value tts_result(std::string wav_bytes, int sample_rate, int channels,
   out["sample_rate"] = Value(static_cast<int64_t>(sample_rate));
   out["channels"] = Value(static_cast<int64_t>(channels));
   out["voice"] = Value(voice);
+  if (streamed) out["streamed"] = Value(true);
   if (first_frame_ms >= 0) out["first_frame_ms"] = Value(first_frame_ms);
   if (total_ms >= 0) out["total_ms"] = Value(total_ms);
   out["data"] = Value::bin(std::move(wav_bytes));

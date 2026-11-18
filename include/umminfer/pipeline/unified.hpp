@@ -31,9 +31,13 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <variant>
+#include <vector>
 
 #include "umminfer/pipeline/pipeline.hpp"
+#include "umminfer/pipeline/session_store.hpp"
 #include "umminfer/proto/messages.hpp"
 
 namespace umminfer {
@@ -66,6 +70,9 @@ inline constexpr size_t kMaxArtifactAggregateBytes = 60u << 20;
 // both the 3 MiB wire ceiling and the 4 MiB SSE parser limit.
 inline constexpr size_t kArtifactChunkTargetBytes = 2u << 20;
 inline constexpr size_t kMaxSseFrameWireBytes = 3u << 20;
+// Hard cap on streamed TTS sentence legs per unified request. Once N-1 legs are
+// submitted, remaining text stays in sentence_buf for the single final tail leg.
+inline constexpr size_t kMaxStreamedTtsLegs = 32;
 
 // One event of a unified request. The sequence number is gap-free per request
 // and starts at 0, so a consumer verifies ordering directly.
@@ -183,10 +190,17 @@ class UnifiedEngine {
   // bad contract (including video) and QueueFullError on backpressure.
   std::string submit(StagePayload payload);
 
+  enum class CancelStatus { kCancelled, kNotFoundOrTerminal, kSessionMismatch };
+
   // Cancels the request on both stages via the Coordinator abort broadcast.
   // Returns false when the request is unknown or already terminal. source
   // labels the abort metric: "client", "timeout" or "shutdown".
   bool cancel(const std::string& request_id, const char* source = "client");
+  // Same as cancel(), additionally verifying `expected_session_id` when
+  // non-empty so multi-tenant callers cannot abort another session's request.
+  CancelStatus cancel_for_session(const std::string& request_id,
+                                  std::string_view expected_session_id,
+                                  const char* source = "client");
 
   // Returns false for an unknown id or timeout, true only for a terminal record.
   bool wait(const std::string& request_id, double timeout_s);
@@ -232,6 +246,7 @@ class UnifiedEngine {
   struct Record {
     std::string session_id;
     Phase phase = Phase::kAsr;
+    bool terminal_dispatched = false;
     // Metrics and tracing. steady_clock measures durations; start_epoch_ms is
     // the wall-clock start the trace record carries. A negative leg value means
     // that leg did not run for this request.
@@ -314,15 +329,16 @@ class UnifiedEngine {
   void drain_sentences_locked(const std::string& request_id, Record& record);
   // Submits the tail of sentence_buf; called at the VLM terminal.
   void flush_sentences_locked(const std::string& request_id, Record& record);
-  // Turns one streamed TTS chunk into a PCM16 artifact event.
-  void emit_tts_chunk_locked(const std::string& request_id, Record& record,
-                             const Value& chunk);
-  // Aborts every submitted TTS leg; used when the VLM leg fails.
-  void abort_tts_legs_locked(Record& record);
-  // Builds the inputs of one output leg from the VLM answer and the options
-  // the HTTP boundary attached to the original request.
-  static Value build_image_inputs(const Record& record);
-  static Value build_tts_inputs(const Record& record, const std::string& text);
+  // Turns one streamed TTS chunk into a PCM16 artifact event. Appends any
+  // active TTS child ids to `deferred_aborts` if the byte limit is exceeded.
+  void emit_tts_chunk_locked(
+      const std::string& request_id, Record& record, const Value& chunk,
+      std::vector<std::pair<std::string, const char*>>& deferred_aborts);
+  // Collects active TTS child ids so the caller can abort them outside mu_
+  // without self-deadlocking on Coordinator::abort -> on_complete -> mu_.
+  static void collect_tts_aborts_locked(
+      const Record& record, const char* reason,
+      std::vector<std::pair<std::string, const char*>>& out);
   // Turns a successful output-leg completion into kArtifact events with
   // reserved gap-free seq values.
   void emit_artifact_locked(const std::string& request_id, Record& record,
@@ -335,21 +351,12 @@ class UnifiedEngine {
   void on_legs_drained_locked(const std::string& request_id, Record& record);
   // The legs array carried by the terminal event; nil when no output leg ran.
   Value legs_value_locked(const Record& record) const;
-  // Returns the current messages with prior completed turns of
-  // record.session_id prepended as user/assistant messages.
-  Value::Array with_session_history_locked(
-      const Record& record, const Value::Array& current_messages);
-  // Stores the finished turn and enforces the turn and character bounds.
   void record_session_turn_locked(const Record& record);
   UnifiedEvent finish_locked(const std::string& request_id, Record& record,
                              UnifiedEvent::Kind kind, std::string error,
                              Value result);
-  // Records are keyed by the ASR leg id; VLM events carry the derived child id.
-  // ponytail: linear fallback scan; max_in_flight bounds the record count.
   std::map<std::string, Record>::iterator find_record_locked(
       const std::string& event_request_id);
-  static Value build_vlm_inputs(const std::string& transcript,
-                                const Value& original_inputs);
 
   Coordinator& coordinator_;
   UnifiedConfig config_;
@@ -360,17 +367,12 @@ class UnifiedEngine {
   // FIFO of active unified ids, bounded by config_.max_in_flight.
   std::deque<std::string> admission_;
   std::map<std::string, Record> records_;
+  std::unordered_map<std::string, std::string> child_to_unified_;
   using DispatchItem = std::variant<UnifiedEvent, StreamMessage, RequestInfo>;
   std::deque<DispatchItem> dispatch_queue_;
   bool dispatching_ = false;  // guarded by mu_; reentrant callbacks only queue
   std::atomic<uint64_t> session_counter_{0};
-  // Process-local, in-memory history. No persistence: engine destruction or
-  // process restart drops every turn.
-  std::map<std::string, std::deque<SessionTurn>> session_history_;
-  // Insertion order of sessions with retained turns; front is the oldest.
-  // Entries for sessions that emptied through self-eviction are stale and are
-  // skipped when the global cap is enforced.
-  std::deque<std::string> session_order_;
+  SessionHistoryStore session_store_;
 };
 
 }  // namespace umminfer

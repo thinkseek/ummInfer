@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     core.root_module.sanitize_thread = tsan;
     core.root_module.addCSourceFiles(.{
         .files = &.{
+            "src/util/codec.cpp",
             "src/proto/wire.cpp",
             "src/proto/messages.cpp",
             "src/obs/metrics.cpp",
@@ -69,7 +70,10 @@ pub fn build(b: *std.Build) void {
             "src/comm/comm.cpp",
             "src/scheduling/simple_scheduler.cpp",
             "src/pipeline/pipeline.cpp",
+            "src/pipeline/session_store.cpp",
+            "src/pipeline/unified_schema.cpp",
             "src/pipeline/unified.cpp",
+            "src/serve/upstream_proxy.cpp",
             "src/serve/openai_api.cpp",
             "src/serve/realtime_api.cpp",
             "src/audio/audio.cpp",

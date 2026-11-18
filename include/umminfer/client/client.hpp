@@ -99,7 +99,7 @@ struct AudioOutput {
 // aggregated text answer. Requires stream.
 struct ImageOutput {
   std::string prompt;
-  std::string size = "1024x1024";
+  std::string size = "512x512";
   std::optional<int64_t> seed;
   std::string output_format = "png";
 };

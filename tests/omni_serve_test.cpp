@@ -644,6 +644,26 @@ void test_mixed_output_unregistered_stage() {
         std::string::npos);
 }
 
+void test_upstream_circuit_breaker_and_admission_cap() {
+  ApiConfig cb_cfg = sglang_config("image");
+  cb_cfg.upstream_circuit_breaker_failures = 2;
+  cb_cfg.upstream_circuit_breaker_cooldown_s = 10.0;
+  TestServer cb_server(cb_cfg);
+  CHECK(cb_server.start());
+  if (cb_server.port != 0) {
+    const std::string body = R"({"prompt":"a cat","response_format":"b64_json"})";
+    CHECK_EQ(call(cb_server.port, "POST", "/v1/images/generations", body).status,
+             502L);
+    CHECK_EQ(call(cb_server.port, "POST", "/v1/images/generations", body).status,
+             502L);
+    // Third request must fail fast with 503 while the circuit is open.
+    const Result tripped =
+        call(cb_server.port, "POST", "/v1/images/generations", body);
+    CHECK_EQ(tripped.status, 503L);
+    CHECK(tripped.error.find("circuit breaker") != std::string::npos);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -656,6 +676,7 @@ int main() {
   test_relay_ownership();
   test_mixed_output_validation();
   test_mixed_output_unregistered_stage();
+  test_upstream_circuit_breaker_and_admission_cap();
   if (failures != 0) {
     std::cerr << failures << " checks failed\n";
     return 1;

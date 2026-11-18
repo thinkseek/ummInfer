@@ -36,15 +36,24 @@ void usage() {
                "[--next name=EP] [--peer name=EP]\n";
 }
 
-// ZMQ binds an ipc path but never creates its parent directory.
+// ZMQ binds an ipc path but never creates its parent directory. Restrict newly
+// created directories to the owner (0700) so unprivileged local users cannot
+// connect to internal ZMQ sockets.
 void ensure_ipc_parent(const std::string& endpoint) {
   const std::string prefix = "ipc://";
   if (endpoint.rfind(prefix, 0) != 0) return;
   const size_t slash = endpoint.rfind('/');
   if (slash == std::string::npos || slash <= prefix.size()) return;
-  std::error_code ignored;
-  std::filesystem::create_directories(
-      endpoint.substr(prefix.size(), slash - prefix.size()), ignored);
+  const std::filesystem::path dir(
+      endpoint.substr(prefix.size(), slash - prefix.size()));
+  std::error_code ec;
+  const bool existed = std::filesystem::exists(dir, ec);
+  std::filesystem::create_directories(dir, ec);
+  if (!existed && !ec) {
+    std::filesystem::permissions(
+        dir, std::filesystem::perms::owner_all,
+        std::filesystem::perm_options::replace, ec);
+  }
 }
 
 int parse_int(const std::string& text, const std::string& option) {

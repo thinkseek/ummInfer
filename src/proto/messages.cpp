@@ -887,6 +887,11 @@ AdminResultMessage AdminResultMessage::from_value(const Value& v) {
 // ---- dispatch ------------------------------------------------------------
 
 Message parse_message(const Value& v) {
+  if (const Value* pv = v.find("protocol_version"); pv != nullptr && !pv->is_nil()) {
+    if (!pv->is_int() || pv->as_int() != kControlProtocolVersion) {
+      throw ProtocolError("unsupported control protocol_version");
+    }
+  }
   const std::string type = require_str(v, "type");
   if (type == "data_ready") return DataReadyMessage::from_value(v);
   if (type == "stream_chunk_batch") return StreamChunkBatchMessage::from_value(v);
@@ -937,7 +942,13 @@ const char* message_type_name(const Message& msg) {
 }
 
 std::string serialize_message(const Message& msg) {
-  return pack(std::visit([](const auto& m) { return m.to_value(); }, msg));
+  Value encoded = std::visit([](const auto& m) { return m.to_value(); }, msg);
+  if (encoded.is_map()) {
+    Value::Map m = encoded.as_map();
+    m["protocol_version"] = Value(kControlProtocolVersion);
+    encoded = Value(std::move(m));
+  }
+  return pack(encoded);
 }
 
 Message deserialize_message(const std::string& data) {

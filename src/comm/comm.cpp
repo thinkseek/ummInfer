@@ -64,7 +64,7 @@ void* make_socket(int type) {
   if (type == ZMQ_PUSH) {
     // Full send queue means the peer is gone or far behind. Fail the send
     // rather than block a worker that stop() is waiting to join.
-    int sndtimeo = 5000;
+    int sndtimeo = 1500;
     zmq_setsockopt(s, ZMQ_SNDTIMEO, &sndtimeo, sizeof(sndtimeo));
   }
   return s;
@@ -105,18 +105,20 @@ void PushSocket::on_disconnect(std::function<void()> callback) {
   char address[96];
   std::snprintf(address, sizeof(address), "inproc://push-monitor-%llu",
                 static_cast<unsigned long long>(next_monitor.fetch_add(1)));
-  must(zmq_socket_monitor(socket_, address, ZMQ_EVENT_DISCONNECTED),
+  must(zmq_socket_monitor(socket_, address,
+                          ZMQ_EVENT_DISCONNECTED | ZMQ_EVENT_MONITOR_STOPPED),
        "zmq_socket_monitor");
-  // A PAIR socket receives one event message per state change. Its queue is
-  // unbounded enough for the single DISCONNECTED event we subscribe to, and the
-  // thread polls, so a slow callback cannot block the transport.
+  // A PAIR socket receives two frames per state change (6-byte event+value
+  // header and the endpoint string). Drain all frames of each event so the
+  // endpoint frame never masquerades as the next event header, and stop
+  // immediately when close() detaches the monitor.
   monitor_ = make_socket(ZMQ_PAIR);
   must(zmq_connect(monitor_, address), "zmq_connect monitor");
   monitor_running_ = true;
   monitor_thread_ = std::thread([this] {
     while (monitor_running_) {
       zmq_pollitem_t item{monitor_, 0, ZMQ_POLLIN, 0};
-      const int ready = zmq_poll(&item, 1, 100);
+      const int ready = zmq_poll(&item, 1, 50);
       if (ready <= 0) continue;
       zmq_msg_t msg;
       zmq_msg_init(&msg);
@@ -130,6 +132,20 @@ void PushSocket::on_disconnect(std::function<void()> callback) {
         std::memcpy(&event, zmq_msg_data(&msg), sizeof(event));
       }
       zmq_msg_close(&msg);
+      int more = 0;
+      size_t more_sz = sizeof(more);
+      while (zmq_getsockopt(monitor_, ZMQ_RCVMORE, &more, &more_sz) == 0 &&
+             more != 0) {
+        zmq_msg_t tail;
+        zmq_msg_init(&tail);
+        if (zmq_msg_recv(&tail, monitor_, ZMQ_DONTWAIT) < 0) {
+          zmq_msg_close(&tail);
+          break;
+        }
+        zmq_msg_close(&tail);
+        more_sz = sizeof(more);
+      }
+      if (event == ZMQ_EVENT_MONITOR_STOPPED) break;
       if (event == ZMQ_EVENT_DISCONNECTED && disconnect_callback_) {
         disconnect_callback_();
       }
@@ -145,6 +161,14 @@ void PushSocket::send(const Message& msg) {
 
 void PushSocket::close() {
   monitor_running_ = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (socket_ != nullptr && monitor_ != nullptr) {
+      // Detaching emits ZMQ_EVENT_MONITOR_STOPPED so the monitor thread wakes
+      // immediately instead of sleeping out its poll interval.
+      (void)zmq_socket_monitor(socket_, nullptr, 0);
+    }
+  }
   if (monitor_thread_.joinable()) monitor_thread_.join();
   std::lock_guard<std::mutex> lock(mu_);
   if (monitor_ != nullptr) {
@@ -233,8 +257,9 @@ void PubSocket::bind() {
   if (socket_ != nullptr) return;
   socket_ = make_socket(ZMQ_PUB);
   must(zmq_bind(socket_, endpoint_.c_str()), "zmq_bind");
-  // Slow-joiner window: a SUB that connects after the first publish misses it.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // Brief local-joiner settle window; CoordinatorControlPlane::broadcast_abort
+  // also pushes over PUSH sockets for reliable ordered delivery.
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
 void PubSocket::publish(const AbortMessage& msg) {
@@ -315,9 +340,9 @@ void StageControlPlane::start() {
   abort_socket_->connect();
 }
 
-Message StageControlPlane::recv() {
-  if (!recv_socket_) throw ProtocolError("Control plane not started");
-  Message msg = recv_socket_->recv();
+namespace {
+
+void check_stage_message_accepted(const Message& msg) {
   const bool accepted =
       std::holds_alternative<DataReadyMessage>(msg) ||
       std::holds_alternative<StreamChunkBatchMessage>(msg) ||
@@ -333,6 +358,14 @@ Message StageControlPlane::recv() {
     throw ProtocolError(std::string("Unexpected message type: ") +
                         message_type_name(msg));
   }
+}
+
+}  // namespace
+
+Message StageControlPlane::recv() {
+  if (!recv_socket_) throw ProtocolError("Control plane not started");
+  Message msg = recv_socket_->recv();
+  check_stage_message_accepted(msg);
   return msg;
 }
 
@@ -375,9 +408,15 @@ void StageControlPlane::send_admin_result(const AdminResultMessage& msg) {
   coordinator_socket_->send(Message{msg});
 }
 
-std::optional<Message> StageControlPlane::recv_nowait() {
+std::optional<Message> StageControlPlane::recv_timeout(int timeout_ms) {
   if (!recv_socket_) throw ProtocolError("Control plane not started");
-  return recv_socket_->recv_timeout(0);
+  std::optional<Message> msg = recv_socket_->recv_timeout(timeout_ms);
+  if (msg) check_stage_message_accepted(*msg);
+  return msg;
+}
+
+std::optional<Message> StageControlPlane::recv_nowait() {
+  return recv_timeout(0);
 }
 
 AbortMessage StageControlPlane::recv_abort() {
@@ -791,21 +830,43 @@ Relay& CommRouter::relay_for_target(TransportKind kind,
 }
 
 std::pair<TransportKind, Relay*> CommRouter::relay_for(const std::string& target) {
-  const TransportKind kind = outbound(target);
+  TransportKind kind = outbound(target);
   if (kind == TransportKind::LocalObject) {
     throw ProtocolError("same-process target " + target +
                         " has no relay transport; use local-object dispatch");
   }
-  return {kind, &relay_for_target(kind, target)};
+  Relay* selected = &relay_for_target(kind, target);
+  if (kind == TransportKind::CudaIpc && !selected->is_healthy()) {
+    warn_cuda_ipc_fallback(
+        target, placement_gpu_id_.value_or(-1),
+        stage_gpu_ids_.count(target) && !stage_gpu_ids_.at(target).empty()
+            ? stage_gpu_ids_.at(target)[0]
+            : -1,
+        "cuda_ipc edge degraded after abandoned transfer; using SHM");
+    kind = TransportKind::Shm;
+    selected = &relay_for_target(kind, target);
+  }
+  return {kind, selected};
 }
 
 std::pair<TransportKind, Relay*> CommRouter::relay_for_payload(
     const std::string& target, const Value& payload) {
-  const TransportKind kind = outbound_payload(target, payload);
+  TransportKind kind = outbound_payload(target, payload);
   if (kind == TransportKind::LocalObject) {
     throw ProtocolError("local_object has no relay");
   }
-  return {kind, &relay_for_target(kind, target)};
+  Relay* selected = &relay_for_target(kind, target);
+  if (kind == TransportKind::CudaIpc && !selected->is_healthy()) {
+    warn_cuda_ipc_fallback(
+        target, placement_gpu_id_.value_or(-1),
+        stage_gpu_ids_.count(target) && !stage_gpu_ids_.at(target).empty()
+            ? stage_gpu_ids_.at(target)[0]
+            : -1,
+        "cuda_ipc edge degraded after abandoned transfer; using SHM");
+    kind = TransportKind::Shm;
+    selected = &relay_for_target(kind, target);
+  }
+  return {kind, selected};
 }
 
 std::pair<TransportKind, Relay*> CommRouter::relay_for_payload(
@@ -825,7 +886,18 @@ std::pair<TransportKind, Relay*> CommRouter::relay_for_payload(
                            "payload exceeds the CUDA slot limit; using SHM");
     kind = TransportKind::Shm;
   }
-  return {kind, &relay_for_target(kind, target)};
+  Relay* selected = &relay_for_target(kind, target);
+  if (kind == TransportKind::CudaIpc && !selected->is_healthy()) {
+    warn_cuda_ipc_fallback(
+        target, placement_gpu_id_.value_or(-1),
+        stage_gpu_ids_.count(target) && !stage_gpu_ids_.at(target).empty()
+            ? stage_gpu_ids_.at(target)[0]
+            : -1,
+        "cuda_ipc edge degraded after abandoned transfer; using SHM");
+    kind = TransportKind::Shm;
+    selected = &relay_for_target(kind, target);
+  }
+  return {kind, selected};
 }
 
 int CommRouter::slot_size_mb() const {

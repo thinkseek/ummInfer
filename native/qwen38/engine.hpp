@@ -83,8 +83,16 @@ class Engine {
   std::unique_ptr<Impl> impl_;
 };
 
-// Prompt helpers shared with the CLI and tests.
+// Prompt helpers shared with the CLI, the native stage, and tests.
+struct ChatTurn {
+  std::string role;
+  std::string text;
+  bool has_image = false;
+};
+
 std::string render_chat_prompt(const std::string& user_text, bool has_image,
+                               bool enable_thinking);
+std::string render_chat_prompt(const std::vector<ChatTurn>& turns,
                                bool enable_thinking);
 // Expand a single image_pad placeholder to n_tokens copies.
 std::vector<int> expand_image_pads(const std::vector<int>& ids, int n_tokens);

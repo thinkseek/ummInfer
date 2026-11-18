@@ -398,6 +398,38 @@ void Metrics::write_trace_line(const std::string& line) {
   trace_bytes_ += line.size() + 1;
 }
 
+void Metrics::trace_start(const std::string& request_id,
+                          const std::string& request_type,
+                          const std::string& stage, int64_t start_epoch_ms) {
+  if (!trace_enabled()) return;
+  std::string line = "{\"request_id\":\"";
+  append_label_value(line, request_id);
+  line += "\",\"event\":\"request_start\",\"request_type\":\"";
+  append_label_value(line, request_type);
+  line += "\",\"stage\":\"";
+  append_label_value(line, stage);
+  line += "\",\"start_epoch_ms\":";
+  line += std::to_string(start_epoch_ms);
+  line += "}";
+  write_trace_line(line);
+}
+
+void Metrics::trace_leg(const std::string& request_id,
+                        const std::string& leg_name,
+                        const std::string& status, double duration_ms) {
+  if (!trace_enabled()) return;
+  std::string line = "{\"request_id\":\"";
+  append_label_value(line, request_id);
+  line += "\",\"event\":\"leg_end\",\"leg\":\"";
+  append_label_value(line, leg_name);
+  line += "\",\"status\":\"";
+  append_label_value(line, status);
+  line += "\",\"duration_ms\":";
+  line += number(duration_ms);
+  line += "}";
+  write_trace_line(line);
+}
+
 void Metrics::trace(const TraceRecord& record) {
   if (!trace_enabled()) return;
   std::string line = "{\"request_id\":\"";
