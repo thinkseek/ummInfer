@@ -2,6 +2,7 @@
 
 import SwiftUI
 import AppKit
+import AVFoundation
 
 @main
 struct UmmMLXApp: App {
@@ -33,6 +34,7 @@ struct RootView: View {
     @AppStorage("appearance") private var appearance = "system"
     @State private var automatedAppearance: String?
     @State private var automation: Automation?
+    @State private var preview: GeneratedArtifact?
     @Environment(\.colorScheme) private var colorScheme
     private let isAutomation = ProcessInfo.processInfo.arguments.contains("--automation")
 
@@ -67,6 +69,9 @@ struct RootView: View {
         .foregroundStyle(theme.text)
         .tint(theme.accent)
         .preferredColorScheme(preferredScheme)
+        .sheet(item: $preview) { artifact in
+            fullImage(artifact)
+        }
         .onAppear {
             if automation == nil {
                 automation = Automation.requested(model: model, appearance: appearanceBinding)
@@ -85,6 +90,17 @@ struct RootView: View {
                 .font(.system(size: theme.captionSize))
                 .foregroundStyle(theme.secondary)
                 .accessibilityIdentifier("status")
+            if !model.sessionID.isEmpty {
+                Text("session \(model.sessionShort)")
+                    .font(.system(size: theme.captionSize, design: .monospaced))
+                    .foregroundStyle(theme.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .accessibilityIdentifier("session")
+                    .help("Full session id: \(model.sessionID)")
+            }
             Spacer()
             Picker("Theme", selection: appearanceBinding) {
                 Text("System").tag("system")
@@ -123,7 +139,17 @@ struct RootView: View {
                     .accessibilityLabel("Model")
                     .accessibilityIdentifier("model")
             }
-            .frame(width: 285)
+            .frame(width: 260)
+            VStack(alignment: .leading, spacing: 3) {
+                Toggle("Image", isOn: $model.imageOutput)
+                    .toggleStyle(.checkbox)
+                    .accessibilityIdentifier("image-output")
+                Toggle("Audio", isOn: $model.audioOutput)
+                    .toggleStyle(.checkbox)
+                    .accessibilityIdentifier("audio-output")
+            }
+            .frame(width: 92, alignment: .leading)
+            .padding(.bottom, 2)
         }
         .disabled(model.isRunning)
         .padding(.horizontal, 16)
@@ -139,9 +165,9 @@ struct RootView: View {
                         Image(systemName: "text.bubble")
                             .font(.system(size: 30, weight: .light))
                             .foregroundStyle(theme.accent)
-                        Text("Chat with your local ummInfer MLX stage")
+                        Text("Chat with your ummInfer unified server")
                             .font(.system(size: theme.sectionSize, weight: .medium))
-                        Text("Text only · loopback HTTP · streaming SSE")
+                        Text("Text · image · audio · on-device voice input")
                             .font(.system(size: theme.bodySize))
                             .foregroundStyle(theme.secondary)
                     }
@@ -170,7 +196,7 @@ struct RootView: View {
                     Text(turn.role == .user ? "You" : "ummInfer")
                         .font(.system(size: theme.captionSize, weight: .medium))
                         .foregroundStyle(theme.secondary)
-                    if turn.state == .streaming && turn.text.isEmpty {
+                    if turn.state == .streaming && turn.text.isEmpty && turn.artifacts.isEmpty {
                         ProgressView().controlSize(.small)
                     }
                     if turn.state == .stopped {
@@ -182,21 +208,91 @@ struct RootView: View {
                             .foregroundStyle(theme.danger)
                     }
                 }
-                Text(turn.text)
-                    .font(.system(size: theme.bodySize))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 10)
-                    .background(turn.role == .user ? theme.ink : theme.surface)
-                    .foregroundStyle(turn.role == .user ? theme.onInk : theme.text)
-                    .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+                if !turn.text.isEmpty {
+                    Text(turn.text)
+                        .font(.system(size: theme.bodySize))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 10)
+                        .background(turn.role == .user ? theme.ink : theme.surface)
+                        .foregroundStyle(turn.role == .user ? theme.onInk : theme.text)
+                        .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+                }
+                if !turn.transcript.isEmpty {
+                    Text("Server transcript: \(turn.transcript)")
+                        .font(.system(size: theme.captionSize))
+                        .foregroundStyle(theme.secondary)
+                        .accessibilityIdentifier("server-transcript")
+                }
+                if !turn.artifacts.isEmpty {
+                    HStack(alignment: .top, spacing: 10) {
+                        ForEach(turn.artifacts) { artifact in
+                            artifactView(artifact).id(artifact.id)
+                        }
+                    }
+                }
+                ForEach(turn.legErrors, id: \.self) { detail in
+                    Text("Output leg: \(detail)")
+                        .font(.system(size: theme.captionSize))
+                        .foregroundStyle(theme.danger)
+                }
             }
             .frame(maxWidth: 620, alignment: .leading)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier(turn.role == .user ? "user-message" : "assistant-message")
             if turn.role == .assistant { Spacer(minLength: 40) }
         }
+    }
+
+    @ViewBuilder
+    private func artifactView(_ artifact: GeneratedArtifact) -> some View {
+        if artifact.mediaType == "image",
+           let image = NSImage(data: artifact.data) {
+            Button {
+                preview = artifact
+            } label: {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 148, height: 148)
+                    .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+                    .overlay(RoundedRectangle(cornerRadius: theme.cardRadius)
+                        .stroke(theme.line))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Generated image")
+            .accessibilityIdentifier("artifact-image")
+            .help("Open the full image")
+        } else if artifact.mediaType == "audio" {
+            AudioPlayerView(artifact: artifact, theme: theme)
+        } else {
+            Text("Unsupported artifact \(artifact.mimeType)")
+                .font(.system(size: theme.captionSize))
+                .foregroundStyle(theme.secondary)
+        }
+    }
+
+    private func fullImage(_ artifact: GeneratedArtifact) -> some View {
+        VStack(spacing: 12) {
+            if let image = NSImage(data: artifact.data) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 900, maxHeight: 680)
+            }
+            HStack {
+                Text("\(artifact.mimeType) · \(artifact.data.count) bytes")
+                    .font(.system(size: theme.captionSize))
+                    .foregroundStyle(theme.secondary)
+                Spacer()
+                Button("Close") { preview = nil }
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 620, minHeight: 480)
+        .background(theme.background)
     }
 
     private func errorBanner(_ text: String) -> some View {
@@ -218,6 +314,20 @@ struct RootView: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if model.isListening || !model.partialTranscript.isEmpty {
+                HStack(spacing: 7) {
+                    Image(systemName: "waveform")
+                        .foregroundStyle(theme.accent)
+                        .accessibilityHidden(true)
+                    Text(model.partialTranscript.isEmpty
+                         ? "Listening…" : model.partialTranscript)
+                        .font(.system(size: theme.bodySize))
+                        .foregroundStyle(theme.secondary)
+                        .lineLimit(2)
+                        .accessibilityIdentifier("partial-transcript")
+                    Spacer()
+                }
+            }
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("Write a prompt", text: $model.prompt, axis: .vertical)
                     .lineLimit(1...5)
@@ -226,6 +336,19 @@ struct RootView: View {
                     .onSubmit { model.send() }
                     .accessibilityLabel("Prompt")
                     .accessibilityIdentifier("prompt")
+                Button {
+                    model.isListening ? model.stopListening() : model.startListening()
+                } label: {
+                    Image(systemName: model.isListening
+                          ? "stop.circle.fill" : "mic.fill")
+                        .font(.system(size: 15))
+                        .frame(width: 26, height: 22)
+                }
+                .buttonStyle(.bordered)
+                .tint(model.isListening ? theme.danger : theme.accent)
+                .disabled(model.isRunning)
+                .accessibilityLabel(model.isListening ? "Stop recording" : "Record")
+                .accessibilityIdentifier("mic")
                 if model.isRunning {
                     Button("Stop") { model.stop() }
                         .buttonStyle(.borderedProminent)
@@ -241,10 +364,13 @@ struct RootView: View {
                         .accessibilityIdentifier("send")
                 }
             }
-            Text("⌘Return to send · streaming replies are selectable · max 64 tokens")
-                .font(.system(size: theme.captionSize))
-                .foregroundStyle(theme.tertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 4) {
+                Text("⌘Return to send ·")
+                Text("Voice uses Apple's on-device model; audio never leaves this Mac.")
+            }
+            .font(.system(size: theme.captionSize))
+            .foregroundStyle(theme.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
         .background(theme.surface)
@@ -253,5 +379,77 @@ struct RootView: View {
     private func scrollToEnd(_ proxy: ScrollViewProxy) {
         guard let id = model.turns.last?.id else { return }
         withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .bottom) }
+    }
+}
+
+@MainActor
+final class AudioPlayerModel: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    @Published private(set) var isPlaying = false
+    @Published private(set) var duration: TimeInterval = 0
+    private var player: AVAudioPlayer?
+
+    func load(_ data: Data) {
+        guard player == nil else { return }
+        let player = try? AVAudioPlayer(data: data)
+        player?.delegate = self
+        player?.prepareToPlay()
+        self.player = player
+        duration = player?.duration ?? 0
+    }
+
+    func toggle() {
+        guard let player else { return }
+        if player.isPlaying {
+            player.pause()
+            isPlaying = false
+        } else {
+            player.play()
+            isPlaying = true
+        }
+    }
+
+    func stop() {
+        player?.stop()
+        player?.currentTime = 0
+        isPlaying = false
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer,
+                                                 successfully flag: Bool) {
+        Task { @MainActor in self.isPlaying = false }
+    }
+}
+
+struct AudioPlayerView: View {
+    let artifact: GeneratedArtifact
+    let theme: Theme
+    @StateObject private var player = AudioPlayerModel()
+
+    private var durationText: String {
+        String(format: "%.1f s", player.duration)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(player.isPlaying ? "Pause" : "Play") { player.toggle() }
+                .buttonStyle(.bordered)
+                .disabled(player.duration <= 0)
+                .accessibilityIdentifier("audio-play")
+            Button("Stop") { player.stop() }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("audio-stop")
+            Text(durationText)
+                .font(.system(size: theme.captionSize, design: .monospaced))
+                .foregroundStyle(theme.secondary)
+                .accessibilityIdentifier("audio-duration")
+            Text("WAV")
+                .font(.system(size: theme.captionSize))
+                .foregroundStyle(theme.tertiary)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .background(theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+        .onAppear { player.load(artifact.data) }
     }
 }

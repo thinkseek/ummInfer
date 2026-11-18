@@ -18,6 +18,12 @@ struct ChatTurn: Identifiable {
     let role: Role
     var text: String
     var state: State
+    /// Generated image/audio artifacts of this turn. Never sent back as history.
+    var artifacts: [GeneratedArtifact] = []
+    /// Server ASR transcript when the request carried audio. Empty otherwise.
+    var transcript = ""
+    /// Non-terminal optional-leg failures reported by the server.
+    var legErrors: [String] = []
 }
 
 @MainActor
@@ -29,20 +35,47 @@ final class ChatModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var status = "Ready"
     @Published private(set) var error: String?
+    /// Server-echoed session id. The UI shows its first eight characters.
+    @Published private(set) var sessionID = ""
+    @Published var imageOutput = false
+    @Published var audioOutput = false
+    @Published var imageSize = "512x512"
+    @Published var audioVoice = "vivian"
+    @Published var partialTranscript = ""
+    @Published private(set) var isListening = false
+    @Published private(set) var speechStatus = ""
+
+    let speech: SpeechController
 
     private let client = ChatClient()
     private var requestTask: Task<Void, Never>?
     private var activeTurn: UUID?
     private var stopping = false
     private var receivedDelta = false
+    private var requestSessionID = ""
     var onFirstDelta: (() -> Void)?
     /// Automation hook: the exact messages sent for one request.
     var onRequest: (([ChatMessage]) -> Void)?
 
-    init() {
+    init(speech: SpeechController = SpeechController()) {
+        self.speech = speech
         let defaults = UserDefaults.standard
         endpoint = defaults.string(forKey: "endpoint") ?? "http://127.0.0.1:30000/v1"
         model = defaults.string(forKey: "model") ?? "Qwen2.5-0.5B-Instruct-4bit"
+        requestSessionID = Self.newSessionID()
+    }
+
+    static func newSessionID() -> String {
+        "ummmlx-" + UUID().uuidString
+            .replacingOccurrences(of: "-", with: "").prefix(16)
+    }
+
+    /// First eight characters of the server id. The client-generated prefix is
+    /// dropped so the chip does not read "ummmlx-" for every session.
+    var sessionShort: String {
+        var text = sessionID
+        if text.hasPrefix("ummmlx-") { text.removeFirst("ummmlx-".count) }
+        return String(text.prefix(8))
     }
 
     func send() {
@@ -72,6 +105,16 @@ final class ChatModel: ObservableObject {
         let history = Self.requestMessages(turns: turns, prompt: text)
         onRequest?(history)
 
+        var options = ChatStreamOptions()
+        if requestSessionID.isEmpty { requestSessionID = Self.newSessionID() }
+        options.sessionID = requestSessionID
+        if imageOutput {
+            options.image = ImageOptions(size: imageSize)
+        }
+        if audioOutput {
+            options.audio = AudioOptions(voice: audioVoice)
+        }
+
         turns.append(ChatTurn(role: .user, text: text, state: .complete))
         let assistant = ChatTurn(role: .assistant, text: "", state: .streaming)
         turns.append(assistant)
@@ -86,7 +129,8 @@ final class ChatModel: ObservableObject {
             guard let self else { return }
             do {
                 let result = try await self.client.stream(
-                    base: self.endpoint, model: self.model, messages: history
+                    base: self.endpoint, model: self.model, messages: history,
+                    options: options
                 ) { delta in
                     guard self.activeTurn == assistant.id,
                           let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
@@ -98,6 +142,28 @@ final class ChatModel: ObservableObject {
                         self.status = "Streaming…"
                         self.onFirstDelta?()
                     }
+                } onEvent: { event in
+                    guard self.activeTurn == assistant.id,
+                          let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
+                        return
+                    }
+                    switch event.kind {
+                    case .asrFinal:
+                        if !event.text.isEmpty { self.turns[index].transcript = event.text }
+                    case .legError:
+                        let detail = event.error.isEmpty
+                            ? "\(event.stage) output failed" : event.error
+                        self.turns[index].legErrors.append(detail)
+                        self.status = "Completed with leg error"
+                    default:
+                        break
+                    }
+                } onArtifact: { artifact in
+                    guard self.activeTurn == assistant.id,
+                          let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
+                        return
+                    }
+                    self.turns[index].artifacts.append(artifact)
                 }
                 guard self.activeTurn == assistant.id,
                       let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
@@ -105,6 +171,7 @@ final class ChatModel: ObservableObject {
                 }
                 self.turns[index].text = result.text
                 self.turns[index].state = .complete
+                if !result.sessionID.isEmpty { self.sessionID = result.sessionID }
                 self.status = result.finishReason.isEmpty
                     ? "Completed" : "Completed · \(result.finishReason)"
                 self.finish(assistant.id)
@@ -113,7 +180,7 @@ final class ChatModel: ObservableObject {
                 let cancelled = self.stopping || Task.isCancelled ||
                     (error as? URLError)?.code == .cancelled || error is CancellationError
                 if let index = self.turns.firstIndex(where: { $0.id == assistant.id }) {
-                    if self.turns[index].text.isEmpty {
+                    if self.turns[index].text.isEmpty && self.turns[index].artifacts.isEmpty {
                         self.turns.remove(at: index)
                     } else {
                         self.turns[index].state = cancelled ? .stopped : .failed
@@ -149,6 +216,58 @@ final class ChatModel: ObservableObject {
         return messages
     }
 
+    // MARK: - Local speech input (Apple on-device model only)
+
+    func startListening() {
+        guard !isRunning, !isListening else { return }
+        speech.onPartial = { [weak self] text in
+            self?.partialTranscript = text
+        }
+        speech.onFinal = { [weak self] text in
+            guard let self else { return }
+            self.prompt = text
+            self.partialTranscript = ""
+            self.isListening = false
+            self.speechStatus = "On-device transcript ready"
+        }
+        speech.onFailure = { [weak self] message in
+            guard let self else { return }
+            self.isListening = false
+            self.partialTranscript = ""
+            self.error = message
+            self.status = "Speech error"
+        }
+        partialTranscript = ""
+        speechStatus = "Listening on-device…"
+        isListening = true
+        speech.startMicrophone()
+    }
+
+    func stopListening() {
+        speech.cancel()
+        isListening = false
+        partialTranscript = ""
+        speechStatus = "Speech stopped"
+    }
+
+    /// File recognition used by the repeatable automation gate. Never contacts
+    /// the network or the umm server.
+    @discardableResult
+    func transcribeFile(_ url: URL) async throws -> String {
+        speechStatus = "Recognizing on-device…"
+        do {
+            let text = try await speech.transcribeFile(url)
+            prompt = text
+            partialTranscript = ""
+            speechStatus = "On-device transcript ready"
+            return text
+        } catch {
+            speechStatus = "Speech error"
+            self.error = error.localizedDescription
+            throw error
+        }
+    }
+
     func stop() {
         guard isRunning else { return }
         stopping = true
@@ -166,6 +285,8 @@ final class ChatModel: ObservableObject {
         receivedDelta = false
         error = nil
         status = "Ready"
+        sessionID = ""
+        requestSessionID = Self.newSessionID()
         onFirstDelta = nil
     }
 
