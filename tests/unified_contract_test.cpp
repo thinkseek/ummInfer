@@ -296,19 +296,42 @@ class WebSocket {
 namespace {
 
 int g_failures = 0;
+// Names the running test so a failure that repeats the same message from many
+// call sites still says which test produced it.
+const char* g_current_test = "<none>";
 
 void check(bool condition, const char* message) {
   if (!condition) {
-    std::cerr << "FAIL: " << message << "\n";
+    std::cerr << "FAIL: " << message << " [" << g_current_test << "]\n";
     ++g_failures;
   }
 }
 
+// Bound for every assertion that waits for the engine to change state. The
+// coordinator delivers stage submits asynchronously, so these waits poll for
+// the state change instead of measuring elapsed time. Measured submit
+// arrivals: 101-411 ms under 13 CPU-bound processes; the previous single
+// 2 s receive fired under `zig build test`, which runs the test binaries in
+// parallel.
+constexpr std::chrono::seconds kStateWait{30};
+
+// Runs one test with its name set for check() and the wait diagnostics.
+#define RUN(call)           \
+  do {                      \
+    g_current_test = #call; \
+    call;                   \
+  } while (0)
+
 void wait_until(const std::function<bool()>& condition, const char* message) {
-  for (int i = 0; i < 200; ++i) {
+  const auto deadline = std::chrono::steady_clock::now() + kStateWait;
+  while (std::chrono::steady_clock::now() < deadline) {
     if (condition()) return;
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
+  // Reaching this line means the condition stayed false for the whole budget,
+  // not that the check ran too early.
+  std::cerr << "DIAG: condition still false after " << kStateWait.count()
+            << " s: " << message << "\n";
   check(false, message);
 }
 
@@ -622,9 +645,26 @@ struct Harness {
     // Abort frames share the stage PULL socket: broadcast_abort pushes to every
     // stage socket, and the real Stage drains them in handle_message. The fake
     // stage records them and skips to the next submit frame.
+    const char* leg = (&socket == &asr_recv)     ? "asr"
+                      : (&socket == &vlm_recv)   ? "vlm"
+                      : (&socket == &image_recv) ? "image"
+                                                 : "tts";
+    const auto deadline = std::chrono::steady_clock::now() + kStateWait;
     while (true) {
-      auto msg = socket.recv_timeout(2000);
-      if (!msg) return std::nullopt;
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        // The loop only exits here after the full poll budget with no submit
+        // frame on the socket, so "not yet" cannot be reported as "never".
+        std::cerr << "DIAG: no " << leg << " submit within "
+                  << kStateWait.count() << " s; coordinator still had "
+                  << coordinator.in_flight() << " request(s) in flight\n";
+        return std::nullopt;
+      }
+      const auto left =
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
+              .count();
+      auto msg = socket.recv_timeout(static_cast<int>(left < 100 ? left : 100));
+      if (!msg) continue;
       if (auto* abort = std::get_if<AbortMessage>(&*msg)) {
         std::lock_guard<std::mutex> lock(abort_mu);
         aborted_legs.push_back(abort->request_id);
@@ -664,9 +704,11 @@ struct Harness {
     }
   }
 
-  // Drains both stage inboxes until the abort for leg_id is observed.
+  // Drains both stage inboxes until the abort for leg_id is observed. The loop
+  // ends on the state change or the budget, not after a fixed slice count.
   bool wait_abort(const std::string& leg_id) {
-    for (int i = 0; i < 40 && !saw_abort(leg_id); ++i) {
+    const auto deadline = std::chrono::steady_clock::now() + kStateWait;
+    while (!saw_abort(leg_id) && std::chrono::steady_clock::now() < deadline) {
       for (PullSocket* socket : {&asr_recv, &vlm_recv}) {
         auto msg = socket->recv_timeout(50);
         if (!msg) continue;
@@ -3726,16 +3768,22 @@ void test_public_http_session_id_requires_unified() {
 // on its single VLM leg, so the completion uses the observed submit id.
 std::vector<StagePayload> reach_output_barrier(
     Harness& h, UnifiedEngine& engine, const std::string& id,
-    const std::string& answer) {
+    const std::string& answer, bool expect_tts = true) {
   auto vlm = h.next_submit(h.vlm_recv);
   check(vlm.has_value(), "mixed request did not reach the VLM");
   h.complete(vlm ? vlm->request_id : id, "vlm", true,
              text_result(answer));
   std::vector<StagePayload> legs;
-  for (PullSocket* socket : {&h.image_recv, &h.tts_recv}) {
-    auto submit = h.next_submit(*socket);
-    if (submit) legs.push_back(StagePayload::from_value(submit->data));
-  }
+  // Only the legs the request asked for are awaited: a leg that was never
+  // requested would wait out the whole budget and then report a missing
+  // submit the contract never promised.
+  auto image = h.next_submit(h.image_recv);
+  check(image.has_value(), "image leg was not submitted");
+  if (image) legs.push_back(StagePayload::from_value(image->data));
+  if (!expect_tts) return legs;
+  auto tts = h.next_submit(h.tts_recv);
+  check(tts.has_value(), "tts leg was not submitted");
+  if (tts) legs.push_back(StagePayload::from_value(tts->data));
   return legs;
 }
 
@@ -3961,7 +4009,7 @@ void test_mixed_artifact_limits_become_leg_errors() {
   engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
 
   const std::string id = engine.submit(mixed_request(true, false));
-  reach_output_barrier(h, engine, id, "answer");
+  reach_output_barrier(h, engine, id, "answer", false);
   h.complete(id + ":image", "image", true,
              artifact_result("image", "image/png",
                              std::string(kMaxArtifactImageBytes + 1, '\x01')));
@@ -3986,7 +4034,7 @@ void test_mixed_chunk_seq_reservation() {
   engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
 
   const std::string id = engine.submit(mixed_request(true, false));
-  reach_output_barrier(h, engine, id, "answer");
+  reach_output_barrier(h, engine, id, "answer", false);
   // 5 MiB of fake bytes must split into three 2 MiB-target chunks.
   const std::string bytes(5u << 20, '\xab');
   h.complete(id + ":image", "image", true,
@@ -4028,7 +4076,7 @@ void test_mixed_previous_stream_tolerates_bin_chunk() {
   h.start_pump();
 
   const std::string id = engine.submit(mixed_request(true, false));
-  reach_output_barrier(h, engine, id, "answer");
+  reach_output_barrier(h, engine, id, "answer", false);
   h.stream(id + ":image", "image", Value::bin(std::string(12, '\x7f')));
   check(future.wait_for(std::chrono::seconds(2)) ==
             std::future_status::ready,
@@ -4566,78 +4614,82 @@ void test_public_http_finish_reason_length_and_router_reset() {
 }  // namespace
 
 int main() {
-  alarm(120);
-  test_streaming_asr_to_vlm();
-  test_asr_partials_opt_in();
-  test_asr_partials_default_off();
-  test_asr_partials_cancel();
-  test_asr_partials_error();
-  test_nonstream_asr_synthesizes_final();
-  test_asr_plain_string_result();
-  test_asr_malformed_result_fails();
-  test_streaming_asr_malformed_final_fails();
-  test_unknown_id_wait_fails();
-  test_cancel_propagates_to_both_stages();
-  test_asr_failure();
-  test_vlm_failure();
-  test_vlm_result_text_contract();
-  test_queue_cap_backpressure();
-  test_queue_cap_concurrent_submit();
-  test_duplicate_final_and_out_of_order();
-  test_joint_image_audio();
-  test_joint_image_remote_url();
-  test_media_contract_errors();
-  test_vlm_only_string_content();
-  test_vlm_only_image_text();
-  test_vlm_only_session_history();
-  test_session_reuse();
-  test_session_reuse_concurrent();
-  test_session_history_order();
-  test_session_history_default_off();
-  test_session_history_isolation();
-  test_session_history_cancel_error_excluded();
-  test_session_history_turn_eviction();
-  test_session_history_char_eviction();
-  test_session_history_session_eviction();
-  test_session_history_concurrent();
-  test_session_history_restart_drops();
-  test_cancel_before_pumped_completion();
-  test_cancel_after_asr_completed_swallows_vlm();
-  test_cancel_handoff_race_stress();
-  test_previous_sink_reentry_does_not_deadlock();
-  test_cancel_cannot_overtake_partial_dispatch();
-  test_forwarded_sink_cancel_order(false);
-  test_forwarded_sink_cancel_order(true);
-  test_construction_after_pump_start_rejected();
-  test_destructor_synchronizes_inflight_callback();
-  test_retire_wait_fallback_order();
-  test_retired_cross_thread_order();
-  test_retired_same_thread_reentry();
-  test_active_reentry_exception_drains();
-  test_retired_reentry_exception_drains();
-  test_destructor_suppresses_previous_sink_exception();
-  test_public_http_unified_sse();
-  test_public_http_overload_503();
-  test_public_http_cancel_during_vlm();
-  test_public_http_asr_model_failure();
-  test_public_http_joint_input();
-  test_public_http_vlm_only();
-  test_public_http_vlm_only_stream();
-  test_public_http_unified_errors();
-  test_public_http_session_history();
-  test_public_http_session_id_requires_unified();
-  test_mixed_fanout_join_and_prompt_rules();
-  test_mixed_image_prompt_falls_back_to_answer();
-  test_mixed_partial_leg_failure_keeps_artifacts();
-  test_mixed_cancel_aborts_every_submitted_leg();
-  test_mixed_cancel_before_fanout_blocks_legs();
-  test_mixed_join_release_then_late_complete();
-  test_mixed_artifact_limits_become_leg_errors();
-  test_mixed_chunk_seq_reservation();
-  test_mixed_previous_stream_tolerates_bin_chunk();
-  test_public_http_mixed_artifact_stream();
-  test_public_http_mixed_partial_failure();
-  test_realtime_spoken_audio_format_and_leg_error();
-  test_public_http_finish_reason_length_and_router_reset();
+  // Hard stop for a wedged run. Measured wall time for the whole suite: 38 s
+  // idle and 41 s under 13 CPU-bound processes; 300 s leaves 7x headroom for a
+  // parallel `zig build test` run. Each individual wait is bounded by
+  // kStateWait, so this only catches a run that stops making progress.
+  alarm(300);
+  RUN(test_streaming_asr_to_vlm());
+  RUN(test_asr_partials_opt_in());
+  RUN(test_asr_partials_default_off());
+  RUN(test_asr_partials_cancel());
+  RUN(test_asr_partials_error());
+  RUN(test_nonstream_asr_synthesizes_final());
+  RUN(test_asr_plain_string_result());
+  RUN(test_asr_malformed_result_fails());
+  RUN(test_streaming_asr_malformed_final_fails());
+  RUN(test_unknown_id_wait_fails());
+  RUN(test_cancel_propagates_to_both_stages());
+  RUN(test_asr_failure());
+  RUN(test_vlm_failure());
+  RUN(test_vlm_result_text_contract());
+  RUN(test_queue_cap_backpressure());
+  RUN(test_queue_cap_concurrent_submit());
+  RUN(test_duplicate_final_and_out_of_order());
+  RUN(test_joint_image_audio());
+  RUN(test_joint_image_remote_url());
+  RUN(test_media_contract_errors());
+  RUN(test_vlm_only_string_content());
+  RUN(test_vlm_only_image_text());
+  RUN(test_vlm_only_session_history());
+  RUN(test_session_reuse());
+  RUN(test_session_reuse_concurrent());
+  RUN(test_session_history_order());
+  RUN(test_session_history_default_off());
+  RUN(test_session_history_isolation());
+  RUN(test_session_history_cancel_error_excluded());
+  RUN(test_session_history_turn_eviction());
+  RUN(test_session_history_char_eviction());
+  RUN(test_session_history_session_eviction());
+  RUN(test_session_history_concurrent());
+  RUN(test_session_history_restart_drops());
+  RUN(test_cancel_before_pumped_completion());
+  RUN(test_cancel_after_asr_completed_swallows_vlm());
+  RUN(test_cancel_handoff_race_stress());
+  RUN(test_previous_sink_reentry_does_not_deadlock());
+  RUN(test_cancel_cannot_overtake_partial_dispatch());
+  RUN(test_forwarded_sink_cancel_order(false));
+  RUN(test_forwarded_sink_cancel_order(true));
+  RUN(test_construction_after_pump_start_rejected());
+  RUN(test_destructor_synchronizes_inflight_callback());
+  RUN(test_retire_wait_fallback_order());
+  RUN(test_retired_cross_thread_order());
+  RUN(test_retired_same_thread_reentry());
+  RUN(test_active_reentry_exception_drains());
+  RUN(test_retired_reentry_exception_drains());
+  RUN(test_destructor_suppresses_previous_sink_exception());
+  RUN(test_public_http_unified_sse());
+  RUN(test_public_http_overload_503());
+  RUN(test_public_http_cancel_during_vlm());
+  RUN(test_public_http_asr_model_failure());
+  RUN(test_public_http_joint_input());
+  RUN(test_public_http_vlm_only());
+  RUN(test_public_http_vlm_only_stream());
+  RUN(test_public_http_unified_errors());
+  RUN(test_public_http_session_history());
+  RUN(test_public_http_session_id_requires_unified());
+  RUN(test_mixed_fanout_join_and_prompt_rules());
+  RUN(test_mixed_image_prompt_falls_back_to_answer());
+  RUN(test_mixed_partial_leg_failure_keeps_artifacts());
+  RUN(test_mixed_cancel_aborts_every_submitted_leg());
+  RUN(test_mixed_cancel_before_fanout_blocks_legs());
+  RUN(test_mixed_join_release_then_late_complete());
+  RUN(test_mixed_artifact_limits_become_leg_errors());
+  RUN(test_mixed_chunk_seq_reservation());
+  RUN(test_mixed_previous_stream_tolerates_bin_chunk());
+  RUN(test_public_http_mixed_artifact_stream());
+  RUN(test_public_http_mixed_partial_failure());
+  RUN(test_realtime_spoken_audio_format_and_leg_error());
+  RUN(test_public_http_finish_reason_length_and_router_reset());
   return g_failures == 0 ? 0 : 1;
 }
