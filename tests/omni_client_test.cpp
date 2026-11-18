@@ -747,7 +747,11 @@ client::OpenAIConfig mock_config(int port) {
   config.base_url = "http://127.0.0.1:" + std::to_string(port) + "/v1";
   config.model = "m";
   config.max_attempts = 1;
-  config.timeout = client::Milliseconds{10000};
+  // The oversized-stream cases push 48-96 MiB through a local mock. Under a
+  // parallel `zig build test` that write can take longer than 10 s and the
+  // client would time out instead of hitting the parser limit, which makes
+  // the assertion depend on machine load rather than on the contract.
+  config.timeout = client::Milliseconds{60000};
   config.connect_timeout = client::Milliseconds{2000};
   return config;
 }

@@ -326,8 +326,13 @@ void test_http_metrics_and_nvml() {
           });
     });
 
+    // Poll for the streamed request id rather than assuming it arrives within
+    // a fixed window. Under a parallel `zig build test` the whole suite
+    // competes for CPU, and a 3 s window was measured to expire before the
+    // first delta was written. 30 s is a bound, not a wait: the loop exits as
+    // soon as both conditions hold.
     const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
       std::lock_guard<std::mutex> lock(id_mu);
       if (!stream_req_id.empty() && h.vlm_entered.load()) break;

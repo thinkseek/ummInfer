@@ -229,9 +229,12 @@ void test_batch_result_count_mismatch(int& failures) {
       [](const Value&) { return Value("unused"); },
       [](const std::vector<Value>&) { return std::vector<Value>{Value("short")}; },
       2, 0, false);
-  std::thread worker([&scheduler] { scheduler.start(); });
+  // Enqueue before the worker starts: a request that is processed alone goes
+  // down the single-request path and legitimately succeeds, so the mismatch
+  // branch is only reachable when both are already waiting.
   scheduler.enqueue(IncomingMessage{"count-1", "new_request", Value("a")});
   scheduler.enqueue(IncomingMessage{"count-2", "new_request", Value("b")});
+  std::thread worker([&scheduler] { scheduler.start(); });
   for (int index = 0; index < 2; ++index) {
     const auto message = scheduler.outbox().get(2.0);
     check(message && message->type == "error",
