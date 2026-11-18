@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -32,19 +33,28 @@ void usage() {
   std::cerr << "usage: umm-native-stage-<asr|omni|qwen38|tts|image> --kind KIND --model DIR "
                "--recv-endpoint EP --coordinator-endpoint EP --abort-endpoint EP "
                "[--name NAME] [--gpu N] [--max-new-tokens N] [--max-frames N] "
-               "[--max-seq N] [--steps N] [--batch-size N] "
-               "[--next name=EP] [--peer name=EP]\n";
+               "[--max-seq N] [--steps N] [--image-backend 2512|2.1] [--size WxH] "
+               "[--batch-size N] [--next name=EP] [--peer name=EP]\n";
 }
 
-// ZMQ binds an ipc path but never creates its parent directory.
+// ZMQ binds an ipc path but never creates its parent directory. Restrict newly
+// created directories to the owner (0700) so unprivileged local users cannot
+// connect to internal ZMQ sockets.
 void ensure_ipc_parent(const std::string& endpoint) {
   const std::string prefix = "ipc://";
   if (endpoint.rfind(prefix, 0) != 0) return;
   const size_t slash = endpoint.rfind('/');
   if (slash == std::string::npos || slash <= prefix.size()) return;
-  std::error_code ignored;
-  std::filesystem::create_directories(
-      endpoint.substr(prefix.size(), slash - prefix.size()), ignored);
+  const std::filesystem::path dir(
+      endpoint.substr(prefix.size(), slash - prefix.size()));
+  std::error_code ec;
+  const bool existed = std::filesystem::exists(dir, ec);
+  std::filesystem::create_directories(dir, ec);
+  if (!existed && !ec) {
+    std::filesystem::permissions(
+        dir, std::filesystem::perms::owner_all,
+        std::filesystem::perm_options::replace, ec);
+  }
 }
 
 int parse_int(const std::string& text, const std::string& option) {
@@ -67,6 +77,11 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
 
+  static const std::set<std::string> kKnownFlags = {
+      "kind",         "model",    "recv-endpoint", "coordinator-endpoint",
+      "abort-endpoint", "name",   "gpu",           "max-new-tokens",
+      "max-frames",   "max-seq",  "steps",         "image-backend",
+      "size",         "batch-size"};
   Flags flags;
   Repeats repeats;
   for (int index = 1; index < argc; ++index) {
@@ -84,8 +99,12 @@ int main(int argc, char** argv) {
     const std::string value = argv[++index];
     if (key == "next" || key == "peer") {
       repeats.emplace(key, value);
-    } else {
+    } else if (kKnownFlags.count(key)) {
       flags[key] = value;
+    } else {
+      std::cerr << "unknown option: --" << key << "\n";
+      usage();
+      return 2;
     }
   }
 
@@ -117,6 +136,14 @@ int main(int argc, char** argv) {
     options.max_seq =
         flags.count("max-seq") ? parse_int(flags["max-seq"], "--max-seq") : 0;
     options.steps = flags.count("steps") ? parse_int(flags["steps"], "--steps") : 0;
+    options.image_backend =
+        flags.count("image-backend") ? flags["image-backend"] : "";
+    options.image_size = flags.count("size") ? flags["size"] : "";
+    if (kind != "image" &&
+        (!options.image_backend.empty() || !options.image_size.empty())) {
+      throw std::runtime_error(
+          "--image-backend and --size are supported only for --kind image");
+    }
     options.batch_size =
         flags.count("batch-size") ? parse_int(flags["batch-size"], "--batch-size") : 0;
 

@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "umminfer/proto/wire.hpp"
@@ -54,6 +55,7 @@ AsrWork parse_asr_work(const Value& work);
 struct OmniMessage {
   std::string role;
   std::string text;
+  bool has_image = false;
 };
 
 struct OmniWork {
@@ -74,6 +76,11 @@ OmniWork parse_omni_work(const Value& work);
 // consume rejected instead of ignored: audio/video parts, an audio/video
 // modality claim, and more than one image.
 OmniWork parse_qwen38_work(const Value& work);
+
+// Resolves per-request `max_new_tokens` from Stage request params, validating
+// positivity and clamping to `max_seq` when provided.
+int resolve_max_new_tokens(const Value::Map& params, int default_tokens,
+                           int max_seq);
 
 // Chat turn exactly as native/omni_cli renders it. The vision block is two
 // adjacent special tokens; the caller expands the image pads between them.
@@ -116,6 +123,18 @@ struct TtsWork {
 
 TtsWork parse_tts_work(const Value& work);
 
+enum class ImageBackend { kQwen2512, kQwen21 };
+
+// Selects the native image backend. Empty or "2512" / "qwen-image-2512" keeps
+// the default Qwen-Image-2512 executor; "2.1" / "qwen-image-2.1" selects
+// Qwen-Image-2.1. Any other value fails loudly.
+ImageBackend parse_image_backend(const std::string& value);
+const char* image_backend_name(ImageBackend backend);
+
+// Validates a WIDTHxHEIGHT string against the validated serving size (512x512).
+// Never rounds or falls back to a different resolution.
+std::pair<int, int> parse_supported_image_size(const std::string& size);
+
 struct ImageWork {
   std::string prompt;
   std::string negative_prompt = " ";
@@ -132,10 +151,10 @@ ImageWork parse_image_work(const Value& work);
 // Selects the codec language id from the text script.
 bool text_is_mostly_cjk(const std::string& text);
 
-// data: URLs only. Returns the decoded bytes; throws on any other scheme.
+// data: URLs only (capped at 48 MiB decoded). Returns the decoded bytes;
+// throws on any other scheme or local file path.
 std::string decode_data_url(const std::string& url);
 std::string base64_decode(const std::string& text);
-// data: URL or a local file path.
 std::string load_image_bytes(const std::string& url);
 
 Value asr_result(const std::string& text, int generated_tokens,
@@ -145,9 +164,11 @@ Value asr_result(const std::string& text, int generated_tokens,
 Value omni_result(const std::string& text, int generated_tokens,
                   double prefill_ms = -1, double decode_ms = -1);
 // Artifact map the unified engine expects: media_type + Bin under "data".
+// When streamed is true, marks "streamed": true so UnifiedEngine skips
+// re-emitting the full WAV artifact after PCM16 chunks have been streamed.
 Value tts_result(std::string wav_bytes, int sample_rate, int channels,
                  const std::string& voice, double first_frame_ms = -1,
-                 double total_ms = -1);
+                 double total_ms = -1, bool streamed = false);
 Value image_result(std::string png_bytes, int width, int height,
                    uint64_t seed, int steps, double denoise_ms = -1);
 

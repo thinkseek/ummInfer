@@ -47,6 +47,7 @@ class Relay {
   // Copies the block named by metadata into dest.bytes, which the caller sizes
   // from the DataRef length; a smaller destination is rejected.
   virtual void get(const Value& metadata, Tensor& dest) = 0;
+  virtual bool is_healthy() const { return true; }
   virtual void cleanup(const std::string& request_id) { (void)request_id; }
   virtual void close() {}
 };

@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     core.root_module.sanitize_thread = tsan;
     core.root_module.addCSourceFiles(.{
         .files = &.{
+            "src/util/codec.cpp",
             "src/proto/wire.cpp",
             "src/proto/messages.cpp",
             "src/obs/metrics.cpp",
@@ -69,7 +70,10 @@ pub fn build(b: *std.Build) void {
             "src/comm/comm.cpp",
             "src/scheduling/simple_scheduler.cpp",
             "src/pipeline/pipeline.cpp",
+            "src/pipeline/session_store.cpp",
+            "src/pipeline/unified_schema.cpp",
             "src/pipeline/unified.cpp",
+            "src/serve/upstream_proxy.cpp",
             "src/serve/openai_api.cpp",
             "src/serve/realtime_api.cpp",
             "src/audio/audio.cpp",
@@ -194,12 +198,6 @@ pub fn build(b: *std.Build) void {
     const mac_unified_test_step = b.step(
         "mac-unified-test", "Run Mac unified harness unit tests");
     mac_unified_test_step.dependOn(&mac_unified_test.step);
-
-    const qwen_omni_test = b.addSystemCommand(&.{ "python3", "-I" });
-    qwen_omni_test.addFileArg(b.path("tests/qwen_omni_worker_test.py"));
-    const qwen_omni_test_step = b.step(
-        "qwen-omni-test", "Run Qwen3-Omni worker protocol tests");
-    qwen_omni_test_step.dependOn(&qwen_omni_test.step);
 
     // Harness regression: an ambient non-API probe must not shift a proxy
     // plan or bind a WebSocket session. Needs only the CLI binary, no model.

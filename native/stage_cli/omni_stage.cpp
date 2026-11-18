@@ -79,9 +79,9 @@ CancellableComputeFn make_compute(const StageOptions& options) {
   auto tokenizer = std::make_shared<omni::Qwen2BpeTokenizer>(
       options.model_dir + "/vocab.json", options.model_dir + "/merges.txt",
       options.model_dir + "/tokenizer_config.json");
+  const int max_seq = options.max_seq > 0 ? options.max_seq : 2048;
   auto engine = std::make_shared<omni::OmniEngine>(
-      options.model_dir, options.gpu,
-      options.max_seq > 0 ? options.max_seq : 2048);
+      options.model_dir, options.gpu, max_seq);
 
   const int gpu = options.gpu;
   // One engine owns one KV cache, so requests run one at a time. The cache
@@ -101,10 +101,11 @@ CancellableComputeFn make_compute(const StageOptions& options) {
   if (const char* env = std::getenv("UMM_OMNI_PREFIX_CACHE")) {
     cache->enabled = std::atoi(env) != 0;
   }
-  return [tokenizer, engine, max_new_tokens, gpu, cache, cache_mu](
+  return [tokenizer, engine, max_new_tokens, max_seq, gpu, cache, cache_mu](
              const Value& work, const AbortCheck& aborted) {
     std::lock_guard<std::mutex> serialize(*cache_mu);
     const auto started = std::chrono::steady_clock::now();
+    const std::string req_id = bound_request_id();
     // The compute function runs on the Stage scheduler thread, whose CUDA
     // current device defaults to 0. The engine's buffers belong to --gpu.
     if (cudaSetDevice(gpu) != cudaSuccess) {
@@ -112,6 +113,9 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     }
     AbortTracker tracker(aborted);
     const OmniWork input = parse_omni_work(work);
+    const int req_max_new_tokens =
+        resolve_max_new_tokens(bound_request_params(), max_new_tokens, max_seq);
+
     std::unique_ptr<omni::PreprocessedImage> image;
     if (!input.image_url.empty()) {
       image = std::make_unique<omni::PreprocessedImage>(decode_image(input.image_url));
@@ -129,25 +133,21 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       while (common < limit && cache->ids[common] == ids[common]) ++common;
       prefix = static_cast<int>(std::min<size_t>(common, cache->valid));
     }
-    // Token streaming: decode the whole generated prefix and emit only the new
-    // suffix, the same byte-level rule the qwen38 stage uses.
-    std::vector<int> generated;
-    std::string emitted;
-    auto emit_token = [&tokenizer, &generated, &emitted](int id) {
-      generated.push_back(id);
-      const std::string text = tokenizer->decode(generated);
-      // Emit only through the last complete UTF-8 sequence. A partial
-      // character stays buffered until the next token completes it.
-      const size_t safe = utf8_complete_prefix(text);
-      if (safe <= emitted.size()) return;
+    // Token streaming: byte-level BPE is additive per token, so buffer only
+    // incomplete trailing UTF-8 bytes in O(1) per token.
+    std::string pending_utf8;
+    auto emit_token = [&tokenizer, &pending_utf8](int id) {
+      pending_utf8 += tokenizer->decode({id});
+      const size_t safe = utf8_complete_prefix(pending_utf8);
+      if (safe == 0) return;
       Value::Map chunk;
-      chunk["text"] = Value(text.substr(emitted.size(), safe - emitted.size()));
+      chunk["text"] = Value(pending_utf8.substr(0, safe));
       emit_stage_stream(Value(std::move(chunk)));
-      emitted = text.substr(0, safe);
+      pending_utf8.erase(0, safe);
     };
     omni::OmniEngine::Result result;
     try {
-      result = engine->generate(ids, image.get(), max_new_tokens,
+      result = engine->generate(ids, image.get(), req_max_new_tokens,
                                 [&tracker] { return tracker(); }, emit_token,
                                 prefix);
       if (!input.session_id.empty()) {
@@ -161,7 +161,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       cache->valid = 0;
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);
-      std::cerr << "omni request aborted boundary=\"" << error.what() << "\""
+      std::cerr << "omni request aborted request_id=" << req_id
+                << " boundary=\"" << error.what() << "\""
                 << " abort_epoch_ms=" << tracker.detected_epoch_ms()
                 << " exit_epoch_ms=" << epoch_millis()
                 << " compute_ms=" << elapsed.count() << "\n";
@@ -172,18 +173,17 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       throw;
     }
     {
-      // Flush the bytes held back while a character was incomplete.
-      const std::string final_text = tokenizer->decode(result.token_ids);
-      const size_t safe = utf8_complete_prefix(final_text);
-      if (safe > emitted.size()) {
+      const size_t safe = utf8_complete_prefix(pending_utf8);
+      if (safe > 0) {
         Value::Map chunk;
-        chunk["text"] = Value(final_text.substr(emitted.size(), safe - emitted.size()));
+        chunk["text"] = Value(pending_utf8.substr(0, safe));
         emit_stage_stream(Value(std::move(chunk)));
       }
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
-    std::cerr << "omni request prompt_tokens="
+    std::cerr << "omni request request_id=" << req_id
+              << " prompt_tokens="
               << result.prefill_tokens + result.reused_tokens
               << " prefill_tokens=" << result.prefill_tokens
               << " prefix_reused=" << result.reused_tokens

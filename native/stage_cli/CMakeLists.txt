@@ -36,6 +36,7 @@ find_library(MSGPACK_LIBRARY NAMES msgpackc REQUIRED)
 
 # The Stage/Coordinator subset of the C++ runtime: no HTTP, no client library.
 add_library(umm_stage_core STATIC
+  ${UMM_ROOT}/src/util/codec.cpp
   ${UMM_ROOT}/src/proto/wire.cpp
   ${UMM_ROOT}/src/proto/messages.cpp
   ${UMM_ROOT}/src/obs/metrics.cpp
@@ -146,10 +147,9 @@ if(UMM_STAGE_CUDA)
     umm_stage_common ICU::uc ICU::i18n CUDA::cudart)
   set_target_properties(umm-native-stage-tts PROPERTIES CUDA_ARCHITECTURES 90)
 
-  # ---- Image ----
+  # ---- Image (Qwen-Image-2512 + Qwen-Image-2.1) ----
   find_package(ZLIB REQUIRED)
-  add_executable(umm-native-stage-image
-    main.cpp image_stage.cpp
+  add_library(umm_image2512_backend OBJECT
     ${NATIVE_DIR}/image/scheduler.cpp
     ${NATIVE_DIR}/image/png.cpp
     ${NATIVE_DIR}/image/safetensors_shard.cpp
@@ -163,7 +163,47 @@ if(UMM_STAGE_CUDA)
     ${NATIVE_DIR}/image/engine.cpp
     ${NATIVE_DIR}/image/cuda_kernels.cu
   )
-  target_include_directories(umm-native-stage-image PRIVATE ${NATIVE_DIR}/image)
+  target_include_directories(umm_image2512_backend PRIVATE
+    ${NATIVE_DIR}/image ${NATIVE_DIR} ${CUDAToolkit_INCLUDE_DIRS})
+  target_link_libraries(umm_image2512_backend PRIVATE
+    CUDA::cudart CUDA::cublas CUDA::cublasLt ZLIB::ZLIB)
+  if(nlohmann_json_FOUND)
+    target_link_libraries(umm_image2512_backend PRIVATE nlohmann_json::nlohmann_json)
+  else()
+    target_include_directories(umm_image2512_backend PRIVATE ${NLOHMANN_JSON_INCLUDE})
+  endif()
+  set_target_properties(umm_image2512_backend PROPERTIES CUDA_ARCHITECTURES 90)
+
+  add_library(umm_image21_backend OBJECT
+    ${NATIVE_DIR}/image2/scheduler.cpp
+    ${NATIVE_DIR}/image2/png.cpp
+    ${NATIVE_DIR}/image2/safetensors_shard.cpp
+    ${NATIVE_DIR}/image2/tokenizer.cpp
+    ${NATIVE_DIR}/image2/tensor.cpp
+    ${NATIVE_DIR}/image2/weights.cpp
+    ${NATIVE_DIR}/image2/text_encoder.cpp
+    ${NATIVE_DIR}/image2/dit.cpp
+    ${NATIVE_DIR}/image2/vae.cpp
+    ${NATIVE_DIR}/image2/engine.cpp
+    ${NATIVE_DIR}/image2/cuda_kernels.cu
+  )
+  target_include_directories(umm_image21_backend PRIVATE
+    ${NATIVE_DIR}/image2 ${NATIVE_DIR} ${CUDAToolkit_INCLUDE_DIRS})
+  target_link_libraries(umm_image21_backend PRIVATE
+    CUDA::cudart CUDA::cublas CUDA::cublasLt ZLIB::ZLIB)
+  if(nlohmann_json_FOUND)
+    target_link_libraries(umm_image21_backend PRIVATE nlohmann_json::nlohmann_json)
+  else()
+    target_include_directories(umm_image21_backend PRIVATE ${NLOHMANN_JSON_INCLUDE})
+  endif()
+  set_target_properties(umm_image21_backend PROPERTIES CUDA_ARCHITECTURES 90)
+
+  add_executable(umm-native-stage-image
+    main.cpp image_stage.cpp
+    $<TARGET_OBJECTS:umm_image2512_backend>
+    $<TARGET_OBJECTS:umm_image21_backend>
+  )
+  target_include_directories(umm-native-stage-image PRIVATE ${NATIVE_DIR})
   target_link_libraries(umm-native-stage-image PRIVATE
     umm_stage_common CUDA::cudart CUDA::cublas CUDA::cublasLt ZLIB::ZLIB)
   set_target_properties(umm-native-stage-image PROPERTIES CUDA_ARCHITECTURES 90)

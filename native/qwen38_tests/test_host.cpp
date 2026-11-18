@@ -47,6 +47,18 @@ int main() {
   CHECK(with_img.rfind("<|im_start|>user\n<|vision_start|><|image_pad|>"
                        "<|vision_end|>hi<|im_end|>\n",
                        0) == 0);
+  const std::string multi_turn = render_chat_prompt(
+      {{"system", "be brief", false},
+       {"user", "first", false},
+       {"assistant", "ok", false},
+       {"user", "second", true}},
+      false);
+  CHECK(multi_turn ==
+        "<|im_start|>system\nbe brief<|im_end|>\n"
+        "<|im_start|>user\nfirst<|im_end|>\n"
+        "<|im_start|>assistant\nok<|im_end|>\n"
+        "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>second<|im_end|>\n"
+        "<|im_start|>assistant\n<" "think" ">\n\n</" "think" ">\n\n");
 
   // One placeholder becomes exactly n tokens (not n + 1).
   const std::vector<int> ids = expand_image_pads({1, 248056, 2}, 4);

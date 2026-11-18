@@ -110,6 +110,7 @@ class StageControlPlane {
   void start();
   Message recv();
   std::optional<Message> recv_nowait();
+  std::optional<Message> recv_timeout(int timeout_ms);
   void send_to_stage(const std::string& next_stage, const std::string& endpoint,
                      const Message& msg);
   void send_ready(const StageReadyMessage& msg);

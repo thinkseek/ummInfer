@@ -40,6 +40,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
   return [engine, tokenizer, frontend, max_new_tokens, gpu](
              const Value& work, const AbortCheck& aborted) {
     const auto started = std::chrono::steady_clock::now();
+    const std::string req_id = bound_request_id();
     // The compute function runs on the Stage scheduler thread, whose CUDA
     // current device defaults to 0. The engine's buffers belong to --gpu.
     if (cudaSetDevice(gpu) != cudaSuccess) {
@@ -55,7 +56,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     } catch (const native::RequestAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);
-      std::cerr << "asr request aborted boundary=\"" << error.what() << "\""
+      std::cerr << "asr request aborted request_id=" << req_id
+                << " boundary=\"" << error.what() << "\""
                 << " abort_epoch_ms=" << tracker.detected_epoch_ms()
                 << " exit_epoch_ms=" << epoch_millis()
                 << " compute_ms=" << elapsed.count() << "\n";
@@ -70,7 +72,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const std::string text = tokenizer->decode(ids);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
-    std::cerr << "asr request audio_samples=" << input.samples.size()
+    std::cerr << "asr request request_id=" << req_id
+              << " audio_samples=" << input.samples.size()
               << " generated_tokens=" << generated << " chars=" << text.size()
               << " elapsed_ms=" << elapsed.count() << "\n";
     return asr_result(text, generated,

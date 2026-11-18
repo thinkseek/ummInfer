@@ -65,12 +65,12 @@ CancellableComputeFn make_compute(const StageOptions& options) {
   // batch_size > 1 enables continuous batching; the engine owns one batch
   // thread and is safe to call from several scheduler workers.
   const int batch_size = options.batch_size > 1 ? options.batch_size : 1;
+  const int max_seq = options.max_seq > 0 ? options.max_seq : 8192;
   auto engine = std::make_shared<qwen38::Engine>(
-      options.model_dir, options.gpu,
-      options.max_seq > 0 ? options.max_seq : 8192, batch_size);
+      options.model_dir, options.gpu, max_seq, batch_size);
 
   const int gpu = options.gpu;
-  return [tokenizer, engine, max_new_tokens, gpu](
+  return [tokenizer, engine, max_new_tokens, max_seq, gpu](
              const Value& work, const AbortCheck& aborted) {
     const auto started = std::chrono::steady_clock::now();
     // The compute function runs on the Stage scheduler thread, whose CUDA
@@ -80,6 +80,9 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     }
     AbortTracker tracker(aborted);
     const OmniWork input = parse_qwen38_work(work);
+    const int req_max_new_tokens =
+        resolve_max_new_tokens(bound_request_params(), max_new_tokens, max_seq);
+
     std::unique_ptr<qwen38::PreprocessedImage> image;
     int image_tokens = 0;
     if (!input.image_url.empty()) {
@@ -89,37 +92,46 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       }
       image_tokens = image->rows() / 4;
     }
-    std::vector<int> ids =
-        tokenizer->encode(qwen38::render_chat_prompt(input.text, image != nullptr,
-                                                     /*enable_thinking=*/false));
+    std::vector<qwen38::ChatTurn> turns;
+    turns.reserve(input.messages.size());
+    for (size_t i = 0; i < input.messages.size(); ++i) {
+      turns.push_back(qwen38::ChatTurn{
+          input.messages[i].role,
+          input.messages[i].text,
+          image != nullptr && (input.messages[i].has_image ||
+                               i + 1 == input.messages.size()),
+      });
+    }
+    std::vector<int> ids = tokenizer->encode(
+        turns.empty() ? qwen38::render_chat_prompt(input.text, image != nullptr,
+                                                   /*enable_thinking=*/false)
+                      : qwen38::render_chat_prompt(turns,
+                                                   /*enable_thinking=*/false));
     if (image != nullptr) {
       ids = qwen38::expand_image_pads(ids, image_tokens);
     }
 
-    // decode() rebuilds the whole text, so the emitted suffix is exactly the
-    // new bytes. Byte-level BPE only appends, which keeps this monotonic.
-    std::vector<int> generated;
-    std::string emitted;
+    // Byte-level BPE decode is additive per token: buffer only incomplete
+    // trailing UTF-8 bytes so streaming stays O(1) per token instead of O(T^2).
+    std::string pending_utf8;
     // Copy the sink and id bound to this compute call. In batched mode the
     // callback fires on the engine's batch thread, where the scheduler's
     // thread-locals are not bound.
     const StreamFn stream = bound_stream_fn();
-    const std::string stream_id = bound_request_id();
-    auto emit_token = [&tokenizer, &generated, &emitted, stream,
-                       stream_id](int id) {
-      generated.push_back(id);
-      const std::string text = tokenizer->decode(generated);
-      const size_t safe = utf8_complete_prefix(text);
-      if (safe <= emitted.size()) return;
+    const std::string req_id = bound_request_id();
+    auto emit_token = [&tokenizer, &pending_utf8, stream, req_id](int id) {
+      pending_utf8 += tokenizer->decode({id});
+      const size_t safe = utf8_complete_prefix(pending_utf8);
+      if (safe == 0) return;
       Value::Map chunk;
-      chunk["text"] = Value(text.substr(emitted.size(), safe - emitted.size()));
+      chunk["text"] = Value(pending_utf8.substr(0, safe));
       Value value(std::move(chunk));
       if (stream) {
-        stream(stream_id, std::move(value));
+        stream(req_id, std::move(value));
       } else {
         emit_stage_stream(std::move(value));
       }
-      emitted = text.substr(0, safe);
+      pending_utf8.erase(0, safe);
     };
 
     qwen38::GenResult result;
@@ -128,18 +140,19 @@ CancellableComputeFn make_compute(const StageOptions& options) {
         qwen38::BatchRequest request;
         request.prompt_ids = std::move(ids);
         request.image = image.get();
-        request.max_new_tokens = max_new_tokens;
+        request.max_new_tokens = req_max_new_tokens;
         request.abort = [&tracker] { return tracker(); };
         request.on_token = emit_token;
         result = engine->generate_batched(request);
       } else {
-        result = engine->generate(ids, image.get(), max_new_tokens, "",
+        result = engine->generate(ids, image.get(), req_max_new_tokens, "",
                                   [&tracker] { return tracker(); }, emit_token);
       }
     } catch (const qwen38::GenerationAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);
-      std::cerr << "qwen38 request aborted boundary=\"" << error.what() << "\""
+      std::cerr << "qwen38 request aborted request_id=" << req_id
+                << " boundary=\"" << error.what() << "\""
                 << " abort_epoch_ms=" << tracker.detected_epoch_ms()
                 << " exit_epoch_ms=" << epoch_millis()
                 << " compute_ms=" << elapsed.count() << "\n";
@@ -151,7 +164,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const double decode_tok_s = result.decode_ms > 0.0
                                     ? result.decode_steps * 1000.0 / result.decode_ms
                                     : 0.0;
-    std::cerr << "qwen38 request prompt_tokens=" << result.prompt_tokens
+    std::cerr << "qwen38 request request_id=" << req_id
+              << " prompt_tokens=" << result.prompt_tokens
               << " image_tokens=" << result.image_tokens
               << " generated_tokens=" << result.ids.size()
               << " chars=" << text.size()
@@ -162,7 +176,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " decode_tok_per_s=" << std::fixed << std::setprecision(1)
               << decode_tok_s
               << " elapsed_ms=" << elapsed.count() << "\n";
-    return omni_result(text, static_cast<int>(result.ids.size()));
+    return omni_result(text, static_cast<int>(result.ids.size()),
+                       result.prefill_ms, result.decode_ms);
   };
 }
 

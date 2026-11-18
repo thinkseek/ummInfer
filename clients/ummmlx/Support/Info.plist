@@ -12,6 +12,10 @@
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>ummmlx records your voice for Apple's on-device speech recognition. Audio never leaves this Mac.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>ummmlx turns your voice into text with Apple's on-device speech model. Audio never leaves this Mac.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>

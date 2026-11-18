@@ -298,6 +298,11 @@ class CudaIpcRelay : public Relay {
 
   ~CudaIpcRelay() override { close(); }
 
+  bool is_healthy() const override {
+    std::lock_guard<std::mutex> lock(shared_->mu);
+    return !shared_->failed;
+  }
+
   std::unique_ptr<RelayOperation> put(const Tensor& tensor,
                                       const std::string& request_id) override {
     {

@@ -25,6 +25,7 @@ struct IncomingMessage {
   std::string request_id;
   std::string type;
   Value data;
+  Value::Map params = {};
 };
 
 struct OutgoingMessage {
@@ -112,6 +113,7 @@ void emit_stage_stream(Value chunk);
 // outside a compute call.
 StreamFn bound_stream_fn();
 std::string bound_request_id();
+const Value::Map& bound_request_params();
 
 class SimpleScheduler {
  public:

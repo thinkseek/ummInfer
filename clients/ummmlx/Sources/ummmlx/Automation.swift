@@ -3,6 +3,7 @@
 import SwiftUI
 import AppKit
 import Darwin
+import Speech
 
 @MainActor
 final class Automation {
@@ -33,8 +34,12 @@ final class Automation {
         let followup = option("followup-prompt")
             ?? "Reply with one short sentence about the previous reply."
         let errorModel = option("error-model") ?? ""
+        let multimodal = arguments.contains("--multimodal")
+        let asrFile = option("asr-file")
         if let endpoint = option("endpoint") { model.endpoint = endpoint }
         if let servedModel = option("model") { model.model = servedModel }
+        if let size = option("image-size") { model.imageSize = size }
+        if let voice = option("voice") { model.audioVoice = voice }
         appearance.wrappedValue = option("theme") ?? "light"
         await settle()
 
@@ -49,9 +54,79 @@ final class Automation {
         var errorText = ""
         var requests: [[String]] = []
         var successTurns: [[String: String]] = []
+        var asrChecked = false
+        var asrText = ""
+        var asrOnDevice = false
+        var artifacts: [[String: String]] = []
+        var screens: [String] = []
         model.onRequest = { requests.append($0.map(\.role)) }
 
-        if !prompt.isEmpty {
+        // Local file recognition through SFSpeechURLRecognitionRequest with
+        // requiresOnDeviceRecognition. No network, no umm server.
+        if let asrFile {
+            asrChecked = true
+            asrOnDevice = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))?
+                .supportsOnDeviceRecognition ?? false
+            do {
+                asrText = try await model.transcribeFile(
+                    URL(fileURLWithPath: asrFile))
+                if asrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    passed = false
+                    failure = "The local recognizer returned empty text."
+                }
+            } catch {
+                passed = false
+                let ns = error as NSError
+                failure = "Local ASR failed: \(ns.domain) \(ns.code): \(ns.localizedDescription)"
+            }
+            await settle()
+            do {
+                // Capture the transcript and the on-device disclosure before
+                // the theme loop so the evidence names the recognizer.
+                screens.append(try capture(name: "asr", directory: screenshots))
+            } catch {
+                passed = false
+                failure = error.localizedDescription
+            }
+        }
+
+        if multimodal {
+            model.imageOutput = true
+            model.audioOutput = true
+            model.prompt = prompt
+            model.send()
+            if await waitForIdle(timeout: 600) {
+                responseText = model.turns.last { $0.role == .assistant }?.text ?? ""
+                let assistant = model.turns.last { $0.role == .assistant }
+                artifacts = (assistant?.artifacts ?? []).map { artifact in
+                    [
+                        "artifact_id": artifact.id,
+                        "media_type": artifact.mediaType,
+                        "mime_type": artifact.mimeType,
+                        "bytes": String(artifact.data.count),
+                        "sha256": artifact.sha256
+                    ]
+                }
+                if !model.status.hasPrefix("Completed") || responseText.isEmpty {
+                    passed = false
+                    failure = model.error ?? "The multimodal request did not complete with text."
+                } else if model.sessionID.isEmpty {
+                    passed = false
+                    failure = "The server did not report a session id."
+                } else if !artifacts.contains(where: { $0["media_type"] == "image" })
+                            || !artifacts.contains(where: { $0["media_type"] == "audio" }) {
+                    passed = false
+                    failure = "The multimodal request did not return one image and one audio artifact."
+                }
+            } else {
+                passed = false
+                failure = "Timed out waiting for the multimodal completion."
+                model.stop()
+            }
+            successTurns = model.turns.map {
+                ["role": $0.role.rawValue, "state": state($0.state)]
+            }
+        } else if !prompt.isEmpty {
             var runCompletion = true
             if arguments.contains("--stop-first") {
                 model.onFirstDelta = { [weak self] in
@@ -132,7 +207,7 @@ final class Automation {
             }
         }
 
-        var paths: [String] = []
+        var paths: [String] = screens
         for theme in ["light", "dark"] {
             appearance.wrappedValue = theme
             await settle()
@@ -146,7 +221,7 @@ final class Automation {
 
         // Visualise a real server rejection: the model name is not served, so
         // the frozen server answers 400 and the client must show its message.
-        if passed && !prompt.isEmpty && !errorModel.isEmpty {
+        if passed && !multimodal && !prompt.isEmpty && !errorModel.isEmpty {
             errorChecked = true
             appearance.wrappedValue = "light"
             await settle()
@@ -178,7 +253,7 @@ final class Automation {
 
         let result: [String: Any] = [
             "passed": passed,
-            "static_only": prompt.isEmpty,
+            "static_only": prompt.isEmpty && !multimodal,
             "status": model.status,
             "error": model.error ?? "",
             "failure": failure,
@@ -193,6 +268,13 @@ final class Automation {
             "error_text": errorText,
             "endpoint": model.endpoint,
             "model": model.model,
+            "session_id": model.sessionID,
+            "multimodal": multimodal,
+            "artifacts": artifacts,
+            "asr_checked": asrChecked,
+            "asr_text": asrText,
+            "asr_on_device": asrOnDevice,
+            "asr_network": "none: SFSpeechURLRecognitionRequest with requiresOnDeviceRecognition=true",
             "screenshots": paths
         ]
         do {
@@ -222,7 +304,7 @@ final class Automation {
 
     private func waitForIdle(timeout: TimeInterval = 120) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        for _ in 0..<2400 {
+        for _ in 0..<(Int(timeout / 0.1) + 10) {
             if !model.isRunning { return true }
             if Date() >= deadline { return false }
             try? await Task.sleep(nanoseconds: 100_000_000)

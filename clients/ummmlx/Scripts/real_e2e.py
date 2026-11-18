@@ -168,7 +168,7 @@ def main():
             "diag_current_profile", "diag_sync_profile", "diag_vocab",
             "recompute_nolog_report", "fix_report", "mlx_greedy_perf",
             "mlx_prompt_cache_perf", "mlx_e2e_interleave_perf",
-            "mlx_perf_compare", "mlx_stage_test", "h3_live", "h3_image_live",
+            "mlx_perf_compare", "mlx_stage_test",
             "qwen_omni_live", str(APP.resolve()), APP.name,
         }
         needles = sorted(set(perf.patrol_needles(binary, STAGE)) | extra_needles)

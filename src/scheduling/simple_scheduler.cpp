@@ -10,7 +10,9 @@ namespace {
 
 // Valid only while one compute function runs on this thread.
 thread_local const StreamFn* g_stream_sink = nullptr;
+thread_local bool g_in_compute = false;
 thread_local std::string g_stream_request;
+thread_local const Value::Map* g_request_params = nullptr;
 
 }  // namespace
 
@@ -25,7 +27,13 @@ StreamFn bound_stream_fn() {
 }
 
 std::string bound_request_id() {
-  return g_stream_sink == nullptr ? std::string() : g_stream_request;
+  return g_in_compute ? g_stream_request : std::string();
+}
+
+const Value::Map& bound_request_params() {
+  static const Value::Map kEmpty;
+  return (g_in_compute && g_request_params != nullptr) ? *g_request_params
+                                                       : kEmpty;
 }
 
 SimpleScheduler::SimpleScheduler(ComputeFn compute_fn,
@@ -198,16 +206,19 @@ void SimpleScheduler::run_single(const IncomingMessage& msg) {
   // A compute function that streams never sees another request's id.
   struct StreamBinding {
     StreamBinding(const StreamFn* fn, const std::string& request_id,
-                  const StreamFn** slot, std::string* name) {
-      *slot = fn;
-      *name = request_id;
+                  const Value::Map* params) {
+      g_stream_sink = fn;
+      g_in_compute = true;
+      g_stream_request = request_id;
+      g_request_params = params;
     }
     ~StreamBinding() {
       g_stream_sink = nullptr;
+      g_in_compute = false;
       g_stream_request.clear();
+      g_request_params = nullptr;
     }
-  } binding(stream_fn_ ? &stream_fn_ : nullptr, msg.request_id,
-            &g_stream_sink, &g_stream_request);
+  } binding(stream_fn_ ? &stream_fn_ : nullptr, msg.request_id, &msg.params);
   Value result;
   try {
     if (cancellable_fn_) {

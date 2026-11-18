@@ -22,6 +22,7 @@
 #include "asr_common.hpp"
 #include "energy_vad.hpp"
 #include "umminfer/pipeline/unified.hpp"
+#include "umminfer/util/codec.hpp"
 
 namespace umminfer {
 namespace {
@@ -34,6 +35,12 @@ constexpr size_t kMaxAudioBytes = 64u << 20;
 // 200 ms of PCM16 mono 16 kHz. A preview request is submitted for every window
 // of new audio while no request is in flight.
 constexpr size_t kPreviewWindowBytes = 6400;
+// Bound preview re-transcription to the most recent 15 s (16 kHz mono PCM16)
+// so a long monologue stays O(1) per preview instead of O(N^2); final commit
+// still transcribes the full turn.
+constexpr size_t kMaxPreviewSpanBytes = 32000u * 15u;
+constexpr size_t kMaxRealtimeSessions = 64;
+constexpr size_t kMaxOutboundFrames = 1024;
 
 struct RealtimeSession {
   std::string incoming;
@@ -75,6 +82,7 @@ struct RealtimeSession {
   std::string voice = "vivian";
   std::string unified_session;
   std::string response_request_id;
+  Clock::time_point response_deadline{};
   int64_t response_segment = -1;
 };
 
@@ -140,39 +148,6 @@ json effective_session(const RealtimeSession& session) {
   return effective;
 }
 
-std::string encode_base64(std::string_view input) {
-  static constexpr char kTable[] =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  out.reserve((input.size() + 2) / 3 * 4);
-  size_t index = 0;
-  while (index + 3 <= input.size()) {
-    const uint32_t v = (static_cast<uint32_t>(static_cast<unsigned char>(input[index])) << 16) |
-                       (static_cast<uint32_t>(static_cast<unsigned char>(input[index + 1])) << 8) |
-                       static_cast<uint32_t>(static_cast<unsigned char>(input[index + 2]));
-    out.push_back(kTable[(v >> 18) & 63]);
-    out.push_back(kTable[(v >> 12) & 63]);
-    out.push_back(kTable[(v >> 6) & 63]);
-    out.push_back(kTable[v & 63]);
-    index += 3;
-  }
-  const size_t tail = input.size() - index;
-  if (tail == 1) {
-    const uint32_t v = static_cast<uint32_t>(static_cast<unsigned char>(input[index])) << 16;
-    out.push_back(kTable[(v >> 18) & 63]);
-    out.push_back(kTable[(v >> 12) & 63]);
-    out += "==";
-  } else if (tail == 2) {
-    const uint32_t v = (static_cast<uint32_t>(static_cast<unsigned char>(input[index])) << 16) |
-                       (static_cast<uint32_t>(static_cast<unsigned char>(input[index + 1])) << 8);
-    out.push_back(kTable[(v >> 18) & 63]);
-    out.push_back(kTable[(v >> 12) & 63]);
-    out.push_back(kTable[(v >> 6) & 63]);
-    out.push_back('=');
-  }
-  return out;
-}
-
 long long epoch_millis() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::system_clock::now().time_since_epoch())
@@ -196,47 +171,6 @@ std::optional<json> live_generation_metadata(const Value& result) {
   }
   if (out.empty()) return std::nullopt;
   return out;
-}
-
-int base64_value(unsigned char c) {
-  if (c >= 'A' && c <= 'Z') return c - 'A';
-  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-  if (c >= '0' && c <= '9') return c - '0' + 52;
-  if (c == '+') return 62;
-  if (c == '/') return 63;
-  return -1;
-}
-
-std::string decode_base64(std::string_view input) {
-  if (input.empty() || input.size() % 4 != 0) throw ProtocolError("invalid audio base64");
-  std::string output;
-  output.reserve(input.size() / 4 * 3);
-  for (size_t offset = 0; offset < input.size(); offset += 4) {
-    const bool last = offset + 4 == input.size();
-    const int padding = (input[offset + 3] == '=' ? 1 : 0) +
-                        (input[offset + 2] == '=' ? 1 : 0);
-    if ((!last && padding) || input[offset] == '=' || input[offset + 1] == '=' ||
-        (input[offset + 2] == '=' && input[offset + 3] != '=')) {
-      throw ProtocolError("invalid audio base64 padding");
-    }
-    int values[4] = {0, 0, 0, 0};
-    for (size_t index = 0; index < 4 - static_cast<size_t>(padding); ++index) {
-      values[index] = base64_value(static_cast<unsigned char>(input[offset + index]));
-      if (values[index] < 0) throw ProtocolError("invalid audio base64 character");
-    }
-    if ((padding == 2 && (values[1] & 15) != 0) ||
-        (padding == 1 && (values[2] & 3) != 0)) {
-      throw ProtocolError("non-canonical audio base64");
-    }
-    const uint32_t bits = (static_cast<uint32_t>(values[0]) << 18) |
-                          (static_cast<uint32_t>(values[1]) << 12) |
-                          (static_cast<uint32_t>(values[2]) << 6) |
-                          static_cast<uint32_t>(values[3]);
-    output.push_back(static_cast<char>((bits >> 16) & 0xff));
-    if (padding < 2) output.push_back(static_cast<char>((bits >> 8) & 0xff));
-    if (padding < 1) output.push_back(static_cast<char>(bits & 0xff));
-  }
-  return output;
 }
 
 int realtime_callback(lws* wsi, lws_callback_reasons reason, void* user,
@@ -376,13 +310,32 @@ class RealtimeApi::Impl {
 
   bool authorized(lws* wsi) const {
     if (config_.api_key.empty()) return true;
-    return header(wsi, WSI_TOKEN_HTTP_AUTHORIZATION) == "Bearer " + config_.api_key;
+    const std::string expected = "Bearer " + config_.api_key;
+    return util::constant_time_equals(header(wsi, WSI_TOKEN_HTTP_AUTHORIZATION),
+                                      expected);
+  }
+
+  bool at_session_capacity() const {
+    return active_session_count_.load(std::memory_order_relaxed) >=
+           kMaxRealtimeSessions;
+  }
+
+  void cancel_and_release_response(RealtimeSession* session,
+                                   const char* reason) {
+    if (session->response_request_id.empty()) return;
+    const std::string id = std::move(session->response_request_id);
+    session->response_request_id.clear();
+    if (unified_ != nullptr) {
+      unified_->cancel(id, reason);
+      unified_->release(id);
+    }
   }
 
   void established(lws* wsi, RealtimeSession* session) {
     new (session) RealtimeSession;
     session->unified_session = "realtime-" + std::to_string(++next_session_no_);
     sessions_.insert(wsi);
+    active_session_count_.store(sessions_.size(), std::memory_order_relaxed);
   }
 
   void closed(lws* wsi, RealtimeSession* session) {
@@ -390,21 +343,27 @@ class RealtimeApi::Impl {
       coordinator_.abort(session->request_id);
       coordinator_.release(session->request_id);
     }
-    if (!session->response_request_id.empty() && unified_ != nullptr) {
-      unified_->cancel(session->response_request_id, "shutdown");
-      session->response_request_id.clear();
-    }
+    cancel_and_release_response(session, "shutdown");
     sessions_.erase(wsi);
+    active_session_count_.store(sessions_.size(), std::memory_order_relaxed);
     session->~RealtimeSession();
   }
 
   void send(lws* wsi, RealtimeSession* session, const json& event) {
+    if (session->outbound.size() >= kMaxOutboundFrames) {
+      session->close_after_write = true;
+      return;
+    }
     session->outbound.push_back(event.dump());
     lws_callback_on_writable(wsi);
   }
 
   void fail(lws* wsi, RealtimeSession* session, const std::string& message) {
     if (session->close_after_write) return;
+    if (session->outbound.size() >= kMaxOutboundFrames &&
+        !session->outbound.empty()) {
+      session->outbound.pop_back();
+    }
     send(wsi, session,
          {{"type", "error"}, {"error", {{"code", "request_error"}, {"message", message}}}});
     session->close_after_write = true;
@@ -413,10 +372,7 @@ class RealtimeApi::Impl {
   // Stops the in-flight request at the stage's next boundary and drops its
   // record. libwebsockets thread only.
   void interrupt_request(RealtimeSession* session, const char* reason) {
-    if (unified_ != nullptr && !session->response_request_id.empty()) {
-      unified_->cancel(session->response_request_id, "barge_in");
-      session->response_request_id.clear();
-    }
+    cancel_and_release_response(session, "barge_in");
     if (session->request_id.empty()) return;
     const std::string request_id = session->request_id;
     session->last_interrupt_ms = epoch_millis();
@@ -453,9 +409,13 @@ class RealtimeApi::Impl {
     const size_t length = session->audio.size() - session->turn_audio_start;
     if (length == 0 || length % 2 != 0) return false;
     try {
+      size_t slice_offset = session->turn_audio_start;
+      if (!final && length > kMaxPreviewSpanBytes) {
+        slice_offset = session->audio.size() - kMaxPreviewSpanBytes;
+        if ((slice_offset - session->turn_audio_start) % 2 != 0) ++slice_offset;
+      }
       StagePayload payload = serve_detail::make_asr_payload(
-          session->audio.substr(session->turn_audio_start), session->max_tokens,
-          "", "");
+          session->audio.substr(slice_offset), session->max_tokens, "", "");
       // Ask the stage to stream. A stage that ignores stream sends no chunk;
       // this listener then emits only the final segment, as before.
       payload.request.params["stream"] = Value(true);
@@ -776,7 +736,9 @@ class RealtimeApi::Impl {
         if (!session->ready || !event.contains("audio") || !event["audio"].is_string()) {
           throw ProtocolError("audio append requires a string after session.update");
         }
-        std::string pcm = decode_base64(event["audio"].get_ref<const std::string&>());
+        std::string pcm = util::base64_decode(
+            event["audio"].get_ref<const std::string&>(), kMaxMessageBytes,
+            /*require_nonempty=*/true);
         if (pcm.empty() || pcm.size() % 2 != 0) throw ProtocolError("invalid PCM16 audio append");
         append_audio(wsi, session, pcm);
       } else if (type == "transcription.done") {
@@ -795,7 +757,16 @@ class RealtimeApi::Impl {
     const auto now = Clock::now();
     for (lws* wsi : sessions_) {
       auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
-      if (!session || session->request_id.empty()) continue;
+      if (!session) continue;
+      if (!session->response_request_id.empty() &&
+          now >= session->response_deadline) {
+        const int64_t segment = session->response_segment;
+        cancel_and_release_response(session, "timeout");
+        send(wsi, session, {{"type", "response.failed"},
+                            {"segment_id", segment},
+                            {"error", "spoken response timed out"}});
+      }
+      if (session->request_id.empty()) continue;
       const std::string request_id = session->request_id;
       if (!coordinator_.wait(request_id, 0)) {
         if (now >= session->deadline) {
@@ -866,10 +837,7 @@ class RealtimeApi::Impl {
   // arrives as audio.delta events through drain_unified().
   void start_response(RealtimeSession* session, const std::string& text) {
     if (unified_ == nullptr || !session->audio_output || text.empty()) return;
-    if (!session->response_request_id.empty()) {
-      unified_->cancel(session->response_request_id, "barge_in");
-      session->response_request_id.clear();
-    }
+    cancel_and_release_response(session, "barge_in");
     Value::Map inputs;
     Value::Array messages;
     Value::Map message;
@@ -885,9 +853,6 @@ class RealtimeApi::Impl {
     audio["voice"] = Value(session->voice);
     audio["stream"] = Value(true);
     inputs["audio_options"] = Value(std::move(audio));
-    // No session_history: a spoken turn must not grow the VLM prompt with
-    // every earlier answer, or first-audio latency grows with the session.
-    // The session id still keys the VLM's prefill cache.
     inputs["session_id"] = Value(session->unified_session);
     StagePayload payload;
     payload.request.inputs = Value(std::move(inputs));
@@ -895,6 +860,9 @@ class RealtimeApi::Impl {
     try {
       session->response_request_id = unified_->submit(std::move(payload));
       session->response_segment = session->segment_id;
+      session->response_deadline =
+          Clock::now() + std::chrono::duration_cast<Clock::duration>(
+                             std::chrono::duration<double>(config_.request_timeout_s));
       std::cerr << "realtime response_start segment=" << session->segment_id
                 << " request=" << session->response_request_id << "\n";
     } catch (const std::exception& error) {
@@ -911,17 +879,31 @@ class RealtimeApi::Impl {
       std::lock_guard<std::mutex> lock(unified_mu_);
       batch.swap(unified_queue_);
     }
+    const auto timeout_span = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(config_.request_timeout_s));
     for (const UnifiedEvent& event : batch) {
+      const bool terminal = event.kind == UnifiedEvent::Kind::kComplete ||
+                            event.kind == UnifiedEvent::Kind::kError ||
+                            event.kind == UnifiedEvent::Kind::kCancelled;
+      bool matched = false;
       for (lws* wsi : sessions_) {
         auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
         if (session == nullptr ||
-            session->response_request_id != event.request_id ||
-            session->close_after_write) {
+            session->response_request_id != event.request_id) {
           continue;
+        }
+        matched = true;
+        if (session->close_after_write) {
+          if (terminal) {
+            if (unified_ != nullptr) unified_->release(event.request_id);
+            session->response_request_id.clear();
+          }
+          break;
         }
         const int64_t segment = session->response_segment;
         switch (event.kind) {
           case UnifiedEvent::Kind::kVlmDelta:
+            session->response_deadline = Clock::now() + timeout_span;
             if (!event.text.empty()) {
               send(wsi, session, {{"type", "response.text.delta"},
                                   {"segment_id", segment},
@@ -929,30 +911,35 @@ class RealtimeApi::Impl {
             }
             break;
           case UnifiedEvent::Kind::kArtifact: {
+            session->response_deadline = Clock::now() + timeout_span;
             if (event.artifact_bytes == nullptr || event.artifact_length == 0) break;
-            const std::string pcm = event.artifact_bytes->substr(
-                event.artifact_offset, event.artifact_length);
+            const std::string_view pcm(
+                event.artifact_bytes->data() + event.artifact_offset,
+                event.artifact_length);
             send(wsi, session, {{"type", "audio.delta"},
                                 {"segment_id", segment},
                                 {"format", "pcm16"},
                                 {"sample_rate", 24000},
                                 {"channels", 1},
-                                {"audio", encode_base64(pcm)}});
+                                {"audio", util::base64_encode(pcm)}});
             break;
           }
           case UnifiedEvent::Kind::kComplete:
             send(wsi, session, {{"type", "audio.done"}, {"segment_id", segment}});
             send(wsi, session,
                  {{"type", "response.completed"}, {"segment_id", segment}});
+            if (unified_ != nullptr) unified_->release(event.request_id);
             session->response_request_id.clear();
             break;
           case UnifiedEvent::Kind::kError:
             send(wsi, session, {{"type", "response.failed"},
                                 {"segment_id", segment},
                                 {"error", event.error}});
+            if (unified_ != nullptr) unified_->release(event.request_id);
             session->response_request_id.clear();
             break;
           case UnifiedEvent::Kind::kCancelled:
+            if (unified_ != nullptr) unified_->release(event.request_id);
             session->response_request_id.clear();
             break;
           default:
@@ -960,13 +947,27 @@ class RealtimeApi::Impl {
         }
         break;
       }
+      if (!matched && terminal && unified_ != nullptr &&
+          event.request_id.rfind("http-", 0) != 0) {
+        // Release an orphaned realtime response whose session closed or moved
+        // on before the terminal event was drained; never touch HTTP SSE ids.
+        if (const auto info = unified_->info(event.request_id);
+            info && info->state != "running" && info->state != "pending") {
+          unified_->release(event.request_id);
+        }
+      }
     }
   }
 
   void forward_event(const UnifiedEvent& event) {
+    const bool terminal = event.kind == UnifiedEvent::Kind::kComplete ||
+                          event.kind == UnifiedEvent::Kind::kError ||
+                          event.kind == UnifiedEvent::Kind::kCancelled ||
+                          event.kind == UnifiedEvent::Kind::kLegError;
     std::lock_guard<std::mutex> lock(unified_mu_);
-    // ponytail: fixed cap; a stalled WebSocket must not grow the queue.
-    if (unified_queue_.size() >= 4096) return;
+    // Drop only incremental frames under extreme backpressure; terminal events
+    // must always be delivered so UnifiedEngine records are released cleanly.
+    if (!terminal && unified_queue_.size() >= 4096) return;
     unified_queue_.push_back(event);
   }
 
@@ -977,6 +978,7 @@ class RealtimeApi::Impl {
   lws_context* context_ = nullptr;
   lws_sorted_usec_list_t poll_sul_{};
   std::atomic<bool> running_{false};
+  std::atomic<size_t> active_session_count_{0};
   std::set<lws*> sessions_;
   Coordinator::StreamSink previous_stream_;
   Coordinator::CompleteSink previous_complete_;
@@ -1001,6 +1003,11 @@ int realtime_callback(lws* wsi, lws_callback_reasons reason, void* user,
     case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION:
       if (!self->authorized(wsi)) {
         lws_return_http_status(wsi, HTTP_STATUS_UNAUTHORIZED, "invalid api key");
+        return -1;
+      }
+      if (self->at_session_capacity()) {
+        lws_return_http_status(wsi, HTTP_STATUS_SERVICE_UNAVAILABLE,
+                               "realtime session capacity reached");
         return -1;
       }
       {
