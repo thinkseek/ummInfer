@@ -62,9 +62,12 @@ CancellableComputeFn make_compute(const StageOptions& options) {
   auto tokenizer = std::make_shared<qwen38::Qwen2BpeTokenizer>(
       options.model_dir + "/vocab.json", options.model_dir + "/merges.txt",
       options.model_dir + "/tokenizer_config.json");
+  // batch_size > 1 enables continuous batching; the engine owns one batch
+  // thread and is safe to call from several scheduler workers.
+  const int batch_size = options.batch_size > 1 ? options.batch_size : 1;
   auto engine = std::make_shared<qwen38::Engine>(
       options.model_dir, options.gpu,
-      options.max_seq > 0 ? options.max_seq : 8192);
+      options.max_seq > 0 ? options.max_seq : 8192, batch_size);
 
   const int gpu = options.gpu;
   return [tokenizer, engine, max_new_tokens, gpu](
@@ -97,21 +100,42 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     // new bytes. Byte-level BPE only appends, which keeps this monotonic.
     std::vector<int> generated;
     std::string emitted;
-    auto emit_token = [&tokenizer, &generated, &emitted](int id) {
+    // Copy the sink and id bound to this compute call. In batched mode the
+    // callback fires on the engine's batch thread, where the scheduler's
+    // thread-locals are not bound.
+    const StreamFn stream = bound_stream_fn();
+    const std::string stream_id = bound_request_id();
+    auto emit_token = [&tokenizer, &generated, &emitted, stream,
+                       stream_id](int id) {
       generated.push_back(id);
       const std::string text = tokenizer->decode(generated);
       const size_t safe = utf8_complete_prefix(text);
       if (safe <= emitted.size()) return;
       Value::Map chunk;
       chunk["text"] = Value(text.substr(emitted.size(), safe - emitted.size()));
-      emit_stage_stream(Value(std::move(chunk)));
+      Value value(std::move(chunk));
+      if (stream) {
+        stream(stream_id, std::move(value));
+      } else {
+        emit_stage_stream(std::move(value));
+      }
       emitted = text.substr(0, safe);
     };
 
     qwen38::GenResult result;
     try {
-      result = engine->generate(ids, image.get(), max_new_tokens, "",
-                                [&tracker] { return tracker(); }, emit_token);
+      if (engine->batch_capacity() > 1) {
+        qwen38::BatchRequest request;
+        request.prompt_ids = std::move(ids);
+        request.image = image.get();
+        request.max_new_tokens = max_new_tokens;
+        request.abort = [&tracker] { return tracker(); };
+        request.on_token = emit_token;
+        result = engine->generate_batched(request);
+      } else {
+        result = engine->generate(ids, image.get(), max_new_tokens, "",
+                                  [&tracker] { return tracker(); }, emit_token);
+      }
     } catch (const qwen38::GenerationAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);

@@ -516,6 +516,194 @@ __global__ void argmax_kernel(const float* x, int n, int* best_idx) {
   }
 }
 
+// ---- Continuous batching --------------------------------------------------
+// The per-sequence kernels below keep the row math of their single-sequence
+// counterpart. Only the state base and the visible KV prefix become per-span,
+// so a row's result does not depend on which other rows share the call.
+__global__ void gather_rows_kernel(Bf16* dst, const Bf16* src, const int* rows,
+                                   int m, int dim) {
+  const int s = blockIdx.y;
+  if (s >= m) return;
+  const Bf16* sr = src + static_cast<size_t>(rows[s]) * dim;
+  Bf16* dr = dst + static_cast<size_t>(s) * dim;
+  for (int i = threadIdx.x; i < dim; i += blockDim.x) dr[i] = sr[i];
+}
+
+__global__ void argmax_rows_kernel(const float* x, int n, int* best_idx) {
+  const int row = blockIdx.x;
+  const float* xr = x + static_cast<size_t>(row) * n;
+  __shared__ int s_idx[1024];
+  __shared__ float wv[32];
+  float local_val = -INFINITY;
+  int local_idx = 0;
+  for (int i = threadIdx.x; i < n; i += blockDim.x) {
+    const float v = xr[i];
+    if (v > local_val) { local_val = v; local_idx = i; }
+  }
+  const int lane = threadIdx.x & 31, wid = threadIdx.x >> 5;
+  for (int off = 16; off > 0; off >>= 1) {
+    const float ov = __shfl_down_sync(0xffffffffu, local_val, off);
+    const int oi = __shfl_down_sync(0xffffffffu, local_idx, off);
+    if (ov > local_val) { local_val = ov; local_idx = oi; }
+  }
+  if (lane == 0) { wv[wid] = local_val; s_idx[wid] = local_idx; }
+  __syncthreads();
+  if (wid == 0) {
+    const int nw = (blockDim.x + 31) / 32;
+    if (threadIdx.x < nw) { local_val = wv[lane]; local_idx = s_idx[lane]; }
+    for (int off = 16; off > 0; off >>= 1) {
+      const float ov = __shfl_down_sync(0xffffffffu, local_val, off);
+      const int oi = __shfl_down_sync(0xffffffffu, local_idx, off);
+      if (ov > local_val) { local_val = ov; local_idx = oi; }
+    }
+    if (lane == 0) best_idx[row] = local_idx;
+  }
+}
+
+__global__ void conv1d_causal_silu_seg_kernel(const Bf16* x, const Bf16* w,
+                                              Bf16* state, Bf16* out,
+                                              SeqSpans spans, int nseq,
+                                              int channels, size_t seq_stride) {
+  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= channels) return;
+  const float w0 = bf(w[c * 4 + 0]), w1 = bf(w[c * 4 + 1]);
+  const float w2 = bf(w[c * 4 + 2]), w3 = bf(w[c * 4 + 3]);
+  for (int s = 0; s < nseq; ++s) {
+    Bf16* st = state + static_cast<size_t>(spans.slot[s]) * seq_stride;
+    float h0 = bf(st[c]);
+    float h1 = bf(st[channels + c]);
+    float h2 = bf(st[2 * channels + c]);
+    for (int i = 0; i < spans.len[s]; ++i) {
+      const int t = spans.off[s] + i;
+      const float xt = bf(x[static_cast<size_t>(t) * channels + c]);
+      const float acc = bf(to_bf(w0 * h0 + w1 * h1 + w2 * h2 + w3 * xt));
+      out[static_cast<size_t>(t) * channels + c] =
+          to_bf(acc / (1.0f + expf(-acc)));
+      h0 = h1;
+      h1 = h2;
+      h2 = xt;
+    }
+    st[c] = to_bf(h0);
+    st[channels + c] = to_bf(h1);
+    st[2 * channels + c] = to_bf(h2);
+  }
+}
+
+__global__ void gated_delta_rule_seg_kernel(float* state, const float* qn,
+                                            const float* kn, const Bf16* v,
+                                            const float* beta, const float* g,
+                                            Bf16* out, SeqSpans spans, int nseq,
+                                            int k_heads, int v_heads, int dim,
+                                            size_t seq_stride) {
+  extern __shared__ float sm[];
+  const int stride = dim + 1;
+  const int hv = blockIdx.x;
+  const int vid = threadIdx.x;
+  const int group = v_heads / k_heads;
+  const int kh = hv / group;
+  float* S = sm;
+  for (int s = 0; s < nseq; ++s) {
+    float* sbase = state + static_cast<size_t>(spans.slot[s]) * seq_stride +
+                   static_cast<size_t>(hv) * dim * dim;
+    for (int k = 0; k < dim; ++k) S[k * stride + vid] = sbase[k * dim + vid];
+    __syncthreads();
+    for (int i = 0; i < spans.len[s]; ++i) {
+      const int t = spans.off[s] + i;
+      const float decay = expf(g[t * v_heads + hv]);
+      const float bt = beta[t * v_heads + hv];
+      const size_t qrow = (static_cast<size_t>(t) * k_heads + kh) * dim;
+      float kv_mem = 0.0f;
+      for (int k = 0; k < dim; ++k) {
+        const float sv = S[k * stride + vid] * decay;
+        S[k * stride + vid] = sv;
+        kv_mem += sv * kn[qrow + k];
+      }
+      const float delta =
+          (bf(v[(static_cast<size_t>(t) * v_heads + hv) * dim + vid]) - kv_mem) * bt;
+      for (int k = 0; k < dim; ++k) S[k * stride + vid] += kn[qrow + k] * delta;
+      __syncthreads();
+      float acc = 0.0f;
+      for (int k = 0; k < dim; ++k) acc += S[k * stride + vid] * qn[qrow + k];
+      out[(static_cast<size_t>(t) * v_heads + hv) * dim + vid] = to_bf(acc);
+      __syncthreads();
+    }
+    for (int k = 0; k < dim; ++k) sbase[k * dim + vid] = S[k * stride + vid];
+    // The next span reloads S from its own state; no thread may still read.
+    __syncthreads();
+  }
+}
+
+__global__ void attention_seg_kernel(const Bf16* __restrict__ q,
+                                     const Bf16* __restrict__ kbase,
+                                     const Bf16* __restrict__ vbase,
+                                     const Bf16* __restrict__ gate,
+                                     Bf16* __restrict__ out, SeqSpans spans,
+                                     int nseq, size_t seq_stride, int n_q_heads,
+                                     int n_kv_heads, int head_dim) {
+  extern __shared__ float smem[];
+  float* qs = smem;                     // head_dim
+  float* acc = smem + head_dim;         // head_dim
+  float* reduce = smem + 2 * head_dim;  // 32
+  __shared__ float s_max, s_sum, s_w;
+  const int row = blockIdx.y;
+  const int qh = blockIdx.x;
+  const int tid = threadIdx.x;
+  int s = 0;
+  while (s + 1 < nseq && row >= spans.off[s] + spans.len[s]) ++s;
+  const int hi = spans.hist[s] + (row - spans.off[s]) + 1;
+  const bf16* k = reinterpret_cast<const bf16*>(kbase) +
+                  static_cast<size_t>(spans.slot[s]) * seq_stride;
+  const bf16* v = reinterpret_cast<const bf16*>(vbase) +
+                  static_cast<size_t>(spans.slot[s]) * seq_stride;
+  const int kvh = qh * n_kv_heads / n_q_heads;
+  const Bf16* qrow = q + (static_cast<size_t>(row) * n_q_heads + qh) * head_dim;
+  for (int i = tid; i < head_dim; i += blockDim.x) qs[i] = bf(qrow[i]);
+  __syncthreads();
+  const float scale = rsqrtf(static_cast<float>(head_dim));
+
+  if (tid == 0) s_max = -INFINITY;
+  __syncthreads();
+  for (int kj = 0; kj < hi; ++kj) {
+    const bf16* krow =
+        k + (static_cast<size_t>(kj) * n_kv_heads + kvh) * head_dim;
+    const float dot = block_dot(qs, krow, head_dim, reduce) * scale;
+    if (tid == 0) s_max = fmaxf(s_max, dot);
+    __syncthreads();
+  }
+  const float mx = s_max;
+
+  if (tid == 0) s_sum = 0.0f;
+  for (int i = tid; i < head_dim; i += blockDim.x) acc[i] = 0.0f;
+  __syncthreads();
+  for (int kj = 0; kj < hi; ++kj) {
+    const bf16* krow =
+        k + (static_cast<size_t>(kj) * n_kv_heads + kvh) * head_dim;
+    const float weight = expf(block_dot(qs, krow, head_dim, reduce) * scale - mx);
+    if (tid == 0) {
+      s_w = weight;
+      s_sum += weight;
+    }
+    __syncthreads();
+    const bf16* vrow =
+        v + (static_cast<size_t>(kj) * n_kv_heads + kvh) * head_dim;
+    const float wgt = s_w;
+    for (int i = tid; i < head_dim; i += blockDim.x)
+      acc[i] += wgt * __bfloat162float(vrow[i]);
+    __syncthreads();
+  }
+  const float inv = 1.0f / s_sum;
+  Bf16* orow = out + (static_cast<size_t>(row) * n_q_heads + qh) * head_dim;
+  const Bf16* grow =
+      gate + (static_cast<size_t>(row) * n_q_heads + qh) * head_dim;
+  for (int i = tid; i < head_dim; i += blockDim.x) {
+    float o = bf(to_bf(acc[i] * inv));
+    const float gv = bf(grow[i]);
+    const float sg = 1.0f / (1.0f + expf(-gv));
+    o *= bf(to_bf(sg));
+    orow[i] = to_bf(o);
+  }
+}
+
 bool g_dgr_configured = false;
 void configure_dgr_smem(int dim) {
   if (g_dgr_configured) return;
@@ -523,6 +711,10 @@ void configure_dgr_smem(int dim) {
   cudaError_t e = cudaFuncSetAttribute(
       gated_delta_rule_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
       static_cast<int>(bytes));
+  if (e == cudaSuccess)
+    e = cudaFuncSetAttribute(
+        gated_delta_rule_seg_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        static_cast<int>(bytes));
   if (e != cudaSuccess)
     throw std::runtime_error(std::string("cudaFuncSetAttribute: ") + cudaGetErrorString(e));
   g_dgr_configured = true;
@@ -673,6 +865,52 @@ void gated_rms_norm(const Bf16* x, const Bf16* z, const Bf16* weight, Bf16* out,
   gated_rms_norm_kernel<<<rows, 128, 0, stream>>>(x, z, weight, out, dim, eps);
 }
 
+void gather_rows(Bf16* dst, const Bf16* src, const int* rows, int m, int dim,
+                 cudaStream_t stream) {
+  dim3 grid(1, m);
+  gather_rows_kernel<<<grid, 256, 0, stream>>>(dst, src, rows, m, dim);
+}
+
+void argmax_rows(const float* logits, int rows, int n, int* idx,
+                 cudaStream_t stream) {
+  argmax_rows_kernel<<<rows, 1024, 0, stream>>>(logits, n, idx);
+}
+
+void conv1d_causal_silu_seg(const Bf16* x, const Bf16* w, Bf16* state, Bf16* out,
+                            const SeqSpans& spans, int nseq, int channels,
+                            size_t seq_stride, cudaStream_t stream) {
+  conv1d_causal_silu_seg_kernel<<<(channels + 255) / 256, 256, 0, stream>>>(
+      x, w, state, out, spans, nseq, channels, seq_stride);
+}
+
+void gated_delta_rule_seg(float* state, const float* qn, const float* kn,
+                          const Bf16* v, const float* beta, const float* g,
+                          Bf16* out, const SeqSpans& spans, int nseq, int k_heads,
+                          int v_heads, int dim, size_t seq_stride,
+                          cudaStream_t stream) {
+  configure_dgr_smem(dim);
+  const size_t smem = static_cast<size_t>(dim) * (dim + 1) * sizeof(float);
+  gated_delta_rule_seg_kernel<<<v_heads, dim, smem, stream>>>(
+      state, qn, kn, v, beta, g, out, spans, nseq, k_heads, v_heads, dim,
+      seq_stride);
+}
+
+void gqa_attention_seg(const Bf16* q, const Bf16* k_cache, const Bf16* v_cache,
+                       const Bf16* gate, Bf16* out, const SeqSpans& spans,
+                       int nseq, size_t seq_stride, int n_q_heads,
+                       int n_kv_heads, int head_dim, cudaStream_t stream) {
+  int rows = 0;
+  for (int s = 0; s < nseq; ++s) {
+    const int end = spans.off[s] + spans.len[s];
+    rows = end > rows ? end : rows;
+  }
+  dim3 grid(n_q_heads, rows);
+  const size_t smem = (2 * head_dim + 32) * sizeof(float);
+  attention_seg_kernel<<<grid, 128, smem, stream>>>(
+      q, k_cache, v_cache, gate, out, spans, nseq, seq_stride, n_q_heads,
+      n_kv_heads, head_dim);
+}
+
 int argmax_f32(const float* logits, int n, int* scratch_idx, cudaStream_t stream) {
   argmax_kernel<<<1, 1024, 0, stream>>>(logits, n, scratch_idx);
   int idx = -1;
@@ -680,5 +918,4 @@ int argmax_f32(const float* logits, int n, int* scratch_idx, cudaStream_t stream
   cudaStreamSynchronize(stream);
   return idx;
 }
-
 }  // namespace umminfer::qwen38

@@ -19,6 +19,15 @@ void emit_stage_stream(Value chunk) {
   (*g_stream_sink)(g_stream_request, std::move(chunk));
 }
 
+StreamFn bound_stream_fn() {
+  if (g_stream_sink == nullptr || !*g_stream_sink) return {};
+  return *g_stream_sink;
+}
+
+std::string bound_request_id() {
+  return g_stream_sink == nullptr ? std::string() : g_stream_request;
+}
+
 SimpleScheduler::SimpleScheduler(ComputeFn compute_fn,
                                  BatchComputeFn batch_compute_fn,
                                  int max_batch_size, int max_batch_wait_ms,
@@ -28,7 +37,8 @@ SimpleScheduler::SimpleScheduler(ComputeFn compute_fn,
                                  std::function<void(const std::string&)> abort_callback,
                                  std::function<void()> shutdown_callback,
                                  RequestArrivalHook request_arrival_hook,
-                                 std::chrono::milliseconds abort_retention)
+                                 std::chrono::milliseconds abort_retention,
+                                 EngineContract contract)
     : fn_(std::move(compute_fn)),
       batch_fn_(std::move(batch_compute_fn)),
       max_batch_size_(std::max(max_batch_size, 1)),
@@ -41,9 +51,15 @@ SimpleScheduler::SimpleScheduler(ComputeFn compute_fn,
       abort_callback_(std::move(abort_callback)),
       shutdown_callback_(std::move(shutdown_callback)),
       request_arrival_hook_(std::move(request_arrival_hook)),
-      abort_retention_(std::max(abort_retention, std::chrono::milliseconds{1})) {
+      abort_retention_(std::max(abort_retention, std::chrono::milliseconds{1})),
+      contract_(contract) {
   if (max_concurrency_ > 1 && batch_fn_) {
     throw ProtocolError("max_concurrency > 1 and batch_compute_fn are mutually exclusive");
+  }
+  // Concurrency is only safe when the engine declares itself thread-safe.
+  if (max_concurrency_ > 1 && contract_ != EngineContract::kThreadSafe) {
+    throw ProtocolError(
+        "max_concurrency > 1 requires EngineContract::kThreadSafe");
   }
 }
 

@@ -244,6 +244,90 @@ __global__ void __launch_bounds__(128) gemv_kernel(const bf16* __restrict__ w,
   }
 }
 
+// Batched decode GEMV. Each warp owns four output rows and keeps one fp32
+// accumulator per (row, input) pair. An input vector element is loaded once and
+// multiplied against all four weight rows, so the load-instruction count per
+// weight byte stays low. Per (row, input) the k reduction order and the warp
+// shuffle match gemv_kernel, so the value is bitwise equal to running that row
+// alone.
+template <typename OutT>
+__global__ void __launch_bounds__(128) gemv_batch_kernel(
+    const bf16* __restrict__ w, const bf16* __restrict__ x,
+    OutT* __restrict__ out, int m, int n_out, int k) {
+  constexpr int kRowsPerWarp = 4;
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  const int row0 = (blockIdx.x * 4 + warp) * kRowsPerWarp;
+  if (row0 >= n_out) return;
+  const bf16* wr = w + static_cast<size_t>(row0) * k;
+  float acc[kRowsPerWarp][kMaxBatch];
+  #pragma unroll
+  for (int r = 0; r < kRowsPerWarp; ++r)
+    #pragma unroll
+    for (int b = 0; b < kMaxBatch; ++b) acc[r][b] = 0.0f;
+
+  const int step = 32 * 8;
+  int i = lane * 8;
+  for (; i + 8 <= k; i += step) {
+    uint4 xv[kMaxBatch];
+    #pragma unroll
+    for (int b = 0; b < kMaxBatch; ++b) {
+      if (b >= m) continue;
+      xv[b] = *reinterpret_cast<const uint4*>(x + static_cast<size_t>(b) * k + i);
+    }
+    #pragma unroll
+    for (int r = 0; r < kRowsPerWarp; ++r) {
+      if (row0 + r >= n_out) continue;
+      const uint4 v =
+          *reinterpret_cast<const uint4*>(wr + static_cast<size_t>(r) * k + i);
+      const __nv_bfloat162* vb = reinterpret_cast<const __nv_bfloat162*>(&v);
+      #pragma unroll
+      for (int b = 0; b < kMaxBatch; ++b) {
+        if (b >= m) continue;
+        const __nv_bfloat162* ub =
+            reinterpret_cast<const __nv_bfloat162*>(&xv[b]);
+        #pragma unroll
+        for (int e = 0; e < 4; ++e) {
+          const float2 fv = __bfloat1622float2(vb[e]);
+          const float2 fu = __bfloat1622float2(ub[e]);
+          acc[r][b] += fv.x * fu.x + fv.y * fu.y;
+        }
+      }
+    }
+  }
+  for (; i < k; ++i) {
+    #pragma unroll
+    for (int r = 0; r < kRowsPerWarp; ++r) {
+      if (row0 + r >= n_out) continue;
+      const float wv = __bfloat162float(wr[static_cast<size_t>(r) * k + i]);
+      #pragma unroll
+      for (int b = 0; b < kMaxBatch; ++b) {
+        if (b >= m) continue;
+        acc[r][b] += wv * __bfloat162float(x[static_cast<size_t>(b) * k + i]);
+      }
+    }
+  }
+  #pragma unroll
+  for (int r = 0; r < kRowsPerWarp; ++r) {
+    if (row0 + r >= n_out) continue;
+    #pragma unroll
+    for (int b = 0; b < kMaxBatch; ++b) {
+      if (b >= m) continue;
+      #pragma unroll
+      for (int off = 16; off > 0; off >>= 1)
+        acc[r][b] += __shfl_down_sync(0xffffffffu, acc[r][b], off);
+    }
+    if (lane == 0) {
+      #pragma unroll
+      for (int b = 0; b < kMaxBatch; ++b) {
+        if (b >= m) continue;
+        const size_t o = static_cast<size_t>(b) * n_out + row0 + r;
+        if (sizeof(OutT) == 4) out[o] = acc[r][b];
+        else out[o] = static_cast<OutT>(__float2bfloat16(acc[r][b]));
+      }
+    }
+  }
+}
+
 }  // namespace
 
 void gemm_bf16(Bf16* y, const Bf16* x, const Bf16* w, const Bf16* bias, int m,
@@ -278,6 +362,22 @@ void gemv_bf16_bf16(const Bf16* w, const Bf16* x, Bf16* out, int n_out, int k,
   gemv_kernel<bf16><<<(n_out + 3) / 4, 128, 0, stream>>>(
       reinterpret_cast<const bf16*>(w), reinterpret_cast<const bf16*>(x),
       reinterpret_cast<bf16*>(out), n_out, k);
+}
+
+void gemv_bf16_f32_batch(const Bf16* w, const Bf16* x, float* out, int m,
+                         int n_out, int k, cudaStream_t stream) {
+  if (m <= 0 || n_out <= 0 || k <= 0) return;
+  gemv_batch_kernel<float><<<m * ((n_out + 3) / 4), 128, 0, stream>>>(
+      reinterpret_cast<const bf16*>(w), reinterpret_cast<const bf16*>(x), out,
+      m, n_out, k);
+}
+
+void gemv_bf16_bf16_batch(const Bf16* w, const Bf16* x, Bf16* out, int m,
+                          int n_out, int k, cudaStream_t stream) {
+  if (m <= 0 || n_out <= 0 || k <= 0) return;
+  gemv_batch_kernel<bf16><<<m * ((n_out + 3) / 4), 128, 0, stream>>>(
+      reinterpret_cast<const bf16*>(w), reinterpret_cast<const bf16*>(x),
+      reinterpret_cast<bf16*>(out), m, n_out, k);
 }
 
 }  // namespace umminfer::qwen38

@@ -9,12 +9,17 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <exception>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
-#include <cstring>
 
 #include "qwen38_ops.hpp"
 #include "safetensors_mmap.hpp"
@@ -219,13 +224,43 @@ std::vector<Bf16> interpolate_pos_embed(const std::vector<Bf16>& table, int grid
 
 }  // namespace
 
+// One queued batch request plus its decode progress. The batch thread owns
+// every field after `req`; the calling thread reads `result` and `error` only
+// after `done` is set under `mu`.
+struct BatchJob {
+  BatchRequest req;
+  std::mutex mu;
+  std::condition_variable cv;
+  bool done = false;
+  GenResult result;
+  std::exception_ptr error;
+  int slot = -1;
+  int seq_len = 0;   // tokens already in the KV cache
+  int next_pos = 0;  // mRoPE position of next_token
+  int next_token = 0;
+  std::chrono::steady_clock::time_point decode_started;
+};
+
 struct Engine::Impl {
   int gpu = 0;
   int max_seq = 8192;
+  int batch_capacity = 1;
   std::unique_ptr<ShardedSafetensors> shards;
   std::unordered_map<std::string, Tensor> weights;
   std::vector<Bf16> pos_table_host;  // [2304, 1152] learned vision position grid
   cudaStream_t stream = nullptr;
+
+  // Continuous batching. Only the batch thread touches these after start.
+  std::thread batch_thread;
+  std::mutex queue_mu;
+  std::condition_variable queue_cv;
+  std::deque<std::shared_ptr<BatchJob>> queue;
+  bool stopping = false;
+  std::vector<std::shared_ptr<BatchJob>> active;
+  std::vector<int> free_slots;
+  Bf16* last_hidden = nullptr;  // [kMaxBatch][kHidden]
+  int* argmax_idx = nullptr;    // [kMaxBatch]
+  int* d_logit_rows = nullptr;  // [kMaxBatch] gather rows for the LM head
 
   // Text workspaces.
   Bf16 *hidden = nullptr, *norm = nullptr, *qg = nullptr, *q = nullptr,
@@ -344,24 +379,31 @@ struct Engine::Impl {
     mf(&decay, S * kLVH);
     mb(&mrope_cos, S * kRotaryDim);
     mb(&mrope_sin, S * kRotaryDim);
-    mf(&logits, kVocab);
+    // The text caches are indexed [sequence][layer][...]. Sequence 0 keeps the
+    // exact layout the single-request executor used, so its kernels are
+    // unchanged. batch_capacity == 1 allocates exactly one sequence.
+    const size_t B = static_cast<size_t>(batch_capacity);
+    const size_t rec_bytes = sizeof(float) * kLayers * kLVH * kLVD * kLVD;
+    const size_t conv_bytes = sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1);
+    const size_t kv_bytes = sizeof(Bf16) * 16 * 2 * S * kKvHeads * kHeadDim;
+    mf(&logits, B * kVocab);
     UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_ids),
                                      S * sizeof(int)));
     UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&argmax_scratch),
                                      sizeof(int)));
+    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&argmax_idx),
+                                     B * sizeof(int)));
+    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_logit_rows),
+                                     kMaxBatch * sizeof(int)));
+    mb(&last_hidden, static_cast<size_t>(kMaxBatch) * kHidden);
     UMM_QWEN38_CUDA_CHECK(
-        cudaMalloc(reinterpret_cast<void**>(&kv),
-                   sizeof(Bf16) * 16 * 2 * S * kKvHeads * kHeadDim));
+        cudaMalloc(reinterpret_cast<void**>(&kv), B * kv_bytes));
     UMM_QWEN38_CUDA_CHECK(
-        cudaMalloc(reinterpret_cast<void**>(&rec_state),
-                   sizeof(float) * kLayers * kLVH * kLVD * kLVD));
+        cudaMalloc(reinterpret_cast<void**>(&rec_state), B * rec_bytes));
     UMM_QWEN38_CUDA_CHECK(
-        cudaMalloc(reinterpret_cast<void**>(&conv_state),
-                   sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1)));
-    UMM_QWEN38_CUDA_CHECK(
-        cudaMemset(rec_state, 0, sizeof(float) * kLayers * kLVH * kLVD * kLVD));
-    UMM_QWEN38_CUDA_CHECK(
-        cudaMemset(conv_state, 0, sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1)));
+        cudaMalloc(reinterpret_cast<void**>(&conv_state), B * conv_bytes));
+    UMM_QWEN38_CUDA_CHECK(cudaMemset(rec_state, 0, B * rec_bytes));
+    UMM_QWEN38_CUDA_CHECK(cudaMemset(conv_state, 0, B * conv_bytes));
 
     const size_t T = kVisTokenCap;
     mb(&d_pixels, T * kPatchDim);
@@ -380,13 +422,19 @@ struct Engine::Impl {
   }
 };
 
-Engine::Engine(const std::string& model_dir, int gpu, int max_seq) {
+Engine::Engine(const std::string& model_dir, int gpu, int max_seq,
+               int batch_capacity) {
   impl_ = std::make_unique<Impl>();
   impl_->gpu = gpu;
   impl_->max_seq = max_seq;
+  impl_->batch_capacity = std::max(batch_capacity, 1);
+  if (impl_->batch_capacity > kMaxBatch)
+    throw std::runtime_error("batch_capacity exceeds kMaxBatch");
   UMM_QWEN38_CUDA_CHECK(cudaSetDevice(gpu));
   impl_->load_weights(model_dir);
   impl_->alloc();
+  impl_->free_slots.resize(static_cast<size_t>(impl_->batch_capacity));
+  for (int i = 0; i < impl_->batch_capacity; ++i) impl_->free_slots[i] = i;
 
   // The learned position table is small; interpolation runs on the host.
   const Bf16* table = impl_->bf("model.visual.pos_embed.weight");
@@ -398,6 +446,14 @@ Engine::Engine(const std::string& model_dir, int gpu, int max_seq) {
 
 Engine::~Engine() {
   if (!impl_) return;
+  if (impl_->batch_thread.joinable()) {
+    {
+      std::lock_guard<std::mutex> lock(impl_->queue_mu);
+      impl_->stopping = true;
+    }
+    impl_->queue_cv.notify_all();
+    impl_->batch_thread.join();
+  }
   for (const auto& [name, t] : impl_->weights)
     cudaFree(const_cast<void*>(t.ptr));
   Impl& im = *impl_;
@@ -411,12 +467,15 @@ Engine::~Engine() {
   fb(im.v); fb(im.o); fb(im.mlp_gate); fb(im.mlp_up); fb(im.mlp_act);
   fb(im.mixed); fb(im.mixed_conv); fb(im.z); fb(im.b); fb(im.a); fb(im.core);
   fb(im.gated); fb(im.mrope_cos); fb(im.mrope_sin); fb(im.kv); fb(im.conv_state);
+  fb(im.last_hidden);
   ff(im.qn); ff(im.kn); ff(im.beta); ff(im.decay); ff(im.logits); ff(im.rec_state);
   fb(im.d_pixels); fb(im.v_hidden); fb(im.v_norm); fb(im.v_qkv); fb(im.v_q);
   fb(im.v_k); fb(im.v_v); fb(im.v_proj); fb(im.v_mlp); fb(im.v_pos); fb(im.pooler);
   ff(im.v_rope_cos); ff(im.v_rope_sin);
   if (im.d_ids) cudaFree(im.d_ids);
   if (im.argmax_scratch) cudaFree(im.argmax_scratch);
+  if (im.argmax_idx) cudaFree(im.argmax_idx);
+  if (im.d_logit_rows) cudaFree(im.d_logit_rows);
   if (im.stream) cudaStreamDestroy(im.stream);
 }
 
@@ -643,6 +702,475 @@ void run_layer(Engine::Impl& im, int layer, int m, int history,
              static_cast<size_t>(m) * kHidden * sizeof(Bf16));
 }
 
+// ---- continuous batching --------------------------------------------------
+constexpr size_t kKvRow = static_cast<size_t>(kKvHeads) * kHeadDim;
+
+void finish_job(const std::shared_ptr<BatchJob>& job) {
+  {
+    std::lock_guard<std::mutex> lock(job->mu);
+    job->done = true;
+  }
+  job->cv.notify_all();
+}
+
+void release_slot(Engine::Impl& im, const std::shared_ptr<BatchJob>& job) {
+  if (job->slot < 0) return;
+  im.free_slots.push_back(job->slot);
+  job->slot = -1;
+}
+
+void retire_job(Engine::Impl& im, const std::shared_ptr<BatchJob>& job) {
+  job->result.decode_ms = ms_since(job->decode_started);
+  release_slot(im, job);
+  finish_job(job);
+}
+
+// Emits the current token. Returns true when the request reached EOS or its
+// token limit, which matches the single-request loop's terminal condition.
+bool emit_token(const std::shared_ptr<BatchJob>& job) {
+  job->result.ids.push_back(job->next_token);
+  if (job->req.on_token) job->req.on_token(job->next_token);
+  return is_eos(job->next_token) ||
+         static_cast<int>(job->result.ids.size()) >= job->req.max_new_tokens;
+}
+
+void seg_linear(Bf16* y, const Bf16* x, const Bf16* w, int rows, int k, int n,
+                bool use_gemv, cudaStream_t st) {
+  if (use_gemv)
+    gemv_bf16_bf16_batch(w, x, y, rows, n, k, st);
+  else
+    gemm_bf16(y, x, w, nullptr, rows, k, n, st);
+}
+
+void linear_layer_seg(Engine::Impl& im, int layer, int rows, const SeqSpans& sp,
+                      int nseq, bool use_gemv) {
+  cudaStream_t st = im.stream;
+  const std::string lp = "model.language_model.layers." + std::to_string(layer);
+  rms_norm_zero_centered(im.hidden, im.bf(lp + ".input_layernorm.weight"), im.norm,
+                         rows, kHidden, kEps, st);
+  seg_linear(im.mixed, im.norm, im.bf(lp + ".linear_attn.in_proj_qkv.weight"),
+             rows, kHidden, kConvDim, use_gemv, st);
+  seg_linear(im.z, im.norm, im.bf(lp + ".linear_attn.in_proj_z.weight"), rows,
+             kHidden, kValueDim, use_gemv, st);
+  seg_linear(im.b, im.norm, im.bf(lp + ".linear_attn.in_proj_b.weight"), rows,
+             kHidden, kLVH, use_gemv, st);
+  seg_linear(im.a, im.norm, im.bf(lp + ".linear_attn.in_proj_a.weight"), rows,
+             kHidden, kLVH, use_gemv, st);
+  conv1d_causal_silu_seg(
+      im.mixed, im.bf(lp + ".linear_attn.conv1d.weight"),
+      im.conv_state + static_cast<size_t>(layer) * kConvDim * (kConvK - 1),
+      im.mixed_conv, sp, nseq, kConvDim,
+      static_cast<size_t>(kLayers) * kConvDim * (kConvK - 1), st);
+  split_qkv_widths(im.mixed_conv, im.q, im.k, im.v, rows, kKeyDim, kKeyDim,
+                   kValueDim, st);
+  l2norm_qk(im.q, im.k, im.qn, im.kn, rows, kLKH, kLKD, st);
+  beta_and_decay(im.beta, im.decay, im.b, im.a, im.fp32(lp + ".linear_attn.A_log"),
+                 im.fp32(lp + ".linear_attn.dt_bias"), rows, kLVH, st);
+  gated_delta_rule_seg(
+      im.rec_state + static_cast<size_t>(layer) * kLVH * kLVD * kLVD, im.qn,
+      im.kn, im.v, im.beta, im.decay, im.core, sp, nseq, kLKH, kLVH, kLVD,
+      static_cast<size_t>(kLayers) * kLVH * kLVD * kLVD, st);
+  gated_rms_norm(im.core, im.z, im.bf(lp + ".linear_attn.norm.weight"), im.gated,
+                 rows * kLVH, kLVD, kEps, st);
+  seg_linear(im.o, im.gated, im.bf(lp + ".linear_attn.out_proj.weight"), rows,
+             kValueDim, kHidden, use_gemv, st);
+  add_residual(im.hidden, im.o, rows * kHidden, st);
+}
+
+void full_layer_seg(Engine::Impl& im, int layer, int rows, const SeqSpans& sp,
+                    int nseq, bool use_gemv) {
+  cudaStream_t st = im.stream;
+  const std::string lp = "model.language_model.layers." + std::to_string(layer);
+  rms_norm_zero_centered(im.hidden, im.bf(lp + ".input_layernorm.weight"), im.norm,
+                         rows, kHidden, kEps, st);
+  seg_linear(im.qg, im.norm, im.bf(lp + ".self_attn.q_proj.weight"), rows, kHidden,
+             2 * kQHeads * kHeadDim, use_gemv, st);
+  seg_linear(im.k, im.norm, im.bf(lp + ".self_attn.k_proj.weight"), rows, kHidden,
+             kKvHeads * kHeadDim, use_gemv, st);
+  seg_linear(im.v, im.norm, im.bf(lp + ".self_attn.v_proj.weight"), rows, kHidden,
+             kKvHeads * kHeadDim, use_gemv, st);
+  split_q_gate(im.qg, im.q, im.gate, rows, kQHeads, kHeadDim, st);
+  rms_norm_zero_centered(im.q, im.bf(lp + ".self_attn.q_norm.weight"), im.q,
+                         rows * kQHeads, kHeadDim, kEps, st);
+  rms_norm_zero_centered(im.k, im.bf(lp + ".self_attn.k_norm.weight"), im.k,
+                         rows * kKvHeads, kHeadDim, kEps, st);
+  mrope_partial(im.q, im.mrope_cos, im.mrope_sin, rows, kQHeads, kHeadDim,
+                kRotaryDim, st);
+  mrope_partial(im.k, im.mrope_cos, im.mrope_sin, rows, kKvHeads, kHeadDim,
+                kRotaryDim, st);
+
+  const int slot = layer / 4;
+  const size_t strand = static_cast<size_t>(16) * 2 * im.max_seq * kKvRow;
+  Bf16* kbase = im.kv + static_cast<size_t>(slot) * 2 * im.max_seq * kKvRow;
+  Bf16* vbase = kbase + static_cast<size_t>(im.max_seq) * kKvRow;
+  for (int s = 0; s < nseq; ++s) {
+    const size_t dst = static_cast<size_t>(sp.slot[s]) * strand +
+                       static_cast<size_t>(sp.hist[s]) * kKvRow;
+    const size_t src = static_cast<size_t>(sp.off[s]) * kKvRow;
+    const size_t bytes = static_cast<size_t>(sp.len[s]) * kKvRow * sizeof(Bf16);
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(kbase + dst, im.k + src, bytes,
+                                          cudaMemcpyDeviceToDevice, st));
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(vbase + dst, im.v + src, bytes,
+                                          cudaMemcpyDeviceToDevice, st));
+  }
+  gqa_attention_seg(im.q, kbase, vbase, im.gate, im.o, sp, nseq, strand, kQHeads,
+                    kKvHeads, kHeadDim, st);
+  seg_linear(im.qg, im.o, im.bf(lp + ".self_attn.o_proj.weight"), rows,
+             kQHeads * kHeadDim, kHidden, use_gemv, st);
+  add_residual(im.hidden, im.qg, rows * kHidden, st);
+}
+
+void mlp_block_seg(Engine::Impl& im, int layer, int rows, bool use_gemv) {
+  cudaStream_t st = im.stream;
+  const std::string lp = "model.language_model.layers." + std::to_string(layer);
+  rms_norm_zero_centered(im.hidden,
+                         im.bf(lp + ".post_attention_layernorm.weight"), im.norm,
+                         rows, kHidden, kEps, st);
+  seg_linear(im.mlp_gate, im.norm, im.bf(lp + ".mlp.gate_proj.weight"), rows,
+             kHidden, kInter, use_gemv, st);
+  seg_linear(im.mlp_up, im.norm, im.bf(lp + ".mlp.up_proj.weight"), rows, kHidden,
+             kInter, use_gemv, st);
+  silu_mul(im.mlp_act, im.mlp_gate, im.mlp_up, rows * kInter, st);
+  seg_linear(im.o, im.mlp_act, im.bf(lp + ".mlp.down_proj.weight"), rows, kInter,
+             kHidden, use_gemv, st);
+  add_residual(im.hidden, im.o, rows * kHidden, st);
+}
+
+void run_layer_seg(Engine::Impl& im, int layer, int rows, const SeqSpans& sp,
+                   int nseq, bool use_gemv) {
+  if ((layer % 4) == 3)
+    full_layer_seg(im, layer, rows, sp, nseq, use_gemv);
+  else
+    linear_layer_seg(im, layer, rows, sp, nseq, use_gemv);
+  mlp_block_seg(im, layer, rows, use_gemv);
+}
+
+// Runs every layer over `rows` workspace rows and returns one sampled token per
+// span, taken from the last row of that span.
+std::vector<int> batch_forward(Engine::Impl& im, const SeqSpans& sp, int nseq,
+                               int rows, bool use_gemv, const int* logit_rows) {
+  cudaStream_t st = im.stream;
+  for (int l = 0; l < kLayers; ++l) run_layer_seg(im, l, rows, sp, nseq, use_gemv);
+  // A launch configuration error is reported by the launch itself, not by the
+  // following stream call, so check it before the first dependent copy.
+  UMM_QWEN38_CUDA_CHECK(cudaGetLastError());
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_logit_rows, logit_rows,
+                                        static_cast<size_t>(nseq) * sizeof(int),
+                                        cudaMemcpyHostToDevice, st));
+  gather_rows(im.last_hidden, im.hidden, im.d_logit_rows, nseq, kHidden, st);
+  rms_norm_zero_centered(im.last_hidden, im.bf("model.language_model.norm.weight"),
+                         im.last_hidden, nseq, kHidden, kEps, st);
+  gemv_bf16_f32_batch(im.bf("lm_head.weight"), im.last_hidden, im.logits, nseq,
+                      kVocab, kHidden, st);
+  argmax_rows(im.logits, nseq, kVocab, im.argmax_idx, st);
+  UMM_QWEN38_CUDA_CHECK(cudaGetLastError());
+  std::vector<int> out(static_cast<size_t>(nseq));
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(out.data(), im.argmax_idx,
+                                        static_cast<size_t>(nseq) * sizeof(int),
+                                        cudaMemcpyDeviceToHost, st));
+  UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
+  return out;
+}
+
+void prefill_group(Engine::Impl& im,
+                   const std::vector<std::shared_ptr<BatchJob>>& jobs) {
+  cudaStream_t st = im.stream;
+  const int nseq = static_cast<int>(jobs.size());
+  SeqSpans sp{};
+  std::vector<int> all_ids;
+  std::vector<Positions> pos(static_cast<size_t>(nseq));
+  std::vector<int> logit_rows(static_cast<size_t>(nseq));
+  std::vector<int> img_start(static_cast<size_t>(nseq), -1);
+  std::vector<int> n_img(static_cast<size_t>(nseq), 0);
+  std::vector<double> vision_ms(static_cast<size_t>(nseq), 0.0);
+  int rows = 0;
+  for (int i = 0; i < nseq; ++i) {
+    const BatchJob& job = *jobs[i];
+    const int P = static_cast<int>(job.req.prompt_ids.size());
+    sp.off[i] = rows;
+    sp.len[i] = P;
+    sp.hist[i] = 0;
+    sp.slot[i] = job.slot;
+    rows += P;
+    all_ids.insert(all_ids.end(), job.req.prompt_ids.begin(),
+                   job.req.prompt_ids.end());
+    const PreprocessedImage* image = job.req.image;
+    if (image != nullptr) {
+      if (image->grid_t != 1)
+        throw std::runtime_error("only still images are supported");
+      const auto t0 = Clock::now();
+      vision_forward(im, *image, "");
+      vision_ms[i] = ms_since(t0);
+      n_img[i] = image->rows() / 4;
+      for (int k = 0; k < P; ++k) {
+        if (job.req.prompt_ids[k] == kImagePad) {
+          img_start[i] = k;
+          break;
+        }
+      }
+      if (img_start[i] < 0)
+        throw std::runtime_error("image supplied but no image_pad id");
+    }
+    pos[i] = build_positions(job.req.prompt_ids, image ? image->grid_h : 0,
+                             image ? image->grid_w : 0, image != nullptr);
+    logit_rows[i] = sp.off[i] + P - 1;
+  }
+  if (rows > im.max_seq) throw std::runtime_error("batch rows exceed max_seq");
+
+  // The recurrent state is cumulative, so every joining sequence starts at
+  // zero. Each sequence owns its own block; no other sequence can touch it.
+  const size_t rec_bytes = sizeof(float) * kLayers * kLVH * kLVD * kLVD;
+  const size_t conv_bytes = sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1);
+  for (int i = 0; i < nseq; ++i) {
+    UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(
+        im.rec_state + static_cast<size_t>(sp.slot[i]) * kLayers * kLVH * kLVD * kLVD,
+        0, rec_bytes, st));
+    UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(
+        im.conv_state + static_cast<size_t>(sp.slot[i]) * kLayers * kConvDim * (kConvK - 1),
+        0, conv_bytes, st));
+  }
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, all_ids.data(),
+                                        static_cast<size_t>(rows) * sizeof(int),
+                                        cudaMemcpyHostToDevice, st));
+  index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
+                   im.hidden, rows, kHidden, st);
+  for (int i = 0; i < nseq; ++i) {
+    if (n_img[i] <= 0) continue;
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+        im.hidden + static_cast<size_t>(sp.off[i] + img_start[i]) * kHidden,
+        im.pooler, static_cast<size_t>(n_img[i]) * kHidden * sizeof(Bf16),
+        cudaMemcpyDeviceToDevice, st));
+  }
+  std::vector<Bf16> cos, sin;
+  cos.reserve(static_cast<size_t>(rows) * kRotaryDim);
+  sin.reserve(static_cast<size_t>(rows) * kRotaryDim);
+  for (int i = 0; i < nseq; ++i) {
+    std::vector<Bf16> c, s2;
+    build_text_rope(pos[i], sp.len[i], &c, &s2);
+    cos.insert(cos.end(), c.begin(), c.end());
+    sin.insert(sin.end(), s2.begin(), s2.end());
+  }
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(),
+                                        cos.size() * sizeof(Bf16),
+                                        cudaMemcpyHostToDevice, st));
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, sin.data(),
+                                        sin.size() * sizeof(Bf16),
+                                        cudaMemcpyHostToDevice, st));
+
+  const auto t0 = Clock::now();
+  // A one-token prompt takes the GEMV path, exactly as the single-request
+  // executor does for m == 1. Groups are homogeneous, so no call mixes paths.
+  const bool use_gemv = (rows == nseq);
+  const std::vector<int> tokens =
+      batch_forward(im, sp, nseq, rows, use_gemv, logit_rows.data());
+  const double prefill_ms = ms_since(t0);
+  for (int i = 0; i < nseq; ++i) {
+    auto& job = jobs[i];
+    job->result.prompt_tokens = sp.len[i];
+    job->result.image_tokens = n_img[i];
+    job->result.vision_ms = vision_ms[i];
+    job->result.prefill_ms = prefill_ms;
+    job->seq_len = sp.len[i];
+    job->next_pos = pos[i].next;
+    job->next_token = tokens[i];
+  }
+}
+
+void step_decode(Engine::Impl& im,
+                 const std::vector<std::shared_ptr<BatchJob>>& jobs) {
+  cudaStream_t st = im.stream;
+  const int m = static_cast<int>(jobs.size());
+  SeqSpans sp{};
+  std::vector<int> ids(static_cast<size_t>(m));
+  std::vector<int> logit_rows(static_cast<size_t>(m));
+  std::vector<Bf16> cos, sin;
+  cos.reserve(static_cast<size_t>(m) * kRotaryDim);
+  sin.reserve(static_cast<size_t>(m) * kRotaryDim);
+  for (int i = 0; i < m; ++i) {
+    const BatchJob& job = *jobs[i];
+    sp.off[i] = i;
+    sp.len[i] = 1;
+    sp.hist[i] = job.seq_len;
+    sp.slot[i] = job.slot;
+    ids[i] = job.next_token;
+    logit_rows[i] = i;
+    const Positions one{{job.next_pos}, {job.next_pos}, {job.next_pos},
+                        job.next_pos + 1};
+    std::vector<Bf16> c, s2;
+    build_text_rope(one, 1, &c, &s2);
+    cos.insert(cos.end(), c.begin(), c.end());
+    sin.insert(sin.end(), s2.begin(), s2.end());
+  }
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, ids.data(),
+                                        static_cast<size_t>(m) * sizeof(int),
+                                        cudaMemcpyHostToDevice, st));
+  index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
+                   im.hidden, m, kHidden, st);
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(),
+                                        cos.size() * sizeof(Bf16),
+                                        cudaMemcpyHostToDevice, st));
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, sin.data(),
+                                        sin.size() * sizeof(Bf16),
+                                        cudaMemcpyHostToDevice, st));
+  const auto t0 = Clock::now();
+  const std::vector<int> tokens =
+      batch_forward(im, sp, m, m, /*use_gemv=*/true, logit_rows.data());
+  // One line per decode step: the batch size and the wall time of the forward.
+  std::fprintf(stderr, "qwen38 batch step m=%d rows=%d ms=%.2f\n", m, m,
+               ms_since(t0));
+  for (int i = 0; i < m; ++i) {
+    jobs[i]->next_token = tokens[i];
+    jobs[i]->seq_len += 1;
+    jobs[i]->next_pos += 1;
+    jobs[i]->result.decode_steps += 1;
+  }
+}
+
+// The single batch thread. Requests queue behind it; each iteration admits
+// whatever fits, prefills it, then advances every active request by one step.
+void batch_loop(Engine::Impl& im) {
+  // A new thread starts on device 0. The engine's stream and buffers belong to
+  // im.gpu, so bind this thread before the first launch; otherwise every
+  // launch fails with "invalid resource handle".
+  try {
+    UMM_QWEN38_CUDA_CHECK(cudaSetDevice(im.gpu));
+  } catch (...) {
+    // No forward can run; each admitted request reports the CUDA error below.
+  }
+  while (true) {
+    std::vector<std::shared_ptr<BatchJob>> incoming;
+    {
+      std::unique_lock<std::mutex> lock(im.queue_mu);
+      if (im.active.empty() && im.queue.empty())
+        im.queue_cv.wait(lock, [&] { return im.stopping || !im.queue.empty(); });
+      if (im.stopping) break;
+      const int room = static_cast<int>(im.free_slots.size());
+      for (int i = 0; i < room && !im.queue.empty(); ++i) {
+        incoming.push_back(std::move(im.queue.front()));
+        im.queue.pop_front();
+      }
+    }
+
+    std::vector<std::shared_ptr<BatchJob>> admitted;
+    for (auto& job : incoming) {
+      if (job->req.abort && job->req.abort()) {
+        job->error = std::make_exception_ptr(GenerationAborted("queued"));
+        finish_job(job);
+        continue;
+      }
+      const int P = static_cast<int>(job->req.prompt_ids.size());
+      if (P + job->req.max_new_tokens > im.max_seq) {
+        job->error = std::make_exception_ptr(
+            std::runtime_error("prompt + max_new_tokens exceeds max_seq"));
+        finish_job(job);
+        continue;
+      }
+      job->slot = im.free_slots.back();
+      im.free_slots.pop_back();
+      admitted.push_back(job);
+    }
+
+    // One forward per group. A group is homogeneous in the linear-op path the
+    // single-request executor would choose, and stays inside max_seq rows.
+    std::vector<std::vector<std::shared_ptr<BatchJob>>> groups;
+    std::vector<int> group_rows;
+    for (auto& job : admitted) {
+      const int P = static_cast<int>(job->req.prompt_ids.size());
+      const bool single = (P == 1);
+      // The vision tower writes one shared workspace and the pooler is copied
+      // after the embedding pass, so an image request prefills alone.
+      const bool loner = (job->req.image != nullptr);
+      bool placed = false;
+      if (!loner)
+        for (size_t g = 0; g < groups.size(); ++g) {
+          if (groups[g].front()->req.image != nullptr) continue;
+          const int first =
+              static_cast<int>(groups[g].front()->req.prompt_ids.size());
+          if ((first == 1) != single) continue;
+          if (group_rows[g] + P > im.max_seq) continue;
+          groups[g].push_back(job);
+          group_rows[g] += P;
+          placed = true;
+          break;
+        }
+      if (!placed) {
+        groups.push_back({job});
+        group_rows.push_back(P);
+      }
+    }
+
+    for (size_t g = 0; g < groups.size(); ++g) {
+      try {
+        prefill_group(im, groups[g]);
+      } catch (...) {
+        for (auto& job : groups[g]) {
+          job->error = std::current_exception();
+          release_slot(im, job);
+          finish_job(job);
+        }
+        continue;
+      }
+      for (auto& job : groups[g]) {
+        job->decode_started = Clock::now();
+        if (emit_token(job)) {
+          retire_job(im, job);
+        } else {
+          im.active.push_back(job);
+        }
+      }
+    }
+
+    if (im.active.empty()) continue;
+
+    std::vector<std::shared_ptr<BatchJob>> step_jobs;
+    for (auto& job : im.active) {
+      if (job->req.abort && job->req.abort()) {
+        job->error = std::make_exception_ptr(GenerationAborted("decode"));
+        release_slot(im, job);
+        finish_job(job);
+        continue;
+      }
+      step_jobs.push_back(job);
+    }
+    im.active.clear();
+    if (step_jobs.empty()) continue;
+    try {
+      step_decode(im, step_jobs);
+    } catch (...) {
+      for (auto& job : step_jobs) {
+        job->error = std::current_exception();
+        release_slot(im, job);
+        finish_job(job);
+      }
+      continue;
+    }
+    for (auto& job : step_jobs) {
+      if (emit_token(job)) {
+        retire_job(im, job);
+      } else {
+        im.active.push_back(job);
+      }
+    }
+  }
+
+  // Shutdown: every queued and active request gets a terminal error.
+  std::vector<std::shared_ptr<BatchJob>> leftover;
+  {
+    std::lock_guard<std::mutex> lock(im.queue_mu);
+    while (!im.queue.empty()) {
+      leftover.push_back(std::move(im.queue.front()));
+      im.queue.pop_front();
+    }
+  }
+  for (auto& job : im.active) leftover.push_back(job);
+  im.active.clear();
+  for (auto& job : leftover) {
+    job->error = std::make_exception_ptr(std::runtime_error("engine is stopping"));
+    release_slot(im, job);
+    finish_job(job);
+  }
+}
+
 }  // namespace
 
 GenResult Engine::generate(const std::vector<int>& prompt_ids,
@@ -650,6 +1178,9 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
                            const std::string& dump_dir, const AbortCheck& abort,
                            const TokenCallback& on_token) {
   Impl& im = *impl_;
+  if (im.batch_capacity > 1)
+    throw std::runtime_error(
+        "generate() cannot run on an engine built for continuous batching");
   auto& st = im.stream;
   // Checked on the host between kernel launches, so it changes no result.
   auto check_abort = [&abort](const char* boundary) {
@@ -784,5 +1315,33 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   }
   return result;
 }
+
+GenResult Engine::generate_batched(const BatchRequest& request) {
+  Impl& im = *impl_;
+  if (im.batch_capacity <= 1)
+    throw std::runtime_error("generate_batched requires batch_capacity > 1");
+  if (request.prompt_ids.empty()) throw std::runtime_error("empty prompt");
+  if (request.max_new_tokens <= 0)
+    throw std::runtime_error("max_new_tokens must be positive");
+  auto job = std::make_shared<BatchJob>();
+  job->req = request;
+  {
+    std::lock_guard<std::mutex> lock(im.queue_mu);
+    if (im.stopping) throw std::runtime_error("engine is stopping");
+    // The batch thread starts on the first request, so the serial engine keeps
+    // its original single-thread shape and no work happens at construction.
+    if (!im.batch_thread.joinable()) {
+      im.batch_thread = std::thread([this] { batch_loop(*impl_); });
+    }
+    im.queue.push_back(job);
+  }
+  im.queue_cv.notify_one();
+  std::unique_lock<std::mutex> lock(job->mu);
+  job->cv.wait(lock, [&job] { return job->done; });
+  if (job->error) std::rethrow_exception(job->error);
+  return job->result;
+}
+
+int Engine::batch_capacity() const { return impl_->batch_capacity; }
 
 }  // namespace umminfer::qwen38

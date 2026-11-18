@@ -123,4 +123,15 @@ if(UMM_QWEN38_CUDA)
   target_link_libraries(qwen38_consistency_tests PRIVATE CUDA::cudart)
   set_target_properties(qwen38_consistency_tests PROPERTIES CUDA_ARCHITECTURES 90)
   add_test(NAME qwen38_consistency_tests COMMAND qwen38_consistency_tests)
+
+  # Times the batched decode GEMV against the single-row GEMV and checks that
+  # every row is bitwise identical. Evidence for docs/batching.md.
+  add_executable(qwen38_gemv_bench
+    qwen38_tests/test_gemv_batch.cu
+    qwen38/qwen38_kernels.cu
+    qwen38/qwen38_gemm.cu
+  )
+  target_include_directories(qwen38_gemv_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(qwen38_gemv_bench PRIVATE CUDA::cudart)
+  set_target_properties(qwen38_gemv_bench PROPERTIES CUDA_ARCHITECTURES 90)
 endif()

@@ -141,7 +141,10 @@ void validate_data_ref(const DataRef& ref, int64_t max_payload_bytes) {
 
 Stage::Stage(Config config, ComputeFn compute_fn)
     : config_(std::move(config)),
-      scheduler_(std::make_unique<SimpleScheduler>(std::move(compute_fn))),
+      scheduler_(std::make_unique<SimpleScheduler>(
+          std::move(compute_fn), nullptr, 1, 0, true, nullptr, std::nullopt,
+          config_.max_concurrency, nullptr, nullptr, nullptr,
+          std::chrono::minutes(10), config_.engine_contract)),
       router_(config_.name, config_.gpu_id, config_.gpu_id, {},
               [&] {
                 std::set<std::string> names;

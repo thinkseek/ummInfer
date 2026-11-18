@@ -394,6 +394,35 @@ void test_scheduler_serial_and_batch() {
   CHECK(got == 2);
   batched.stop();
   batch_thread.join();
+
+  // Concurrency above 1 is a contract, not a tuning knob: a serial engine is
+  // rejected instead of being called from two threads.
+  bool rejected = false;
+  try {
+    SimpleScheduler unsafe([](const Value& in) { return in; }, nullptr, 1, 0, true,
+                           nullptr, std::nullopt, 2);
+  } catch (const ProtocolError&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+
+  // With the thread-safe contract the same compute runs on two workers.
+  std::atomic<int> calls{0};
+  SimpleScheduler safe(
+      [&calls](const Value& in) {
+        ++calls;
+        return in;
+      },
+      nullptr, 1, 0, true, nullptr, std::nullopt, 2, nullptr, nullptr, nullptr,
+      std::chrono::minutes(10), EngineContract::kThreadSafe);
+  std::thread safe_thread([&safe] { safe.start(); });
+  safe.enqueue(IncomingMessage{"s1", "new_request", Value("a")});
+  safe.enqueue(IncomingMessage{"s2", "new_request", Value("b")});
+  CHECK(safe.outbox().get(2.0).has_value());
+  CHECK(safe.outbox().get(2.0).has_value());
+  safe.stop();
+  safe_thread.join();
+  CHECK(calls == 2);
 }
 
 void test_pipeline_end_to_end() {

@@ -120,4 +120,51 @@ void gated_rms_norm(const Bf16* x, const Bf16* z, const Bf16* weight, Bf16* out,
 // ---- Sampling -------------------------------------------------------------
 int argmax_f32(const float* logits, int n, int* scratch_idx, cudaStream_t stream);
 
+// ---- Continuous batching --------------------------------------------------
+// One decode or prefill call covers at most this many sequences. A sequence
+// owns rows [off, off+len) of the shared workspace, has `hist` tokens already
+// in its KV cache, and uses per-sequence cache slot `slot`.
+constexpr int kMaxBatch = 8;
+
+struct SeqSpans {
+  int off[kMaxBatch];
+  int len[kMaxBatch];
+  int hist[kMaxBatch];
+  int slot[kMaxBatch];
+};
+
+// Batched GEMV. Each of the m rows is reduced in exactly the order the
+// single-row gemv_* uses, so a row's result is bitwise equal to running that
+// row alone. The weight matrix is read once per four output rows.
+void gemv_bf16_bf16_batch(const Bf16* w, const Bf16* x, Bf16* out, int m,
+                          int n_out, int k, cudaStream_t stream);
+void gemv_bf16_f32_batch(const Bf16* w, const Bf16* x, float* out, int m,
+                         int n_out, int k, cudaStream_t stream);
+// GEMV output is [m, n_out]; this samples one argmax per row.
+void argmax_rows(const float* logits, int rows, int n, int* idx,
+                 cudaStream_t stream);
+// dst[s, :] = src[rows[s], :].
+void gather_rows(Bf16* dst, const Bf16* src, const int* rows, int m, int dim,
+                 cudaStream_t stream);
+
+// Per-sequence versions of the recurrent/attention kernels. The math is the
+// row math of the single-sequence kernels; only the state base and the KV
+// prefix length become per-span.
+// state is the layer base of sequence 0; sequence slot s starts at
+// state + s * seq_stride elements.
+void conv1d_causal_silu_seg(const Bf16* x, const Bf16* w, Bf16* state, Bf16* out,
+                            const SeqSpans& spans, int nseq, int channels,
+                            size_t seq_stride, cudaStream_t stream);
+void gated_delta_rule_seg(float* state, const float* qn, const float* kn,
+                          const Bf16* v, const float* beta, const float* g,
+                          Bf16* out, const SeqSpans& spans, int nseq, int k_heads,
+                          int v_heads, int dim, size_t seq_stride,
+                          cudaStream_t stream);
+// q/out rows are workspace rows. k_cache holds one layer slot for every
+// sequence; sequence `slot` starts at k_cache + slot * seq_stride (elements).
+void gqa_attention_seg(const Bf16* q, const Bf16* k_cache, const Bf16* v_cache,
+                       const Bf16* gate, Bf16* out, const SeqSpans& spans,
+                       int nseq, size_t seq_stride, int n_q_heads,
+                       int n_kv_heads, int head_dim, cudaStream_t stream);
+
 }  // namespace umminfer::qwen38

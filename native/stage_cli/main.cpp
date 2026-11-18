@@ -32,7 +32,8 @@ void usage() {
   std::cerr << "usage: umm-native-stage-<asr|omni|qwen38|tts|image> --kind KIND --model DIR "
                "--recv-endpoint EP --coordinator-endpoint EP --abort-endpoint EP "
                "[--name NAME] [--gpu N] [--max-new-tokens N] [--max-frames N] "
-               "[--max-seq N] [--steps N] [--next name=EP] [--peer name=EP]\n";
+               "[--max-seq N] [--steps N] [--batch-size N] "
+               "[--next name=EP] [--peer name=EP]\n";
 }
 
 // ZMQ binds an ipc path but never creates its parent directory.
@@ -116,6 +117,8 @@ int main(int argc, char** argv) {
     options.max_seq =
         flags.count("max-seq") ? parse_int(flags["max-seq"], "--max-seq") : 0;
     options.steps = flags.count("steps") ? parse_int(flags["steps"], "--steps") : 0;
+    options.batch_size =
+        flags.count("batch-size") ? parse_int(flags["batch-size"], "--batch-size") : 0;
 
     umminfer::Stage::Config config;
     config.name = flags.count("name") ? flags["name"] : kind;
@@ -124,6 +127,12 @@ int main(int argc, char** argv) {
     config.abort_endpoint = abort;
     config.gpu_id = options.gpu;
     config.announce_ready = true;
+    if (options.batch_size > 1) {
+      // The engine runs one batch thread; concurrent compute calls only queue
+      // work into it. This is the thread-safe contract, not serial compute.
+      config.max_concurrency = options.batch_size;
+      config.engine_contract = umminfer::EngineContract::kThreadSafe;
+    }
     config.peer_endpoints[config.name] = recv;
     for (const auto& [key, value] : repeats) {
       const size_t equals = value.find('=');

@@ -32,11 +32,30 @@ struct GenResult {
   int decode_steps = 0;
 };
 
+// One request for the continuous-batching path.
+struct BatchRequest {
+  std::vector<int> prompt_ids;
+  const PreprocessedImage* image = nullptr;  // must outlive the call
+  int max_new_tokens = 0;
+  AbortCheck abort;
+  TokenCallback on_token;
+};
+
 // Native Qwen3.8-27B (Qwen3_5ForConditionalGeneration) executor.
+//
+// Thread-safety contract: an engine with batch_capacity == 1 holds one CUDA
+// stream and one set of buffers, so generate() must run on one thread at a
+// time. An engine with batch_capacity > 1 owns a single batch thread and
+// generate_batched() may be called from several threads at once; every call
+// queues its request and blocks until its own result is ready. generate() and
+// generate_batched() are mutually exclusive on one engine.
 class Engine {
  public:
   // max_seq bounds prompt + generated tokens; the KV cache is allocated once.
-  Engine(const std::string& model_dir, int gpu, int max_seq = 8192);
+  // batch_capacity is the number of sequences that decode together; 1 keeps
+  // the original single-request executor and its memory footprint.
+  Engine(const std::string& model_dir, int gpu, int max_seq = 8192,
+         int batch_capacity = 1);
   ~Engine();
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -49,6 +68,13 @@ class Engine {
                      const std::string& dump_dir = "",
                      const AbortCheck& abort = {},
                      const TokenCallback& on_token = {});
+
+  // Continuous batching: the request joins the batch thread's queue, decodes
+  // next to the other active requests, and leaves the batch on EOS or at its
+  // token limit. Callable concurrently from up to batch_capacity threads.
+  GenResult generate_batched(const BatchRequest& request);
+
+  int batch_capacity() const;
 
   // Opaque state; public only so the translation-unit helpers can name it.
   struct Impl;

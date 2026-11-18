@@ -21,6 +21,8 @@ struct StageOptions {
   int max_frames = 0;  // TTS only
   int max_seq = 0;     // Omni and Qwen3.8
   int steps = 0;       // Image only
+  // Requests decoded together. 0 or 1 keeps the single-request executor.
+  int batch_size = 0;
 };
 
 // The kind this executable was built for: "asr", "omni", "qwen38", "tts" or

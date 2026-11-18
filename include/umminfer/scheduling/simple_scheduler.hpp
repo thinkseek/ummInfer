@@ -83,6 +83,13 @@ class RequestAborted : public std::runtime_error {
       : std::runtime_error(std::move(message)) {}
 };
 
+// Declares how the scheduler may call the compute function. A serial engine
+// owns one CUDA stream and one buffer set; a thread-safe engine may be called
+// from several threads because it serialises work internally, either behind a
+// lock or through its own single-threaded batch loop. The two are not
+// interchangeable, so a concurrency above 1 requires kThreadSafe.
+enum class EngineContract { kSerial, kThreadSafe };
+
 // Bound to one request id: true once that id was aborted. A late abort for a
 // different id never affects it.
 using AbortCheck = std::function<bool()>;
@@ -99,6 +106,13 @@ using StreamFn = std::function<void(const std::string& request_id, Value chunk)>
 // inside a compute function; outside one it does nothing.
 void emit_stage_stream(Value chunk);
 
+// The sink and request id bound to the compute call on this thread. A compute
+// function that hands work to another thread copies them, so the other thread
+// can stream without relying on this thread's thread-local state. Empty
+// outside a compute call.
+StreamFn bound_stream_fn();
+std::string bound_request_id();
+
 class SimpleScheduler {
  public:
   SimpleScheduler(ComputeFn compute_fn, BatchComputeFn batch_compute_fn = nullptr,
@@ -110,7 +124,8 @@ class SimpleScheduler {
                   std::function<void(const std::string&)> abort_callback = nullptr,
                   std::function<void()> shutdown_callback = nullptr,
                   RequestArrivalHook request_arrival_hook = nullptr,
-                  std::chrono::milliseconds abort_retention = std::chrono::minutes(10));
+                  std::chrono::milliseconds abort_retention = std::chrono::minutes(10),
+                  EngineContract contract = EngineContract::kSerial);
 
   MessageQueue<IncomingMessage>& inbox() { return inbox_; }
   MessageQueue<OutgoingMessage>& outbox() { return outbox_; }
@@ -149,6 +164,7 @@ class SimpleScheduler {
   RequestCostFn request_cost_fn_;
   std::optional<int> max_batch_cost_;
   int max_concurrency_;
+  EngineContract contract_ = EngineContract::kSerial;
   std::function<void(const std::string&)> abort_callback_;
   std::function<void()> shutdown_callback_;
   RequestArrivalHook request_arrival_hook_;
