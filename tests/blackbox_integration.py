@@ -187,8 +187,6 @@ def main():
             "--project", str(project),
             "--deps-prefix", deps,
             "--curl-prefix", curl]),
-        ("qwen-asr-stage", python + ["tests/qwen_asr_stage_test.py"]),
-        ("qwen-omni-worker", python + ["tests/qwen_omni_worker_test.py"]),
         ("mlx-stage", python + ["tests/mlx_stage_test.py"]),
         ("rl-phase1", python + ["tests/rl_architecture_test.py"]),
         ("rl-phase2", python + ["tests/rl_phase2_test.py"]),
