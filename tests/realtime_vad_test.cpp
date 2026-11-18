@@ -2,11 +2,13 @@
 // Unit checks for the realtime server's energy endpoint detector. No model, no
 // socket: the VAD is pure host code, so the cases below pin its contract.
 #include "serve/energy_vad.hpp"
+#include "umminfer/audio/audio.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -120,6 +122,35 @@ void frames_survive_split_appends() {
         "a frame split across appends was not completed exactly once");
 }
 
+void wav_pcm16_parser_extracts_headerless_samples() {
+  const std::string pcm("\x01\x02\x7f\x00\x00\x80\x34\x12", 8);
+  const std::string wav24k = umminfer::audio::wav_from_pcm16(pcm, 24000);
+  const auto parsed = umminfer::audio::parse_wav_pcm16(wav24k);
+  check(parsed.sample_rate == 24000, "24 kHz WAV sample_rate was not parsed");
+  check(parsed.channels == 1, "24 kHz WAV channel count was not parsed");
+  check(parsed.pcm == pcm, "parsed WAV payload kept RIFF header bytes");
+
+  bool rejected_16k = false;
+  try {
+    (void)umminfer::audio::pcm16_from_wav(wav24k);
+  } catch (const std::invalid_argument& err) {
+    rejected_16k =
+        std::string(err.what()) ==
+        "WAV must contain one PCM16 mono 16 kHz data chunk";
+  }
+  check(rejected_16k,
+        "ASR 16 kHz WAV helper did not preserve its error contract");
+
+  bool rejected_corrupt = false;
+  try {
+    (void)umminfer::audio::parse_wav_pcm16(
+        std::string_view("RIFF\x04\x00\x00\x00WAVE", 12));
+  } catch (const std::invalid_argument&) {
+    rejected_corrupt = true;
+  }
+  check(rejected_corrupt, "truncated WAV without fmt/data was not rejected");
+}
+
 }  // namespace
 
 int main() {
@@ -128,6 +159,7 @@ int main() {
   silence_threshold_holds_a_turn_open();
   noise_floor_adapts_down();
   frames_survive_split_appends();
+  wav_pcm16_parser_extracts_headerless_samples();
   if (failures != 0) {
     std::fprintf(stderr, "%d realtime VAD checks failed\n", failures);
     return 1;

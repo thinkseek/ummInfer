@@ -21,6 +21,7 @@
 
 #include "asr_common.hpp"
 #include "energy_vad.hpp"
+#include "umminfer/audio/audio.hpp"
 #include "umminfer/pipeline/unified.hpp"
 #include "umminfer/util/codec.hpp"
 
@@ -41,6 +42,7 @@ constexpr size_t kPreviewWindowBytes = 6400;
 constexpr size_t kMaxPreviewSpanBytes = 32000u * 15u;
 constexpr size_t kMaxRealtimeSessions = 64;
 constexpr size_t kMaxOutboundFrames = 1024;
+constexpr size_t kMaxRealtimeAudioDeltaPcmBytes = 256u << 10;
 
 struct RealtimeSession {
   std::string incoming;
@@ -82,6 +84,7 @@ struct RealtimeSession {
   std::string voice = "vivian";
   std::string unified_session;
   std::string response_request_id;
+  std::string response_leg_error;
   Clock::time_point response_deadline{};
   int64_t response_segment = -1;
 };
@@ -322,6 +325,7 @@ class RealtimeApi::Impl {
 
   void cancel_and_release_response(RealtimeSession* session,
                                    const char* reason) {
+    session->response_leg_error.clear();
     if (session->response_request_id.empty()) return;
     const std::string id = std::move(session->response_request_id);
     session->response_request_id.clear();
@@ -858,6 +862,7 @@ class RealtimeApi::Impl {
     payload.request.inputs = Value(std::move(inputs));
     payload.request.metadata["request_type"] = Value("chat");
     try {
+      session->response_leg_error.clear();
       session->response_request_id = unified_->submit(std::move(payload));
       session->response_segment = session->segment_id;
       session->response_deadline =
@@ -867,7 +872,27 @@ class RealtimeApi::Impl {
                 << " request=" << session->response_request_id << "\n";
     } catch (const std::exception& error) {
       session->response_request_id.clear();
+      session->response_leg_error.clear();
       std::cerr << "realtime response_start failed: " << error.what() << "\n";
+    }
+  }
+
+  void emit_audio_deltas(lws* wsi, RealtimeSession* session, int64_t segment,
+                         std::string_view pcm, int64_t sample_rate,
+                         int64_t channels) {
+    const size_t frame_bytes = static_cast<size_t>(channels) * 2u;
+    const size_t max_chunk =
+        std::max(frame_bytes,
+                 (kMaxRealtimeAudioDeltaPcmBytes / frame_bytes) * frame_bytes);
+    for (size_t offset = 0; offset < pcm.size(); offset += max_chunk) {
+      const size_t step = std::min(max_chunk, pcm.size() - offset);
+      send(wsi, session,
+           {{"type", "audio.delta"},
+            {"segment_id", segment},
+            {"format", "pcm16"},
+            {"sample_rate", sample_rate},
+            {"channels", channels},
+            {"audio", util::base64_encode(pcm.substr(offset, step))}});
     }
   }
 
@@ -897,6 +922,7 @@ class RealtimeApi::Impl {
           if (terminal) {
             if (unified_ != nullptr) unified_->release(event.request_id);
             session->response_request_id.clear();
+            session->response_leg_error.clear();
           }
           break;
         }
@@ -912,22 +938,124 @@ class RealtimeApi::Impl {
             break;
           case UnifiedEvent::Kind::kArtifact: {
             session->response_deadline = Clock::now() + timeout_span;
+            if (!session->response_leg_error.empty()) break;
+            std::string format_str;
+            std::string mime_str;
+            int64_t sample_rate = 24000;
+            int64_t channels = 1;
+            if (event.artifact.is_map()) {
+              if (const Value* media = event.artifact.find("media_type");
+                  media != nullptr && media->is_str() &&
+                  media->as_str() != "audio") {
+                break;
+              }
+              if (const Value* fmt = event.artifact.find("format");
+                  fmt != nullptr && fmt->is_str()) {
+                format_str = fmt->as_str();
+              }
+              if (const Value* mime = event.artifact.find("mime_type");
+                  mime != nullptr && mime->is_str()) {
+                mime_str = mime->as_str();
+              }
+              if (const Value* rate = event.artifact.find("sample_rate");
+                  rate != nullptr && rate->is_int()) {
+                sample_rate = rate->as_int();
+              }
+              if (const Value* ch = event.artifact.find("channels");
+                  ch != nullptr && ch->is_int()) {
+                channels = ch->as_int();
+              }
+            }
             if (event.artifact_bytes == nullptr || event.artifact_length == 0) break;
-            const std::string_view pcm(
-                event.artifact_bytes->data() + event.artifact_offset,
-                event.artifact_length);
-            send(wsi, session, {{"type", "audio.delta"},
-                                {"segment_id", segment},
-                                {"format", "pcm16"},
-                                {"sample_rate", 24000},
-                                {"channels", 1},
-                                {"audio", util::base64_encode(pcm)}});
+            if (event.artifact_offset > event.artifact_bytes->size() ||
+                event.artifact_length >
+                    event.artifact_bytes->size() - event.artifact_offset) {
+              session->response_leg_error = "invalid audio artifact slice";
+              break;
+            }
+            const std::string_view full_bytes(*event.artifact_bytes);
+            const bool has_riff_header = full_bytes.size() >= 12 &&
+                                         full_bytes.substr(0, 4) == "RIFF" &&
+                                         full_bytes.substr(8, 4) == "WAVE";
+            const bool is_wav =
+                format_str == "wav" || mime_str == "audio/wav" ||
+                (format_str.empty() && mime_str.empty() && has_riff_header);
+            const bool is_pcm16 =
+                !is_wav && (format_str == "pcm16" || mime_str == "audio/pcm" ||
+                            (format_str.empty() && mime_str.empty()));
+            if (is_wav) {
+              // slice_artifact_events shares the complete WAV buffer across
+              // every chunk; parse and emit the headerless PCM payload once on
+              // the leading chunk so multi-channel sample frames never split.
+              if (event.artifact_offset > 0) break;
+              try {
+                const audio::WavPcm16View wav = audio::parse_wav_pcm16(full_bytes);
+                if (!wav.pcm.empty()) {
+                  emit_audio_deltas(wsi, session, segment, wav.pcm,
+                                    static_cast<int64_t>(wav.sample_rate),
+                                    static_cast<int64_t>(wav.channels));
+                }
+              } catch (const std::exception& error) {
+                session->response_leg_error = error.what();
+              }
+            } else if (is_pcm16) {
+              if (sample_rate <= 0 || channels < 1 || channels > 32) {
+                session->response_leg_error = "invalid PCM16 audio metadata";
+                break;
+              }
+              const size_t frame_bytes = static_cast<size_t>(channels) * 2u;
+              if (event.artifact_length % frame_bytes != 0) {
+                session->response_leg_error =
+                    "PCM16 audio chunk is not sample-aligned";
+                break;
+              }
+              emit_audio_deltas(
+                  wsi, session, segment,
+                  full_bytes.substr(event.artifact_offset, event.artifact_length),
+                  sample_rate, channels);
+            } else {
+              session->response_leg_error =
+                  "unsupported realtime audio format";
+            }
             break;
           }
+          case UnifiedEvent::Kind::kLegError:
+            session->response_deadline = Clock::now() + timeout_span;
+            if ((event.stage_id.empty() || event.stage_id == kTtsStageId) &&
+                session->response_leg_error.empty()) {
+              session->response_leg_error =
+                  event.error.empty() ? "spoken response audio failed"
+                                      : event.error;
+            }
+            break;
           case UnifiedEvent::Kind::kComplete:
-            send(wsi, session, {{"type", "audio.done"}, {"segment_id", segment}});
-            send(wsi, session,
-                 {{"type", "response.completed"}, {"segment_id", segment}});
+            if (session->response_leg_error.empty() && event.legs.is_array()) {
+              for (const Value& leg : event.legs.as_array()) {
+                if (!leg.is_map()) continue;
+                const Value* stage = leg.find("stage");
+                const Value* state = leg.find("state");
+                if (stage != nullptr && stage->is_str() &&
+                    stage->as_str() == kTtsStageId && state != nullptr &&
+                    state->is_str() && state->as_str() == "failed") {
+                  const Value* err = leg.find("error");
+                  session->response_leg_error =
+                      (err != nullptr && err->is_str() && !err->as_str().empty())
+                          ? err->as_str()
+                          : "spoken response audio failed";
+                  break;
+                }
+              }
+            }
+            if (!session->response_leg_error.empty()) {
+              send(wsi, session, {{"type", "response.failed"},
+                                  {"segment_id", segment},
+                                  {"error", session->response_leg_error}});
+              session->response_leg_error.clear();
+            } else {
+              send(wsi, session, {{"type", "audio.done"}, {"segment_id", segment}});
+              send(wsi, session,
+                   {{"type", "response.completed"}, {"segment_id", segment}});
+            }
             if (unified_ != nullptr) unified_->release(event.request_id);
             session->response_request_id.clear();
             break;
@@ -937,10 +1065,12 @@ class RealtimeApi::Impl {
                                 {"error", event.error}});
             if (unified_ != nullptr) unified_->release(event.request_id);
             session->response_request_id.clear();
+            session->response_leg_error.clear();
             break;
           case UnifiedEvent::Kind::kCancelled:
             if (unified_ != nullptr) unified_->release(event.request_id);
             session->response_request_id.clear();
+            session->response_leg_error.clear();
             break;
           default:
             break;
@@ -960,14 +1090,15 @@ class RealtimeApi::Impl {
   }
 
   void forward_event(const UnifiedEvent& event) {
-    const bool terminal = event.kind == UnifiedEvent::Kind::kComplete ||
-                          event.kind == UnifiedEvent::Kind::kError ||
-                          event.kind == UnifiedEvent::Kind::kCancelled ||
-                          event.kind == UnifiedEvent::Kind::kLegError;
+    const bool must_deliver = event.kind == UnifiedEvent::Kind::kComplete ||
+                              event.kind == UnifiedEvent::Kind::kError ||
+                              event.kind == UnifiedEvent::Kind::kCancelled ||
+                              event.kind == UnifiedEvent::Kind::kLegError;
     std::lock_guard<std::mutex> lock(unified_mu_);
-    // Drop only incremental frames under extreme backpressure; terminal events
-    // must always be delivered so UnifiedEngine records are released cleanly.
-    if (!terminal && unified_queue_.size() >= 4096) return;
+    // Drop only incremental frames under extreme backpressure; terminal and
+    // leg-failure events must always be delivered so UnifiedEngine records are
+    // released cleanly and audio failures are never hidden.
+    if (!must_deliver && unified_queue_.size() >= 4096) return;
     unified_queue_.push_back(event);
   }
 

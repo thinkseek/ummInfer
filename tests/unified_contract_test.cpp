@@ -11,8 +11,10 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -32,7 +34,10 @@
 #include "umminfer/pipeline/pipeline.hpp"
 #include "umminfer/pipeline/unified.hpp"
 #include "umminfer/serve/openai_api.hpp"
+#include "umminfer/serve/realtime_api.hpp"
+#include "umminfer/util/codec.hpp"
 #include "client/http.hpp"
+#include "client/websocket.hpp"
 #include <nlohmann/json.hpp>
 
 using namespace umminfer;
@@ -3984,6 +3989,232 @@ void test_public_http_mixed_partial_failure() {
              "partial-failure request stayed in flight");
 }
 
+void test_realtime_spoken_audio_format_and_leg_error() {
+  Harness h("rtspoken");
+  ApiConfig rt_config;
+  rt_config.host = "127.0.0.1";
+  rt_config.port = 0;
+  rt_config.model = "qwen3-unified";
+  rt_config.entry_stage = "asr";
+  rt_config.request_timeout_s = 10.0;
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  RealtimeApi realtime(h.coordinator, rt_config);
+  realtime.attach_unified(engine);
+  engine.on_event = [&](const UnifiedEvent& event) {
+    realtime.forward_event(event);
+  };
+  realtime.install_stream_sink();
+  check(realtime.bind(), "realtime server did not bind");
+  h.start_pump();
+  std::thread rt_thread([&] { realtime.listen(); });
+
+  std::atomic<bool> cancel{false};
+  const std::string ws_url =
+      "ws://127.0.0.1:" + std::to_string(realtime.bound_port()) +
+      "/v1/realtime?intent=transcription&model=qwen3-unified";
+  client::detail::WebSocket ws(ws_url, client::Milliseconds{5000}, &cancel);
+
+  std::mutex ws_mu;
+  std::condition_variable ws_cv;
+  std::deque<json> ws_events;
+  std::thread ws_reader([&] {
+    try {
+      ws.run([&](std::string_view msg) {
+        json parsed = json::parse(msg, nullptr, false);
+        if (parsed.is_discarded()) return;
+        {
+          std::lock_guard<std::mutex> lock(ws_mu);
+          ws_events.push_back(std::move(parsed));
+        }
+        ws_cv.notify_all();
+      });
+    } catch (...) {
+    }
+  });
+
+  auto next_ws_event = [&](double timeout_s = 5.0) -> std::optional<json> {
+    std::unique_lock<std::mutex> lock(ws_mu);
+    if (!ws_cv.wait_for(lock, std::chrono::duration<double>(timeout_s),
+                        [&] { return !ws_events.empty(); })) {
+      return std::nullopt;
+    }
+    json ev = std::move(ws_events.front());
+    ws_events.pop_front();
+    return ev;
+  };
+
+  ws.send_text(json{{"type", "session.update"},
+                    {"session",
+                     {{"input_audio_format", "pcm16"},
+                      {"turn_detection",
+                       {{"type", "server_vad"}, {"silence_ms", 100}}},
+                      {"audio_output", {{"voice", "vivian"}}}}}}
+                   .dump());
+  const auto updated = next_ws_event();
+  check(updated.has_value() &&
+            (*updated)["type"] == "transcription_session.updated",
+        "realtime session.update did not echo transcription_session.updated");
+
+  // 120 ms voiced 440 Hz PCM16 at 16 kHz (3840 bytes, < 6400 preview window)
+  // followed by 150 ms digital silence (4800 bytes) to commit one VAD turn.
+  std::string voiced(3840, '\0');
+  for (int i = 0; i < 1920; ++i) {
+    const auto sample = static_cast<int16_t>(
+        6000.0 * std::sin(2.0 * 3.14159265358979323846 * 440.0 * i / 16000.0));
+    voiced[static_cast<size_t>(i) * 2] = static_cast<char>(sample & 0xff);
+    voiced[static_cast<size_t>(i) * 2 + 1] =
+        static_cast<char>((static_cast<uint16_t>(sample) >> 8) & 0xff);
+  }
+  const std::string quiet(4800, '\0');
+
+  auto send_utterance = [&] {
+    ws.send_text(json{{"type", "input_audio_buffer.append"},
+                      {"audio", util::base64_encode(voiced)}}
+                     .dump());
+    ws.send_text(json{{"type", "input_audio_buffer.append"},
+                      {"audio", util::base64_encode(quiet)}}
+                     .dump());
+    while (auto req = h.next_submit(h.asr_recv)) {
+      if (req->request_id.rfind("realtime-preview-", 0) == 0) {
+        h.complete(req->request_id, "asr", true, text_result("he"));
+        continue;
+      }
+      h.complete(req->request_id, "asr", true, text_result("hello"));
+      break;
+    }
+    auto vlm_req = h.next_submit(h.vlm_recv);
+    check(vlm_req.has_value(), "realtime spoken turn did not submit to VLM");
+    if (vlm_req) {
+      h.complete(vlm_req->request_id, "vlm", true, text_result("world"));
+    }
+    return h.next_submit(h.tts_recv);
+  };
+
+  // Turn 0: non-streaming TTS stage returns a RIFF WAV without streamed=true.
+  // RealtimeApi must unwrap the RIFF header and emit genuine headerless PCM16.
+  if (auto tts_req = send_utterance()) {
+    const std::string raw_pcm = "\x11\x22\x33\x44\x55\x66\x77\x08";
+    const std::string wav = audio::wav_from_pcm16(raw_pcm, 24000);
+    Value::Map extra;
+    extra["format"] = Value("wav");
+    extra["sample_rate"] = Value(int64_t{24000});
+    extra["channels"] = Value(int64_t{1});
+    h.complete(tts_req->request_id, "tts", true,
+               artifact_result("audio", "audio/wav", wav, std::move(extra)));
+
+    std::string collected_pcm;
+    bool saw_audio_done = false;
+    bool saw_completed = false;
+    while (auto ev = next_ws_event()) {
+      const std::string type = ev->value("type", "");
+      if (type == "audio.delta") {
+        check(ev->value("format", "") == "pcm16",
+              "fallback WAV turn did not label audio.delta as pcm16");
+        check(ev->value("sample_rate", 0) == 24000 &&
+                  ev->value("channels", 0) == 1,
+              "fallback WAV turn did not report WAV sample_rate/channels");
+        collected_pcm +=
+            util::base64_decode(ev->at("audio").get<std::string>(), 1u << 20);
+      } else if (type == "audio.done") {
+        saw_audio_done = true;
+      } else if (type == "response.completed") {
+        saw_completed = true;
+        break;
+      } else if (type == "response.failed") {
+        check(false, "fallback WAV turn unexpectedly failed");
+        break;
+      }
+    }
+    check(collected_pcm == raw_pcm && collected_pcm.rfind("RIFF", 0) != 0,
+          "fallback WAV turn leaked RIFF header bytes into pcm16 audio.delta");
+    check(saw_audio_done && saw_completed,
+          "fallback WAV turn did not emit audio.done and response.completed");
+  } else {
+    check(false, "turn 0 did not submit to TTS");
+  }
+
+  // Turn 1: streaming TTS stage emits PCM16 chunks and sets streamed=true on
+  // its terminal WAV. RealtimeApi must emit the streamed chunks once and skip
+  // the terminal WAV.
+  if (auto tts_req = send_utterance()) {
+    const std::string c0("\x01\x00\x02\x00", 4);
+    const std::string c1("\x03\x00\x04\x00", 4);
+    auto pcm_chunk = [](const std::string& bytes, int64_t idx) {
+      Value::Map m;
+      m["audio"] = Value::bin(bytes);
+      m["index"] = Value(idx);
+      m["sample_rate"] = Value(int64_t{24000});
+      m["channels"] = Value(int64_t{1});
+      m["format"] = Value("pcm16");
+      return Value(std::move(m));
+    };
+    h.stream(tts_req->request_id, "tts", pcm_chunk(c0, 0));
+    h.stream(tts_req->request_id, "tts", pcm_chunk(c1, 1));
+    Value::Map extra;
+    extra["format"] = Value("wav");
+    extra["sample_rate"] = Value(int64_t{24000});
+    extra["channels"] = Value(int64_t{1});
+    extra["streamed"] = Value(true);
+    h.complete(
+        tts_req->request_id, "tts", true,
+        artifact_result("audio", "audio/wav",
+                        audio::wav_from_pcm16(c0 + c1, 24000),
+                        std::move(extra)));
+
+    std::string collected_pcm;
+    bool saw_completed = false;
+    while (auto ev = next_ws_event()) {
+      const std::string type = ev->value("type", "");
+      if (type == "audio.delta") {
+        collected_pcm +=
+            util::base64_decode(ev->at("audio").get<std::string>(), 1u << 20);
+      } else if (type == "response.completed") {
+        saw_completed = true;
+        break;
+      }
+    }
+    check(saw_completed && collected_pcm == c0 + c1,
+          "streamed TTS turn duplicated or altered PCM16 audio");
+  } else {
+    check(false, "turn 1 did not submit to TTS");
+  }
+
+  // Turn 2: TTS leg fails after VLM succeeds (kLegError). RealtimeApi must
+  // report response.failed instead of claiming audio.done/response.completed.
+  if (auto tts_req = send_utterance()) {
+    h.complete(tts_req->request_id, "tts", false, Value(),
+               std::string("tts worker crashed"));
+    bool saw_audio_done = false;
+    bool saw_completed = false;
+    std::string failed_error;
+    while (auto ev = next_ws_event()) {
+      const std::string type = ev->value("type", "");
+      if (type == "audio.done") {
+        saw_audio_done = true;
+      } else if (type == "response.completed") {
+        saw_completed = true;
+        break;
+      } else if (type == "response.failed") {
+        failed_error = ev->value("error", "");
+        break;
+      }
+    }
+    check(!saw_audio_done && !saw_completed &&
+              failed_error == "tts worker crashed",
+          "TTS leg failure did not surface as realtime response.failed");
+  } else {
+    check(false, "turn 2 did not submit to TTS");
+  }
+
+  wait_until([&] { return engine.in_flight() == 0; },
+             "realtime spoken requests stayed in flight");
+  cancel.store(true, std::memory_order_relaxed);
+  ws.close();
+  if (ws_reader.joinable()) ws_reader.join();
+  realtime.stop();
+  rt_thread.join();
+}
+
 }  // namespace
 
 int main() {
@@ -4058,5 +4289,6 @@ int main() {
   test_mixed_previous_stream_tolerates_bin_chunk();
   test_public_http_mixed_artifact_stream();
   test_public_http_mixed_partial_failure();
+  test_realtime_spoken_audio_format_and_leg_error();
   return g_failures == 0 ? 0 : 1;
 }

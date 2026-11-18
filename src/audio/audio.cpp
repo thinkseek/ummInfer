@@ -15,6 +15,10 @@ constexpr size_t kWavHeaderSize = 44;
   throw std::invalid_argument("WAV must contain one PCM16 mono 16 kHz data chunk");
 }
 
+[[noreturn]] void invalid_wav_pcm16() {
+  throw std::invalid_argument("WAV must contain one valid PCM16 data chunk");
+}
+
 uint16_t read_u16(std::string_view bytes, size_t offset) {
   return static_cast<uint16_t>(static_cast<unsigned char>(bytes[offset])) |
          static_cast<uint16_t>(static_cast<unsigned char>(bytes[offset + 1]) << 8);
@@ -78,39 +82,51 @@ std::string wav_from_pcm16(std::string_view pcm, uint32_t sample_rate) {
   return wav;
 }
 
-std::string pcm16_from_wav(std::string_view wav) {
+WavPcm16View parse_wav_pcm16(std::string_view wav) {
   if (wav.size() < 12 || wav.substr(0, 4) != "RIFF" || wav.substr(8, 4) != "WAVE") {
-    invalid_wav();
+    invalid_wav_pcm16();
   }
   const uint32_t riff_size = read_u32(wav, 4);
-  if (riff_size < 4 || static_cast<uint64_t>(riff_size) + 8 != wav.size()) invalid_wav();
+  if (riff_size < 4 || static_cast<uint64_t>(riff_size) + 8 != wav.size()) {
+    invalid_wav_pcm16();
+  }
   const size_t riff_end = static_cast<size_t>(riff_size) + 8;
 
   bool saw_format = false;
   bool saw_data = false;
+  uint16_t channels = 0;
+  uint32_t sample_rate = 0;
+  uint32_t block_align = 0;
   size_t data_offset = 0;
   size_t data_size = 0;
   size_t offset = 12;
   while (offset < riff_end) {
-    if (riff_end - offset < 8) invalid_wav();
+    if (riff_end - offset < 8) invalid_wav_pcm16();
     const std::string_view chunk_id = wav.substr(offset, 4);
     const uint32_t chunk_size = read_u32(wav, offset + 4);
     const size_t body_offset = offset + 8;
-    if (chunk_size > riff_end - body_offset) invalid_wav();
+    if (chunk_size > riff_end - body_offset) invalid_wav_pcm16();
     const size_t body_end = body_offset + static_cast<size_t>(chunk_size);
 
     if (chunk_id == "fmt ") {
-      if (saw_format || chunk_size < 16) invalid_wav();
-      const bool valid_format = read_u16(wav, body_offset) == 1 &&
-                                read_u16(wav, body_offset + 2) == 1 &&
-                                read_u32(wav, body_offset + 4) == kSampleRate &&
-                                read_u32(wav, body_offset + 8) == kSampleRate * 2 &&
-                                read_u16(wav, body_offset + 12) == 2 &&
-                                read_u16(wav, body_offset + 14) == 16;
-      if (!valid_format) invalid_wav();
+      if (saw_format || chunk_size < 16) invalid_wav_pcm16();
+      const uint16_t format_tag = read_u16(wav, body_offset);
+      channels = read_u16(wav, body_offset + 2);
+      sample_rate = read_u32(wav, body_offset + 4);
+      const uint32_t byte_rate = read_u32(wav, body_offset + 8);
+      block_align = read_u16(wav, body_offset + 12);
+      const uint16_t bits_per_sample = read_u16(wav, body_offset + 14);
+      const bool valid_format =
+          format_tag == 1 && channels >= 1 && channels <= 32 &&
+          sample_rate > 0 && bits_per_sample == 16 &&
+          block_align == static_cast<uint32_t>(channels) * 2u &&
+          static_cast<uint64_t>(sample_rate) * block_align == byte_rate;
+      if (!valid_format) invalid_wav_pcm16();
       saw_format = true;
     } else if (chunk_id == "data") {
-      if (!saw_format || saw_data || chunk_size % 2 != 0) invalid_wav();
+      if (!saw_format || saw_data || chunk_size % block_align != 0) {
+        invalid_wav_pcm16();
+      }
       saw_data = true;
       data_offset = body_offset;
       data_size = chunk_size;
@@ -118,12 +134,23 @@ std::string pcm16_from_wav(std::string_view wav) {
 
     offset = body_end;
     if (chunk_size % 2 != 0) {
-      if (offset == riff_end) invalid_wav();
+      if (offset == riff_end) invalid_wav_pcm16();
       ++offset;
     }
   }
-  if (!saw_format || !saw_data) invalid_wav();
-  return std::string(wav.substr(data_offset, data_size));
+  if (!saw_format || !saw_data) invalid_wav_pcm16();
+  return WavPcm16View{wav.substr(data_offset, data_size), sample_rate, channels};
+}
+
+std::string pcm16_from_wav(std::string_view wav) {
+  WavPcm16View parsed;
+  try {
+    parsed = parse_wav_pcm16(wav);
+  } catch (const std::invalid_argument&) {
+    invalid_wav();
+  }
+  if (parsed.channels != 1 || parsed.sample_rate != kSampleRate) invalid_wav();
+  return std::string(parsed.pcm);
 }
 
 }  // namespace umminfer::audio
