@@ -85,14 +85,13 @@ CancellableComputeFn make_compute(const StageOptions& options) {
 
   const int gpu = options.gpu;
   // One engine owns one KV cache, so requests run one at a time. The cache
-  // holds the prompt region of the last request in one session; only tokens
-  // produced by prefill are reused, which keeps a reuse run bit-identical to a
-  // full prefill.
-  // ponytail: one cached session; add per-session snapshots if concurrent
-  // sessions must each keep a prefix.
+  // holds the prompt region of the most recent pure-text prefill; any pure-text
+  // request (same session, another session sharing a system prompt, or a repeat
+  // prompt) reuses the common leading token prefix up to ids.size() - 1 so
+  // reuse stays bit-identical to a full prefill.
   struct PrefixCache {
     bool enabled = true;
-    std::string session;
+    std::string last_session;
     std::vector<int> ids;
     int valid = 0;
   };
@@ -126,12 +125,14 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       ids = expand_image_pads(std::move(ids), image->rows() / 4);
     }
     int prefix = 0;
-    if (cache->enabled && image == nullptr && !input.session_id.empty() &&
-        cache->session == input.session_id && cache->valid > 0) {
+    if (cache->enabled && image == nullptr && cache->valid > 0 &&
+        ids.size() > 1) {
       size_t common = 0;
       const size_t limit = std::min(cache->ids.size(), ids.size());
       while (common < limit && cache->ids[common] == ids[common]) ++common;
-      prefix = static_cast<int>(std::min<size_t>(common, cache->valid));
+      const size_t max_reusable =
+          std::min<size_t>(static_cast<size_t>(cache->valid), ids.size() - 1);
+      prefix = static_cast<int>(std::min(common, max_reusable));
     }
     // Token streaming: byte-level BPE is additive per token, so buffer only
     // incomplete trailing UTF-8 bytes in O(1) per token.
@@ -150,11 +151,12 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       result = engine->generate(ids, image.get(), req_max_new_tokens,
                                 [&tracker] { return tracker(); }, emit_token,
                                 prefix);
-      if (!input.session_id.empty()) {
-        cache->session = input.session_id;
+      if (image == nullptr) {
+        cache->last_session = input.session_id;
         cache->ids = ids;
         cache->valid = static_cast<int>(ids.size());
       } else {
+        cache->ids.clear();
         cache->valid = 0;
       }
     } catch (const omni::RequestAborted& error) {
@@ -182,6 +184,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
+    const char* finish_reason = result.stopped_by_eos ? "stop" : "length";
     std::cerr << "omni request request_id=" << req_id
               << " prompt_tokens="
               << result.prefill_tokens + result.reused_tokens
@@ -189,6 +192,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " prefix_reused=" << result.reused_tokens
               << " image_tokens=" << result.image_tokens
               << " generated_tokens=" << result.token_ids.size()
+              << " finish_reason=" << finish_reason
               << " chars=" << result.text.size()
               << " prefill_ms=" << std::fixed << std::setprecision(1)
               << result.prefill_ms
@@ -196,7 +200,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << result.decode_ms
               << " elapsed_ms=" << elapsed.count() << "\n";
     return omni_result(result.text, static_cast<int>(result.token_ids.size()),
-                       result.prefill_ms, result.decode_ms);
+                       result.prefill_ms, result.decode_ms, finish_reason);
   };
 }
 

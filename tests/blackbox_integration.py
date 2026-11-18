@@ -111,6 +111,8 @@ def main():
                             "UMMINFER_CURL_PREFIX", "/opt/homebrew/opt/curl")))
     parser.add_argument("--timeout", type=int, default=1800,
                         help="per-suite timeout in seconds")
+    parser.add_argument("--suites", default="",
+                        help="optional comma-separated suite names to run")
     parser.add_argument("--self-check", action="store_true",
                         help="prove the streaming log cap with a 4 MiB producer")
     args = parser.parse_args()
@@ -177,6 +179,7 @@ def main():
     suites = [
         ("build", ["zig", "build", "-Doptimize=ReleaseFast"] + zig_flags),
         ("zig-test", ["zig", "build", "test"] + zig_flags),
+        ("smoke", ["zig", "build", "smoke"] + zig_flags),
         ("unified-test", ["zig", "build", "unified-test"] + zig_flags),
         ("realtime-contract", python + [
             "tests/realtime_contract_e2e.py",
@@ -188,11 +191,20 @@ def main():
             "--deps-prefix", deps,
             "--curl-prefix", curl]),
         ("mlx-stage", python + ["tests/mlx_stage_test.py"]),
+        ("service", python + ["tests/umminfer_service_test.py"]),
+        ("multimodal-bench", python + ["tests/multimodal_benchmark_test.py"]),
+        ("wire-proxy-teardown", python + ["tests/wire_proxy_teardown_test.py"]),
         ("rl-phase1", python + ["tests/rl_architecture_test.py"]),
         ("rl-phase2", python + ["tests/rl_phase2_test.py"]),
         ("provenance", python + ["tests/model_provenance_test.py"]),
         ("mac-unified", python + ["tests/mac_unified_validation_test.py"]),
     ]
+    if args.suites:
+        wanted = {item.strip() for item in args.suites.split(",") if item.strip()}
+        unknown = wanted - {name for name, _ in suites}
+        if unknown:
+            parser.error("unknown suite(s): " + ", ".join(sorted(unknown)))
+        suites = [(name, cmd) for name, cmd in suites if name in wanted]
 
     failures = []
     for name, command in suites:

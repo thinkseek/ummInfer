@@ -858,6 +858,9 @@ class RealtimeApi::Impl {
     audio["stream"] = Value(true);
     inputs["audio_options"] = Value(std::move(audio));
     inputs["session_id"] = Value(session->unified_session);
+    if (unified_->history_enabled() && !session->unified_session.empty()) {
+      inputs["session_history"] = Value(true);
+    }
     StagePayload payload;
     payload.request.inputs = Value(std::move(inputs));
     payload.request.metadata["request_type"] = Value("chat");

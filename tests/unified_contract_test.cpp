@@ -34,13 +34,264 @@
 #include "umminfer/pipeline/pipeline.hpp"
 #include "umminfer/pipeline/unified.hpp"
 #include "umminfer/serve/openai_api.hpp"
+#include "umminfer/client/client.hpp"
 #include "umminfer/serve/realtime_api.hpp"
 #include "umminfer/util/codec.hpp"
-#include "client/http.hpp"
-#include "client/websocket.hpp"
+#include <curl/curl.h>
+#include <httplib.h>
 #include <nlohmann/json.hpp>
+#include <poll.h>
+#include <sys/socket.h>
 
 using namespace umminfer;
+using json = nlohmann::json;
+
+namespace test_http {
+
+enum class HttpMethod { kGet, kPost, kDelete };
+
+struct HttpRequest {
+  std::string url;
+  HttpMethod method = HttpMethod::kPost;
+  std::string body;
+  std::string bearer;
+  std::map<std::string, std::string> headers;
+  client::Milliseconds timeout{10000};
+  client::Milliseconds connect_timeout{2000};
+  bool no_proxy = true;
+  std::function<bool(std::string_view)> on_body;
+};
+
+struct HttpResponse {
+  long status = 0;
+  std::string body;
+  std::map<std::string, std::string> headers;
+};
+
+inline client::Milliseconds retry_after(
+    const std::map<std::string, std::string>& headers) {
+  for (const auto& [k, v] : headers) {
+    std::string lower = k;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower == "retry-after") {
+      try {
+        const long secs = std::stol(v);
+        if (secs > 0) return client::Milliseconds{secs * 1000};
+      } catch (...) {
+      }
+    }
+  }
+  return client::Milliseconds{0};
+}
+
+inline HttpResponse perform(const HttpRequest& req) {
+  std::string host = "127.0.0.1";
+  int port = 80;
+  std::string path = "/";
+  const size_t scheme_end = req.url.find("://");
+  const size_t host_begin = scheme_end == std::string::npos ? 0 : scheme_end + 3;
+  const size_t slash = req.url.find('/', host_begin);
+  const std::string authority =
+      slash == std::string::npos ? req.url.substr(host_begin)
+                                 : req.url.substr(host_begin, slash - host_begin);
+  if (slash != std::string::npos) path = req.url.substr(slash);
+  const size_t colon = authority.rfind(':');
+  if (colon != std::string::npos) {
+    host = authority.substr(0, colon);
+    port = std::stoi(authority.substr(colon + 1));
+  } else {
+    host = authority;
+  }
+
+  httplib::Client cli(host, port);
+  const auto to_sec_usec = [](client::Milliseconds ms) {
+    const auto count = std::max<int64_t>(1, ms.count());
+    return std::pair<time_t, time_t>{static_cast<time_t>(count / 1000),
+                                     static_cast<time_t>((count % 1000) * 1000)};
+  };
+  const auto [c_sec, c_usec] = to_sec_usec(req.connect_timeout);
+  const auto [t_sec, t_usec] = to_sec_usec(req.timeout);
+  cli.set_connection_timeout(c_sec, c_usec);
+  cli.set_read_timeout(t_sec, t_usec);
+  cli.set_write_timeout(t_sec, t_usec);
+
+  httplib::Headers hdrs;
+  std::string content_type = "application/json";
+  for (const auto& [k, v] : req.headers) {
+    if (k == "Content-Type" || k == "content-type") {
+      content_type = v;
+    } else {
+      hdrs.emplace(k, v);
+    }
+  }
+  if (!req.bearer.empty()) {
+    hdrs.emplace("Authorization", "Bearer " + req.bearer);
+  }
+
+  HttpResponse out;
+  httplib::Result res;
+  if (req.method == HttpMethod::kGet) {
+    if (req.on_body) {
+      res = cli.Get(
+          path, hdrs,
+          [&](const httplib::Response& r) {
+            out.status = r.status;
+            for (const auto& [hk, hv] : r.headers) out.headers[hk] = hv;
+            return true;
+          },
+          [&](const char* data, size_t len) {
+            out.body.append(data, len);
+            return req.on_body(std::string_view(data, len));
+          });
+    } else {
+      res = cli.Get(path, hdrs);
+    }
+  } else if (req.method == HttpMethod::kDelete) {
+    res = req.body.empty() ? cli.Delete(path, hdrs)
+                           : cli.Delete(path, hdrs, req.body, content_type);
+  } else if (req.on_body) {
+    res = cli.Post(path, hdrs, req.body, content_type,
+                   [&](const char* data, size_t len) {
+                     out.body.append(data, len);
+                     return req.on_body(std::string_view(data, len));
+                   });
+  } else {
+    res = cli.Post(path, hdrs, req.body, content_type);
+  }
+
+  if (!res && out.status == 0) {
+    throw client::Error(client::ErrorCode::kNetwork,
+                        httplib::to_string(res.error()), true, 0);
+  }
+  if (res) {
+    out.status = res->status;
+    if (out.body.empty()) out.body = res->body;
+    for (const auto& [hk, hv] : res->headers) out.headers[hk] = hv;
+  }
+  if (out.status < 200 || out.status >= 300) {
+    const auto code =
+        (out.status == 429 || out.status == 503) ? client::ErrorCode::kRateLimited
+        : (out.status == 401 || out.status == 403)
+            ? client::ErrorCode::kAuthentication
+        : out.status >= 500 ? client::ErrorCode::kServer
+                            : client::ErrorCode::kBadRequest;
+    throw client::Error(
+        code, "HTTP " + std::to_string(out.status) + ": " + out.body,
+        out.status == 429 || out.status >= 500, static_cast<int>(out.status),
+        retry_after(out.headers));
+  }
+  return out;
+}
+
+class WebSocket {
+ public:
+  WebSocket(const std::string& url, client::Milliseconds timeout,
+            const std::atomic<bool>* cancel)
+      : cancel_(cancel) {
+    static std::once_flag once;
+    std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+    curl_ = curl_easy_init();
+    if (!curl_) throw std::runtime_error("curl_easy_init failed");
+    curl_easy_setopt(curl_, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl_, CURLOPT_CONNECT_ONLY, 2L);
+    curl_easy_setopt(curl_, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl_, CURLOPT_NOPROXY, "*");
+    curl_easy_setopt(curl_, CURLOPT_PROTOCOLS_STR, "ws");
+    curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT_MS,
+                     static_cast<long>(std::max<int64_t>(1, timeout.count())));
+    curl_easy_setopt(curl_, CURLOPT_TIMEOUT_MS,
+                     static_cast<long>(std::max<int64_t>(1, timeout.count())));
+    const CURLcode rc = curl_easy_perform(curl_);
+    if (rc != CURLE_OK) {
+      curl_easy_cleanup(curl_);
+      curl_ = nullptr;
+      throw std::runtime_error(curl_easy_strerror(rc));
+    }
+    curl_easy_getinfo(curl_, CURLINFO_ACTIVESOCKET, &sock_);
+  }
+
+  ~WebSocket() {
+    close();
+    if (curl_) curl_easy_cleanup(curl_);
+  }
+
+  void send_text(const std::string& text) {
+    std::lock_guard<std::mutex> lock(io_mu_);
+    size_t off = 0;
+    while (off < text.size() && !stopped()) {
+      size_t sent = 0;
+      const CURLcode rc = curl_ws_send(
+          curl_, text.data() + off, text.size() - off, &sent, 0, CURLWS_TEXT);
+      if (rc == CURLE_OK) {
+        off += sent;
+      } else if (rc == CURLE_AGAIN) {
+        poll_sock(POLLOUT, 20);
+      } else {
+        throw std::runtime_error(curl_easy_strerror(rc));
+      }
+    }
+  }
+
+  void run(const std::function<void(std::string_view)>& on_msg) {
+    std::string accum;
+    while (!stopped()) {
+      char buf[16384];
+      size_t got = 0;
+      const curl_ws_frame* meta = nullptr;
+      CURLcode rc = CURLE_OK;
+      {
+        std::lock_guard<std::mutex> lock(io_mu_);
+        rc = curl_ws_recv(curl_, buf, sizeof(buf), &got, &meta);
+      }
+      if (rc == CURLE_OK && meta != nullptr) {
+        if (meta->flags & CURLWS_CLOSE) return;
+        if (meta->flags & CURLWS_TEXT) {
+          accum.append(buf, got);
+          if (meta->bytesleft == 0 && !(meta->flags & CURLWS_CONT)) {
+            on_msg(accum);
+            accum.clear();
+          }
+        }
+        continue;
+      }
+      if (rc == CURLE_AGAIN) {
+        poll_sock(POLLIN, 20);
+        continue;
+      }
+      return;
+    }
+  }
+
+  void close() {
+    if (!closed_.exchange(true) && sock_ != CURL_SOCKET_BAD) {
+      ::shutdown(static_cast<int>(sock_), SHUT_RDWR);
+    }
+  }
+
+ private:
+  bool stopped() const {
+    return closed_.load(std::memory_order_relaxed) ||
+           (cancel_ != nullptr && cancel_->load(std::memory_order_relaxed));
+  }
+  void poll_sock(short events, int ms) {
+    if (sock_ == CURL_SOCKET_BAD) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+      return;
+    }
+    pollfd pfd{};
+    pfd.fd = static_cast<int>(sock_);
+    pfd.events = events;
+    (void)::poll(&pfd, 1, ms);
+  }
+  CURL* curl_ = nullptr;
+  curl_socket_t sock_ = CURL_SOCKET_BAD;
+  const std::atomic<bool>* cancel_ = nullptr;
+  std::atomic<bool> closed_{false};
+  std::mutex io_mu_;
+};
+
+}  // namespace test_http
 
 namespace {
 
@@ -1108,13 +1359,13 @@ void test_public_http_overload_503() {
   const std::string body =
       R"({"model":"qwen3-unified","messages":[{"role":"user","content":"hello"}],"stream":false})";
   auto send = [&] {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
                   "/v1/chat/completions";
     request.body = body;
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{10000};
-    return client::detail::perform(request);
+    return test_http::perform(request);
   };
 
   // The first request holds the only slot until its VLM leg completes.
@@ -1132,7 +1383,7 @@ void test_public_http_overload_503() {
     overloaded_503 = response.status == 503L;
     named_overload =
         response.body.find("\"type\":\"overloaded\"") != std::string::npos;
-    retry_after = client::detail::retry_after(response.headers).count() > 0;
+    retry_after = test_http::retry_after(response.headers).count() > 0;
   } catch (const client::Error& error) {
     overloaded_503 = error.status() == 503;
     named_overload = std::string(error.what()).find("overloaded") != std::string::npos;
@@ -2137,19 +2388,21 @@ void test_retire_wait_fallback_order() {
   h.stream(id, "asr", text_chunk("partial", false));
   probe.stream_entered_future.wait();
   const auto copied_complete = h.coordinator.on_complete;
-  UnifiedEngine* engine_ptr = engine.get();
 
+  std::promise<void> destroyer_started;
+  auto destroyer_started_future = destroyer_started.get_future();
   std::promise<void> destroyed;
   auto destroyed_future = destroyed.get_future();
   std::thread destroyer([&] {
+    destroyer_started.set_value();
     engine.reset();
     destroyed.set_value();
   });
-  bool retiring = false;
-  wait_until([&] {
-    retiring = unified_retirement_waiting_for_test(*engine_ptr);
-    return retiring;
-  }, "retire did not wait for the active forwarded stream");
+  destroyer_started_future.wait();
+  const bool retiring =
+      destroyed_future.wait_for(std::chrono::milliseconds(25)) ==
+      std::future_status::timeout;
+  check(retiring, "retire did not wait for the active forwarded stream");
   if (!retiring) {
     probe.release();
     destroyed_future.wait();
@@ -2301,10 +2554,19 @@ void test_destructor_suppresses_previous_sink_exception() {
 
   std::thread stream_thread([&] { copied_stream(retired_stream_message()); });
   probe.stream_entered_future.wait();
-  UnifiedEngine* engine_ptr = engine.get();
-  std::thread destroyer([&] { engine.reset(); });
-  wait_until([&] { return unified_retirement_waiting_for_test(*engine_ptr); },
-             "retire did not wait for the blocked previous stream");
+  std::promise<void> destroyer_started;
+  auto destroyer_started_future = destroyer_started.get_future();
+  std::promise<void> destroyed;
+  auto destroyed_future = destroyed.get_future();
+  std::thread destroyer([&] {
+    destroyer_started.set_value();
+    engine.reset();
+    destroyed.set_value();
+  });
+  destroyer_started_future.wait();
+  check(destroyed_future.wait_for(std::chrono::milliseconds(25)) ==
+            std::future_status::timeout,
+        "retire did not wait for the blocked previous stream");
 
   std::promise<void> complete_returned;
   auto complete_returned_future = complete_returned.get_future();
@@ -2349,7 +2611,7 @@ void test_public_http_unified_sse() {
   const std::string wav = audio::wav_from_pcm16(pcm);
   nlohmann::json audio_part = {
       {"type", "input_audio"},
-      {"input_audio", {{"data", client::detail::base64_encode(wav)}, {"format", "wav"}}}};
+      {"input_audio", {{"data", util::base64_encode(wav)}, {"format", "wav"}}}};
   nlohmann::json message = {{"role", "user"},
                             {"content", nlohmann::json::array({audio_part})}};
   nlohmann::json body = {{"model", "qwen3-unified"},
@@ -2358,13 +2620,13 @@ void test_public_http_unified_sse() {
                          {"max_tokens", 37},
                          {"temperature", 0.25}};
   auto response_future = std::async(std::launch::async, [&] {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
                   "/v1/chat/completions";
     request.body = body.dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{10000};
-    return client::detail::perform(request);
+    return test_http::perform(request);
   });
 
   auto asr_submit = h.next_submit(h.asr_recv);
@@ -2441,7 +2703,7 @@ void test_public_http_joint_input() {
   const std::string wav = audio::wav_from_pcm16(pcm);
   nlohmann::json audio_part = {
       {"type", "input_audio"},
-      {"input_audio", {{"data", client::detail::base64_encode(wav)}, {"format", "wav"}}}};
+      {"input_audio", {{"data", util::base64_encode(wav)}, {"format", "wav"}}}};
   nlohmann::json instruction = {{"type", "text"}, {"text", "describe this image"}};
   nlohmann::json image = {{"type", "image_url"},
                           {"image_url", {{"url", "data:image/png;base64,AA"}}}};
@@ -2453,13 +2715,13 @@ void test_public_http_joint_input() {
            {"content", nlohmann::json::array({instruction, image, audio_part})}}})},
       {"stream", true}};
   auto response_future = std::async(std::launch::async, [&] {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
                   "/v1/chat/completions";
     request.body = body.dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{10000};
-    return client::detail::perform(request);
+    return test_http::perform(request);
   });
 
   auto asr_submit = h.next_submit(h.asr_recv);
@@ -2520,12 +2782,12 @@ void test_public_http_vlm_only() {
   auto post = [&](nlohmann::json body) {
     body["model"] = "qwen3-unified";
     body["stream"] = false;
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = base + "/v1/chat/completions";
     request.body = body.dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{5000};
-    return client::detail::perform(request);
+    return test_http::perform(request);
   };
   auto body_with = [](nlohmann::json content) {
     return nlohmann::json{{"messages", nlohmann::json::array({nlohmann::json{
@@ -2589,7 +2851,7 @@ void test_public_http_vlm_only() {
   const std::string wav = audio::wav_from_pcm16(std::string(800, '\0'));
   const nlohmann::json audio_part = {
       {"type", "input_audio"},
-      {"input_audio", {{"data", client::detail::base64_encode(wav)},
+      {"input_audio", {{"data", util::base64_encode(wav)},
                        {"format", "wav"}}}};
   bool two_audio_rejected = false;
   try {
@@ -2652,12 +2914,12 @@ void test_public_http_vlm_only_stream() {
       {"stream", true},
       {"max_tokens", 16}};
   auto response_future = std::async(std::launch::async, [&] {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = base + "/v1/chat/completions";
     request.body = body.dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{10000};
-    return client::detail::perform(request);
+    return test_http::perform(request);
   });
 
   check(h.no_submit(h.asr_recv), "a streaming VLM-only request reached ASR");
@@ -2707,21 +2969,21 @@ void test_public_http_unified_errors() {
   const std::string wav = audio::wav_from_pcm16(std::string(800, '\0'));
   const nlohmann::json audio_part = {
       {"type", "input_audio"},
-      {"input_audio", {{"data", client::detail::base64_encode(wav)}, {"format", "wav"}}}};
+      {"input_audio", {{"data", util::base64_encode(wav)}, {"format", "wav"}}}};
   const nlohmann::json image = {{"type", "image_url"},
                                 {"image_url", {{"url", "data:image/png;base64,AA"}}}};
   // The public client throws on a non-2xx response; a 400 is the expected result.
   auto rejected = [&](nlohmann::json body) {
     body["model"] = "qwen3-unified";
     body["stream"] = false;
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
                   "/v1/chat/completions";
     request.body = body.dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{5000};
     try {
-      client::detail::perform(request);
+      test_http::perform(request);
     } catch (const client::Error& exc) {
       return std::string(exc.what()).find("HTTP 400") != std::string::npos;
     }
@@ -2765,7 +3027,7 @@ nlohmann::json public_audio_body(int max_tokens = 37) {
   const std::string wav = audio::wav_from_pcm16(pcm);
   nlohmann::json audio_part = {
       {"type", "input_audio"},
-      {"input_audio", {{"data", client::detail::base64_encode(wav)}, {"format", "wav"}}}};
+      {"input_audio", {{"data", util::base64_encode(wav)}, {"format", "wav"}}}};
   nlohmann::json message = {{"role", "user"},
                             {"content", nlohmann::json::array({audio_part})}};
   return {{"model", "qwen3-unified"},
@@ -2807,7 +3069,7 @@ void test_public_http_cancel_during_vlm() {
   auto saw_two_deltas_future = saw_two_deltas.get_future();
   bool signaled = false;
   auto stream_future = std::async(std::launch::async, [&] {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = base + "/v1/chat/completions";
     request.body = public_audio_body().dump();
     request.headers.emplace("Content-Type", "application/json");
@@ -2831,7 +3093,7 @@ void test_public_http_cancel_during_vlm() {
       }
       return true;
     };
-    return client::detail::perform(request);
+    return test_http::perform(request);
   });
 
   auto asr_submit = h.next_submit(h.asr_recv);
@@ -2850,7 +3112,7 @@ void test_public_http_cancel_during_vlm() {
   check(!stream_request_id.empty() && stream_request_id == id,
         "the public stream id did not match the submitted request");
 
-  client::detail::HttpRequest abort_request;
+  test_http::HttpRequest abort_request;
   abort_request.url = base + "/abort";
   abort_request.body =
       nlohmann::json{{"request_id", stream_request_id.empty() ? id
@@ -2858,7 +3120,7 @@ void test_public_http_cancel_during_vlm() {
           .dump();
   abort_request.headers.emplace("Content-Type", "application/json");
   abort_request.timeout = client::Milliseconds{5000};
-  const auto abort_response = client::detail::perform(abort_request);
+  const auto abort_response = test_http::perform(abort_request);
   check(abort_response.status == 200,
         "public abort did not accept the active request");
 
@@ -2937,12 +3199,12 @@ void test_public_http_asr_model_failure() {
   engine.on_terminal = [&](const UnifiedEvent& event) { log.finish(event); };
 
   auto response_future = std::async(std::launch::async, [&] {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = base + "/v1/chat/completions";
     request.body = public_audio_body().dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{10000};
-    return client::detail::perform(request);
+    return test_http::perform(request);
   });
 
   auto asr_submit = h.next_submit(h.asr_recv);
@@ -3286,7 +3548,7 @@ void test_public_http_session_history() {
   const std::string wav = audio::wav_from_pcm16(std::string(800, '\0'));
   const nlohmann::json audio_part = {
       {"type", "input_audio"},
-      {"input_audio", {{"data", client::detail::base64_encode(wav)}, {"format", "wav"}}}};
+      {"input_audio", {{"data", util::base64_encode(wav)}, {"format", "wav"}}}};
   auto body = [&](nlohmann::json extra) {
     extra["model"] = "qwen3-unified";
     extra["stream"] = false;
@@ -3296,14 +3558,14 @@ void test_public_http_session_history() {
     return extra;
   };
   auto post = [](OpenAIApi& api, const nlohmann::json& payload) {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
                   "/v1/chat/completions";
     request.body = payload.dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{5000};
     try {
-      client::detail::perform(request);
+      test_http::perform(request);
     } catch (const client::Error& exc) {
       return std::string(exc.what());
     }
@@ -3432,7 +3694,7 @@ void test_public_http_session_id_requires_unified() {
       {"session_id", "plain-session"},
       {"messages", nlohmann::json::array({nlohmann::json{
            {"role", "user"}, {"content", "hello"}}})}};
-  client::detail::HttpRequest request;
+  test_http::HttpRequest request;
   request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
                 "/v1/chat/completions";
   request.body = body.dump();
@@ -3440,7 +3702,7 @@ void test_public_http_session_id_requires_unified() {
   request.timeout = client::Milliseconds{5000};
   bool rejected_with_400 = false;
   try {
-    client::detail::perform(request);
+    test_http::perform(request);
   } catch (const client::Error& exc) {
     rejected_with_400 =
         std::string(exc.what()).find("HTTP 400") != std::string::npos &&
@@ -3830,13 +4092,13 @@ void test_public_http_mixed_artifact_stream() {
                  {"sample_rate", 24000}}}};
 
   auto response_future = std::async(std::launch::async, [&] {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
                   "/v1/chat/completions";
     request.body = body.dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{15000};
-    return client::detail::perform(request);
+    return test_http::perform(request);
   });
 
   auto vlm = h.next_submit(h.vlm_recv);
@@ -3891,7 +4153,7 @@ void test_public_http_mixed_artifact_stream() {
       const std::string id = a["artifact_id"].get<std::string>();
       const std::string data = a["data"].get<std::string>();
       check(data.size() % 4 == 0, "an artifact chunk is not aligned base64");
-      reassembled[id] += client::detail::base64_decode(
+      reassembled[id] += util::base64_decode(
           data, kArtifactChunkTargetBytes + 16);
       if (a.contains("sha256")) {
         digests[id] = a["sha256"].get<std::string>();
@@ -3910,7 +4172,7 @@ void test_public_http_mixed_artifact_stream() {
   check(reassembled.size() == 2, "expected two artifacts");
   for (auto& [id, bytes] : reassembled) {
     check(digests.count(id) == 1 &&
-              digests[id] == client::detail::sha256_hex(bytes),
+              digests[id] == util::sha256_hex(bytes),
           "an artifact sha256 does not match its reassembled bytes");
     check(expected_bytes[id] == static_cast<int64_t>(bytes.size()),
           "an artifact byte count does not match");
@@ -3948,13 +4210,13 @@ void test_public_http_mixed_partial_failure() {
       {"image", nlohmann::json::object()},
       {"audio", {{"voice", "Tina"}, {"format", "wav"}}}};
   auto response_future = std::async(std::launch::async, [&] {
-    client::detail::HttpRequest request;
+    test_http::HttpRequest request;
     request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
                   "/v1/chat/completions";
     request.body = body.dump();
     request.headers.emplace("Content-Type", "application/json");
     request.timeout = client::Milliseconds{15000};
-    return client::detail::perform(request);
+    return test_http::perform(request);
   });
 
   auto vlm = h.next_submit(h.vlm_recv);
@@ -4012,7 +4274,7 @@ void test_realtime_spoken_audio_format_and_leg_error() {
   const std::string ws_url =
       "ws://127.0.0.1:" + std::to_string(realtime.bound_port()) +
       "/v1/realtime?intent=transcription&model=qwen3-unified";
-  client::detail::WebSocket ws(ws_url, client::Milliseconds{5000}, &cancel);
+  test_http::WebSocket ws(ws_url, client::Milliseconds{5000}, &cancel);
 
   std::mutex ws_mu;
   std::condition_variable ws_cv;
@@ -4050,7 +4312,11 @@ void test_realtime_spoken_audio_format_and_leg_error() {
                        {{"type", "server_vad"}, {"silence_ms", 100}}},
                       {"audio_output", {{"voice", "vivian"}}}}}}
                    .dump());
-  const auto updated = next_ws_event();
+  auto updated = next_ws_event();
+  if (updated.has_value() &&
+      (*updated).value("type", "") == "transcription_session.created") {
+    updated = next_ws_event();
+  }
   check(updated.has_value() &&
             (*updated)["type"] == "transcription_session.updated",
         "realtime session.update did not echo transcription_session.updated");
@@ -4215,6 +4481,88 @@ void test_realtime_spoken_audio_format_and_leg_error() {
   rt_thread.join();
 }
 
+
+void test_public_http_finish_reason_length_and_router_reset() {
+  Harness h("httplength");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.served_model_name = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  api.set_unified_engine(engine, "vlm");
+  h.start_pump();
+  check(api.bind(), "httplength OpenAIApi failed to bind");
+  std::thread server_thread([&] { api.listen(); });
+  for (int i = 0; i < 100; ++i) {
+    httplib::Client probe("127.0.0.1", api.bound_port());
+    if (auto r = probe.Get("/health"); r && r->status == 200) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const std::string url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                          "/v1/chat/completions";
+
+  {
+    auto fut = std::async(std::launch::async, [&] {
+      test_http::HttpRequest req;
+      req.url = url;
+      req.body = R"({"model":"qwen3-unified","max_tokens":4,"messages":[{"role":"user","content":"long"}]})";
+      req.headers.emplace("Content-Type", "application/json");
+      return test_http::perform(req);
+    });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "httplength non-stream VLM submit missing");
+    if (vlm) {
+      Value::Map res;
+      res["content"] = Value("truncated answer");
+      res["finish_reason"] = Value("length");
+      h.complete(vlm->request_id, "vlm", true, Value(std::move(res)));
+    }
+    const auto resp = fut.get();
+    const auto parsed = json::parse(resp.body);
+    check(parsed["choices"][0]["finish_reason"] == "length",
+          "non-streaming chat did not propagate finish_reason=length");
+  }
+
+  {
+    auto fut = std::async(std::launch::async, [&] {
+      test_http::HttpRequest req;
+      req.url = url;
+      req.body = R"({"model":"qwen3-unified","stream":true,"max_tokens":4,"messages":[{"role":"user","content":"long"}]})";
+      req.headers.emplace("Content-Type", "application/json");
+      return test_http::perform(req);
+    });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "httplength stream VLM submit missing");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm", text_chunk("truncated", false));
+      Value::Map res;
+      res["content"] = Value("truncated");
+      res["finish_reason"] = Value("length");
+      h.complete(vlm->request_id, "vlm", true, Value(std::move(res)));
+    }
+    const auto resp = fut.get();
+    check(resp.body.find("\"finish_reason\":\"length\"") != std::string::npos,
+          "streaming chat SSE did not propagate finish_reason=length");
+  }
+
+  api.stop();
+  server_thread.join();
+
+  CommRouter router("asr", std::nullopt, std::nullopt, {}, {"vlm"},
+                    {{"vlm", {0}}}, {});
+  const auto [kind1, r1] = router.relay_for("vlm");
+  check(kind1 == TransportKind::Shm && r1 != nullptr,
+        "CommRouter initial outbound SHM selection failed");
+  router.reset_target("vlm");
+  const auto [kind2, r2] = router.relay_for("vlm");
+  check(kind2 == TransportKind::Shm && r2 != nullptr,
+        "CommRouter outbound selection after reset_target failed");
+  router.close();
+}
+
 }  // namespace
 
 int main() {
@@ -4290,5 +4638,6 @@ int main() {
   test_public_http_mixed_artifact_stream();
   test_public_http_mixed_partial_failure();
   test_realtime_spoken_audio_format_and_leg_error();
+  test_public_http_finish_reason_length_and_router_reset();
   return g_failures == 0 ? 0 : 1;
 }

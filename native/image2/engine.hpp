@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -42,11 +43,16 @@ struct GenerateResult {
 class Image2Engine {
  public:
   Image2Engine(int gpu_id, const std::string& model_dir);
+  ~Image2Engine();
+  Image2Engine(const Image2Engine&) = delete;
+  Image2Engine& operator=(const Image2Engine&) = delete;
   GenerateResult generate(const GenerateParams& p, const AbortCheck& abort = {});
 
  private:
   int gpu_;
   std::string model_dir_;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace umminfer::image2

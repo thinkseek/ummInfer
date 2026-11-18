@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "benchmarks"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import multimodal_data as md  # noqa: E402
-import unified_benchmark as ub  # noqa: E402  (percentile, capped_append)
+import bench_common as ub  # noqa: E402  (percentile, capped_append)
 
 LOG_CAP = 64 * 1024
 MAX_ROUNDS = 30

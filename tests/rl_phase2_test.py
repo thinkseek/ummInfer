@@ -157,6 +157,7 @@ class PolicyServerProtocolTests(unittest.TestCase):
                             serve.make_handler(FakePolicy()))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         port = server.server_address[1]
         with tempfile.TemporaryDirectory() as tmp:
@@ -179,13 +180,19 @@ class PolicyServerProtocolTests(unittest.TestCase):
                             serve.make_handler(FakePolicy()))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         port = server.server_address[1]
         conn = http.client.HTTPConnection("127.0.0.1", port)
+        self.addCleanup(conn.close)
         conn.request("GET", "/health")
-        self.assertEqual(conn.getresponse().status, 200)
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 200)
         conn.request("GET", "/nope")
-        self.assertEqual(conn.getresponse().status, 404)
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 404)
 
 
 class WorkerTrainStepValidationTests(unittest.TestCase):

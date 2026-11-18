@@ -38,6 +38,7 @@ class OmniEngine {
   struct Result {
     std::vector<int> token_ids;          // generated ids, excluding EOS
     std::string text;                    // decoded, specials skipped
+    bool stopped_by_eos = false;
     // prompt_tokens is the whole prompt; prefill_tokens is what this call
     // actually computed; reused_tokens came from the KV cache of the previous
     // request in the same session.

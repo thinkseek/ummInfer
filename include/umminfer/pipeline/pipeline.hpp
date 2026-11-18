@@ -189,6 +189,7 @@ class Coordinator {
   std::map<std::string, std::string> endpoints_;
   std::set<std::string> stages_requiring_ready_;
   std::set<std::string> ready_stages_;
+  std::set<std::string> ever_ready_stages_;
   std::map<std::string, std::deque<SubmitMessage>> pending_submits_;
 
   mutable std::mutex mu_;

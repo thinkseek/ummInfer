@@ -164,10 +164,12 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const double decode_tok_s = result.decode_ms > 0.0
                                     ? result.decode_steps * 1000.0 / result.decode_ms
                                     : 0.0;
+    const char* finish_reason = result.stopped_by_eos ? "stop" : "length";
     std::cerr << "qwen38 request request_id=" << req_id
               << " prompt_tokens=" << result.prompt_tokens
               << " image_tokens=" << result.image_tokens
               << " generated_tokens=" << result.ids.size()
+              << " finish_reason=" << finish_reason
               << " chars=" << text.size()
               << " prefill_ms=" << std::fixed << std::setprecision(1)
               << result.prefill_ms
@@ -177,7 +179,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << decode_tok_s
               << " elapsed_ms=" << elapsed.count() << "\n";
     return omni_result(text, static_cast<int>(result.ids.size()),
-                       result.prefill_ms, result.decode_ms);
+                       result.prefill_ms, result.decode_ms, finish_reason);
   };
 }
 

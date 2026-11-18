@@ -4,6 +4,7 @@
 #include "tensor.hpp"
 
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -39,11 +40,16 @@ struct GenerateResult {
 class ImageEngine {
  public:
   ImageEngine(int gpu_id, const std::string& model_dir);
+  ~ImageEngine();
+  ImageEngine(const ImageEngine&) = delete;
+  ImageEngine& operator=(const ImageEngine&) = delete;
   GenerateResult generate(const GenerateParams& p, const AbortCheck& abort = {});
 
  private:
   int gpu_;
   std::string model_dir_;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace umminfer::image

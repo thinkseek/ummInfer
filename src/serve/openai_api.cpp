@@ -50,7 +50,8 @@ struct RouteMetric {
   const char* route;
   const httplib::Response* response;
   ~RouteMetric() {
-    obs::Metrics::instance().http(route, std::to_string(response->status));
+    const int status = response->status > 0 ? response->status : 200;
+    obs::Metrics::instance().http(route, std::to_string(status));
   }
 };
 

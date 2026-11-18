@@ -18,12 +18,12 @@
 #include <thread>
 #include <vector>
 
-#include "client/http.hpp"
+#include <httplib.h>
+
 #include "umminfer/pipeline/unified.hpp"
 #include "umminfer/serve/openai_api.hpp"
 
 using namespace umminfer;
-namespace detail = umminfer::client::detail;
 
 namespace {
 
@@ -60,6 +60,13 @@ constexpr const char* kInboundKey = "inbound-key-1234";
 // pinned SGLang or an authorized Qwen endpoint exists.
 constexpr const char* kDeadUpstream = "http://127.0.0.1:9";
 
+struct MimePart {
+  std::string name;
+  std::string data;
+  std::string filename;
+  std::string content_type;
+};
+
 struct Result {
   long status = 0;
   std::string body;
@@ -69,37 +76,57 @@ struct Result {
 Result call(int port, const std::string& method, const std::string& path,
             const std::string& body = "", const std::string& bearer = "",
             const std::vector<std::pair<std::string, std::string>>& headers = {},
-            const std::vector<detail::MimePart>& parts = {}) {
-  detail::HttpRequest request;
-  request.url = "http://127.0.0.1:" + std::to_string(port) + path;
-  if (method == "GET") request.method = detail::HttpMethod::kGet;
-  else if (method == "DELETE") request.method = detail::HttpMethod::kDelete;
-  else request.method = detail::HttpMethod::kPost;
-  request.body = body;
-  request.bearer = bearer;
-  request.mime_parts = parts;
-  request.timeout = client::Milliseconds{10000};
-  for (const auto& [name, value] : headers) request.headers.emplace(name, value);
-  // cpp-httplib parses a body with no declared type as form-urlencoded and
-  // rejects JSON bodies above its 8 KiB form limit with 413. Every JSON request
-  // in this file must announce its type; multipart requests keep their own
-  // part-derived type.
-  if (request.method == detail::HttpMethod::kPost && !body.empty() && parts.empty() &&
-      !request.headers.contains("Content-Type") &&
-      !request.headers.contains("content-type")) {
-    request.headers.emplace("Content-Type", "application/json");
+            const std::vector<MimePart>& parts = {}) {
+  httplib::Client cli("127.0.0.1", port);
+  cli.set_connection_timeout(2, 0);
+  cli.set_read_timeout(10, 0);
+  cli.set_write_timeout(10, 0);
+
+  httplib::Headers req_headers;
+  bool has_auth = false;
+  std::string content_type = "application/json";
+  for (const auto& [name, value] : headers) {
+    if (name == "Authorization" || name == "authorization") has_auth = true;
+    if (name == "Content-Type" || name == "content-type") {
+      content_type = value;
+    } else {
+      req_headers.emplace(name, value);
+    }
   }
+  if (!bearer.empty() && !has_auth) {
+    req_headers.emplace("Authorization", "Bearer " + bearer);
+  }
+
+  httplib::Result res;
+  if (method == "GET") {
+    res = cli.Get(path, req_headers);
+  } else if (method == "DELETE") {
+    if (body.empty()) {
+      res = cli.Delete(path, req_headers);
+    } else {
+      res = cli.Delete(path, req_headers, body, content_type);
+    }
+  } else if (!parts.empty()) {
+    httplib::UploadFormDataItems items;
+    items.reserve(parts.size());
+    for (const auto& p : parts) {
+      items.push_back({p.name, p.data, p.filename, p.content_type});
+    }
+    res = cli.Post(path, req_headers, items);
+  } else {
+    res = cli.Post(path, req_headers, body, content_type);
+  }
+
   Result result;
-  try {
-    const auto response = detail::perform(request);
-    result.status = response.status;
-    result.body = response.body;
-  } catch (const client::Error& error) {
-    result.status = error.status() != 0 ? error.status() : -1;
-    result.error = error.what();
-  } catch (const std::exception& error) {
+  if (res) {
+    result.status = res->status;
+    result.body = res->body;
+    if (res->status < 200 || res->status >= 300) {
+      result.error = res->body;
+    }
+  } else {
     result.status = -1;
-    result.error = error.what();
+    result.error = httplib::to_string(res.error());
   }
   return result;
 }
@@ -291,18 +318,18 @@ void test_image_server() {
 
   // Editing requires ordered multipart data.
   CHECK_EQ(call(server.port, "POST", "/v1/images/edits", "{}", auth).status, 400L);
-  std::vector<detail::MimePart> wrong_part(1);
+  std::vector<MimePart> wrong_part(1);
   wrong_part[0].name = "mask";
   wrong_part[0].data = "x";
   CHECK_EQ(call(server.port, "POST", "/v1/images/edits", "", auth, {}, wrong_part).status,
            400L);
-  std::vector<detail::MimePart> no_prompt(1);
+  std::vector<MimePart> no_prompt(1);
   no_prompt[0].name = "image";
   no_prompt[0].data = "image-bytes";
   no_prompt[0].filename = "image.png";
   CHECK_EQ(call(server.port, "POST", "/v1/images/edits", "", auth, {}, no_prompt).status,
            400L);
-  std::vector<detail::MimePart> valid_edit(2);
+  std::vector<MimePart> valid_edit(2);
   valid_edit[0].name = "image";
   valid_edit[0].data = "image-bytes";
   valid_edit[0].filename = "image.png";
@@ -311,7 +338,7 @@ void test_image_server() {
   CHECK_EQ(call(server.port, "POST", "/v1/images/edits", "", auth, {}, valid_edit).status,
            502L);
   // task_type is an official edit field.
-  std::vector<detail::MimePart> typed_edit(3);
+  std::vector<MimePart> typed_edit(3);
   typed_edit[0].name = "image";
   typed_edit[0].data = "image-bytes";
   typed_edit[0].filename = "image.png";
@@ -644,6 +671,26 @@ void test_mixed_output_unregistered_stage() {
         std::string::npos);
 }
 
+void test_upstream_circuit_breaker_and_admission_cap() {
+  ApiConfig cb_cfg = sglang_config("image");
+  cb_cfg.upstream_circuit_breaker_failures = 2;
+  cb_cfg.upstream_circuit_breaker_cooldown_s = 10.0;
+  TestServer cb_server(cb_cfg);
+  CHECK(cb_server.start());
+  if (cb_server.port != 0) {
+    const std::string body = R"({"prompt":"a cat","response_format":"b64_json"})";
+    CHECK_EQ(call(cb_server.port, "POST", "/v1/images/generations", body).status,
+             502L);
+    CHECK_EQ(call(cb_server.port, "POST", "/v1/images/generations", body).status,
+             502L);
+    // Third request must fail fast with 503 while the circuit is open.
+    const Result tripped =
+        call(cb_server.port, "POST", "/v1/images/generations", body);
+    CHECK_EQ(tripped.status, 503L);
+    CHECK(tripped.error.find("circuit breaker") != std::string::npos);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -656,6 +703,7 @@ int main() {
   test_relay_ownership();
   test_mixed_output_validation();
   test_mixed_output_unregistered_stage();
+  test_upstream_circuit_breaker_and_admission_cap();
   if (failures != 0) {
     std::cerr << failures << " checks failed\n";
     return 1;

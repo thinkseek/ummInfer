@@ -443,11 +443,13 @@ Value asr_result(const std::string& text, int generated_tokens,
 }
 
 Value omni_result(const std::string& text, int generated_tokens,
-                  double prefill_ms, double decode_ms) {
+                  double prefill_ms, double decode_ms,
+                  const std::string& finish_reason) {
+  if (finish_reason.empty()) bad("VLM finish_reason must not be empty");
   Value::Map out;
   out["content"] = Value(text);
   out["generated_token_count"] = Value(static_cast<int64_t>(generated_tokens));
-  out["finish_reason"] = Value("stop");
+  out["finish_reason"] = Value(finish_reason);
   if (prefill_ms >= 0) out["prefill_ms"] = Value(prefill_ms);
   if (decode_ms >= 0) out["decode_ms"] = Value(decode_ms);
   return Value(std::move(out));

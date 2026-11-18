@@ -1,19 +1,21 @@
 const std = @import("std");
 
-fn configure(mod: *std.Build.Module, b: *std.Build, deps_prefix: ?[]const u8, curl_prefix: ?[]const u8, cuda_prefix: ?[]const u8, cuda: bool, link_deps: bool) void {
+fn configure(mod: *std.Build.Module, b: *std.Build, deps_prefix: ?[]const u8, curl_prefix: ?[]const u8, cuda_prefix: ?[]const u8, cuda: bool, link_deps: bool, include_private_src: bool) void {
     mod.addIncludePath(b.path("include"));
-    mod.addIncludePath(b.path("src"));
+    if (include_private_src) mod.addIncludePath(b.path("src"));
+    if (curl_prefix) |prefix| {
+        if (deps_prefix == null or !std.mem.eql(u8, deps_prefix.?, prefix)) {
+            mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "include" }) });
+        }
+        mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
+        mod.addRPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
+    }
     if (deps_prefix) |prefix| {
         // -I, not -isystem: Zig's clang searches its own system include
         // directories before -isystem paths, so a distro httplib.h would win
         // over the pinned one in the dependency prefix.
         mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "include" }) });
         mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
-    }
-    if (curl_prefix) |prefix| {
-        mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "include" }) });
-        mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
-        mod.addRPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
     }
     if (cuda_prefix) |prefix| {
         mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "include" }) });
@@ -58,7 +60,7 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
         .root_module = module(b, target, optimize),
     });
-    configure(core.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, false);
+    configure(core.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, false, true);
     core.root_module.sanitize_thread = tsan;
     core.root_module.addCSourceFiles(.{
         .files = &.{
@@ -91,7 +93,7 @@ pub fn build(b: *std.Build) void {
         .name = "umm-infer",
         .root_module = module(b, target, optimize),
     });
-    configure(exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true);
+    configure(exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, true);
     exe.root_module.sanitize_thread = tsan;
     exe.root_module.linkLibrary(core);
     exe.root_module.addCSourceFiles(.{
@@ -123,7 +125,7 @@ pub fn build(b: *std.Build) void {
             .name = item.name,
             .root_module = module(b, target, optimize),
         });
-        configure(test_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true);
+        configure(test_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, false);
         test_exe.root_module.sanitize_thread = tsan;
         test_exe.root_module.linkLibrary(core);
         test_exe.root_module.addCSourceFiles(.{
@@ -136,8 +138,12 @@ pub fn build(b: *std.Build) void {
             if (std.mem.eql(u8, item.name, "cuda_pipeline_test")) pipeline_exe = test_exe;
         }
         const run = b.addRunArtifact(test_exe);
+        if (std.mem.eql(u8, item.name, "omni_client_test")) {
+            run.addArtifactArg(exe);
+        }
         test_step.dependOn(&run.step);
         if (std.mem.eql(u8, item.name, "unified_contract_test")) {
+            if (b.args) |args| run.addArgs(args);
             const unified_test = b.step("unified-test", "Run unified orchestration contract tests");
             unified_test.dependOn(&run.step);
         }
@@ -168,7 +174,7 @@ pub fn build(b: *std.Build) void {
             .name = "cuda_bench",
             .root_module = module(b, target, optimize),
         });
-        configure(bench_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true);
+        configure(bench_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, false);
         bench_exe.root_module.linkLibrary(core);
         bench_exe.root_module.addCSourceFiles(.{
             .files = &.{"tests/cuda_bench.cpp"},

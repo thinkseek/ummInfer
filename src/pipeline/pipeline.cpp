@@ -268,8 +268,16 @@ void Stage::handle_message(Message msg) {
             fail_request(value.request_id, "request aborted");
           } else if constexpr (std::is_same_v<T, ShutdownMessage>) {
             running_ = false;
+          } else if constexpr (std::is_same_v<T, AdminMessage>) {
+            if (value.operation.action == "reset_peer") {
+              const auto it = value.operation.payload.find("target");
+              if (it != value.operation.payload.end() && it->second.is_str() &&
+                  !it->second.as_str().empty()) {
+                router_.reset_target(it->second.as_str());
+              }
+            }
           } else {
-            // Admin and profiler messages are accepted by the control plane
+            // Profiler and freeze-GC messages are accepted by the control plane
             // and have no behaviour in this build.
           }
         } catch (const std::exception& e) {
@@ -845,24 +853,47 @@ void Coordinator::handle_event(const Message& msg) {
   if (const auto* ready = std::get_if<StageReadyMessage>(&msg)) {
     std::string endpoint_url;
     std::vector<SubmitMessage> to_send;
+    std::vector<std::pair<std::string, std::string>> peer_endpoints;
     {
       std::lock_guard<std::mutex> lock(mu_);
       const auto endpoint = endpoints_.find(ready->from_stage);
       if (endpoint == endpoints_.end()) return;
       if (!ready_stages_.insert(ready->from_stage).second) return;
-      const auto queued = pending_submits_.find(ready->from_stage);
-      if (queued == pending_submits_.end()) return;
-      endpoint_url = endpoint->second;
-      for (auto& submit : queued->second) {
-        auto request = requests_.find(submit.request_id);
-        if (request == requests_.end() || request->second.state != "pending" ||
-            request->second.current_stage != ready->from_stage) {
-          continue;
+      const bool restarted = !ever_ready_stages_.insert(ready->from_stage).second;
+      if (restarted) {
+        for (const auto& [peer_name, peer_ep] : endpoints_) {
+          if (peer_name != ready->from_stage &&
+              ready_stages_.count(peer_name) > 0) {
+            peer_endpoints.emplace_back(peer_name, peer_ep);
+          }
         }
-        request->second.state = "running";
-        to_send.push_back(std::move(submit));
       }
-      pending_submits_.erase(queued);
+      const auto queued = pending_submits_.find(ready->from_stage);
+      if (queued != pending_submits_.end()) {
+        endpoint_url = endpoint->second;
+        for (auto& submit : queued->second) {
+          auto request = requests_.find(submit.request_id);
+          if (request == requests_.end() || request->second.state != "pending" ||
+              request->second.current_stage != ready->from_stage) {
+            continue;
+          }
+          request->second.state = "running";
+          to_send.push_back(std::move(submit));
+        }
+        pending_submits_.erase(queued);
+      }
+    }
+    if (!peer_endpoints.empty()) {
+      AdminMessage reset_msg;
+      reset_msg.operation.op_id = "peer_ready";
+      reset_msg.operation.action = "reset_peer";
+      reset_msg.operation.payload["target"] = Value(ready->from_stage);
+      for (const auto& [peer_name, peer_ep] : peer_endpoints) {
+        try {
+          control_plane_->send_admin(peer_name, peer_ep, reset_msg);
+        } catch (...) {
+        }
+      }
     }
     std::vector<RequestInfo> failed;
     for (const auto& submit : to_send) {

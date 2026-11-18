@@ -12,14 +12,22 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 
 namespace umminfer::image2 {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr size_t kMinFreeBytesForResidentCache = 36ULL << 30;
+
+bool resident_cache_allowed() {
+  const char* env = std::getenv("UMM_IMAGE_RESIDENT_CACHE");
+  return env == nullptr || std::atoi(env) != 0;
+}
 
 int ms_since(Clock::time_point t0) {
   return static_cast<int>(
@@ -38,12 +46,37 @@ std::vector<float> read_float_array(const nlohmann::json& j) {
 
 }  // namespace
 
+struct Image2Engine::Impl {
+  int gpu = 0;
+  std::mutex mu;
+  std::unique_ptr<Qwen2BpeTokenizer> tokenizer;
+  std::vector<float> vae_mean;
+  std::vector<float> vae_std;
+  std::unique_ptr<CudaRuntime> rt;
+  std::unique_ptr<TextEncoder> te;
+  std::unique_ptr<DiT> dit;
+  std::unique_ptr<VaeDecoder> vae;
+
+  explicit Impl(int gpu_id) : gpu(gpu_id) {}
+  ~Impl() {
+    if (rt) {
+      (void)cudaSetDevice(gpu);
+      vae.reset();
+      dit.reset();
+      te.reset();
+      rt.reset();
+    }
+  }
+};
+
 Image2Engine::Image2Engine(int gpu_id, const std::string& model_dir)
-    : gpu_(gpu_id), model_dir_(model_dir) {}
+    : gpu_(gpu_id), model_dir_(model_dir), impl_(std::make_unique<Impl>(gpu_id)) {}
+
+Image2Engine::~Image2Engine() = default;
 
 GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck& abort) {
+  std::lock_guard<std::mutex> lock(impl_->mu);
   auto t_start = Clock::now();
-  auto t = Clock::now();
   GenerateResult res;
 
   if (p.width <= 0 || p.height <= 0 || p.width % 32 != 0 || p.height % 32 != 0) {
@@ -54,29 +87,58 @@ GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck&
   const int height = p.height;
   const int gh = height / 16, gw = width / 16;
 
-  CudaRuntime rt(gpu_);
+  IMG_CUDA_CHECK(cudaSetDevice(gpu_));
+  std::unique_ptr<CudaRuntime> transient_rt;
+  if (!impl_->te && resident_cache_allowed() &&
+      free_bytes() >= kMinFreeBytesForResidentCache) {
+    auto t_load = Clock::now();
+    impl_->rt = std::make_unique<CudaRuntime>(gpu_);
+    try {
+      impl_->te = std::make_unique<TextEncoder>(*impl_->rt, model_dir_ + "/text_encoder");
+      impl_->dit = std::make_unique<DiT>(*impl_->rt, model_dir_ + "/transformer");
+      impl_->vae = std::make_unique<VaeDecoder>(*impl_->rt, model_dir_ + "/vae");
+    } catch (...) {
+      impl_->vae.reset();
+      impl_->dit.reset();
+      impl_->te.reset();
+      impl_->rt.reset();
+      throw;
+    }
+    res.load_ms += ms_since(t_load);
+  }
+  if (!impl_->rt) {
+    transient_rt = std::make_unique<CudaRuntime>(gpu_);
+  }
+  CudaRuntime& rt = impl_->rt ? *impl_->rt : *transient_rt;
   auto check_abort = [&](const char* boundary) {
     if (abort && abort()) {
       rt.sync();
       throw RequestAborted(boundary);
     }
   };
+  check_abort("model load");
   size_t min_free = free_bytes();
 
   // ---- tokenizer + text encoder -------------------------------------------
-  Qwen2BpeTokenizer tok(model_dir_ + "/processor");
-  const std::vector<int> ids = tok.encode_prompt(p.prompt);
-  const int drop = tok.system_prefix_tokens();
+  if (!impl_->tokenizer) {
+    impl_->tokenizer = std::make_unique<Qwen2BpeTokenizer>(model_dir_ + "/processor");
+  }
+  const std::vector<int> ids = impl_->tokenizer->encode_prompt(p.prompt);
+  const int drop = impl_->tokenizer->system_prefix_tokens();
   if (drop < 0 || drop >= static_cast<int>(ids.size()))
     throw std::runtime_error("prompt shorter than the system prefix");
 
   DeviceTensor txt;
   int txt_len = 0;
   {
-    auto t_load = Clock::now();
-    TextEncoder te(rt, model_dir_ + "/text_encoder");
-    res.load_ms += ms_since(t_load);
-    check_abort("text encoder load");
+    std::unique_ptr<TextEncoder> transient_te;
+    if (!impl_->te) {
+      auto t_load = Clock::now();
+      transient_te = std::make_unique<TextEncoder>(rt, model_dir_ + "/text_encoder");
+      res.load_ms += ms_since(t_load);
+      check_abort("text encoder load");
+    }
+    TextEncoder& te = impl_->te ? *impl_->te : *transient_te;
     auto t_enc = Clock::now();
     DeviceTensor hidden = te.forward(ids);
     txt_len = static_cast<int>(ids.size()) - drop;
@@ -100,11 +162,15 @@ GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck&
 
   // ---- DiT denoising -------------------------------------------------------
   {
-    auto t_load = Clock::now();
-    DiT dit(rt, model_dir_ + "/transformer");
-    res.load_ms += ms_since(t_load);
-    min_free = std::min(min_free, free_bytes());
-    check_abort("transformer load");
+    std::unique_ptr<DiT> transient_dit;
+    if (!impl_->dit) {
+      auto t_load = Clock::now();
+      transient_dit = std::make_unique<DiT>(rt, model_dir_ + "/transformer");
+      res.load_ms += ms_since(t_load);
+      min_free = std::min(min_free, free_bytes());
+      check_abort("transformer load");
+    }
+    DiT& dit = impl_->dit ? *impl_->dit : *transient_dit;
 
     auto t_den = Clock::now();
     for (int i = 0; i < p.steps; ++i) {
@@ -132,24 +198,32 @@ GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck&
     DeviceTensor lat({64, gh * gw});
     tokens_to_nchw(packed.data, lat.data, 64, gh * gw, rt.stream);
 
-    std::ifstream cfg_file(model_dir_ + "/vae/config.json");
-    if (!cfg_file) throw std::runtime_error("cannot read vae/config.json");
-    nlohmann::json cfg;
-    cfg_file >> cfg;
-    const std::vector<float> mean = read_float_array(cfg.at("latents_mean"));
-    const std::vector<float> stdv = read_float_array(cfg.at("latents_std"));
-    DeviceTensorF mean_d(mean.size()), std_d(stdv.size());
-    IMG_CUDA_CHECK(cudaMemcpy(mean_d.data, mean.data(), mean.size() * sizeof(float),
+    if (impl_->vae_mean.empty() || impl_->vae_std.empty()) {
+      std::ifstream cfg_file(model_dir_ + "/vae/config.json");
+      if (!cfg_file) throw std::runtime_error("cannot read vae/config.json");
+      nlohmann::json cfg;
+      cfg_file >> cfg;
+      impl_->vae_mean = read_float_array(cfg.at("latents_mean"));
+      impl_->vae_std = read_float_array(cfg.at("latents_std"));
+    }
+    DeviceTensorF mean_d(impl_->vae_mean.size()), std_d(impl_->vae_std.size());
+    IMG_CUDA_CHECK(cudaMemcpy(mean_d.data, impl_->vae_mean.data(),
+                              impl_->vae_mean.size() * sizeof(float),
                               cudaMemcpyHostToDevice));
-    IMG_CUDA_CHECK(cudaMemcpy(std_d.data, stdv.data(), stdv.size() * sizeof(float),
+    IMG_CUDA_CHECK(cudaMemcpy(std_d.data, impl_->vae_std.data(),
+                              impl_->vae_std.size() * sizeof(float),
                               cudaMemcpyHostToDevice));
     DeviceTensor denorm({64, gh * gw});
     denorm_latents_std(lat.data, mean_d.data, std_d.data, denorm.data, 64, gh * gw,
                        rt.stream);
 
-    auto t_load = Clock::now();
-    VaeDecoder vae(rt, model_dir_ + "/vae");
-    res.load_ms += ms_since(t_load);
+    std::unique_ptr<VaeDecoder> transient_vae;
+    if (!impl_->vae) {
+      auto t_load = Clock::now();
+      transient_vae = std::make_unique<VaeDecoder>(rt, model_dir_ + "/vae");
+      res.load_ms += ms_since(t_load);
+    }
+    VaeDecoder& vae = impl_->vae ? *impl_->vae : *transient_vae;
     auto t_vae = Clock::now();
     DeviceTensor rgb = vae.decode(denorm, gh, gw);
     rt.sync();
@@ -167,7 +241,6 @@ GenerateResult Image2Engine::generate(const GenerateParams& p, const AbortCheck&
   IMG_CUDA_CHECK(cudaMemGetInfo(&free_mem, &total_mem));
   res.peak_gpu_bytes = total_mem - min_free;
   res.total_ms = ms_since(t_start);
-  (void)t;
   return res;
 }
 

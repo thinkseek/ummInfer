@@ -127,9 +127,6 @@ class Metrics {
   void trace_leg(const std::string& request_id, const std::string& leg_name,
                  const std::string& status, double duration_ms);
   void trace(const TraceRecord& record);
-  // Test seam: forgets the cached UMM_TRACE value so the next call re-reads the
-  // environment. Not used by the server.
-  void reset_trace_for_test();
 
   // Full Prometheus text exposition, including a live GPU sample.
   std::string render();
@@ -163,6 +160,7 @@ class Metrics {
 
   Nvml nvml_;
   std::string trace_path_;
+  std::string trace_open_path_;
   std::mutex trace_mu_;
   std::FILE* trace_file_ = nullptr;
   size_t trace_bytes_ = 0;

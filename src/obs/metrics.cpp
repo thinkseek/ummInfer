@@ -353,21 +353,20 @@ void Metrics::http(const std::string& route, const std::string& status) {
 // guards, and an operator can turn tracing on without a restart.
 bool Metrics::trace_enabled() {
   const char* value = std::getenv("UMM_TRACE");
-  if (value == nullptr || std::strcmp(value, "1") != 0) return false;
+  if (value == nullptr || std::strcmp(value, "1") != 0) {
+    std::lock_guard<std::mutex> lock(trace_mu_);
+    if (trace_file_ != nullptr) {
+      std::fclose(trace_file_);
+      trace_file_ = nullptr;
+      trace_open_path_.clear();
+      trace_bytes_ = 0;
+    }
+    return false;
+  }
   const char* path = std::getenv("UMM_TRACE_FILE");
   std::lock_guard<std::mutex> lock(trace_mu_);
   trace_path_ = (path != nullptr && path[0] != '\0') ? path : "umm-trace.jsonl";
   return true;
-}
-
-void Metrics::reset_trace_for_test() {
-  std::lock_guard<std::mutex> lock(trace_mu_);
-  if (trace_file_ != nullptr) {
-    std::fclose(trace_file_);
-    trace_file_ = nullptr;
-  }
-  trace_path_.clear();
-  trace_bytes_ = 0;
 }
 
 // Rotation keeps every file at or below kTraceCapBytes: the active file and
@@ -375,9 +374,16 @@ void Metrics::reset_trace_for_test() {
 void Metrics::write_trace_line(const std::string& line) {
   std::lock_guard<std::mutex> lock(trace_mu_);
   if (line.size() + 1 > kTraceCapBytes) return;  // one line never exceeds the cap
+  if (trace_file_ != nullptr && trace_open_path_ != trace_path_) {
+    std::fclose(trace_file_);
+    trace_file_ = nullptr;
+    trace_open_path_.clear();
+    trace_bytes_ = 0;
+  }
   if (trace_file_ == nullptr) {
     trace_file_ = std::fopen(trace_path_.c_str(), "a");
     if (trace_file_ == nullptr) return;
+    trace_open_path_ = trace_path_;
     std::fseek(trace_file_, 0, SEEK_END);
     const long size = std::ftell(trace_file_);
     trace_bytes_ = size > 0 ? static_cast<size_t>(size) : 0;
@@ -385,12 +391,14 @@ void Metrics::write_trace_line(const std::string& line) {
   if (trace_bytes_ + line.size() + 1 > kTraceCapBytes) {
     std::fclose(trace_file_);
     trace_file_ = nullptr;
+    trace_open_path_.clear();
     const std::string previous = trace_path_ + ".1";
     std::remove(previous.c_str());
     std::rename(trace_path_.c_str(), previous.c_str());
     trace_file_ = std::fopen(trace_path_.c_str(), "a");
     trace_bytes_ = 0;
     if (trace_file_ == nullptr) return;
+    trace_open_path_ = trace_path_;
   }
   std::fwrite(line.data(), 1, line.size(), trace_file_);
   std::fputc('\n', trace_file_);

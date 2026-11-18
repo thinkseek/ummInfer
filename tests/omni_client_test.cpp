@@ -4,6 +4,7 @@
 // an unbound loopback port, so forwarded requests fail at connect time. No fake
 // upstream, no hand-written protocol response and no inference take part.
 // Success against a real Qwen or SGLang upstream is NOT_COVERED.
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -15,17 +16,17 @@
 #include <thread>
 #include <vector>
 
-#include "client/cli.hpp"
-#include "client/http.hpp"
 #include "umminfer/audio/audio.hpp"
 #include "umminfer/client/client.hpp"
 #include "umminfer/serve/openai_api.hpp"
+#include "umminfer/util/codec.hpp"
 #include <httplib.h>
 
 using namespace umminfer;
-namespace detail = umminfer::client::detail;
 
 namespace {
+
+std::string g_cli_bin = "./zig-out/bin/umm-infer";
 
 int failures = 0;
 int checks = 0;
@@ -63,14 +64,15 @@ struct TestServer {
     port = api.bound_port();
     worker = std::thread([this] { api.listen(); });
     for (int attempt = 0; attempt < 100; ++attempt) {
-      detail::HttpRequest probe;
-      probe.url = "http://127.0.0.1:" + std::to_string(port) + "/health";
-      probe.method = detail::HttpMethod::kGet;
-      probe.bearer = inbound_key;
-      probe.timeout = client::Milliseconds{2000};
-      try {
-        if (detail::perform(probe).status == 200) return true;
-      } catch (const std::exception&) {
+      httplib::Client probe("127.0.0.1", port);
+      probe.set_connection_timeout(1, 0);
+      probe.set_read_timeout(2, 0);
+      httplib::Headers hdrs;
+      if (!inbound_key.empty()) {
+        hdrs.emplace("Authorization", "Bearer " + inbound_key);
+      }
+      if (auto res = probe.Get("/health", hdrs); res && res->status == 200) {
+        return true;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -144,21 +146,21 @@ client::ErrorCode error_code(Function&& function, int* status = nullptr) {
   return client::ErrorCode::kEmpty;
 }
 
-// Runs one raw request whose HTTP error status is the expected result.
-// detail::perform throws on any non-2xx status, so the status and message are
-// collected here instead of escaping the test.
-int raw_status(detail::HttpRequest request, std::string* text = nullptr) {
-  try {
-    const detail::HttpResponse response = detail::perform(request);
-    if (text != nullptr) *text = response.body;
-    return static_cast<int>(response.status);
-  } catch (const client::Error& error) {
-    if (text != nullptr) *text = error.what();
-    return error.status();
-  } catch (const std::exception& error) {
-    if (text != nullptr) *text = error.what();
-    return 0;
-  }
+int raw_http_status(int port, const std::string& method,
+                    const std::string& path, const std::string& body = "",
+                    const std::string& bearer = "",
+                    std::string* text = nullptr) {
+  httplib::Client cli("127.0.0.1", port);
+  cli.set_connection_timeout(2, 0);
+  cli.set_read_timeout(2, 0);
+  httplib::Headers hdrs;
+  if (!bearer.empty()) hdrs.emplace("Authorization", "Bearer " + bearer);
+  httplib::Result res =
+      method == "GET" ? cli.Get(path, hdrs)
+                      : cli.Post(path, hdrs, body, "application/json");
+  if (!res) return 0;
+  if (text != nullptr) *text = res->body;
+  return res->status;
 }
 
 client::Message text_message(std::string text) {
@@ -377,15 +379,10 @@ void test_qwen_server() {
   // and never {"success":true}; the client's own cancel is local and never
   // claims an upstream abort.
   {
-    detail::HttpRequest request;
-    request.url = "http://127.0.0.1:" + std::to_string(server.port) + "/abort";
-    request.method = detail::HttpMethod::kPost;
-    request.bearer = kInboundKey;
-    request.headers.emplace("Content-Type", "application/json");
-    request.body = R"({"request_id":"req-1"})";
-    request.timeout = client::Milliseconds{2000};
     std::string text;
-    const int status = raw_status(std::move(request), &text);
+    const int status = raw_http_status(
+        server.port, "POST", "/abort", R"({"request_id":"req-1"})",
+        kInboundKey, &text);
     CHECK(status == 501);
     CHECK(text.find("\"success\":true") == std::string::npos);
     CHECK(text.find("abort is not supported") != std::string::npos);
@@ -512,13 +509,10 @@ void test_video_server() {
   // a non-negative integer is a local 400 from the proxy, never a forwarded
   // request.
   for (const char* bad : {"abc", "a/b", "bad.id"}) {
-    detail::HttpRequest request;
-    request.url = "http://127.0.0.1:" + std::to_string(server.port) +
-                  "/v1/videos/vid-1/content?variant=" + bad;
-    request.method = detail::HttpMethod::kGet;
-    request.timeout = client::Milliseconds{2000};
     std::string text;
-    const int status = raw_status(std::move(request), &text);
+    const int status = raw_http_status(
+        server.port, "GET",
+        std::string("/v1/videos/vid-1/content?variant=") + bad, "", "", &text);
     CHECK(status == 400);
     if (status != 400) std::cerr << "variant=" << bad << " status=" << status << "\n";
   }
@@ -565,18 +559,43 @@ void test_video_server() {
   std::filesystem::remove_all(directory, ignored);
 }
 
-// Runs the real CLI parser. Every case here must fail before any connection,
-// so the base URL is never contacted.
-int cli(std::vector<std::string> args) {
-  std::vector<char*> argv;
-  argv.reserve(args.size());
-  for (auto& arg : args) argv.push_back(arg.data());
-  std::atomic<bool> cancel{false};
-  try {
-    return client::run_cli(argv[1], static_cast<int>(argv.size()), argv.data(), &cancel);
-  } catch (const std::exception&) {
+// Executes the real compiled `umm-infer` CLI binary as a subprocess.
+int cli(std::vector<std::string> args, std::string* captured_output = nullptr) {
+  if (args.empty()) return 1;
+  args[0] = g_cli_bin;
+  int pipefd[2] = {-1, -1};
+  if (::pipe(pipefd) != 0) return 1;
+  const pid_t pid = ::fork();
+  if (pid < 0) {
+    ::close(pipefd[0]);
+    ::close(pipefd[1]);
     return 1;
   }
+  if (pid == 0) {
+    ::close(pipefd[0]);
+    ::dup2(pipefd[1], STDOUT_FILENO);
+    ::dup2(pipefd[1], STDERR_FILENO);
+    ::close(pipefd[1]);
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (auto& arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+    ::execv(g_cli_bin.c_str(), argv.data());
+    std::_Exit(127);
+  }
+  ::close(pipefd[1]);
+  std::string out;
+  char buf[4096];
+  while (true) {
+    const ssize_t n = ::read(pipefd[0], buf, sizeof(buf));
+    if (n <= 0) break;
+    out.append(buf, static_cast<size_t>(n));
+  }
+  ::close(pipefd[0]);
+  if (captured_output != nullptr) *captured_output = std::move(out);
+  int status = 0;
+  if (::waitpid(pid, &status, 0) < 0) return 1;
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
 void test_cli_usage() {
@@ -675,7 +694,7 @@ std::string artifact_stream(const std::string& raw, size_t raw_chunk,
   int64_t seq = 0;
   const int64_t total =
       static_cast<int64_t>((raw.size() + raw_chunk - 1) / raw_chunk);
-  const std::string digest = detail::sha256_hex(raw);
+  const std::string digest = util::sha256_hex(raw);
   size_t offset = 0;
   for (int64_t index = 0; index < total; ++index) {
     const size_t length = std::min(raw_chunk, raw.size() - offset);
@@ -684,7 +703,7 @@ std::string artifact_stream(const std::string& raw, size_t raw_chunk,
         {"media_type", media},
         {"mime_type", mime},
         {"encoding", "base64"},
-        {"data", detail::base64_encode(raw.substr(offset, length))},
+        {"data", util::base64_encode(raw.substr(offset, length))},
         {"index", index},
         {"total", total}};
     if (index + 1 == total) {
@@ -750,7 +769,7 @@ void test_client_artifact_reassembly_and_checksum() {
   CHECK(response.artifacts.size() == 1);
   if (response.artifacts.size() == 1) {
     CHECK(response.artifacts[0].data == raw);
-    CHECK(response.artifacts[0].sha256 == detail::sha256_hex(raw));
+    CHECK(response.artifacts[0].sha256 == util::sha256_hex(raw));
     CHECK(response.artifacts[0].media_type == "image");
   }
 }
@@ -759,7 +778,7 @@ void test_client_rejects_bad_checksum_and_base64() {
   const std::string raw(1024, '\x44');
   // Corrupt the digest on the final chunk.
   std::string bad = artifact_stream(raw, 512, "audio", "audio/wav");
-  const std::string good_digest = detail::sha256_hex(raw);
+  const std::string good_digest = util::sha256_hex(raw);
   bad.replace(bad.find(good_digest), good_digest.size(),
               std::string(64, '0'));
   ArtifactMockServer mock;
@@ -930,29 +949,95 @@ void test_client_text_stream_64mib_hard_limit() {
   CHECK(status == 0);
 }
 
-// The artifact summary is the only log-safe representation: it must never
-// contain the raw bytes or prompt text, only media type, length and hash.
+// The CLI logs only safe artifact metadata (media type, byte count, sha256) and
+// never echoes raw artifact payload bytes or secret text on stdout/stderr.
 void test_artifact_log_summary_redacts_payload() {
   const std::string secret_prompt = "do-not-log-this-prompt";
   const std::string bytes = secret_prompt + std::string(32, '\x00');
-  const std::string summary =
-      detail::summarize_artifact("image", bytes);
-  CHECK(summary.find(secret_prompt) == std::string::npos);
-  CHECK(summary.find("do-not-log") == std::string::npos);
-  CHECK(summary.find("media=image") != std::string::npos);
-  CHECK(summary.find("bytes=" + std::to_string(bytes.size())) !=
-        std::string::npos);
-  CHECK(summary.find(detail::sha256_hex(bytes)) != std::string::npos);
-  // Known SHA-256 vector guards the self-contained implementation.
-  CHECK(detail::sha256_hex("abc") ==
+  ArtifactMockServer mock;
+  mock.frames = artifact_stream(bytes, 64, "image", "image/png");
+  mock.start();
+  const std::string url =
+      "http://127.0.0.1:" + std::to_string(mock.port) + "/v1";
+  const std::string dir =
+      "/tmp/omni-cli-redact-" + std::to_string(::getpid());
+  std::error_code ignored;
+  std::filesystem::create_directories(dir, ignored);
+  const std::string out = dir + "/redacted.png";
+  std::string cli_output;
+  const int code = cli({"umm-infer", "chat", "--url", url, "--model", "m",
+                        "--prompt", "hi", "--stream", "--image-out", out},
+                       &cli_output);
+  CHECK(code == 0);
+  CHECK(cli_output.find(secret_prompt) == std::string::npos);
+  CHECK(cli_output.find("do-not-log") == std::string::npos);
+  CHECK(std::filesystem::exists(out));
+  if (std::filesystem::exists(out)) {
+    std::ifstream in(out, std::ios::binary);
+    const std::string saved((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+    CHECK(saved == bytes);
+  }
+  std::filesystem::remove_all(dir, ignored);
+  // Known SHA-256 vectors guard the public codec implementation.
+  CHECK(util::sha256_hex("abc") ==
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-  CHECK(detail::sha256_hex("") ==
+  CHECK(util::sha256_hex("") ==
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+}
+
+// A streaming call without request.on_delta must still forbid automatic retry
+// once any content or unified SSE frame has arrived before truncation.
+void test_stream_no_retry_without_on_delta() {
+  httplib::Server server;
+  std::atomic<int> hits{0};
+  server.Post("/v1/chat/completions",
+              [&](const httplib::Request&, httplib::Response& res) {
+                ++hits;
+                res.set_chunked_content_provider(
+                    "text/event-stream",
+                    [](size_t offset, httplib::DataSink& sink) {
+                      if (offset > 0) {
+                        sink.done();
+                        return true;
+                      }
+                      const std::string partial =
+                          "data: {\"id\":\"http-1\",\"object\":\"chat.completion.chunk\","
+                          "\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},"
+                          "\"finish_reason\":null}]}\n\n";
+                      sink.write(partial.data(), partial.size());
+                      // End without [DONE] to simulate mid-stream truncation.
+                      sink.done();
+                      return true;
+                    });
+              });
+  const int port = server.bind_to_any_port("127.0.0.1");
+  std::thread th([&] { server.listen_after_bind(); });
+  for (int i = 0; i < 100 && !server.is_running(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  client::OpenAIConfig cfg = mock_config(port);
+  cfg.max_attempts = 3;
+  cfg.retry_base = client::Milliseconds{10};
+  cfg.retry_max = client::Milliseconds{20};
+  client::OpenAIClient openai(cfg);
+  client::ChatRequest req;
+  req.messages.push_back(text_message("hello"));
+  req.stream = true;  // Note: req.on_delta intentionally left unset!
+  CHECK(error_code([&] { openai.chat(req); }) == client::ErrorCode::kNetwork);
+  CHECK(hits.load() == 1);
+
+  server.stop();
+  if (th.joinable()) th.join();
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1 && argv[1] != nullptr && argv[1][0] != '\0') {
+    g_cli_bin = argv[1];
+  }
   test_validation();
   test_cli_usage();
   test_qwen_server();
@@ -967,6 +1052,7 @@ int main() {
   test_client_text_stream_64mib_hard_limit();
   test_cli_image_output_atomic_write();
   test_artifact_log_summary_redacts_payload();
+  test_stream_no_retry_without_on_delta();
   if (failures != 0) {
     std::cerr << failures << " of " << checks << " checks failed\n";
     return 1;

@@ -467,6 +467,12 @@ void test_result_shapes() {
 
   const umminfer::Value omni = omni_result("answer", 3);
   check(omni.find("content")->as_str() == "answer", "omni result content");
+  check(omni.find("finish_reason")->as_str() == "stop", "omni default finish reason");
+  const umminfer::Value omni_len = omni_result("truncated", 12, 10.0, 20.0, "length");
+  check(omni_len.find("finish_reason")->as_str() == "length",
+        "omni length finish reason propagated");
+  check_throws([] { omni_result("x", 1, -1.0, -1.0, ""); },
+               "empty omni finish reason rejected");
 
   const umminfer::Value tts = tts_result("RIFFdata", 24000, 1, "vivian");
   check(tts.find("media_type")->as_str() == "audio", "tts media type");

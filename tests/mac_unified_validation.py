@@ -43,9 +43,9 @@ MODEL_NAME = "qwen3-unified"
 
 
 def _load_benchmark():
-    """Reuse the benchmark's tested percentile, SSE, and process helpers."""
-    path = Path(__file__).resolve().with_name("unified_benchmark.py")
-    spec = importlib.util.spec_from_file_location("unified_benchmark", path)
+    """Reuse the shared tested percentile, SSE, and process helpers."""
+    path = Path(__file__).resolve().with_name("bench_common.py")
+    spec = importlib.util.spec_from_file_location("bench_common", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

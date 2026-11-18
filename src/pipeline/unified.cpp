@@ -118,12 +118,6 @@ struct UnifiedEngine::CallbackGate {
   std::function<void(const RequestInfo&)> previous_complete;
 };
 
-bool unified_retirement_waiting_for_test(const UnifiedEngine& engine) {
-  std::lock_guard<std::mutex> lock(engine.callback_gate_->mu);
-  return engine.callback_gate_->engine == nullptr &&
-         engine.callback_gate_->active != 0;
-}
-
 const char* to_string(UnifiedModality modality) {
   switch (modality) {
     case UnifiedModality::kAudio: return "audio";

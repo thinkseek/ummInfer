@@ -728,10 +728,13 @@ void retire_job(Engine::Impl& im, const std::shared_ptr<BatchJob>& job) {
 // Emits the current token. Returns true when the request reached EOS or its
 // token limit, which matches the single-request loop's terminal condition.
 bool emit_token(const std::shared_ptr<BatchJob>& job) {
+  if (is_eos(job->next_token)) {
+    job->result.stopped_by_eos = true;
+    return true;
+  }
   job->result.ids.push_back(job->next_token);
   if (job->req.on_token) job->req.on_token(job->next_token);
-  return is_eos(job->next_token) ||
-         static_cast<int>(job->result.ids.size()) >= job->req.max_new_tokens;
+  return static_cast<int>(job->result.ids.size()) >= job->req.max_new_tokens;
 }
 
 void seg_linear(Bf16* y, const Bf16* x, const Bf16* w, int rows, int k, int n,
@@ -1305,6 +1308,7 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     ++next_pos;
     ++decode_forwards;
   }
+  result.stopped_by_eos = (max_new_tokens > 0) && is_eos(next);
   UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
   result.decode_ms = ms_since(t_decode);
   result.decode_steps = static_cast<int>(decode_forwards);

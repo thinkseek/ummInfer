@@ -76,7 +76,7 @@ rejected with 400.
 ./zig-out/bin/umm-infer chat \
   --url http://127.0.0.1:30000/v1 --model omni --prompt 'Draw this' --stream \
   --image-out /tmp/picture.png --image-prompt 'a red cube' \
-  --image-size 1024x1024 --image-seed 7 --image-format png
+  --image-size 512x512 --image-seed 7 --image-format png
 
 ./zig-out/bin/umm-infer chat \
   --url http://127.0.0.1:30000/v1 --model omni --prompt 'Say hello' --stream \
@@ -84,7 +84,7 @@ rejected with 400.
 ```
 
 - `image` accepts `prompt` (absent means the full aggregated text answer is
-  used), `size` (default `1024x1024`), integer `seed`, and `output_format`
+  used), `size` (default `512x512`), integer `seed`, and `output_format`
   (`png` or `jpeg`).
 - `audio` requires `voice`, accepts only `format=wav` and `sample_rate=24000`
   (WAV, PCM16, mono).

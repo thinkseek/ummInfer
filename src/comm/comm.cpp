@@ -915,12 +915,42 @@ int64_t CommRouter::cuda_slot_bytes() const {
 
 std::pair<TransportKind, Relay*> CommRouter::relay_for_stream(
     const std::string& target, const Tensor& data) {
-  const TransportKind kind = outbound_stream(target, data);
+  TransportKind kind = outbound_stream(target, data);
   if (kind == TransportKind::LocalObject) {
     throw ProtocolError("same-process stream target " + target +
                         " has no relay transport; use local-object dispatch");
   }
-  return {kind, &relay_for_target(kind, target)};
+  Relay* selected = &relay_for_target(kind, target);
+  if (kind == TransportKind::CudaIpc && !selected->is_healthy()) {
+    warn_cuda_ipc_fallback(
+        target, placement_gpu_id_.value_or(-1),
+        stage_gpu_ids_.count(target) && !stage_gpu_ids_.at(target).empty()
+            ? stage_gpu_ids_.at(target)[0]
+            : -1,
+        "cuda_ipc edge degraded after abandoned transfer; using SHM");
+    kind = TransportKind::Shm;
+    selected = &relay_for_target(kind, target);
+  }
+  return {kind, selected};
+}
+
+void CommRouter::reset_target(const std::string& target) {
+  Relay* to_close = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(relays_mu_);
+    if (closed_ || injected_relay_) return;
+    auto it = target_relays_.find(target);
+    if (it == target_relays_.end()) return;
+    to_close = it->second.get();
+    retired_relays_.push_back(std::move(it->second));
+    target_relays_.erase(it);
+  }
+  if (to_close != nullptr) {
+    try {
+      to_close->close();
+    } catch (...) {
+    }
+  }
 }
 
 Relay& CommRouter::inbound_relay(const std::string& from_stage) {

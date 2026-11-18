@@ -228,6 +228,9 @@ class CommRouter {
   Relay& inbound_relay(const std::string& from_stage);
   Relay& inbound_relay(const std::string& from_stage,
                        TransportKind advertised_transport);
+  // Retires an outbound CUDA IPC relay cached for `target` so the next transfer
+  // builds a fresh relay after a peer process restarts.
+  void reset_target(const std::string& target);
   void cleanup(const std::string& request_id);
   void close();
 
@@ -263,6 +266,7 @@ class CommRouter {
   bool closed_ = false;
   std::map<TransportKind, std::unique_ptr<Relay>> relays_;
   std::map<std::string, std::unique_ptr<Relay>> target_relays_;
+  std::vector<std::unique_ptr<Relay>> retired_relays_;
   // Send and receive paths query the same peer cache on different threads.
   std::mutex cuda_mu_;
   std::map<std::string, bool> cuda_ipc_peer_cache_;

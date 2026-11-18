@@ -13,7 +13,7 @@ without them is byte-identical to the current text path.
 - `image`: object, optional.
   - `prompt`: optional non-empty string. When absent the image prompt is the
     full aggregated VLM answer. Never a transcript or a streaming delta.
-  - `size`: string, default `"1024x1024"`.
+  - `size`: string, default `"512x512"` (matching the native `umm-native-stage-image` `--image-backend 2512|2.1` stages).
   - `seed`: optional integer.
   - `output_format`: `"png"` (default) or `"jpeg"`.
 - `audio`: object, required when `modalities` includes `audio`.
@@ -73,7 +73,7 @@ exactly one `data: [DONE]`.
              "encoding":"base64","data":"<independently decodable base64>",
              "index":0,"total":3,"bytes":184320,
              "sha256":"<hex of full decoded artifact>",
-             "format":"png","size":"1024x1024","seed":42}}
+             "format":"png","size":"512x512","seed":42}}
 ```
 
 - Every chunk's `data` is independently legal base64 (multiple of 4 chars).

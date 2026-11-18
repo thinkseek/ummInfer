@@ -228,7 +228,6 @@ class UnifiedEngine {
  private:
   enum class Phase { kAsr, kVlm, kOutputs, kDone };
   struct CallbackGate;
-  friend bool unified_retirement_waiting_for_test(const UnifiedEngine& engine);
 
   // One optional output leg's runtime state.
   struct OutputLeg {

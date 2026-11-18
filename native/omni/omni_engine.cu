@@ -360,6 +360,7 @@ OmniEngine::Result OmniEngine::generate(const std::vector<int>& prompt_ids,
                   kVocab, kTextH, s.stream);
     next = argmax_f32(s.logits, kVocab, s.argmax_scratch, s.stream);
   }
+  result.stopped_by_eos = (max_new_tokens > 0) && im.tokenizer->is_eos(next);
   UMM_CUDA_CHECK(cudaStreamSynchronize(s.stream));
   result.decode_ms =
       std::chrono::duration<double, std::milli>(wall() - t_decode).count();

@@ -12,11 +12,19 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <mutex>
 
 namespace umminfer::image {
 namespace {
 constexpr int kLatentCh = 16;
 constexpr int kMaxSeq = 512;  // pipeline max_sequence_length default
+constexpr size_t kMinFreeBytesForResidentCache = 64ULL << 30;
+
+bool resident_cache_allowed() {
+  const char* env = std::getenv("UMM_IMAGE_RESIDENT_CACHE");
+  return env == nullptr || std::atoi(env) != 0;
+}
 
 // Reinterpret a BF16 bit pattern as a host float.
 float bf16_bits_to_float(uint16_t bits) {
@@ -36,25 +44,44 @@ const float kLatStd[16] = {2.8184f, 1.4541f, 2.3275f, 2.6558f, 1.2196f, 1.7708f,
                            2.8251f, 1.9160f};
 }  // namespace
 
+struct ImageEngine::Impl {
+  int gpu = 0;
+  std::mutex mu;
+  std::unique_ptr<Qwen2BpeTokenizer> tokenizer;
+  std::unique_ptr<CudaRuntime> rt;
+  std::unique_ptr<TextEncoder> te;
+  std::unique_ptr<DiT> dit;
+  std::unique_ptr<VaeDecoder> vae;
+
+  explicit Impl(int gpu_id) : gpu(gpu_id) {}
+  ~Impl() {
+    if (rt) {
+      (void)cudaSetDevice(gpu);
+      vae.reset();
+      dit.reset();
+      te.reset();
+      rt.reset();
+    }
+  }
+};
+
 ImageEngine::ImageEngine(int gpu_id, const std::string& model_dir)
-    : gpu_(gpu_id), model_dir_(model_dir) {}
+    : gpu_(gpu_id), model_dir_(model_dir), impl_(std::make_unique<Impl>(gpu_id)) {}
+
+ImageEngine::~ImageEngine() = default;
 
 GenerateResult ImageEngine::generate(const GenerateParams& gp, const AbortCheck& abort) {
+  std::lock_guard<std::mutex> lock(impl_->mu);
   using clock = std::chrono::steady_clock;
   const auto t_start = clock::now();
-  CudaRuntime rt(gpu_);
-  auto check_abort = [&](const char* boundary) {
-    if (abort && abort()) {
-      // Do not leave queued CUDA work running after the request exits.
-      rt.sync();
-      throw RequestAborted(boundary);
-    }
-  };
+  IMG_CUDA_CHECK(cudaSetDevice(gpu_));
 
   // ---- tokenize (host) ----
-  Qwen2BpeTokenizer tokenizer(model_dir_ + "/tokenizer");
-  auto cond_ids = tokenizer.encode_prompt(gp.prompt);
-  auto neg_ids = tokenizer.encode_prompt(gp.negative_prompt);
+  if (!impl_->tokenizer) {
+    impl_->tokenizer = std::make_unique<Qwen2BpeTokenizer>(model_dir_ + "/tokenizer");
+  }
+  auto cond_ids = impl_->tokenizer->encode_prompt(gp.prompt);
+  auto neg_ids = impl_->tokenizer->encode_prompt(gp.negative_prompt);
   if (static_cast<int>(cond_ids.size()) > Qwen2BpeTokenizer::kTemplatePrefixTokens + kMaxSeq)
     cond_ids.resize(Qwen2BpeTokenizer::kTemplatePrefixTokens + kMaxSeq);
   if (static_cast<int>(neg_ids.size()) > Qwen2BpeTokenizer::kTemplatePrefixTokens + kMaxSeq)
@@ -66,9 +93,46 @@ GenerateResult ImageEngine::generate(const GenerateParams& gp, const AbortCheck&
                 neg_ids.begin() + Qwen2BpeTokenizer::kTemplatePrefixTokens);
 
   auto t_loaded_components = clock::now();
-  TextEncoder te(rt, model_dir_ + "/text_encoder");
-  DiT dit(rt, model_dir_ + "/transformer");
-  VaeDecoder vae(rt, model_dir_ + "/vae");
+  std::unique_ptr<CudaRuntime> transient_rt;
+  std::unique_ptr<TextEncoder> transient_te;
+  std::unique_ptr<DiT> transient_dit;
+  std::unique_ptr<VaeDecoder> transient_vae;
+
+  if (!impl_->te) {
+    size_t free_b = 0, total_b = 0;
+    IMG_CUDA_CHECK(cudaMemGetInfo(&free_b, &total_b));
+    if (resident_cache_allowed() && free_b >= kMinFreeBytesForResidentCache) {
+      impl_->rt = std::make_unique<CudaRuntime>(gpu_);
+      try {
+        impl_->te = std::make_unique<TextEncoder>(*impl_->rt, model_dir_ + "/text_encoder");
+        impl_->dit = std::make_unique<DiT>(*impl_->rt, model_dir_ + "/transformer");
+        impl_->vae = std::make_unique<VaeDecoder>(*impl_->rt, model_dir_ + "/vae");
+      } catch (...) {
+        impl_->vae.reset();
+        impl_->dit.reset();
+        impl_->te.reset();
+        impl_->rt.reset();
+        throw;
+      }
+    } else {
+      transient_rt = std::make_unique<CudaRuntime>(gpu_);
+      transient_te = std::make_unique<TextEncoder>(*transient_rt, model_dir_ + "/text_encoder");
+      transient_dit = std::make_unique<DiT>(*transient_rt, model_dir_ + "/transformer");
+      transient_vae = std::make_unique<VaeDecoder>(*transient_rt, model_dir_ + "/vae");
+    }
+  }
+
+  CudaRuntime& rt = impl_->rt ? *impl_->rt : *transient_rt;
+  TextEncoder& te = impl_->te ? *impl_->te : *transient_te;
+  DiT& dit = impl_->dit ? *impl_->dit : *transient_dit;
+  VaeDecoder& vae = impl_->vae ? *impl_->vae : *transient_vae;
+  auto check_abort = [&](const char* boundary) {
+    if (abort && abort()) {
+      // Do not leave queued CUDA work running after the request exits.
+      rt.sync();
+      throw RequestAborted(boundary);
+    }
+  };
   const auto t_after_load = clock::now();
   check_abort("model load");
 

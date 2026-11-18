@@ -24,6 +24,7 @@ using TokenCallback = std::function<void(int)>;
 
 struct GenResult {
   std::vector<int> ids;        // generated token ids, EOS excluded
+  bool stopped_by_eos = false;
   int prompt_tokens = 0;
   int image_tokens = 0;
   double vision_ms = 0.0;      // image tower + merger

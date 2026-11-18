@@ -162,7 +162,8 @@ Value asr_result(const std::string& text, int generated_tokens,
 // Optional phase times are milliseconds the stage measured itself. A negative
 // value omits the field, so the server records nothing instead of a zero.
 Value omni_result(const std::string& text, int generated_tokens,
-                  double prefill_ms = -1, double decode_ms = -1);
+                  double prefill_ms = -1, double decode_ms = -1,
+                  const std::string& finish_reason = "stop");
 // Artifact map the unified engine expects: media_type + Bin under "data".
 // When streamed is true, marks "streamed": true so UnifiedEngine skips
 // re-emitting the full WAV artifact after PCM16 chunks have been streamed.
