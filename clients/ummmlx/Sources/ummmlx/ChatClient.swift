@@ -87,6 +87,33 @@ struct SSEParser {
         return nil
     }
 
+    /// Line-oriented entry point. `bytes.lines` already splits the stream, so
+    /// this skips the per-byte loop that made a large artifact line take
+    /// seconds to traverse.
+    mutating func feed(line text: String) throws -> String? {
+        var value = text
+        if value.hasSuffix("\r") { value.removeLast() }
+        if value.utf8.count > limit {
+            throw ChatClientError.invalidResponse("an SSE line exceeds 4 MiB")
+        }
+        if value.isEmpty { return try flush() }
+        let parts = value.split(separator: ":", maxSplits: 1,
+                                omittingEmptySubsequences: false)
+        guard parts.first == "data" else { return nil }
+        var payload = parts.count == 2 ? String(parts[1]) : ""
+        if payload.first == " " { payload.removeFirst() }
+        dataBytes += payload.utf8.count + (dataLines.isEmpty ? 0 : 1)
+        if dataBytes > limit {
+            throw ChatClientError.invalidResponse("an SSE event exceeds 4 MiB")
+        }
+        dataLines.append(payload)
+        // AsyncLineSequence does not surface the blank separator line, so a
+        // buffered multi-line event would run into the next one. The server
+        // emits exactly one data line per event, so flush on the data line.
+        return try flush()
+    }
+
+
     mutating func finish() throws -> String? {
         if !line.isEmpty {
             if let event = try consumeLine() { return event }
@@ -459,13 +486,17 @@ final class ChatClient {
             return false
         }
 
-        stream: for try await byte in bytes {
+        // Reading the stream byte by byte costs one async iteration per byte.
+        // An audio artifact line is tens of kilobytes, so that loop fell behind
+        // the server and the player starved between chunks. Lines are the SSE
+        // unit anyway, so iterate over them.
+        stream: for try await line in bytes.lines {
             try Task.checkCancellation()
-            received += 1
+            received += line.utf8.count + 1
             if received > wireLimit {
                 throw ChatClientError.invalidResponse("stream exceeds its byte limit")
             }
-            if let event = try parser.feed(byte), try consume(event) {
+            if let event = try parser.feed(line: line), try consume(event) {
                 done = true
                 break stream
             }

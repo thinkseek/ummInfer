@@ -45,6 +45,39 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
     private var streamEnded = false
     private var engineFailed = false
     private var generation = 0
+    /// Chunks arrive per sentence, and the first one can be 0.16 s long while
+    /// the next takes 0.3 s. Starting playback on the first chunk therefore
+    /// runs the node dry and the audio stutters. Wait for a small jitter
+    /// buffer before the first start, and once playing keep scheduling.
+    private var bufferedFrames = 0
+    private var playbackStarted = false
+    /// Adaptive jitter buffer. A slow link or a slow synthesiser shows up as
+    /// long gaps between chunks, so the target is derived from the gaps this
+    /// stream actually produced instead of a fixed constant: start low for
+    /// latency, grow when the node is found starved, shrink again after a run
+    /// of clean chunks.
+    private var targetSeconds = 0.3
+    private let minimumTargetSeconds = 0.25
+    private let maximumTargetSeconds = 3.0
+    private var recentGaps: [Double] = []
+    private var lastArrival: Double = 0
+    private var cleanChunks = 0
+    private var underruns = 0
+    /// When the producer is slower than real time the cushion can never grow,
+    /// so waiting for a target only delays the first gap. In that case hold
+    /// every chunk and play the answer once it is complete.
+    private var firstArrival: Double = 0
+    private var producedSeconds: Double = 0
+    private var chunkCount = 0
+    private var bufferToEnd = false
+
+    private static let debugAudio =
+        ProcessInfo.processInfo.environment["UMM_AUDIO_DEBUG"] == "1"
+    private static func log(_ what: String) {
+        guard debugAudio else { return }
+        FileHandle.standardError.write(
+            Data("AUDIO \(Date().timeIntervalSince1970) \(what)\n".utf8))
+    }
 
     static func makePCMBuffer(_ chunk: AudioStreamChunk) -> AVAudioPCMBuffer? {
         guard chunk.sampleRate > 0,
@@ -84,6 +117,12 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         stop()
         engineFailed = false
         streamEnded = false
+        bufferedFrames = 0
+        playbackStarted = false
+        firstArrival = 0
+        producedSeconds = 0
+        chunkCount = 0
+        bufferToEnd = false
     }
 
     func enqueue(_ chunk: AudioStreamChunk) {
@@ -108,29 +147,88 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
             }
         }
         let currentGen = generation
-        pendingBuffers += 1
-        isPlaying = true
-        node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.didFinishBuffer(generation: currentGen)
+        let frames = Int(buffer.frameLength)
+        let sampleRate = Double(chunk.sampleRate)
+        let now = Date().timeIntervalSince1970
+        if lastArrival > 0 {
+            let gap = now - lastArrival
+            if gap > 0.001 {
+                recentGaps.append(gap)
+                if recentGaps.count > 8 { recentGaps.removeFirst() }
+            }
+            // The node ran dry before this chunk arrived: playback stopped and
+            // only resumes once the cushion is refilled. Grow the target to
+            // cover the gap that just happened.
+            if playbackStarted && pendingBuffers == 0 && !streamEnded {
+                underruns += 1
+                targetSeconds = min(maximumTargetSeconds,
+                                    max(targetSeconds, gap * 1.5 + 0.2))
+                playbackStarted = false
+                isPlaying = false
+                Self.log("underrun gap_s=\(gap) target_s=\(targetSeconds)")
             }
         }
-        if !node.isPlaying {
+        lastArrival = now
+        // A slow link or a slow synthesiser shows up as long gaps; keep the
+        // cushion at least large enough for the worst one seen so far.
+        if let worst = recentGaps.max() {
+            targetSeconds = min(maximumTargetSeconds,
+                                max(targetSeconds, worst * 1.5 + 0.1))
+        }
+        chunkCount += 1
+        producedSeconds += Double(frames) / sampleRate
+        if firstArrival == 0 { firstArrival = now }
+        let elapsed = now - firstArrival
+        if !bufferToEnd, chunkCount >= 4, elapsed > 0.5,
+           producedSeconds / elapsed < 0.95 {
+            bufferToEnd = true
+            Self.log("slow_producer ratio=\(producedSeconds / elapsed)")
+        }
+        pendingBuffers += 1
+        bufferedFrames += frames
+        let needed = Int(targetSeconds * sampleRate)
+        node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.didFinishBuffer(generation: currentGen, frames: frames)
+            }
+        }
+        if !playbackStarted && !bufferToEnd && bufferedFrames >= needed {
+            playbackStarted = true
+            isPlaying = true
+            Self.log("start target_s=\(targetSeconds) buffered_s=\(Double(bufferedFrames) / sampleRate)")
+        }
+        if playbackStarted && !node.isPlaying {
             node.play()
         }
+        if playbackStarted && underruns == 0 {
+            cleanChunks += 1
+            if cleanChunks >= 20 {
+                cleanChunks = 0
+                targetSeconds = max(minimumTargetSeconds, targetSeconds * 0.85)
+            }
+        }
+        Self.log("enqueue frames=\(frames) buffered_ms=\(Int(Double(bufferedFrames) / sampleRate * 1000)) target_ms=\(Int(targetSeconds * 1000))")
     }
 
     func finishStream() {
+        Self.log("finish_stream pending=\(pendingBuffers)")
         streamEnded = true
         if pendingBuffers == 0 {
             teardownEngine()
             isPlaying = false
+        } else if !playbackStarted {
+            // A short answer never reached the jitter target; play what we have.
+            playbackStarted = true
+            isPlaying = true
+            playerNode?.play()
         }
     }
 
     func stop() {
         generation += 1
         pendingBuffers = 0
+        bufferedFrames = 0
+        playbackStarted = false
         streamEnded = true
         teardownEngine()
         isPlaying = false
@@ -159,9 +257,10 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         return true
     }
 
-    private func didFinishBuffer(generation value: Int) {
+    private func didFinishBuffer(generation value: Int, frames: Int) {
         guard generation == value else { return }
         pendingBuffers = max(0, pendingBuffers - 1)
+        bufferedFrames = max(0, bufferedFrames - frames)
         if streamEnded && pendingBuffers == 0 {
             teardownEngine()
             isPlaying = false
@@ -169,6 +268,7 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
     }
 
     private func teardownEngine() {
+        Self.log("teardown pending=\(pendingBuffers) ended=\(streamEnded)")
         playerNode?.stop()
         engine?.stop()
         playerNode = nil
