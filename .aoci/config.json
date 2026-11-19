@@ -129,6 +129,28 @@
         "created_by": "aoci-init",
         "order": 106,
         "enabled": true
+      },
+      {
+        "rule_id": "index-test-mlx-stage-result",
+        "action": "index",
+        "pattern": "tests/mlx_stage_result_test.py",
+        "pattern_kind": "file",
+        "reason": "Task requires an FRAS Entry for this named new test file; it validates the MLX stage result contract",
+        "source": "user",
+        "created_by": "claude-ccv41",
+        "order": 40,
+        "enabled": true
+      },
+      {
+        "rule_id": "index-test-multimodal-benchmark",
+        "action": "index",
+        "pattern": "tests/multimodal_benchmark_test.py",
+        "pattern_kind": "file",
+        "reason": "Task requires an FRAS Entry for this named new test file; it validates the multimodal benchmark harness",
+        "source": "user",
+        "created_by": "claude-ccv41",
+        "order": 41,
+        "enabled": true
       }
     ]
   },
