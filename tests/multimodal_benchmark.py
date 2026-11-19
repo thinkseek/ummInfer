@@ -169,8 +169,8 @@ _VQA_NUMBERS = {
 
 
 def vqa_normalize(text):
-    """Lowercase, strip punctuation/articles, map 0..10 number words."""
-    text = re.sub(r"[^\w\s]", " ", (text or "").lower())
+    """Lowercase, remove punctuation/articles, map 0..10 number words."""
+    text = re.sub(r"[^\w\s]", "", (text or "").lower())
     tokens = [_VQA_NUMBERS.get(token, token) for token in text.split()
               if token not in _VQA_ARTICLES]
     return " ".join(tokens)
