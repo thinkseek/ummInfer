@@ -36,6 +36,9 @@ struct ApiConfig {
   // past this cap answer 503 with Retry-After: 1 instead of spawning unbounded
   // worker threads.
   size_t max_in_flight = 64;
+  // Opt-in static hosting of a directory (normally the repository `web/`) at
+  // "/". Empty keeps the route absent, so a default deployment is unchanged.
+  std::string web_root;
 
   // Fixed upstream. One process serves one upstream, one model and one
   // variant; there is no routing or fallback between upstreams. All five

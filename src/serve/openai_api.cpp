@@ -194,6 +194,28 @@ std::string result_finish_reason(const Value& result) {
   return reason->as_str();
 }
 
+// Token counts the stage reported in its terminal result. Every field is copied,
+// never estimated: a stage that cannot count a leg leaves the key out and the
+// key stays absent on the wire. total_tokens is derived only when both halves
+// are present, so a partial sum is never shown as a total. Images and audio
+// have no comparable token count and contribute no field.
+json result_usage(const Value& result) {
+  json usage = json::object();
+  const auto read = [&result](const char* key) -> std::optional<int64_t> {
+    const Value* value = result.find(key);
+    if (value == nullptr || !value->is_int() || value->as_int() < 0) {
+      return std::nullopt;
+    }
+    return value->as_int();
+  };
+  const auto prompt = read("prompt_tokens");
+  const auto completion = read("generated_token_count");
+  if (prompt) usage["prompt_tokens"] = *prompt;
+  if (completion) usage["completion_tokens"] = *completion;
+  if (prompt && completion) usage["total_tokens"] = *prompt + *completion;
+  return usage.empty() ? json(nullptr) : usage;
+}
+
 using SseItem = std::variant<Value, UnifiedEvent>;
 
 struct SseSink {
@@ -205,6 +227,8 @@ struct SseSink {
   std::string error;
   std::string finish_reason;
   std::optional<UnifiedEvent> terminal;
+  // Non-unified terminal stage result; the unified path keeps it in `terminal`.
+  std::optional<Value> result;
 
   void push(Value v, bool delta = false) {
     {
@@ -744,6 +768,15 @@ class OpenAIApi::Impl {
                        R"({"error":{"message":"speech is not implemented by this server"}})",
                        "application/json");
                  });
+
+    // Opt-in static hosting for the bundled browser client. cpp-httplib's mount
+    // rejects a ".." segment in the URL and any path that resolves outside the
+    // directory (a symlink escape), so no request reads past web_root.
+    if (!config_.web_root.empty() &&
+        !server_.set_mount_point("/", config_.web_root)) {
+      std::fprintf(stderr, "web root is not a readable directory: %s\n",
+                   config_.web_root.c_str());
+    }
   }
 
   bool bind() {
@@ -1356,6 +1389,7 @@ class OpenAIApi::Impl {
           std::string stream_error;
           std::string finish;
           std::optional<UnifiedEvent> terminal;
+          std::optional<Value> sink_result;
           bool settled = false;
           bool disconnected = false;
           const auto timeout = std::chrono::duration<double>(config_.request_timeout_s);
@@ -1429,6 +1463,7 @@ class OpenAIApi::Impl {
                 stream_error = sink->error;
                 finish = sink->finish_reason;
                 terminal = sink->terminal;
+                sink_result = sink->result;
               }
             }
             if (settled) break;
@@ -1447,6 +1482,15 @@ class OpenAIApi::Impl {
                      {"finish_reason",
                       finish.empty() ? json(nullptr) : json(finish)}}}}};
               if (terminal) final_chunk["unified"] = unified_event_json(*terminal);
+              // The usage carrier rides on the last chunk, before [DONE]. A
+              // client that does not know the key ignores it.
+              const Value* usage_source =
+                  terminal ? &terminal->result
+                           : (sink_result ? &*sink_result : nullptr);
+              if (usage_source != nullptr) {
+                json usage = result_usage(*usage_source);
+                if (!usage.is_null()) final_chunk["usage"] = std::move(usage);
+              }
               send_chunk(final_chunk);
             } else {
               json error_chunk = {{"error", {{"message", stream_error},
@@ -1547,6 +1591,7 @@ class OpenAIApi::Impl {
         std::lock_guard<std::mutex> lock(sink->mu);
         has_deltas = sink->has_deltas;
         sink->finish_reason = result_finish_reason(info.result);
+        sink->result = info.result;
       }
       if (!has_deltas) sink->push(info.result);
       sink->finish();

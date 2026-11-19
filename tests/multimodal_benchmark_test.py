@@ -23,6 +23,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "tests" / "multimodal_benchmark.py"
 MANIFEST = ROOT / "benchmarks" / "multimodal_manifest.json"
+sys.path.insert(0, str(ROOT / "benchmarks"))
+sys.path.insert(0, str(ROOT / "tests"))
+import multimodal_data as md  # noqa: E402
+import multimodal_benchmark as mb  # noqa: E402
 
 
 def _sha(data):
@@ -33,7 +37,7 @@ def build_index(manifest):
     by_wav, by_image, by_audio, by_question = {}, {}, {}, {}
     for case in manifest["cases"]:
         kind = case["input"]["type"]
-        if kind == "librispeech_utterance":
+        if kind in ("librispeech_utterance", "fleurs_utterance"):
             by_wav[case["input"]["wav_sha256"]] = case
         elif kind == "image_url":
             by_image[case["input"]["sha256"]] = case
@@ -137,13 +141,77 @@ class MockHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
+def unit_checks():
+    """Offline checks: manifest shape, hash rejection, Chinese CER bounds."""
+    failures = []
+    manifest = json.loads(MANIFEST.read_text())
+    if manifest["total_cases"] != len(manifest["cases"]):
+        failures.append("total_cases does not match len(cases)")
+    zh = [case for case in manifest["cases"] if case.get("language") == "zh"]
+    if len(zh) != 16:
+        failures.append(f"{len(zh)} Mandarin ASR cases, expected 16")
+    if any(case["metric"] != "cer" for case in zh):
+        failures.append("a Mandarin case does not use the cer metric")
+    speakers = {case["input"]["client_id"] for case in zh}
+    if len(speakers) != len(zh):
+        failures.append("Mandarin selection repeats a speaker")
+    dataset = manifest["datasets"].get("fleurs_zh_cn_test") or {}
+    for key in ("url", "license", "license_url", "archive_sha256",
+                "revision"):
+        if not dataset.get(key):
+            failures.append(f"fleurs_zh_cn_test: missing {key}")
+    if dataset.get("license") != "CC BY 4.0":
+        failures.append("fleurs_zh_cn_test: license is not CC BY 4.0")
+    for case in zh:
+        for key in ("member", "sha256", "wav_sha256", "wav_bytes"):
+            if not case["input"].get(key):
+                failures.append(f"{case['id']}: missing input.{key}")
+
+    with tempfile.TemporaryDirectory(prefix="umm-mm-unit-") as tmp:
+        payload = b"benchmark-input-that-must-not-be-trusted" * 8
+        source = Path(tmp) / "source.bin"
+        source.write_bytes(payload)
+        try:
+            md.download_verified(source.as_uri(), Path(tmp) / "copy.bin",
+                                 "0" * 64, len(payload), timeout=5)
+        except md.DataError:
+            pass
+        else:
+            failures.append("download_verified accepted a wrong SHA-256")
+        if (Path(tmp) / "copy.bin").exists():
+            failures.append("a rejected download left a file behind")
+        good = md.sha256_bytes(payload)
+        try:
+            md.download_verified(source.as_uri(), Path(tmp) / "copy.bin",
+                                 good, len(payload), timeout=5)
+        except md.DataError as error:
+            failures.append(f"download_verified rejected a good file: {error}")
+
+    cases = [
+        ("今天天气很好", "今天天气很好", 0.0),      # identical
+        ("北京上海", "广州深圳", 1.0),              # every character wrong
+        ("今天天气很好", "明天天气很坏", 2 / 6),    # two substitutions
+        ("今天，天气 很好。", "今天天气很好", 0.0),  # punctuation removed
+    ]
+    for reference, hypothesis, want in cases:
+        value, errors, chars = mb.chinese_character_error_rate(
+            reference, hypothesis)
+        if value is None or abs(value - want) > 1e-9:
+            failures.append(f"CER({reference!r}, {hypothesis!r})="
+                            f"{value}, expected {want}")
+    value, _, _ = mb.chinese_character_error_rate("", "空")
+    if value is not None:
+        failures.append("CER with an empty reference must be None")
+    return failures
+
+
 def main():
     manifest = json.loads(MANIFEST.read_text())
+    failures = unit_checks()
     MockHandler.index = build_index(manifest)
     server = ThreadingHTTPServer(("127.0.0.1", 0), MockHandler)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    failures = []
     with tempfile.TemporaryDirectory(prefix="umm-mm-contract-") as tmp:
         cmd = [sys.executable, "-I", str(RUNNER),
                "--base-url", f"http://127.0.0.1:{port}",
@@ -184,7 +252,9 @@ def main():
                 failures.append(f"{len(rows)} case rows, expected "
                                 f"{manifest['total_cases']}")
             tasks = aggregates["tasks"]
-            expected = {"asr": ("wer", 0.0), "gsm8k": ("gsm8k_accuracy", 1.0),
+            expected = {"asr_en": ("wer", 0.0),
+                        "asr_zh": ("cer", 0.0),
+                        "gsm8k": ("gsm8k_accuracy", 1.0),
                         "vqa": ("vqa_accuracy", 0.0),
                         "joint": ("joint_asr_wer", 0.0)}
             for task, (key, want) in expected.items():

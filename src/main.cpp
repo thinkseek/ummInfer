@@ -54,7 +54,7 @@ CommandOptions command_options(const std::string& command) {
              "upstream-model", "upstream-api-key", "upstream-variant",
              "upstream-cb-failures", "upstream-cb-cooldown", "vlm-entry",
              "vlm-entry-endpoint", "image-entry", "image-entry-endpoint",
-             "tts-entry", "tts-entry-endpoint", "max-in-flight"},
+             "tts-entry", "tts-entry-endpoint", "max-in-flight", "web-root"},
             {"demo", "session-history"},
             {}};
   }
@@ -206,6 +206,7 @@ void print_usage(std::ostream& out) {
          "      [--session-history]  enable opt-in multi-turn history (in-process, 256 sessions x 8 turns / 16384 chars)\n"
          "      [--max-in-flight N]  admitted unified requests before overload answers 503 (default 32)\n"
          "      [--realtime-port 30001]  enable the ASR WebSocket listener\n"
+         "      [--web-root DIR]  serve DIR as static files at / (off by default)\n"
       << "      [--demo]  run one in-process echo stage (development only)\n"
       << "  umm-infer stage --name N --recv EP --coordinator EP --abort EP "
          "[--next name=EP ...] [--peer name=EP ...]\n"
@@ -238,6 +239,7 @@ int run_demo(const Flags& flags) {
   api_config.port = parse_port(flags);
   api_config.model = flag(flags, "model", api_config.model);
   api_config.api_key = flag(flags, "api-key", "");
+  api_config.web_root = flag(flags, "web-root");
 
   const std::string base = flag(flags, "ipc-dir", "/tmp/omni-demo");
   // A killed server leaves its ipc sockets behind and the next bind fails.
@@ -305,6 +307,12 @@ int run_serve(const Flags& flags) {
   api_config.port = parse_port(flags);
   api_config.model = flag(flags, "model", api_config.model);
   api_config.api_key = flag(flags, "api-key", "");
+  api_config.web_root = flag(flags, "web-root");
+  if (!api_config.web_root.empty() &&
+      !std::filesystem::is_directory(api_config.web_root)) {
+    std::cerr << "--web-root is not a directory: " << api_config.web_root << "\n";
+    return usage();
+  }
   if (flags.count("max-in-flight")) {
     api_config.max_in_flight = static_cast<size_t>(max_in_flight);
   }

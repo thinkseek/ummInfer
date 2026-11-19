@@ -65,6 +65,32 @@ returns 400, not 500. The client sends `top_p` and `seed` only when the caller
 sets them. It never adds `stream_options`, and it never drops a caller field and
 retries: an unsupported field is reported as an error.
 
+### Token usage in a stream
+
+The last `chat.completion.chunk` of a streaming chat response, the one that
+carries `finish_reason`, also carries a `usage` object. It arrives before
+`data: [DONE]`:
+
+```text
+data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],...,
+       "usage":{"completion_tokens":17}}
+```
+
+- Every value is the count the stage reported in its terminal result. The
+  server never estimates a count from characters or words and never writes a
+  zero for an unobserved count.
+- `completion_tokens` is the stage's `generated_token_count`. It is present
+  whenever the stage counted its output.
+- `prompt_tokens` and `total_tokens` are present only when the stage also
+  reported `prompt_tokens`. No bundled stage reports it today, so a text
+  request normally carries `completion_tokens` alone. `total_tokens` is
+  emitted only as the sum of both reported halves, never as a partial sum.
+- Image and audio legs add no field. They have no comparable token count.
+- The key rides on an existing chunk, so a client that does not know it
+  ignores it. It is sent regardless of `stream_options`; the field
+  `stream_options.include_usage: true` is still rejected with HTTP 400.
+- The non-streaming response body is unchanged.
+
 ## Mixed output (generated image and audio)
 
 A unified server can return generated image and audio artifacts alongside the
