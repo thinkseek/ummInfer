@@ -1014,9 +1014,28 @@ All three rounds are identical, and their 70 metric records are identical case
 by case (0 differing records). The single quality failure is
 `vqa2-val-262197000`, which scores 0.0 in run D as well.
 
-Per case against run D: all 54 baseline cases match in all three rounds, with 0
-infrastructure and 0 public-contract failures. The two joint cases of section
-16.6 return to their run-D transcripts:
+Per case against run D, 46 of the 54 baseline cases are identical in all three
+rounds and 8 differ, with 0 infrastructure and 0 public-contract failures in
+every round. Five English ASR cases improve, one English ASR case regresses on
+its auxiliary CER only, and two VQA cases change `detail.matches` without
+changing `vqa_accuracy`:
+
+| Case | run D | Rounds 1–3 | Direction |
+| --- | --- | --- | --- |
+| `asr-en-ls-1089-134686-0000` | WER 2/28 | WER 1/28 | better |
+| `asr-en-ls-1188-133604-0000` | WER 2/19, CER 13/109 | WER 1/19, CER 9/109 | better |
+| `asr-en-ls-121-123852-0000` | WER 3/29, CER 6/167 | WER 2/29, CER 5/167 | better |
+| `asr-en-ls-1221-135767-0000` | WER 4/72, CER 9/396 | WER 2/72, CER 7/396 | better |
+| `asr-en-ls-1284-134647-0000` | WER 1/21, CER 2/130 | WER 0/21, CER 1/130 | better |
+| `asr-en-ls-1221-135766-0000` | WER 0/37, CER 2/208 | WER 0/37, CER 3/208 | **CER worse by one character** |
+| `vqa2-val-393226000` | matches 5, accuracy 1.0 | matches 3, accuracy 1.0 | detail only |
+| `vqa2-val-393243000` | matches 3, accuracy 1.0 | matches 7, accuracy 1.0 | detail only |
+
+The accepted exception is the one regression: `asr-en-ls-1221-135766-0000`
+keeps WER 0 and moves its auxiliary CER from 2/208 to 3/208, one character.
+Apart from that case, no metric regresses against run D.
+
+The two joint cases of section 16.6 return to their run-D transcripts:
 
 | Case | Run D | Pre-fix, after one suite | Fixed, rounds 1–3 |
 | --- | --- | --- | --- |
