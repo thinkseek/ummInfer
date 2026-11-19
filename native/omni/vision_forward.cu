@@ -8,7 +8,9 @@
 namespace umminfer::omni {
 namespace {
 
-constexpr int kMaxImgTokens = 1296;  // 36x36 pre-merge upper bound for 768px cap
+// Pre-merge patch rows the vision scratch was allocated for, from the same
+// bound the preprocessor clamps to. smart_resize cannot exceed it.
+constexpr int kMaxImgTokens = kMaxImagePatchRows;
 
 // Build the [tokens, 72] vision cos/sin tables for one image grid.
 void build_vision_rope(int grid_h, int grid_w, Bf16* cos, Bf16* sin,

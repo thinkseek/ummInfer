@@ -128,8 +128,9 @@ struct OmniEngine::Impl {
     // KV cache: [48][2][max_seq][4][128].
     UMM_CUDA_CHECK(cudaMalloc(&s.kv, sizeof(Bf16) * kTextLayers * 2 * max_seq *
                                           kKvHeads * kHeadDim));
-    // Vision workspaces (bounded by the 768px preprocessor cap).
-    constexpr int kVT = 1296;
+    // Vision workspaces, sized by the same image bound the preprocessor
+    // enforces, so smart_resize output always fits without a hard-coded guess.
+    constexpr int kVT = kMaxImagePatchRows;
     mk(s.v_hidden, static_cast<size_t>(kVT) * kVisionH);
     mk(s.v_norm, static_cast<size_t>(kVT) * kVisionH);
     mk(s.v_qkv, static_cast<size_t>(kVT) * 3 * kVisionH);

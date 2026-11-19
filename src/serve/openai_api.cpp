@@ -13,6 +13,7 @@
 #include <ctime>
 #include <deque>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -536,6 +537,18 @@ class OpenAIApi::Impl {
       config_.served_model_name = config_.model;
     }
     server_.set_payload_max_length(kMaxHttpPayloadBytes);
+    // Transport faults were invisible in the log: a connection dropped before
+    // a response left no trace, so a client-seen EOF could not be attributed.
+    // One line names the httplib error and the route; never the body.
+    server_.set_error_logger([](const httplib::Error& error,
+                                const httplib::Request* request) {
+      std::cerr << "http error=" << httplib::to_string(error);
+      if (request != nullptr) {
+        std::cerr << " method=" << request->method << " path=" << request->path
+                  << " body_bytes=" << request->body.size();
+      }
+      std::cerr << "\n";
+    });
   }
 
   void install_routes() {
@@ -840,6 +853,9 @@ class OpenAIApi::Impl {
   void handle_transcription(const httplib::Request& req, httplib::Response& res) {
     RouteMetric route_metric{"transcriptions", &res};
     AsrRequestMetric request_metric;
+    // The handler starts after httplib has read the whole body, so this clock
+    // separates upload time (client total minus this) from engine time.
+    const auto handler_started = std::chrono::steady_clock::now();
     auto reject = [&res](int status, const std::string& message) {
       res.status = status;
       res.set_content(json{{"error", {{"message", util::utf8_sanitized(message)},
@@ -963,6 +979,10 @@ class OpenAIApi::Impl {
       reject(503, error.what());
       return;
     }
+    // Submit is synchronous only in the sense that it enqueues; the split
+    // between this and the wait below is what tells a slow engine from a slow
+    // client-to-server transfer.
+    const auto submit_done = std::chrono::steady_clock::now();
     obs::Metrics::instance().trace_start(request_id, "transcription", "asr",
                                          request_metric.start_epoch_ms);
     request_metric.request_id = request_id;
@@ -979,12 +999,28 @@ class OpenAIApi::Impl {
           std::min(0.1, std::chrono::duration<double>(remaining).count()));
     }
     if (req.is_connection_closed()) {
+      std::cerr << "transcription client_closed request_id=" << request_id
+                << " body_bytes=" << req.body.size() << " submit_ms="
+                << static_cast<long>(
+                       std::chrono::duration<double, std::milli>(
+                           submit_done - handler_started).count())
+                << " handler_ms="
+                << static_cast<long>(elapsed_seconds(handler_started) * 1000.0)
+                << " settled=" << (settled ? 1 : 0) << "\n";
       coordinator_.abort(request_id, "client");
       coordinator_.release(request_id);
+      // An abandoned request must not leave res.status unset: httplib fills a
+      // missing status with 200, so a client that is still reading would see a
+      // successful transcription with an empty body.
+      reject(503, "client closed the connection before the transcription finished");
       return;
     }
     auto info = coordinator_.info(request_id);
     if (!settled || !info) {
+      std::cerr << "transcription timeout request_id=" << request_id
+                << " handler_ms="
+                << static_cast<long>(elapsed_seconds(handler_started) * 1000.0)
+                << "\n";
       request_metric.status = "timeout";
       coordinator_.abort(request_id, "timeout");
       coordinator_.release(request_id);
@@ -993,6 +1029,10 @@ class OpenAIApi::Impl {
     }
     coordinator_.release(request_id);
     request_metric.status = info->state;
+    std::cerr << "transcription done request_id=" << request_id
+              << " body_bytes=" << req.body.size() << " handler_ms="
+              << static_cast<long>(elapsed_seconds(handler_started) * 1000.0)
+              << " state=" << info->state << "\n";
     if (info->state != "completed") {
       reject(500, info->error);
       return;

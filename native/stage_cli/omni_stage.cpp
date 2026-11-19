@@ -33,7 +33,7 @@ namespace {
 
 constexpr int kDefaultMaxNewTokens = 512;
 constexpr int kMinPixels = 3136;
-constexpr int kMaxPixels = 12845056;
+constexpr int kMaxPixels = omni::kMaxImagePixels;
 
 omni::PreprocessedImage decode_image(const std::string& url) {
   const std::string bytes = load_image_bytes(url);
