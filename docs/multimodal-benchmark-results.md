@@ -786,11 +786,9 @@ body read, which httplib maps to `400 Bad Request`.
 So the responsible component is the client-to-server transport, not the ASR
 engine, the Omni engine, the pipeline or the stage. The server contributes the
 failure mode: a valid request whose upload stalls is answered `400`, which the
-harness records as `http_4xx_valid_request`. A longer read timeout would move
-the threshold and is excluded by the brief, so no such change is applied. The
-finding is recorded for the deployment owner: a server that accepts 1 MB
-uploads over a 0.6 s round-trip link should size its socket read timeout from
-its payload policy.
+harness records as `http_4xx_valid_request`. The brief first excluded a read
+timeout change; the owner then authorized it, and section 16.5 records the
+change and the re-test.
 
 ### 16.2 Mandarin (FLEURS zh_cn) first real-model results
 
@@ -848,8 +846,10 @@ English failure is `asr-en-ls-1221-135767-0000`, answered with `400` in rounds
   The three clean 54-case rounds recorded in section 15.3 ran with the client
   inside the container.
 - **Mandarin WER.** Not defined for this case set.
-- **A code fix for the drop.** The stall is outside the repository. No retry,
-  timeout change or connection-reset workaround is applied.
+- **A code fix for the stall itself.** The stall is outside the repository.
+  The server-side read timeout was aligned with the payload policy after the
+  owner authorized it (section 16.5); no retry or connection-reset workaround
+  is applied.
 
 ### 16.4 Cleanup, second window
 
@@ -864,3 +864,64 @@ English failure is `asr-en-ls-1221-135767-0000`, answered with `400` in rounds
 The server, ASR stage and Omni stage were stopped by pid. No process of this
 window remains, no listener claims 43310, and the resident 43301 service on
 GPUs 2-5 was never touched (`/health` answered 200 after the stop).
+
+### 16.5 Read timeout aligned with the payload policy, and the re-test
+
+Owner decision: the read timeout may be changed. Change in
+`src/serve/openai_api.cpp`, deployed as `umm-infer` SHA-256
+`8a489f1cf1c5d849e286…`:
+
+```cpp
+// How long one socket read may wait for the next byte. The body is read before
+// any handler runs, so this value alone decides whether a slow upload survives.
+// ... 30 s exceeds a worst-case TCP retransmission backoff and still reclaims
+// a dead connection.
+constexpr time_t kHttpReadStallSeconds = 30;
+server_.set_read_timeout(kHttpReadStallSeconds, 0);
+```
+
+The value bounds one stalled read, not the whole transfer. A progressing upload
+of any size is unaffected, a dead connection is still reclaimed, and the handler
+wait keeps its own 600 s request deadline.
+
+Re-test: six full 70-case rounds over the same external path (three on one
+service instance, then a restart, then three more), same client, same data,
+same case set.
+
+| Rounds | Cases | infra | contract | quality | EN ASR | EN WER | ZH ASR | ZH corpus CER | VQA | GSM8K |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1–3 | 70 | 0 | 0 | 1 | 16/16 | 0.0329 | 16/16 | 0.1106 | 0.8958 | 1.0000 |
+| 4–6 | 70 | 0 | 0 | 1 | 16/16 | 0.0329 | 16/16 | 0.1106 | 0.8958 | 1.0000 |
+
+All six rounds are identical to five decimal places. Counters over the window:
+the ASR stage logged 118 requests with 0 aborts and a maximum compute time of
+2280 ms; the server logged 96 `transcription done`, 0 `Failed to read`, 0
+`http error` and 0 `client_closed`. ASR drops: 0 in six rounds, 0 in 96
+transcription requests and 96 joint ASR legs. `vqa2-val-262189000` scored 1.0
+in every round. The single remaining failure is the recorded quality miss on
+`vqa2-val-262197000`.
+
+Per case, 68 of 70 match run D in every round. The two exceptions are joint
+cases, described in section 16.6. Every English ASR, Mandarin ASR, GSM8K and
+VQA case matches run D exactly.
+
+### 16.6 Separate finding: a joint-ASR transcript depends on service history
+
+Two joint cases change transcript after the service has served a full suite,
+with identical request bytes:
+
+| Case | Fresh service, first requests | After a full suite | run D |
+| --- | --- | --- | --- |
+| `joint-speechcoco-val-0000` | `Well dressed man and woman pose for picture.` | `Were dressed men and women posed for picture.` | same as fresh |
+| `joint-speechcoco-val-0005` | `A room with blue walls and a white sink and door. Um.` | `A room with three walls and a white sink and door. Um.` | same as fresh |
+
+The request hashes are identical in both conditions (audio
+`6f47641905b7…`, image `b654e4127bdd…`, prompt `31779b525b53…` for the first
+case). The deviant transcripts repeat exactly in every round after the first
+suite, and the run-D transcripts return on a freshly started service, so the
+difference follows service history and not the client path.
+
+The deviation predates the timeout change: the four rounds in section 16.2,
+run before it, show the same two values. It is recorded with its reproduction
+and is not fixed; isolating the retained state is ASR engine work outside this
+change.

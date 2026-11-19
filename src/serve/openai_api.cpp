@@ -35,6 +35,14 @@ namespace {
 using json = nlohmann::json;
 
 constexpr size_t kMaxHttpPayloadBytes = 64u << 20;
+// How long one socket read may wait for the next byte. The body is read before
+// any handler runs, so this value alone decides whether a slow upload survives.
+// httplib's 5 s default aborts a 1 MB audio upload on any link that stalls for
+// longer than that: measured on the H20B window, the server logged
+// "Failed to read" with recv returning EAGAIN while the client's send had
+// already completed. 30 s exceeds a worst-case TCP retransmission backoff and
+// still reclaims a dead connection.
+constexpr time_t kHttpReadStallSeconds = 30;
 
 int64_t now_epoch_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -537,6 +545,7 @@ class OpenAIApi::Impl {
       config_.served_model_name = config_.model;
     }
     server_.set_payload_max_length(kMaxHttpPayloadBytes);
+    server_.set_read_timeout(kHttpReadStallSeconds, 0);
     // Transport faults were invisible in the log: a connection dropped before
     // a response left no trace, so a client-seen EOF could not be attributed.
     // One line names the httplib error and the route; never the body.
