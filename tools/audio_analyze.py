@@ -20,6 +20,8 @@ import wave
 NOISE_WINDOW = 0.01     # 0.2 s of decoder noise is invisible in a 0.5 s window
 NOISE_ZCR_RATIO = 0.4   # near Nyquist: 0.4 * sample_rate crossings per second
 NOISE_SILENCE_RMS = 60.0  # same window and floor as native/tts/tail_trim.cpp
+NOISE_MAX_HIGH_BAND = 0.21  # energy above rate/3; above this it is a fricative
+BAND_TAPS = 63
 BUZZ_MIN_SECONDS = 0.2  # real fricative bursts measured up to 0.16 s
 TAIL_NOISE_MIN_SECONDS = 0.1
 CLICK_JUMP = 24000      # PCM16 sample-to-sample step
@@ -89,6 +91,39 @@ def periodicity(block, rate, max_hz=2500):
     return best
 
 
+def high_band_ratio(block, rate):
+    """Energy above rate/3 as a fraction of the total, through the same
+    63-tap Hamming-windowed sinc low pass the engine uses. A decoder hiss
+    sits below it (0.15-0.19 measured); a final fricative reaches above it
+    (0.24-0.47), so the band tells them apart where the zero-crossing rate
+    cannot. Returns 1.0 (keep) for a span too short to judge.
+    """
+    n = len(block)
+    if n < BAND_TAPS or rate <= 0:
+        return 1.0
+    cut = rate / 3.0
+    mid = (BAND_TAPS - 1) / 2.0
+    taps = []
+    for i in range(BAND_TAPS):
+        x = 2.0 * cut / rate * (i - mid)
+        sinc = 1.0 if abs(x) < 1e-12 else math.sin(math.pi * x) / (math.pi * x)
+        taps.append(sinc * (0.54 - 0.46 * math.cos(2.0 * math.pi * i / (BAND_TAPS - 1))))
+    mean = sum(block) / n
+    x = [float(v) - mean for v in block]
+    low = high = 0.0
+    for i in range(n):
+        base = i - (BAND_TAPS - 1) // 2
+        acc = 0.0
+        for k in range(BAND_TAPS):
+            j = base + k
+            if 0 <= j < n:
+                acc += taps[k] * x[j]
+        low += acc * acc
+        d = x[i] - acc
+        high += d * d
+    return high / (high + low + 1e-12)
+
+
 def noise_kind(row, rate):
     """Classify one short window as silence, near-Nyquist noise, or speech."""
     if row["rms"] < NOISE_SILENCE_RMS:
@@ -100,6 +135,8 @@ def noise_windows(samples, rate):
     rows = []
     for start, block in windows(samples, rate, NOISE_WINDOW):
         rows.append({
+            "start": start,
+            "end": min(len(samples), start + int(rate * NOISE_WINDOW)),
             "start_s": start / rate,
             "end_s": min(len(samples), start + int(rate * NOISE_WINDOW)) / rate,
             "rms": rms_of(block),
@@ -133,20 +170,23 @@ def tail_noise_run(rows, rate):
     """Walk backwards over the trailing run of near-Nyquist noise.
 
     Trailing and interleaved silent windows are skipped. Returns
-    (start_s, end_s, noise_seconds) or None when the file ends on speech.
+    (start_s, end_s, noise_seconds, start_sample) or None when the file ends
+    on speech.
     """
     start = end = None
+    start_sample = None
     noise = 0.0
     for row in reversed(rows):
         kind = noise_kind(row, rate)
         if kind == "voice":
             break
+        start_sample = row["start"]
         if kind == "noise":
             noise += row["end_s"] - row["start_s"]
             start = row["start_s"]
             if end is None:
                 end = row["end_s"]
-    return None if start is None else (start, end, noise)
+    return None if start is None else (start, end, noise, start_sample)
 
 
 def analyze(samples, rate, window=0.5):
@@ -160,14 +200,15 @@ def analyze(samples, rate, window=0.5):
         })
     findings = []
 
-    # Decoder noise lasts 0.2-0.5 s, so a 0.5 s window dilutes it below any
-    # threshold; a short-window pass sees it. Zero-crossing rate alone cannot
-    # separate noise from a fricative (both reach 0.4 * rate for up to 0.16 s);
-    # duration and position do. The trailing run is reported as tail_noise, so
-    # the interior scan stops where that run starts.
+    # A 0.5 s window dilutes the hiss below any threshold; a short-window pass
+    # sees it. Zero-crossing rate alone cannot separate the hiss from a
+    # fricative, so a run counts only when it is also dark below 8 kHz, the
+    # same test native/tts/tail_trim.cpp applies. The trailing run is reported
+    # as tail_noise, so the interior scan stops where that run starts.
     short = noise_windows(samples, rate)
     tail = tail_noise_run(short, rate)
-    if tail and tail[2] >= TAIL_NOISE_MIN_SECONDS:
+    if tail and tail[2] >= TAIL_NOISE_MIN_SECONDS and high_band_ratio(
+            samples[tail[3]:], rate) < NOISE_MAX_HIGH_BAND:
         findings.append({
             "kind": "tail_noise",
             "start_s": round(tail[0], 2),
@@ -180,6 +221,9 @@ def analyze(samples, rate, window=0.5):
         noise = noise_duration(run, rate)
         if noise < BUZZ_MIN_SECONDS:
             continue
+        if high_band_ratio(samples[run[0]["start"]:run[-1]["end"]], rate) >= \
+                NOISE_MAX_HIGH_BAND:
+            continue  # bright enough to be a fricative
         noisy = [row for row in run if noise_kind(row, rate) == "noise"]
         findings.append({
             "kind": "buzz",

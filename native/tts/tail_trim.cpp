@@ -14,10 +14,14 @@ constexpr double kSilentRmsPcm16 = 60.0;
 constexpr double kPcm16Scale = 32768.0;
 constexpr double kNoiseZcrRatio = 0.4;
 constexpr int kWindowMs = 10;
-// A real fricative measured at up to 0.16 s and the decoder's noise run at
-// 0.24 s, so 0.20 s keeps every fricative and still removes the noise.
-constexpr int kMinNoiseMs = 200;
+constexpr int kMinNoiseMs = 30;
 constexpr int kMaxNoiseMs = 600;
+// Energy fraction at or above 8 kHz. Measured on H20B: the decoder's run is
+// 0.146-0.191, a final /s/, /f/ or /S/ is 0.236-0.465. Zero crossing rate
+// cannot separate them; the band can.
+constexpr double kNoiseMaxHighBand = 0.21;
+constexpr int kBandTaps = 63;
+constexpr double kPi = 3.14159265358979323846;
 
 double window_rms(const float* p, std::size_t n) {
   if (n == 0) return 0.0;
@@ -32,6 +36,38 @@ double window_zcr(const float* p, std::size_t n, int sample_rate) {
   for (std::size_t i = 1; i < n; ++i)
     if ((p[i - 1] < 0.0f) != (p[i] < 0.0f)) ++crossings;
   return double(crossings) * double(sample_rate) / double(n);
+}
+
+// Energy above sample_rate/3 (8 kHz at 24 kHz) as a fraction of the total,
+// through a 63-tap Hamming-windowed sinc low pass: the high band is the input
+// minus the low band. Returns 1 when the span is too short to judge, which
+// keeps the audio.
+double high_band_ratio(const float* p, std::size_t n, int sample_rate) {
+  if (n < std::size_t(kBandTaps) || sample_rate <= 0) return 1.0;
+  const double cut = double(sample_rate) / 3.0;
+  const double mid = (kBandTaps - 1) / 2.0;
+  double h[kBandTaps];
+  for (int i = 0; i < kBandTaps; ++i) {
+    const double x = 2.0 * cut / double(sample_rate) * (i - mid);
+    const double sinc = std::fabs(x) < 1e-12 ? 1.0 : std::sin(kPi * x) / (kPi * x);
+    h[i] = sinc * (0.54 - 0.46 * std::cos(2.0 * kPi * i / (kBandTaps - 1)));
+  }
+  double mean = 0.0;
+  for (std::size_t i = 0; i < n; ++i) mean += p[i];
+  mean /= double(n);
+  double low = 0.0, high = 0.0;
+  const long len = static_cast<long>(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    double acc = 0.0;
+    for (int k = 0; k < kBandTaps; ++k) {
+      const long j = static_cast<long>(i) + k - static_cast<long>(mid);
+      if (j >= 0 && j < len) acc += h[k] * (double(p[j]) - mean);
+    }
+    const double x = double(p[i]) - mean;
+    low += acc * acc;
+    high += (x - acc) * (x - acc);
+  }
+  return high / (high + low + 1e-12);
 }
 
 }  // namespace
@@ -74,9 +110,14 @@ std::size_t trailing_noise_cut(const std::vector<float>& samples,
   }
   // An output with no speech window at all is degenerate, not a tail to trim.
   if (!reached_voice) return 0;
-  // A run shorter than 0.20 s could be a final fricative; keep the audio.
   if (noise_only < min_noise) return 0;
   if (budget_end != 0 && budget_end > cursor) cursor = budget_end;
+  // A final fricative passes the zero-crossing test; only its band tells it
+  // apart from the decoder's hiss. Keep anything that is bright enough.
+  if (high_band_ratio(samples.data() + cursor, end - cursor, sample_rate) >=
+      kNoiseMaxHighBand) {
+    return 0;
+  }
   return end - cursor;
 }
 

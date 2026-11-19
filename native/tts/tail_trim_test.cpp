@@ -20,11 +20,18 @@ std::vector<float> voiced(int n) {
   return v;
 }
 
-std::vector<float> noise(int n) {
+std::vector<float> tone(int n, double hz) {
   std::vector<float> v(n);
-  for (int i = 0; i < n; ++i) v[i] = (i % 2) ? -kLevel : kLevel;
+  for (int i = 0; i < n; ++i)
+    v[i] = kLevel * float(std::sin(2.0 * 3.14159265 * hz * i / kRate));
   return v;
 }
+
+// Decoder hiss: above the zero-crossing threshold, below the 8 kHz band edge.
+std::vector<float> hiss(int n) { return tone(n, 7000.0); }
+
+// A final fricative: same zero-crossing behaviour, most energy above 8 kHz.
+std::vector<float> fricative(int n) { return tone(n, 10500.0); }
 
 std::vector<float> silence(int n) { return std::vector<float>(n, 0.0f); }
 
@@ -49,10 +56,10 @@ int main() {
   }
   {
     std::vector<float> s = voiced(kRate);
-    append(s, noise(kRate * 3 / 10));
+    append(s, hiss(kRate * 3 / 10));
     append(s, silence(kRate * 2 / 10));
     const auto cut = umminfer::native::trailing_noise_cut(s, kRate);
-    check("noise plus trailing silence is cut", cut == size_t(kRate / 2));
+    check("hiss plus trailing silence is cut", cut == size_t(kRate / 2));
     const auto out = umminfer::native::trim_trailing_noise(s, kRate);
     check("trimmed length", out.size() == size_t(kRate));
     check("fade reaches zero", out.back() == 0.0f);
@@ -60,38 +67,42 @@ int main() {
   }
   {
     std::vector<float> s = voiced(kRate);
-    append(s, noise(kRate * 20 / 1000));
-    check("short noise is below the 200 ms floor",
+    append(s, hiss(kRate * 20 / 1000));
+    check("20 ms of hiss is below the floor",
           umminfer::native::trailing_noise_cut(s, kRate) == 0);
   }
   {
-    // A final fricative measures up to 160 ms and must survive.
+    // Same duration and zero-crossing rate as the hiss, wrong band: kept.
     std::vector<float> s = voiced(kRate);
-    append(s, noise(kRate * 16 / 100));
+    append(s, fricative(kRate * 16 / 100));
     check("160 ms fricative ending is kept",
           umminfer::native::trailing_noise_cut(s, kRate) == 0);
   }
   {
-    // A 240 ms run is the decoder's noise and is removed.
     std::vector<float> s = voiced(kRate);
-    append(s, noise(kRate * 24 / 100));
-    check("240 ms noise run is cut",
-          umminfer::native::trailing_noise_cut(s, kRate) ==
-              size_t(kRate * 24 / 100));
+    append(s, fricative(kRate * 3 / 10));
+    check("300 ms fricative ending is kept",
+          umminfer::native::trailing_noise_cut(s, kRate) == 0);
   }
   {
     std::vector<float> s = voiced(kRate);
-    append(s, noise(kRate));
+    append(s, hiss(kRate * 16 / 100));
+    check("160 ms hiss run is cut",
+          umminfer::native::trailing_noise_cut(s, kRate) ==
+              size_t(kRate * 16 / 100));
+  }
+  {
+    std::vector<float> s = voiced(kRate);
+    append(s, hiss(kRate));
     check("cut is capped at 600 ms",
           umminfer::native::trailing_noise_cut(s, kRate) == size_t(kRate * 6 / 10));
   }
   {
     std::vector<float> s = silence(kRate);
-    check("pure silence is kept",
-          umminfer::native::trailing_noise_cut(s, kRate) == 0);
+    check("pure silence is kept", umminfer::native::trailing_noise_cut(s, kRate) == 0);
   }
   {
-    std::vector<float> s = noise(kRate);
+    std::vector<float> s = hiss(kRate);
     check("all-noise output is kept",
           umminfer::native::trailing_noise_cut(s, kRate) == 0);
   }
