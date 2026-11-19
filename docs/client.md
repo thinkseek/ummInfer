@@ -82,9 +82,12 @@ data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],...,
 - `completion_tokens` is the stage's `generated_token_count`. It is present
   whenever the stage counted its output.
 - `prompt_tokens` and `total_tokens` are present only when the stage also
-  reported `prompt_tokens`. No bundled stage reports it today, so a text
-  request normally carries `completion_tokens` alone. `total_tokens` is
-  emitted only as the sum of both reported halves, never as a partial sum.
+  reported `prompt_tokens`. The bundled MLX text stage
+  (`python/umminfer_mlx_stage.py`) reports the count MLX-LM measured for the
+  tokenized prompt, so its requests carry all three. The native text stages do
+  not report it yet, so their requests carry `completion_tokens` alone.
+  `total_tokens` is emitted only as the sum of both reported halves, never as a
+  partial sum.
 - Image and audio legs add no field. They have no comparable token count.
 - The key rides on an existing chunk, so a client that does not know it
   ignores it. It is sent regardless of `stream_options`; the field

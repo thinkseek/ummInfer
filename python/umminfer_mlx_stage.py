@@ -464,10 +464,25 @@ class MLXStage:
             raise ValueError("MLX-LM did not report generation_tokens")
         return count, reason
 
+    @staticmethod
+    def prompt_token_count(last_response):
+        """Prompt tokens MLX-LM reported for this request, or None.
+
+        The value is the one MLX-LM measured for the tokenized prompt. A stage
+        that cannot observe it reports nothing rather than an estimate.
+        """
+        count = getattr(last_response, "prompt_tokens", None)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        return count
+
     def complete_message(self, request_id, success, text="", error=None,
-                         generated_tokens=None, finish_reason=None):
+                         generated_tokens=None, finish_reason=None,
+                         prompt_tokens=None):
         result = {"text": text}
         # Only report counts this stage actually observed.
+        if prompt_tokens is not None:
+            result["prompt_tokens"] = prompt_tokens
         if generated_tokens is not None:
             result["generated_token_count"] = generated_tokens
         if finish_reason is not None:
@@ -477,11 +492,13 @@ class MLXStage:
                 "result": result, "error": error}
 
     def complete(self, request_id, success, text="", error=None,
-                 generated_tokens=None, finish_reason=None):
+                 generated_tokens=None, finish_reason=None,
+                 prompt_tokens=None):
         self.emit(self.complete_message(
             request_id, success, text=text, error=error,
             generated_tokens=generated_tokens,
-            finish_reason=finish_reason))
+            finish_reason=finish_reason,
+            prompt_tokens=prompt_tokens))
 
     def receive(self, socket):
         return unpack_message(socket.recv())
@@ -650,6 +667,7 @@ class MLXStage:
                 return
             generated_tokens, finish_reason = self.result_metadata(
                 parts, max_tokens, last_response)
+            prompt_tokens = self.prompt_token_count(last_response)
             # Write the record before `complete`: a client that sees the
             # completion can then read this record with no race.
             if self.perf_log is not None:
@@ -672,7 +690,8 @@ class MLXStage:
                 self.write_perf(record)
             self.complete(request_id, True, "".join(parts),
                           generated_tokens=generated_tokens,
-                          finish_reason=finish_reason)
+                          finish_reason=finish_reason,
+                          prompt_tokens=prompt_tokens)
         except Exception as exc:
             self.poll_events()
             if self.consume_abort(request_id) or not self.running:
