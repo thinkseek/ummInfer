@@ -35,6 +35,7 @@ final class Automation {
             ?? "Reply with one short sentence about the previous reply."
         let errorModel = option("error-model") ?? ""
         let multimodal = arguments.contains("--multimodal")
+        let audioOnly = arguments.contains("--audio-only")
         let asrFile = option("asr-file")
         if let endpoint = option("endpoint") { model.endpoint = endpoint }
         if let servedModel = option("model") { model.model = servedModel }
@@ -121,6 +122,26 @@ final class Automation {
             } else {
                 passed = false
                 failure = "Timed out waiting for the multimodal completion."
+                model.stop()
+            }
+            successTurns = model.turns.map {
+                ["role": $0.role.rawValue, "state": state($0.state)]
+            }
+        } else if audioOnly {
+            // Audio-only: the client sends audio.stream=true and plays each
+            // PCM chunk as it arrives, so this is the path a listener hears.
+            model.audioOutput = true
+            model.prompt = prompt
+            model.send()
+            if await waitForIdle(timeout: 300) {
+                responseText = model.turns.last { $0.role == .assistant }?.text ?? ""
+                if !model.status.hasPrefix("Completed") || responseText.isEmpty {
+                    passed = false
+                    failure = model.error ?? "The audio request did not complete with text."
+                }
+            } else {
+                passed = false
+                failure = "Timed out waiting for the audio completion."
                 model.stop()
             }
             successTurns = model.turns.map {

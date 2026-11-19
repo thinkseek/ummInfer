@@ -65,10 +65,12 @@ final class ChatModel: ObservableObject {
          audioStream: AudioStreamPlaying? = nil) {
         self.speech = speech
         self.client = client ?? ChatClient()
+        // Automation runs are silent by default so a gate run never makes noise.
+        // --automation-audio opts into the live player for a manual listen.
+        let automation = ProcessInfo.processInfo.arguments.contains("--automation")
+        let audible = ProcessInfo.processInfo.arguments.contains("--automation-audio")
         let resolvedAudio = audioStream ?? (
-            ProcessInfo.processInfo.arguments.contains("--automation")
-                ? NoOpAudioStreamPlayer()
-                : LiveAudioStreamPlayer()
+            automation && !audible ? NoOpAudioStreamPlayer() : LiveAudioStreamPlayer()
         )
         self.audioStream = resolvedAudio
         let defaults = UserDefaults.standard
