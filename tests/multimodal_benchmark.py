@@ -330,7 +330,7 @@ class PublicClient:
             "usage": None, "finish_reason": None,
             "total_ms": None, "first_delta_ms": None, "asr_final_ms": None,
             "stream_ms": None, "done": False,
-            "asr_final_before_delta": None,
+            "asr_final_before_delta": None, "stream_error": None,
         }
         first_delta = asr_final = last_delta = None
         answer, transcript, usage, finish = [], "", None, None
@@ -382,6 +382,10 @@ class PublicClient:
                             "raw_event_count", 0) + 1
                         if "error" in event:
                             record["error_body"] = json.dumps(event["error"])[:2000]
+                            error = event["error"]
+                            record["stream_error"] = (
+                                error.get("message") if isinstance(error, dict)
+                                else str(error)) or "upstream error event"
                             continue
                         if event.get("usage"):
                             usage = event["usage"]
@@ -590,12 +594,19 @@ def classify(case, record, latency_cap_ms=CASE_LATENCY_CAP_MS):
     elif record.get("error") and status == 200:
         add("public_contract", "malformed_stream", "P0", record["error"])
     if status == 200 and record["endpoint"] == "/v1/chat/completions":
-        if not record.get("done"):
-            add("public_contract", "missing_done", "P1",
-                "SSE ended without [DONE]")
-        if record.get("finish_reason") is None and record.get("done"):
-            add("public_contract", "missing_finish_reason", "P1",
-                "stream completed without finish_reason")
+        if record.get("stream_error"):
+            # An explicit error event with an HTTP-style code is a server-side
+            # generation failure, not a stream contract violation. Report the
+            # real message instead of a missing marker.
+            add("infrastructure", "stream_error_event", "P1",
+                record["stream_error"])
+        else:
+            if not record.get("done"):
+                add("public_contract", "missing_done", "P1",
+                    "SSE ended without [DONE]")
+            if record.get("finish_reason") is None and record.get("done"):
+                add("public_contract", "missing_finish_reason", "P1",
+                    "stream completed without finish_reason")
         if "audio" in case["modalities"] and not record.get("transcript"):
             add("public_contract", "missing_asr_final", "P0",
                 "unified audio request produced no asr_final transcript")
