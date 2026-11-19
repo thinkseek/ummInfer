@@ -16,17 +16,20 @@ that service and reports the evidence. Mock servers exist only in
 | Task | Dataset | Cases | License | Public source | Pin |
 | --- | --- | ---: | --- | --- | --- |
 | ASR WER (English) | LibriSpeech test-clean | 16 | CC BY 4.0 | `openslr.trmal.net/resources/12/test-clean.tar.gz` | archive MD5 matches openslr `md5sum.txt`; SHA-256 `39fde525…e6c23`; per-case WAV SHA-256 |
+| ASR CER (Mandarin) | FLEURS `zh_cn` test split (config `cmn_hans_cn`) | 16 | CC BY 4.0, declared by the dataset card | `huggingface.co/datasets/google/fleurs` at revision `70bb2e84…94dd` | archive SHA-256 `09d19ad1…fc166` (it equals the Git LFS oid); per-member and per-converted-WAV SHA-256 |
 | GSM8K exact | GSM8K test split | 16 | MIT | `raw.githubusercontent.com/openai/grade-school-math/.../test.jsonl` | file SHA-256 `3730d312…39d14`; per-row SHA-256 |
 | Image VQA | VQA v2.0 val | 16 | CC BY 4.0 (questions and annotations; the JSON declares it) | `visualqa.org`, `s3.amazonaws.com/cvmlp/vqa/mscoco/vqa/`, COCO val2014 images | question/annotation zip SHA-256; per-image SHA-256 |
 | Joint image + real speech | SpokenCOCO via `mteb/SpeechCoco` validation | 6 | CC BY-SA 4.0 per upstream card; COCO images keep Flickr terms | `huggingface.co/datasets/mteb/SpeechCoco` at revision `ba337542…1576` | revision pin plus per-audio and per-image SHA-256 |
 
-Total: 54 cases. Every case has a stable id, task, modalities, input reference,
-reference answer, metric, and tags.
+Total: 70 cases. Every case has a stable id, task, modalities, input
+reference, reference answer, metric, and tags.
 
 Selection rules are recorded in the manifest and are deterministic:
 
 - LibriSpeech: one utterance per chapter, chapters sorted lexicographically,
   first 16 chapters, first utterance per chapter.
+- FLEURS zh_cn: `test.tsv` rows in file order, the first 16 rows whose
+  `client_id` has not appeared earlier, so each case is a different speaker.
 - GSM8K: first 16 lines of the pinned test file.
 - VQAv2: validation questions in file order, first 16 with a unique image id.
 - SpokenCOCO: validation rows 0..5 at the pinned revision.
@@ -40,18 +43,21 @@ download the LibriSpeech corpus from a mirror that lacks the official MD5.
 
 | Capability | Cases | Metric | Verifiable |
 | --- | ---: | --- | --- |
-| English ASR | 16 | corpus WER and CER | yes |
-| Mandarin ASR | 0 | — | `NOT_COVERED` |
+| English ASR (`asr_en`) | 16 | corpus WER and CER | yes |
+| Mandarin ASR (`asr_zh`) | 16 | corpus CER | data verified; no real-model run yet |
 | GSM8K numeric answer | 16 | exact integer after `####` | yes |
 | Image VQA | 16 | official VQA accuracy | yes |
 | Joint image + real speech | 6 | ASR WER plus caption-keyword hit | partial; answer goes to human review |
 
 ### Known gaps
 
-- **Mandarin ASR and CER:** no small, clearly licensed Mandarin test set was
-  added. `google/fleurs` `zh_cn` exceeds the datasets-server parquet scan limit,
-  and AISHELL-1 is about 15 GB. Both are excluded instead of partially
-  downloaded. The runner computes CER when such cases are added.
+- **Mandarin ASR:** covered by 16 FLEURS `zh_cn` cases (CC BY 4.0). The
+  archive is 525,346,466 bytes, under the download byte cap, so the previous
+  objection (the datasets-server parquet scan limit) does not apply: the
+  downloader fetches the audio archive directly and pins it by SHA-256.
+  AISHELL-1 and THCHS-30 are Apache-2.0 but 15 GB and 6.4 GB; both exceed the
+  byte cap, so neither is used. No real-model run has scored the 16 Mandarin
+  cases yet.
 - **Joint answer quality:** the joint answer is open-ended. The harness scores
   two objective sub-metrics and saves the full answer with
   `human_review_required=true`. It does not invent a quality score.
@@ -85,7 +91,12 @@ exact input reference and its SHA-256.
 - verifies the SpeechCoco caption and requires the pinned revision inside both
   asset URLs;
 - decodes FLAC with `flac`, falling back to `ffmpeg`, and rebuilds the canonical
-  PCM16/mono/16 kHz WAV. The decoded WAV SHA-256 must match the manifest.
+  PCM16/mono/16 kHz WAV. The decoded WAV SHA-256 must match the manifest;
+- converts the FLEURS 32-bit float WAVs to PCM16 in Python with a fixed rule
+  (scale by 32768, truncate, clamp), so the result does not depend on the
+  ffmpeg build or its dithering. The member SHA-256 is checked before the
+  conversion and the converted WAV SHA-256 after it. Members are matched by
+  exact name and read into memory, so no archive path is ever written to disk.
 
 Default cache: `~/.cache/umminfer-multimodal-benchmark`
 (`UMMINFER_BENCH_CACHE` overrides it). Verify all inputs without a server:
@@ -94,7 +105,7 @@ Default cache: `~/.cache/umminfer-multimodal-benchmark`
 python3 -I tests/multimodal_benchmark.py --verify-data
 ```
 
-Observed on 2026-11-15: `PASS data: 54 cases verified`.
+Observed on 2026-11-19: `PASS data: 70 cases verified (manifest 2026-11-19.1)`.
 
 ## 3. Runner
 
@@ -109,6 +120,23 @@ python3 -I tests/multimodal_benchmark.py \
   --baseline /tmp/mm-evidence/baseline.json --rounds 3
 ```
 
+Mandarin ASR only, and the full baseline once a service is up:
+
+```sh
+python3 -I tests/multimodal_benchmark.py --verify-data --tags zh
+python3 -I tests/multimodal_benchmark.py \
+  --base-url http://127.0.0.1:43200 --model qwen3-unified \
+  --evidence-dir /tmp/mm-evidence-zh --tags zh --rounds 1
+python3 -I tests/multimodal_benchmark.py \
+  --base-url http://127.0.0.1:43200 --model qwen3-unified \
+  --evidence-dir /tmp/mm-evidence --accept-baseline
+```
+
+The `--tags zh` run is a subset: it reports `subset=true` and can never
+produce a stability `PASS` or establish a baseline. The third command
+replaces the previous 54-case baseline, because the manifest version and
+the case set changed.
+
 Public endpoints only:
 
 - `POST /v1/chat/completions` with `stream=true` for GSM8K, VQA, joint, and
@@ -117,7 +145,7 @@ Public endpoints only:
 - `GET /health` as a preflight signal. A failed health check is logged; each
   case is still attempted and classified.
 
-Default execution is the full 54-case manifest. A subset requires `--cases` or
+Default execution is the full 70-case manifest. A subset requires `--cases` or
 `--tags`. The report then has `subset=true`, the selected count, the manifest
 count, and `excluded_case_ids`. There is no limit flag and no silent truncation.
 A subset round is ineligible for a stability PASS.
@@ -141,8 +169,10 @@ the tar scan, the GSM8K line index, and the SSE loops all have explicit bounds.
 - **WER:** word Levenshtein distance divided by reference word count, after
   uppercasing and removing punctuation. Aggregated as corpus WER
   (`sum(errors) / sum(reference words)`).
-- **CER:** character edit distance divided by reference characters. Reported
-  when a case uses it.
+- **CER:** character edit distance divided by reference characters. Both
+  sides are NFKC-normalized, lowercased, and stripped of whitespace,
+  punctuation, symbols, and control characters. Mandarin has no word
+  boundaries, so `asr_zh` uses CER and does not report WER.
 - **VQA accuracy:** per question `min(1, matches/3)` over the 10 provided
   answers, then averaged. Normalization is declared in section 1.
 - **GSM8K accuracy:** the last `#### <integer>` marker must equal the gold
@@ -192,12 +222,15 @@ Constants in `tests/multimodal_benchmark.py`:
 - `REQUIRED_CONSECUTIVE = 3`
 - `MAX_ROUNDS = 30`
 - `P95_TOLERANCE = 0.10`
-- `QUALITY_TOLERANCE = {wer: 0.02, cer: 0.02, vqa_accuracy: 0.05,
-  gsm8k_accuracy: 0.05, joint_asr_wer: 0.05, joint_keyword_hit: 0.05}`
+- `QUALITY_TOLERANCE = {asr_en_wer: 0.02, asr_en_cer: 0.02,
+  asr_zh_cer: 0.02, vqa_accuracy: 0.05, gsm8k_accuracy: 0.05,
+  joint_asr_wer: 0.05, joint_keyword_hit: 0.05}`
+- ASR is reported per language (`asr_en`, `asr_zh`) so a Mandarin CER and an
+  English WER never share one number.
 
 A round passes only when all of these hold:
 
-1. the round ran the full 54-case manifest;
+1. the round ran the full 70-case manifest;
 2. infrastructure failure count is 0;
 3. public-contract P0/P1 count is 0;
 4. every quality metric is within its tolerance of the accepted baseline
@@ -252,9 +285,12 @@ python3 -I tests/multimodal_benchmark_test.py
 python3 -I tests/multimodal_benchmark.py --verify-data
 ```
 
-The suite covers: WER, CER, VQA accuracy, GSM8K extraction, keyword hit rate;
-manifest structure, coverage and pins; download verification, cache reuse,
-corrupt-cache replacement, oversize rejection, tar extraction; public-client
+The suite covers: WER, CER, Chinese CER (identical, fully wrong, two
+substitutions, punctuation, empty reference), VQA accuracy, GSM8K extraction,
+keyword hit rate; manifest structure, coverage and pins, including the 16
+Mandarin cases; hash-mismatch rejection in the downloader; download
+verification, cache reuse, corrupt-cache replacement, oversize rejection, tar
+extraction; public-client
 SSE and transcription parsing; failure classification for all four categories;
 three-round PASS, insufficient rounds, infrastructure and contract failures,
 p95 outside ±10%, quality drop beyond tolerance, subset ineligibility, baseline

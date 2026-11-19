@@ -1,13 +1,14 @@
 {
   "schema_version": "umm-multimodal-manifest/v1",
-  "manifest_version": "2026-11-15.1",
+  "manifest_version": "2026-11-19.1",
   "created": "2026-11-15",
-  "total_cases": 54,
+  "total_cases": 70,
   "selection": {
     "librispeech": "one utterance per chapter; chapters sorted lexicographically; first 16 chapters; first utterance per chapter in lexicographic order",
     "gsm8k": "first 16 lines of the pinned test.jsonl",
     "vqav2": "val2014 questions in file order, first 16 with a unique image_id",
-    "speechcoco": "validation rows 0..5 at the pinned revision"
+    "speechcoco": "validation rows 0..5 at the pinned revision",
+    "fleurs_zh_cn": "test.tsv rows in file order; the first 16 rows whose client_id has not appeared earlier, so each case is a different speaker; the reference is the raw transcription column"
   },
   "prompt_templates": {
     "gsm8k": "Solve the grade-school math problem in at most three short sentences. Do not write headings or LaTeX. Your last line must have the exact form \"#### <integer>\", as in this example:\nShe has 2 times 4 apples, so 8 apples in total.\n#### 8\n\nQuestion: {question}",
@@ -18,7 +19,8 @@
     "wer": "Levenshtein word error rate after LibriSpeech-style normalization (uppercase, punctuation removed).",
     "vqa_accuracy": "Official VQA accuracy: per question min(1, matches/3), averaged over questions, using the 10 provided answers.",
     "gsm8k_exact": "The last \"#### <integer>\" marker must equal the gold integer. A missing marker scores 0.",
-    "joint_asr_wer_keyword_hit": "ASR WER of asr_final against the spoken caption; plus the fraction of declared caption keywords present in the answer. The answer itself requires human review."
+    "joint_asr_wer_keyword_hit": "ASR WER of asr_final against the spoken caption; plus the fraction of declared caption keywords present in the answer. The answer itself requires human review.",
+    "cer": "Character error rate: Levenshtein distance over characters divided by the reference character count. Both sides are NFKC-normalized, lowercased, and stripped of whitespace, punctuation and symbols. Mandarin has no word boundaries, so CER is used instead of WER."
   },
   "datasets": {
     "librispeech_test_clean": {
@@ -73,6 +75,18 @@
       "rows_api": "https://datasets-server.huggingface.co/rows?dataset=mteb/SpeechCoco&config=default&split=validation",
       "kind": "hf_rows",
       "notes": "Each validation row pairs one COCO image with a recording of a human speaker reading a caption of that same image, plus the caption text. No audio is synthesized and no pair is random."
+    },
+    "fleurs_zh_cn_test": {
+      "title": "FLEURS zh_cn test split (google/fleurs, config cmn_hans_cn)",
+      "url": "https://huggingface.co/datasets/google/fleurs/resolve/70bb2e84b976b7e960aa89f1c648e09c59f894dd/data/cmn_hans_cn/audio/test.tar.gz",
+      "official_page": "https://huggingface.co/datasets/google/fleurs",
+      "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "archive_sha256": "09d19ad18f5d7e91076880807e866cd16abd924c7052b55f71cdae91714fc166",
+      "archive_bytes": 525346466,
+      "kind": "tar.gz",
+      "notes": "CC BY 4.0 is declared by the dataset card (license: cc-by-4.0). Redistribution and evaluation use are permitted with attribution. The archive SHA-256 equals the Git LFS oid published at the pinned revision. Audio is 32-bit float mono 16 kHz; the downloader converts it to PCM16 with a fixed, decoder-independent rule."
     }
   },
   "cases": [
@@ -522,6 +536,486 @@
       },
       "reference": {
         "transcript": "IT WAS THE INDIAN WHOSE DARK SILHOUETTE APPEARED SUDDENLY UPON HIS BLIND"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-10325559490685159122",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/10325559490685159122.wav",
+        "row_index": 0,
+        "client_id": "1779",
+        "sha256": "8ef25b2f964e60f5aa25b11179d5a9c9182c66119c5333fc9e2e2d8e8d951b5f",
+        "bytes": 970298,
+        "wav_sha256": "495c23880772a6f2680d678e52b6a6b0fb595f9b65fc94fba0d99768049c1edb",
+        "wav_bytes": 485164,
+        "duration_s": 15.16
+      },
+      "reference": {
+        "transcript": "特朗普与土耳其总统雷杰普·塔伊普·埃尔多安（Recep Tayyip Erdoğan）通话后发表了声明。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-14716260585206763911",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/14716260585206763911.wav",
+        "row_index": 2,
+        "client_id": "1843",
+        "sha256": "565ac6c79e751d7924666ad3144d9baa6814dbadc1fd7fe150066c22f317d9de",
+        "bytes": 553018,
+        "wav_sha256": "184c74abfcfa1a340903592ecca375097ce6a000dd26d0275f6e74d14e8743f6",
+        "wav_bytes": 276524,
+        "duration_s": 8.64
+      },
+      "reference": {
+        "transcript": "邓迪大学（University of Dundee）的 Pamela Ferguson 教授指出：“记者如果公布嫌疑人的照片等信息的话，似乎确实存在危害性。”"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-10369927130798325266",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/10369927130798325266.wav",
+        "row_index": 5,
+        "client_id": "1780",
+        "sha256": "7fe486fad6f5d25438efa3d201d4c95b1654ccd836985200e9f7dd6eeefbeaba",
+        "bytes": 1003578,
+        "wav_sha256": "5b6890165dc7dc95f7dd2fa9e75c7d025406e0f8ec19992386189c83b7b30afc",
+        "wav_bytes": 501804,
+        "duration_s": 15.68
+      },
+      "reference": {
+        "transcript": "在昆达里尼瑜伽中，昆达里尼能量（启迪能量）通过瑜伽姿势、呼吸练习、念语和视觉形象被唤醒。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-7669819575583671099",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/7669819575583671099.wav",
+        "row_index": 8,
+        "client_id": "1847",
+        "sha256": "652051e69758e2c24199f90df9ab21deff6612efe105226bd13730e40be30d9a",
+        "bytes": 756538,
+        "wav_sha256": "eb502c513cc3d89fa11e7554614ec8d8833b6b5ec5091640736b2d373bbf9891",
+        "wav_bytes": 378284,
+        "duration_s": 11.82
+      },
+      "reference": {
+        "transcript": "他受到了新加坡副总理黄根成的欢迎，并与新加坡总理李显龙探讨了贸易和恐怖主义问题。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-17791005930196814474",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/17791005930196814474.wav",
+        "row_index": 11,
+        "client_id": "1922",
+        "sha256": "8ed34ba05c0c4e9848304161f879a275649f18c6fd0f11d6f24d4a17135fe0a7",
+        "bytes": 906298,
+        "wav_sha256": "4abcb1d15c20c1e7c1a6835b756c338199d824ce491260504c9386d4c8938cdc",
+        "wav_bytes": 453164,
+        "duration_s": 14.16
+      },
+      "reference": {
+        "transcript": "当然，这个传统有其基督教神学的解释，但它很可能是基督诞生以前就存在的一种庆祝春天、祈求丰收的仪式。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-6567034835218108721",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/6567034835218108721.wav",
+        "row_index": 13,
+        "client_id": "1687",
+        "sha256": "5ec857e10d9948540f187d8ea35a4364a9a70f37e220c05b96f91253e5bc1a2b",
+        "bytes": 526138,
+        "wav_sha256": "940000401a4add26b2a7e130e8772858a0fbcd95b887cb8a62fd1a61a8c2a761",
+        "wav_bytes": 263084,
+        "duration_s": 8.22
+      },
+      "reference": {
+        "transcript": "由于分离和重组，变异在每一代的两个库之间来回变动。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-4048226328336996391",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/4048226328336996391.wav",
+        "row_index": 16,
+        "client_id": "1711",
+        "sha256": "dbe7b891cb88fb69e84ad5afb319b447be1054216836e55867dceb280a8ec9fc",
+        "bytes": 1093178,
+        "wav_sha256": "cbfcace8c4c345a24021c1169462ef4c82a38ec582139196b829ea34bfce79ad",
+        "wav_bytes": 546604,
+        "duration_s": 17.08
+      },
+      "reference": {
+        "transcript": "这些理论研究为什么某些人想要做他们所做的事情，以及他们所处的环境中哪些事情会让他们做或不做某些事情。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-16272218284004703131",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/16272218284004703131.wav",
+        "row_index": 19,
+        "client_id": "1812",
+        "sha256": "c93af206acd4e5372af02782fafb0e578c15b58796e095dfe54fa0158dc823d1",
+        "bytes": 695098,
+        "wav_sha256": "18ce57aab4dcb0e71277bedd7e09947bc1c699a0bd7a51fa058fb5e760e82701",
+        "wav_bytes": 347564,
+        "duration_s": 10.86
+      },
+      "reference": {
+        "transcript": "虽然有一种实验性疫苗看似能够降低埃博拉病毒的死亡率，但迄今为止，还没明确证明任何药物适合治疗现有的感染。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-10104380129516909856",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/10104380129516909856.wav",
+        "row_index": 21,
+        "client_id": "1869",
+        "sha256": "cd509460412479ebc989b962938881b47aad636eca388e890e3fd219e999b60d",
+        "bytes": 989498,
+        "wav_sha256": "3688333b6bc7236430e65569005fe32d03646f0a3690b50bc7595e4161e150f5",
+        "wav_bytes": 494764,
+        "duration_s": 15.46
+      },
+      "reference": {
+        "transcript": "它的长下颚上布满了 70 多颗剃刀般锋利的牙齿，上颚上还有一排。这意味着任何与它相遇的东西都无路可逃。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-10852536777113131618",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/10852536777113131618.wav",
+        "row_index": 23,
+        "client_id": "1686",
+        "sha256": "7c36072de9d8c3583db3101e5695c163a27a424c22263c0d956cfc4a3101304a",
+        "bytes": 526138,
+        "wav_sha256": "e89dedb6a0b78fd972a0168d93d5fe69728ca02cb4eb5cd63cd74fa83cbd3310",
+        "wav_bytes": 263084,
+        "duration_s": 8.22
+      },
+      "reference": {
+        "transcript": "因此，一个组织在共同努力克服障碍的过程中，往往会带来新的创新流程，以满足客户的需求。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-1868048601472473390",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/1868048601472473390.wav",
+        "row_index": 25,
+        "client_id": "1661",
+        "sha256": "0df04ad2bbc1abe94168b100b85b8bf374b5b2b527bf5ee1980d0bcf48c8c68e",
+        "bytes": 829498,
+        "wav_sha256": "a74ed86d65f024b5de38df0a0cf6db53c59c5084e08eccf8b26e3a04c58eb6ff",
+        "wav_bytes": 414764,
+        "duration_s": 12.96
+      },
+      "reference": {
+        "transcript": "他没有设定削减数额，只是表示将根据中国的经济产出来决定数额。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-8424295226444731846",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/8424295226444731846.wav",
+        "row_index": 28,
+        "client_id": "1870",
+        "sha256": "aa7d769e248ca35ca30bf8fd0d87e652dbe87b6dedfd212390986a0314538a05",
+        "bytes": 642618,
+        "wav_sha256": "f78083a04eb20ceda2de4740f974a93a5d5a97ad207c68c8ae8800b9795b2f0e",
+        "wav_bytes": 321324,
+        "duration_s": 10.04
+      },
+      "reference": {
+        "transcript": "场景在金字塔上展示，不同的金字塔被点亮。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-15324743446256875074",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/15324743446256875074.wav",
+        "row_index": 31,
+        "client_id": "1725",
+        "sha256": "2e9b0b6f36a3908c4eabb3d7835160b7c6fc0ad09cbee97fb2c1e51a6d086060",
+        "bytes": 994618,
+        "wav_sha256": "cdc00207af3584a7b6004d55098842a961974daf359ecaa879caa87eabd752e9",
+        "wav_bytes": 497324,
+        "duration_s": 15.54
+      },
+      "reference": {
+        "transcript": "早先于全球发布的华硕 Eee PC 个人笔记本，因成本节约及功能性因素，成为 2007 年台北 IT 资讯月备受瞩目的话题。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-8702090716396029445",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/8702090716396029445.wav",
+        "row_index": 34,
+        "client_id": "1894",
+        "sha256": "d0bc2e8a9552b7399c844035edb493b2a5f9d0df9333eec0068e5e44dbf51be6",
+        "bytes": 771898,
+        "wav_sha256": "fd3b742d5ce9c56351d6f917076e4095e3eddaa4118ab12e6bd50b306cb69643",
+        "wav_bytes": 385964,
+        "duration_s": 12.06
+      },
+      "reference": {
+        "transcript": "咖喱饭菜是一道以香草和香料为主的菜肴，并配以肉类或蔬菜。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-1177351021583652757",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/1177351021583652757.wav",
+        "row_index": 37,
+        "client_id": "1799",
+        "sha256": "41781dbf698a140e003a1ed56f0eaf3def55afdd3c8513dd20c6b3407e5bb869",
+        "bytes": 556858,
+        "wav_sha256": "f13fab3bdebedc5a29b073653532a9b6cb98d03dc5111f7c0a0d00f590f9c006",
+        "wav_bytes": 278444,
+        "duration_s": 8.7
+      },
+      "reference": {
+        "transcript": "除了周三的比赛，卡帕内多（Carpanedo）还参加了锦标赛的两项个人竞赛。"
+      }
+    },
+    {
+      "id": "asr-zh-fleurs-16106752411261640702",
+      "task": "asr",
+      "dataset": "fleurs_zh_cn_test",
+      "modalities": [
+        "audio"
+      ],
+      "metric": "cer",
+      "language": "zh",
+      "tags": [
+        "asr",
+        "zh",
+        "cer",
+        "public"
+      ],
+      "input": {
+        "type": "fleurs_utterance",
+        "member": "test/16106752411261640702.wav",
+        "row_index": 40,
+        "client_id": "1911",
+        "sha256": "3dffc04a51ea7d5a95d1c437759088f0fc1c3ff753d6dc5568f2593b9681bc82",
+        "bytes": 764218,
+        "wav_sha256": "8c0ab34395761fe7b4e8e029d942e8f07ccaf87c3e6d085534a46fada144d199",
+        "wav_bytes": 382124,
+        "duration_s": 11.94
+      },
+      "reference": {
+        "transcript": "同理，有了申根签证，你就不必分别向每个申根成员国申请签证，从而节省了时间、金钱和手续。"
       }
     },
     {

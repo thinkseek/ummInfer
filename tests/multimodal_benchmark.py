@@ -32,6 +32,7 @@ import re
 import statistics
 import sys
 import time
+import unicodedata
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,19 +61,19 @@ MEDIAN_TOLERANCE = 0.10
 # blocks. asr/gsm8k/vqa (n=16) stay blocking under the median band.
 LATENCY_OBSERVATION_TASKS = frozenset({"joint"})
 QUALITY_TOLERANCE = {
-    "wer": 0.02,
-    "cer": 0.02,
+    "asr_en_wer": 0.02,
+    "asr_en_cer": 0.02,
+    "asr_zh_cer": 0.02,
     "vqa_accuracy": 0.05,
     "gsm8k_accuracy": 0.05,
     "joint_asr_wer": 0.05,
     "joint_keyword_hit": 0.05,
 }
 GAPS = [
-    {"item": "zh_asr_cer", "status": "NOT_COVERED",
-     "reason": ("no small, clearly licensed Mandarin test set was added. "
-                "google/fleurs zh_cn exceeds the datasets-server scan limit "
-                "and AISHELL-1 is about 15 GB; neither is downloaded by this "
-                "manifest.")},
+    {"item": "zh_asr_cer", "status": "COVERED",
+     "reason": ("16 FLEURS zh_cn test cases (CC BY 4.0) are pinned by "
+                "archive, member and converted-WAV SHA-256. No real-model "
+                "run has scored them yet.")},
     {"item": "joint_objective_answer", "status": "PARTIAL",
      "reason": ("joint cases score ASR WER against the real spoken caption "
                 "and caption-keyword hit in the answer. The free-form answer "
@@ -154,6 +155,22 @@ def word_error_rate(reference, hypothesis):
 def character_error_rate(reference, hypothesis):
     ref = " ".join((reference or "").upper().split())
     hyp = " ".join((hypothesis or "").upper().split())
+    if not ref:
+        return None, None, 0
+    errors = _edit_distance(list(ref), list(hyp))
+    return errors / len(ref), errors, len(ref)
+
+
+def normalize_zh(text):
+    """NFKC, lowercase, then drop whitespace, punctuation, symbols, controls."""
+    text = unicodedata.normalize("NFKC", (text or "").lower())
+    return "".join(ch for ch in text if unicodedata.category(ch)[0] not in "PSZC")
+
+
+def chinese_character_error_rate(reference, hypothesis):
+    """CER over characters. Mandarin has no word boundaries, so WER is unusable."""
+    ref = normalize_zh(reference)
+    hyp = normalize_zh(hypothesis)
     if not ref:
         return None, None, 0
     errors = _edit_distance(list(ref), list(hyp))
@@ -537,6 +554,12 @@ def score_case(case, record):
     if task == "asr":
         reference = case["reference"]["transcript"]
         hypothesis = record.get("transcript") or ""
+        if case.get("metric") == "cer":
+            cer, errors, chars = chinese_character_error_rate(
+                reference, hypothesis)
+            return {"name": "cer", "value": cer,
+                    "detail": {"character_errors": errors,
+                               "reference_characters": chars}}
         wer, errors, words = word_error_rate(reference, hypothesis)
         cer, char_errors, chars = character_error_rate(reference, hypothesis)
         return {"name": "wer", "value": wer,
@@ -629,7 +652,8 @@ def classify(case, record, latency_cap_ms=CASE_LATENCY_CAP_MS):
                for f in failures):
         value = metric.get("value")
         if case["task"] == "asr" and isinstance(value, float) and value > 0.5:
-            add("quality", "asr_wer_high", "P2", f"WER {value:.3f} > 0.50")
+            add("quality", "asr_error_rate_high", "P2",
+                f"{case['metric'].upper()} {value:.3f} > 0.50")
         elif case["task"] == "vqa" and value == 0.0:
             add("quality", "vqa_wrong", "P2",
                 "answer matches none of the 10 reference answers")
@@ -670,7 +694,7 @@ def _task_aggregate(task, rows):
         "tokens_per_s_p50": ub.percentile(tokens, 50),
         "tokens_per_s_p95": ub.percentile(tokens, 95),
     }
-    if task == "asr":
+    if task.startswith("asr"):
         errors = sum(m.get("detail", {}).get("errors") or 0 for m in metrics)
         words = sum(m.get("detail", {}).get("reference_words") or 0
                     for m in metrics)
@@ -678,8 +702,10 @@ def _task_aggregate(task, rows):
                           for m in metrics)
         chars = sum(m.get("detail", {}).get("reference_characters") or 0
                     for m in metrics)
-        out["wer"] = errors / words if words else None
-        out["cer"] = char_errors / chars if chars else None
+        if words:
+            out["wer"] = errors / words
+        if chars:
+            out["cer"] = char_errors / chars
     elif task == "vqa":
         values = [m["value"] for m in metrics if isinstance(m.get("value"), float)]
         out["vqa_accuracy"] = statistics.fmean(values) if values else None
@@ -705,7 +731,10 @@ def _task_aggregate(task, rows):
 def aggregate(rows):
     groups = {}
     for row in rows:
-        groups.setdefault(row["task"], []).append(row)
+        key = row["task"]
+        if row["task"] == "asr":
+            key = "asr_" + (row.get("language") or "unknown")
+        groups.setdefault(key, []).append(row)
     aggregates = {task: _task_aggregate(task, group)
                   for task, group in sorted(groups.items())}
     latencies = [row["latency"]["total_ms"] for row in rows
@@ -731,10 +760,11 @@ def aggregate(rows):
 def quality_snapshot(aggregates):
     snapshot = {}
     for task, values in aggregates["tasks"].items():
+        prefix = f"{task}_" if task.startswith("asr") else ""
         for key in ("wer", "cer", "vqa_accuracy", "gsm8k_accuracy",
                     "joint_asr_wer", "joint_keyword_hit"):
-            if key in values:
-                snapshot[key] = values[key]
+            if values.get(key) is not None:
+                snapshot[prefix + key] = values[key]
     return snapshot
 
 
@@ -779,7 +809,7 @@ def evaluate_round(report, baseline):
     if baseline:
         current_quality = quality_snapshot(aggregates)
         for key, tolerance in QUALITY_TOLERANCE.items():
-            lower = key in ("wer", "cer", "joint_asr_wer")
+            lower = key.endswith(("_wer", "_cer"))
             comparison = _regression(baseline["quality"].get(key),
                                      current_quality.get(key), tolerance,
                                      lower_is_better=lower)
@@ -983,6 +1013,7 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
         row = {
             "case_id": case_id,
             "task": case["task"],
+            "language": case.get("language"),
             "modalities": case["modalities"],
             "metric_name": case["metric"],
             "metric": metric,
@@ -1206,22 +1237,27 @@ def main(argv=None):
         if args.evidence_class != "real":
             parser.error("a contract test cannot establish a real baseline")
 
-    asr_archive = None
-    if any(case["input"]["type"] == "librispeech_utterance" for case in cases):
+    archives = {}
+    for kind, ensure, label in (
+            ("librispeech_utterance", md.ensure_librispeech, "librispeech"),
+            ("fleurs_utterance", md.ensure_fleurs_zh, "fleurs zh_cn")):
+        if not any(case["input"]["type"] == kind for case in cases):
+            continue
         try:
-            asr_archive = md.ensure_librispeech(manifest, args.cache_dir)
-            log.write(f"librispeech archive verified: {asr_archive}")
+            archives[kind] = ensure(manifest, args.cache_dir)
+            log.write(f"{label} archive verified: {archives[kind]}")
         except (md.DataError, OSError) as error:
-            log.write(f"librispeech archive unavailable: {error}")
+            log.write(f"{label} archive unavailable: {error}")
     resolved = {}
     for case in cases:
-        if (case["input"]["type"] == "librispeech_utterance"
-                and asr_archive is None):
+        kind = case["input"]["type"]
+        if kind in ("librispeech_utterance", "fleurs_utterance") \
+                and kind not in archives:
             log.write(f"input unavailable: {case['id']}: archive is missing")
             continue
         try:
             resolved[case["id"]] = md.resolve_case(
-                manifest, case, args.cache_dir, asr_archive=asr_archive)
+                manifest, case, args.cache_dir, archives=archives)
             log.write(f"input verified: {case['id']}")
         except (md.DataError, OSError) as error:
             log.write(f"input unavailable: {case['id']}: {error}")

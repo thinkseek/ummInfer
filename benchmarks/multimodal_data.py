@@ -10,13 +10,16 @@ All loops here have an explicit cap: bytes read, archive members scanned, and
 line index for text rows. The flac/ffmpeg decode helpers run with a timeout.
 """
 
+import array
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
+import sys
 import tarfile
 import urllib.parse
 import urllib.request
@@ -30,10 +33,12 @@ MAX_JSON_BYTES = 4 << 20
 MAX_MEMBER_BYTES = 64 << 20
 MAX_TAR_MEMBERS = 200000
 MAX_TEXT_LINE_BYTES = 64 << 10
+MAX_RIFF_CHUNKS = 64
 DECODE_TIMEOUT_S = 120
 USER_AGENT = "umminfer-multimodal-benchmark/1"
 
 AUDIO_FORMAT = (1, 2, 16000)  # PCM, mono, 16 kHz -- the worker contract
+FLEURS_FORMAT = (3, 1, 16000, 32)  # IEEE float, mono, 16 kHz, 32-bit
 
 
 class DataError(RuntimeError):
@@ -75,9 +80,11 @@ def load_manifest(path=None):
 
 
 TASKS = ("asr", "gsm8k", "vqa", "joint")
-METRICS = ("wer", "vqa_accuracy", "gsm8k_exact", "joint_asr_wer_keyword_hit")
+METRICS = ("wer", "cer", "vqa_accuracy", "gsm8k_exact",
+           "joint_asr_wer_keyword_hit")
 INPUT_FIELDS = {
     "librispeech_utterance": ("member", "flac_sha256", "wav_sha256"),
+    "fleurs_utterance": ("member", "sha256", "wav_sha256", "wav_bytes"),
     "dataset_row": ("row_index", "row_sha256"),
     "image_url": ("url", "sha256", "bytes"),
     "speechcoco_row": ("row_index", "revision", "audio_sha256",
@@ -232,6 +239,13 @@ def ensure_librispeech(manifest, cache_dir):
         dataset["archive_sha256"], dataset["archive_bytes"])
 
 
+def ensure_fleurs_zh(manifest, cache_dir):
+    dataset = manifest["datasets"]["fleurs_zh_cn_test"]
+    return download_verified(
+        dataset["url"], Path(cache_dir) / "fleurs_zh_cn_test/test.tar.gz",
+        dataset["archive_sha256"], dataset["archive_bytes"])
+
+
 def extract_members(archive_path, members, max_bytes=MAX_MEMBER_BYTES):
     """Scan the archive once and return {member: bytes}. Missing members fail."""
     wanted = set(members)
@@ -306,6 +320,65 @@ def decode_audio_to_wav(flac_bytes, expected_wav_sha256=None):
     data = out.getvalue()
     if expected_wav_sha256 and sha256_bytes(data) != expected_wav_sha256:
         raise DataError("decoded WAV does not match the manifest SHA-256")
+    return data
+
+
+def float_wav_to_pcm16(data, expected_wav_sha256=None):
+    """Convert a mono 16 kHz IEEE-float WAV to the worker's PCM16 WAV.
+
+    FLEURS stores 32-bit float samples. The float-to-int16 rule is fixed here
+    (scale by 32768, truncate toward zero, clamp), so the output bytes do not
+    depend on the ffmpeg build or on its dithering. Parsing is bounded by a
+    chunk cap and by the file size; nothing is written to disk.
+    """
+    if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise DataError("audio is not a RIFF/WAVE file")
+    fmt = frames = None
+    offset = 12
+    for _ in range(MAX_RIFF_CHUNKS):
+        if offset + 8 > len(data):
+            break
+        chunk_id = data[offset:offset + 4]
+        size = struct.unpack("<I", data[offset + 4:offset + 8])[0]
+        body = offset + 8
+        if body + size > len(data):
+            raise DataError(f"RIFF chunk {chunk_id!r} exceeds the file")
+        if chunk_id == b"fmt ":
+            if size < 16:
+                raise DataError("WAV fmt chunk is shorter than 16 bytes")
+            tag, channels, rate, _, _, bits = struct.unpack(
+                "<HHIIHH", data[body:body + 16])
+            fmt = (tag, channels, rate, bits)
+        elif chunk_id == b"data":
+            frames = data[body:body + size]
+            if fmt is not None:
+                break
+        offset = body + size + (size & 1)
+    if fmt is None or frames is None:
+        raise DataError("WAV is missing the fmt or data chunk")
+    if fmt != FLEURS_FORMAT:
+        raise DataError(f"audio must be float32 mono 16 kHz, got {fmt}")
+    if not frames:
+        raise DataError("audio has no frames")
+    samples = array.array("f")
+    samples.frombytes(frames[:len(frames) - len(frames) % 4])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    pcm = array.array("h", (
+        -32768 if value <= -1.0 else
+        32767 if value >= 1.0 else int(value * 32768.0)
+        for value in samples))
+    if sys.byteorder != "little":
+        pcm.byteswap()
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(pcm.tobytes())
+    data = out.getvalue()
+    if expected_wav_sha256 and sha256_bytes(data) != expected_wav_sha256:
+        raise DataError("converted WAV does not match the manifest SHA-256")
     return data
 
 
@@ -424,7 +497,7 @@ def _speechcoco(manifest, cache_dir, case):
     return audio, image
 
 
-def resolve_case(manifest, case, cache_dir, asr_archive=None):
+def resolve_case(manifest, case, cache_dir, archives=None):
     """Return the exact bytes to send for one case.
 
     The returned dict always carries `input_sha256`: a dict for multimodal
@@ -432,8 +505,9 @@ def resolve_case(manifest, case, cache_dir, asr_archive=None):
     carries, which can differ from the downloaded bytes only by WAV rewriting.
     """
     kind = case["input"]["type"]
+    archives = archives or {}
     if kind == "librispeech_utterance":
-        archive = asr_archive or ensure_librispeech(manifest, cache_dir)
+        archive = archives.get(kind) or ensure_librispeech(manifest, cache_dir)
         member = extract_members(archive, [case["input"]["member"]])
         wav = decode_audio_to_wav(
             member[case["input"]["member"]], case["input"]["wav_sha256"])
@@ -442,6 +516,19 @@ def resolve_case(manifest, case, cache_dir, asr_archive=None):
         return {"type": "audio", "audio": wav,
                 "input_sha256": case["input"]["wav_sha256"],
                 "source": case["input"]["member"]}
+    if kind == "fleurs_utterance":
+        archive = archives.get(kind) or ensure_fleurs_zh(manifest, cache_dir)
+        member = case["input"]["member"]
+        raw = extract_members(archive, [member])[member]
+        if sha256_bytes(raw) != case["input"]["sha256"]:
+            raise DataError(
+                f"{case['id']}: archive member SHA-256 does not match the manifest")
+        wav = float_wav_to_pcm16(raw, case["input"]["wav_sha256"])
+        if len(wav) != case["input"]["wav_bytes"]:
+            raise DataError(f"{case['id']}: WAV byte count changed")
+        return {"type": "audio", "audio": wav,
+                "input_sha256": case["input"]["wav_sha256"],
+                "source": member}
     if kind == "dataset_row":
         question = _gsm8k_row(manifest, cache_dir, case)
         prompt = manifest["prompt_templates"]["gsm8k"].format(question=question)
@@ -472,16 +559,20 @@ def resolve_case(manifest, case, cache_dir, asr_archive=None):
 
 
 def resolve_cases(manifest, cases, cache_dir, log=None):
-    """Resolve every selected case. ASR cases share one archive scan."""
-    archive = None
-    if any(case["input"]["type"] == "librispeech_utterance" for case in cases):
-        archive = ensure_librispeech(manifest, cache_dir)
-        if log:
-            log(f"librispeech archive verified: {archive}")
+    """Resolve every selected case. Each archive is verified once."""
+    archives = {}
+    kinds = {case["input"]["type"] for case in cases}
+    for kind, ensure, label in (
+            ("librispeech_utterance", ensure_librispeech, "librispeech"),
+            ("fleurs_utterance", ensure_fleurs_zh, "fleurs zh_cn")):
+        if kind in kinds:
+            archives[kind] = ensure(manifest, cache_dir)
+            if log:
+                log(f"{label} archive verified: {archives[kind]}")
     resolved = {}
     for case in cases:
         resolved[case["id"]] = resolve_case(manifest, case, cache_dir,
-                                            asr_archive=archive)
+                                            archives=archives)
         if log:
             log(f"input verified: {case['id']}")
     return resolved

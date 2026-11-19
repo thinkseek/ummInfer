@@ -167,7 +167,7 @@ These are real and reproduced or measured; they are not counted as passes.
 | Capability | Status |
 | --- | --- |
 | English ASR (16 cases) | Covered, real model, real audio |
-| Mandarin ASR | `NOT_COVERED` — no licensed test set in the manifest |
+| Mandarin ASR (16 cases) | Covered in the manifest from 2026-11-19: FLEURS `zh_cn` test split, CC BY 4.0, scored by CER. No real-model run has scored these cases yet; this table describes the 54-case H20B run |
 | GSM8K exact answer (16) | Covered |
 | Image VQA (16) | Covered |
 | Joint image + real speech (6) | Covered; objective sub-metrics only, free-form answer needs human review |
