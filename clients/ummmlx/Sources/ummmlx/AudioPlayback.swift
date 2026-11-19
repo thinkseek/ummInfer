@@ -120,6 +120,12 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
             Data("AUDIO \(Date().timeIntervalSince1970) \(what)\n".utf8))
     }
 
+    /// Read-only view of the active stream's cushion, used by the fault gate
+    /// and the regression tests. It changes no playback behavior.
+    var jitterTargetSeconds: Double { jitter.targetSeconds }
+    /// True when the output device could not be started.
+    var outputDeviceUnavailable: Bool { engineFailed }
+
     static func makePCMBuffer(_ chunk: AudioStreamChunk) -> AVAudioPCMBuffer? {
         guard chunk.sampleRate > 0,
               chunk.channels >= 1, chunk.channels <= 8 else {
