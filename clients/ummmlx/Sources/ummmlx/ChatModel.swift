@@ -253,6 +253,7 @@ final class ChatModel: ObservableObject {
     func startListening() {
         guard !isRunning, !isListening else { return }
         stopStreamingAudio()
+        error = nil
         speech.onPartial = { [weak self] text in
             self?.partialTranscript = text
         }
@@ -262,6 +263,7 @@ final class ChatModel: ObservableObject {
             self.partialTranscript = ""
             self.isListening = false
             self.speechStatus = "On-device transcript ready"
+            if self.status == "Speech error" { self.status = "Ready" }
         }
         speech.onFailure = { [weak self] message in
             guard let self else { return }
@@ -269,6 +271,14 @@ final class ChatModel: ObservableObject {
             self.partialTranscript = ""
             self.error = message
             self.status = "Speech error"
+        }
+        // The recognizer can end without a final result (silence). Release
+        // the composer instead of leaving the mic latched on.
+        speech.onIdle = { [weak self] in
+            guard let self, self.isListening else { return }
+            self.isListening = false
+            self.partialTranscript = ""
+            self.speechStatus = "No speech recognized"
         }
         partialTranscript = ""
         speechStatus = "Listening on-device…"
@@ -288,6 +298,7 @@ final class ChatModel: ObservableObject {
     @discardableResult
     func transcribeFile(_ url: URL) async throws -> String {
         speechStatus = "Recognizing on-device…"
+        error = nil
         do {
             let text = try await speech.transcribeFile(url)
             prompt = text
