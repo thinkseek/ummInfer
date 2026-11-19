@@ -11,7 +11,7 @@
 | 功能 | 入口 | 核心实现 | 协议/契约 | 验证 | 状态 |
 |---|---|---|---|---|---|
 | 健康与就绪探针 /health、/ready | `src/serve/openai_api.cpp:572` `server_.Get("/health", [this](const httplib::Request&, h` | `src/serve/openai_api.cpp:589` `const bool entry_ready = !config_.external_entry_stage` | GET /health -> {status:ok,in_flight}; GET /ready -> 200/503 | tests/http_smoke.py:77 + tests/h20b_service_live.py:165 + tests/h20b_service_live.py:168 | 部分 |
-| Prometheus 指标导出 /metrics | `src/serve/openai_api.cpp:583` `server_.Get("/metrics", [](const httplib::Request&, http` | `src/serve/openai_api.cpp:584` `res.set_content(obs::Metrics::instance().render()` | GET /metrics, text/plain; version=0.0.4 | tests/soak_native.py:263 | 已验证 |
+| Prometheus 指标导出 /metrics | `src/serve/openai_api.cpp:583` `server_.Get("/metrics", [](const httplib::Request&, http` | `src/serve/openai_api.cpp:584` `res.set_content(obs::Metrics::instance().render()` | GET /metrics, text/plain; version=0.0.4 | tests/soak_native.py:263 + tests/soak_native.py:322 | 已验证 |
 | Bearer API Key 鉴权 | `src/serve/openai_api.cpp:555` `server_.set_pre_routing_handler(` | `src/serve/openai_api.cpp:562` `if (util::constant_time_equals(auth, expected))` | Authorization: Bearer <key>, 失败 401 auth_error | tests/http_smoke.py:76 | 已验证 |
 | 过载 503 与 Retry-After | `src/serve/openai_api.cpp:83` `class AdmissionGuard` | `src/serve/openai_api.cpp:519` `void reject_overloaded(httplib::Response& res)` | 503 + Retry-After: 1 + type=overloaded | tests/unified_contract_test.cpp:1385 | 已验证 |
 | 聊天补全非流式 JSON | `src/serve/openai_api.cpp:608` `server_.Post("/v1/chat/completions"` | `src/serve/openai_api.cpp:1360` `json out =` | POST /v1/chat/completions, stream=false | tests/http_smoke.py:97 | 已验证 |
