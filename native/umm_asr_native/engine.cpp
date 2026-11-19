@@ -31,6 +31,13 @@ constexpr int kAudioLayers = 18;
 constexpr int kAudioFfn = 3584;
 constexpr int kAudioDown = 480;
 constexpr int kAudioOut = 1024;
+// Mel frames are cut into 100-frame chunks and each chunk yields 13 tokens.
+constexpr int kMaxAudioTokens = (kMelFrames + 99) / 100 * 13;
+// A conv token is one 480-channel frame of 16 positions; conv_permute lays a
+// request out as [tokens][kAudioPermRow]. d_au_norm holds both that layout and
+// the later [tokens][kAudioD] layer-norm layout, so it is sized for the wider.
+constexpr int kAudioPermRow = kAudioDown * 16;
+constexpr int kAuNormElements = kMaxAudioTokens * kAudioPermRow;
 constexpr int kTextLayers = 28;
 constexpr int kTextH = 1024;
 constexpr int kTextQHeads = 16;
@@ -123,9 +130,14 @@ struct AsrEngine::Impl {
     conv3x3s2_gelu(d_conv2, w(p + "conv2d3.weight"), w(p + "conv2d3.bias"), d_conv3,
                    chunks, kAudioDown, kAudioDown, 32, 25, stream);
     // [c,480,16,13] -> [c,13,7680] -> conv_out linear -> [c,13,896].
-    conv_permute(d_conv3, d_au_norm, chunks, stream);
+    // conv_permute is unbounded by design; the workspace must hold its output.
     const int tokens = chunks * 13;
-    linear(d_audio, d_au_norm, dense(p + "conv_out", kAudioDown * 16, kAudioD, false),
+    if (tokens > kMaxAudioTokens)
+      throw std::runtime_error("audio tower tokens exceed workspace: " +
+                               std::to_string(tokens) + " > " +
+                               std::to_string(kMaxAudioTokens));
+    conv_permute(d_conv3, d_au_norm, chunks, stream);
+    linear(d_audio, d_au_norm, dense(p + "conv_out", kAudioPermRow, kAudioD, false),
            tokens);
     add_sinusoidal(d_audio, d_pe, chunks, 13, kAudioD, stream);
 
@@ -285,11 +297,11 @@ AsrEngine::AsrEngine(const std::string& model_dir, int gpu_id) {
   mk(im.d_gate, kMaxSeq * kTextInter);
   mk(im.d_up, kMaxSeq * kTextInter);
   mk(im.d_audio, kMaxSeq * kAudioOut);
-  mk(im.d_au_norm, 390 * kAudioD);
-  mk(im.d_au_q, 390 * kAudioD);
-  mk(im.d_au_k, 390 * kAudioD);
-  mk(im.d_au_v, 390 * kAudioD);
-  mk(im.d_au_ffn, 390 * kAudioFfn);
+  mk(im.d_au_norm, kAuNormElements);
+  mk(im.d_au_q, kMaxAudioTokens * kAudioD);
+  mk(im.d_au_k, kMaxAudioTokens * kAudioD);
+  mk(im.d_au_v, kMaxAudioTokens * kAudioD);
+  mk(im.d_au_ffn, kMaxAudioTokens * kAudioFfn);
   constexpr int kMaxChunks = 30;
   mk(im.d_conv_in, kMaxChunks * 1 * 128 * 100);
   mk(im.d_conv1, kMaxChunks * kAudioDown * 64 * 50);

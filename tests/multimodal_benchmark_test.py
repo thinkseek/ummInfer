@@ -202,6 +202,30 @@ def unit_checks():
     value, _, _ = mb.chinese_character_error_rate("", "空")
     if value is not None:
         failures.append("CER with an empty reference must be None")
+
+    # Mandarin WER counts jieba words, never characters. Skipped, not failed,
+    # on a host without jieba: the CER metric above needs no segmenter.
+    try:
+        mb.zh_segmenter_id()
+    except RuntimeError:
+        return failures
+    word_cases = [
+        ("今天天气很好", "今天天气很好", 0.0, 0, 3),   # identical
+        ("北京上海", "广州深圳", 1.0, 2, 2),           # both words wrong
+        ("今天天气很好", "明天天气很坏", 1.0, 3, 3),   # 3 of 3 reference words
+        ("今天，天气 很好。", "今天天气很好", 0.0, 0, 3),  # punctuation removed
+    ]
+    for reference, hypothesis, want, want_errors, want_words in word_cases:
+        value, errors, words = mb.chinese_word_error_rate(
+            reference, hypothesis)
+        if (value is None or abs(value - want) > 1e-9
+                or errors != want_errors or words != want_words):
+            failures.append(f"WER({reference!r}, {hypothesis!r})="
+                            f"{(value, errors, words)}, expected "
+                            f"{(want, want_errors, want_words)}")
+    value, _, _ = mb.chinese_word_error_rate("", "空")
+    if value is not None:
+        failures.append("WER with an empty reference must be None")
     return failures
 
 

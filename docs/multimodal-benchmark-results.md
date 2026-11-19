@@ -167,7 +167,7 @@ These are real and reproduced or measured; they are not counted as passes.
 | Capability | Status |
 | --- | --- |
 | English ASR (16 cases) | Covered, real model, real audio |
-| Mandarin ASR (16 cases) | Covered and measured from 2026-11-19: FLEURS `zh_cn` test split, CC BY 4.0, scored by CER. Corpus CER 0.1106 (70/633) over the 16 cases, section 16.2 |
+| Mandarin ASR (16 cases) | Covered and measured from 2026-11-19: FLEURS `zh_cn` test split, CC BY 4.0, scored by CER and by WER over jieba words. Corpus CER 0.0916 (58/633) and WER 0.0503 (17/338) over the 16 cases, section 17.3 |
 | GSM8K exact answer (16) | Covered |
 | Image VQA (16) | Covered |
 | Joint image + real speech (6) | Covered; objective sub-metrics only, free-form answer needs human review |
@@ -845,7 +845,8 @@ English failure is `asr-en-ls-1221-135767-0000`, answered with `400` in rounds
   attempted and none was clean; every failure is the transport stall above.
   The three clean 54-case rounds recorded in section 15.3 ran with the client
   inside the container.
-- **Mandarin WER.** Not defined for this case set.
+- **Mandarin WER at the time of this window.** Not defined then; added in
+  section 17.4 with jieba segmentation.
 - **A code fix for the stall itself.** The stall is outside the repository.
   The server-side read timeout was aligned with the payload policy after the
   owner authorized it (section 16.5); no retry or connection-reset workaround
@@ -922,6 +923,144 @@ suite, and the run-D transcripts return on a freshly started service, so the
 difference follows service history and not the client path.
 
 The deviation predates the timeout change: the four rounds in section 16.2,
-run before it, show the same two values. It is recorded with its reproduction
-and is not fixed; isolating the retained state is ASR engine work outside this
-change.
+run before it, show the same two values. The retained state was located and
+fixed afterwards; section 17 gives the cause, the fix and the re-test.
+
+## 17. Request-history dependence in ASR, fixed 2026-11-20
+
+### 17.1 Cause
+
+`d_au_norm` is one workspace used with two row widths. `conv_permute` writes
+the permuted conv output as `[tokens][480 * 16]` (7680 BF16 per token), and the
+layer-normalised activations reuse the same buffer as `[tokens][896]`. The
+allocation was sized for the narrow width:
+
+```cpp
+mk(im.d_au_norm, 390 * kAudioD);        // 349,440 elements, 698,880 bytes
+```
+
+`tokens = 13 * ceil(valid_frames / 100)`, so a write of `tokens * 7680`
+elements overruns that allocation from 4 chunks on, that is from 301 mel
+frames, which is audio longer than 3.01 s. The joint SpeechCOCO clips are
+2.78 s (279 frames, 3 chunks, 299,520 elements) and stay inside the buffer.
+The FLEURS Mandarin clip used for isolation is 10.38 s (1038 frames, 11
+chunks): 143 tokens, 1,098,240 elements written into a 349,440-element buffer,
+748,800 elements past the end.
+
+`compute-sanitizer --tool memcheck` on the pre-fix build reports the write by
+name:
+
+```text
+========= Invalid __global__ write of size 2 bytes
+=========     at umminfer::native::conv_permute_kernel(...)+0x280
+=========     Address 0x7feb0e3ffc00 is out of bounds
+=========     and is 1,024 bytes before the nearest allocation at
+=========     0x7feb0e400000 of size 2,097,152 bytes
+=========     ...
+=========     in umminfer::native::AsrEngine::Impl::audio_forward(int, ...)
+========= ERROR SUMMARY: 8129 errors
+```
+
+The 8,129 reported writes are the part of the overrun that lands in the gap
+between allocations. The rest lands inside whatever `cudaMalloc` placed next,
+which is why the damage surfaces as a changed decode in a later request rather
+than as a fault.
+
+### 17.2 Isolation, on the pre-fix binary
+
+The trigger is audio length, not language. Same engine instance, same English
+clip before and after a long request:
+
+| Sequence on the pre-fix binary | Transcript |
+| --- | --- |
+| English clip, first request | `Well dressed man and woman pose for picture.` |
+| 10.38 s Mandarin clip | `这并不是告别，这是一个篇章的结束，也是新篇章的开始。` |
+| same English clip after it | `Were dressed, man and woman, pose for picture.` |
+| 8.35 s English clip (three copies of the same clip) | decodes all three copies correctly |
+| same English clip after that | `Well dressed men and women pose for picture.` |
+
+The Mandarin clip is not special: an 8.35 s English clip leaves the same
+damaged state. A repeated short English request does not.
+
+### 17.3 Fix and re-test
+
+The workspace is sized for the wider layout, the row width is one constant, and
+a request that would exceed the workspace throws instead of writing past it:
+
+```cpp
+constexpr int kMaxAudioTokens = (kMelFrames + 99) / 100 * 13;   // 390
+constexpr int kAudioPermRow = kAudioDown * 16;                   // 7680
+constexpr int kAuNormElements = kMaxAudioTokens * kAudioPermRow;
+...
+if (tokens > kMaxAudioTokens)
+  throw std::runtime_error("audio tower tokens exceed workspace: ...");
+conv_permute(d_conv3, d_au_norm, chunks, stream);
+```
+
+On the fixed binary the same sequence returns one transcript for all three
+English decodes, with the Mandarin and 8.35 s English requests in between.
+
+Re-test: three full 70-case rounds over the same external path (Mac →
+`ssh -L` → container, `127.0.0.1:43310`), one client, one service instance,
+evidence in `/tmp/mmfix/ev-hist`, `/tmp/mmfix/ev-h2`, `/tmp/mmfix/ev-h3`:
+
+| Round | Cases | infra | contract | quality | EN WER / CER | ZH WER | ZH CER | VQA | GSM8K | joint WER / hit |
+| ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 70 | 0 | 0 | 1 | 0.0188 / 0.0245 | 0.0503 | 0.0916 | 0.8958 | 1.0000 | 0.0000 / 1.0000 |
+| 2 | 70 | 0 | 0 | 1 | 0.0188 / 0.0245 | 0.0503 | 0.0916 | 0.8958 | 1.0000 | 0.0000 / 1.0000 |
+| 3 | 70 | 0 | 0 | 1 | 0.0188 / 0.0245 | 0.0503 | 0.0916 | 0.8958 | 1.0000 | 0.0000 / 1.0000 |
+
+All three rounds are identical, and their 70 metric records are identical case
+by case (0 differing records). The single quality failure is
+`vqa2-val-262197000`, which scores 0.0 in run D as well.
+
+Per case against run D: all 54 baseline cases match in all three rounds, with 0
+infrastructure and 0 public-contract failures. The two joint cases of section
+16.6 return to their run-D transcripts:
+
+| Case | Run D | Pre-fix, after one suite | Fixed, rounds 1–3 |
+| --- | --- | --- | --- |
+| `joint-speechcoco-val-0000` | WER 0, hit 1.0 | WER 0.5, hit 0.75 | WER 0, hit 1.0 |
+| `joint-speechcoco-val-0005` | WER 0, hit 1.0 | WER 0.0833, hit 0.8333 | WER 0, hit 1.0 |
+
+English ASR also improves, because the overrun also damaged the current
+request: EN WER 0.0329 → 0.0188 and Mandarin CER 0.1106 → 0.0916.
+
+### 17.4 Mandarin WER
+
+The manifest holds reference sentences, not word boundaries, so the harness
+segments both reference and hypothesis with jieba. The segmentation is
+dictionary-only (`jieba.cut(text, HMM=False)`), and the segmenter name and
+version are written into `report.json` as `zh_segmenter`:
+
+```text
+jieba 0.42.1, jieba.cut(HMM=False), default dictionary
+```
+
+Both sides are NFKC-normalised with punctuation and spaces removed before
+segmentation, the same normalisation the CER metric uses. WER is reported next
+to CER; `cer` stays the case metric and no threshold changed. The harness test
+`tests/multimodal_benchmark_test.py` asserts the word counts, including that
+characters are never counted as words.
+
+Corpus over the 16 Mandarin cases, all three rounds: WER 0.0503 (17/338),
+CER 0.0916 (58/633).
+
+| case | CER | WER | char err/ref | word err/ref |
+| --- | ---: | ---: | ---: | ---: |
+| 10104380129516909856 | 0.0435 | 0.0714 | 2/46 | 2/28 |
+| 10325559490685159122 | 0.4000 | 0.1500 | 18/45 | 3/20 |
+| 10369927130798325266 | 0.0000 | 0.0000 | 0/38 | 0/22 |
+| 10852536777113131618 | 0.0000 | 0.0000 | 0/38 | 0/22 |
+| 1177351021583652757 | 0.2647 | 0.0625 | 9/34 | 1/16 |
+| 14716260585206763911 | 0.2687 | 0.0476 | 18/67 | 1/21 |
+| 15324743446256875074 | 0.0385 | 0.0417 | 2/52 | 1/24 |
+| 16106752411261640702 | 0.0000 | 0.0000 | 0/38 | 0/22 |
+| 16272218284004703131 | 0.0612 | 0.1154 | 3/49 | 3/26 |
+| 17791005930196814474 | 0.0222 | 0.0370 | 1/45 | 1/27 |
+| 1868048601472473390 | 0.0000 | 0.0000 | 0/28 | 0/16 |
+| 4048226328336996391 | 0.0208 | 0.0323 | 1/48 | 1/31 |
+| 6567034835218108721 | 0.0000 | 0.0000 | 0/23 | 0/14 |
+| 7669819575583671099 | 0.0789 | 0.1364 | 3/38 | 3/22 |
+| 8424295226444731846 | 0.0000 | 0.0000 | 0/18 | 0/10 |
+| 8702090716396029445 | 0.0385 | 0.0588 | 1/26 | 1/17 |

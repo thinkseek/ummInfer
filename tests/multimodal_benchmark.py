@@ -64,6 +64,7 @@ QUALITY_TOLERANCE = {
     "asr_en_wer": 0.02,
     "asr_en_cer": 0.02,
     "asr_zh_cer": 0.02,
+    "asr_zh_wer": 0.02,
     "vqa_accuracy": 0.05,
     "gsm8k_accuracy": 0.05,
     "joint_asr_wer": 0.05,
@@ -74,8 +75,10 @@ GAPS = [
      "reason": ("16 FLEURS zh_cn test cases (CC BY 4.0) are pinned by "
                 "archive, member and converted-WAV SHA-256. First real-model "
                 "run 2026-11-19: all 16 scored across four rounds, corpus CER "
-                "0.1106. The manifest defines cer and carries no word-level "
-                "reference, so no WER is reported.")},
+                "0.1106. WER is reported beside CER from the same reference "
+                "texts, segmented with jieba 0.42.1 (jieba.cut, HMM=False, "
+                "default dictionary); the segmenter and its version are "
+                "recorded in report.json.")},
     {"item": "joint_objective_answer", "status": "PARTIAL",
      "reason": ("joint cases score ASR WER against the real spoken caption "
                 "and caption-keyword hit in the answer. The free-form answer "
@@ -170,12 +173,74 @@ def normalize_zh(text):
 
 
 def chinese_character_error_rate(reference, hypothesis):
-    """CER over characters. Mandarin has no word boundaries, so WER is unusable."""
+    """CER over characters. Character counts need no segmentation."""
     ref = normalize_zh(reference)
     hyp = normalize_zh(hypothesis)
     if not ref:
         return None, None, 0
     errors = _edit_distance(list(ref), list(hyp))
+    return errors / len(ref), errors, len(ref)
+
+
+_JIEBA = None
+
+
+def _segmenter():
+    """Lazy jieba handle, so English-only runs never need the package."""
+    global _JIEBA
+    if _JIEBA is None:
+        try:
+            import jieba  # noqa: PLC0415  (optional, Mandarin WER only)
+        except ImportError as error:  # pragma: no cover - environment dependent
+            raise RuntimeError(
+                "Mandarin WER needs jieba (pip install jieba); the CER metric "
+                "does not") from error
+        _JIEBA = jieba
+    return _JIEBA
+
+
+def zh_segmenter_id():
+    """Name and version of the segmenter, recorded so the WER reproduces."""
+    return "jieba %s, jieba.cut(HMM=False), default dictionary" % (
+        _segmenter().__version__)
+
+
+def _zh_segmenter_if_available(rows):
+    """Segmenter identity for the report, or None when it cannot be recorded.
+
+    A host without jieba (for example `python -I`, which drops user
+    site-packages) still runs the round: the Mandarin cases then carry a null
+    WER instead of failing the run.
+    """
+    if not any(row.get("language") == "zh" for row in rows):
+        return None
+    try:
+        return zh_segmenter_id()
+    except RuntimeError:
+        return None
+
+
+def zh_tokens(text):
+    """Mandarin word tokens: NFKC with punctuation stripped, then jieba.
+
+    jieba's HMM is disabled, so the segmentation is dictionary-only and does
+    not depend on the HMM's learned probabilities. Word counts come from these
+    tokens, never from character counts.
+    """
+    normalized = normalize_zh(text)
+    if not normalized:
+        return []
+    return [token for token in _segmenter().cut(normalized, HMM=False)
+            if token.strip()]
+
+
+def chinese_word_error_rate(reference, hypothesis):
+    """WER over Mandarin word tokens. None when the reference is empty."""
+    ref = zh_tokens(reference)
+    hyp = zh_tokens(hypothesis)
+    if not ref:
+        return None, None, 0
+    errors = _edit_distance(ref, hyp)
     return errors / len(ref), errors, len(ref)
 
 
@@ -559,9 +624,20 @@ def score_case(case, record):
         if case.get("metric") == "cer":
             cer, errors, chars = chinese_character_error_rate(
                 reference, hypothesis)
+            # WER is reported alongside CER; `cer` stays the case metric so no
+            # existing name or threshold changes. A host without jieba (for
+            # example `python -I`) records no word errors instead of failing
+            # the whole round; report.json then carries zh_segmenter: null.
+            try:
+                wer, word_errors, words = chinese_word_error_rate(
+                    reference, hypothesis)
+            except RuntimeError:
+                wer, word_errors, words = None, None, 0
             return {"name": "cer", "value": cer,
                     "detail": {"character_errors": errors,
-                               "reference_characters": chars}}
+                               "reference_characters": chars,
+                               "wer": wer, "errors": word_errors,
+                               "reference_words": words}}
         wer, errors, words = word_error_rate(reference, hypothesis)
         cer, char_errors, chars = character_error_rate(reference, hypothesis)
         return {"name": "wer", "value": wer,
@@ -1091,6 +1167,9 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
             "log_cap_bytes": LOG_CAP,
         },
         "coverage": md.coverage(manifest),
+        # Recorded only when a Mandarin case was scored, so the WER numbers in
+        # this report can be reproduced with the same segmenter.
+        "zh_segmenter": _zh_segmenter_if_available(rows),
         "gaps": GAPS,
         "cases": rows,
         "aggregates": aggregates,
