@@ -72,8 +72,10 @@ QUALITY_TOLERANCE = {
 GAPS = [
     {"item": "zh_asr_cer", "status": "COVERED",
      "reason": ("16 FLEURS zh_cn test cases (CC BY 4.0) are pinned by "
-                "archive, member and converted-WAV SHA-256. No real-model "
-                "run has scored them yet.")},
+                "archive, member and converted-WAV SHA-256. First real-model "
+                "run 2026-11-19: all 16 scored across four rounds, corpus CER "
+                "0.1106. The manifest defines cer and carries no word-level "
+                "reference, so no WER is reported.")},
     {"item": "joint_objective_answer", "status": "PARTIAL",
      "reason": ("joint cases score ASR WER against the real spoken caption "
                 "and caption-keyword hit in the answer. The free-form answer "

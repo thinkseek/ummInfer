@@ -167,7 +167,7 @@ These are real and reproduced or measured; they are not counted as passes.
 | Capability | Status |
 | --- | --- |
 | English ASR (16 cases) | Covered, real model, real audio |
-| Mandarin ASR (16 cases) | Covered in the manifest from 2026-11-19: FLEURS `zh_cn` test split, CC BY 4.0, scored by CER. No real-model run has scored these cases yet; this table describes the 54-case H20B run |
+| Mandarin ASR (16 cases) | Covered and measured from 2026-11-19: FLEURS `zh_cn` test split, CC BY 4.0, scored by CER. Corpus CER 0.1106 (70/633) over the 16 cases, section 16.2 |
 | GSM8K exact answer (16) | Covered |
 | Image VQA (16) | Covered |
 | Joint image + real speech (6) | Covered; objective sub-metrics only, free-form answer needs human review |
@@ -732,3 +732,135 @@ Every value matches run D. No case regressed.
 The server, ASR stage and Omni stage were stopped by pid. No process of this
 window remains, no listener claims 43310, and the resident 43301 service on
 GPUs 2-5 was never touched.
+
+## 16. External-link rounds and Mandarin coverage, 2026-11-19 (second window)
+
+The first window ran the 54 English cases with the client inside the container.
+This window restores the original client path and runs the Mandarin cases that
+`74ed3f2` pinned but never scored.
+
+Client: Mac, `ssh -L 43310:172.17.0.2:43310 h20b`, measured round trip 0.6 s.
+Service: one instance on port 43310, ASR stage GPU 6, Omni stage GPU 7. GPUs 0/1
+and port 43300 were not touched.
+
+Mandarin data: FLEURS `cmn_hans_cn` test split, revision
+`70bb2e84b976b7e960aa89f1c648e09c59f894dd`, archive 525346466 B, SHA-256
+`09d19ad18f5d7e91076880807e866cd16abd924c7052b55f71cdae91714fc166`, CC BY 4.0.
+The harness verified the archive, every member and every converted WAV before
+the first request.
+
+Deployed bytes for this window (SHA-256, first 20 hex): `umm-infer`
+`6fdbf9666f61113c5e4f`, `umm-native-stage-asr` `81ac3287be1fb48d1868`,
+`umm-native-stage-omni` `6fb3bd93413c987f7a9c`.
+
+### 16.1 The drop reproduced over the original path
+
+One 54-case round over this path produced 9 infrastructure failures, all
+`RemoteDisconnected: Remote end closed connection without response`: 5 on
+`/v1/audio/transcriptions` and 4 on `/v1/chat/completions`. The original window
+dropped only ASR requests; with the link degraded, chat requests drop too, so
+the failure belongs to the connection phase and not to one route.
+
+With the link degraded, a probe of five 400 KB transcriptions failed 5/5: four
+received `HTTP 400` after 5.3–29.7 s and one received a bare EOF. The client's
+`sendall` returned in about 1 ms each time, so the bytes were in the client
+kernel immediately.
+
+Correlated observations for that window:
+
+| Component | Observation |
+| --- | --- |
+| client | `sendall` returns in ~1 ms; `getresponse` then waits 5–30 s and gets 400 or EOF |
+| server error hook | `Failed to read ... method=POST path=/v1/audio/transcriptions body_bytes=0` |
+| server `recv` shim (diagnostic only, not shipped) | `ret=-1 errno=11` (`EAGAIN`): the socket read timed out; normal closes show `ret=0` |
+| ASR stage | 14 requests logged where 22 were sent; the dropped ones never arrived |
+| control: plain TCP, same forward, 800 KB × 20 | 20/20 delivered intact |
+| control: `curl` multipart POST over the same forward | 3/3 answered in ~0.6 s |
+
+The plain-TCP control rules out loss or truncation in the forward. The shim
+shows the server's read failing with `EAGAIN`, not `EOF`: the server stopped
+waiting. The server keeps httplib's default 5 s socket read timeout
+(`CPPHTTPLIB_SERVER_READ_TIMEOUT_SECOND`); a stall longer than that aborts the
+body read, which httplib maps to `400 Bad Request`.
+
+So the responsible component is the client-to-server transport, not the ASR
+engine, the Omni engine, the pipeline or the stage. The server contributes the
+failure mode: a valid request whose upload stalls is answered `400`, which the
+harness records as `http_4xx_valid_request`. A longer read timeout would move
+the threshold and is excluded by the brief, so no such change is applied. The
+finding is recorded for the deployment owner: a server that accepts 1 MB
+uploads over a 0.6 s round-trip link should size its socket read timeout from
+its payload policy.
+
+### 16.2 Mandarin (FLEURS zh_cn) first real-model results
+
+The manifest defines the Mandarin metric as `cer` and carries no word-level
+reference, so no WER is reported. A character-count WER would misstate the
+metric and is not computed.
+
+Four full 70-case rounds were run over the external path:
+
+| Round | Cases | infra | contract | quality | EN ASR valid | EN WER | ZH valid | ZH corpus CER | VQA | GSM8K |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 70 | 1 | 0 | 1 | 16/16 | 0.0329 | 15/16 | 0.1018 | 0.8958 | 1.0000 |
+| 2 | 70 | 2 | 2 | 0 | 16/16 | 0.0329 | 14/16 | 0.1221 | 0.8333 | 1.0000 |
+| 3 | 70 | 0 | 2 | 1 | 15/16 | 0.0283 | 16/16 | 0.1106 | 0.8333 | 1.0000 |
+| 4 | 70 | 0 | 4 | 1 | 15/16 | 0.0283 | 13/16 | 0.1292 | 0.8958 | 1.0000 |
+
+EN WER and VQA move between rounds only because a failed case leaves the scored
+set; every case that produced a transcript matches run D in all four rounds.
+No round was free of transport failures on this path.
+
+Per-case Mandarin CER, first successful attempt per case across the four rounds:
+
+| case | CER | chars | char errors | ms | round |
+| --- | ---: | ---: | ---: | ---: | --- |
+| asr-zh-fleurs-10104380129516909856 | 0.0870 | 46 | 4 | 3145 | 1 |
+| asr-zh-fleurs-10325559490685159122 | 0.4000 | 45 | 18 | 2719 | 1 |
+| asr-zh-fleurs-10369927130798325266 | 0.0000 | 38 | 0 | 2941 | 1 |
+| asr-zh-fleurs-10852536777113131618 | 0.0000 | 38 | 0 | 1880 | 1 |
+| asr-zh-fleurs-1177351021583652757 | 0.2647 | 34 | 9 | 3496 | 2 |
+| asr-zh-fleurs-14716260585206763911 | 0.2687 | 67 | 18 | 1926 | 1 |
+| asr-zh-fleurs-15324743446256875074 | 0.1731 | 52 | 9 | 8557 | 1 |
+| asr-zh-fleurs-16106752411261640702 | 0.0000 | 38 | 0 | 8839 | 1 |
+| asr-zh-fleurs-16272218284004703131 | 0.0612 | 49 | 3 | 2827 | 1 |
+| asr-zh-fleurs-17791005930196814474 | 0.0667 | 45 | 3 | 12165 | 1 |
+| asr-zh-fleurs-1868048601472473390 | 0.0357 | 28 | 1 | 2379 | 1 |
+| asr-zh-fleurs-4048226328336996391 | 0.0208 | 48 | 1 | 3459 | 1 |
+| asr-zh-fleurs-6567034835218108721 | 0.0000 | 23 | 0 | 7338 | 1 |
+| asr-zh-fleurs-7669819575583671099 | 0.0526 | 38 | 2 | 2618 | 1 |
+| asr-zh-fleurs-8424295226444731846 | 0.0000 | 18 | 0 | 11169 | 1 |
+| asr-zh-fleurs-8702090716396029445 | 0.0769 | 26 | 2 | 6100 | 1 |
+
+All 16 cases produced at least one valid transcript across the four rounds.
+Corpus CER over those 16 results: **0.1106** (70 character errors / 633
+reference characters). Per round, over the cases that produced a transcript:
+0.1018 (61/599), 0.1221 (68/557), 0.1106 (70/633) and 0.1292 (66/511).
+
+English ASR over the same rounds: every valid case equals run D; the only
+English failure is `asr-en-ls-1221-135767-0000`, answered with `400` in rounds
+3 and 4 by the same transport mechanism.
+
+### 16.3 What this window does not establish
+
+- **Three clean 54-case rounds over the external path.** Four full rounds were
+  attempted and none was clean; every failure is the transport stall above.
+  The three clean 54-case rounds recorded in section 15.3 ran with the client
+  inside the container.
+- **Mandarin WER.** Not defined for this case set.
+- **A code fix for the drop.** The stall is outside the repository. No retry,
+  timeout change or connection-reset workaround is applied.
+
+### 16.4 Cleanup, second window
+
+| Item | Before the rounds | During the rounds | After stop |
+| --- | ---: | ---: | ---: |
+| GPU 6 used | 3 MiB | 2389 MiB | 3 MiB |
+| GPU 7 used | 3 MiB | 78867 MiB | 3 MiB |
+| GPU 0/1 | 3 MiB | 3 MiB, never touched | 3 MiB |
+| Port 43310 | free | listening | free |
+| Port 43300 | — | never started or stopped | — |
+
+The server, ASR stage and Omni stage were stopped by pid. No process of this
+window remains, no listener claims 43310, and the resident 43301 service on
+GPUs 2-5 was never touched (`/health` answered 200 after the stop).
