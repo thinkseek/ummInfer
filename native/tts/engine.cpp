@@ -17,6 +17,7 @@
 #include "cuda_kernels.hpp"
 #include "prompt.hpp"
 #include "safetensors.hpp"
+#include "tail_trim.hpp"
 
 namespace umminfer::native {
 namespace {
@@ -486,11 +487,29 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   // bit-repeatable across decodes, so the terminal waveform is never decoded
   // a second time.
   constexpr int kSamplesPerFrame = 1920;
+  constexpr int kSampleRate = 24000;
   constexpr int kFirstChunkFrames = 2;
   constexpr int kChunkFrames = 8;
   std::vector<float> samples;
   int decoded_frames = 0;
   int next_stream_frame = kFirstChunkFrames;
+  // The terminal waveform is trimmed of the decoder's trailing noise, so the
+  // end of the stream cannot be emitted before the synthesis knows it is the
+  // end. The last kTrimGuardFrames are kept back and released as whole frames
+  // whenever a later chunk arrives. The guard holds 1.04 s: the 0.6 s noise
+  // cap plus the silence the run may carry. A longer cut is clamped to the
+  // guard. The first chunk is emitted at once so first_audio_ms does not
+  // move.
+  constexpr int kTrimGuardFrames = 13;
+  constexpr size_t kTrimGuardSamples = kTrimGuardFrames * kSamplesPerFrame;
+  std::vector<float> held;
+  int held_frame = 0;
+  bool emitted_any = false;
+  auto emit = [&](const std::vector<float>& chunk, int first_frame, int frames) {
+    if (timings != nullptr && timings->first_audio_ms < 0)
+      timings->first_audio_ms = elapsed_ms();
+    on_chunk(chunk, first_frame, frames);
+  };
   // Takes a decode of the first `frame_count` frames and keeps the samples
   // that are past the frames already emitted.
   auto take = [&](std::vector<float>&& all, int frame_count) {
@@ -500,9 +519,35 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
     const int first_frame = decoded_frames;
     samples.insert(samples.end(), chunk.begin(), chunk.end());
     decoded_frames = frame_count;
-    if (timings != nullptr && timings->first_audio_ms < 0)
-      timings->first_audio_ms = elapsed_ms();
-    on_chunk(chunk, first_frame, frame_count - first_frame);
+    if (!emitted_any) {
+      emit(chunk, first_frame, frame_count - first_frame);
+      emitted_any = true;
+      held_frame = frame_count;
+      return;
+    }
+    held.insert(held.end(), chunk.begin(), chunk.end());
+    const size_t keep = std::min(held.size(), kTrimGuardSamples);
+    const size_t release = held.size() - keep;
+    if (release > 0) {
+      std::vector<float> out(held.begin(), held.begin() + static_cast<long>(release));
+      emit(out, held_frame, static_cast<int>(release / kSamplesPerFrame));
+      held.erase(held.begin(), held.begin() + static_cast<long>(release));
+      held_frame += static_cast<int>(release / kSamplesPerFrame);
+    }
+  };
+  // Trims the terminal noise and emits the held tail. `samples` keeps the
+  // trimmed tail, so the emitted chunks still concatenate to it exactly. A
+  // single-chunk utterance has nothing held back to trim, and is left alone.
+  auto finish_stream = [&]() {
+    const size_t cut = std::min(trailing_noise_cut(samples, kSampleRate), held.size());
+    if (cut > 0) {
+      held.resize(held.size() - cut);
+      samples.resize(samples.size() - cut);
+      fade_out(held, static_cast<size_t>(kSampleRate) * 5 / 1000);
+      std::copy(held.begin(), held.end(), samples.end() - held.size());
+    }
+    if (!held.empty()) emit(held, held_frame, static_cast<int>(held.size() / kSamplesPerFrame));
+    held.clear();
   };
   c0_trace.push_back(c0);
   for (int step = 0; step < max_frames; ++step) {
@@ -579,10 +624,14 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
     throw std::runtime_error("codec frames not divisible by 16");
   const int total_frames = static_cast<int>(frames.size() / kGroups);
   if (!on_chunk) {
-    samples = im.codec->decode(frames, total_frames, abort);
-  } else if (decoded_frames < total_frames) {
-    // Emit the tail frames the loop did not reach.
-    take(im.codec->decode(frames, total_frames, abort), total_frames);
+    samples = trim_trailing_noise(im.codec->decode(frames, total_frames, abort),
+                                  kSampleRate);
+  } else {
+    if (decoded_frames < total_frames) {
+      // Emit the tail frames the loop did not reach.
+      take(im.codec->decode(frames, total_frames, abort), total_frames);
+    }
+    finish_stream();
   }
   if (on_chunk && std::getenv("UMM_TTS_REPEAT_CHECK")) {
     // Diagnostic only: decodes of the same frames are not bit-repeatable, so a

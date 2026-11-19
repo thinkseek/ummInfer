@@ -66,6 +66,15 @@ target_include_directories(umm_stage_common PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR} ${NATIVE_DIR})
 target_link_libraries(umm_stage_common PUBLIC umm_stage_core)
 
+# Trailing-noise trim self-check. No CUDA, so it runs on any host.
+enable_testing()
+add_executable(tts_tail_trim_test
+  ${NATIVE_DIR}/tts/tail_trim_test.cpp
+  ${NATIVE_DIR}/tts/tail_trim.cpp
+)
+target_include_directories(tts_tail_trim_test PRIVATE ${NATIVE_DIR}/tts)
+add_test(NAME tts_tail_trim_test COMMAND tts_tail_trim_test)
+
 
 if(UMM_STAGE_CUDA)
   enable_language(CUDA)
@@ -136,6 +145,7 @@ if(UMM_STAGE_CUDA)
     ${NATIVE_DIR}/tts/prompt.cpp
     ${NATIVE_DIR}/tts/engine.cpp
     ${NATIVE_DIR}/tts/codec.cpp
+    ${NATIVE_DIR}/tts/tail_trim.cpp
     ${NATIVE_DIR}/tts/cuda_kernels.cu
   )
   target_include_directories(umm-native-stage-tts PRIVATE ${NATIVE_DIR}/tts)

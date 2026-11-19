@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Analyze a PCM16 WAV for the defects a listening test notices.
 
-Reports the waveform in fixed windows and flags four things a listener hears:
-a buzz (a sustained high zero-crossing rate, usually the codec ringing past the
-end of speech), a click (a sample step far larger than its neighbours), a
-silent gap, and clipping. Exit code 1 when any finding is present, so this can
-gate a generated artifact.
+Reports the waveform in fixed windows and flags five things a listener hears:
+a buzz (a run of near-Nyquist windows inside the speech), tail_noise (the same
+near-Nyquist noise at the very end of the file), a click (a sample step far
+larger than its neighbours), a silent gap, and clipping. Exit code 1 when any
+finding is present, so this can gate a generated artifact.
 
     python3 -I tools/audio_analyze.py out.wav
     python3 -I tools/audio_analyze.py out.wav --json
@@ -17,10 +17,11 @@ import struct
 import sys
 import wave
 
-BUZZ_ZCR = 3000.0       # zero crossings per second
-BUZZ_RMS = 200.0        # below this it is silence, not a buzz
-BUZZ_PERIODICITY = 0.90 # speech does not repeat one period for a whole window
-BUZZ_MIN_SECONDS = 1.0
+NOISE_WINDOW = 0.01     # 0.2 s of decoder noise is invisible in a 0.5 s window
+NOISE_ZCR_RATIO = 0.4   # near Nyquist: 0.4 * sample_rate crossings per second
+NOISE_SILENCE_RMS = 60.0  # same window and floor as native/tts/tail_trim.cpp
+BUZZ_MIN_SECONDS = 0.2  # real fricative bursts measured up to 0.16 s
+TAIL_NOISE_MIN_SECONDS = 0.1
 CLICK_JUMP = 24000      # PCM16 sample-to-sample step
 CLICK_MIN_SECONDS = None
 SILENCE_RMS = 50.0
@@ -88,6 +89,66 @@ def periodicity(block, rate, max_hz=2500):
     return best
 
 
+def noise_kind(row, rate):
+    """Classify one short window as silence, near-Nyquist noise, or speech."""
+    if row["rms"] < NOISE_SILENCE_RMS:
+        return "silence"
+    return "noise" if row["zcr"] >= NOISE_ZCR_RATIO * rate else "voice"
+
+
+def noise_windows(samples, rate):
+    rows = []
+    for start, block in windows(samples, rate, NOISE_WINDOW):
+        rows.append({
+            "start_s": start / rate,
+            "end_s": min(len(samples), start + int(rate * NOISE_WINDOW)) / rate,
+            "rms": rms_of(block),
+            "zcr": zcr_of(block, rate),
+        })
+    return rows
+
+
+def noise_duration(rows, rate):
+    return sum(row["end_s"] - row["start_s"] for row in rows
+               if noise_kind(row, rate) == "noise")
+
+
+def noise_runs(rows, rate, until_s=None):
+    """Maximal spans of noise or silence before until_s; a voice window ends one."""
+    run = []
+    for row in rows:
+        if until_s is not None and row["start_s"] >= until_s:
+            break
+        if noise_kind(row, rate) == "voice":
+            if run:
+                yield run
+            run = []
+        else:
+            run.append(row)
+    if run:
+        yield run
+
+
+def tail_noise_run(rows, rate):
+    """Walk backwards over the trailing run of near-Nyquist noise.
+
+    Trailing and interleaved silent windows are skipped. Returns
+    (start_s, end_s, noise_seconds) or None when the file ends on speech.
+    """
+    start = end = None
+    noise = 0.0
+    for row in reversed(rows):
+        kind = noise_kind(row, rate)
+        if kind == "voice":
+            break
+        if kind == "noise":
+            noise += row["end_s"] - row["start_s"]
+            start = row["start_s"]
+            if end is None:
+                end = row["end_s"]
+    return None if start is None else (start, end, noise)
+
+
 def analyze(samples, rate, window=0.5):
     rows = []
     for start, block in windows(samples, rate, window):
@@ -99,30 +160,34 @@ def analyze(samples, rate, window=0.5):
         })
     findings = []
 
-    # Buzz: consecutive windows whose zero-crossing rate is far above speech.
-    run = []
-    for row in rows:
-        if row["zcr"] >= BUZZ_ZCR and row["rms"] >= BUZZ_RMS and row["periodicity"] >= BUZZ_PERIODICITY:
-            run.append(row)
-        else:
-            if len(run) * window >= BUZZ_MIN_SECONDS:
-                findings.append({
-                    "kind": "buzz",
-                    "start_s": run[0]["start_s"],
-                    "end_s": round(run[-1]["start_s"] + window, 2),
-                    "detail": "zcr %d-%d, rms %d-%d, periodicity %.2f" % (
-                        run[0]["zcr"], run[-1]["zcr"],
-                        run[0]["rms"], run[-1]["rms"], run[0]["periodicity"]),
-                })
-            run = []
-    if len(run) * window >= BUZZ_MIN_SECONDS:
+    # Decoder noise lasts 0.2-0.5 s, so a 0.5 s window dilutes it below any
+    # threshold; a short-window pass sees it. Zero-crossing rate alone cannot
+    # separate noise from a fricative (both reach 0.4 * rate for up to 0.16 s);
+    # duration and position do. The trailing run is reported as tail_noise, so
+    # the interior scan stops where that run starts.
+    short = noise_windows(samples, rate)
+    tail = tail_noise_run(short, rate)
+    if tail and tail[2] >= TAIL_NOISE_MIN_SECONDS:
+        findings.append({
+            "kind": "tail_noise",
+            "start_s": round(tail[0], 2),
+            "end_s": round(tail[1], 2),
+            "detail": "%.0f ms of zcr >= %d" % (
+                tail[2] * 1000, NOISE_ZCR_RATIO * rate),
+        })
+
+    for run in noise_runs(short, rate, tail[0] if tail else None):
+        noise = noise_duration(run, rate)
+        if noise < BUZZ_MIN_SECONDS:
+            continue
+        noisy = [row for row in run if noise_kind(row, rate) == "noise"]
         findings.append({
             "kind": "buzz",
-            "start_s": run[0]["start_s"],
-            "end_s": round(run[-1]["start_s"] + window, 2),
-            "detail": "zcr %d-%d, rms %d-%d, periodicity %.2f" % (
-                run[0]["zcr"], run[-1]["zcr"], run[0]["rms"], run[-1]["rms"],
-                run[0]["periodicity"]),
+            "start_s": round(noisy[0]["start_s"], 2),
+            "end_s": round(noisy[-1]["end_s"], 2),
+            "detail": "%.0f ms of zcr %d-%d, rms %d-%d" % (
+                noise * 1000, int(noisy[0]["zcr"]), int(noisy[-1]["zcr"]),
+                int(noisy[0]["rms"]), int(noisy[-1]["rms"])),
         })
 
     # Click: a single step far above anything its neighbours produce.
@@ -190,13 +255,13 @@ def main():
             args.wav, report["duration_s"], rate, report["peak"], report["rms"]))
         for finding in report["findings"]:
             if "start_s" in finding:
-                print("  %-8s %5.2f-%5.2fs  %s" % (
+                print("  %-10s %5.2f-%5.2fs  %s" % (
                     finding["kind"], finding["start_s"],
                     finding["end_s"], finding["detail"]))
             else:
-                print("  %-8s %s" % (finding["kind"],
-                                     {k: v for k, v in finding.items()
-                                      if k != "kind"}))
+                print("  %-10s %s" % (finding["kind"],
+                                      {k: v for k, v in finding.items()
+                                       if k != "kind"}))
         print("  PASS" if report["passed"] else "  FAIL")
     return 0 if report["passed"] else 1
 

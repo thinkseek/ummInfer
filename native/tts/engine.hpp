@@ -34,7 +34,11 @@ class TtsEngine {
 
   // Receives the newly decoded samples at a codec-frame boundary. first_frame
   // is the index of the first codec frame in this chunk; the concatenation of
-  // every chunk equals the vector synthesize returns, bit for bit.
+  // every chunk equals the vector synthesize returns, bit for bit. The final
+  // chunk is shortened by the trailing-noise trim and can then hold fewer
+  // samples than frames * 1920, so a consumer must size it by the chunk.
+  // Chunks are delayed by up to 1.04 s of audio so the end can still be
+  // trimmed; the first chunk is not delayed.
   using StreamSink = std::function<void(const std::vector<float>& samples,
                                         int first_frame, int frames)>;
 
@@ -46,7 +50,9 @@ class TtsEngine {
   // and only its new tail samples are kept, so the returned vector is the
   // concatenation of the chunks by construction. The codec is not
   // bit-repeatable across calls, so a second decode of the same frames does
-  // not reproduce them; no code path relies on that.
+  // not reproduce them; no code path relies on that. The returned waveform is
+  // trimmed of the decoder's trailing noise; a streamed utterance of a single
+  // chunk (at most 160 ms of audio) is returned untrimmed.
   std::vector<float> synthesize(const std::vector<int>& text_ids, int language_id,
                                 int speaker_id, int max_frames,
                                 const AbortCheck& abort = {},

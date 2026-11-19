@@ -64,6 +64,7 @@ if(UMM_TTS_CUDA)
     engine.cpp
     prompt.cpp
     codec.cpp
+    tail_trim.cpp
     cuda_kernels.cu
   )
   target_link_libraries(umm-tts-native PRIVATE umm_tts_host CUDA::cudart)
