@@ -1,73 +1,31 @@
 # ummInfer 功能映射
 
-基线 commit `a213514ea12b32bb971ed49607fde06bc1a6f993`（当前 main）。功能清点在 `973e280` 完成；`a213514` 只在 `src/serve/openai_api.cpp` 与 `tests/multimodal_benchmark.py` 增删行，锚点已按 `a213514` 重新定位。下表全部 `文件:行号` 只在 `a213514` 下有效；后续提交会使行号漂移。
+基线 commit `973e28042a41f12a5ec1136d0330f9ff69490522`。下表全部 `文件:行号` 只在 `973e280` 下有效；之后任何提交都可能使行号漂移。
 
-校验：`python3 -I tools/check_feature_map.py`。脚本逐条打开文件，确认行号存在、非空，且反引号内符号确实出现在该行；同时校验「验证」列引用的文件与行号。
+校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show 973e280:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
 
-状态：`已验证` = 仓库内有测试文件对该行为做了断言；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言该行为。GPU 与真实模型用例本轮未运行，只按测试文件举证。
-
-状态：`已验证` = 仓库内有测试文件对该行为做出断言；`部分` = 测试只覆盖该功能的一部分；`已实现未验` = 无测试断言；`未实现` = 代码中缺少该能力。本轮不执行需要 GPU 或权重的验证，状态只引用仓库内已有测试文件。
-
-状态定义：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分路径；`已实现未验` = 无测试断言该行为。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 仓库内无测试断言该行为。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言该行为。本轮不运行需要 GPU 的用例。
-
-状态定义：`已验证` = 仓库内有测试文件对该行为做了断言；`部分` = 测试只覆盖其中一部分；`已实现未验` = 仓库内没有测试断言该行为。需要 GPU 或模型权重的测试只按测试文件举证，本轮未运行。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖该行为的一部分；`已实现未验` = 无测试断言该行为。判定只看仓库内测试文件的断言，不看代码能否跑通；需要 GPU 或模型权重的测试本轮未执行。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试文件断言该行为。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖该行为的一部分；`已实现未验` = 无测试断言该行为。
-
-状态：`已验证` = 仓库内有测试文件对该行为做了断言；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言该行为；`未实现` = 只有占位或返回 501 的路由。
-
-状态定义：`已验证` = 仓库内有测试文件对该行为做了断言；`部分` = 测试只覆盖该行为的一部分；`已实现未验` = 无测试断言该行为。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言该行为。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言该行为。
-
-状态：`已验证` 仓库内有测试文件断言该行为；`部分` 测试只覆盖该行为的一部分；`已实现未验` 无测试断言该行为。
-
-状态取值：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖该功能的一部分；`已实现未验` = 仓库内无测试断言该行为；`未实现` = 路由或入口明确返回未实现。
-
-状态定义：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言该行为。
-
-
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 仓库内无测试断言该行为；`未实现` = 代码未提供该能力。
-
-状态判定只看仓库内的测试文件：`已验证` 表示有测试断言该行为；`部分` 表示测试只覆盖其中一部分；`已实现未验` 表示没有任何测试断言该行为。需要 GPU 或模型权重的用例本轮未执行，只按测试源码举证。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言该行为。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言。需要 GPU 或模型权重的验证本轮未执行，仅按测试文件举证。
-
-状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖其中一部分；`已实现未验` = 无测试断言该行为。
+状态：`已验证` = 仓库内有测试文件断言该行为；`部分` = 测试只覆盖该行为的一部分；`已实现未验` = 无测试断言。GPU 与真实模型用例本轮未运行，状态只按测试文件举证。
 
 ## 1. 对外接口
 
 | 功能 | 入口 | 核心实现 | 协议/契约 | 验证 | 状态 |
 |---|---|---|---|---|---|
-| 健康与就绪探针 /health、/ready | `src/serve/openai_api.cpp:581` `server_.Get("/health", [this](const httplib::Request&, h` | `src/serve/openai_api.cpp:598` `const bool entry_ready = !config_.external_entry_stage` | GET /health -> {status:ok,in_flight}; GET /ready -> 200/503 | tests/http_smoke.py:77 | 已验证 |
-| Prometheus 指标导出 /metrics | `src/serve/openai_api.cpp:592` `server_.Get("/metrics", [](const httplib::Request&, http` | `src/serve/openai_api.cpp:593` `res.set_content(obs::Metrics::instance().render()` | GET /metrics, text/plain; version=0.0.4 | tests/soak_native.py:263 | 已验证 |
-| Bearer API Key 鉴权 | `src/serve/openai_api.cpp:564` `server_.set_pre_routing_handler(` | `src/serve/openai_api.cpp:571` `if (util::constant_time_equals(auth, expected))` | Authorization: Bearer <key>, 失败 401 auth_error | tests/http_smoke.py:76 | 已验证 |
-| 过载 503 与 Retry-After | `src/serve/openai_api.cpp:91` `class AdmissionGuard` | `src/serve/openai_api.cpp:527` `void reject_overloaded(httplib::Response& res)` | 503 + Retry-After: 1 + type=overloaded | tests/unified_contract_test.cpp:1385 | 已验证 |
-| 聊天补全非流式 JSON | `src/serve/openai_api.cpp:617` `server_.Post("/v1/chat/completions"` | `src/serve/openai_api.cpp:1369` `json out =` | POST /v1/chat/completions, stream=false | tests/http_smoke.py:97 | 已验证 |
-| 聊天补全 SSE 流式 | `src/serve/openai_api.cpp:617` `server_.Post("/v1/chat/completions"` | `src/serve/openai_api.cpp:1420` `res.set_chunked_content_provider(` | stream=true; choice delta; 末尾 data: [DONE] | tests/http_smoke.py:103 | 已验证 |
-| 模型列表 /v1/models | `src/serve/openai_api.cpp:608` `server_.Get("/v1/models", [this](const httplib::Request&` | `src/serve/openai_api.cpp:609` `json body =` | GET /v1/models -> object=list,data[].id | 无 | 已实现未验 |
-| 语音转写 /v1/audio/transcriptions | `src/serve/openai_api.cpp:862` `void handle_transcription(const httplib::Request& req, h` | `src/serve/openai_api.cpp:986` `request_id = coordinator_.submit(std::move(payload), con` | POST /v1/audio/transcriptions multipart file,model,stream | tests/multimodal_benchmark.py:273 | 已验证 |
-| 请求中止 /abort | `src/serve/openai_api.cpp:735` `server_.Post("/abort", [this](const httplib::Request& re` | `src/serve/openai_api.cpp:768` `unified_engine_->cancel_for_session(request_id, session_` | POST /abort {request_id,session_id} -> {success:true}; 403 会话不符 | tests/unified_contract_test.cpp:3158 | 已验证 |
-| 语音合成路由 /v1/audio/speech 返回 501 | `src/serve/openai_api.cpp:786` `server_.Post("/v1/audio/speech"` | `src/serve/openai_api.cpp:788` `res.status = 501` | POST /v1/audio/speech -> 501 speech is not implemented | 无 | 已实现未验 |
-| 图片生成/编辑与视频任务上游代理 | `src/serve/openai_api.cpp:645` `server_.Post("/v1/images/generations"` | `src/serve/openai_api.cpp:657` `proxy_.handle_image_generation(req, res)` | POST /v1/images/generations/edits; POST/GET/DELETE /v1/videos | 无 | 已实现未验 |
-| 静态站点托管 --web-root | `src/main.cpp:310` `api_config.web_root = flag(flags, "web-root")` | `src/serve/openai_api.cpp:798` `!server_.set_mount_point("/", config_.web_root))` | --web-root DIR 挂载 /；CORS 头 - | 无 | 部分 |
+| 健康与就绪探针 /health、/ready | `src/serve/openai_api.cpp:572` `server_.Get("/health", [this](const httplib::Request&, h` | `src/serve/openai_api.cpp:589` `const bool entry_ready = !config_.external_entry_stage` | GET /health -> {status:ok,in_flight}; GET /ready -> 200/503 | tests/http_smoke.py:77 | 已验证 |
+| Prometheus 指标导出 /metrics | `src/serve/openai_api.cpp:583` `server_.Get("/metrics", [](const httplib::Request&, http` | `src/serve/openai_api.cpp:584` `res.set_content(obs::Metrics::instance().render()` | GET /metrics, text/plain; version=0.0.4 | tests/soak_native.py:263 | 已验证 |
+| Bearer API Key 鉴权 | `src/serve/openai_api.cpp:555` `server_.set_pre_routing_handler(` | `src/serve/openai_api.cpp:562` `if (util::constant_time_equals(auth, expected))` | Authorization: Bearer <key>, 失败 401 auth_error | tests/http_smoke.py:76 | 已验证 |
+| 过载 503 与 Retry-After | `src/serve/openai_api.cpp:83` `class AdmissionGuard` | `src/serve/openai_api.cpp:519` `void reject_overloaded(httplib::Response& res)` | 503 + Retry-After: 1 + type=overloaded | tests/unified_contract_test.cpp:1385 | 已验证 |
+| 聊天补全非流式 JSON | `src/serve/openai_api.cpp:608` `server_.Post("/v1/chat/completions"` | `src/serve/openai_api.cpp:1360` `json out =` | POST /v1/chat/completions, stream=false | tests/http_smoke.py:97 | 已验证 |
+| 聊天补全 SSE 流式 | `src/serve/openai_api.cpp:608` `server_.Post("/v1/chat/completions"` | `src/serve/openai_api.cpp:1411` `res.set_chunked_content_provider(` | stream=true; choice delta; 末尾 data: [DONE] | tests/http_smoke.py:103 | 已验证 |
+| 模型列表 /v1/models | `src/serve/openai_api.cpp:599` `server_.Get("/v1/models", [this](const httplib::Request&` | `src/serve/openai_api.cpp:600` `json body =` | GET /v1/models -> object=list,data[].id | 无 | 已实现未验 |
+| 语音转写 /v1/audio/transcriptions | `src/serve/openai_api.cpp:853` `void handle_transcription(const httplib::Request& req, h` | `src/serve/openai_api.cpp:977` `request_id = coordinator_.submit(std::move(payload), con` | POST /v1/audio/transcriptions multipart file,model,stream | tests/multimodal_benchmark.py:272 | 已验证 |
+| 请求中止 /abort | `src/serve/openai_api.cpp:726` `server_.Post("/abort", [this](const httplib::Request& re` | `src/serve/openai_api.cpp:759` `unified_engine_->cancel_for_session(request_id, session_` | POST /abort {request_id,session_id} -> {success:true}; 403 会话不符 | tests/unified_contract_test.cpp:3158 | 已验证 |
+| 语音合成路由 /v1/audio/speech 返回 501 | `src/serve/openai_api.cpp:777` `server_.Post("/v1/audio/speech"` | `src/serve/openai_api.cpp:779` `res.status = 501` | POST /v1/audio/speech -> 501 speech is not implemented | 无 | 已实现未验 |
+| 图片生成/编辑与视频任务上游代理 | `src/serve/openai_api.cpp:636` `server_.Post("/v1/images/generations"` | `src/serve/openai_api.cpp:648` `proxy_.handle_image_generation(req, res)` | POST /v1/images/generations/edits; POST/GET/DELETE /v1/videos | 无 | 已实现未验 |
+| 静态站点托管 --web-root | `src/serve/openai_api.cpp:789` `!server_.set_mount_point("/", config_.web_root))` | `src/serve/openai_api.cpp:789` `!server_.set_mount_point("/", config_.web_root))` | --web-root DIR 挂载 /；CORS 头 - | 无 | 已实现未验 |
 | WebSocket 实时握手校验 | `src/serve/realtime_api.cpp:115` `bool valid_handshake(lws* wsi, const std::string& served` | `src/serve/realtime_api.cpp:118` `if (path != "/v1/realtime")` | GET /v1/realtime?intent=transcription&model=<served>; 否则 400 | tests/realtime_contract_e2e.py:313 | 已验证 |
 | 实时会话配置与转写事件 | `src/serve/realtime_api.cpp:571` `void update_session(lws* wsi, RealtimeSession* session` | `src/serve/realtime_api.cpp:816` `json completed =` | session.update -> transcription_session.updated; transcription.segment/completed | tests/realtime_contract_e2e.py:220 | 已验证 |
 | 实时语音回复 audio.delta 推流 | `src/serve/realtime_api.cpp:842` `void start_response(RealtimeSession* session, const std:` | `src/serve/realtime_api.cpp:893` `{{"type", "audio.delta"}` | audio.delta {segment_id,format:pcm16,sample_rate,channels,audio(base64)} | tests/full_duplex_l2_live.py:290 | 已验证 |
-| SSE 事件携带 session_id 与请求字段解析 | `src/serve/openai_api.cpp:278` `json unified_event_json(const UnifiedEvent& event)` + `src/serve/openai_api.cpp:617` `server_.Post("/v1/chat/completions"` | `src/serve/openai_api.cpp:282` `{"session_id", event.ses` + `src/serve/openai_api.cpp:1279` `inputs["session_id"] = Value(body["session_id"].get<std:` | SSE field session_id | tests/unified_contract_test.cpp:2730 | 已验证 |
+| SSE 事件携带 session_id 与请求字段解析 | `src/serve/openai_api.cpp:270` `json unified_event_json(const UnifiedEvent& event)` + `src/serve/openai_api.cpp:608` `server_.Post("/v1/chat/completions"` | `src/serve/openai_api.cpp:274` `{"session_id", event.ses` + `src/serve/openai_api.cpp:1270` `inputs["session_id"] = Value(body["session_id"].get<std:` | SSE field session_id | tests/unified_contract_test.cpp:2730 | 已验证 |
 
 ## 2. 请求编排
 
@@ -85,7 +43,7 @@
 | Stage 接收提交、交给调度器并回传失败 | `src/pipeline/pipeline.cpp:348` `void Stage::on_submit(const SubmitMessage& msg)` + `src/pipeline/pipeline.cpp:444` `void Stage::fail_request(const std::string& request_id` | `src/pipeline/pipeline.cpp:381` `scheduler_->enqueue(IncomingMessage` + `src/pipeline/pipeline.cpp:457` `control_plane_->send_complete(done)` | submit message → new_request；payload.data 为空时用 request.inputs | 无 | 已实现未验 |
 | Coordinator 事件回调转发 | `src/pipeline/pipeline.cpp:852` `void Coordinator::handle_event(const Message& msg)` | `src/pipeline/pipeline.cpp:940` `if (on_complete) on_complete(snapshot)` | on_stream / on_complete sink；仅 pending/running 请求可收敛 | tests/unified_contract_test.cpp:2148 | 已验证 |
 | 调度器批量收集与取消墓碑 | `src/scheduling/simple_scheduler.cpp:128` `void SimpleScheduler::collect_batch(std::vector<Incoming` | `src/scheduling/simple_scheduler.cpp:175` `batch.push_back(std::move(*next))` | max_batch_size, max_batch_wait_ms, max_batch_cost；abort 墓碑 abort_retention | 无 | 已实现未验 |
-| 控制面消息解析与版本校验 | `src/proto/messages.cpp:889` `Message parse_message(const Value& v)` | `src/proto/messages.cpp:896` `if (type == "data_ready") return DataReadyMessage::from_` | type=data_ready/stream/complete/submit/abort/stage_ready/admin; protocol_version=1 | tests/unified_contract_test.cpp:789 | 部分 |
+| 控制面消息解析与版本校验 | `src/proto/messages.cpp:889` `Message parse_message(const Value& v)` | `src/proto/messages.cpp:896` `if (type == "data_ready") return DataReadyMessage::from_` | type=data_ready/stream/complete/submit/abort/stage_ready/admin; protocol_version=1 | tests/unified_contract_test.cpp:585 | 部分 |
 
 ## 3.1 原生 stage：ASR
 
@@ -197,14 +155,14 @@
 | zig build test / smoke 跑契约套件与 HTTP 冒烟 | `build.zig:105` `const test_step = b.step("test", "Run the end-to-end con` + `build.zig:143` `const smoke = b.addSystemCommand(&.` | `build.zig:119` `test_step.dependOn(&run_test.step)` + `build.zig:147` `smoke_step.dependOn(&smoke.step)` | zig build test；zig build unified-test | tests/unified_contract_test.cpp:4616 + tests/http_smoke.py:275 | 部分 |
 | zig build cuda-bench 延迟基准 | `build.zig:123` `const bench_step = b.step("cuda-bench", "Measure SHM and` | `build.zig:137` `bench_step.dependOn(&run.step)` | zig build cuda-bench（需 -Dcuda，否则打印提示） | 无 | 已实现未验 |
 | CMake 构建原生 CLI 与 5 个 stage 可执行文件 | `native/CMakeLists.txt:36` `add_executable(umm-asr-native` + `native/stage_cli/CMakeLists.txt:79` `if(UMM_STAGE_CUDA)` | `native/CMakeLists.txt:44` `set_target_properties(umm-asr-native PROPERTIES CUDA_ARC` + `native/stage_cli/CMakeLists.txt:84` `add_executable(umm-native-stage-asr` | -DUMM_ASR_CUDA=ON -DUMM_QWEN38_CUDA=ON；umm-asr-native, umm-qwen38-native；CUDA_ARCHITECTURES 90 | 无 | 已实现未验 |
-| 各原生子项目独立 CMake 构建 | `native/image/CMakeLists.txt:52` `add_executable(umm-image-native` + `native/image2/CMakeLists.txt:50` `add_executable(umm-image2-native` + `native/tts/CMakeLists.txt:62` `add_executable(umm-tts-native` + `native/omni/CMakeLists.txt:46` `add_subdirectory($` | `native/image/CMakeLists.txt:65` `set_target_properties(umm-image-native PROPERTIES CUDA_A` + `native/image2/CMakeLists.txt:63` `set_target_properties(umm-image2-native PROPERTIES CUDA_` + `native/tts/CMakeLists.txt:71` `set_target_properties(umm-tts-native PROPERTIES CUDA_ARC` + `native/omni_cli/CMakeLists.txt:21` `add_executable(umm-omni-native $` | -DUMM_IMAGE_CUDA=ON；umm-image-native | 无 | 部分 |
+| 各原生子项目独立 CMake 构建 | `native/image/CMakeLists.txt:52` `add_executable(umm-image-native` + `native/image2/CMakeLists.txt:50` `add_executable(umm-image2-native` + `native/tts/CMakeLists.txt:62` `add_executable(umm-tts-native` + `native/omni/CMakeLists.txt:46` `add_subdirectory($` | `native/image/CMakeLists.txt:65` `set_target_properties(umm-image-native PROPERTIES CUDA_A` + `native/image2/CMakeLists.txt:63` `set_target_properties(umm-image2-native PROPERTIES CUDA_` + `native/tts/CMakeLists.txt:71` `set_target_properties(umm-tts-native PROPERTIES CUDA_ARC` + `native/omni_cli/CMakeLists.txt:21` `add_executable(umm-omni-native $` | -DUMM_IMAGE_CUDA=ON；umm-image-native | 无 | 已实现未验 |
 | stage CMake 打包两个图像后端 | `native/stage_cli/CMakeLists.txt:158` `add_library(umm_image2512_backend OBJECT` | `native/stage_cli/CMakeLists.txt:181` `set_target_properties(umm_image2512_backend PROPERTIES C` | umm_image2512_backend, umm_image21_backend → umm-native-stage-image；CUDA_ARCHITECTURES 90 | 无 | 已实现未验 |
 | ctest 尾音裁剪自检 | `native/stage_cli/CMakeLists.txt:71` `add_executable(tts_tail_trim_test` | `native/stage_cli/CMakeLists.txt:76` `add_test(NAME tts_tail_trim_test COMMAND tts_tail_trim_t` | ctest -R tts_tail_trim_test | native/tts/tail_trim_test.cpp:51 | 已验证 |
-| H20B 五进程服务启停与守护 | `service/h20b-native-service.sh:62` `start()` | `service/h20b-native-service.sh:102` `( cd "$ROOT" && nohup "$binary" --kind "$kind" --name "$` | start/stop/status；端口 43301；--vlm-entry/--image-entry/--tts-entry；UMM_NATIVE_GPU_*；h20b-service.json | tests/h20b_service_live.py:165 | 部分 |
+| H20B 五进程服务启停与守护 | `service/h20b-native-service.sh:62` `start()` | `service/h20b-native-service.sh:102` `( cd "$ROOT" && nohup "$binary" --kind "$kind" --name "$` | start/stop/status；端口 43301；--vlm-entry/--image-entry/--tts-entry；UMM_NATIVE_GPU_*；h20b-service.json | 无 | 已实现未验 |
 | 并发压测独立服务栈启停 | `service/concurrency-stack.sh:32` `start()` | `service/concurrency-stack.sh:34` `nohup "$BIN/umm-infer" serve --host "$HOST" --port "$POR` | start/stop/status；端口 43302；MAX_IN_FLIGHT/IMAGE_STEPS/TTS_FRAMES | 无 | 已实现未验 |
 | 发布产物构建、校验和与推送 | `tools/publish-release.sh:91` `log "building umm-infer on $PLATFORM"` + `tools/publish-release.sh:196` `find . -type f ! -name SHA256SUMS ! -name MANIFEST.md -p` + `tools/publish-release.sh:264` `git -c user.name="$AUTHOR_NAME" -c user.email="$AUTHOR_E` | `tools/publish-release.sh:94` `"$ZIG" build -Doptimize=ReleaseFast -Ddeps-prefix="$DEPS` + `tools/publish-release.sh:198` `) > "$DIST/SHA256SUMS"` + `tools/publish-release.sh:266` `git push origin HEAD:main` | publish-release.sh vX.Y.Z；STAGE_BUILD=local/remote/auto；dist/<ver>/linux-x86_64；patchelf $ORIGIN/lib | 无 | 已实现未验 |
 | 已发布产物一条命令校验 | `release/tools/verify.sh:17` `echo "== checksums ($VERSION) =="` | `release/tools/verify.sh:55` `BODY=$(curl -sS "http://127.0.0.1:$PORT/v1/chat/completi` | ./tools/verify.sh [vX.Y.Z]；sha256sum -c；serve --help；serve --demo；断言 "content":"echo: hello" | 无 | 已实现未验 |
-| macOS 客户端构建、打包与签名 | `clients/ummmlx/Scripts/build.sh:6` `swift build -c "$CONFIG"` | `clients/ummmlx/Scripts/build.sh:18` `codesign --force --sign - --identifier dev.umminfer.ummm` | Scripts/build.sh [release]；build/ummmlx.app；Package.swift: executableTarget ummlx + testTarget ummmlxTests；bundle id dev.umminfer.ummmlx | clients/ummmlx/Tests/ummmlxTests/ChatClientTests.swift:7 | 部分 |
+| macOS 客户端构建、打包与签名 | `clients/ummmlx/Scripts/build.sh:6` `swift build -c "$CONFIG"` | `clients/ummmlx/Scripts/build.sh:18` `codesign --force --sign - --identifier dev.umminfer.ummm` | Scripts/build.sh [release]；build/ummmlx.app；Package.swift: executableTarget ummlx + testTarget ummmlxTests；bundle id dev.umminfer.ummmlx | 无 | 已实现未验 |
 
 ## 8. 测试与基准
 
@@ -222,7 +180,7 @@
 | H20B 常驻服务在线验收 | `tests/h20b_service_live.py:147` `def main():` | `tests/h20b_service_live.py:185` `status, frames = stream(chat_url, body)` | /health；/ready；/v1/chat/completions；UMMINFER_LIVE_OPT_IN=1 | tests/h20b_service_live.py:70 | 已实现未验 |
 | macOS 统一引擎低资源复现 | `tests/mac_unified_validation.py:587` `def main():` | `tests/mac_unified_validation.py:653` `server = start_server(binary, paths)` | /v1/chat/completions；ipc:// asr/vlm/done/abort；--evidence-dir | tests/mac_unified_validation.py:512 | 已实现未验 |
 | MLX 三级性能与 token 计数 | `tests/mlx_perf.py:1160` `def main():` | `tests/mlx_perf.py:1240` `results["stage"] = run_stage(stage, model, args.max_toke` | --mode direct/stage/e2e/all；--samples/--warmup；prompt_tokens/generated_token_count | tests/mlx_perf.py:1160 | 已实现未验 |
-| 多模态基准与证据回放 | `tests/multimodal_benchmark.py:1184` `def main(argv=None):` | `tests/multimodal_benchmark.py:1280` `report = run_round(manifest, cases, resolved, args, roun` | /v1/chat/completions；/v1/audio/transcriptions；--verify-data；--accept-baseline；--baseline | tests/multimodal_benchmark.py:931 | 已实现未验 |
+| 多模态基准与证据回放 | `tests/multimodal_benchmark.py:1182` `def main(argv=None):` | `tests/multimodal_benchmark.py:1278` `report = run_round(manifest, cases, resolved, args, roun` | /v1/chat/completions；/v1/audio/transcriptions；--verify-data；--accept-baseline；--baseline | tests/multimodal_benchmark.py:931 | 已实现未验 |
 | 基准 harness 离线契约测试 | `tests/multimodal_benchmark_test.py:208` `def main():` | `tests/multimodal_benchmark_test.py:220` `completed = subprocess.run(cmd, capture_output=True, tex` | --evidence-class contract-test；stability_verdict=NOT_REAL_EVIDENCE | tests/multimodal_benchmark_test.py:144 | 已验证 |
 | CUDA/SHM 中继延迟基准 | `tests/cuda_bench.cpp:267` `int main(int argc, char** argv)` | `tests/cuda_bench.cpp:330` `auto op = relay->put(tensor, "bench")` | --role bench；CSV 列 relay,direct_d2h,size_bytes,median_us,p95_us,mib_per_s,hash_ok | tests/cuda_bench.cpp:330 | 已实现未验 |
 | macOS 端测试：统一流解码与语音状态机 | `clients/ummmlx/Tests/ummmlxTests/UnifiedStreamTests.swift:45` `func testDecodesEveryDocumentedKind() throws` + `clients/ummmlx/Tests/ummmlxTests/ChatClientTests.swift:7` `func testSplitMultilineAndComments() throws` | `clients/ummmlx/Tests/ummmlxTests/UnifiedStreamTests.swift:168` `let artifact = try collector.ingest(ArtifactChunk(` + `clients/ummmlx/Tests/ummmlxTests/SpeechControllerTests.swift:52` `let text = try await controller.transcribeFile(URL(fileU` | kind: asr_partial/asr_final/vlm_delta/artifact/leg_error/complete/error/cancelled；sha256/bytes/base64 | clients/ummmlx/Tests/ummmlxTests/UnifiedStreamTests.swift:158 | 已验证 |
