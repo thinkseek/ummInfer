@@ -946,7 +946,12 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
                 record["output_tokens"] = tokens
                 record["tokens_source"] = source
                 if tokens is not None:
-                    basis = record.get("stream_ms") or record.get("total_ms")
+                    # A single delta makes first_delta and last_delta the same
+                    # clock reading, so stream_ms is near zero. Fall back to
+                    # the total request time instead of dividing by it.
+                    basis = record.get("stream_ms") or 0
+                    if basis < 1.0:
+                        basis = record.get("total_ms") or 0
                     if basis:
                         record["tokens_per_s"] = tokens / (basis / 1000.0)
                 failures.extend(classify(case, record,
