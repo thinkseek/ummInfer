@@ -171,7 +171,7 @@ These are real and reproduced or measured; they are not counted as passes.
 | GSM8K exact answer (16) | Covered |
 | Image VQA (16) | Covered |
 | Joint image + real speech (6) | Covered; objective sub-metrics only, free-form answer needs human review |
-| Multi-round stability | `NOT_RUN` — one round only; three consecutive rounds are required for a stability verdict |
+| Multi-round stability | `PARTIAL` — five full 54-case rounds on 2026-11-19, section 12. Quality metrics reproduce exactly when no request drops (CV 0 over the clean rounds); latency CV exceeds 0.10 on three of the four tasks, so the latency figures are not a stable baseline |
 | Token counts | `word_estimate` for chat (no `usage.completion_tokens` in the stream) |
 | AOCI cognition maintenance | `NOT_COVERED` — no AOCI MCP tools in this session |
 
@@ -180,13 +180,17 @@ spoken caption, then the Omni stage answers with the image and the transcript.
 The native Omni engine does not accept audio directly
 (`native/OMNI_NATIVE.md`), and the benchmark does not send audio to it.
 
-Repository documentation drift found during this run:
+Repository documentation drift found during this run, and its state on
+2026-11-19 (section 13):
 
-- `docs/h20b-service.md` describes the retired phase-7 topology (Python
-  workers plus SGLang backends). The current head is native-only.
-- `service/h20b-native-service.sh` and `README.md` invoke
-  `umm-native-stage-*` from `zig build`; those binaries come from the separate
-  CMake project `native/stage_cli`.
+- `docs/h20b-service.md` described the retired phase-7 topology (Python
+  workers plus SGLang backends). Fixed: rewritten for the native topology.
+- `service/h20b-native-service.sh` did not state where its binaries come from.
+  Fixed: the header now names both build systems.
+- `README.md` was reported as invoking `umm-native-stage-*` from `zig build`.
+  It already separated the two build systems at commit `44de086`; the only
+  wrong sentence was "configured by `service/h20b-service.json`" for the
+  shell-only path. Fixed.
 
 ## 9. Per-case results
 
@@ -284,3 +288,204 @@ python3 -I tests/multimodal_benchmark.py \
 The server, ASR stage and Omni stage were stopped by PID. No `/root/mmbench/bin/`
 process remains. The SSH tunnel on port 43301 was stopped and the port is free.
 GPU 0/1 were never touched. The 43300 service was never started or stopped.
+
+## 12. Multi-round stability, 2026-11-19
+
+Five consecutive full 54-case rounds were run against one service instance.
+Three rounds were required; five were run because two rounds contained dropped
+requests and, under the documented `cv > 0.10` rule, a round like that does not
+count.
+
+Setup, unchanged from section 3 except port and GPU:
+
+| Item | Value |
+| --- | --- |
+| Service | one instance, `172.17.0.2:43302`, started fresh, never restarted during the 5 rounds |
+| GPUs | ASR stage 6, Omni stage 7. GPU 0/1 untouched, port 43300 untouched |
+| Resident 43301 service | running throughout on GPUs 2-5; it is the same service that ran during the baseline window and was not touched |
+| Binaries | `umm-infer` `5953963c…30864`, `umm-native-stage-asr` `1bf9485f…cf072`, `umm-native-stage-omni` `8ca0225d…dadd8` (identical to section 3) |
+| Harness | `3d747bc`, same manifest `2026-11-15.1`, same cached inputs, `--baseline /tmp/mmbench/evidence-v5/baseline.json` |
+| Client | Mac through `ssh -L 43302:172.17.0.2:43302 h20b` |
+| Evidence | `/tmp/mmbench/stability/round-{1..5}/round-1/` (`cases.jsonl`, `events/`, `answers/`, `transcripts/`, `failures.json`, `report.json`) |
+
+### Per-round results
+
+| Round | Wall s | Cases | Successes | infra | contract | quality | WER | CER | VQA acc | GSM8K | joint WER | keyword hit |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 204.5 | 54 | 53 | 1 | 0 | 1 | 0.0329 | 0.0274 | 0.8333 | 1.0000 | 0.0000 | 1.0000 |
+| 2 | 217.6 | 54 | 53 | 1 | 0 | 1 | 0.0329 | 0.0274 | 0.8333 | 1.0000 | 0.0000 | 1.0000 |
+| 3 | 201.2 | 54 | 52 | 2 | 0 | 1 | 0.1200 | 0.1144 | 0.8333 | 1.0000 | 0.0000 | 1.0000 |
+| 4 | 203.0 | 54 | 53 | 1 | 0 | 1 | 0.0329 | 0.0274 | 0.8333 | 1.0000 | 0.0000 | 1.0000 |
+| 5 | 280.1 | 54 | 50 | 4 | 0 | 1 | 0.1529 | 0.1410 | 0.8333 | 1.0000 | 0.0345 | 1.0000 |
+
+Per-task latency, median / p95 in ms:
+
+| Round | ASR | GSM8K | VQA | joint |
+| ---: | --- | --- | --- | --- |
+| 1 | 2320 / 5512 | 2894 / 4763 | 3344 / 6698 | 2815 / 3763 |
+| 2 | 2252 / 5527 | 2838 / 6004 | 2635 / 8172 | 2921 / 5121 |
+| 3 | 2484 / 8362 | 2791 / 4866 | 2522 / 6599 | 3061 / 4932 |
+| 4 | 3210 / 8729 | 3487 / 5880 | 2341 / 5299 | 3096 / 8853 |
+| 5 | 7357 / 23357 | 3004 / 6086 | 2569 / 6800 | 2924 / 7333 |
+
+### Coefficient of variation
+
+CV is `stdev / median` over the rounds, the same definition as
+`docs/mlx.md` and `tests/mlx_perf.py`. The gate: `cv > 0.10` means the window
+was not quiet, and that round does not count.
+
+| Metric | CV, all 5 rounds | CV, rounds 1/2/4 | Gate |
+| --- | ---: | ---: | --- |
+| WER | 1.757 | 0.000 | fail over 5, pass over clean rounds |
+| CER | 2.030 | 0.000 | fail over 5, pass over clean rounds |
+| VQA accuracy | 0.000 | 0.000 | pass |
+| GSM8K accuracy | 0.000 | 0.000 | pass |
+| joint keyword hit | 0.000 | 0.000 | pass |
+| joint ASR WER | undefined (four rounds 0, one 0.0345) | 0.000 | pass over clean rounds |
+| ASR median | 0.876 | 0.230 | fail |
+| ASR p95 | 0.892 | 0.335 | fail |
+| GSM8K median | 0.097 | 0.124 | borderline, fail over clean rounds |
+| GSM8K p95 | 0.110 | 0.116 | fail |
+| VQA median | 0.150 | 0.196 | fail |
+| VQA p95 | 0.152 | 0.215 | fail |
+| joint median | 0.039 | 0.049 | pass |
+| joint p95 | 0.401 | 0.515 | fail |
+| wall time | 0.164 | — | fail |
+
+Per-case latency spread is wider than the per-task medians suggest: 54 of 54
+cases have three samples, and the median per-case CV of `total_ms` is 0.2515.
+The worst case is `vqa2-val-240301000` at 6698 / 2458 / 2455 ms.
+
+### What the variance is made of
+
+Three separate effects, not one noise source.
+
+1. **Dropped requests.** Rounds 3 and 5 each contained ASR requests that ended
+   with `RemoteDisconnected: Remote end closed connection without response`
+   (round 3: `asr-en-ls-1221-135766-0000`; round 5:
+   `asr-en-ls-1089-134691-0000`, `asr-en-ls-1188-133604-0000`,
+   `asr-en-ls-1580-141083-0000`). The failing case is scored with an empty
+   transcript, so one drop adds about 28 word errors and moves corpus WER from
+   0.0329 to 0.1200 or 0.1529. This is the failure documented in section 7
+   item 2, now at 4 occurrences in 80 ASR requests.
+2. **A deterministic engine failure, every round.** `vqa2-val-262189000` ended
+   with `{"error":{"code":500,"message":"image too large for slice",...}}` in
+   5 of 5 rounds. In the baseline run D the same image passed. The limit is
+   `kMaxImgTokens = 1296` in `native/omni/vision_forward.cu:11` and the input
+   bytes are unchanged, so the failure is engine state, not image size. It
+   costs 1/16 of the VQA score: 0.8958 in the baseline, 0.8333 in all five
+   rounds.
+3. **One transcription miss in round 5.** `joint-speechcoco-val-0000` scored
+   `asr_wer = 0.25` there and 0.0 in rounds 1-4. The transcript is real and
+   shorter than the caption; it is not a transport error.
+
+The two known deterministic quality outcomes are unchanged in every round: the
+VQA miss on `vqa2-val-262197000` (`1` against six `2` and four `0`) and
+GSM8K 16/16.
+
+### Conclusion
+
+The quality numbers are a credible baseline; the latency numbers are not.
+
+- **Quality: credible.** On rounds with no dropped request (1, 2, 4) every
+  quality metric is identical to five decimal places, CV = 0. The model is
+  deterministic on this input set. Two caveats: WER/CER can only be quoted
+  per-round with the drop rate stated, because 2 of 5 rounds lost a request;
+  and VQA accuracy is 0.8333, not the 0.8958 recorded in section 1, while
+  `vqa2-val-262189000` keeps failing.
+- **Latency: not credible as a baseline.** Even over the three clean rounds,
+  ASR median CV is 0.230, VQA median CV is 0.196 and GSM8K median CV is 0.124,
+  all above the 0.10 gate. The host is shared with the resident 43301 service
+  on GPUs 2-5 and the per-case spread (median CV 0.2515) shows scheduling
+  stalls, not model variance. The medians in section 1 are one sample of a
+  wide distribution; treat them as an order of magnitude, not a measurement.
+- **The stability gate itself would not pass.** `stability_verdict` requires
+  three consecutive rounds with zero infrastructure failures. Five rounds were
+  run and none had zero, so the harness verdict is `FAIL` for reasons 1 and 2
+  above.
+
+No claim of a stable PASS is made. The two defects behind it are recorded
+above and are engine work, not harness work.
+
+## 13. Documentation and script drift, fixed 2026-11-19
+
+Three items were checked; one needed a rewrite, one needed a header, one was
+already correct.
+
+| Item | State at `3d747bc` | Action |
+| --- | --- | --- |
+| `docs/h20b-service.md` | described the retired phase-7 topology: Python workers `umminfer_qwen_asr_stage.py` / `umminfer_qwen_omni_worker.py` and SGLang backends on GPU 0/1 | rewritten for the native topology, with the phase-7 record compressed to one history paragraph |
+| `service/h20b-native-service.sh` | never stated where `$BIN/umm-infer` and `$BIN/umm-native-stage-*` come from | header now names both build systems and the install line |
+| `README.md` | already separated `zig build` from `native/stage_cli` at commit `44de086`; it wrongly said the shell script is "configured by `service/h20b-service.json`" | sentence corrected: the script reads `UMM_NATIVE_*`; the JSON is the supervisor's config |
+
+The claim that both build systems are separate is verified, not asserted: the
+CMake output `/root/mmbench/stage-build/umm-native-stage-asr` and the deployed
+`/root/mmbench/bin/umm-native-stage-asr` (the binary used in the baseline run)
+have the same SHA-256 `1bf9485f9a103b0b14e946e0235b2a7397271251184c4f6f47ecadad106cf072`.
+
+### Startup verification
+
+Run on the container, from a fresh root, using the binaries the runbook names:
+
+```sh
+ROOT=/root/umm-native-verify
+mkdir -p $ROOT/bin $ROOT/run $ROOT/logs
+install -m755 /root/mmbench/src/zig-out/bin/umm-infer $ROOT/bin/
+install -m755 /root/mmbench/stage-build/umm-native-stage-* $ROOT/bin/
+
+UMM_NATIVE_ROOT=$ROOT UMM_NATIVE_PORT=43302 \
+UMM_NATIVE_IPC=/tmp/umminfer-native-verify-ipc \
+UMM_NATIVE_GPU_ASR=6 UMM_NATIVE_GPU_VLM=6 \
+UMM_NATIVE_GPU_IMAGE=7 UMM_NATIVE_GPU_TTS=7 \
+  /root/h20b-native-service.sh start
+```
+
+The GPU overrides exist because GPUs 2-5 and port 43301 are held by the live
+resident service; the defaults in the script and in `service/h20b-service.json`
+are unchanged.
+
+Observed output:
+
+```text
+started asr pid 1065000 gpu 6
+started qwen38 pid 1065003 gpu 6
+started image pid 1065006 gpu 7
+started tts pid 1065009 gpu 7
+ready_after_s=11
+health=200 ready=200
+server running pid 1064808
+asr running pid 1065000
+qwen38 running pid 1065003
+image running pid 1065006
+tts running pid 1065009
+```
+
+All four stages logged `native stage <kind> ready` (load times 4149, 9961,
+0 and 5702 ms). One chat request returned HTTP 200,
+`{"content": "ok", "role": "assistant"}`. `stop` removed every pid, closed port
+43302, and left GPU 6 at 3 MiB and GPU 7 at 3 MiB.
+
+The supervised path was checked the same way, with a config copy pointed at the
+same root, port and GPUs: `start` returned a supervisor pid, `status` reported
+all five children alive with `restarts: 0`, `/health` and `/ready` answered
+200 / 200, and `stop` signalled the supervisor and left the children dead.
+
+One correction to the old runbook: it cited `python3 -I
+tests/umminfer_service_test.py` as a local contract test for the supervisor.
+That file does not exist and never did; the new page states that no offline
+test exists and records the live checks instead.
+
+## 14. Cleanup, 2026-11-19
+
+| Item | Before start | During run | After stop |
+| --- | ---: | ---: | ---: |
+| GPU 6 used | 3 MiB | 2387 MiB (2389 during the startup check) | 3 MiB |
+| GPU 7 used | 3 MiB | 78755 MiB | 3 MiB |
+| GPU 0/1 | 3 MiB | 3 MiB, never touched | 3 MiB |
+| Port 43302 | free | listening | free |
+| Port 43300 | — | never started or stopped | — |
+
+The server, ASR stage and Omni stage were stopped by pid. Their entries remain
+as `Z` zombies reparented to container PID 1, which does not reap orphans; this
+is the same state documented for earlier phases. No process holds GPU 6 or 7
+and no listener claims 43302. The Mac tunnel was closed.

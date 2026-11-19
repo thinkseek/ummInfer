@@ -4,17 +4,31 @@
 # one umm-infer server and one native stage per model. No Python, PyTorch or
 # SGLang on the serving path.
 #
+# Binary origin. Two build systems, not one:
+#   umm-infer                    zig build -Doptimize=ReleaseFast
+#                                -> zig-out/bin/umm-infer
+#   umm-native-stage-*           cmake -S native/stage_cli -B build
+#                                  -DUMM_STAGE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+#                                cmake --build build -j
+#                                -> build/umm-native-stage-{asr,omni,qwen38,image,tts}
+# zig build does not produce the stage binaries, and the CMake project does not
+# produce umm-infer. Install both into $BIN:
+#   install -m755 zig-out/bin/umm-infer build/umm-native-stage-* "$BIN/"
+#
 #   ASR    GPU 2, stage name asr,    ipc:///tmp/umminfer-native-ipc/asr
 #   Qwen38 GPU 3, stage name qwen38, ipc:///tmp/umminfer-native-ipc/qwen38
 #   Image  GPU 4, stage name image,  ipc:///tmp/umminfer-native-ipc/image
 #   TTS    GPU 5, stage name tts,    ipc:///tmp/umminfer-native-ipc/tts
+# Override the GPU of each stage with UMM_NATIVE_GPU_ASR, UMM_NATIVE_GPU_VLM,
+# UMM_NATIVE_GPU_IMAGE and UMM_NATIVE_GPU_TTS. The defaults above assume the
+# whole box is yours; a host that already runs a service on 2-5 needs the
+# overrides.
 #
 # The omni stage is retained but not started. Set UMM_NATIVE_OMNI=1 to run it
-# as the VLM stage instead of qwen38; only one of the two may hold GPU 3.
+# as the VLM stage instead of qwen38; only one of the two may hold GPU_VLM.
 #   Server 172.17.0.2:43301, completion/abort under the same ipc dir.
 #
-# GPU0/1 hold the existing SGLang backends and are never touched. The port is
-# distinct from the phase7 service on 43300.
+# The port is distinct from the retired phase7 service on 43300.
 #
 # usage: h20b-native-service.sh start|stop|status
 set -eu
@@ -29,6 +43,12 @@ MODELS=${UMM_NATIVE_MODELS:-/root/omniinfer-model-validation-20261111-k3/models}
 ASR_MODEL=${UMM_NATIVE_ASR_MODEL:-$MODELS/asr}
 QWEN38_MODEL=${UMM_NATIVE_QWEN38_MODEL:-/root/models/qwen3.8-27b}
 OMNI_MODEL=${UMM_NATIVE_OMNI_MODEL:-$MODELS/omni}
+# GPU per stage. Only one process may hold a card. Override when the defaults
+# are held by another service on the same host.
+GPU_ASR=${UMM_NATIVE_GPU_ASR:-2}
+GPU_VLM=${UMM_NATIVE_GPU_VLM:-3}
+GPU_IMAGE=${UMM_NATIVE_GPU_IMAGE:-4}
+GPU_TTS=${UMM_NATIVE_GPU_TTS:-5}
 if [ "${UMM_NATIVE_OMNI:-0}" = "1" ]; then VLM_STAGE=omni; else VLM_STAGE=qwen38; fi
 VLM_MODEL=$([ "$VLM_STAGE" = omni ] && echo "$OMNI_MODEL" || echo "$QWEN38_MODEL")
 TTS_MODEL=${UMM_NATIVE_TTS_MODEL:-/root/umm-mixed-output-20261116/models/qwen3-tts}
@@ -69,10 +89,10 @@ start() {
   if [ "$VLM_STAGE" = "qwen38" ]; then
     VLM_EXTRA="$VLM_EXTRA --batch-size ${UMM_QWEN38_BATCH_SIZE:-8}"
   fi
-  start_stage asr asr "$BIN/umm-native-stage-asr" "$ASR_MODEL" 2 ""
-  start_stage "$VLM_STAGE" "$VLM_STAGE" "$BIN/umm-native-stage-$VLM_STAGE" "$VLM_MODEL" 3 "$VLM_EXTRA"
-  start_stage image image "$BIN/umm-native-stage-image" "$IMAGE_MODEL" 4 ""
-  start_stage tts tts "$BIN/umm-native-stage-tts" "$TTS_MODEL" 5 ""
+  start_stage asr asr "$BIN/umm-native-stage-asr" "$ASR_MODEL" "$GPU_ASR" ""
+  start_stage "$VLM_STAGE" "$VLM_STAGE" "$BIN/umm-native-stage-$VLM_STAGE" "$VLM_MODEL" "$GPU_VLM" "$VLM_EXTRA"
+  start_stage image image "$BIN/umm-native-stage-image" "$IMAGE_MODEL" "$GPU_IMAGE" ""
+  start_stage tts tts "$BIN/umm-native-stage-tts" "$TTS_MODEL" "$GPU_TTS" ""
 }
 
 # start_stage NAME KIND BINARY MODEL GPU EXTRA

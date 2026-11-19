@@ -121,9 +121,13 @@ curl -sS -F model=qwen3-native -F file=@input_16k.wav \
 ```
 
 On H20B the same layout is launched by
-`service/h20b-native-service.sh start|stop|status`, configured by
-`service/h20b-service.json`. Set `UMM_NATIVE_OMNI=1` to serve Omni instead of
-Qwen3.8-27B as the VLM leg.
+`service/h20b-native-service.sh start|stop|status`, which reads the
+`UMM_NATIVE_*` environment variables. The supervised path is
+`python3 -I python/umminfer_service.py --config service/h20b-service.json
+start`, which takes the same layout from that file and restarts unhealthy
+children. Set `UMM_NATIVE_OMNI=1` to serve Omni instead of Qwen3.8-27B as the
+VLM leg. Both paths need `zig-out/bin/umm-infer` and `build/umm-native-stage-*`
+installed in the same directory; see [the H20B runbook](docs/h20b-service.md).
 
 ## Supported models
 
