@@ -169,8 +169,8 @@ _VQA_NUMBERS = {
 
 
 def vqa_normalize(text):
-    """Lowercase, strip punctuation/articles, map 0..10 number words."""
-    text = re.sub(r"[^\w\s]", " ", (text or "").lower())
+    """Lowercase, remove punctuation/articles, map 0..10 number words."""
+    text = re.sub(r"[^\w\s]", "", (text or "").lower())
     tokens = [_VQA_NUMBERS.get(token, token) for token in text.split()
               if token not in _VQA_ARTICLES]
     return " ".join(tokens)
@@ -330,7 +330,7 @@ class PublicClient:
             "usage": None, "finish_reason": None,
             "total_ms": None, "first_delta_ms": None, "asr_final_ms": None,
             "stream_ms": None, "done": False,
-            "asr_final_before_delta": None,
+            "asr_final_before_delta": None, "stream_error": None,
         }
         first_delta = asr_final = last_delta = None
         answer, transcript, usage, finish = [], "", None, None
@@ -382,6 +382,10 @@ class PublicClient:
                             "raw_event_count", 0) + 1
                         if "error" in event:
                             record["error_body"] = json.dumps(event["error"])[:2000]
+                            error = event["error"]
+                            record["stream_error"] = (
+                                error.get("message") if isinstance(error, dict)
+                                else str(error)) or "upstream error event"
                             continue
                         if event.get("usage"):
                             usage = event["usage"]
@@ -590,12 +594,19 @@ def classify(case, record, latency_cap_ms=CASE_LATENCY_CAP_MS):
     elif record.get("error") and status == 200:
         add("public_contract", "malformed_stream", "P0", record["error"])
     if status == 200 and record["endpoint"] == "/v1/chat/completions":
-        if not record.get("done"):
-            add("public_contract", "missing_done", "P1",
-                "SSE ended without [DONE]")
-        if record.get("finish_reason") is None and record.get("done"):
-            add("public_contract", "missing_finish_reason", "P1",
-                "stream completed without finish_reason")
+        if record.get("stream_error"):
+            # An explicit error event with an HTTP-style code is a server-side
+            # generation failure, not a stream contract violation. Report the
+            # real message instead of a missing marker.
+            add("infrastructure", "stream_error_event", "P1",
+                record["stream_error"])
+        else:
+            if not record.get("done"):
+                add("public_contract", "missing_done", "P1",
+                    "SSE ended without [DONE]")
+            if record.get("finish_reason") is None and record.get("done"):
+                add("public_contract", "missing_finish_reason", "P1",
+                    "stream completed without finish_reason")
         if "audio" in case["modalities"] and not record.get("transcript"):
             add("public_contract", "missing_asr_final", "P0",
                 "unified audio request produced no asr_final transcript")
@@ -946,7 +957,12 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
                 record["output_tokens"] = tokens
                 record["tokens_source"] = source
                 if tokens is not None:
-                    basis = record.get("stream_ms") or record.get("total_ms")
+                    # A single delta makes first_delta and last_delta the same
+                    # clock reading, so stream_ms is near zero. Fall back to
+                    # the total request time instead of dividing by it.
+                    basis = record.get("stream_ms") or 0
+                    if basis < 1.0:
+                        basis = record.get("total_ms") or 0
                     if basis:
                         record["tokens_per_s"] = tokens / (basis / 1000.0)
                 failures.extend(classify(case, record,
