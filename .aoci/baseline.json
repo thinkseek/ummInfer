@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-19T20:25:33Z",
+  "updated_at": "2026-11-19T20:25:40Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -35,9 +35,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "ea7216ee134c74296fdf8848116db7ba5cc832c4bef1fac88d962f0707df8c45",
-      "size": 140993,
-      "normalized_sha256": "ea7216ee134c74296fdf8848116db7ba5cc832c4bef1fac88d962f0707df8c45"
+      "sha256": "e128807b6649c86baa51596dd558f56b7044a417a9c253f092121a2733340191",
+      "size": 153677,
+      "normalized_sha256": "e128807b6649c86baa51596dd558f56b7044a417a9c253f092121a2733340191"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1031,9 +1031,9 @@
     },
     "native/omni/vision_forward.cu": {
       "role": "index",
-      "sha256": "ae73ef6a42560f39189b9af166411eeb4344fdb03398b1d64998bd702d0b517f",
-      "size": 7596,
-      "normalized_sha256": "ae73ef6a42560f39189b9af166411eeb4344fdb03398b1d64998bd702d0b517f"
+      "sha256": "d23c11ce6892b1bfb0b57cc74deca723eea4bf9141e128c37676e35510dac27a",
+      "size": 7708,
+      "normalized_sha256": "d23c11ce6892b1bfb0b57cc74deca723eea4bf9141e128c37676e35510dac27a"
     },
     "native/omni_cli/CMakeLists.txt": {
       "role": "index",
@@ -1313,9 +1313,9 @@
     },
     "native/stage_cli/CMakeLists.txt": {
       "role": "index",
-      "sha256": "5532d10c5b84cbae7a95e5f56dbbae33403d7904f173d0b18ef2eff2785f10cf",
-      "size": 8182,
-      "normalized_sha256": "5532d10c5b84cbae7a95e5f56dbbae33403d7904f173d0b18ef2eff2785f10cf"
+      "sha256": "651ae8f0aeef070a3a75fd4efd60ea2afb3f020a1bc30e417d2f02c83501a41e",
+      "size": 8546,
+      "normalized_sha256": "651ae8f0aeef070a3a75fd4efd60ea2afb3f020a1bc30e417d2f02c83501a41e"
     },
     "native/stage_cli/asr_stage.cpp": {
       "role": "index",
@@ -1337,9 +1337,9 @@
     },
     "native/stage_cli/omni_stage.cpp": {
       "role": "index",
-      "sha256": "57011a96aa0c1d8706b43b18ea5fc14071ab7b07182a01b445cf9b4b4cc19966",
-      "size": 8400,
-      "normalized_sha256": "57011a96aa0c1d8706b43b18ea5fc14071ab7b07182a01b445cf9b4b4cc19966"
+      "sha256": "7b33242b70b28a1e59c12aa4e81b42436ed3191828d9722bfe2172fef93ba7ab",
+      "size": 8413,
+      "normalized_sha256": "7b33242b70b28a1e59c12aa4e81b42436ed3191828d9722bfe2172fef93ba7ab"
     },
     "native/stage_cli/qwen38_stage.cpp": {
       "role": "index",
@@ -1979,9 +1979,9 @@
     },
     "native/tts/CMakeLists.txt": {
       "role": "index",
-      "sha256": "ef972c087bdb7ed7006cf7a5e624ca42114f99a858b4fbf31dacd638297ab11c",
-      "size": 2986,
-      "normalized_sha256": "ef972c087bdb7ed7006cf7a5e624ca42114f99a858b4fbf31dacd638297ab11c"
+      "sha256": "d8d3a3c962563a7162a3d06004ab234371884b934c2f7551400d099ff10a7148",
+      "size": 3004,
+      "normalized_sha256": "d8d3a3c962563a7162a3d06004ab234371884b934c2f7551400d099ff10a7148"
     },
     "native/tts/NOTICE": {
       "role": "index",
@@ -2039,9 +2039,9 @@
     },
     "native/tts/engine.cpp": {
       "role": "index",
-      "sha256": "e70b899203feb8443cb3d6c09ed8f0d6b2e6ebdb365a6d14f40c952c8ea72509",
-      "size": 27279,
-      "normalized_sha256": "e70b899203feb8443cb3d6c09ed8f0d6b2e6ebdb365a6d14f40c952c8ea72509"
+      "sha256": "1a10fde7665b0693b713310e383d55e5b0a6cfb17eb5bf60505108b45e813edb",
+      "size": 29556,
+      "normalized_sha256": "1a10fde7665b0693b713310e383d55e5b0a6cfb17eb5bf60505108b45e813edb"
     },
     "native/tts/engine.hpp": {
       "role": "index",
