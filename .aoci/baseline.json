@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-19T20:25:17Z",
+  "updated_at": "2026-11-19T20:25:25Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -35,9 +35,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c9fdca2510ea3b6c7a29fde6335aff718ee00a0b914ab3432e98c54e91cfbd23",
-      "size": 109009,
-      "normalized_sha256": "c9fdca2510ea3b6c7a29fde6335aff718ee00a0b914ab3432e98c54e91cfbd23"
+      "sha256": "3fe0ef46fe32d003453c0c087ce97c8944dad38954edbf0710a446c3e52547b5",
+      "size": 122500,
+      "normalized_sha256": "3fe0ef46fe32d003453c0c087ce97c8944dad38954edbf0710a446c3e52547b5"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "include/umminfer/serve/openai_api.hpp": {
       "role": "index",
-      "sha256": "5a8e5f9f33782101b312388162a84dc0cebb41720469fac13e3e10b67e5bf7cb",
-      "size": 3467,
-      "normalized_sha256": "5a8e5f9f33782101b312388162a84dc0cebb41720469fac13e3e10b67e5bf7cb"
+      "sha256": "a80e1e525225132b43eee191373b7f647e2037265a358ce62f2e6a63aec473a2",
+      "size": 3647,
+      "normalized_sha256": "a80e1e525225132b43eee191373b7f647e2037265a358ce62f2e6a63aec473a2"
     },
     "include/umminfer/serve/realtime_api.hpp": {
       "role": "index",
