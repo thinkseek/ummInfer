@@ -341,7 +341,7 @@ was not quiet, and that round does not count.
 | VQA accuracy | 0.000 | 0.000 | pass |
 | GSM8K accuracy | 0.000 | 0.000 | pass |
 | joint keyword hit | 0.000 | 0.000 | pass |
-| joint ASR WER | undefined (four rounds 0, one 0.0345) | 0.000 | pass over clean rounds |
+| joint ASR WER | undefined (four rounds 0, one 0.0345) | 0 (all three rounds 0, no variation) | pass over clean rounds |
 | ASR median | 0.876 | 0.230 | fail |
 | ASR p95 | 0.892 | 0.335 | fail |
 | GSM8K median | 0.097 | 0.124 | borderline, fail over clean rounds |
@@ -352,9 +352,12 @@ was not quiet, and that round does not count.
 | joint p95 | 0.401 | 0.515 | fail |
 | wall time | 0.164 | — | fail |
 
-Per-case latency spread is wider than the per-task medians suggest: 54 of 54
-cases have three samples, and the median per-case CV of `total_ms` is 0.2515.
-The worst case is `vqa2-val-240301000` at 6698 / 2458 / 2455 ms.
+Per-case latency spread is wider than the per-task medians suggest. Over the
+three clean rounds 1/2/4, 54 of 54 cases have three samples of `total_ms`, and
+the median per-case CV is 0.2568. The widest case is
+`asr-en-ls-1089-134691-0000` at 946.81 / 829.13 / 4552.72 ms, CV 2.2356. The
+next widest are `asr-en-ls-1284-1181-0000` (CV 1.0593) and `vqa2-val-393266000`
+(CV 1.0433).
 
 ### What the variance is made of
 
@@ -396,7 +399,7 @@ The quality numbers are a credible baseline; the latency numbers are not.
 - **Latency: not credible as a baseline.** Even over the three clean rounds,
   ASR median CV is 0.230, VQA median CV is 0.196 and GSM8K median CV is 0.124,
   all above the 0.10 gate. The host is shared with the resident 43301 service
-  on GPUs 2-5 and the per-case spread (median CV 0.2515) shows scheduling
+  on GPUs 2-5 and the per-case spread (median CV 0.2568) shows scheduling
   stalls, not model variance. The medians in section 1 are one sample of a
   wide distribution; treat them as an order of magnitude, not a measurement.
 - **The stability gate itself would not pass.** `stability_verdict` requires
