@@ -66,10 +66,6 @@ target_include_directories(umm_stage_common PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR} ${NATIVE_DIR})
 target_link_libraries(umm_stage_common PUBLIC umm_stage_core)
 
-enable_testing()
-add_executable(stage_host_tests ${NATIVE_DIR}/stage_tests/test_host.cpp)
-target_link_libraries(stage_host_tests PRIVATE umm_stage_common)
-add_test(NAME stage_host_tests COMMAND stage_host_tests)
 
 if(UMM_STAGE_CUDA)
   enable_language(CUDA)

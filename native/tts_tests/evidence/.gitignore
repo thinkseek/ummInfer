@@ -1,4 +1,0 @@
-# Evidence directory: commit text logs/manifests/SHA, never binary audio.
-*.wav
-*.npy
-*.f32

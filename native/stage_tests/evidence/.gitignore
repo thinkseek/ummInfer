@@ -1,4 +1,0 @@
-# Live artifacts stay on the H20B host; only text evidence is committed.
-*.wav
-*.png
-live/

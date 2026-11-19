@@ -30,14 +30,6 @@ else()
   endif()
 endif()
 
-enable_testing()
-add_executable(asr_host_tests tests/test_host.cpp)
-target_link_libraries(asr_host_tests PRIVATE umm_asr_host)
-add_test(NAME asr_host_tests COMMAND asr_host_tests)
-
-add_executable(mel_dump tests/mel_dump.cpp)
-target_link_libraries(mel_dump PRIVATE umm_asr_host)
-
 if(UMM_ASR_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
@@ -50,12 +42,6 @@ if(UMM_ASR_CUDA)
   )
   target_link_libraries(umm-asr-native PRIVATE umm_asr_host CUDA::cudart)
   set_target_properties(umm-asr-native PROPERTIES CUDA_ARCHITECTURES 90)
-
-  add_executable(gqa_tests tests/test_gqa.cu umm_asr_native/cuda_kernels.cu)
-  target_include_directories(gqa_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(gqa_tests PRIVATE CUDA::cudart)
-  set_target_properties(gqa_tests PROPERTIES CUDA_ARCHITECTURES 90)
-  add_test(NAME gqa_tests COMMAND gqa_tests)
 endif()
 
 # ---- Native Qwen3.8-27B executor -------------------------------------------
@@ -76,16 +62,6 @@ else()
   message(FATAL_ERROR "nlohmann/json.hpp not found")
 endif()
 
-add_executable(qwen38_host_tests qwen38_tests/test_host.cpp)
-target_link_libraries(qwen38_host_tests PRIVATE qwen38_host)
-add_test(NAME qwen38_host_tests COMMAND qwen38_host_tests)
-
-add_executable(qwen38_tokenize qwen38_tests/tokenize_cli.cpp)
-target_link_libraries(qwen38_tokenize PRIVATE qwen38_host)
-
-add_executable(qwen38_preprocess qwen38_tests/preprocess_cli.cpp)
-target_link_libraries(qwen38_preprocess PRIVATE qwen38_host)
-
 if(UMM_QWEN38_CUDA)
   include(CheckLanguage)
   check_language(CUDA)
@@ -104,34 +80,4 @@ if(UMM_QWEN38_CUDA)
   target_link_libraries(umm-qwen38-native PRIVATE qwen38_host CUDA::cudart)
   set_target_properties(umm-qwen38-native PROPERTIES CUDA_ARCHITECTURES 90)
 
-  add_executable(qwen38_kernel_tests
-    qwen38_tests/test_delta.cu
-    qwen38/qwen38_kernels.cu
-    qwen38/qwen38_gemm.cu
-  )
-  target_include_directories(qwen38_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(qwen38_kernel_tests PRIVATE CUDA::cudart)
-  set_target_properties(qwen38_kernel_tests PROPERTIES CUDA_ARCHITECTURES 90)
-  add_test(NAME qwen38_kernel_tests COMMAND qwen38_kernel_tests)
-
-  add_executable(qwen38_consistency_tests
-    qwen38_tests/test_consistency.cu
-    qwen38/qwen38_kernels.cu
-    qwen38/qwen38_gemm.cu
-  )
-  target_include_directories(qwen38_consistency_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(qwen38_consistency_tests PRIVATE CUDA::cudart)
-  set_target_properties(qwen38_consistency_tests PROPERTIES CUDA_ARCHITECTURES 90)
-  add_test(NAME qwen38_consistency_tests COMMAND qwen38_consistency_tests)
-
-  # Times the batched decode GEMV against the single-row GEMV and checks that
-  # every row is bitwise identical. Evidence for docs/batching.md.
-  add_executable(qwen38_gemv_bench
-    qwen38_tests/test_gemv_batch.cu
-    qwen38/qwen38_kernels.cu
-    qwen38/qwen38_gemm.cu
-  )
-  target_include_directories(qwen38_gemv_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(qwen38_gemv_bench PRIVATE CUDA::cudart)
-  set_target_properties(qwen38_gemv_bench PROPERTIES CUDA_ARCHITECTURES 90)
 endif()

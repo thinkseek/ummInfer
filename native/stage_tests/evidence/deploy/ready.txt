@@ -1,4 +1,0 @@
-$ curl -s -o /dev/null -w %{http_code}
- http://172.17.0.2:43400/ready
-200
-exit=0

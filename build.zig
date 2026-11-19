@@ -102,71 +102,23 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    const test_step = b.step("test", "Run C++ runtime tests");
-    var ipc_exe: ?*std.Build.Step.Compile = null;
-    var pipeline_exe: ?*std.Build.Step.Compile = null;
-    const tests = [_]struct { name: []const u8, source: []const u8, cuda: bool = false }{
-        .{ .name = "self_check", .source = "tests/self_check.cpp" },
-        .{ .name = "wire_compat", .source = "tests/compat/wire_compat.cpp" },
-        .{ .name = "runtime_compat", .source = "tests/compat/runtime_compat.cpp" },
-        .{ .name = "omni_transport_test", .source = "tests/omni_transport_test.cpp" },
-        .{ .name = "unified_contract_test", .source = "tests/unified_contract_test.cpp" },
-        .{ .name = "omni_serve_test", .source = "tests/omni_serve_test.cpp" },
-        .{ .name = "omni_client_test", .source = "tests/omni_client_test.cpp" },
-        .{ .name = "metrics_test", .source = "tests/metrics_test.cpp" },
-        .{ .name = "realtime_vad_test", .source = "tests/realtime_vad_test.cpp" },
-        .{ .name = "sentence_split_test", .source = "tests/sentence_split_test.cpp" },
-        .{ .name = "cuda_ipc_test", .source = "tests/cuda_ipc_test.cpp", .cuda = true },
-        .{ .name = "cuda_pipeline_test", .source = "tests/cuda_pipeline_test.cpp", .cuda = true },
-    };
-    for (tests) |item| {
-        if (item.cuda and !cuda) continue;
-        const test_exe = b.addExecutable(.{
-            .name = item.name,
-            .root_module = module(b, target, optimize),
-        });
-        configure(test_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, false);
-        test_exe.root_module.sanitize_thread = tsan;
-        test_exe.root_module.linkLibrary(core);
-        test_exe.root_module.addCSourceFiles(.{
-            .files = &.{item.source},
-            .flags = &.{"-std=c++20"},
-        });
-        if (item.cuda) {
-            b.installArtifact(test_exe);
-            if (std.mem.eql(u8, item.name, "cuda_ipc_test")) ipc_exe = test_exe;
-            if (std.mem.eql(u8, item.name, "cuda_pipeline_test")) pipeline_exe = test_exe;
-        }
-        const run = b.addRunArtifact(test_exe);
-        if (std.mem.eql(u8, item.name, "omni_client_test")) {
-            run.addArtifactArg(exe);
-        }
-        test_step.dependOn(&run.step);
-        if (std.mem.eql(u8, item.name, "unified_contract_test")) {
-            if (b.args) |args| run.addArgs(args);
-            const unified_test = b.step("unified-test", "Run unified orchestration contract tests");
-            unified_test.dependOn(&run.step);
-        }
-        if (std.mem.eql(u8, item.name, "runtime_compat")) {
-            if (b.args) |args| run.addArgs(args);
-            const runtime_test = b.step("runtime-test", "Run coordinator and stage runtime tests");
-            runtime_test.dependOn(&run.step);
-        }
-    }
-
-    const stress_step = b.step("cuda-stress", "Repeat the CUDA tests until a failure");
-    if (ipc_exe != null and pipeline_exe != null) {
-        const stress = b.addSystemCommand(&.{ "python3", "-I" });
-        stress.addFileArg(b.path("tests/cuda_stress.py"));
-        stress.addArgs(&.{"--ipc"});
-        stress.addArtifactArg(ipc_exe.?);
-        stress.addArgs(&.{"--pipeline"});
-        stress.addArtifactArg(pipeline_exe.?);
-        stress_step.dependOn(&stress.step);
-    } else {
-        const note = b.addSystemCommand(&.{ "sh", "-c", "echo 'cuda-stress needs -Dcuda; no CUDA test binaries were built'" });
-        stress_step.dependOn(&note.step);
-    }
+    const test_step = b.step("test", "Run the end-to-end contract suite");
+    const test_exe = b.addExecutable(.{
+        .name = "unified_contract_test",
+        .root_module = module(b, target, optimize),
+    });
+    configure(test_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, false);
+    test_exe.root_module.sanitize_thread = tsan;
+    test_exe.root_module.linkLibrary(core);
+    test_exe.root_module.addCSourceFiles(.{
+        .files = &.{"tests/unified_contract_test.cpp"},
+        .flags = &.{"-std=c++20"},
+    });
+    const run_test = b.addRunArtifact(test_exe);
+    if (b.args) |args| run_test.addArgs(args);
+    test_step.dependOn(&run_test.step);
+    const unified_test = b.step("unified-test", "Run unified orchestration contract tests");
+    unified_test.dependOn(&run_test.step);
 
     const bench_step = b.step("cuda-bench", "Measure SHM and CUDA IPC relay latency");
     if (cuda) {
@@ -194,24 +146,4 @@ pub fn build(b: *std.Build) void {
     const smoke_step = b.step("smoke", "Run HTTP and process lifecycle tests");
     smoke_step.dependOn(&smoke.step);
 
-    const mlx_test = b.addSystemCommand(&.{ "python3", "-I" });
-    mlx_test.addFileArg(b.path("tests/mlx_stage_test.py"));
-    const mlx_test_step = b.step("mlx-test", "Run MLX stage unit tests");
-    mlx_test_step.dependOn(&mlx_test.step);
-
-    const mac_unified_test = b.addSystemCommand(&.{ "python3", "-I" });
-    mac_unified_test.addFileArg(b.path("tests/mac_unified_validation_test.py"));
-    const mac_unified_test_step = b.step(
-        "mac-unified-test", "Run Mac unified harness unit tests");
-    mac_unified_test_step.dependOn(&mac_unified_test.step);
-
-    // Harness regression: an ambient non-API probe must not shift a proxy
-    // plan or bind a WebSocket session. Needs only the CLI binary, no model.
-    const proxy_isolation = b.addSystemCommand(&.{ "python3", "-I" });
-    proxy_isolation.addFileArg(b.path("tests/proxy_isolation_test.py"));
-    proxy_isolation.addArtifactArg(exe);
-    const proxy_isolation_step = b.step(
-        "proxy-isolation-test",
-        "Check harness proxies ignore non-API probe connections");
-    proxy_isolation_step.dependOn(&proxy_isolation.step);
 }

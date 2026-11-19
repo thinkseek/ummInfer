@@ -1,3 +1,0 @@
-input_text=Hello, welcome to the native inference engine test.
-CMD: CUDA_VISIBLE_DEVICES=5 /root/umm-native-asr-20261116/native/cuda-build/umm-asr-native /root/omniinfer-model-validation-20261111-k3/models/asr /root/umm-native-tts-20261116/evidence/final/en.16k.wav 0
-asr_exit=0

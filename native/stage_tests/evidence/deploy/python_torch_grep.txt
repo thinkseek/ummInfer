@@ -1,3 +1,0 @@
-$ sh -c ldd /root/umm-native-service/bin/umm-native-stage-* | grep -Ei 'python|torch|sglang' || echo 'no python/torch/sglang libraries'
-no python/torch/sglang libraries
-exit=0

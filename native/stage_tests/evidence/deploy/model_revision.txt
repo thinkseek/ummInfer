@@ -1,8 +1,0 @@
-$ sh -c for d in /root/omniinfer-model-validation-20261111-k3/models/asr   /root/omniinfer-model-validation-20261111-k3/models/omni   /root/umm-mixed-output-20261116/models/qwen3-tts; do   echo "$d"; (cd $d && git rev-parse HEAD 2>/dev/null || echo UNKNOWN); done
-/root/omniinfer-model-validation-20261111-k3/models/asr
-UNKNOWN
-/root/omniinfer-model-validation-20261111-k3/models/omni
-UNKNOWN
-/root/umm-mixed-output-20261116/models/qwen3-tts
-UNKNOWN
-exit=0

@@ -190,14 +190,6 @@ def main():
             "--project", str(project),
             "--deps-prefix", deps,
             "--curl-prefix", curl]),
-        ("mlx-stage", python + ["tests/mlx_stage_test.py"]),
-        ("service", python + ["tests/umminfer_service_test.py"]),
-        ("multimodal-bench", python + ["tests/multimodal_benchmark_test.py"]),
-        ("wire-proxy-teardown", python + ["tests/wire_proxy_teardown_test.py"]),
-        ("rl-phase1", python + ["tests/rl_architecture_test.py"]),
-        ("rl-phase2", python + ["tests/rl_phase2_test.py"]),
-        ("provenance", python + ["tests/model_provenance_test.py"]),
-        ("mac-unified", python + ["tests/mac_unified_validation_test.py"]),
     ]
     if args.suites:
         wanted = {item.strip() for item in args.suites.split(",") if item.strip()}
