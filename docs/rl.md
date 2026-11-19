@@ -20,7 +20,7 @@ new code files are:
 | `python/umminfer_rl_trajectory.py` | Out-of-process recorder, SSE parsing, input references, JSONL export |
 | `python/umminfer_rl_reward.py` | Reward abstract class, null reward, plugin loader |
 | `python/umminfer_rl_worker.py` | Worker process, NDJSON protocol, checkpoint store with hash chain |
-| `tests/rl_architecture_test.py` | Deterministic tests, no model and no server binary required |
+| `tests/rl_architecture_test.py` | REMOVED in `ab51cf5`; the deterministic suite no longer exists |
 
 ## Why the recorder is a client, not a server hook
 
@@ -100,8 +100,8 @@ Input bytes never enter the JSONL.
 - Terminal states: `completed`, `failed`, `cancelled`.
   - A clean stream ends with `[DONE]` and no error frame.
   - An error frame, an HTTP error body, or EOF without `[DONE]` is `failed`.
-    The EOF message is `stream ended before [DONE]`, identical to
-    `tests/unified_benchmark.py`.
+    The EOF message is `stream ended before [DONE]`, matching the retired
+    `tests/unified_benchmark.py` (removed in `e45b591`).
   - A transport failure (refused connection, dropped socket, undecodable
     response bytes) is also `failed` with a `transport error:` message. Every
     attempted turn stays in the export rather than escaping the recorder.
@@ -271,15 +271,6 @@ claimed in phase 1.
 
 ## Tests
 
-```
-python3 -I tests/rl_architecture_test.py
-```
-
-The suite uses a loopback HTTP server with canned JSON/SSE responses and a
-real subprocess for the worker boundary. It covers text/audio/image input
-references, ordered unified streaming events, EOF truncation, error frames,
-the server `cancelled` SSE terminal, a client abort driven through the real
-`/abort` exit (including the 501 case), transport failures, realtime event
-derivation, null-versus-zero reward handling, NaN rejection, malformed and
-mixed reward blocks, checkpoint ordering and both hash-chain tampering
-paths, invalid-export rejection, and the subprocess protocol.
+The deterministic suite `tests/rl_architecture_test.py` was removed in
+`ab51cf5`. No automated RL test remains; the RL modules are exercised only by
+the recorded H20B runs in this document and `rl-phase2.md`.

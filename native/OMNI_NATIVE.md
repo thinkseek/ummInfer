@@ -11,7 +11,7 @@ talker and code2wav are not loaded and audio/video inputs are unsupported.
 |---|---|
 | `native/omni/` | Engine: multi-shard mmap loader, image preprocessing, Qwen2 BPE tokenizer, CUDA kernels, vision tower, MoE text decoder, engine |
 | `native/omni_cli/` | The `umm-omni-native` command line |
-| `native/omni_tests/` | Host (CPU) unit tests, Unicode table generator, golden fixtures |
+| `native/omni_tests/` | REMOVED in `ab51cf5`; host tests, Unicode generator and fixtures no longer exist |
 | `native/OMNI_NATIVE.md` | This document |
 
 The pre-existing `native/umm_asr_native/` ASR slice is untouched. This build is
@@ -85,7 +85,7 @@ BF16 operands. Rounding the activation to BF16 would change the numeric
 semantics (up to 2^-7 relative per element) rather than only the reduction
 order, so that projection runs as FP32 FMA over upcast BF16 weights. Products
 are then bit-identical to the reference and only the accumulation order
-differs. `omni_tests/test_moe_down.cu` is a GPU test that fails if a BF16
+differs. `omni_tests/test_moe_down.cu` (removed in `ab51cf5`) was a GPU test that failed if a BF16
 activation is reintroduced: it builds activations that BF16 cannot represent,
 and asserts the kernel is within FP32 accumulation noise of an FP32-activation
 reference (measured 4e-7) and 2.7e-3 away from a BF16-activation one.
@@ -130,7 +130,12 @@ CUDA_VISIBLE_DEVICES=6 ./build/omni_cli/umm-omni-bench \
 
 ## Tests and golden data
 
-`omni_host_tests` covers smart_resize, image error paths, bicubic resize
+RETIRED. `native/omni_tests/` was removed in `ab51cf5`. The `omni_host_tests`
+and `omni_moe_down_test` targets named below, the golden data and the committed
+evidence no longer exist. `native/omni/CMakeLists.txt` still names the removed
+`omni_tests` directory; that is a known build break outside this document.
+
+`omni_host_tests` covered smart_resize, image error paths, bicubic resize
 against a torchvision dump, the full pixel buffer against the HF
 `AutoImageProcessor` output, synthetic and real-tokenizer BPE golden vectors,
 and decode round-trips. Golden data under `omni_tests/golden/` is downloaded

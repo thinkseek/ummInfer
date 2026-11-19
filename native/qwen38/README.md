@@ -123,6 +123,9 @@ false, which makes the assistant answer immediately.
 
 ## Reference parity harness (development only)
 
+RETIRED. `native/qwen38_tests/` was removed in `ab51cf5`. The scripts and
+commands below are a historical record and do not run on the current source.
+
 `reference.py` runs the same prompt and image through transformers on one GPU
 (or CPU for the FP32 anchor) and dumps the embedding, every layer/mixer
 output, the vision tower and the generated ids.  `compare_layers.py` compares

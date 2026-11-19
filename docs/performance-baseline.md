@@ -34,7 +34,8 @@ did not start or stop any backend process. Local SSH forwards carried
 
 ## Model snapshot and provenance
 
-Collected 2026-11-13 with `tests/model_provenance.py`; full evidence and the
+Collected 2026-11-13 with `tests/model_provenance.py`, which was removed in
+`ab51cf5`; full evidence and the
 reproduction commands are in
 `/tmp/umminfer-phase5-provenance-evidence/` (`provenance.json`,
 `SHA256SUMS`). Every remote operation was read-only; weight hashes were

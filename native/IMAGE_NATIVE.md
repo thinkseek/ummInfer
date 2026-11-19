@@ -19,8 +19,8 @@ produce reference golden tensors for numerical verification.
     GQA causal attention, RoPE, norms, 2D convs, Philox RNG), `text_encoder`,
     `dit`, `vae`, `engine` orchestration.
 - `image_cli/` — `umm-image-native` CLI.
-- `image_tests/` — host unit tests, a tokenizer parity dump, and GPU golden
-  parity tests.
+- `image_tests/` — REMOVED in `ab51cf5`; host tests, tokenizer parity dump and
+  GPU golden parity tests no longer exist.
 
 ## Pipeline facts implemented (all traced to diffusers 0.36.0 source)
 

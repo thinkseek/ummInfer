@@ -102,9 +102,8 @@ curl -sS http://127.0.0.1:43301/v1/chat/completions \
        "content":"What is the sea?"}]}'
 ```
 
-Recorded response from the native Omni stage (abridged;
-`native/stage_tests/evidence/resident/vlm_text.json`, HTTP 200 in 38.2 s). The
-Qwen3.8-27B stage returns the same JSON shape with a different answer:
+Recorded response from the native Omni stage (abridged; HTTP 200 in 38.2 s).
+The Qwen3.8-27B stage returns the same JSON shape with a different answer:
 
 ```json
 {"choices":[{"finish_reason":"stop","index":0,"message":{
@@ -161,7 +160,6 @@ native/tts/   native/tts_cli/   Qwen3-TTS engine + CLI
 native/image/ native/image_cli/ Qwen-Image-2512 engine + CLI
 native/image2/                  Qwen-Image-2.1 engine + CLI
 native/stage_cli/               the five umm-native-stage-* binaries
-native/stage_tests/             live smoke harness + committed evidence
 service/                        H20B launcher and supervisor config
 tests/                          C++ contract tests, Python E2E, CUDA tests
 python/                         offline/legacy: MLX stage, RL tooling, old Qwen
@@ -182,13 +180,10 @@ Server and control plane (CPU, no model, no CUDA):
 zig build test -Ddeps-prefix=/opt/homebrew -Dcurl-prefix=/opt/homebrew/opt/curl
 ```
 
-This builds and runs `self_check`, `wire_compat`, `runtime_compat`,
-`omni_transport_test`, `unified_contract_test`, `omni_serve_test` and
-`omni_client_test`. Two consecutive runs on this Mac (Zig 0.16.0, Homebrew
-deps) exited 0 and printed `all 112 client checks passed`, `all transport
-checks passed` and `all serve proxy checks passed`. An earlier run on commit
-`31cf1fd` failed `omni_client_test` with `SimpleScheduler: batch collection
-failed: cost failed`, so a non-zero exit is a real failure, not a known state.
+This builds and runs `tests/unified_contract_test.cpp`, the end-to-end contract
+suite. Unit-level suites (`self_check`, `wire_compat`, `runtime_compat`,
+`omni_transport_test`, `omni_serve_test`, `omni_client_test`) were removed in
+`ab51cf5`. A non-zero exit is a real failure.
 
 Host tests that need no weights and no GPU:
 
@@ -205,19 +200,8 @@ their own host targets with the same shape. GPU parity and kernel tests run on
 the CUDA host, one project at a time, as `ctest` in each build directory. Gate
 values, golden-data provenance and known gaps are in each executor's document.
 
-End-to-end smoke against a running deployment:
-
-```sh
-python3 -I native/stage_tests/native_stage_smoke.py \
-  --base-url http://127.0.0.1:43301 \
-  --wav asr_en_pcm16.wav --image man_ironing.png \
-  --out-dir ./smoke-out
-```
-
-The committed record of that harness (health, direct ASR, text and image VLM,
-audio->text SSE, mixed text+image+audio, TTS round-trip, cancellation paths,
-recovery) is
-[native/stage_tests/evidence/MANIFEST.md](native/stage_tests/evidence/MANIFEST.md).
+The live smoke harness `native/stage_tests/native_stage_smoke.py` and its
+committed evidence were removed in `ab51cf5`. Use the case reproduction below.
 
 Full request-level reproduction of a four-stage deployment:
 
@@ -231,7 +215,6 @@ CUDA IPC remains separately testable:
 
 ```sh
 zig build test -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/homebrew
-zig build cuda-stress -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/homebrew
 zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/homebrew -Doptimize=ReleaseFast
 ```
 

@@ -158,20 +158,12 @@ Expected result: every line reports `OK` and the `find` command prints nothing.
   memory leaks, and long-run stability are not.
 - On this Mac profile, chunked SSE partial ASR through the unified route is not
   covered: the engine submits the ASR leg with `stream=false`. The same route
-  with opt-in partials passed on H20B; see `docs/validation.md` section 5c.
-  Realtime partials are also covered by `docs/validation.md`.
+  with opt-in partials passed on H20B; see `docs/validation.md` section 5c
+  (now retired). Realtime partials are also covered by `docs/validation.md`.
 - The recorded run used baseline `a412d0d4` with the uncommitted harness. The
   commit adds only the harness, its unit test, and documentation. It changes no
   runtime code, and `env.json` records the binary and model hashes.
 
-## Unit test
-
-```sh
-python3 -I tests/mac_unified_validation_test.py
-# or
-zig build mac-unified-test
-```
-
-The unit test covers WAV generation, request-body shape, the event-contract
-checker, summary aggregation, log capping, and SHA256SUMS round-trip and
-tamper detection. It starts no server and loads no model.
+The unit test `tests/mac_unified_validation_test.py` and the
+`zig build mac-unified-test` step were removed in `ab51cf5`. Only the harness
+described above remains.

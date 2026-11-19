@@ -7,6 +7,12 @@ inputs, the same real Qwen3-ASR and Qwen3-Omni backends, and the same binary
 source. Raw records are in
 `/tmp/umminfer-phase5-optimization-evidence/{baseline,candidate}/`.
 
+RETIRED COMPONENTS. The SGLang-era workers (`umminfer_qwen_omni_worker.py`,
+`umminfer_qwen_asr_stage.py`) and the harness `tests/unified_benchmark.py` named
+below were removed in `7542ba0` and `e45b591`. This page is a historical record
+of the 2026-11-13 measurement; its reproduction commands do not run on the
+current source.
+
 ## Conclusion
 
 One Omni worker processed one request at a time. That serial loop was the
@@ -182,16 +188,19 @@ identity. Text quality is not measured here.
 
 ## Checks
 
+The four unit suites below were deleted in `ab51cf5`; their results are a
+historical record. The build, unified-test, realtime and diff checks still run.
+
 | Check | Result |
 | --- | --- |
 | `zig build test -Ddeps-prefix=/opt/homebrew -Dcurl-prefix=/opt/homebrew/opt/curl` | pass |
 | `zig build unified-test …` | pass |
 | `python3 -I tests/realtime_contract_e2e.py --server zig-out/bin/umm-infer --stage python/umminfer_tiny_asr_stage.py` | pass |
 | `python3 -I tests/realtime_client_contract_e2e.py zig-out/bin/umm-infer` | pass |
-| `python3 -I tests/unified_benchmark_test.py` | 10 tests pass |
-| `python3 -I tests/qwen_omni_worker_test.py` | 3 tests pass |
-| `python3 -I tests/qwen_asr_stage_test.py` | 14 tests pass |
-| `python3 -I tests/mlx_stage_test.py` | 28 tests pass |
+| `python3 -I tests/unified_benchmark_test.py` (removed) | 10 tests passed |
+| `python3 -I tests/qwen_omni_worker_test.py` (removed) | 3 tests passed |
+| `python3 -I tests/qwen_asr_stage_test.py` (removed) | 14 tests passed |
+| `python3 -I tests/mlx_stage_test.py` (removed) | 28 tests passed |
 | `git diff --check` | clean |
 
 ## Regression found before push (2026-11-13)
@@ -218,7 +227,9 @@ finish=abort`, and the next request succeeded. Evidence:
 
 The exact commands, environment, and file hashes are in
 `/tmp/umminfer-phase5-optimization-evidence/COMMANDS.md` and
-`ENVIRONMENT.md`. `SHA256SUMS` covers every evidence file.
+`ENVIRONMENT.md`. `SHA256SUMS` covers every evidence file. The commands below
+name harnesses that were removed in `e45b591`; they are kept only as a record of
+how the numbers were produced.
 
 ```sh
 cd /tmp/umminfer-phase5-baseline   # 4b13fe1 with the same harness copied in

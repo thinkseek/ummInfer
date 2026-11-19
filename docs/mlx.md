@@ -103,30 +103,23 @@ separate processes; stopping one does not automatically stop the other.
 
 ## Verify
 
-The unit tests use a fake generator and do not need MLX or a downloaded model:
+The deterministic stage test uses a fake generator and does not need MLX or a
+downloaded model:
 
 ```sh
-zig build mlx-test -Ddeps-prefix=/opt/homebrew
+python3 -I tests/mlx_stage_result_test.py
 zig build test -Ddeps-prefix=/opt/homebrew
 zig build smoke -Ddeps-prefix=/opt/homebrew
 ```
 
-The real-model smoke requires an existing local MLX model directory and the MLX
-Python dependencies. It forces Hugging Face offline mode and is not part of the
-default test or smoke targets. Replace the example model path with a local
-snapshot:
+The `zig build mlx-test` step was removed in `ab51cf5` with
+`tests/mlx_stage_test.py`.
 
-```sh
-python3 -I tests/mlx_smoke.py \
-  --server zig-out/bin/umm-infer \
-  --stage python/umminfer_mlx_stage.py \
-  --model /absolute/path/to/mlx-model
-```
-
-The smoke checks JSON, SSE, abort, a disconnected SSE client, a following request,
-and four concurrent requests. It reports first-token latency where the streaming
-API exposes it, total latency, output tokens, and end-to-end output tokens per
-second. Do not compare model execution time with echo-compute time.
+The real-model smoke harness `tests/mlx_smoke.py` was removed in `ab51cf5`. No
+real-model JSON, SSE, abort or concurrency smoke remains. `zig build test` and
+`zig build smoke` still cover the C++ server and the HTTP/process lifecycle, and
+`tests/mlx_stage_result_test.py` covers the stage's token accounting without a
+model.
 
 ## Performance measurement
 
@@ -248,13 +241,10 @@ The 5% band covers run-to-run noise on this machine. A result inside the band is
 reported as unchanged, not as a regression. A result outside the band fails the
 gate.
 
-`tests/mlx_perf_compare.py` evaluates every gate above on two reports. It
-refuses a partial report: both inputs must be `--mode all`, `completed=true`,
-with no skipped path, no foreign process, and unchanged artifact hashes. It also
-requires one identical `output_sha256` per path across both reports, the same
-binary, model, model weights, prompt, `max_tokens=64`, at least 20 samples, and
-matching Python and package versions. A failed gate is named and the command
-exits non-zero.
+`tests/mlx_perf_compare.py` evaluated every gate above on two reports. It was
+removed in `ab51cf5`; the gates below remain the acceptance definition, but no
+committed tool enforces them. `tests/mlx_perf.py` still measures a run and
+`tests/mlx_e2e_interleave_perf.py` still measures interleaved E2E cost.
 
 ### Final benchmark command
 
@@ -343,22 +333,11 @@ shasum -a 256 python/umminfer_mlx_stage.py /tmp/umminfer-stage-baseline.py
 The counters stay in both files: the baseline increases `builds` and `accesses`
 on every call, the candidate builds once at load and only increases `accesses`.
 
-Run the two commands in "Final benchmark command", then compare the reports.
-Freeze the environment first; the file is created on the first call and
-required to match on every later call:
-
-```sh
-python3 -I tests/mlx_perf_compare.py \
-  /tmp/umminfer-mlx-exclusive-baseline.json \
-  /tmp/umminfer-mlx-exclusive-candidate.json \
-  --manifest /tmp/umminfer-mlx-manifest.json \
-  --out /tmp/umminfer-mlx-comparison.json
-```
-
-The manifest records the interpreter absolute path and the `msgpack`, `mlx`,
-`mlx-lm`, and `transformers` versions. The comparison prints one line per gate,
-including the main ratio, TTFT, total latency, memory, stability, and output
-identity, and exits non-zero if any gate fails.
+Run the two commands in "Final benchmark command". The comparison tool
+`tests/mlx_perf_compare.py` was removed in `ab51cf5`, so the two reports must be
+compared by hand against the gate table above. Freeze the environment first.
+Each report still records the interpreter absolute path and the `msgpack`,
+`mlx`, `mlx-lm`, and `transformers` versions.
 
 ### Optimization candidates (static analysis)
 

@@ -182,7 +182,8 @@ Three candidates were tested on the exclusive GPU 6.
    of 0.49 TB/s (12 % of the 4 TB/s HBM peak) against 2.0 TB/s for the serial
    step (24.0 ms).
 
-`native/qwen38_tests/test_gemv_batch.cu` measures one MLP gate projection
+The harness `native/qwen38_tests/test_gemv_batch.cu` (removed in `ab51cf5`)
+measured one MLP gate projection
 (n=17408, k=5120, 0.166 GiB of weights) with CUDA events:
 
 | Path | m=1 | m=2 | m=4 | m=8 | GB/s at m=8 |
@@ -192,8 +193,8 @@ Three candidates were tested on the exclusive GPU 6.
 | replicated-block GEMV variant | 0.057 | 0.089 | 0.164 | 0.319 | 560 |
 | tensor-core `gemm_bf16` | 0.304 | 0.304 | 0.304 | 0.305 | 586 |
 
-The same file checks row equivalence: all 36 (m, row) combinations match the
-single-row GEMV bit for bit.
+The same harness checked row equivalence: all 36 (m, row) combinations matched
+the single-row GEMV bit for bit.
 
 Interpretation:
 

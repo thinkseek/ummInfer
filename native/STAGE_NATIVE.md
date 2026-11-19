@@ -104,9 +104,11 @@ field the engine cannot consume is an error, never a silently dropped input:
 | an `image_url` with an `http(s)` URL | error; send a `data:` URL or a local path |
 | an image with `grid_t != 1` | error: still images only |
 
-`native/stage_tests/test_host.cpp` covers each row. The VLM stage is also
-reachable directly, without the unified engine in front of it, so the check
-cannot rely on the server having already removed these fields.
+`native/stage_tests/test_host.cpp` covered each row. It was removed in
+`ab51cf5`, together with the rest of `native/stage_tests/`; no automated host
+test for this table remains. The VLM stage is also reachable directly, without
+the unified engine in front of it, so any future check cannot rely on the server
+having already removed these fields.
 
 `max_new_tokens` and `stream` do not reach a compute function (see "Behaviour
 differences"), so the stage uses `--max-new-tokens`.
@@ -239,15 +241,15 @@ cmake --build build -j
 
 ```sh
 service/h20b-native-service.sh start     # server + four stages
-python3 -I native/stage_tests/native_stage_smoke.py \
-  --base-url http://172.17.0.2:43301 --wav asr_en_pcm16.wav \
-  --image man_ironing.png --vlm-stage qwen38 \
-  --out-dir native/stage_tests/evidence/live
 service/h20b-native-service.sh stop
 ```
+
+The live smoke harness `native/stage_tests/native_stage_smoke.py` was removed in
+`ab51cf5`. For a request-level end-to-end run use `docs/cases/0001_repro.sh`.
 
 The supervisor (`python/umminfer_service.py`) reads the same selection from
 `vlm_stage` in its config. Stages listed under `optional_stages` are validated
 but not started, which is how the omni entry is kept available.
 
-Evidence from the acceptance run is in `native/stage_tests/evidence/`.
+The committed evidence under `native/stage_tests/evidence/` was removed in
+`ab51cf5` with the harness.

@@ -11,9 +11,12 @@ checks.
 - `native/tts/` — engine, talker, code predictor, F32 speech codec, CUDA
   kernels, BPE tokenizer, prompt builder, safetensors/WAV I/O.
 - `native/tts_cli/` — `umm-tts-native` command line front end.
-- `native/tts_tests/` — host unit tests, CUDA kernel tests, tokenizer fuzz
-  harness. Probe tools under `tools/` are built manually with `nvcc` during
-  bring-up and are not part of the CMake build.
+- `native/tts/tail_trim_test.cpp` — host self-check for the trailing-noise
+  trim, built by the `tts_tail_trim_test` target.
+
+RETIRED. The `native/tts_tests/` tree (host unit tests, CUDA kernel tests,
+tokenizer fuzz harness and probe tools) was removed in `ab51cf5`. Every
+reference to it below is historical.
 
 No existing ASR source or shared top-level file is modified. The TTS slice
 links its own standalone CMake project.
@@ -93,25 +96,23 @@ limitations section.
 
 ## Build and test
 
-Host (macOS, tokenizer/prompt/WAV/safetensors logic, no CUDA):
+RETIRED. The `tts_host_tests` and `tts_cuda_tests` targets were built from
+`native/tts_tests/`, which was removed in `ab51cf5`. `native/tts/CMakeLists.txt`
+still names those sources, so configuring this project currently fails. That is
+a known build break outside this document.
+
+The trailing-noise trim has a standalone host test, `tts_tail_trim_test`, wired
+through `native/stage_cli`:
 
 ```
-cmake -S native/tts -B native/tts/build-host
-cmake --build native/tts/build-host
-native/tts/build-host/tts_host_tests <dir-with-vocab-merges-tokenizer_config>
+cmake -S native/stage_cli -B native/stage_cli/build
+cmake --build native/stage_cli/build --target tts_tail_trim_test
+ctest --test-dir native/stage_cli/build -R tts_tail_trim_test
 ```
 
-CUDA (H20B, sm_90, CUDA 12.4):
-
-```
-cmake -S native/tts -B native/tts/cuda-build -DUMM_TTS_CUDA=ON
-cmake --build native/tts/cuda-build
-native/tts/cuda-build/tts_cuda_tests
-```
-
-The BPE tokenizer is fuzz-checked against HuggingFace tokenizers 0.22.2 via
-`native/tts_tests/tools/tok_fuzz.{cpp,py}` (30010/30010 parity in the
-bring-up run).
+The BPE tokenizer was fuzz-checked against HuggingFace tokenizers 0.22.2 via
+`native/tts_tests/tools/tok_fuzz.{cpp,py}` (30010/30010 parity in the bring-up
+run). That harness was removed in `ab51cf5`.
 
 ## CLI
 
@@ -142,7 +143,8 @@ the text-only manifest and host-test log committed under
   Chinese `79271212bb2dc7f1e388ec2851573c9101da9644563bebec77943151a448adb2`.
 - Round-trip intelligibility uses the validated `umm-asr-native` after a
   test-only 24 kHz -> 16 kHz resample
-  (`native/tts_tests/tools/resample16.py`). Both runs exit 0 and transcribe
+  (`native/tts_tests/tools/resample16.py`, removed in `ab51cf5`). Both runs
+  exited 0 and transcribed
   the input text verbatim; stdout/stderr, exit codes, resample commands and
   input hashes are in `{en,zh}.asr.{meta,stdout,stderr}` and
   `{en,zh}.asr_inputs.sha256` in the evidence directory.

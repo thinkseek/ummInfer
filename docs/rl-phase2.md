@@ -33,7 +33,7 @@ acceptance criteria name is measured from real tensors and real processes.
 | `python/umminfer_rl_worker.py` | Adds the `train_step` verb; phase-1 `train` is unchanged |
 | `python/umminfer_rl_eval.py` | Separate-process greedy evaluation, with or without checkpoint weights |
 | `python/umminfer_rl_run.py` | End-to-end orchestrator; itself imports no torch |
-| `tests/rl_phase2_test.py` | Deterministic tests, no torch/GPU/network |
+| `tests/rl_phase2_test.py` | REMOVED in `ab51cf5`; the deterministic suite no longer exists |
 
 ## Algorithm
 
@@ -146,12 +146,9 @@ python3 -I python/umminfer_rl_run.py \
 a contiguous slice is used. The manifest records every selected index, so the
 split is reproducible either way.
 
-Deterministic local tests need no model:
-
-```
-python3 -I tests/rl_phase2_test.py
-python3 -I tests/rl_architecture_test.py
-```
+Deterministic local tests need no model, but `tests/rl_phase2_test.py` and
+`tests/rl_architecture_test.py` were removed in `ab51cf5`. No automated
+phase-2 test remains.
 
 ## Measured H20B run (2026-11-14)
 

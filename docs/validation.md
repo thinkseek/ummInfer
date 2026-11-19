@@ -16,10 +16,9 @@ gate, not new evidence: it adds no assertions and each suite keeps its own exit
 code, printed as `REAL_EXIT <suite> <code>`. The gate exits non-zero if any
 suite fails.
 
-Included suites: `build`, `zig-test`, `unified-test`, the two realtime contract
-E2Es, the Qwen ASR and Omni worker tests, the MLX stage test, RL phase 1 and
-2, the benchmark helper test, provenance, and the Mac unified helper test. All
-of them run without H20B, CUDA, SGLang, or RL training.
+Included suites: `build`, `zig-test`, `smoke`, `unified-test`, and the two
+realtime contract E2Es. All of them run without H20B, CUDA, SGLang, or RL
+training.
 
 Behavior: suites run serially in their own session; combined output per suite
 is capped at 64 KiB (tail kept); a suite that exceeds `--timeout` (default
@@ -28,9 +27,9 @@ and `--binary` when the defaults under `/opt/homebrew` and `zig-out/bin` do not
 match this host.
 
 Boundary. A pass proves the local contracts only. It does not replace the H20B
-runs in this document: CUDA relay and sanitizer (section 8), real Qwen3 backends
-(sections 3a, 5c, 5e, 5f), the realtime live run, or the real RL optimizer-step
-validation. Those still need their dedicated evidence directories.
+runs in this document: real Qwen3 backends, the realtime live run, or the real
+RL optimizer-step validation. Those still need their dedicated evidence
+directories.
 
 ## 1. Prepare the environment
 
@@ -56,43 +55,23 @@ zig build -Doptimize=ReleaseFast -Ddeps-prefix=/opt/homebrew \
 zig build test -Ddeps-prefix=/opt/homebrew -Dcurl-prefix=/opt/homebrew/opt/curl
 ```
 
-Expected result: the build exits 0, all C++ checks pass, and the binary exists.
-These checks cover wire format, relay, scheduler, coordinator, and C++ pipeline
-behavior. They do not load a model.
-
-`runtime_compat` also covers a real non-streaming 504. A request that stays
-pending before `stage_ready`, with `request_timeout_s=0.2`, must reach the
-public `OpenAIClient` as `kTimeout`, status 504, retryable, with the text
-`HTTP 504: request timed out`. The case asserts a configured server wait of at
-least 0.15 s and leaves `in_flight` at zero.
+Expected result: the build exits 0, the contract suite passes, and the binary
+exists. The suite drives the real Coordinator over IPC sockets with bound
+PUSH/PULL stage sockets and no model worker. It covers the ASR -> VLM event
+contract: ordering, aggregation, cancellation, stage failures, backpressure,
+and duplicate or out-of-order handling. It does not load a model.
 
 ## 2. Complete the primary user journey
 
+`tests/client_smoke.py` was removed in `ab51cf5`. The real end-to-end journey is
+the committed case reproduction:
+
 ```sh
-python3 -I tests/client_smoke.py "$UMMINFER_BINARY" --model "$MLX_MODEL"
+SSH_OPTS="-o ControlPath=$HOME/.ssh/cm/tn-h20b" sh docs/cases/0001_repro.sh
 ```
 
-Follow the `PASS` and `NOT_COVERED` lines. A zero process exit is required, but
-also check that no `FAIL` or `BLOCKED` line exists. The script reaps only the
-processes it owns.
-
-| User action | Expected result | Real coverage |
-| --- | --- | --- |
-| Start chat server and model stage | Readiness changes after stage initialization | Server, Coordinator, ZeroMQ, MLX model |
-| Send one chat request | Exit 0 and non-empty model text | Public client, HTTP, model |
-| Stream the same prompt | Deltas assemble to the JSON result | SSE parsing and model streaming |
-| Send concurrent requests | Four correct answers without cross-answer data | Persistent stage and request isolation |
-| Transcribe valid audio | Exit 0 and text from the TinyCTC forward pass | WAV/PCM, multipart, ZeroMQ, model |
-| Send two scalar `model` parts | HTTP 400 `duplicate multipart field: model`; `in_flight` returns to zero | Multipart parser, server route |
-| Start realtime audio | Live preview and completed result work | Real WebSocket client and server |
-| Finish through HTTP Final | Final multipart result is returned | Retained PCM and Final fallback |
-| Enable authentication | Missing or wrong key fails; correct key succeeds | HTTP, health/readiness, WS, CLI, Final |
-| Stop or kill a streaming client | Request is reaped; a later request succeeds | Disconnect recovery |
-| Stop owned processes | Server and stages exit; no owned process remains | Cleanup |
-
-The authentication matrix includes an accepted WebSocket session followed by
-an authenticated HTTP Final request. A WebSocket handshake rejection is not
-evidence for an HTTP Final rejection.
+Case record, per-leg timings and hashes:
+[docs/cases/0001-end-to-end-native.md](cases/0001-end-to-end-native.md).
 
 ## 3. Exercise input and client boundaries
 
@@ -129,18 +108,18 @@ Expected results:
   the wire proxy and closes it. Every round must record both Close frames and
   no forwarded-error entry. ENOTCONN/EPIPE count as teardown; ECONNRESET counts
   only after an observed Close frame or EOF. Other transport errors and
-  protocol assertions remain test failures. `tests/wire_proxy_teardown_test.py`
-  pins that classifier without a server.
+  protocol assertions remain test failures. The local classifier test
+  `tests/wire_proxy_teardown_test.py` was removed in `ab51cf5`; the real
+  20-round regression above is the remaining evidence.
 - `--ping-interval-ms` makes the real CLI send PING control frames while it
   streams audio. The wire proxy observes those frames and injects none. The
   stream keeps its order, ends with exactly one terminal event, and later
   requests succeed.
-- `tests/realtime_streaming_live.py` drives the real Qwen3-ASR backend. It
-  checks cumulative partials, PING/PONG interleaving, one terminal event, and
-  cancellation. The cancelled request must show `SGLANG_ABORT_CONFIRMED` with
-  `finish=abort` in the stage log: that is the backend's own acknowledgement,
-  not a local socket close. On H20B the test passes with a locally built
-  WebSocket-enabled libcurl; section 3a gives the build recipe and the result.
+- The real-backend realtime live harness
+  `tests/realtime_streaming_live.py` was removed in `7542ba0` with the retired
+  SGLang backends. Partials, PING/PONG interleaving, terminal count and
+  cancellation now have no live-backend test; the local realtime contract E2Es
+  above remain.
 
 Check each script's argument help if its local stage defaults differ from your
 checkout. Do not use `--skip-real` when validating the end-to-end journey.
@@ -164,10 +143,16 @@ zig build -Doptimize=ReleaseFast -Dcurl-prefix="$PREFIX" \
   -Ddeps-prefix=/path/to/deps
 ```
 
-`curl-config --protocols` must list `ws` and `wss`. On H20B 2026-11-14 a
-dedicated `qwen3-asr` backend ran on GPU 5, port 31005. It needed
+`curl-config --protocols` must list `ws` and `wss`. The harness
+`tests/realtime_streaming_live.py` was removed in `7542ba0`; the build recipe
+below remains valid and the results are a historical record. On H20B 2026-11-14
+a dedicated `qwen3-asr` backend ran on GPU 5, port 31005. It needed
 `LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat` because the installed driver
-535.161.08 is older than the container CUDA 13 build. The live test passed:
+535.161.08 is older than the container CUDA 13 build.
+
+The harness that produced these results, `tests/realtime_streaming_live.py`,
+was removed in `7542ba0` with the retired SGLang backends. The table below is a
+historical record; none of it is reproducible on the current source:
 
 | Check | Result |
 | --- | --- |
@@ -195,13 +180,9 @@ It never writes HTTP, SSE, WebSocket, or control-frame payloads of its own.
 
 Both relays ignore connections that are not part of the protocol under test. A
 localhost port scanner or health probe sends `GET /` and must not consume a
-relay plan slot or bind the WebSocket session. `tests/proxy_isolation_test.py`
-pins that invariant without a model, and also proves the pre-fix behaviour still
-fails:
-
-```sh
-python3 -I tests/proxy_isolation_test.py "$UMMINFER_BINARY"
-```
+relay plan slot or bind the WebSocket session. The local pinning test
+`tests/proxy_isolation_test.py` was removed in `ab51cf5`; the relay isolation
+behaviour is now covered only by the real byte-tap runs above.
 
 Expected result: retries occur only where the client contract allows them.
 Emitted stream content is not silently restarted. Stall and total timeouts
@@ -212,16 +193,18 @@ interruption of an MLX forward call.
 
 ## 5. Check the MLX backend separately
 
+`tests/mlx_smoke.py` was removed in `ab51cf5`. The deterministic MLX stage
+contract that remains is `tests/mlx_stage_result_test.py`; run it after
+`zig build test`:
+
 ```sh
-python3 -I tests/mlx_smoke.py \
-  --server "$UMMINFER_BINARY" \
-  --stage python/umminfer_mlx_stage.py \
-  --model "$MLX_MODEL"
+python3 -I tests/mlx_stage_result_test.py
 ```
 
-Expected result: JSON, SSE, abort, disconnected-client recovery, and concurrent
-requests pass with one persistent stage. Reported latency is a local
-measurement, not a performance guarantee.
+It loads no model and starts no server. It checks that the stage forwards the
+prompt and completion counts MLX-LM reported and never invents a count it did
+not observe. Real-model MLX latency measurement remains in `tests/mlx_perf.py`
+(see `docs/mlx.md`).
 
 ## 5b. Mac unified low-resource profile
 
@@ -239,28 +222,25 @@ evidence.
 
 ## 5c. Unified ASR partials and VLM GPU abort
 
-`tests/unified_partial_abort_live.py` drives the real Qwen3-ASR and Qwen3-Omni
-workers through public HTTP/SSE. It requires `UMMINFER_LIVE_OPT_IN=1`, the
+RETIRED. `tests/unified_partial_abort_live.py` was removed in `ab51cf5`, and the
+SGLang backends it drove were retired in `7542ba0`. The paragraph below is a
+historical record of the 2026-11-13 H20B run; it cannot be reproduced on the
+current source. The deterministic partial and abort contracts remain in
+`zig build unified-test` (section 5d).
+
+`tests/unified_partial_abort_live.py` drove the real Qwen3-ASR and Qwen3-Omni
+workers through public HTTP/SSE. It required `UMMINFER_LIVE_OPT_IN=1`, the
 ReleaseFast binary, both SGLang backends, and real audio.
 
-```sh
-UMMINFER_LIVE_OPT_IN=1 python3 -I tests/unified_partial_abort_live.py \
-  --server ./zig-out/bin/umm-infer \
-  --asr-backend http://127.0.0.1:43100 \
-  --omni-backend http://127.0.0.1:43101 \
-  --audio asr_zh.wav --cancel-audio asr_en_120s.wav \
-  --image man_ironing.png \
-  --evidence-dir /tmp/umminfer-phase5-streaming-abort-evidence
-```
-
-Expected result, recorded on H20B 2026-11-13: a default request carries one
-`asr_final` and no `asr_partial`; `stream_options.include_asr_partials` adds
+Expected result, recorded on H20B 2026-11-13: a default request carried one
+`asr_final` and no `asr_partial`; `stream_options.include_asr_partials` added
 ordered `asr_partial` deltas before one `asr_final`, then `vlm_delta`, with
-gap-free `seq` and one terminal; a cancel during the VLM stream yields exactly
+gap-free `seq` and one terminal; a cancel during the VLM stream yielded exactly
 one `cancelled`, no later delta, `/abort` 200, `in_flight=0`, and the Omni
-worker logs `SGLANG_ABORT_CONFIRMED ... finish=abort`; the next request
-completes. `tests/sglang_abort_probe.py` records the backend-only confirmation:
-`/abort_request` 200 and a raw SSE `finish_reason="abort"` frame.
+worker logged `SGLANG_ABORT_CONFIRMED ... finish=abort`; the next request
+completed. `tests/sglang_abort_probe.py` (also removed) recorded the
+backend-only confirmation: `/abort_request` 200 and a raw SSE
+`finish_reason="abort"` frame.
 
 ## 5d. Optional multi-turn session history
 
@@ -278,23 +258,15 @@ eviction, the global session cap, default-off behavior at both gates, the
 non-unified and disabled-engine HTTP 400 responses, and history loss across an
 engine restart. These are contract tests, not real-model validation.
 
-Real H20B multi-turn validation passed on 2026-11-14 with
-`tests/unified_remote_image_history_live.py`. The harness starts the real
-server twice: once without `--session-history` for the default gate, then with
-the switch and a fresh worker pair. It serves `man_ironing.png` from a local
-HTTP server and drives the default gate, two successful turns, a cancel, a
-failed VLM leg, a follow-up turn, and a request with no opt-in. One extra
-request without the image checks that the image answer is not generic.
-
-```sh
-UMMINFER_LIVE_OPT_IN=1 python3 -I tests/unified_remote_image_history_live.py \
-  --server ./zig-out/bin/umm-infer \
-  --asr-backend http://127.0.0.1:31000 \
-  --omni-backend http://127.0.0.1:31001 \
-  --audio-zh asr_zh.wav --audio-en asr_en_16k.wav \
-  --image man_ironing.png --public-host 127.0.0.1 \
-  --evidence-dir /tmp/umminfer-phase5-final-h20b-evidence/live
-```
+Real H20B multi-turn validation was recorded on 2026-11-14 with
+`tests/unified_remote_image_history_live.py`. That harness was removed in
+`ab51cf5` with the SGLang backends in `7542ba0`, so the description and command
+below are a historical record, not a runnable test. It started the real server
+twice: once without `--session-history` for the default gate, then with the
+switch and a fresh worker pair. It served `man_ironing.png` from a local HTTP
+server and drove the default gate, two successful turns, a cancel, a failed VLM
+leg, a follow-up turn, and a request with no opt-in. One extra request without
+the image checked that the image answer was not generic.
 
 `asr_en_16k.wav` is the repository recording converted to the contract format
 with `ffmpeg -i asr_en.wav -ar 16000 -ac 1 -sample_fmt s16 -c:a pcm_s16le`;
@@ -319,32 +291,31 @@ SHA256 values, commands, and `SHA256SUMS` are in
 
 ## 5e. Backend decode stop: scheduler, SSE, and GPU hardware evidence
 
-Three distinct evidence levels are recorded for one abort. They answer
+RETIRED. Every harness named in this section (`tests/sglang_abort_probe.py`,
+`tests/gpu_abort_evidence.py`, `tests/gpu_decode_stop_evidence.sh`) was removed
+in `ab51cf5`, and the SGLang backends were retired in `7542ba0`. The section is
+kept as a historical record of the 2026-11-14 measurement. None of its commands
+run on the current source.
+
+Three distinct evidence levels were recorded for one abort. They answered
 different questions and are not interchangeable. Before 2026-11-14 only levels
 1 and 2 existed; level 3 was the open `NOT_COVERED` gap closed by the run below.
 
-1. Scheduler abort. `tests/sglang_abort_probe.py` samples the backend
+1. Scheduler abort. `tests/sglang_abort_probe.py` sampled the backend
    scheduler counter `/v1/loads` before, during and after the request, then
-   posts `/abort_request`:
+   posted `/abort_request`. Recorded on H20B 2026-11-14 in 10 consecutive runs:
+   `/abort_request` 200; `num_running_reqs` went 0 -> 1 -> 0;
+   `counter_decode_stopped=true`. This was the scheduler's view of the running
+   batch, not a GPU hardware counter.
 
-   ```sh
-   python3 -I tests/sglang_abort_probe.py \
-     --base-url http://172.17.0.2:31001 --model qwen3-omni \
-     --out /tmp/umminfer-phase5-final-h20b-evidence/backend/abort-repeat-1.json
-   ```
-
-   Recorded on H20B 2026-11-14 in 10 consecutive runs: `/abort_request` 200;
-   `num_running_reqs` goes 0 -> 1 -> 0; `counter_decode_stopped=true`. This is
-   the scheduler's view of the running batch, not a GPU hardware counter.
-
-2. SSE abort. The generate stream ends with `finish_reason="abort"`. This is a
+2. SSE abort. The generate stream ended with `finish_reason="abort"`. This is a
    protocol frame. It proves the backend told the client the request ended, not
    that the GPU stopped executing kernels.
 
 3. GPU hardware stop. `tests/gpu_abort_evidence.py` plus
-   `tests/gpu_decode_stop_evidence.sh` run on a dedicated GPU 2 against an
-   independent SGLang instance (the shared GPU 0/1 backends are never
-   restarted). Two independent hardware instruments record the stop, each with
+   `tests/gpu_decode_stop_evidence.sh` ran on a dedicated GPU 2 against an
+   independent SGLang instance (the shared GPU 0/1 backends were never
+   restarted). Two independent hardware instruments recorded the stop, each with
    request id and wall-clock markers:
 
    - CUPTI kernel timeline. SGLang's own `torch.profiler` (Kineto) subscribes
@@ -372,7 +343,7 @@ different questions and are not interchangeable. Before 2026-11-14 only levels
    Run:
 
    ```sh
-   tests/gpu_decode_stop_evidence.sh <repo-checkout-dir>
+   tests/gpu_decode_stop_evidence.sh <repo-checkout-dir>   # removed in ab51cf5
    ```
 
    The verdict gates are in the analyzer and covered by its `selfcheck`
@@ -406,8 +377,13 @@ detect it. The shared backends on GPUs 0 and 1 stay unmodified.
 
 ## 5f. Real model-compute NaN failure, recorded on 2026-11-14
 
-`tests/unified_compute_failure_live.py` drives one fault leg through the public
-unified HTTP/SSE path. `tests/sglang_nan_injection.py` patches a copy of
+RETIRED. `tests/unified_compute_failure_live.py` and
+`tests/sglang_nan_injection.py` were removed in `ab51cf5` with the SGLang
+backends in `7542ba0`. This section is a historical record; its command does not
+run on the current source.
+
+`tests/unified_compute_failure_live.py` drove one fault leg through the public
+unified HTTP/SSE path. `tests/sglang_nan_injection.py` patched a copy of
 SGLang 0.5.15 (`/sgl-workspace/sglang`) at
 `srt/layers/logits_processor.py`. On the first decode forward after the trigger
 file exists, the copy multiplies the final hidden states by NaN on the GPU, so
@@ -420,6 +396,8 @@ The server is the ReleaseFast binary; both workers are the committed Python
 scripts. All three come from c8ce8a2. The ASR backend is port 43100 for the ASR
 leg; the Omni backend is port 43101 for the VLM leg. The other leg uses the unmodified shared backend on
 31000/31001.
+
+The recorded command was:
 
 ```sh
 UMMINFER_LIVE_OPT_IN=1 python3 -I tests/unified_compute_failure_live.py \
@@ -588,26 +566,26 @@ editing, reference-count, or output-format case that was not executed remains
 
 ## 8. CUDA build, IPC, sanitizer and stress on H20B
 
-Run these on a CUDA host with at least two free GPUs. On a shared host, select
-dedicated devices with `CUDA_VISIBLE_DEVICES` so the tests see them as 0 and 1.
-Do not run them at the same time as a model benchmark.
+RETIRED. `tests/cuda_ipc_test.cpp`, `tests/cuda_pipeline_test.cpp`,
+`tests/cuda_sanitize.py`, and `tests/cuda_stress.py` were removed in `ab51cf5`,
+and the `cuda-stress` build step no longer exists. The measurement below is a
+historical record of the 2026-11-14 H20B run.
+
+The only CUDA checks that remain on the current source are the build and the
+relay benchmark:
 
 ```sh
 zig build -Doptimize=ReleaseFast -Dcuda -Dcuda-prefix=/usr/local/cuda \
   -Ddeps-prefix=/path/to/deps
-zig-out/bin/cuda_ipc_test
-zig-out/bin/cuda_pipeline_test
-python3 -I tests/cuda_sanitize.py --ipc zig-out/bin/cuda_ipc_test \
-  --pipeline zig-out/bin/cuda_pipeline_test --log-dir /tmp/cuda-sanitize
-python3 -I tests/cuda_stress.py --ipc zig-out/bin/cuda_ipc_test \
-  --pipeline zig-out/bin/cuda_pipeline_test --rounds 10 --log-dir /tmp/cuda-stress
+zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda \
+  -Ddeps-prefix=/path/to/deps -Doptimize=ReleaseFast
 ```
 
 `-Ddeps-prefix` must contain the pinned `httplib.h`, `nlohmann/`, and the
 `libzmq`, `libmsgpackc`, `libcurl`, and `libwebsockets` libraries. The build
 puts that prefix before distro headers.
 
-Expected results, recorded on H20B 2026-11-14 on GPUs 2 and 3:
+Historical results, recorded on H20B 2026-11-14 on GPUs 2 and 3:
 
 | Check | Expected |
 | --- | --- |

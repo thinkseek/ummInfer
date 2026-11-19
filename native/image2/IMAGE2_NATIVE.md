@@ -149,9 +149,11 @@ cmake --build build-image2 -j
 ctest --test-dir build-image2
 ```
 
-`image2_gpu_tests MODEL_DIR GOLDEN_DIR` runs the three stage comparisons when
-the development-time golden dumps are present; otherwise it prints `skip` for
-that stage. The dump script is development-only and is not part of the build.
+`image2_gpu_tests MODEL_DIR GOLDEN_DIR` ran the three stage comparisons when
+the development-time golden dumps were present. `native/image2_tests/` was
+removed in `ab51cf5`, so the target no longer builds. `native/image2/CMakeLists.txt`
+still names the removed directory; that is a known build break outside this
+document.
 
 ## Known limitations
 
