@@ -318,6 +318,9 @@ final class SpeechController: ObservableObject {
     var onPartial: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onFailure: ((String) -> Void)?
+    /// A run ended without a final result (silence, or the system ending the
+    /// task). The UI releases the microphone; this is not an error.
+    var onIdle: (() -> Void)?
     /// True when the active recognizer is Apple's on-device model.
     private(set) var onDevice = true
 
@@ -412,6 +415,7 @@ final class SpeechController: ObservableObject {
                 if self.runID == id,
                    self.phase == .listening || self.phase == .transcribing {
                     self.phase = .finished
+                    self.onIdle?()
                 }
             } catch {
                 if self.runID == id, !(error is CancellationError) {

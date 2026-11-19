@@ -44,6 +44,24 @@ final class Automation {
         appearance.wrappedValue = option("theme") ?? "light"
         await settle()
 
+        // Server-free fault regression. It drives the real model, client and
+        // player through a scripted transport, so it needs neither a server nor
+        // a socket. `--automation` alone stays the live-server GUI gate.
+        if arguments.contains("--faults") {
+            let report = await FaultGate.run()
+            let passed = report["passed"] as? Bool ?? false
+            do {
+                let data = try JSONSerialization.data(
+                    withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: URL(fileURLWithPath: output))
+            } catch {
+                FileHandle.standardError.write(
+                    Data("ummmlx fault gate: \(error)\n".utf8))
+                exit(2)
+            }
+            exit(passed ? 0 : 1)
+        }
+
         var stopChecked = false
         var stopStatus = "NOT_REQUESTED"
         var passed = true

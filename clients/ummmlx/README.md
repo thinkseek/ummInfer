@@ -136,6 +136,36 @@ Screenshots are window captures and show the conversation, so pass
 server and stage, drives the GUI, and checks request history, Stop, and a real
 400. It needs `UMMMLX_SERVER` (the frozen binary) and `UMMMLX_MODEL`.
 
+### Fault regression (no server)
+
+`--automation --faults` drives the real `ChatModel`, `ChatClient`, `URLSession`
+and `LiveAudioStreamPlayer` through a scripted transport inside the app. It
+opens no socket, needs no ummInfer server, and asks for no microphone
+permission:
+
+```sh
+build/ummmlx.app/Contents/MacOS/ummmlx --automation --faults \
+  --output=/tmp/ummmlx-faults.json
+```
+
+It exits 0 only when every check passes and writes the same checks to
+`--output`.
+
+| Check | Path |
+| --- | --- |
+| `audio_cancel`, `audio_cancel_next_request` | Stop during streamed PCM, then a clean request in the same chat |
+| `network_drop_visible`, `network_drop_recovery` | Connection lost after a delta, then a successful request |
+| `server_error_visible`, `server_error_recovery` | HTTP 503, then a successful request |
+| `asr_failure_visible` | Speech permission denied |
+| `asr_ends_without_final` | Recognition ends without a final result |
+| `jitter_burst`, `jitter_slow`, `jitter_reset` | Burst delivery, a 2.5 s gap, and the stream after a slow one |
+
+The plain `--automation` runs above remain the live-server GUI gate; they are
+the only path that contacts a server. The fault gate is the unattended
+regression for the failure paths that the live gate cannot inject. `swift test`
+covers the same fault paths without the GUI, plus the parser and artifact
+checks.
+
 ## Voxt reuse
 
 Voxt commit `5645daf0480e9bf572b45a2bba8b8e2f1e642daa` supplied the SSE/error

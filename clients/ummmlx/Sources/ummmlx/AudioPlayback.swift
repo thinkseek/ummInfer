@@ -26,6 +26,51 @@ final class NoOpAudioStreamPlayer: AudioStreamPlaying {
     func stop() {}
 }
 
+/// Jitter-buffer sizing for one streamed-PCM turn. The two extremes it must
+/// cover: a burst delivery (all chunks at once, so latency stays low) and a
+/// link slower than real time (gaps above 2 s, so the cushion grows to the cap).
+/// One value per stream; a new stream does not inherit the previous worst gap.
+struct JitterPolicy {
+    private(set) var targetSeconds: Double
+    private let minimumSeconds: Double
+    private let maximumSeconds: Double
+    private var recentGaps: [Double] = []
+    private var cleanChunks = 0
+
+    init(minimumSeconds: Double = 0.25, maximumSeconds: Double = 3.0,
+         initialSeconds: Double = 0.3) {
+        self.minimumSeconds = minimumSeconds
+        self.maximumSeconds = maximumSeconds
+        self.targetSeconds = initialSeconds
+    }
+
+    /// `gap` is the wall-clock gap since the previous chunk, nil for the first
+    /// chunk. `starved` means the node had run dry, so the current gap needs
+    /// its own cushion on top of the worst gap seen.
+    mutating func noteArrival(gap: Double?, starved: Bool) {
+        if let gap, gap > 0.001 {
+            recentGaps.append(gap)
+            if recentGaps.count > 8 { recentGaps.removeFirst() }
+            if starved {
+                targetSeconds = min(maximumSeconds,
+                                    max(targetSeconds, gap * 1.5 + 0.2))
+            }
+        }
+        if let worst = recentGaps.max() {
+            targetSeconds = min(maximumSeconds,
+                                max(targetSeconds, worst * 1.5 + 0.1))
+        }
+    }
+
+    mutating func notePlayedChunk() {
+        cleanChunks += 1
+        if cleanChunks >= 20 {
+            cleanChunks = 0
+            targetSeconds = max(minimumSeconds, targetSeconds * 0.85)
+        }
+    }
+}
+
 @MainActor
 final class LiveAudioStreamPlayer: AudioStreamPlaying {
     var onStateChange: ((Bool) -> Void)?
@@ -56,12 +101,8 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
     /// stream actually produced instead of a fixed constant: start low for
     /// latency, grow when the node is found starved, shrink again after a run
     /// of clean chunks.
-    private var targetSeconds = 0.3
-    private let minimumTargetSeconds = 0.25
-    private let maximumTargetSeconds = 3.0
-    private var recentGaps: [Double] = []
+    private var jitter = JitterPolicy()
     private var lastArrival: Double = 0
-    private var cleanChunks = 0
     private var underruns = 0
     /// When the producer is slower than real time the cushion can never grow,
     /// so waiting for a target only delays the first gap. In that case hold
@@ -78,6 +119,12 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         FileHandle.standardError.write(
             Data("AUDIO \(Date().timeIntervalSince1970) \(what)\n".utf8))
     }
+
+    /// Read-only view of the active stream's cushion, used by the fault gate
+    /// and the regression tests. It changes no playback behavior.
+    var jitterTargetSeconds: Double { jitter.targetSeconds }
+    /// True when the output device could not be started.
+    var outputDeviceUnavailable: Bool { engineFailed }
 
     static func makePCMBuffer(_ chunk: AudioStreamChunk) -> AVAudioPCMBuffer? {
         guard chunk.sampleRate > 0,
@@ -123,6 +170,11 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         producedSeconds = 0
         chunkCount = 0
         bufferToEnd = false
+        // A stream that follows a slow one starts at the minimum cushion
+        // instead of inheriting the previous stream's worst gap.
+        jitter = JitterPolicy()
+        lastArrival = 0
+        underruns = 0
     }
 
     func enqueue(_ chunk: AudioStreamChunk) {
@@ -150,31 +202,18 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         let frames = Int(buffer.frameLength)
         let sampleRate = Double(chunk.sampleRate)
         let now = Date().timeIntervalSince1970
-        if lastArrival > 0 {
-            let gap = now - lastArrival
-            if gap > 0.001 {
-                recentGaps.append(gap)
-                if recentGaps.count > 8 { recentGaps.removeFirst() }
-            }
-            // The node ran dry before this chunk arrived: playback stopped and
-            // only resumes once the cushion is refilled. Grow the target to
-            // cover the gap that just happened.
-            if playbackStarted && pendingBuffers == 0 && !streamEnded {
-                underruns += 1
-                targetSeconds = min(maximumTargetSeconds,
-                                    max(targetSeconds, gap * 1.5 + 0.2))
-                playbackStarted = false
-                isPlaying = false
-                Self.log("underrun gap_s=\(gap) target_s=\(targetSeconds)")
-            }
+        // The node ran dry before this chunk arrived: playback stopped and
+        // only resumes once the cushion is refilled.
+        let gap = lastArrival > 0 ? now - lastArrival : nil
+        let starved = playbackStarted && pendingBuffers == 0 && !streamEnded
+        jitter.noteArrival(gap: gap, starved: starved)
+        if starved {
+            underruns += 1
+            playbackStarted = false
+            isPlaying = false
+            Self.log("underrun gap_s=\(gap ?? 0) target_s=\(jitter.targetSeconds)")
         }
         lastArrival = now
-        // A slow link or a slow synthesiser shows up as long gaps; keep the
-        // cushion at least large enough for the worst one seen so far.
-        if let worst = recentGaps.max() {
-            targetSeconds = min(maximumTargetSeconds,
-                                max(targetSeconds, worst * 1.5 + 0.1))
-        }
         chunkCount += 1
         producedSeconds += Double(frames) / sampleRate
         if firstArrival == 0 { firstArrival = now }
@@ -186,7 +225,7 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         }
         pendingBuffers += 1
         bufferedFrames += frames
-        let needed = Int(targetSeconds * sampleRate)
+        let needed = Int(jitter.targetSeconds * sampleRate)
         node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.didFinishBuffer(generation: currentGen, frames: frames)
@@ -195,19 +234,15 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         if !playbackStarted && !bufferToEnd && bufferedFrames >= needed {
             playbackStarted = true
             isPlaying = true
-            Self.log("start target_s=\(targetSeconds) buffered_s=\(Double(bufferedFrames) / sampleRate)")
+            Self.log("start target_s=\(jitter.targetSeconds) buffered_s=\(Double(bufferedFrames) / sampleRate)")
         }
         if playbackStarted && !node.isPlaying {
             node.play()
         }
         if playbackStarted && underruns == 0 {
-            cleanChunks += 1
-            if cleanChunks >= 20 {
-                cleanChunks = 0
-                targetSeconds = max(minimumTargetSeconds, targetSeconds * 0.85)
-            }
+            jitter.notePlayedChunk()
         }
-        Self.log("enqueue frames=\(frames) buffered_ms=\(Int(Double(bufferedFrames) / sampleRate * 1000)) target_ms=\(Int(targetSeconds * 1000))")
+        Self.log("enqueue frames=\(frames) buffered_ms=\(Int(Double(bufferedFrames) / sampleRate * 1000)) target_ms=\(Int(jitter.targetSeconds * 1000))")
     }
 
     func finishStream() {
