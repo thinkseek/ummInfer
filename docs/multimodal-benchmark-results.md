@@ -492,3 +492,243 @@ The server, ASR stage and Omni stage were stopped by pid. Their entries remain
 as `Z` zombies reparented to container PID 1, which does not reap orphans; this
 is the same state documented for earlier phases. No process holds GPU 6 or 7
 and no listener claims 43302. The Mac tunnel was closed.
+
+## 15. Engine defects, reproduced and fixed, 2026-11-19
+
+Section 12 left two failures that blocked the stability gate. Both were
+investigated on the 54 cases of the accepted baseline, selected by id from the
+current manifest (`2026-11-19.1`, which adds Mandarin cases), with a fresh
+service on port 43310, ASR stage on GPU 6 and Omni stage on GPU 7. GPUs 0/1 and
+port 43300 were never touched. The case ids and the baseline comparison come
+from `/tmp/mmbench/evidence-v5` (manifest `2026-11-15.1`).
+
+Deployed bytes for every run in this section:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `umm-infer` | `fb092678c6328e1552fe7357c1e1293f6d131e71e2fd8f302b3f9411c00d254f` |
+| `umm-native-stage-asr` | `81ac3287be1fb48d186859c65c25f7ffa138389a4a6050ca23e9f23cacdd9221` |
+| `umm-native-stage-omni` | `6fb3bd93413c987f7a9caf230234bedf164b46461d66c7d99530569d3604075c` |
+| LibriSpeech archive | `39fde525e59672dc6d1551919b1478f724438a95aa55f874b576be21967e6c23` |
+
+### 15.1 `image too large for slice`: a fixed size bound, not engine state
+
+Reproduction with the real request bytes, on a freshly started service:
+
+| Probe | Order | Result |
+| --- | --- | ---: |
+| `vqa2-val-262189000`, five consecutive requests | first requests after start | 5/5 failed |
+| target after a passing image (`262148`), twice | interleaved | 4/4 failed |
+| small/target interleaved, three rounds | 3 rounds | 3/3 failed |
+
+Every failure arrived in 28–77 ms, before any vision work, and the same bytes
+failed every time. Order and history never changed the result, so the "stale
+slicing cache or sequence length" hypothesis is excluded.
+
+The arithmetic is the whole cause. `smart_resize` keeps the resized area within
+`max_pixels`, and the preprocessor then cuts the result into 16×16 patches:
+
+| Quantity | Value for COCO 262189 |
+| --- | --- |
+| source bytes | 279986, SHA-256 `5b6076cc…4ae14f4` |
+| source size | 587×640 |
+| `smart_resize(factor 32, max_pixels 12845056)` | 640×576 (368640 px) |
+| pre-merge patch rows | 40×36 = **1440** |
+| previous bound `kMaxImgTokens` | **1296** (36×36, that is 576×576) |
+
+`native/omni/vision_forward.cu` rejected any image above 36×36 patch rows,
+while `native/stage_cli/omni_stage.cpp` accepted up to 12845056 px. The two
+constants were written independently and never agreed. A 640×480 image resizes
+to 30×40 = 1200 rows and passed; a 587×640 image needs 1440 and failed. That is
+the whole difference between the passing and the failing VQA cases.
+
+The run-D stage log no longer exists (later runs overwrote it), so its pass on
+this case cannot be re-derived from logs. The check is a pure function of the
+resized size, so a pass in run D requires different deployed bytes or a
+different input size, not engine memory.
+
+Fix, in one place (`native/omni/image_preprocess.hpp`):
+
+```cpp
+constexpr int kMaxImagePixels = 1024 * 1024;              // 1024x1024
+constexpr int kMaxImagePatchRows = kMaxImagePixels / 256; // 4096 patch rows
+constexpr int kMaxImageTokens = kMaxImagePixels / 1024;   // 1024 decoder pads
+static_assert(kMaxImageTokens * 4 == kMaxImagePatchRows, "...");
+```
+
+The preprocessor default, the vision scratch (`kVT` in `omni_engine.cu`) and
+the guard in `vision_forward.cu` now read the same constants, so `smart_resize`
+output can never exceed the allocation. A 1024×1024 image leaves 1024 of the
+default 2048-token context for text and generated tokens. The static assertion
+makes the pixel/row/pad relation a compile-time check.
+
+After the fix every one of the 11 target requests sent after the change answered
+("four distinct street signs", against the ten reference answers `4`), across
+two builds and both probe orders. The stage log reports `image_tokens=360` for
+the case, which is 1440/4.
+
+### 15.2 ASR requests closed without a response: transport, not engine
+
+Section 12 counted four drops in 80 ASR requests. The ASR stage log shows where
+the requests stopped:
+
+| Round | ASR cases | `asr request` lines in the stage log |
+| ---: | ---: | ---: |
+| 1 | 16 | 16 |
+| 2 | 16 | 16 |
+| 3 | 16 | 15 |
+| 4 | 16 | 16 |
+| 5 | 16 | 13 |
+
+The shortfalls match the dropped cases exactly: one in round 3, three in round
+5. Every request that reached the stage completed, with `elapsed_ms` from 191 to
+2288 ms over all 112 logged requests. The dropped requests never reached the
+engine.
+
+Controlled probes against the same binary on the same network path:
+
+| Probe | Result |
+| --- | --- |
+| 40 sequential transcriptions, 1 MB body | 40/40 HTTP 200, p50 696 ms |
+| headers and half body, 6 s stall | HTTP 400 `Connection: close` at 6.0 s |
+| connect, send nothing for 6 s, then send | EOF with no status line |
+| connect, send nothing for 12 s, then send | EOF with no status line |
+
+The last two rows reproduce the client-visible signature:
+`RemoteDisconnected: Remote end closed connection without response`. The server
+closes a connection whose request head does not arrive within httplib's default
+5 s socket read timeout. That close carries no status line and no log line. The
+body-read timeout is a different path and answers with 400.
+
+The observed durations (9.9, 12.3 and 11.8 s) and the fact that only the ASR
+route failed, and only in the slowest round, put the break in the connection
+phase before the handler. The client-to-server path stalled, the head arrived
+late, and the server closed the connection. No ASR engine, Omni engine or
+pipeline code is involved, and the stage log shows the engine never saw the
+traffic.
+
+Code changes in the server, and what was not changed:
+
+- `set_error_logger` now logs httplib transport errors, and every transcription
+  logs one line with `body_bytes`, `handler_ms` and `state`. Before this, a
+  route could fail with no trace in the server log, which is why section 12
+  could not attribute the drops.
+- The abandoned-request branch now answers 503. It previously returned with no
+  status, and httplib turned that into an empty 200.
+- No retry, no timeout change, no engine change. There is no engine defect at
+  this layer, and a longer timeout only moves the threshold.
+
+### 15.3 Verification: three rounds of the same 54 cases
+
+The client ran inside the container against `172.17.0.2:43310`, the container's
+bridge address. That is a real veth path, not loopback. Each round is a separate
+process; the harness stops after one round when the case set is a subset, so
+`--rounds 3` produced one round and the three rounds were started separately.
+
+| Round | Cases | Successes | infra | contract | quality | WER | CER | VQA acc | GSM8K | joint WER | hit | p50 ms | p95 ms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 54 | 54 | 0 | 0 | 1 | 0.0329 | 0.0274 | 0.8958 | 1.0000 | 0.0000 | 1.0000 | 1091 | 2686 |
+| 2 | 54 | 54 | 0 | 0 | 1 | 0.0329 | 0.0274 | 0.8958 | 1.0000 | 0.0000 | 1.0000 | 1091 | 2699 |
+| 3 | 54 | 54 | 0 | 0 | 1 | 0.0329 | 0.0274 | 0.8958 | 1.0000 | 0.0000 | 1.0000 | 1091 | 2688 |
+
+ASR drops: 0 in 3 rounds, 0 in 48 ASR requests. Every round wrote 22
+transcripts (16 ASR and 6 joint). The stage log records 88 requests and 0
+aborts over the whole window, with a maximum compute time of 2282 ms. The
+server log records 64 `transcription done` lines, 0 `client_closed` and 0
+`http error`.
+
+`vqa2-val-262189000` scored 1.0000 in all three rounds. VQA accuracy returns to
+the run-D value 0.8958. The one remaining failure in every round is the
+recorded quality miss on `vqa2-val-262197000`, which answered `1` against six
+`2` and four `0` reference answers.
+
+Per-case comparison against run D (`/tmp/mmbench/evidence-v5/round-1/cases.jsonl`):
+
+| case | task | run D | round 1 | round 2 | round 3 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| asr-en-ls-1089-134686-0000 | asr | 0.0714 | 0.0714 | 0.0714 | 0.0714 |
+| asr-en-ls-1089-134691-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| asr-en-ls-1188-133604-0000 | asr | 0.1053 | 0.1053 | 0.1053 | 0.1053 |
+| asr-en-ls-121-121726-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| asr-en-ls-121-123852-0000 | asr | 0.1034 | 0.1034 | 0.1034 | 0.1034 |
+| asr-en-ls-121-123859-0000 | asr | 0.0270 | 0.0270 | 0.0270 | 0.0270 |
+| asr-en-ls-121-127105-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| asr-en-ls-1221-135766-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| asr-en-ls-1221-135767-0000 | asr | 0.0556 | 0.0556 | 0.0556 | 0.0556 |
+| asr-en-ls-1284-1180-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| asr-en-ls-1284-1181-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| asr-en-ls-1284-134647-0000 | asr | 0.0476 | 0.0476 | 0.0476 | 0.0476 |
+| asr-en-ls-1320-122612-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| asr-en-ls-1320-122617-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| asr-en-ls-1580-141083-0000 | asr | 0.0333 | 0.0333 | 0.0333 | 0.0333 |
+| asr-en-ls-1580-141084-0000 | asr | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| gsm8k-test-0000 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0001 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0002 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0003 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0004 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0005 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0006 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0007 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0008 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0009 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0010 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0011 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0012 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0013 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0014 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| gsm8k-test-0015 | gsm8k | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-262148000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-393225000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-393226000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-240301000 | vqa | 0.3333 | 0.3333 | 0.3333 | 0.3333 |
+| vqa2-val-131089000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-262162000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-393243000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-262175000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-131108000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-393254000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-42000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-131115000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-262189000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-393266000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-393267000 | vqa | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| vqa2-val-262197000 | vqa | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| joint-speechcoco-val-0000 | joint | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 |
+| joint-speechcoco-val-0001 | joint | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 |
+| joint-speechcoco-val-0002 | joint | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 |
+| joint-speechcoco-val-0003 | joint | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 |
+| joint-speechcoco-val-0004 | joint | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 |
+| joint-speechcoco-val-0005 | joint | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 | 0.0000 / 1.000 |
+
+Every value matches run D. No case regressed.
+
+### 15.4 What was not established
+
+- **Run D on `vqa2-val-262189000`.** Its stage log is gone. The fix stands on
+  the deterministic reproduction and the arithmetic, not on an explanation of
+  that earlier pass.
+- **The ASR drop over the original network path.** The three rounds ran inside
+  the container. The SSH tunnel from the Mac to the container was not usable
+  during this session (the forwarding channel carried no data and bulk
+  transfers stalled), so the exact external path that produced the four drops
+  was not re-run. The four drops are explained and their mechanism is
+  reproduced, but "zero drops over that path" is not demonstrated.
+- **The head-timeout close is still invisible in the server log.** It happens
+  inside httplib before any handler runs, and this version offers no hook for
+  it. A recurrence is now attributable to the absence of a `transcription` line
+  for a request the client saw fail, but it is not logged directly.
+
+### 15.5 Cleanup, 2026-11-19 (second window)
+
+| Item | Before start | During run | After stop |
+| --- | ---: | ---: | ---: |
+| GPU 6 used | 3 MiB | 2387 MiB | 3 MiB |
+| GPU 7 used | 3 MiB | 78867 MiB | 3 MiB |
+| GPU 0/1 | 3 MiB | 3 MiB, never touched | 3 MiB |
+| Port 43310 | free | listening | free |
+| Port 43300 | — | never started or stopped | — |
+
+The server, ASR stage and Omni stage were stopped by pid. No process of this
+window remains, no listener claims 43310, and the resident 43301 service on
+GPUs 2-5 was never touched.

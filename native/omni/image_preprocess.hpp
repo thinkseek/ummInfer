@@ -18,6 +18,11 @@ namespace umminfer::omni {
 constexpr int kMaxImagePixels = 1024 * 1024;
 constexpr int kMaxImagePatchRows = kMaxImagePixels / (16 * 16);
 constexpr int kMaxImageTokens = kMaxImagePixels / (32 * 32);
+// The three consumers must agree: 4 pre-merge rows become one decoder token.
+static_assert(kMaxImageTokens * 4 == kMaxImagePatchRows,
+              "image patch rows and image pads disagree");
+static_assert(kMaxImageTokens * 32 * 32 == kMaxImagePixels,
+              "image pixel bound is not a whole number of merged patches");
 
 struct PreprocessedImage {
   // Pre-merge patch rows: grid_t * grid_h * grid_w rows of 1536 (864 for the
