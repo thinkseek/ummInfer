@@ -61,8 +61,23 @@ int main() {
   {
     std::vector<float> s = voiced(kRate);
     append(s, noise(kRate * 20 / 1000));
-    check("20 ms of noise is below the floor",
+    check("short noise is below the 200 ms floor",
           umminfer::native::trailing_noise_cut(s, kRate) == 0);
+  }
+  {
+    // A final fricative measures up to 160 ms and must survive.
+    std::vector<float> s = voiced(kRate);
+    append(s, noise(kRate * 16 / 100));
+    check("160 ms fricative ending is kept",
+          umminfer::native::trailing_noise_cut(s, kRate) == 0);
+  }
+  {
+    // A 240 ms run is the decoder's noise and is removed.
+    std::vector<float> s = voiced(kRate);
+    append(s, noise(kRate * 24 / 100));
+    check("240 ms noise run is cut",
+          umminfer::native::trailing_noise_cut(s, kRate) ==
+              size_t(kRate * 24 / 100));
   }
   {
     std::vector<float> s = voiced(kRate);

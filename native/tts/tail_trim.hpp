@@ -14,8 +14,10 @@ namespace umminfer::native {
 // Returns how many trailing samples to remove. Walks 10 ms windows backwards,
 // skipping silent windows (rms < 60) and noise windows (zcr >= 0.4 *
 // sample_rate), plus the silence between them, and stops at the first other
-// window. Returns 0 unless at least one noise window was skipped and the
-// skipped run is at least 30 ms. At most 0.6 s of noise is removed; the
+// window. The run must carry at least 200 ms of noise, because a real
+// fricative measures up to 160 ms and the decoder's run 240 ms; a shorter run
+// is left in place. The cut stays inside that one run. At most 0.6 s of noise
+// is removed; the
 // silence around it is removed with it but does not consume that budget, so
 // an utterance ending in a pause does not keep its noise. Trailing silence on
 // its own is kept.
