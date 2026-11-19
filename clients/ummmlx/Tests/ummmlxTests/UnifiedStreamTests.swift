@@ -75,9 +75,18 @@ final class UnifiedDecodeTests: XCTestCase {
         XCTAssertEqual(event.stage, "image")
     }
 
-    func testRejectsUnknownKindMissingSeqAndWrongTypes() throws {
+    func testUnknownKindIsTolerated() throws {
+        // A newer server may add a kind. It must not fail the stream: its seq is
+        // consumed and it is never treated as a terminal.
+        let event = try UnifiedDecode.decode(
+            eventData(unifiedEvent(kind: "mystery", seq: 0)))
+        XCTAssertEqual(event.kind, .unknown)
+        XCTAssertEqual(event.seq, 0)
+        XCTAssertFalse(event.kind.isTerminal)
+    }
+
+    func testRejectsMissingSeqAndWrongTypes() throws {
         for object in [
-            unifiedEvent(kind: "mystery", seq: 0),
             ["kind": "complete", "session_id": "s", "stage": "vlm", "text": ""],
             ["kind": 7, "seq": 0, "session_id": "s", "stage": "vlm", "text": ""],
             ["kind": "complete", "seq": -1, "session_id": "s", "stage": "vlm", "text": ""],

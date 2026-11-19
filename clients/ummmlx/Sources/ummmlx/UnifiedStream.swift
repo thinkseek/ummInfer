@@ -15,6 +15,24 @@ enum UnifiedKind: String, CaseIterable {
     case complete
     case error
     case cancelled
+    /// A kind this client does not know, added by a newer server. Its seq is
+    /// consumed and the event is otherwise ignored; it is never terminal, so it
+    /// cannot truncate a stream.
+    case unknown
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "asr_partial": self = .asrPartial
+        case "asr_final": self = .asrFinal
+        case "vlm_delta": self = .vlmDelta
+        case "artifact": self = .artifact
+        case "leg_error": self = .legError
+        case "complete": self = .complete
+        case "error": self = .error
+        case "cancelled": self = .cancelled
+        default: self = .unknown
+        }
+    }
 
     var isTerminal: Bool { self == .complete || self == .error || self == .cancelled }
 }
@@ -133,9 +151,7 @@ enum UnifiedDecode {
             throw ChatClientError.invalidResponse("a unified event is not JSON")
         }
         let kindText = try string(root["kind"], "kind")
-        guard let kind = UnifiedKind(rawValue: kindText) else {
-            throw ChatClientError.invalidResponse("unified kind '\(kindText)' is unknown")
-        }
+        let kind = UnifiedKind(rawValue: kindText) ?? .unknown
         let seq = try integer(root["seq"], "seq")
         guard seq >= 0 else {
             throw ChatClientError.invalidResponse("unified seq is negative")
