@@ -219,6 +219,9 @@ class UnifiedEngine {
   // boundary turns a false into a 400 before any submit.
   bool image_enabled() const { return !config_.image_stage.empty(); }
   bool tts_enabled() const { return !config_.tts_stage.empty(); }
+  // Coordinator stage name of the TTS worker, empty when none is registered.
+  // The standalone /v1/audio/speech route submits to that same stage.
+  const std::string& tts_stage_name() const { return config_.tts_stage; }
 
   // Fires for every ASR partial/final and VLM delta, in sequence order.
   std::function<void(const UnifiedEvent&)> on_event;

@@ -674,6 +674,39 @@ struct Harness {
     }
   }
 
+  // Drains one stage inbox until the abort for leg_id is observed. Unlike
+  // wait_abort it polls only the given socket, so a tts/image abort is not
+  // missed and no other stage's frames are consumed.
+  bool wait_abort_on(PullSocket& socket, const std::string& leg_id) {
+    const auto deadline = std::chrono::steady_clock::now() + kStateWait;
+    while (!saw_abort(leg_id) && std::chrono::steady_clock::now() < deadline) {
+      auto msg = socket.recv_timeout(50);
+      if (!msg) continue;
+      if (auto* abort = std::get_if<AbortMessage>(&*msg)) {
+        std::lock_guard<std::mutex> lock(abort_mu);
+        aborted_legs.push_back(abort->request_id);
+      }
+    }
+    return saw_abort(leg_id);
+  }
+
+  // Drains both stage inboxes until the abort for leg_id is observed. The loop
+  // ends on the state change or the budget, not after a fixed slice count.
+  bool wait_abort(const std::string& leg_id) {
+    const auto deadline = std::chrono::steady_clock::now() + kStateWait;
+    while (!saw_abort(leg_id) && std::chrono::steady_clock::now() < deadline) {
+      for (PullSocket* socket : {&asr_recv, &vlm_recv}) {
+        auto msg = socket->recv_timeout(50);
+        if (!msg) continue;
+        if (auto* abort = std::get_if<AbortMessage>(&*msg)) {
+          std::lock_guard<std::mutex> lock(abort_mu);
+          aborted_legs.push_back(abort->request_id);
+        }
+      }
+    }
+    return saw_abort(leg_id);
+  }
+
   bool saw_abort(const std::string& leg_id) {
     std::lock_guard<std::mutex> lock(abort_mu);
     for (const auto& id : aborted_legs) {
@@ -704,22 +737,6 @@ struct Harness {
     }
   }
 
-  // Drains both stage inboxes until the abort for leg_id is observed. The loop
-  // ends on the state change or the budget, not after a fixed slice count.
-  bool wait_abort(const std::string& leg_id) {
-    const auto deadline = std::chrono::steady_clock::now() + kStateWait;
-    while (!saw_abort(leg_id) && std::chrono::steady_clock::now() < deadline) {
-      for (PullSocket* socket : {&asr_recv, &vlm_recv}) {
-        auto msg = socket->recv_timeout(50);
-        if (!msg) continue;
-        if (auto* abort = std::get_if<AbortMessage>(&*msg)) {
-          std::lock_guard<std::mutex> lock(abort_mu);
-          aborted_legs.push_back(abort->request_id);
-        }
-      }
-    }
-    return saw_abort(leg_id);
-  }
 
   void stream(const std::string& id, const std::string& stage, Value chunk) {
     StreamMessage msg;
@@ -4611,6 +4628,407 @@ void test_public_http_finish_reason_length_and_router_reset() {
   router.close();
 }
 
+// ---- Standalone speech synthesis ------------------------------------------
+
+// One text goes to the registered TTS stage; the WAV the stage returns is
+// served as audio/wav, or stripped to raw PCM16 for response_format=pcm.
+void test_public_http_audio_speech() {
+  Harness h("httpspeech");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "speech server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string url = "http://127.0.0.1:" +
+                          std::to_string(api.bound_port()) + "/v1/audio/speech";
+
+  auto post = [&](const json& body) {
+    test_http::HttpRequest request;
+    request.url = url;
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{10000};
+    return test_http::perform(request);
+  };
+  auto post_status = [&](const json& body) -> long {
+    try {
+      return post(body).status;
+    } catch (const client::Error& error) {
+      return static_cast<long>(error.status());
+    }
+  };
+  auto content_type = [](const test_http::HttpResponse& response) {
+    for (const auto& [key, value] : response.headers) {
+      std::string lower = key;
+      std::transform(lower.begin(), lower.end(), lower.begin(),
+                     [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                     });
+      if (lower == "content-type") return value;
+    }
+    return std::string();
+  };
+
+  const std::string raw_pcm("\x10\x20\x30\x40\x50\x60", 6);
+  const std::string wav = audio::wav_from_pcm16(raw_pcm, 24000);
+  Value::Map extra;
+  extra["sample_rate"] = Value(int64_t{24000});
+  extra["channels"] = Value(int64_t{1});
+
+  auto serve = [&](const std::string& format) {
+    auto future = std::async(std::launch::async, [&] {
+      return post(json{{"model", "qwen3-unified"},
+                       {"input", "hello there"},
+                       {"voice", "vivian"},
+                       {"response_format", format}});
+    });
+    auto submit = h.next_submit(h.tts_recv);
+    check(submit.has_value(), "speech request did not reach the TTS stage");
+    if (submit) {
+      StagePayload p = StagePayload::from_value(submit->data);
+      check(p.request.inputs.find("text")->as_str() == "hello there",
+            "speech request did not forward the input text");
+      check(p.request.inputs.find("voice")->as_str() == "vivian",
+            "speech request did not forward the voice");
+      h.complete(submit->request_id, "tts", true,
+                 artifact_result("audio", "audio/wav", wav, extra));
+    }
+    return future.get();
+  };
+
+  const auto wav_response = serve("wav");
+  check(wav_response.status == 200, "wav speech did not answer 200");
+  check(wav_response.body == wav,
+        "wav speech did not return the stage bytes unchanged");
+  check(content_type(wav_response).rfind("audio/wav", 0) == 0,
+        "wav speech did not answer audio/wav");
+
+  const auto pcm_response = serve("pcm");
+  check(pcm_response.status == 200, "pcm speech did not answer 200");
+  check(pcm_response.body == raw_pcm,
+        "pcm speech did not strip the RIFF container");
+  check(content_type(pcm_response).rfind("audio/pcm", 0) == 0,
+        "pcm speech did not answer audio/pcm");
+
+  // Contract errors answer 400 before any stage submit.
+  check(post_status(json::object()) == 400,
+        "a missing input did not answer 400");
+  check(post_status(json{{"input", ""}}) == 400,
+        "an empty input did not answer 400");
+  check(post_status(json{{"input", "hi"}, {"response_format", "mp3"}}) == 400,
+        "an unsupported response_format did not answer 400");
+  check(post_status(json{{"input", "hi"}, {"speed", 1.5}}) == 400,
+        "an unsupported field did not answer 400");
+  check(post_status(json{{"input", "hi"}, {"model", "other"}}) == 400,
+        "an unserved model did not answer 400");
+  check(h.no_submit(h.tts_recv),
+        "a rejected speech request still submitted to the TTS stage");
+
+  api.stop();
+  server_thread.join();
+}
+
+// A process without a registered TTS stage answers 501, not a 200 with no
+// audio.
+void test_public_http_audio_speech_without_tts() {
+  Harness h("httpspeechnone");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 5.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "no-tts speech server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  test_http::HttpRequest request;
+  request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                "/v1/audio/speech";
+  request.body = json{{"input", "hello"}}.dump();
+  request.headers.emplace("Content-Type", "application/json");
+  request.timeout = client::Milliseconds{5000};
+  long status = 0;
+  std::string body;
+  try {
+    const auto response = test_http::perform(request);
+    status = response.status;
+    body = response.body;
+  } catch (const client::Error& error) {
+    status = static_cast<long>(error.status());
+    body = error.what();
+  }
+  check(status == 501, "speech without a TTS stage did not answer 501");
+  check(body.find("TTS stage") != std::string::npos,
+        "the 501 body does not name the missing TTS stage");
+  api.stop();
+  server_thread.join();
+}
+
+// ---- Session-scoped cancellation -----------------------------------------
+
+// A request carrying session_id may only be aborted by that session. The
+// engine reports kSessionMismatch, the HTTP route answers 403, and the request
+// keeps running for its owner.
+void test_cancel_for_session_rejects_foreign_session() {
+  Harness h("cancelsession");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "session-cancel server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  StagePayload request = audio_request();
+  Value::Map inputs = request.request.inputs.as_map();
+  inputs["session_id"] = Value("tenant-a");
+  request.request.inputs = Value(std::move(inputs));
+
+  const std::string id = engine.submit(request);
+  auto asr = h.next_submit(h.asr_recv);
+  check(asr && asr->request_id == id,
+        "the session request did not reach the ASR stage under its own id");
+
+  check(engine.cancel_for_session(id, "tenant-b") ==
+            UnifiedEngine::CancelStatus::kSessionMismatch,
+        "cancel_for_session accepted a foreign session id");
+
+  test_http::HttpRequest abort_request;
+  abort_request.url = "http://127.0.0.1:" +
+                      std::to_string(api.bound_port()) + "/abort";
+  abort_request.body =
+      json{{"request_id", id}, {"session_id", "tenant-b"}}.dump();
+  abort_request.headers.emplace("Content-Type", "application/json");
+  abort_request.timeout = client::Milliseconds{5000};
+  long abort_status = 0;
+  try {
+    abort_status = test_http::perform(abort_request).status;
+  } catch (const client::Error& error) {
+    abort_status = static_cast<long>(error.status());
+  }
+  check(abort_status == 403, "a cross-session abort did not answer 403");
+  check(!h.saw_abort(id), "a cross-session abort reached the request");
+
+  h.complete(id, "asr", true, text_result("transcript"));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "the owned request did not reach the VLM stage");
+  h.complete(vlm ? vlm->request_id : id + ":vlm", "vlm", true,
+             text_result("answer"));
+  check(engine.wait(id, 5.0), "the owned request did not settle");
+  const auto info = engine.info(id);
+  check(info && info->state == "completed",
+        "a foreign cancel changed the owned request's outcome");
+  engine.release(id);
+
+  // The owning session still cancels its own request.
+  const std::string second = engine.submit(request);
+  auto second_asr = h.next_submit(h.asr_recv);
+  check(second_asr.has_value(), "the second request did not reach ASR");
+  check(engine.cancel_for_session(second, "tenant-a") ==
+            UnifiedEngine::CancelStatus::kCancelled,
+        "cancel_for_session rejected the owning session");
+  check(h.wait_abort(second), "the owning cancel did not abort the leg");
+  h.complete(second, "asr", false, Value(), std::string("request aborted"));
+  check(engine.wait(second, 5.0), "the owned cancel did not settle");
+  engine.release(second);
+
+  api.stop();
+  server_thread.join();
+}
+
+// ---- Streamed TTS fan-out ------------------------------------------------
+
+// A VLM-only request that asks for streamed audio output.
+StagePayload streamed_audio_request() {
+  StagePayload payload = mixed_request(false, true);
+  Value::Map inputs = payload.request.inputs.as_map();
+  Value::Map options = inputs.at("audio_options").as_map();
+  options["stream"] = Value(true);
+  inputs["audio_options"] = Value(std::move(options));
+  payload.request.inputs = Value(std::move(inputs));
+  return payload;
+}
+
+// Each VLM delta that completes a sentence starts its own :tts:N leg in
+// sentence order.
+void test_streamed_tts_sentence_fanout() {
+  Harness h("ttsfanout");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id = engine.submit(streamed_audio_request());
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "the streamed request did not reach the VLM");
+  const std::string vlm_id = vlm ? vlm->request_id : id;
+
+  h.stream(vlm_id, "vlm", text_chunk("Hello there. ", false));
+  h.stream(vlm_id, "vlm", text_chunk("How are you? ", false));
+  h.stream(vlm_id, "vlm", text_chunk("Fine.", false));
+
+  const std::vector<std::string> expected = {"Hello there.", "How are you?",
+                                             "Fine."};
+  std::vector<std::string> leg_ids;
+  std::vector<std::string> texts;
+  for (size_t i = 0; i < expected.size(); ++i) {
+    auto leg = h.next_submit(h.tts_recv);
+    check(leg.has_value(), "a streamed sentence leg was not submitted");
+    if (!leg) break;
+    leg_ids.push_back(leg->request_id);
+    texts.push_back(StagePayload::from_value(leg->data)
+                        .request.inputs.find("text")
+                        ->as_str());
+  }
+  check(texts == expected,
+        "streamed TTS legs do not carry the sentences in order");
+  for (size_t i = 0; i < leg_ids.size(); ++i) {
+    check(leg_ids[i] == id + ":tts:" + std::to_string(i),
+          "a streamed TTS leg id is not the ordered :tts:N child id");
+  }
+
+  h.complete(vlm_id, "vlm", true, text_result("Hello there. How are you? Fine."));
+  Value::Map extra;
+  extra["sample_rate"] = Value(int64_t{24000});
+  extra["channels"] = Value(int64_t{1});
+  for (const std::string& leg_id : leg_ids) {
+    h.complete(leg_id, "tts", true,
+               artifact_result("audio", "audio/wav",
+                               audio::wav_from_pcm16(std::string(4, '\x01'),
+                                                     24000),
+                               extra));
+  }
+  check(engine.wait(id, 5.0), "the streamed request did not complete");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete,
+        "the streamed request did not end in one complete terminal");
+  check(h.no_submit(h.tts_recv),
+        "a fourth TTS leg started after the stream was flushed");
+  engine.release(id);
+}
+
+// A streamed chunk past the per-request audio limit aborts the TTS legs and
+// fails the request instead of forwarding the bytes as an artifact.
+void test_streamed_tts_chunk_limit_aborts() {
+  Harness h("ttslimit");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id = engine.submit(streamed_audio_request());
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "the limited request did not reach the VLM");
+  const std::string vlm_id = vlm ? vlm->request_id : id;
+  h.stream(vlm_id, "vlm", text_chunk("Hello there. ", false));
+  auto leg = h.next_submit(h.tts_recv);
+  check(leg.has_value(), "the first streamed leg was not submitted");
+  const std::string leg_id = leg ? leg->request_id : id + ":tts:0";
+
+  Value::Map chunk;
+  chunk["audio"] = Value::bin(std::string(kMaxArtifactAudioBytes + 1, '\x05'));
+  chunk["index"] = Value(int64_t{0});
+  h.stream(leg_id, "tts", Value(std::move(chunk)));
+  check(h.wait_abort_on(h.tts_recv, leg_id),
+        "an oversized streamed chunk did not abort the TTS leg");
+
+  h.complete(vlm_id, "vlm", true, text_result("Hello there. "));
+  h.complete(leg_id, "tts", false, Value(), std::string("request aborted"));
+  check(engine.wait(id, 6.0), "the oversized stream did not settle");
+
+  bool saw_limit = false;
+  size_t artifacts = 0;
+  for (const UnifiedEvent& e : log.snapshot()) {
+    if (e.kind == UnifiedEvent::Kind::kLegError &&
+        e.error.find("artifact limit") != std::string::npos) {
+      saw_limit = true;
+    }
+    if (e.kind == UnifiedEvent::Kind::kArtifact) ++artifacts;
+  }
+  check(saw_limit, "the oversized stream did not report an artifact-limit error");
+  check(artifacts == 0, "an oversized streamed chunk was forwarded as an artifact");
+  const auto terminal = log.terminal_for(id);
+  bool tts_failed = false;
+  if (terminal && terminal->legs.is_array()) {
+    for (const Value& reported : terminal->legs.as_array()) {
+      if (reported.find("stage")->as_str() == kTtsStageId) {
+        tts_failed = reported.find("state")->as_str() == "failed";
+      }
+    }
+  }
+  check(tts_failed, "the terminal does not report the failed TTS leg");
+  engine.release(id);
+}
+
+// ---- Scheduler batch collection and abort tombstones ---------------------
+
+// A request whose abort arrived before the request is dropped by the tombstone
+// and produces no result; the requests behind it still collect into one batch.
+void test_simple_scheduler_batch_and_abort_tombstone() {
+  std::mutex mu;
+  std::vector<std::vector<std::string>> batches;
+  auto compute = [](const Value&) { return Value(std::string("single")); };
+  auto batch_fn = [&](const std::vector<Value>& inputs) {
+    std::vector<std::string> ids;
+    std::vector<Value> results;
+    for (const Value& input : inputs) {
+      ids.push_back(input.as_str());
+      results.push_back(Value("b:" + input.as_str()));
+    }
+    std::lock_guard<std::mutex> lock(mu);
+    batches.push_back(std::move(ids));
+    return results;
+  };
+  SimpleScheduler scheduler(compute, batch_fn, /*max_batch_size=*/4,
+                            /*max_batch_wait_ms=*/200,
+                            /*batch_wait_when_idle=*/true);
+  std::thread runner([&] { scheduler.start(); });
+
+  scheduler.abort("gone");
+  scheduler.enqueue(
+      IncomingMessage{"gone", "new_request", Value(std::string("gone"))});
+  for (const char* id : {"a", "b", "c"}) {
+    scheduler.enqueue(
+        IncomingMessage{id, "new_request", Value(std::string(id))});
+  }
+
+  std::map<std::string, std::string> results;
+  const auto deadline = std::chrono::steady_clock::now() + kStateWait;
+  while (results.size() < 3 && std::chrono::steady_clock::now() < deadline) {
+    auto msg = scheduler.outbox().get(0.1);
+    if (!msg) continue;
+    results[msg->request_id] =
+        msg->data.is_str() ? msg->data.as_str() : std::string();
+  }
+  check(results.size() == 3, "the queued requests did not all answer");
+  check(results.count("gone") == 0, "an aborted request produced a result");
+  check(results["a"] == "b:a" && results["b"] == "b:b" &&
+            results["c"] == "b:c",
+        "batch results did not map back to their request ids");
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    check(batches.size() == 1 && batches[0].size() == 3,
+          "the waiting requests were not collected into one batch");
+  }
+  scheduler.stop();
+  runner.join();
+}
+
 }  // namespace
 
 int main() {
@@ -4691,5 +5109,11 @@ int main() {
   RUN(test_public_http_mixed_partial_failure());
   RUN(test_realtime_spoken_audio_format_and_leg_error());
   RUN(test_public_http_finish_reason_length_and_router_reset());
+  RUN(test_public_http_audio_speech());
+  RUN(test_public_http_audio_speech_without_tts());
+  RUN(test_cancel_for_session_rejects_foreign_session());
+  RUN(test_streamed_tts_sentence_fanout());
+  RUN(test_streamed_tts_chunk_limit_aborts());
+  RUN(test_simple_scheduler_batch_and_abort_tombstone());
   return g_failures == 0 ? 0 : 1;
 }

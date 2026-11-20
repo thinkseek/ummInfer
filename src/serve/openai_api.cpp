@@ -24,6 +24,7 @@
 
 #include "asr_common.hpp"
 #include "serve/upstream_proxy.hpp"
+#include "umminfer/audio/audio.hpp"
 #include "umminfer/client/client.hpp"
 #include "umminfer/obs/metrics.hpp"
 #include "umminfer/pipeline/unified.hpp"
@@ -784,11 +785,8 @@ class OpenAIApi::Impl {
     });
 
     server_.Post("/v1/audio/speech",
-                 [](const httplib::Request&, httplib::Response& res) {
-                   res.status = 501;
-                   res.set_content(
-                       R"({"error":{"message":"speech is not implemented by this server"}})",
-                       "application/json");
+                 [this](const httplib::Request& req, httplib::Response& res) {
+                   handle_speech(req, res);
                  });
 
     // Opt-in static hosting for the bundled browser client. cpp-httplib's mount
@@ -1074,6 +1072,158 @@ class OpenAIApi::Impl {
     if (has_metadata) event["generation_metadata"] = out["generation_metadata"];
     res.set_content("data: " + event.dump() + "\n\ndata: [DONE]\n\n",
                     "text/event-stream");
+  }
+
+  // POST /v1/audio/speech. One text-to-speech request against the TTS stage
+  // the unified engine already registered: the same Coordinator submit/abort
+  // path, no second protocol. The stage speaks WAV only, so a pcm response
+  // drops the RIFF container here and the stage stays one format.
+  void handle_speech(const httplib::Request& req, httplib::Response& res) {
+    RouteMetric route_metric{"speech", &res};
+    auto reject = [&res](int status, const std::string& message,
+                         const char* type) {
+      res.status = status;
+      res.set_content(
+          json{{"error", {{"message", util::utf8_sanitized(message)},
+                          {"type", type}}}}
+              .dump(),
+          "application/json");
+    };
+    if (!config_.upstream_kind.empty()) {
+      proxy_.reject_route(res, "audio speech");
+      return;
+    }
+    if (unified_engine_ == nullptr || !unified_engine_->tts_enabled()) {
+      reject(501,
+             "speech is not implemented by this server: no TTS stage is registered",
+             "unsupported_route");
+      return;
+    }
+    const json body = json::parse(req.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) {
+      reject(400, "request body must be a JSON object", "invalid_request");
+      return;
+    }
+    static const std::set<std::string> kAllowedFields = {
+        "model", "input", "voice", "response_format"};
+    for (auto it = body.begin(); it != body.end(); ++it) {
+      if (!kAllowedFields.count(it.key())) {
+        reject(400, "unsupported field: " + it.key(), "invalid_request");
+        return;
+      }
+    }
+    if (body.contains("model") && !body["model"].is_null()) {
+      if (!body["model"].is_string()) {
+        reject(400, "model must be a string", "invalid_request");
+        return;
+      }
+      const std::string model = body["model"].get<std::string>();
+      if (model != config_.served_model_name) {
+        reject(400, "unsupported model: " + model + "; this server serves " +
+                        config_.served_model_name,
+               "invalid_request");
+        return;
+      }
+    }
+    if (!body.contains("input") || !body["input"].is_string() ||
+        body["input"].get_ref<const std::string&>().empty()) {
+      reject(400, "input must be a nonempty string", "invalid_request");
+      return;
+    }
+    const std::string input = body["input"].get<std::string>();
+    // The stage treats voice as a free label and defaults to vivian; only the
+    // empty string is a contract error here.
+    std::string voice = "vivian";
+    if (body.contains("voice") && !body["voice"].is_null()) {
+      if (!body["voice"].is_string() ||
+          body["voice"].get_ref<const std::string&>().empty()) {
+        reject(400, "voice must be a nonempty string", "invalid_request");
+        return;
+      }
+      voice = body["voice"].get<std::string>();
+    }
+    std::string response_format = "wav";
+    if (body.contains("response_format") && !body["response_format"].is_null()) {
+      if (!body["response_format"].is_string()) {
+        reject(400, "response_format must be a string", "invalid_request");
+        return;
+      }
+      response_format = body["response_format"].get<std::string>();
+    }
+    if (response_format != "wav" && response_format != "pcm") {
+      reject(400,
+             "unsupported response_format: " + response_format +
+                 "; this server serves wav and pcm",
+             "invalid_request");
+      return;
+    }
+
+    AdmissionGuard guard(active_http_requests_, config_.max_in_flight);
+    if (!guard.admitted()) {
+      reject_overloaded(res);
+      return;
+    }
+    StagePayload payload;
+    Value::Map inputs;
+    inputs["text"] = Value(input);
+    inputs["voice"] = Value(voice);
+    inputs["format"] = Value("wav");
+    payload.request.inputs = Value(std::move(inputs));
+    std::string request_id;
+    try {
+      request_id = coordinator_.submit(std::move(payload),
+                                       unified_engine_->tts_stage_name());
+    } catch (const std::exception& error) {
+      reject(503, error.what(), "pipeline_error");
+      return;
+    }
+    bool settled = false;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::duration<double>(config_.request_timeout_s);
+    while (!settled && !req.is_connection_closed()) {
+      const auto remaining = deadline - std::chrono::steady_clock::now();
+      if (remaining <= std::chrono::steady_clock::duration::zero()) break;
+      settled = coordinator_.wait(
+          request_id,
+          std::min(0.1, std::chrono::duration<double>(remaining).count()));
+    }
+    if (req.is_connection_closed()) {
+      coordinator_.abort(request_id, "client");
+      coordinator_.release(request_id);
+      reject(503, "client closed the connection before the speech finished",
+             "speech_error");
+      return;
+    }
+    auto info = coordinator_.info(request_id);
+    if (!settled || !info) {
+      coordinator_.abort(request_id, "timeout");
+      coordinator_.release(request_id);
+      reject(504, "speech timed out", "speech_error");
+      return;
+    }
+    coordinator_.release(request_id);
+    if (info->state != "completed") {
+      reject(500, info->error.empty() ? "speech failed" : info->error,
+             "speech_error");
+      return;
+    }
+    const Value* data =
+        info->result.is_map() ? info->result.find("data") : nullptr;
+    if (data == nullptr || !data->is_bin() || data->as_bin().empty()) {
+      reject(500, "the TTS stage returned no audio bytes", "speech_error");
+      return;
+    }
+    if (response_format == "wav") {
+      res.set_content(data->as_bin(), "audio/wav");
+      return;
+    }
+    try {
+      const std::string pcm(audio::parse_wav_pcm16(data->as_bin()).pcm);
+      res.set_content(pcm, "audio/pcm");
+    } catch (const std::exception& error) {
+      reject(500, std::string("invalid TTS WAV container: ") + error.what(),
+             "speech_error");
+    }
   }
 
   void handle_chat(const httplib::Request& req, httplib::Response& res) {
