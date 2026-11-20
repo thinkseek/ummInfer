@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ummInfer — 一套引擎，四种模态</title>
+<meta name="description" content="ummInfer 统一多模态推理引擎：语音转写、看图理解、图像生成、语音合成，C++ 核心与 ZeroMQ 编排，原生 macOS 客户端。">
+<style>
+  :root {
+    --bg: #f2e7d6;
+    --ink: #1a1a1a;
+    --grey: #6b6b6b;
+    --blue: #2f6bff;
+    --line: rgba(26, 26, 26, 0.16);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Helvetica Neue", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-weight: 300;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 32px; }
+  nav {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 28px 0; letter-spacing: 0.06em;
+  }
+  .brand { font-size: 20px; font-weight: 400; letter-spacing: 0.02em; }
+  nav a { color: var(--ink); text-decoration: none; font-size: 14px; }
+  nav a:hover { color: var(--blue); }
+  header { padding: 72px 0 40px; text-align: center; }
+  .eyebrow {
+    font-size: 14px; letter-spacing: 0.42em; color: var(--grey);
+    text-indent: 0.42em; margin-bottom: 28px;
+  }
+  h1 {
+    font-size: clamp(34px, 5.6vw, 62px); font-weight: 300;
+    letter-spacing: 0.14em; text-indent: 0.14em; line-height: 1.4;
+  }
+  .modalities {
+    margin-top: 26px; font-size: clamp(14px, 2vw, 18px);
+    letter-spacing: 0.22em; text-indent: 0.22em; color: var(--grey);
+  }
+  .film { padding: 32px 0 8px; }
+  video {
+    width: 100%; display: block; border-radius: 6px;
+    outline: 1px solid var(--line); outline-offset: -1px;
+  }
+  .film-note {
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+    font-size: 13px; color: var(--grey); padding: 14px 2px 0; letter-spacing: 0.04em;
+  }
+  .film-note a { color: var(--grey); }
+  section { padding: 64px 0; }
+  h2 {
+    font-size: 15px; font-weight: 400; letter-spacing: 0.32em;
+    color: var(--grey); margin-bottom: 36px; text-align: center;
+  }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 36px 56px; }
+  .cell h3 { font-size: 19px; font-weight: 400; letter-spacing: 0.08em; margin-bottom: 10px; }
+  .cell p { font-size: 14.5px; color: var(--grey); }
+  .cell h3::before { content: "—"; color: var(--blue); margin-right: 10px; }
+  .metrics {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 24px; text-align: center;
+  }
+  .metric .num {
+    font-size: clamp(30px, 4.4vw, 46px); font-weight: 300;
+    color: var(--blue); letter-spacing: 0.01em;
+  }
+  .metric .label { font-size: 13px; color: var(--grey); margin-top: 6px; letter-spacing: 0.05em; }
+  .poem { text-align: center; padding: 48px 0 24px; }
+  .poem .line { font-size: clamp(20px, 3vw, 28px); letter-spacing: 0.3em; text-indent: 0.3em; }
+  .poem .sub { margin-top: 14px; font-size: 14px; color: var(--grey); letter-spacing: 0.12em; }
+  footer {
+    border-top: 1px solid var(--line); margin-top: 48px;
+    padding: 28px 0 40px; display: flex; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--grey);
+  }
+  footer a { color: var(--grey); text-decoration: none; margin-left: 20px; }
+  footer a:hover { color: var(--blue); }
+  @media (max-width: 720px) {
+    .grid { grid-template-columns: 1fr; gap: 28px; }
+    .metrics { grid-template-columns: repeat(2, 1fr); gap: 32px 16px; }
+    header { padding: 48px 0 28px; }
+    section { padding: 44px 0; }
+    footer { justify-content: center; text-align: center; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <span class="brand">ummInfer</span>
+    <a href="https://github.com/thinkseek/ummInfer">GitHub ↗</a>
+  </nav>
+
+  <header>
+    <p class="eyebrow">统一多模态推理引擎</p>
+    <h1>一套引擎，四种模态</h1>
+    <p class="modalities">语音转写 · 看图理解 · 图像生成 · 语音合成</p>
+  </header>
+
+  <div class="film">
+    <video src="assets/umminfer-promo-16x9.mp4" autoplay muted loop playsinline controls></video>
+    <div class="film-note">
+      <span>宣传片 · 32 秒 · 横屏</span>
+      <a href="assets/umminfer-promo-9x16.mp4" target="_blank" rel="noopener">竖屏版 23.5 秒 ↗</a>
+    </div>
+  </div>
+
+  <section>
+    <h2>引擎</h2>
+    <div class="grid">
+      <div class="cell">
+        <h3>统一编排</h3>
+        <p>同一引擎内运行 VLM、ASR、图像与语音生成：共享会话、任务编排、流式事件，文本行为保持兼容，多模态输出按需启用。</p>
+      </div>
+      <div class="cell">
+        <h3>流式与取消</h3>
+        <p>C++ 核心与 ZeroMQ / MessagePack 通信，HTTP JSON、SSE、WebSocket 与 CLI 公开接口，统一的回调顺序、取消与错误语义。</p>
+      </div>
+      <div class="cell">
+        <h3>原生客户端</h3>
+        <p>macOS SwiftUI 原生客户端，流式对话、录音与播放、原生过渡动效；另有单文件 Web 客户端便于快速验证。</p>
+      </div>
+      <div class="cell">
+        <h3>真实基线</h3>
+        <p>统一 benchmark 覆盖转写、数学推理、视觉问答与音图联合输入，全部指标来自真实模型实测，可复跑、可核对。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>真实多模态基线</h2>
+    <div class="metrics">
+      <div class="metric"><div class="num">54/54</div><div class="label">多模态用例通过</div></div>
+      <div class="metric"><div class="num">2.74%</div><div class="label">中文 ASR 字错率</div></div>
+      <div class="metric"><div class="num">100%</div><div class="label">GSM8K 数学推理</div></div>
+      <div class="metric"><div class="num">89.6%</div><div class="label">VQA 视觉问答</div></div>
+    </div>
+  </section>
+
+  <div class="poem">
+    <p class="line">万流归一</p>
+    <p class="sub">语音、图像与文字，在同一引擎中相会</p>
+  </div>
+
+  <footer>
+    <span>真实模型实测 · 2026-11 · ummInfer</span>
+    <span>
+      <a href="https://github.com/thinkseek/ummInfer#readme">README</a>
+      <a href="https://github.com/thinkseek/ummInfer/tree/main/docs">文档</a>
+      <a href="https://github.com/thinkseek/ummInfer">GitHub ↗</a>
+    </span>
+  </footer>
+</div>
+</body>
+</html>
