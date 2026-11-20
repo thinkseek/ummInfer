@@ -3972,8 +3972,96 @@ void test_mixed_cancel_aborts_every_submitted_leg() {
   check(terminal && terminal->kind == UnifiedEvent::Kind::kCancelled &&
             log.terminal_count(id) == 1,
         "mixed cancel did not produce exactly one cancelled terminal");
+  if (terminal && terminal->legs.is_array()) {
+    bool image_aborted = false;
+    bool tts_aborted = false;
+    for (const Value& leg : terminal->legs.as_array()) {
+      const Value* stage = leg.find("stage");
+      const Value* state = leg.find("state");
+      if (stage != nullptr && state != nullptr && stage->is_str() && state->is_str()) {
+        if (stage->as_str() == "image" && state->as_str() == "aborted") {
+          image_aborted = true;
+        }
+        if (stage->as_str() == "tts" && state->as_str() == "aborted") {
+          tts_aborted = true;
+        }
+      }
+    }
+    check(image_aborted, "cancelled mixed terminal did not report image leg as aborted");
+    check(tts_aborted, "cancelled mixed terminal did not report tts leg as aborted");
+  } else {
+    check(false, "cancelled mixed terminal missing legs array");
+  }
   engine.release(id);
   check(engine.in_flight() == 0, "in_flight nonzero after cancel and release");
+}
+
+void test_streamed_tts_submit_failure_becomes_leg_error() {
+  Harness h("streamedttsfail");
+  UnifiedConfig cfg = h.mixed_config();
+  // Point tts_stage to a stage name that is not registered in Coordinator so
+  // Coordinator::submit throws during handle_stream -> drain_sentences_locked.
+  cfg.tts_stage = "unregistered_tts";
+  UnifiedEngine engine(h.coordinator, cfg);
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  StagePayload req = mixed_request(false, true);
+  Value::Map inputs = req.request.inputs.as_map();
+  Value::Map audio_opts = inputs["audio_options"].as_map();
+  audio_opts["stream"] = Value(true);
+  inputs["audio_options"] = Value(std::move(audio_opts));
+  req.request.inputs = Value(std::move(inputs));
+
+  const std::string id = engine.submit(std::move(req));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "VLM submit missing for streamed TTS failure test");
+  if (!vlm) return;
+
+  // Sentence-ending punctuation triggers drain_sentences_locked inside handle_stream.
+  Value::Map delta;
+  delta["text"] = Value("Hello world.");
+  h.stream(vlm->request_id, "vlm", Value(std::move(delta)));
+  h.complete(vlm->request_id, "vlm", true, text_result("Hello world."));
+
+  check(engine.wait(id, 5.0),
+        "streamed TTS submit failure must not wedge or kill the coordinator pump");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+            log.terminal_count(id) == 1,
+        "VLM request must still complete when streamed TTS submit fails");
+  bool saw_leg_error = false;
+  bool saw_vlm_delta = false;
+  {
+    std::lock_guard<std::mutex> lock(log.mu);
+    for (const auto& e : log.events) {
+      if (e.request_id != id) continue;
+      if (e.kind == UnifiedEvent::Kind::kLegError && e.stage_id == "tts") {
+        saw_leg_error = true;
+      }
+      if (e.kind == UnifiedEvent::Kind::kVlmDelta && e.text == "Hello world.") {
+        saw_vlm_delta = true;
+      }
+    }
+  }
+  check(saw_leg_error, "streamed TTS submit failure did not emit kLegError");
+  check(saw_vlm_delta, "VLM delta was lost after streamed TTS submit failure");
+  bool tts_failed = false;
+  if (terminal && terminal->legs.is_array()) {
+    for (const Value& leg : terminal->legs.as_array()) {
+      const Value* stage = leg.find("stage");
+      const Value* state = leg.find("state");
+      if (stage != nullptr && state != nullptr && stage->is_str() &&
+          state->is_str() && stage->as_str() == "tts" &&
+          state->as_str() == "failed") {
+        tts_failed = true;
+      }
+    }
+  }
+  check(tts_failed, "terminal legs did not report failed tts leg");
+  engine.release(id);
 }
 
 void test_mixed_cancel_before_fanout_blocks_legs() {
@@ -5100,6 +5188,7 @@ int main() {
   RUN(test_mixed_image_prompt_falls_back_to_answer());
   RUN(test_mixed_partial_leg_failure_keeps_artifacts());
   RUN(test_mixed_cancel_aborts_every_submitted_leg());
+  RUN(test_streamed_tts_submit_failure_becomes_leg_error());
   RUN(test_mixed_cancel_before_fanout_blocks_legs());
   RUN(test_mixed_join_release_then_late_complete());
   RUN(test_mixed_artifact_limits_become_leg_errors());

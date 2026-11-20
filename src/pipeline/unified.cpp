@@ -375,7 +375,22 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
           record.vlm_text += delta;
           if (record.tts_stream && !record.tts_failed) {
             record.sentence_buf += delta;
-            drain_sentences_locked(unified_id, record);
+            try {
+              drain_sentences_locked(unified_id, record);
+            } catch (const std::exception& error) {
+              record.tts_failed = true;
+              if (record.tts_error.empty()) record.tts_error = error.what();
+              record.sentence_buf.clear();
+              collect_tts_aborts_locked(record, "vlm_failure", deferred_aborts);
+              UnifiedEvent leg_error;
+              leg_error.request_id = unified_id;
+              leg_error.session_id = record.session_id;
+              leg_error.stage_id = kTtsStageId;
+              leg_error.kind = UnifiedEvent::Kind::kLegError;
+              leg_error.seq = record.next_seq++;
+              leg_error.error = record.tts_error;
+              dispatch_queue_.push_back(std::move(leg_error));
+            }
           }
           UnifiedEvent event;
           event.request_id = unified_id;
@@ -968,7 +983,7 @@ void UnifiedEngine::settle_output_leg_locked(
     obs::Metrics::instance().trace_leg(request_id, leg_name, leg.state, ms);
   }
   if (kind != UnifiedEvent::Kind::kComplete) {
-    if (leg.stage_id == kTtsStageId) {
+    if (leg.stage_id == kTtsStageId && leg.state == "failed") {
       record.tts_failed = true;
       if (record.tts_error.empty()) record.tts_error = error;
     }

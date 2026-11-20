@@ -310,12 +310,6 @@ class UnifiedEngine {
     size_t artifact_bytes_total = 0;
   };
 
-  // One completed user/assistant turn kept in process-local session history.
-  struct SessionTurn {
-    std::string user;
-    std::string assistant;
-  };
-
   void handle_stream(const StreamMessage& msg);
   void handle_complete(const RequestInfo& info);
   void drain_dispatch();
