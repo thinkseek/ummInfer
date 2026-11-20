@@ -23,8 +23,10 @@ struct ValidatedSubmission {
   std::string session_id;
   bool image_output = false;
   bool audio_output = false;
+  bool video_output = false;
   Value::Map image_options;
   Value::Map audio_options;
+  Value::Map video_options;
   std::string user_text;
 };
 
@@ -41,6 +43,8 @@ ValidatedSubmission validate_submission(const Value& inputs,
 Value build_vlm_inputs(const std::string& transcript,
                        const Value& original_inputs);
 Value build_image_inputs(const Value::Map& image_options,
+                         const std::string& vlm_text);
+Value build_video_inputs(const Value::Map& video_options,
                          const std::string& vlm_text);
 Value build_tts_inputs(const Value::Map& audio_options,
                        const std::string& text, bool tts_stream);

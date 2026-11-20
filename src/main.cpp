@@ -202,7 +202,8 @@ void print_usage(std::ostream& out) {
          "[--completion ipc:///tmp/x/done] [--abort ipc:///tmp/x/abort]\n"
          "      [--vlm-entry name --vlm-entry-endpoint ipc:///tmp/x/vlm]  ASR -> VLM chat\n"
          "      [--image-entry name --image-entry-endpoint ipc:///tmp/x/image]\n"
-         "      [--tts-entry name --tts-entry-endpoint ipc:///tmp/x/tts]  optional mixed-output legs (never gate /ready)\n"
+         "      [--tts-entry name --tts-entry-endpoint ipc:///tmp/x/tts]\n"
+         "      [--video-entry name --video-entry-endpoint ipc:///tmp/x/video]  optional mixed-output legs (never gate /ready)\n"
          "      [--session-history]  enable opt-in multi-turn history (in-process, 256 sessions x 8 turns / 16384 chars)\n"
          "      [--max-in-flight N]  admitted unified requests before overload answers 503 (default 32)\n"
          "      [--realtime-port 30001]  enable the ASR WebSocket listener\n"
@@ -352,18 +353,21 @@ int run_serve(const Flags& flags) {
   const std::string image_ep = flag(flags, "image-entry-endpoint");
   const std::string tts_name = flag(flags, "tts-entry", "tts");
   const std::string tts_ep = flag(flags, "tts-entry-endpoint");
+  const std::string video_name = flag(flags, "video-entry", "video");
+  const std::string video_ep = flag(flags, "video-entry-endpoint");
   const bool unified = !vlm_ep.empty();
   if (flags.count("vlm-entry") && !unified) {
     std::cerr << "--vlm-entry requires --vlm-entry-endpoint\n";
     return usage();
   }
   if ((flags.count("image-entry") > 0) != (!image_ep.empty()) ||
-      (flags.count("tts-entry") > 0) != (!tts_ep.empty())) {
+      (flags.count("tts-entry") > 0) != (!tts_ep.empty()) ||
+      (flags.count("video-entry") > 0) != (!video_ep.empty())) {
     std::cerr << "optional output stages need both --*-entry and --*-entry-endpoint\n";
     return usage();
   }
-  if ((!image_ep.empty() || !tts_ep.empty()) && !unified) {
-    std::cerr << "--image-entry/--tts-entry require the unified VLM entry\n";
+  if ((!image_ep.empty() || !tts_ep.empty() || !video_ep.empty()) && !unified) {
+    std::cerr << "--image-entry/--tts-entry/--video-entry require the unified VLM entry\n";
     return usage();
   }
   if (unified && fixed_upstream) {
@@ -419,8 +423,8 @@ int run_serve(const Flags& flags) {
     ensure_ipc_parent(vlm_ep);
     coordinator.register_stage(vlm_name, vlm_ep, true);
   }
-  // Optional output stages never gate /ready: a deployment without the image
-  // or tts worker stays a healthy text server. require_ready stays false.
+  // Optional output stages never gate /ready: a deployment without the image,
+  // tts or video worker stays a healthy text server. require_ready stays false.
   if (!image_ep.empty()) {
     ensure_ipc_parent(image_ep);
     coordinator.register_stage(image_name, image_ep, false);
@@ -428,6 +432,10 @@ int run_serve(const Flags& flags) {
   if (!tts_ep.empty()) {
     ensure_ipc_parent(tts_ep);
     coordinator.register_stage(tts_name, tts_ep, false);
+  }
+  if (!video_ep.empty()) {
+    ensure_ipc_parent(video_ep);
+    coordinator.register_stage(video_name, video_ep, false);
   }
   std::unique_ptr<UnifiedEngine> unified_engine;
   if (unified) {
@@ -437,6 +445,7 @@ int run_serve(const Flags& flags) {
     unified_config.max_in_flight = static_cast<size_t>(max_in_flight);
     if (!image_ep.empty()) unified_config.image_stage = image_name;
     if (!tts_ep.empty()) unified_config.tts_stage = tts_name;
+    if (!video_ep.empty()) unified_config.video_stage = video_name;
     // Off by default: without this switch session_id stays a grouping label.
     unified_config.session_history.enabled = flags.count("session-history") != 0;
     unified_engine = std::make_unique<UnifiedEngine>(coordinator, unified_config);

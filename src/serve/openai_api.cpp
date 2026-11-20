@@ -394,9 +394,11 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
 }
 
 bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
-                        Value::Map& engine_inputs, std::string& error) {
+                        bool video_enabled, Value::Map& engine_inputs,
+                        std::string& error) {
   bool image_output = false;
   bool audio_output = false;
+  bool video_output = false;
   if (body.contains("modalities") && !body["modalities"].is_null()) {
     const json& modalities = body["modalities"];
     if (!modalities.is_array() || modalities.empty()) {
@@ -412,8 +414,9 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
       if (name == "text") continue;
       if (name == "image") image_output = true;
       else if (name == "audio") audio_output = true;
+      else if (name == "video") video_output = true;
       else {
-        error = "modalities values must be text, image or audio";
+        error = "modalities values must be text, image, audio or video";
         return false;
       }
     }
@@ -474,9 +477,56 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     }
     audio_output = true;
   }
-  if (!image_output && !audio_output) return true;
+  if (body.contains("video") && !body["video"].is_null()) {
+    const json& video = body["video"];
+    if (!video.is_object()) {
+      error = "video must be an object";
+      return false;
+    }
+    if (video.contains("prompt") && !video["prompt"].is_null()) {
+      if (!video["prompt"].is_string() ||
+          video["prompt"].get_ref<const std::string&>().empty()) {
+        error = "video.prompt must be a non-empty string";
+        return false;
+      }
+    }
+    if (video.contains("size") && !video["size"].is_null()) {
+      if (!video["size"].is_string() || video["size"].get<std::string>().empty()) {
+        error = "video.size must be a non-empty string";
+        return false;
+      }
+    }
+    if (video.contains("seconds") && !video["seconds"].is_null()) {
+      if (!video["seconds"].is_number_integer() ||
+          video["seconds"].get<int64_t>() < 1) {
+        error = "video.seconds must be a positive integer";
+        return false;
+      }
+    }
+    if (video.contains("fps") && !video["fps"].is_null()) {
+      if (!video["fps"].is_number_integer() ||
+          video["fps"].get<int64_t>() < 1) {
+        error = "video.fps must be a positive integer";
+        return false;
+      }
+    }
+    if (video.contains("seed") && !video["seed"].is_null() &&
+        !video["seed"].is_number_integer()) {
+      error = "video.seed must be an integer";
+      return false;
+    }
+    if (video.contains("output_format") && !video["output_format"].is_null()) {
+      if (!video["output_format"].is_string() ||
+          video["output_format"].get<std::string>() != "mp4") {
+        error = "video.output_format must be mp4";
+        return false;
+      }
+    }
+    video_output = true;
+  }
+  if (!image_output && !audio_output && !video_output) return true;
   if (!body.value("stream", false)) {
-    error = "image and audio output require stream=true";
+    error = "image, audio and video output require stream=true";
     return false;
   }
   if (image_output && !image_enabled) {
@@ -487,9 +537,14 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     error = "audio output is not enabled on this server";
     return false;
   }
+  if (video_output && !video_enabled) {
+    error = "video output is not enabled on this server";
+    return false;
+  }
   Value::Array selected;
   if (image_output) selected.push_back(Value("image"));
   if (audio_output) selected.push_back(Value("audio"));
+  if (video_output) selected.push_back(Value("video"));
   engine_inputs["output_modalities"] = Value(std::move(selected));
   if (image_output) {
     Value::Map options;
@@ -521,6 +576,29 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     options["sample_rate"] = Value(int64_t{24000});
     if (audio.value("stream", false)) options["stream"] = Value(true);
     engine_inputs["audio_options"] = Value(std::move(options));
+  }
+  if (video_output) {
+    Value::Map options;
+    const json empty_video = json::object();
+    const json& video = body.contains("video") && body["video"].is_object()
+                            ? body["video"]
+                            : empty_video;
+    if (video.contains("prompt") && !video["prompt"].is_null()) {
+      options["prompt"] = Value(video["prompt"].get<std::string>());
+    }
+    options["size"] = Value(video.value("size", std::string("1280x720")));
+    if (video.contains("seconds") && !video["seconds"].is_null()) {
+      options["seconds"] = Value(video["seconds"].get<int64_t>());
+    }
+    if (video.contains("fps") && !video["fps"].is_null()) {
+      options["fps"] = Value(video["fps"].get<int64_t>());
+    }
+    if (video.contains("seed") && !video["seed"].is_null()) {
+      options["seed"] = Value(video["seed"].get<int64_t>());
+    }
+    options["output_format"] =
+        Value(video.value("output_format", std::string("mp4")));
+    engine_inputs["video_options"] = Value(std::move(options));
   }
   return true;
 }
@@ -1299,7 +1377,7 @@ class OpenAIApi::Impl {
         "model", "messages", "stream", "temperature", "max_tokens",
         "max_completion_tokens", "top_p", "seed", "stop", "response_format",
         "stream_options", "session_id", "session_history", "modalities",
-        "image", "audio"};
+        "image", "audio", "video"};
     for (auto it = body.begin(); it != body.end(); ++it) {
       if (!kAllowedFields.count(it.key()) && !it.value().is_null()) {
         reject("unsupported field: " + it.key());
@@ -1394,13 +1472,14 @@ class OpenAIApi::Impl {
       std::string mixed_error;
       if (!valid_mixed_output(
               body, unified_engine_->image_output_enabled(),
-              unified_engine_->tts_output_enabled(), mixed_engine_inputs,
+              unified_engine_->tts_output_enabled(),
+              unified_engine_->video_output_enabled(), mixed_engine_inputs,
               mixed_error)) {
         reject(mixed_error);
         return;
       }
     } else if (body.contains("modalities") || body.contains("image") ||
-               body.contains("audio")) {
+               body.contains("audio") || body.contains("video")) {
       reject("mixed output requires unified mode");
       return;
     }

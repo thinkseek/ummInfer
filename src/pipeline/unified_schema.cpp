@@ -95,9 +95,8 @@ ValidatedSubmission validate_submission(const Value& inputs,
       }
       const auto modality = modality_from_string(token.as_str());
       if (!modality) throw ProtocolError("unknown modality: " + token.as_str());
-      if (*modality == UnifiedModality::kVideo) {
-        throw ProtocolError("modality " + token.as_str() +
-                            " is declared but has no worker in unified engine v1");
+      if (*modality == UnifiedModality::kVideo && config.video_stage.empty()) {
+        throw ProtocolError("video output is not enabled on this server");
       }
     }
   }
@@ -172,6 +171,7 @@ ValidatedSubmission validate_submission(const Value& inputs,
       if (name == "text") continue;
       if (name == "image") out.image_output = true;
       else if (name == "audio") out.audio_output = true;
+      else if (name == "video") out.video_output = true;
       else throw ProtocolError("unknown output modality: " + name);
     }
   }
@@ -188,11 +188,19 @@ ValidatedSubmission validate_submission(const Value& inputs,
     }
     out.audio_options = options->as_map();
   }
+  if (const Value* options = out.original_inputs.find("video_options");
+      options != nullptr) {
+    if (!options->is_map()) throw ProtocolError("video_options must be a map");
+    out.video_options = options->as_map();
+  }
   if (out.image_output && config.image_stage.empty()) {
     throw ProtocolError("image output is not enabled on this server");
   }
   if (out.audio_output && config.tts_stage.empty()) {
     throw ProtocolError("audio output is not enabled on this server");
+  }
+  if (out.video_output && config.video_stage.empty()) {
+    throw ProtocolError("video output is not enabled on this server");
   }
   if (out.audio_output) {
     auto voice = out.audio_options.find("voice");
@@ -236,7 +244,7 @@ Value build_vlm_inputs(const std::string& transcript,
       if (key != "messages" && key != "modalities" && key != "session_id" &&
           key != "audio" && key != "asr_partials" && key != "session_history" &&
           key != "output_modalities" && key != "image_options" &&
-          key != "audio_options") {
+          key != "audio_options" && key != "video_options") {
         out[key] = value;
       }
     }
@@ -308,6 +316,17 @@ Value build_image_inputs(const Value::Map& image_options,
   return Value(std::move(out));
 }
 
+Value build_video_inputs(const Value::Map& video_options,
+                         const std::string& vlm_text) {
+  Value::Map out = video_options;
+  auto prompt = out.find("prompt");
+  if (prompt == out.end() || !prompt->second.is_str() ||
+      prompt->second.as_str().empty()) {
+    out["prompt"] = Value(vlm_text);
+  }
+  return Value(std::move(out));
+}
+
 Value build_tts_inputs(const Value::Map& audio_options,
                        const std::string& text, bool tts_stream) {
   Value::Map out = audio_options;
@@ -333,10 +352,15 @@ std::vector<UnifiedEvent> slice_artifact_events(
   }
   const std::string& media = media_type->as_str();
   const size_t size = data->as_bin().size();
-  const size_t per_leg_limit =
-      media == "image" ? kMaxArtifactImageBytes : kMaxArtifactAudioBytes;
-  if (media != "image" && media != "audio") {
-    throw ProtocolError("artifact media_type must be image or audio");
+  size_t per_leg_limit = 0;
+  if (media == "image") {
+    per_leg_limit = kMaxArtifactImageBytes;
+  } else if (media == "audio") {
+    per_leg_limit = kMaxArtifactAudioBytes;
+  } else if (media == "video") {
+    per_leg_limit = kMaxArtifactVideoBytes;
+  } else {
+    throw ProtocolError("artifact media_type must be image, audio or video");
   }
   if (size > per_leg_limit) {
     throw ProtocolError(stage_id + " artifact exceeds its decoded size limit");

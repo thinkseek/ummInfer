@@ -21,7 +21,8 @@
 | **Qwen-Image-2.1** | `native/image2` + `umm-native-stage-image --image-backend 2.1` | CLI 真实模型验证通过（H20B 40 steps 69.8 s，本地 `native/image2/IMAGE2_NATIVE.md` 记录较参考 diffusers 6.04 s 慢约 10×）；**Stage 仅代码接入**（未接入默认服务配置、缺端到端验证） | `UNKNOWN` | CUDA SM90 (H20B)，~14.4 GiB 峰值（14,763 MiB） | 512×512（32 倍数），无 True-CFG / 无 KV cache / 无条件图编辑 | Text → Image (RGBA PNG) | 否 | 1（`kSerial`） | Apache-2.0 / **Qwen Research（非商用）** |
 | **MLX-LM（如 Qwen2.5-0.5B-Instruct-4bit）** | `python/umminfer_mlx_stage.py` | 真实模型验证通过（Apple M4 Pro 开发路径，非 H20B 生产路径） | `UNKNOWN`（权重 SHA-256 `ddffab9c…`） | Apple Silicon Metal（48 GiB 统一内存实测） | 取决于所加载 MLX 模型（`UNKNOWN` 统一上限） | Text → Text | 支持（SSE） | 1（串行，无跨请求 KV 复用） | MIT (MLX) / 视模型（示例 Apache-2.0） |
 | **Qwen2.5-0.5B-Instruct (RL Phase 2)** | `python/umminfer_rl_{policy_serve,train}.py` | 真实模型验证通过（仅 H20B GPU 4 离线 RL 架构闭环，非推理服务） | `UNKNOWN` | CUDA (PyTorch) | 离线 GSM8K 实验脚本（`UNKNOWN` 上限） | Text → Text | SSE rollout | 离线实验 | Apache-2.0 / Apache-2.0 |
-| **Upstream Proxy**（`/v1/images/*`, `/v1/videos*`） | `src/serve/upstream_proxy.cpp` | **仅代码接入**（仅测过配置/路由门禁与连接失败，无真实上游成功转发） | N/A | 无本地 GPU | 依赖外部上游（JSON 64 MiB / 二进制 512 MiB 上限） | Image / Video 透传 | 透传 | 受上游与连接限制 | Apache-2.0 / 视上游 |
+| **Upstream Proxy**（`/v1/images/*`, `/v1/videos*`） | `src/serve/upstream_proxy.cpp` | **仅代码接入**（兼容旁路代理；仅测过配置/路由门禁与连接失败，无真实上游成功转发） | N/A | 无本地 GPU | 依赖外部上游（JSON 64 MiB / 二进制 512 MiB 上限） | Image / Video 透传 | 透传 | 受上游与连接限制 | Apache-2.0 / 视上游 |
+| **UnifiedEngine Video Stage 契约**（`--video-entry`） | `src/pipeline/unified.cpp` + `src/serve/openai_api.cpp` + `tests/unified_contract_test.cpp` | **仅契约或测试桩**（视频已提升为 UnifiedEngine 一等输出，覆盖 `pending/running/completed/failed/aborted`、取消、会话归属、资源清理与 SSE 2 MiB 分片重组；**真实视频模型/外部上游后端生成为 `NOT_RUN`，测试桩不计作真实生视频验收**） | N/A（模型作为可替换 Stage 接入，不建独立控制面） | 取决于所接入的视频 Stage | 单视频产物上限 48 MiB（单请求聚合上限 60 MiB），`video/mp4` | Text → Video（与 Text/Image/Audio 同请求同会话统一编排） | SSE 分片 `kArtifact` | 受 `UnifiedEngine` 准入与 Stage 并发限制 | Apache-2.0 |
 | **macOS SFSpeechRecognizer** | `clients/ummmlx/Sources/ummmlx/Speech.swift` | **仅代码接入**（客户端本地听写，单元测试部分覆盖） | 系统内置 | macOS 客户端本机 | 系统接口上限（`UNKNOWN`） | Audio → Text | 支持（`AsyncThrowingStream`） | 客户端单路 | Apple SDK |
 | **TinyCTC** | `python/umminfer_tiny_asr_stage.py` | **仅契约或测试桩**（随机初始化权重 seed `20261111`，无识别质量） | 本地生成 | Apple Silicon / CPU (MLX) | 最长 30 s，16 kHz | Audio → Text（桩） | 非流式 | 1 | Apache-2.0 |
 | **Echo / Demo Stage & Contract Mocks** | `umm-infer serve --demo`、`tests/unified_contract_test.cpp` | **仅契约或测试桩** | N/A | CPU | 无模型 | 控制面契约 | 模拟事件 | 契约测试 | Apache-2.0 |
@@ -83,7 +84,7 @@
 | **`Voxtral-Mini-4B-Realtime-2602`（原生流式 ASR）** | **估计：中**（新因果音频编码器 + Mistral 解码器，接入 `asr_stage` 真流式 `StreamMessage`） | 权重与峰值 VRAM **待原型实测** | 补充（Realtime 场景替代 200 ms 窗口重算） | Apache-2.0，目标解决全双工 L1/L2 伪流式预览的算力浪费与延迟抖动 |
 | **`google/gemma-4-26B-A4B-it` 或 `gemma-4-E4B-it`** | **估计：中–高**（新增 Gemma4 原生 stage；`26B-A4B` 为 MoE/256K/无原生音频；`E4B` 为 Dense/128K/支持原生音频） | `E4B` BF16 权重 **`14.894 GiB`**（`15,992,595,884 bytes`，峰值 VRAM 另计；若采用量化须指明格式）；`26B-A4B` 峰值 **待原型实测** | 补充（提供非 Qwen 生态与 `E4B` 原生音频理解选项） | Apache-2.0，按实际需求提供多生态备选与原生音频理解路径 |
 | **`Kokoro-82M`（超轻量本地/兜底 TTS）** | **估计：低**（可先以独立轻量 stage（CPU/Metal/CUDA）接入 `tts` 契约） | <1 GiB（82M 参数） | 补充（Mac 开发/超低延迟语音兜底） | Apache-2.0，目标补齐 Mac 端及低算力场景轻量 TTS 空白 |
-| **`Wan2.2-TI2V-5B`（商用级本地视频 Stage）** | **估计：高**（`UnifiedEngine` 放开 `kVideo` 异步作业生命周期 + 新增视频 stage，可参考 `native/image` Wan-VAE 经验） | 峰值 VRAM **待原型实测**（720p 单卡） | 新增视频能力（补齐 `/v1/videos` 本地后端） | Apache-2.0 商用无限制、单卡可跑，避免引入高风险许可 |
+| **`Wan2.2-TI2V-5B`（商用级本地视频 Stage）** | **估计：中–高**（`UnifiedEngine` 已完成 `kVideo` 一等输出与统一 `LegState` 生命周期接入；剩余成本为接入可替换视频 Stage 后端，可先复用外部上游 Stage 或参考 `native/image` Wan-VAE 经验实现原生 Stage，不另建独立视频控制面） | 峰值 VRAM **待原型实测**（720p 单卡） | 新增真实视频 Stage 后端（复用 `UnifiedEngine` 统一控制面，替代仅依赖 `/v1/videos*` 代理旁路） | Apache-2.0 商用无限制、单卡可跑，避免引入高风险许可；**当前真实生视频为 `NOT_RUN`** |
 
 ### P2（研究维护 / 按需外部 Stage 或上游代理，不投入主干 C++/CUDA 引擎）
 
@@ -118,7 +119,7 @@
 | **ASR** (`Qwen3-ASR-1.7B` / `Voxtral-Realtime`) | H20B 单卡 BF16 | 1) 目标语种/方言/噪声/专名成对回归（与 0.6B 同集对照）；2) `/v1/audio/transcriptions` 与 `/v1/realtime` + `server_vad` 打断恢复；3) 非法采样率/超长音频拒绝 | 区分权重体积与峰值 VRAM；按目标语种/方言/噪声/专名分组报告 WER/CER（避免只看单集而掩盖如 TED-LIUM 类退化）；Realtime 首字延迟 <1 s；记录音频与输出 SHA-256 |
 | **TTS** (`Qwen3-TTS-1.7B CustomVoice / Base` / `Kokoro-82M`) | H20B（Kokoro 另测 Mac CPU/Metal） | 1) `/v1/audio/speech` 非流式 WAV/PCM 与统一链路流式 PCM16；2) 分语种合成（CustomVoice）及参考音频+参考文本零样本克隆（Base）；3) 合成 WAV 经 ASR 回环转写 + speaker similarity + 人工听评；4) 中途 `/abort` | 校验 WAV 头/采样率/非静音比例/RMS/SHA-256 与 `stream_check identical=1`；必录**分语种 WER**、**speaker similarity** 与**人工听评**（明确：**ASR 回环仅证明内容可懂度，不能证明自然度与音色保真度**） |
 | **Image** (`FLUX.2-klein-4B` 商用候选 / `Qwen-Image-2.1` P2 研究) | H20B 单卡 BF16 | 1) 经 `umm-native-stage-image` 的中/英多提示词文生图与图像编辑（含目标分辨率）；2) 固定 seed 两次复现 SHA-256 一致；3) 去噪中途 `/abort` 退出；4) 优化前后消融对比 | 真实 PNG 解码校验宽高/通道/非纯色/SHA-256、权重体积与峰值 VRAM；默认替代 `2512` 前必过 **prompt alignment**、**人工质量**、**编辑能力** 与 **质量相当工作点延迟** 门禁（禁止将不同步数/工作点的墙钟比当作同质量加速比） |
-| **Video** (`Wan2.2-TI2V-5B`) | H20B 单卡 BF16 | 1) `/v1/videos` 异步创建→轮询→拉取 MP4；2) 取消任务与显存回收 | 真实解码器校验帧数/分辨率/FPS/时长与文件 SHA-256；无进程与显存泄漏 |
+| **Video** (`Wan2.2-TI2V-5B` 或首个外部视频 Stage) | H20B 单卡 BF16（或真实外部上游） | 1) 经 `UnifiedEngine`（`POST /v1/chat/completions` `modalities=["text","video"]` + `--video-entry`）生成 MP4 并校验 SSE 分片重组与 SHA-256；2) 同会话取消 `/abort`（含跨会话 403）与显存/资源回收；3) 兼容校验 `/v1/videos*` 代理（若启用） | 真实解码器校验帧数/分辨率/FPS/时长与文件 SHA-256；无进程与显存泄漏；**测试 Stage 桩仅验控制面契约，严禁计作真实生视频验收（当前真实生视频 `NOT_RUN`）** |
 
 ---
 
@@ -126,5 +127,5 @@
 
 1. **本地权重精确 Revision 缺失**：除 `Qwen3-TTS-0.6B` 记录了 `85e237c12c027371202489a0ec509ded67b5e4b5` 外，H20B 本地 `asr` / `qwen38` / `omni` / `image` / `image2` 与 Mac `MLX` 目录均无 `.git`，revision 为 `UNKNOWN`（仅部分有 `config.json`/权重 SHA-256）。后续拉取新权重须强制记录 HF commit SHA。
 2. **许可证合规风险**：树内已实现的 `Qwen-Image-2.1` 使用 `qwen-research` 非商用许可；路线图中的 `MiniMax-H3` / `H3-Image` 含地域排除与社区商用限制。对外发布商用版本前必须由 Apache-2.0 模型（如 `FLUX.2-klein-4B`、`Wan2.2`）兜底。
-3. **测试套件与实测覆盖边界**：`ab51cf5` 曾移除多组历史单测与金标验证脚手架；本集成分支已恢复 `native/{omni,tts,image,image2}` CPU host 单元测试并统一 `README.md` 与 `docs/architecture.md` 口径，但 `/v1/audio/speech` 真实 TTS Stage 链路及所有 H20B 真实模型/GPU 验证仍为 `NOT_RUN`。
+3. **测试套件与实测覆盖边界**：`ab51cf5` 曾移除多组历史单测与金标验证脚手架；本分支已覆盖 `native/{omni,tts,image,image2}` CPU host 单元测试、`UnifiedEngine` 文本/图像/音频/视频四模态统一契约测试与 macOS Swift 客户端测试，但 `/v1/audio/speech` 真实 TTS Stage、真实视频 Stage/上游生成及所有 H20B 真实模型/GPU 验证仍为 `NOT_RUN`（测试桩不计作真实生视频验收）。
 4. **GitHub 公开 API 限流**：本次核查中 GitHub REST API 返回 403 rate limit，故生态/维护风险辅助信号统一以 Hugging Face 官方 API（`2026-11-20`）为准，GitHub stars 记为 `UNKNOWN`。

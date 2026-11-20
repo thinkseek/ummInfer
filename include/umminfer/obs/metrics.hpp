@@ -88,6 +88,7 @@ struct TraceRecord {
   double vlm_ms = -1;
   double image_ms = -1;
   double tts_ms = -1;
+  double video_ms = -1;
 };
 
 // Process-wide registry. The server is one process, so one instance is the

@@ -465,6 +465,7 @@ void Metrics::trace(const TraceRecord& record) {
   append_leg("vlm_ms", record.vlm_ms);
   append_leg("image_ms", record.image_ms);
   append_leg("tts_ms", record.tts_ms);
+  append_leg("video_ms", record.video_ms);
   line += "}";
   write_trace_line(line);
 }

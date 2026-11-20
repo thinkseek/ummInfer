@@ -174,6 +174,26 @@ final class ArtifactCollectorTests: XCTestCase {
         XCTAssertEqual(collector.decodedBytes, all.count)
     }
 
+    func testReassemblesMultiChunkVideoArtifact() throws {
+        let first = Data([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70])
+        let second = Data([0x6d, 0x70, 0x34, 0x32, 0x00, 0x00, 0x00, 0x00])
+        let all = first + second
+        var collector = ArtifactCollector()
+        XCTAssertNil(try collector.ingest(ArtifactChunk(
+            artifactID: "art-0", mediaType: "video", mimeType: "video/mp4",
+            encoding: "base64", index: 0, total: 2, data: first,
+            sha256: nil, bytes: nil)))
+        XCTAssertTrue(collector.hasIncompleteArtifacts)
+        let artifact = try collector.ingest(ArtifactChunk(
+            artifactID: "art-0", mediaType: "video", mimeType: "video/mp4",
+            encoding: "base64", index: 1, total: 2, data: second,
+            sha256: shaHex(all), bytes: all.count))
+        XCTAssertEqual(artifact?.mediaType, "video")
+        XCTAssertEqual(artifact?.mimeType, "video/mp4")
+        XCTAssertEqual(artifact?.data, all)
+        XCTAssertFalse(collector.hasIncompleteArtifacts)
+    }
+
     func testShaMismatchFails() {
         let bytes = Data([1, 2, 3])
         var collector = ArtifactCollector()

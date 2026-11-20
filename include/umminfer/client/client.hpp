@@ -107,7 +107,7 @@ struct ImageOutput {
 // One delivered generated artifact, fully decoded and checksum-verified.
 struct Artifact {
   std::string artifact_id;
-  std::string media_type;  // image | audio
+  std::string media_type;  // image | audio | video
   std::string mime_type;
   std::string data;
   std::string sha256;

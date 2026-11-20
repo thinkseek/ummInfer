@@ -639,8 +639,8 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                 const std::string id = a["artifact_id"].get<std::string>();
                 const std::string media = a["media_type"].get<std::string>();
                 const std::string mime = a["mime_type"].get<std::string>();
-                if (media != "image" && media != "audio") {
-                  fail_artifact("artifact media_type must be image or audio");
+                if (media != "image" && media != "audio" && media != "video") {
+                  fail_artifact("artifact media_type must be image, audio or video");
                 }
                 if (a["encoding"].get<std::string>() != "base64") {
                   fail_artifact("artifact encoding must be base64");
