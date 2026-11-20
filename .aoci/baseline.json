@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-20T16:14:47Z",
+  "updated_at": "2026-11-20T16:36:46Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "f5fb15fcbc9a7b2d250142ec184f1982a84edf933bf3872fbccb13de6d33a128",
-      "size": 178935,
-      "normalized_sha256": "f5fb15fcbc9a7b2d250142ec184f1982a84edf933bf3872fbccb13de6d33a128"
+      "sha256": "9f55586242ab6258c6f45da86173bb77ef57ee27ee71971a3524603cfb4b61e9",
+      "size": 178907,
+      "normalized_sha256": "9f55586242ab6258c6f45da86173bb77ef57ee27ee71971a3524603cfb4b61e9"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -311,9 +311,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "4dfe838c68c388d671f501a7ee65496abb739f2d10008f992655e21c79bd6c04",
-      "size": 53111,
-      "normalized_sha256": "4dfe838c68c388d671f501a7ee65496abb739f2d10008f992655e21c79bd6c04"
+      "sha256": "837dd77a2177456763f089dce65ed86b2113bc405d70a581d65bd881cb082095",
+      "size": 53081,
+      "normalized_sha256": "837dd77a2177456763f089dce65ed86b2113bc405d70a581d65bd881cb082095"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -431,9 +431,9 @@
     },
     "include/umminfer/client/client.hpp": {
       "role": "index",
-      "sha256": "bcaf2689e5aa44dc7767e28e8a6f124029b5145b45fdcf4df17c1925f89079a3",
-      "size": 9433,
-      "normalized_sha256": "bcaf2689e5aa44dc7767e28e8a6f124029b5145b45fdcf4df17c1925f89079a3"
+      "sha256": "383d7eb5ec3826d8977166ad3abe100f75d9736a77f81a8320ef7766156a2109",
+      "size": 9810,
+      "normalized_sha256": "383d7eb5ec3826d8977166ad3abe100f75d9736a77f81a8320ef7766156a2109"
     },
     "include/umminfer/comm/comm.hpp": {
       "role": "index",
@@ -1631,9 +1631,9 @@
     },
     "src/client/openai.cpp": {
       "role": "index",
-      "sha256": "b45ada01d42847f54acc046aece98420c799467acfd8d452925bda625a5c949f",
-      "size": 43024,
-      "normalized_sha256": "b45ada01d42847f54acc046aece98420c799467acfd8d452925bda625a5c949f"
+      "sha256": "d4a882e39e264eb9046f5c6ea6d63a7f46c4a8f59312fe9d74bdc9d2b6ac3b00",
+      "size": 45089,
+      "normalized_sha256": "d4a882e39e264eb9046f5c6ea6d63a7f46c4a8f59312fe9d74bdc9d2b6ac3b00"
     },
     "src/client/realtime.cpp": {
       "role": "index",
@@ -1691,9 +1691,9 @@
     },
     "src/pipeline/unified_schema.cpp": {
       "role": "index",
-      "sha256": "0af7add42f4c23c4cf4b12144375758a1160f25cd1f50bf283b576759f257977",
-      "size": 15382,
-      "normalized_sha256": "0af7add42f4c23c4cf4b12144375758a1160f25cd1f50bf283b576759f257977"
+      "sha256": "bed3c5d3ea0e2112a0e2d25bbf0907591107173357ba4150e3a768546846d7ab",
+      "size": 15415,
+      "normalized_sha256": "bed3c5d3ea0e2112a0e2d25bbf0907591107173357ba4150e3a768546846d7ab"
     },
     "src/pipeline/unified_schema.hpp": {
       "role": "index",
@@ -1739,9 +1739,9 @@
     },
     "src/serve/openai_api.cpp": {
       "role": "index",
-      "sha256": "cded62b59a37057b8b5f127f2ef7f24dfec0ecbf65ebccd610fc967b2ac4079a",
-      "size": 73282,
-      "normalized_sha256": "cded62b59a37057b8b5f127f2ef7f24dfec0ecbf65ebccd610fc967b2ac4079a"
+      "sha256": "3da6b3296d92ca59fe579d54602d2e338585b7c4c3a6c932833f69f3792da242",
+      "size": 73437,
+      "normalized_sha256": "3da6b3296d92ca59fe579d54602d2e338585b7c4c3a6c932833f69f3792da242"
     },
     "src/serve/realtime_api.cpp": {
       "role": "index",
@@ -1895,9 +1895,9 @@
     },
     "tests/unified_contract_test.cpp": {
       "role": "observe",
-      "sha256": "e853653d9732eec0ee42352f50fc970c676d97b22699bb845f36ee91ea07443e",
-      "size": 243367,
-      "normalized_sha256": "e853653d9732eec0ee42352f50fc970c676d97b22699bb845f36ee91ea07443e"
+      "sha256": "86816d84422341209830f01efe64bf927ee09fb3e90ce2789e975f24eb69752a",
+      "size": 261894,
+      "normalized_sha256": "86816d84422341209830f01efe64bf927ee09fb3e90ce2789e975f24eb69752a"
     },
     "tools/audio_analyze.py": {
       "role": "index",
