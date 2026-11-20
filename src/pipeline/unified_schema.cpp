@@ -95,8 +95,9 @@ ValidatedSubmission validate_submission(const Value& inputs,
       }
       const auto modality = modality_from_string(token.as_str());
       if (!modality) throw ProtocolError("unknown modality: " + token.as_str());
-      if (*modality == UnifiedModality::kVideo && config.video_stage.empty()) {
-        throw ProtocolError("video output is not enabled on this server");
+      if (*modality == UnifiedModality::kVideo) {
+        throw ProtocolError(
+            "modality video is not supported as an input modality; use output_modalities for video output");
       }
     }
   }

@@ -104,6 +104,17 @@ struct ImageOutput {
   std::string output_format = "png";
 };
 
+// Requested generated video. An empty prompt makes the server use the full
+// aggregated text answer. Requires stream.
+struct VideoOutput {
+  std::string prompt;
+  std::string size = "1280x720";
+  std::optional<int64_t> seconds;
+  std::optional<int64_t> fps;
+  std::optional<int64_t> seed;
+  std::string output_format = "mp4";
+};
+
 // One delivered generated artifact, fully decoded and checksum-verified.
 struct Artifact {
   std::string artifact_id;
@@ -118,10 +129,11 @@ struct Artifact {
 struct ChatRequest {
   std::string model;
   std::vector<Message> messages;
-  // "text", "image" and/or "audio". Empty keeps the server default.
+  // "text", "image", "audio" and/or "video". Empty keeps the server default.
   std::vector<std::string> modalities;
   std::optional<AudioOutput> audio;
   std::optional<ImageOutput> image;
+  std::optional<VideoOutput> video;
   std::optional<double> temperature;
   std::optional<double> top_p;
   int max_tokens = 0;

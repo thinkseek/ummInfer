@@ -1478,8 +1478,10 @@ class OpenAIApi::Impl {
         reject(mixed_error);
         return;
       }
-    } else if (body.contains("modalities") || body.contains("image") ||
-               body.contains("audio") || body.contains("video")) {
+    } else if ((body.contains("modalities") && !body["modalities"].is_null()) ||
+               (body.contains("image") && !body["image"].is_null()) ||
+               (body.contains("audio") && !body["audio"].is_null()) ||
+               (body.contains("video") && !body["video"].is_null())) {
       reject("mixed output requires unified mode");
       return;
     }

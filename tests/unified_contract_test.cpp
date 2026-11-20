@@ -5665,6 +5665,446 @@ void test_public_http_mixed_video_stream_and_abort() {
   server2.join();
 }
 
+// 1) C++ OpenAIClient::chat end-to-end video request, VideoOutput validation,
+// and 48 MiB MP4 (64 MiB base64 + SSE envelope > 64 MiB text cap) wire boundary.
+void test_openai_client_video_and_wire_limit_boundary() {
+  Harness h("clientvideo");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 15.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "client video server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  client::OpenAIConfig cfg;
+  cfg.base_url = "http://127.0.0.1:" + std::to_string(api.bound_port()) + "/v1";
+  cfg.model = "qwen3-unified";
+  cfg.max_attempts = 1;
+  client::OpenAIClient client(cfg);
+
+  // Client-side validation checks.
+  {
+    client::ChatRequest bad;
+    bad.messages = {client::Message{"user", "clip", {}}};
+    bad.modalities = {"text", "video"};
+    bad.stream = false;
+    bad.video = client::VideoOutput{};
+    bool rejected = false;
+    try {
+      client.chat(bad);
+    } catch (const client::Error& err) {
+      rejected = (err.code() == client::ErrorCode::kConfig);
+    }
+    check(rejected, "OpenAIClient accepted non-streaming video request");
+  }
+  {
+    client::ChatRequest bad;
+    bad.messages = {client::Message{"user", "clip", {}}};
+    bad.modalities = {"text"};
+    bad.stream = true;
+    bad.video = client::VideoOutput{};
+    bool rejected = false;
+    try {
+      client.chat(bad);
+    } catch (const client::Error& err) {
+      rejected = (err.code() == client::ErrorCode::kConfig);
+    }
+    check(rejected, "OpenAIClient accepted video options without video modality");
+  }
+
+  // End-to-end OpenAIClient::chat -> OpenAIApi -> UnifiedEngine -> :video.
+  const std::string small_mp4(64 * 1024, '\x66');
+  client::ChatRequest req;
+  req.messages = {client::Message{"user", "make a clip", {}}};
+  req.modalities = {"text", "video"};
+  req.stream = true;
+  client::VideoOutput vopt;
+  vopt.prompt = "sunset over sea";
+  vopt.size = "1280x720";
+  vopt.seconds = 4;
+  vopt.fps = 24;
+  vopt.seed = 7;
+  vopt.output_format = "mp4";
+  req.video = vopt;
+
+  auto resp_future = std::async(std::launch::async, [&] {
+    try {
+      return std::pair<std::optional<client::ChatResponse>, std::string>{
+          client.chat(req), ""};
+    } catch (const std::exception& err) {
+      return std::pair<std::optional<client::ChatResponse>, std::string>{
+          std::nullopt, err.what()};
+    }
+  });
+
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "OpenAIClient video request did not reach VLM");
+  if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("vlm answer"));
+  auto vid = vlm ? h.next_submit(h.video_recv) : std::nullopt;
+  check(vid.has_value(), "OpenAIClient video request did not reach video stage");
+  if (vid) {
+    StagePayload p = StagePayload::from_value(vid->data);
+    check(p.request.inputs.find("prompt")->as_str() == "sunset over sea" &&
+              p.request.inputs.find("size")->as_str() == "1280x720" &&
+              p.request.inputs.find("seconds")->as_int() == 4 &&
+              p.request.inputs.find("fps")->as_int() == 24 &&
+              p.request.inputs.find("seed")->as_int() == 7 &&
+              p.request.inputs.find("output_format")->as_str() == "mp4",
+          "OpenAIClient did not forward VideoOutput options to video stage");
+    Value::Map extra;
+    extra["format"] = Value("mp4");
+    extra["size"] = Value("1280x720");
+    h.complete(vid->request_id, "video", true,
+               artifact_result("video", "video/mp4", small_mp4,
+                               std::move(extra)));
+  }
+  const auto [resp_opt, resp_err] = resp_future.get();
+  check(resp_opt.has_value(),
+        ("OpenAIClient::chat failed: " + resp_err).c_str());
+  if (resp_opt) {
+    const client::ChatResponse& resp = *resp_opt;
+    check(resp.artifacts.size() == 1 &&
+              resp.artifacts[0].media_type == "video" &&
+              resp.artifacts[0].mime_type == "video/mp4" &&
+              resp.artifacts[0].data == small_mp4 &&
+              resp.artifacts[0].sha256 == util::sha256_hex(small_mp4),
+          "OpenAIClient::chat did not decode and verify video artifact");
+    check(resp.legs.is_array() && resp.legs.size() == 1 &&
+              resp.legs[0]["stage"] == "video" &&
+              resp.legs[0]["state"] == "completed",
+          "OpenAIClient::chat terminal legs missing completed video");
+  }
+  wait_until([&] { return engine.in_flight() == 0; },
+             "OpenAIClient video request stayed in flight");
+
+  api.stop();
+  server_thread.join();
+
+  // 48 MiB MP4 wire-limit boundary: 48 MiB decoded == 64 MiB base64, so with
+  // SSE/JSON envelopes the wire stream exceeds the 64 MiB text-only cap and
+  // requires mixed_output to select kMixedStreamWireBytes (96 MiB).
+  httplib::Server mock_server;
+  constexpr size_t kChunkBytes = 2u << 20;
+  constexpr size_t kChunkCount = 24;  // 24 * 2 MiB == 48 MiB exact
+  const std::string one_chunk_raw(kChunkBytes, '\x5a');
+  const std::string one_chunk_b64 = util::base64_encode(one_chunk_raw);
+  const std::string full_48m_sha =
+      util::sha256_hex(std::string(kChunkBytes * kChunkCount, '\x5a'));
+
+  mock_server.Post(
+      "/v1/chat/completions",
+      [&](const httplib::Request&, httplib::Response& res) {
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [&](size_t, httplib::DataSink& sink) {
+              auto write_frame = [&](const json& j) {
+                const std::string line = "data: " + j.dump() + "\n\n";
+                return sink.write(line.data(), line.size());
+              };
+              int64_t seq = 0;
+              for (size_t i = 0; i < kChunkCount; ++i) {
+                json art = {{"artifact_id", "art-0"},
+                            {"media_type", "video"},
+                            {"mime_type", "video/mp4"},
+                            {"encoding", "base64"},
+                            {"data", one_chunk_b64},
+                            {"index", static_cast<int64_t>(i)},
+                            {"total", static_cast<int64_t>(kChunkCount)},
+                            {"format", "mp4"}};
+                if (i + 1 == kChunkCount) {
+                  art["bytes"] =
+                      static_cast<int64_t>(kChunkBytes * kChunkCount);
+                  art["sha256"] = full_48m_sha;
+                }
+                json frame = {
+                    {"id", "mock-48m"},
+                    {"object", "chat.completion.chunk"},
+                    {"created", 0},
+                    {"model", "qwen3-unified"},
+                    {"choices",
+                     {{{"index", 0},
+                       {"delta", json::object()},
+                       {"finish_reason", nullptr}}}},
+                    {"unified",
+                     {{"kind", "artifact"},
+                      {"stage", "video"},
+                      {"seq", seq++},
+                      {"session_id", "s-48m"},
+                      {"is_final", true},
+                      {"text", ""},
+                      {"artifact", std::move(art)}}}};
+                if (!write_frame(frame)) return false;
+              }
+              json done = {
+                  {"id", "mock-48m"},
+                  {"object", "chat.completion.chunk"},
+                  {"created", 0},
+                  {"model", "qwen3-unified"},
+                  {"choices",
+                   {{{"index", 0},
+                     {"delta", json::object()},
+                     {"finish_reason", "stop"}}}},
+                  {"unified",
+                   {{"kind", "complete"},
+                    {"stage", "vlm"},
+                    {"seq", seq++},
+                    {"session_id", "s-48m"},
+                    {"is_final", true},
+                    {"text", ""},
+                    {"legs",
+                     {{{"stage", "video"}, {"state", "completed"}}}}}}};
+              if (!write_frame(done)) return false;
+              static const std::string kDone = "data: [DONE]\n\n";
+              sink.write(kDone.data(), kDone.size());
+              sink.done();
+              return true;
+            });
+      });
+  const int mock_port = mock_server.bind_to_any_port("127.0.0.1");
+  check(mock_port > 0, "mock 48 MiB server failed to bind");
+  std::thread mock_thread([&] { mock_server.listen_after_bind(); });
+
+  client::OpenAIConfig cfg48;
+  cfg48.base_url = "http://127.0.0.1:" + std::to_string(mock_port) + "/v1";
+  cfg48.model = "qwen3-unified";
+  cfg48.max_attempts = 1;
+  client::OpenAIClient client48(cfg48);
+  client::ChatRequest req48;
+  req48.messages = {client::Message{"user", "max video", {}}};
+  req48.modalities = {"text", "video"};
+  req48.stream = true;
+  std::optional<client::ChatResponse> resp48;
+  std::string err48;
+  try {
+    resp48 = client48.chat(req48);
+  } catch (const std::exception& err) {
+    err48 = err.what();
+  }
+  mock_server.stop();
+  mock_thread.join();
+
+  check(resp48.has_value() && resp48->artifacts.size() == 1 &&
+            resp48->artifacts[0].media_type == "video" &&
+            resp48->artifacts[0].data.size() == kChunkBytes * kChunkCount &&
+            resp48->artifacts[0].sha256 == full_48m_sha,
+        ("OpenAIClient failed 48 MiB base64+envelope video wire boundary: " +
+         err48)
+            .c_str());
+}
+
+// 2) Non-unified mode keeps backwards compatibility for null mixed fields
+// (e.g. "video": null), while still rejecting non-null mixed fields with 400.
+void test_non_unified_null_video_field_compatible() {
+  Harness h("nonunifnull");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "legacy-chat";
+  config.entry_stage = "vlm";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  check(api.bind(), "non-unified server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  const std::string url =
+      "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+      "/v1/chat/completions";
+
+  // "video": null (plus null modalities/image/audio) must be accepted.
+  auto future = std::async(std::launch::async, [&] {
+    test_http::HttpRequest req;
+    req.url = url;
+    req.body = nlohmann::json{
+                   {"model", "legacy-chat"},
+                   {"messages", nlohmann::json::array(
+                                    {nlohmann::json{{"role", "user"},
+                                                    {"content", "hello"}}})},
+                   {"stream", false},
+                   {"modalities", nullptr},
+                   {"image", nullptr},
+                   {"audio", nullptr},
+                   {"video", nullptr}}
+                   .dump();
+    req.headers.emplace("Content-Type", "application/json");
+    try {
+      return std::pair<int, std::string>{test_http::perform(req).status, ""};
+    } catch (const client::Error& err) {
+      return std::pair<int, std::string>{err.status(), err.what()};
+    }
+  });
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "non-unified request with video:null did not submit");
+  if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("ok"));
+  const auto [status_null, err_null] = future.get();
+  check(status_null == 200,
+        ("non-unified request with video:null returned " +
+         std::to_string(status_null) + ": " + err_null)
+            .c_str());
+
+  // Non-null "video": {} must still be rejected with 400 in non-unified mode.
+  {
+    test_http::HttpRequest req;
+    req.url = url;
+    req.body = nlohmann::json{
+                   {"model", "legacy-chat"},
+                   {"messages", nlohmann::json::array(
+                                    {nlohmann::json{{"role", "user"},
+                                                    {"content", "hello"}}})},
+                   {"stream", true},
+                   {"video", nlohmann::json::object()}}
+                   .dump();
+    req.headers.emplace("Content-Type", "application/json");
+    bool got_400 = false;
+    try {
+      test_http::perform(req);
+    } catch (const client::Error& err) {
+      got_400 = (err.status() == 400);
+    }
+    check(got_400, "non-unified request with non-null video was not rejected");
+  }
+
+  api.stop();
+  server_thread.join();
+}
+
+// 3) Direct UnifiedEngine::submit with inputs.modalities=["video"] must be
+// explicitly rejected even when config.video_stage is configured (never
+// silently degrade to text-only); output_modalities=["video"] selects output.
+void test_direct_engine_video_input_modality_rejected_even_with_video_stage() {
+  Harness h("directvidin");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+
+  StagePayload payload;
+  Value::Map message;
+  message["role"] = Value("user");
+  message["content"] = Value("describe video");
+  Value::Map inputs;
+  inputs["messages"] = Value(Value::Array{Value(std::move(message))});
+  inputs["modalities"] = Value(Value::Array{Value("video")});
+  payload.request.inputs = Value(std::move(inputs));
+
+  bool rejected = false;
+  try {
+    engine.submit(std::move(payload));
+  } catch (const ProtocolError&) {
+    rejected = true;
+  }
+  check(rejected,
+        "direct submit with inputs.modalities=[video] silently degraded to text");
+  check(engine.in_flight() == 0, "rejected direct submit leaked in_flight");
+}
+
+// 4) 60 MiB aggregate boundary: exact 60 MiB succeeds; exceeding 60 MiB fails
+// only the offending leg without emitting partial artifacts or aborting others.
+void test_mixed_artifact_aggregate_60mib_boundary() {
+  Harness h("agg60m");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  // Exact 60 MiB: 40 MiB image + 20 MiB video -> both succeed.
+  {
+    const std::string id =
+        engine.submit(mixed_request(true, false, "", "Tina", true));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "no VLM submit for exact 60 MiB test");
+    h.complete(vlm->request_id, "vlm", true, text_result("exact 60"));
+    check(h.next_submit(h.image_recv).has_value(), "no image submit");
+    check(h.next_submit(h.video_recv).has_value(), "no video submit");
+
+    h.complete(id + ":image", "image", true,
+               artifact_result("image", "image/png",
+                               std::string(40u << 20, '\x89')));
+    h.complete(id + ":video", "video", true,
+               artifact_result("video", "video/mp4",
+                               std::string(20u << 20, '\x66')));
+    check(engine.wait(id, 10.0), "exact 60 MiB request did not settle");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+              terminal->legs.is_array() && terminal->legs.as_array().size() == 2,
+          "exact 60 MiB request did not complete with two legs");
+    if (terminal && terminal->legs.is_array()) {
+      for (const Value& leg : terminal->legs.as_array()) {
+        check(leg.find("state")->as_str() == "completed",
+              "exact 60 MiB leg was not completed");
+      }
+    }
+    engine.release(id);
+  }
+
+  // Over 60 MiB: 40 MiB image succeeds, 20 MiB + 1 video fails without emitting
+  // any partial video artifact and without aborting the concurrent TTS leg.
+  {
+    const std::string id =
+        engine.submit(mixed_request(true, true, "", "Tina", true));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "no VLM submit for >60 MiB test");
+    h.complete(vlm->request_id, "vlm", true, text_result("over 60"));
+    check(h.next_submit(h.image_recv).has_value(), "no image submit");
+    check(h.next_submit(h.tts_recv).has_value(), "no tts submit");
+    check(h.next_submit(h.video_recv).has_value(), "no video submit");
+
+    h.complete(id + ":image", "image", true,
+               artifact_result("image", "image/png",
+                               std::string(40u << 20, '\x89')));
+    h.complete(id + ":video", "video", true,
+               artifact_result("video", "video/mp4",
+                               std::string((20u << 20) + 1, '\x66')));
+    // TTS must NOT be aborted by video exceeding the aggregate cap.
+    check(!h.saw_abort(id + ":tts"),
+          "video aggregate cap overflow aborted concurrent TTS leg");
+    h.complete(id + ":tts", "tts", true,
+               artifact_result("audio", "audio/wav", std::string(1024, '\x52')));
+    check(engine.wait(id, 10.0), "over-60 MiB request did not settle");
+
+    size_t video_artifacts = 0;
+    size_t video_leg_errors = 0;
+    size_t tts_artifacts = 0;
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.request_id != id) continue;
+      if (e.kind == UnifiedEvent::Kind::kArtifact && e.stage_id == kVideoStageId) {
+        ++video_artifacts;
+      }
+      if (e.kind == UnifiedEvent::Kind::kLegError && e.stage_id == kVideoStageId) {
+        ++video_leg_errors;
+      }
+      if (e.kind == UnifiedEvent::Kind::kArtifact && e.stage_id == kTtsStageId) {
+        ++tts_artifacts;
+      }
+    }
+    check(video_artifacts == 0,
+          "failed >60 MiB video leg emitted partial artifact chunks");
+    check(video_leg_errors == 1,
+          "failed >60 MiB video leg did not emit kLegError");
+    check(tts_artifacts == 1,
+          "concurrent TTS leg did not deliver its artifact");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+              terminal->legs.is_array() && terminal->legs.as_array().size() == 3,
+          "over-60 MiB terminal missing 3-entry legs array");
+    if (terminal && terminal->legs.is_array()) {
+      std::map<std::string, std::string> states;
+      for (const Value& leg : terminal->legs.as_array()) {
+        states[leg.find("stage")->as_str()] = leg.find("state")->as_str();
+      }
+      check(states["image"] == "completed" && states["tts"] == "completed" &&
+                states["video"] == "failed",
+            "over-60 MiB terminal leg states mismatch");
+    }
+    engine.release(id);
+    check(engine.in_flight() == 0, "over-60 MiB request stayed in flight");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -5756,5 +6196,9 @@ int main() {
   RUN(test_mixed_video_failure_and_artifact_limit());
   RUN(test_mixed_video_cancel_and_session_ownership());
   RUN(test_public_http_mixed_video_stream_and_abort());
+  RUN(test_openai_client_video_and_wire_limit_boundary());
+  RUN(test_non_unified_null_video_field_compatible());
+  RUN(test_direct_engine_video_input_modality_rejected_even_with_video_stage());
+  RUN(test_mixed_artifact_aggregate_60mib_boundary());
   return g_failures == 0 ? 0 : 1;
 }
