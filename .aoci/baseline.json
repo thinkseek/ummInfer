@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-20T16:36:46Z",
+  "updated_at": "2026-11-20T17:18:08Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "9f55586242ab6258c6f45da86173bb77ef57ee27ee71971a3524603cfb4b61e9",
-      "size": 178907,
-      "normalized_sha256": "9f55586242ab6258c6f45da86173bb77ef57ee27ee71971a3524603cfb4b61e9"
+      "sha256": "e384583fd94b65739ffeee0456b7df1a540a979e877c4a514a36b3239b85a1e5",
+      "size": 178884,
+      "normalized_sha256": "e384583fd94b65739ffeee0456b7df1a540a979e877c4a514a36b3239b85a1e5"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -287,9 +287,9 @@
     },
     "docs/client.md": {
       "role": "index",
-      "sha256": "55d0c797ad6b34345c44c35e49e0bdbcd31ca72543dd359e7cf2a00171cafaed",
-      "size": 17415,
-      "normalized_sha256": "55d0c797ad6b34345c44c35e49e0bdbcd31ca72543dd359e7cf2a00171cafaed"
+      "sha256": "48629629591f535dd1803e547c806fc100329971fe2a568196123607918f7120",
+      "size": 18038,
+      "normalized_sha256": "48629629591f535dd1803e547c806fc100329971fe2a568196123607918f7120"
     },
     "docs/concurrency.md": {
       "role": "index",
@@ -311,9 +311,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "837dd77a2177456763f089dce65ed86b2113bc405d70a581d65bd881cb082095",
+      "sha256": "15ebeb20c2b6974a9814aa3c80e21055a3ed59e2fc29ebc48169d14fba981019",
       "size": 53081,
-      "normalized_sha256": "837dd77a2177456763f089dce65ed86b2113bc405d70a581d65bd881cb082095"
+      "normalized_sha256": "15ebeb20c2b6974a9814aa3c80e21055a3ed59e2fc29ebc48169d14fba981019"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -353,9 +353,9 @@
     },
     "docs/mixed-output-contract.md": {
       "role": "index",
-      "sha256": "98fd64a3075c2414b0d995662fdd61475044a32c4b69ad8c882c726836d1d705",
-      "size": 7746,
-      "normalized_sha256": "98fd64a3075c2414b0d995662fdd61475044a32c4b69ad8c882c726836d1d705"
+      "sha256": "3b69419f9f31b7e9a567cfa1d3ef8fdd52c6daa17762670aa93bc5220d8af186",
+      "size": 7914,
+      "normalized_sha256": "3b69419f9f31b7e9a567cfa1d3ef8fdd52c6daa17762670aa93bc5220d8af186"
     },
     "docs/mlx.md": {
       "role": "index",

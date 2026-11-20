@@ -94,11 +94,11 @@ data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],...,
   `stream_options.include_usage: true` is still rejected with HTTP 400.
 - The non-streaming response body is unchanged.
 
-## Mixed output (generated image and audio)
+## Mixed output (generated image, audio and video)
 
-A unified server can return generated image and audio artifacts alongside the
-text answer. The request opts in with `modalities` plus an `image` and/or
-`audio` object, and requires `stream=true`; non-streaming mixed output is
+A unified server can return generated image, audio and video artifacts alongside
+the text answer. The request opts in with `modalities` plus an `image`, `audio`
+and/or `video` object, and requires `stream=true`; non-streaming mixed output is
 rejected with 400.
 
 ```sh
@@ -118,6 +118,12 @@ rejected with 400.
 - `audio` requires `voice`, accepts only `format=wav` and `sample_rate=24000`
   (WAV, PCM16, mono). The CLI does not expose `audio.stream`, so it always
   receives one complete WAV and writes it after the request finishes.
+- `video` (via C++ `OpenAIClient::chat` with `ChatRequest::modalities` including
+  `"video"` and optional `ChatRequest::video` / `VideoOutput`) accepts `prompt`
+  (absent falls back to the aggregated text answer), `size` (default `1280x720`),
+  optional positive `seconds` and `fps`, optional non-negative `seed`, and
+  `output_format="mp4"`; decoded `video/mp4` bytes are returned in
+  `ChatResponse::artifacts`.
 - A client that wants audio before synthesis ends sends `"stream": true` in the
   `audio` object (see the mixed output contract). The server then delivers
   `mime_type: audio/pcm` artifacts, one per finished sentence, and sends no WAV
@@ -125,18 +131,21 @@ rejected with 400.
   arrives; its first chunk arrived 0.36 s into a 9.1 s request on H20B.
 - A modality whose stage is not registered on the server is rejected with 400
   before submission: `image output is not enabled on this server` /
-  `audio output is not enabled on this server`.
+  `audio output is not enabled on this server` /
+  `video output is not enabled on this server`.
 
 Artifacts arrive as base64 `artifact` SSE events in independently decodable
 chunks whose decoded target is 2 MiB. The C++ client reassembles them in
 order, verifies the final-chunk `sha256` against the decoded bytes, and rejects
 a mismatch, out-of-order chunks, non-aligned base64, or a truncated stream.
-Decoded limits are 48 MiB per image, 48 MiB per audio, and 60 MiB aggregated
-per request; one SSE wire frame is capped at 3 MiB (the parser ceiling is
-4 MiB). The CLI writes each output through an atomic part file and refuses to
-overwrite an existing path. Session history stores text only; artifact bytes
-are never persisted in history, and logs never contain prompts, TTS text,
-base64 or Bin payloads.
+Decoded limits are 48 MiB per image, 48 MiB per audio, 48 MiB per video, and
+60 MiB aggregated per request; one SSE wire frame is capped at 3 MiB (the
+parser ceiling is 4 MiB). The C++ client keeps a 64 MiB cap for text-only
+streams and uses a 96 MiB wire/aggregated stream cap for mixed output. The CLI
+writes each output through an atomic part file and refuses to overwrite an
+existing path. Session history stores text only; artifact bytes are never
+persisted in history, and logs never contain prompts, TTS text, base64 or Bin
+payloads.
 
 ## Final ASR
 

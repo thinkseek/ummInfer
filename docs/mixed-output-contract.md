@@ -138,8 +138,10 @@ Frozen values, enforced at the HTTP boundary and mirrored by the C++ client:
 - one decoded video: at most 48 MiB;
 - decoded artifact bytes per request aggregated: at most 60 MiB;
 - one SSE frame on the wire: at most 3 MiB (the parser hard limit is 4 MiB);
-- the C++ client keeps its existing 64 MiB aggregate hard limit and must fail
-  deterministically rather than truncate.
+- the C++ client keeps its 64 MiB hard cap for text-only streams and uses a
+  96 MiB wire/aggregated stream cap (`kMixedStreamWireBytes`) for mixed output
+  (giving base64 + SSE/JSON envelope headroom for the 60 MiB decoded aggregate),
+  failing deterministically rather than truncating.
 
 Worker -> engine transport is one msgpack Bin in the existing
 `CompleteMessage.result`; no new top-level message type. The result map is

@@ -1,8 +1,8 @@
 # ummInfer 功能映射
 
-基线 commit `1600551bc1f0b07264934d1bbdda3a007a1fcc5c`（基于 `origin/main` `1e77d585116b5e94f33710ce0fa42b3eec0c01e9`）。下表全部 `文件:行号` 只在 `26861c3` 下有效；之后任何提交都可能使行号漂移。
+基线 commit `1600551bc1f0b07264934d1bbdda3a007a1fcc5c`（基于 `origin/main` `1e77d585116b5e94f33710ce0fa42b3eec0c01e9`）。下表全部 `文件:行号` 只在 `1600551` 下有效；之后任何提交都可能使行号漂移。
 
-校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show 26861c3:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
+校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show 1600551:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
 
 状态定义（严格区分离线契约/测试桩与真实模型验证）：
 - `已实现（契约/单测已验）`：仓库内有离线契约测试、单元测试或 mock/TinyCTC 断言该行为；**不代表真实大模型或 GPU 验证**。
