@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-<meta name="theme-color" content="#f2e7d6">
+<meta name="theme-color" content="#fdf9f1">
 <meta property="og:type" content="website">
 <meta property="og:title" content="ummInfer — 一套引擎，四种模态">
 <meta property="og:description" content="统一多模态推理引擎：语音转写、看图理解、图像生成、语音合成，真实基线 54/54 全通过。">
@@ -18,23 +18,25 @@
 <meta name="twitter:card" content="summary_large_image">
 <style>
   :root {
-    --bg: #f2e7d6;
-    --ink: #1a1a1a;
-    --grey: #6b6b6b;
-    --blue: #2f6bff;
-    --line: rgba(26, 26, 26, 0.16);
+    --bg: #fdf9f1;
+    --ink: #17202b;
+    --grey: #5d6b7c;
+    --blue: #2e7cf6;
+    --sun: #ff8a3d;
+    --line: rgba(23, 32, 43, 0.12);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
   body {
-    background: var(--bg);
+    background: linear-gradient(180deg, #fefaf2 0%, #fbf6ec 45%, #edf3fc 100%);
+    background-attachment: fixed;
     color: var(--ink);
     font-family: "Helvetica Neue", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     font-weight: 300;
     line-height: 1.7;
     -webkit-font-smoothing: antialiased;
   }
-  ::selection { background: rgba(47, 107, 255, 0.18); }
+  ::selection { background: rgba(255, 138, 61, 0.22); }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 0 32px; }
 
   nav {
@@ -42,7 +44,7 @@
     padding: 26px 0; border-bottom: 1px solid var(--line);
   }
   .brand { font-size: 21px; font-weight: 400; letter-spacing: 0.02em; }
-  .brand em { font-style: normal; color: var(--blue); }
+  .brand em { font-style: normal; color: var(--sun); }
   .nav-right { display: flex; align-items: center; gap: 22px; }
   .nav-link { color: var(--grey); text-decoration: none; font-size: 14px; letter-spacing: 0.04em; }
   .nav-link:hover { color: var(--ink); }
@@ -80,8 +82,15 @@
     text-decoration: none; letter-spacing: 0.05em; transition: all 0.18s ease;
   }
   .btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; }
-  .btn-primary { background: var(--ink); color: var(--bg); border: 1px solid var(--ink); }
-  .btn-primary:hover { background: var(--blue); border-color: var(--blue); }
+  .btn-primary {
+    background: linear-gradient(135deg, #2e7cf6, #4da3ff);
+    color: #fdf9f1; border: 1px solid transparent;
+    box-shadow: 0 10px 24px -12px rgba(46, 124, 246, 0.65);
+  }
+  .btn-primary:hover {
+    background: linear-gradient(135deg, #ff8a3d, #ffb25e);
+    box-shadow: 0 10px 24px -12px rgba(255, 138, 61, 0.65);
+  }
   .btn-primary:hover svg { fill: currentColor; }
   .btn-ghost { border: 1px solid var(--line); color: var(--ink); }
   .btn-ghost:hover { border-color: var(--ink); }
