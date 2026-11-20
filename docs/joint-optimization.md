@@ -82,8 +82,10 @@ No model is duplicated. No second engine, transport, or event schema is added.
   same as [performance-baseline.md](performance-baseline.md#method).
 * Unified concurrency 1, 2, and 4, English and Chinese.
 * Inputs are the same Phase 4 real recordings as
-  [performance-baseline.md](performance-baseline.md#inputs). The full audio
-  hashes are in [README](../README.md#run-real-qwen-asr---vlm). The served Omni
+  [performance-baseline.md](performance-baseline.md#inputs) (the historical
+  README section that previously listed the full audio hashes was replaced when
+  the README moved to the native architecture; the hashes stay in git history
+  and in the recorded evidence). The served Omni
   tokenizer here is `a7d41145…5d1fab`.
 * Both SGLang backends were already running. No backend process was started or
   stopped. The local SSH control socket `/tmp/umm-bench-ssh.sock` was reused.

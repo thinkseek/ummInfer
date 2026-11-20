@@ -31,14 +31,16 @@ default deployment does not start it. Exactly one VLM stage runs at a time.
 | `umm-native-stage-omni` | `omni` | `omni::OmniEngine` | 512 (`--max-new-tokens`); the H20B launcher sets 96 |
 | `umm-native-stage-qwen38` | `qwen38` | `qwen38::Engine` | 256 (`--max-new-tokens`); the H20B launcher sets 96 |
 | `umm-native-stage-tts` | `tts` | `native::TtsEngine` | 8192 (`--max-frames`) |
-| `umm-native-stage-image` | `image` | `image::ImageEngine` | 50 (`--steps`) |
+| `umm-native-stage-image` | `image` | `image::ImageEngine` (`2512`, default) / `image2::Image2Engine` (`2.1`) via `--image-backend` | 50 (`2512`) / 40 (`2.1`) (`--steps`) |
 
 The compute function runs on the `Stage` scheduler thread, whose CUDA current
 device defaults to 0. Every kind calls `cudaSetDevice(--gpu)` at the start of
 each request; the engines set the device only in their constructors.
 
-Measured on H20B: the accepted Omni engine decodes about 2 s per token, so one
-answer of 96 tokens takes roughly 3 minutes and the launcher caps its length.
+Measured on H20B: after the MoE host-path fix ([OMNI_NATIVE.md](OMNI_NATIVE.md)),
+the Omni engine decodes at 30.6 tok/s on the image case and 14.79 ms/token on
+the text case (earlier pre-fix runs decoded at ~2 s/token, which is why the
+H20B launcher defaulted to 96 tokens).
 The Qwen3.8-27B engine decodes at 42.0 tok/s for text and 29.2 tok/s for an
 image prompt, with 0.16 s and 1.05 s prefill. The ASR stage returns a 15 s
 clip in about 1 s after model load.
@@ -110,8 +112,9 @@ test for this table remains. The VLM stage is also reachable directly, without
 the unified engine in front of it, so any future check cannot rely on the server
 having already removed these fields.
 
-`max_new_tokens` and `stream` do not reach a compute function (see "Behaviour
-differences"), so the stage uses `--max-new-tokens`.
+`max_new_tokens` from request `params` is read via `bound_request_params()`
+and clamped to `max_seq` (falling back to `--max-new-tokens` when omitted);
+`temperature` and sampling controls are ignored (greedy decoding).
 
 TTS (the audio leg, from `UnifiedEngine::build_tts_inputs`):
 
@@ -137,8 +140,8 @@ Image (the image leg, from `UnifiedEngine::build_image_inputs`):
 ```
 
 The accepted image slice currently supports only `512x512` PNG. Other sizes
-and JPEG are rejected explicitly. `steps` defaults to 50; zero selects the
-process default.
+and JPEG are rejected explicitly. `steps` defaults to 50 for `2512` and 40 for
+`2.1`; zero selects the process default.
 
 ## Streaming deltas
 
@@ -153,15 +156,18 @@ The scheduler binds the emitter to the request id for the duration of that
 compute call. A chunk can never be attributed to another request, and a call
 outside a compute function is dropped.
 
-`umm-native-stage-qwen38` emits one chunk per generated token as
-`{"text": "<new suffix>"}`. It decodes the whole generated prefix each step and
-sends only the bytes past the previous length, so a multi-byte character split
-across two tokens is never sent as half a codepoint. The aggregate result still
-arrives at completion, which keeps non-streaming requests and the TTS/image
-legs unchanged.
+Both `umm-native-stage-qwen38` and `umm-native-stage-omni` emit one chunk per
+generated token as `{"text": "<new suffix>"}`. Both buffer incomplete trailing
+UTF-8 bytes in O(1) per token (`utf8_complete_prefix`) so a multi-byte character
+split across two tokens is never sent as half a codepoint. The aggregate result
+still arrives at completion, which keeps non-streaming requests and the
+TTS/image legs unchanged. `omni` also supports pure-text prefix KV reuse
+(`UMM_OMNI_PREFIX_CACHE`, enabled by default).
 
-The omni, asr, tts and image stages do not emit chunks; their text arrives
-once, in the completed result.
+`umm-native-stage-tts` emits raw PCM16 chunks (`format: "pcm16"`, 24 kHz mono)
+when `inputs.stream=true`, and checks bit-for-bit equality against the terminal
+waveform (`stream_matches`). The `asr` and `image` stages do not emit chunks;
+their outputs arrive once in the completed result.
 
 ## Cancellation
 
@@ -212,17 +218,20 @@ API impact:
 
 ## Behaviour differences from the Python stages
 
-- Request `params` (`max_new_tokens`, `stream`, `temperature`) do not reach a
-  `ComputeFn`: `Stage` hands the function only the payload data or the request
-  inputs. Each stage uses the defaults above. `asr_partials` therefore produces
-  no partial events; the ASR leg still delivers its final transcript.
-- One request at a time per stage (the default `SimpleScheduler` concurrency).
+- Request `params`: `max_new_tokens` reaches `qwen38` and `omni` via
+  `bound_request_params()` (clamped to `max_seq`), and `inputs.stream` reaches
+  `tts`. `temperature`, sampling controls and `asr_partials` are ignored by the
+  native stages; the ASR leg delivers its final transcript (realtime previews
+  are driven by the server's 200 ms preview loop in `realtime_api.cpp`).
+- Stages default to one request at a time (`SimpleScheduler` `kSerial`);
+  `qwen38` supports opt-in decode continuous batching via `--batch-size N`
+  (`kThreadSafe`, see [docs/batching.md](../docs/batching.md)).
 - ASR is 16 kHz mono only, at most 30 s per request, inherited from the
   accepted frontend.
 
 ## Build
 
-Host (parsing tests only, no CUDA):
+Host (`tts_tail_trim_test` only, no CUDA):
 
 ```sh
 cmake -S native/stage_cli -B build-host -DCMAKE_PREFIX_PATH=/opt/homebrew

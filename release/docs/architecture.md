@@ -7,8 +7,13 @@ three parts.
    SSE surface, keeps request state, and runs the Coordinator.
 2. The Coordinator talks to the stages over ZeroMQ with MessagePack control
    frames. Large payloads move through POSIX shared memory.
-3. Each stage is one process. A stage loads one model on one GPU and handles
-   one request at a time.
+3. Each stage is one process. A stage loads one model on one GPU; stages
+   default to one request at a time, while `qwen38` supports opt-in decode
+   continuous batching (`--batch-size N`).
+
+See `docs/architecture.md` in the source repository for the full end-to-end
+call chains (sync/streaming, cancellation, error propagation, session and
+resource lifecycles) and the local verification matrix.
 
 No Python, PyTorch, vLLM or SGLang runs on the serving path. `ldd` on a stage
 binary lists the CUDA runtime, libzmq, libmsgpackc and system libraries only.
@@ -40,10 +45,10 @@ follows it. The image and TTS legs are optional outputs.
 
 | Path | Stages | Terminal event |
 | --- | --- | --- |
-| Text chat | VLM | `complete`; Qwen3.8-27B also emits one `vlm_delta` per token |
+| Text chat | VLM | `complete`; both `qwen38` and `omni` emit `vlm_delta` per token |
 | Audio to text | ASR, VLM | `asr_final`, VLM deltas, `complete` |
 | Image and text to text | VLM | `complete` |
-| Text to speech | VLM, TTS | `complete` with one WAV `artifact` |
+| Text to speech | VLM, TTS | `complete` with one WAV `artifact`, or streamed PCM16 chunks when `audio.stream=true` |
 | Text to image | VLM, image | `complete` with one PNG `artifact` |
 | Mixed input and output | ASR, VLM, image and TTS | `complete` with two `artifact`s |
 
@@ -62,7 +67,7 @@ ready. The image and TTS legs never gate `/ready`.
 - `POST /v1/chat/completions` — chat, with optional image, audio, speech and
   image output fields.
 - `POST /v1/audio/transcriptions` — ASR.
-- `/health`, `/ready` — process and readiness probes.
+- `/health`, `/ready`, `/metrics` — process, readiness, and Prometheus probes.
 - `--realtime-port` — WebSocket ASR listener.
 
 The `umm-infer chat`, `transcribe`, `realtime` and `image` subcommands use the

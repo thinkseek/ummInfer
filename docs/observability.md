@@ -56,7 +56,7 @@ counting a fabricated zero.
 |---|---|---|
 | `umm_vlm_prefill_seconds` | histogram | VLM prompt prefill (`prefill_ms` in the stage result) |
 | `umm_vlm_decode_seconds` | histogram | VLM token decode (`decode_ms`) |
-| `umm_tts_first_frame_seconds` | histogram | Time to the first generated codec frame (`first_frame_ms`). The native decoder is not streaming, so this is not a time to first audio sample. |
+| `umm_tts_first_frame_seconds` | histogram | Time to the first generated codec frame (`first_frame_ms`), reported by the TTS stage regardless of whether `audio.stream=true` PCM16 chunk streaming is enabled. |
 | `umm_tts_total_seconds` | histogram | TTS synthesis (`total_ms`) |
 | `umm_image_denoise_step_seconds` | histogram | `denoise_ms / steps` per image request |
 
@@ -91,8 +91,9 @@ Sampled on each scrape, read-only. The server never writes a device setting.
 `umm_gpu_nvml_available` is 1 when `libnvidia-ml.so.1` (or `libnvidia-ml.so`)
 loaded and `nvmlInit` succeeded. When it is 0 the endpoint still answers and no
 per-GPU sample is emitted; the rest of the metrics are unaffected. This is the
-normal state on a host without an NVIDIA driver, and it is what the unit test
-covers.
+normal state on a host without an NVIDIA driver. (The standalone unit suite
+`tests/metrics_test.cpp` was removed in `ab51cf5`; `/metrics` scraping is
+exercised by `tests/soak_native.py`.)
 
 Every field except `name` also needs one `nvmlDeviceGet*` call to succeed for
 that device; a device that refuses a reading emits 0 for that field.
