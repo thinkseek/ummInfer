@@ -1,8 +1,8 @@
 # ummInfer 功能映射
 
-基线 commit `bd4f4f17631e1a4bd67b44af2370b931dea24fd9`（当前 `main`，继承原 pre-merge 基线 `1600551` 的 127 行代码映射与 436 处引用，期间业务代码无锚点变动）。下表全部 `文件:行号` 在 `bd4f4f1` 下已逐条校验有效；之后任何代码提交都可能使行号漂移。
+基线 commit `e528a6d0b424716c561ad100056869d0bf3c3db3`（继承原 `bd4f4f1` 的 127 行代码映射并新增可替换视频 Stage 与契约/实测条目，共 130 行代码映射）。下表全部 `文件:行号` 在 `e528a6d` 下已逐条校验有效；之后任何代码提交都可能使行号漂移。
 
-校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show bd4f4f1:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
+校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show e528a6d:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
 
 > **单一事实源原则**：本文件是 `ummInfer` 唯一的功能映射与能力状态台账（与 `aoci.txt` / `aoci.code.txt` 协同维护），**不新增第二套功能清单、并行表格或重复跟踪系统**。
 
@@ -23,7 +23,7 @@
 - `未验证`：代码已实现，但仓库内无自动化测试断言（本轮 `NOT_RUN`）。
 - `计划中`：尚未实现，见第 9 节与 [roadmap.md](roadmap.md)。
 
-> **真模型验证声明**：本轮核验在无 GPU 的 macOS 环境完成，所有 GPU 核、真实大模型推理与 H20B 常驻服务实测在本轮均为 `NOT_RUN`。历史实测记录（附环境、SHA-256 与日志路径）保留在 [docs/multimodal-benchmark-results.md](multimodal-benchmark-results.md)、[docs/cases/0001-end-to-end-native.md](cases/0001-end-to-end-native.md)、[docs/batching.md](batching.md)、[docs/concurrency.md](concurrency.md)、[docs/full-duplex.md](full-duplex.md)、[docs/soak.md](soak.md) 与 [docs/h20b-service.md](h20b-service.md)。
+> **真模型验证声明**：本轮于 H20B（`linyu-dev` 容器独立栈 `127.0.0.1:43391`，GPU 0/1，不冲突于常驻 `43301` GPU 2–5）完成了**真实视频 Stage 端到端实测**（`Wan-AI/Wan2.2-TI2V-5B-Diffusers` Apache-2.0，本地 revision `UNKNOWN`，`model_index.json` SHA-256 `6a72faeb…`，704×480 29 帧 16 fps H.264 MP4 `163,552 B` SHA-256 `074f6d67…`，含中途 `/abort` 与 leg 失败生命周期）；其余 GPU 核、`/v1/audio/speech` 真 TTS、外部授权 `/v1/videos` 上游实测及 H20B 常驻服务 `43301` 变更仍为 `NOT_RUN`。历史实测记录（附环境、SHA-256 与日志路径）保留在 [docs/multimodal-benchmark-results.md](multimodal-benchmark-results.md)、[docs/cases/0001-end-to-end-native.md](cases/0001-end-to-end-native.md)、[docs/batching.md](batching.md)、[docs/concurrency.md](concurrency.md)、[docs/full-duplex.md](full-duplex.md)、[docs/soak.md](soak.md) 与 [docs/h20b-service.md](h20b-service.md)。
 
 ## 1. 对外接口（HTTP / SSE / WebSocket）
 
@@ -58,7 +58,7 @@
 | 按会话归属校验取消权限 | `src/pipeline/unified.cpp:281` `UnifiedEngine::CancelStatus UnifiedEngine::cancel_for_se` | `src/pipeline/unified.cpp:290` `it->second.session_id != expected_session_id)` | request_id, session_id, CancelStatus::kSessionMismatch | tests/unified_contract_test.cpp:4892 + tests/unified_contract_test.cpp:5374 | 已实现（契约/单测已验） |
 | 终态等待与请求记录释放 | `src/pipeline/unified.cpp:379` `bool UnifiedEngine::release(const std::string& request_i` | `src/pipeline/unified.cpp:417` `coordinator_.release(request_id)` | wait(request_id, timeout_s) 阻塞到终态回调完成；release() 删除记录与 vlm/image/tts/video 全部子 leg | tests/unified_contract_test.cpp:4090 + tests/unified_contract_test.cpp:5154 | 已实现（契约/单测已验） |
 | 图片、语音与视频输出并行扇出 | `src/pipeline/unified.cpp:1026` `void UnifiedEngine::start_outputs_locked(const std::stri` | `src/pipeline/unified.cpp:1033` `if (record.image_leg.enabled) start_image_locked(request` + `src/pipeline/unified.cpp:1034` `if (record.video_leg.enabled) start_video_locked(request_id, record);` | output_modalities 含 image/audio/video；子请求 id 为 <id>:image、<id>:tts 与 <id>:video | tests/unified_contract_test.cpp:3813 + tests/unified_contract_test.cpp:5154 | 已实现（契约/单测已验） |
-| 统一四模态 leg 生命周期与视频一等输出 | `src/pipeline/unified.cpp:331` `std::vector<LegSnapshot> UnifiedEngine::legs_snapshot(` + `src/pipeline/unified.cpp:928` `void UnifiedEngine::start_video_locked(const std::string& request_id,` | `src/pipeline/unified.cpp:1034` `if (record.video_leg.enabled) start_video_locked(request_id, record);` | 文本/图像/音频/视频统一 LegState（pending/running/completed/failed/aborted）、取消、会话归属、资源清理与 SSE 2 MiB video/mp4 分片；真实生视频后端 NOT_RUN | tests/unified_contract_test.cpp:5154 + tests/unified_contract_test.cpp:5296 + tests/unified_contract_test.cpp:5374 + tests/unified_contract_test.cpp:5457 | 已实现（契约/单测已验） |
+| 统一四模态 leg 生命周期与视频一等输出 | `src/pipeline/unified.cpp:331` `std::vector<LegSnapshot> UnifiedEngine::legs_snapshot(` + `src/pipeline/unified.cpp:928` `void UnifiedEngine::start_video_locked(const std::string& request_id,` | `src/pipeline/unified.cpp:1034` `if (record.video_leg.enabled) start_video_locked(request_id, record);` | 文本/图像/音频/视频统一 LegState（pending/running/completed/failed/aborted）、取消、会话归属、资源清理与 SSE 2 MiB video/mp4 分片；H20B 真实 `Wan-AI/Wan2.2-TI2V-5B-Diffusers` Stage 已验（`tests/video_live_e2e.py`），外部 `/v1/videos` 上游与原生 C++/CUDA 视频引擎仍 `NOT_RUN` | tests/unified_contract_test.cpp:5154 + tests/unified_contract_test.cpp:5296 + tests/unified_contract_test.cpp:5374 + tests/unified_contract_test.cpp:5457 + tests/video_live_e2e.py:91 | 部分覆盖 |
 | 非流式产物按 2 MiB 分片 | `src/pipeline/unified_schema.cpp:339` `std::vector<UnifiedEvent> slice_artifact_events(` | `src/pipeline/unified_schema.cpp:396` `event.kind = UnifiedEvent::Kind::kArtifact` | artifact_id, index, total; kMaxArtifactImageBytes / kMaxArtifactAudioBytes / kMaxArtifactVideoBytes / kMaxArtifactAggregateBytes | tests/unified_contract_test.cpp:4139 + tests/unified_contract_test.cpp:5457 | 已实现（契约/单测已验） |
 | Coordinator 提交到入口 stage | `src/pipeline/pipeline.cpp:751` `std::string Coordinator::submit(StagePayload payload` | `src/pipeline/pipeline.cpp:812` `control_plane_->submit_to_stage(entry_stage, endpoint, M` | entry_stage 名; 自动 request_id = req-N; 未 ready 时进入 pending_submits_ | tests/unified_contract_test.cpp:812 | 已实现（契约/单测已验） |
 | Stage 接收提交、交给调度器并回传失败 | `src/pipeline/pipeline.cpp:348` `void Stage::on_submit(const SubmitMessage& msg)` + `src/pipeline/pipeline.cpp:444` `void Stage::fail_request(const std::string& request_id` | `src/pipeline/pipeline.cpp:381` `scheduler_->enqueue(IncomingMessage` + `src/pipeline/pipeline.cpp:457` `control_plane_->send_complete(done)` | submit message -> new_request；payload.data 为空时用 request.inputs | 无 | 未验证 |
@@ -127,6 +127,12 @@
 |---|---|---|---|---|---|
 | 共享内存 / CUDA IPC 张量中继 | `src/relay/relay.cpp:291` `class CudaIpcRelay : public Relay` | `src/relay/relay.cpp:349` `cuda_check(cudaMemcpy(buffer, tensor.bytes.data()` | --relay shm/cuda_ipc（承载宿主序列化字节，非零拷贝设备张量） | tests/cuda_bench.cpp:330 | 部分覆盖 |
 
+## 3.6 可替换视频 stage（Diffusers / 外部上游）
+
+| 功能 | 入口 | 核心实现 | 协议/契约 | 验证 | 状态 |
+|---|---|---|---|---|---|
+| 可替换真实视频 Stage（Diffusers 本地权重 / 外部 `/v1/videos` 上游） | `python/umminfer_video_stage.py:474` `class VideoStage:` + `python/umminfer_video_stage.py:885` `def main(argv=None):` | `python/umminfer_video_stage.py:241` `class DiffusersVideoBackend:` + `python/umminfer_video_stage.py:367` `class UpstreamVideoBackend:` | ZMQ+msgpack Stage 协议（`stage_ready`/`submit`/`abort`/`complete`）；`--backend diffusers`（H20B GPU 0 实测 `Wan-AI/Wan2.2-TI2V-5B-Diffusers` 输出有效 H.264 MP4，支持去噪步级 `/abort` 中断）与 `--backend upstream`（仅离线契约已验，真实外部上游 `NOT_RUN`） | tests/video_stage_contract_test.py:202 + tests/video_stage_contract_test.py:244 + tests/video_live_e2e.py:91 | 部分覆盖 |
+
 ## 4. 多模态输出
 
 | 功能 | 入口 | 核心实现 | 协议/契约 | 验证 | 状态 |
@@ -144,7 +150,7 @@
 | 功能 | 入口 | 核心实现 | 协议/契约 | 验证 | 状态 |
 |---|---|---|---|---|---|
 | session_id 标记事件分组 | `src/pipeline/unified.cpp:183` `std::string UnifiedEngine::submit(StagePayload payload)` | `src/pipeline/unified.cpp:204` `record.session_id = std::move(session_id)` | session_id | tests/unified_contract_test.cpp:1812 | 已实现（契约/单测已验） |
-| --session-history 开启多轮历史 | `src/main.cpp:450` `unified_config.session_history.enabled = flags.count("se` | `src/pipeline/unified.cpp:167` `session_store_(to_history_policy(config_.session_history` | --session-history | tests/full_duplex_l2_live.py:184 | 部分覆盖 |
+| --session-history 开启多轮历史 | `src/main.cpp:451` `unified_config.session_history.enabled = flags.count("se` | `src/pipeline/unified.cpp:167` `session_store_(to_history_policy(config_.session_history` | --session-history | tests/full_duplex_l2_live.py:184 | 部分覆盖 |
 | 历史注入 VLM prompt 与仅成功轮次入库 | `src/pipeline/unified.cpp:588` `void UnifiedEngine::start_vlm_locked(const std::string&` + `src/pipeline/unified.cpp:1202` `void UnifiedEngine::on_legs_drained_locked(const std::st` + `src/pipeline/unified.cpp:612` `void UnifiedEngine::record_session_turn_locked(const Rec` | `src/pipeline/unified.cpp:599` `session_store_.prepend_history(` + `src/pipeline/unified.cpp:1211` `if (kind == UnifiedEvent::Kind::kComplete && record.hist` + `src/pipeline/unified.cpp:614` `record.transcript.empty() ? record.user_text : record.tr` | session_history, messages | tests/unified_contract_test.cpp:3340 | 已实现（契约/单测已验） |
 | 会话历史按 session_id 隔离且需显式 opt-in | `src/pipeline/session_store.cpp:17` `Value::Array SessionHistoryStore::prepend_history(` + `src/pipeline/unified_schema.cpp:81` `ValidatedSubmission validate_submission(const Value& inp` | `src/pipeline/session_store.cpp:21` `const auto it = sessions_.find(session_id)` + `src/pipeline/unified_schema.cpp:233` `if (out.history_requested && !out.explicit_session)` | session_id | tests/unified_contract_test.cpp:3394 | 已实现（契约/单测已验） |
 | 历史三级淘汰（轮次/字符/会话） | `src/pipeline/session_store.cpp:39` `void SessionHistoryStore::record_turn(const std::string&` | `src/pipeline/session_store.cpp:52` `while ((turns.size() > policy_.max_turns` | max_turns, max_chars, max_sessions | tests/unified_contract_test.cpp:3454 | 已实现（契约/单测已验） |
@@ -165,7 +171,7 @@
 | macOS：深色/浅色主题 | `clients/ummmlx/Sources/ummmlx/Theme.swift:8` `struct Theme` | `clients/ummmlx/Sources/ummmlx/Theme.swift:12` `Color(hex: dark ? darkValue : light)` | - | 无 | 未验证 |
 | Web：文本流式对话 | `web/index.html:570` `async function send()` | `web/index.html:646` `for await (const line of readLines(res))` | POST /v1/chat/completions / session_id | 无 | 未验证 |
 | Web：PCM 音频播放与图片/WAV 产物渲染 | `web/index.html:314` `push(bytes, rate, channels)` + `web/index.html:448` `function deliver(chunk, bytes)` | `web/index.html:336` `source.start(at)` + `web/index.html:455` `const url = URL.createObjectURL(new Blob([bytes]` | audio/pcm / sample_rate / channels | 无 | 未验证 |
-| CLI：serve 与 stage 宿主入口 | `src/main.cpp:299` `int run_serve(const Flags& flags)` + `src/main.cpp:503` `int run_stage(const Flags& flags)` | `src/main.cpp:299` `int run_serve(const Flags& flags)` + `src/main.cpp:503` `int run_stage(const Flags& flags)` | umm-infer serve [--demo --entry --vlm-entry --image-entry --tts-entry --max-in-flight --session-history --api-key --web-root]; umm-infer stage | tests/http_smoke.py:281 | 部分覆盖 |
+| CLI：serve 与 stage 宿主入口 | `src/main.cpp:300` `int run_serve(const Flags& flags)` + `src/main.cpp:504` `int run_stage(const Flags& flags)` | `src/main.cpp:300` `int run_serve(const Flags& flags)` + `src/main.cpp:504` `int run_stage(const Flags& flags)` | umm-infer serve [--demo --entry --vlm-entry --image-entry --tts-entry --video-entry --max-in-flight --session-history --api-key --web-root]; umm-infer stage | tests/http_smoke.py:281 + tests/video_stage_contract_test.py:116 | 部分覆盖 |
 | CLI：chat 与多模态输出 | `src/client/cli.cpp:378` `int chat(int argc, char** argv, std::atomic<bool>* cance` | `src/client/cli.cpp:498` `const ChatResponse response = client.chat(request)` | chat --prompt --url --model --stream --audio-out --image-out | tests/client_boundary_e2e.py:395 | 已实现（契约/单测已验） |
 | CLI：transcribe 离线转写 | `src/client/cli.cpp:547` `int transcribe(int argc, char** argv, std::atomic<bool>*` | `src/client/cli.cpp:565` `std::cout << client.transcribe(request).text << '\n'` | transcribe --url --model --file --format | tests/client_boundary_e2e.py:508 | 已实现（契约/单测已验） |
 | CLI：realtime 实时转写 | `src/client/cli.cpp:569` `int realtime(int argc, char** argv, std::atomic<bool>* c` | `src/client/cli.cpp:595` `auto session = client.realtime(request)` | realtime --file --live-result --chunk-ms / WS /v1/realtime | tests/realtime_client_contract_e2e.py:676 | 已实现（契约/单测已验） |
@@ -211,6 +217,8 @@
 | 基准 harness 离线契约测试 | `tests/multimodal_benchmark_test.py:232` `def main():` | `tests/multimodal_benchmark_test.py:244` `completed = subprocess.run(cmd, capture_output=True, tex` | --evidence-class contract-test；stability_verdict=NOT_REAL_EVIDENCE | tests/multimodal_benchmark_test.py:144 | 已实现（契约/单测已验） |
 | CUDA/SHM 中继延迟基准 | `tests/cuda_bench.cpp:267` `int main(int argc, char** argv)` | `tests/cuda_bench.cpp:330` `auto op = relay->put(tensor, "bench")` | --role bench；CSV 列 relay,direct_d2h,size_bytes,median_us,p95_us,mib_per_s,hash_ok | tests/cuda_bench.cpp:330 | 未验证 |
 | macOS 端测试：统一流解码、恢复、抖动策略与语音状态机 | `clients/ummmlx/Tests/ummmlxTests/UnifiedStreamTests.swift:45` `func testDecodesEveryDocumentedKind() throws` + `clients/ummmlx/Tests/ummmlxTests/ChatClientTests.swift:7` `func testSplitMultilineAndComments() throws` | `clients/ummmlx/Tests/ummmlxTests/UnifiedStreamTests.swift:168` `let artifact = try collector.ingest(ArtifactChunk(` + `clients/ummmlx/Tests/ummmlxTests/SpeechControllerTests.swift:52` `let text = try await controller.transcribeFile(URL(fileU` | kind: asr_partial/asr_final/vlm_delta/artifact/leg_error/complete/error/cancelled；sha256/bytes/base64；恢复/抖动回归 | clients/ummmlx/Tests/ummmlxTests/UnifiedStreamTests.swift:158 + clients/ummmlx/Tests/ummmlxTests/ChatModelRecoveryTests.swift:219 + clients/ummmlx/Tests/ummmlxTests/JitterPlaybackTests.swift:27 | 已实现（契约/单测已验） |
+| 视频 Stage 离线协议与 CLI 回归 | `tests/video_stage_contract_test.py:164` `class VideoStageProtocolTests(unittest.TestCase):` + `tests/video_stage_contract_test.py:285` `class UpstreamVideoBackendTests(unittest.TestCase):` | `tests/video_stage_contract_test.py:202` `def test_submit_complete_and_error(self):` + `tests/video_stage_contract_test.py:244` `def test_mid_generation_abort_and_tombstone(self):` | 请求校验、Wan 帧对齐、ZMQ submit/complete/error/abort 墓碑与中途取消、`/v1/videos` 上游适配、`--video-entry` CLI 选项 | tests/video_stage_contract_test.py:202 + tests/video_stage_contract_test.py:244 | 已实现（契约/单测已验） |
+| 真实视频后端端到端验收（H20B） | `tests/video_live_e2e.py:311` `def main():` | `tests/video_live_e2e.py:91` `def verify_generation(base_url, model, out_dir: Path, prompt: str,` + `tests/video_live_e2e.py:180` `def verify_cancel(base_url, model, prompt: str, video_prompt: str, size: str,` + `tests/video_live_e2e.py:269` `def verify_leg_failure(base_url, model):` | 公开 HTTP `POST /v1/chat/completions` (`modalities=["text","video"]`) → UnifiedEngine → 真实视频 Stage；ffprobe 校验 MP4、SSE 分片重组、真实 `/abort`（含 403/200 与 `in_flight=0`）与 `failed` leg | tests/video_live_e2e.py:91 + tests/video_live_e2e.py:180 + tests/video_live_e2e.py:269 | 部分覆盖 |
 
 ## 9. 计划中与未覆盖边界（无代码实现）
 
@@ -219,9 +227,9 @@
 | `Qwen3.5-Omni` 接入 | 仅限官方授权 API（`qwen3.5-omni-plus` / `qwen3.5-omni-flash`），授权未验证，全部执行用例 `NOT_COVERED` | [docs/roadmap.md](roadmap.md#model-support-plan) | 计划中 |
 | `MiniMaxAI/MiniMax-H3` | H20B 全栈 BF16 基线；开源 H3-Base 仅限 768p，2K 依赖未完全开源模块 | [docs/roadmap.md](roadmap.md#model-support-plan) | 计划中 |
 | `MiniMaxAI/MiniMax-H3-Image` | H20B 全栈 BF16 文生图与最多 16 张参考图编辑 | [docs/roadmap.md](roadmap.md#model-support-plan) | 计划中 |
-| 真实视频模型 Stage 后端 | `UnifiedEngine` 已将 `video` 提升为一等输出并完成测试 Stage 契约验证（`--video-entry`），剩余为接入可替换的真实视频权重/外部上游 Stage 后端（真实生视频当前 `NOT_RUN`） | [docs/model-support.md](model-support.md) / [docs/roadmap.md](roadmap.md#phases) | 计划中 |
+| 原生 C++/CUDA 视频 Stage 与外部授权视频上游实测 | 可替换 Python Diffusers 视频 Stage（`python/umminfer_video_stage.py`）已完成 `Wan-AI/Wan2.2-TI2V-5B-Diffusers` H20B 端到端实测；原生 C++/CUDA 视频引擎与真实外部授权 `/v1/videos` 上游实测仍为 `NOT_RUN` | [docs/model-support.md](model-support.md) / [docs/roadmap.md](roadmap.md#phases) | 计划中 |
 | 多卡模型切分与多 stage 动态批处理 | 当前单 stage 绑定单 GPU；仅 `qwen38` 支持 `--batch-size N` 连续批处理 | [README.md](../README.md#known-limitations) / [docs/batching.md](batching.md) | 计划中 |
 | 非流式混合输出（`stream=false` + image/audio/video） | 当前显式返回 HTTP 400 | [docs/mixed-output-contract.md](mixed-output-contract.md) | 计划中 |
 | 真实模型负载下的 CUDA IPC、零拷贝设备张量与多机 IPC | 当前 CUDA IPC 承载宿主序列化字节，仅通过独立基准与 sanitizer，真模型负载下 `NOT_COVERED` | [docs/cuda-ipc.md](cuda-ipc.md) / [docs/roadmap.md](roadmap.md#explicitly-unverified-or-unsupported) | 计划中 |
 
-共 127 行代码映射条目 + 7 项计划中条目。
+共 130 行代码映射条目 + 7 项计划中条目。
