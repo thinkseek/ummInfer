@@ -1,0 +1,33 @@
+# Third-party notices — native Qwen3.8-27B executor
+
+## Code reused from this repository
+
+`safetensors_mmap.*`, `tokenizer.*`, `unicode_ranges.hpp`, `image_preprocess.*`,
+`stb_image.h`, `bf16.hpp`, `qwen38_gemm.cu` and several elementwise kernels in
+`qwen38_kernels.cu` are derived from `native/omni/` in the same repository
+(Apache-2.0). The tensor-core GEMM/GEMV code originated there; the hybrid
+attention, partial-mRoPE, gated delta rule, depthwise causal conv and vision
+merger paths were written for this model.
+
+`stb_image.h` is Sean Barrett's stb_image, public domain / MIT.
+
+`unicode_ranges.hpp` is generated range data for the Unicode general
+categories used by the Qwen2 pretokenizer (see
+`native/omni_tests/gen_unicode_ranges.py`).
+
+## Specifications implemented from upstream (read, not copied)
+
+- HuggingFace Transformers 5.x, Apache-2.0:
+  `src/transformers/models/qwen3_5/modeling_qwen3_5.py`,
+  `configuration_qwen3_5.py`, `vision_utils.py`,
+  `image_processing_qwen2_vl.py`, `processing_qwen3_vl.py`, and the model's
+  `chat_template.jinja`. Formulas, tensor layouts, rounding order and the
+  prompt/position-id construction follow these sources.
+- Qwen3.8-27B checkpoint (`Qwen/Qwen3.8-27B`, Apache-2.0): weight names,
+  shapes and configuration.
+
+## Not used
+
+No vLLM, SGLang, FLA, flash-linear-attention, cuBLAS, cuDNN, PyTorch or
+Triton code is linked or copied into this directory. The only runtime
+dependency is the NVIDIA CUDA runtime (`libcudart`).

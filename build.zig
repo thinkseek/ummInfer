@@ -1,0 +1,149 @@
+const std = @import("std");
+
+fn configure(mod: *std.Build.Module, b: *std.Build, deps_prefix: ?[]const u8, curl_prefix: ?[]const u8, cuda_prefix: ?[]const u8, cuda: bool, link_deps: bool, include_private_src: bool) void {
+    mod.addIncludePath(b.path("include"));
+    if (include_private_src) mod.addIncludePath(b.path("src"));
+    if (curl_prefix) |prefix| {
+        if (deps_prefix == null or !std.mem.eql(u8, deps_prefix.?, prefix)) {
+            mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "include" }) });
+        }
+        mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
+        mod.addRPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
+    }
+    if (deps_prefix) |prefix| {
+        // -I, not -isystem: Zig's clang searches its own system include
+        // directories before -isystem paths, so a distro httplib.h would win
+        // over the pinned one in the dependency prefix.
+        mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "include" }) });
+        mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib" }) });
+    }
+    if (cuda_prefix) |prefix| {
+        mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "include" }) });
+        mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ prefix, "lib64" }) });
+    }
+    if (cuda) mod.addCMacro("UMMINFER_WITH_CUDA", "1");
+    // The metrics module dlopen()s libnvidia-ml. glibc before 2.34 keeps
+    // dlopen in libdl; macOS has it in libSystem, so only Linux links it.
+    if (mod.resolved_target) |resolved| {
+        if (resolved.result.os.tag == .linux) {
+            mod.linkSystemLibrary("dl", .{ .use_pkg_config = .no });
+        }
+    }
+    if (link_deps) {
+        mod.linkSystemLibrary("zmq", .{ .use_pkg_config = .no });
+        mod.linkSystemLibrary("msgpackc", .{ .use_pkg_config = .no });
+        mod.linkSystemLibrary("curl", .{ .use_pkg_config = .no });
+        mod.linkSystemLibrary("websockets", .{ .use_pkg_config = .no });
+        if (cuda) mod.linkSystemLibrary("cudart", .{ .use_pkg_config = .no });
+    }
+}
+
+fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libcpp = true,
+    });
+}
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    const deps_prefix = b.option([]const u8, "deps-prefix", "Prefix containing include/ and lib/ for native dependencies");
+    const curl_prefix = b.option([]const u8, "curl-prefix", "Prefix of a libcurl build with WebSocket support");
+    const cuda_prefix = b.option([]const u8, "cuda-prefix", "CUDA prefix containing include/ and lib64/");
+    const cuda = b.option(bool, "cuda", "Enable the CUDA IPC relay") orelse (cuda_prefix != null);
+    const tsan = b.option(bool, "tsan", "Enable ThreadSanitizer") orelse false;
+
+    const core = b.addLibrary(.{
+        .name = "umm_core",
+        .linkage = .static,
+        .root_module = module(b, target, optimize),
+    });
+    configure(core.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, false, true);
+    core.root_module.sanitize_thread = tsan;
+    core.root_module.addCSourceFiles(.{
+        .files = &.{
+            "src/util/codec.cpp",
+            "src/proto/wire.cpp",
+            "src/proto/messages.cpp",
+            "src/obs/metrics.cpp",
+            "src/relay/relay.cpp",
+            "src/comm/comm.cpp",
+            "src/scheduling/simple_scheduler.cpp",
+            "src/pipeline/pipeline.cpp",
+            "src/pipeline/session_store.cpp",
+            "src/pipeline/unified_schema.cpp",
+            "src/pipeline/unified.cpp",
+            "src/serve/upstream_proxy.cpp",
+            "src/serve/openai_api.cpp",
+            "src/serve/realtime_api.cpp",
+            "src/audio/audio.cpp",
+            "src/client/http.cpp",
+            "src/client/openai.cpp",
+            "src/client/asr.cpp",
+            "src/client/websocket.cpp",
+            "src/client/realtime.cpp",
+            "src/client/cli.cpp",
+        },
+        .flags = &.{"-std=c++20"},
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "umm-infer",
+        .root_module = module(b, target, optimize),
+    });
+    configure(exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, true);
+    exe.root_module.sanitize_thread = tsan;
+    exe.root_module.linkLibrary(core);
+    exe.root_module.addCSourceFiles(.{
+        .files = &.{"src/main.cpp"},
+        .flags = &.{"-std=c++20"},
+    });
+    b.installArtifact(exe);
+
+    const test_step = b.step("test", "Run the end-to-end contract suite");
+    const test_exe = b.addExecutable(.{
+        .name = "unified_contract_test",
+        .root_module = module(b, target, optimize),
+    });
+    configure(test_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, false);
+    test_exe.root_module.sanitize_thread = tsan;
+    test_exe.root_module.linkLibrary(core);
+    test_exe.root_module.addCSourceFiles(.{
+        .files = &.{"tests/unified_contract_test.cpp"},
+        .flags = &.{"-std=c++20"},
+    });
+    const run_test = b.addRunArtifact(test_exe);
+    if (b.args) |args| run_test.addArgs(args);
+    test_step.dependOn(&run_test.step);
+    const unified_test = b.step("unified-test", "Run unified orchestration contract tests");
+    unified_test.dependOn(&run_test.step);
+
+    const bench_step = b.step("cuda-bench", "Measure SHM and CUDA IPC relay latency");
+    if (cuda) {
+        const bench_exe = b.addExecutable(.{
+            .name = "cuda_bench",
+            .root_module = module(b, target, optimize),
+        });
+        configure(bench_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, false);
+        bench_exe.root_module.linkLibrary(core);
+        bench_exe.root_module.addCSourceFiles(.{
+            .files = &.{"tests/cuda_bench.cpp"},
+            .flags = &.{"-std=c++20"},
+        });
+        b.installArtifact(bench_exe);
+        const run = b.addRunArtifact(bench_exe);
+        bench_step.dependOn(&run.step);
+    } else {
+        const note = b.addSystemCommand(&.{ "sh", "-c", "echo 'cuda-bench needs -Dcuda; no benchmark built'" });
+        bench_step.dependOn(&note.step);
+    }
+
+    const smoke = b.addSystemCommand(&.{ "python3", "-I" });
+    smoke.addFileArg(b.path("tests/http_smoke.py"));
+    smoke.addArtifactArg(exe);
+    const smoke_step = b.step("smoke", "Run HTTP and process lifecycle tests");
+    smoke_step.dependOn(&smoke.step);
+
+}

@@ -1,0 +1,377 @@
+// SPDX-License-Identifier: Apache-2.0
+
+import SwiftUI
+import AppKit
+import Darwin
+import Speech
+
+@MainActor
+final class Automation {
+    private let model: ChatModel
+    private let appearance: Binding<String>
+    private let arguments = ProcessInfo.processInfo.arguments
+
+    static func requested(model: ChatModel, appearance: Binding<String>) -> Automation? {
+        guard ProcessInfo.processInfo.arguments.contains("--automation") else { return nil }
+        return Automation(model: model, appearance: appearance)
+    }
+
+    private init(model: ChatModel, appearance: Binding<String>) {
+        self.model = model
+        self.appearance = appearance
+        Task { await run() }
+    }
+
+    private func option(_ name: String) -> String? {
+        let prefix = "--\(name)="
+        return arguments.first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
+    }
+
+    private func run() async {
+        let output = option("output") ?? "/tmp/ummmlx-result.json"
+        let screenshots = option("screenshots") ?? "/tmp/ummmlx-screenshots"
+        let prompt = option("prompt") ?? ""
+        let followup = option("followup-prompt")
+            ?? "Reply with one short sentence about the previous reply."
+        let errorModel = option("error-model") ?? ""
+        let multimodal = arguments.contains("--multimodal")
+        let audioOnly = arguments.contains("--audio-only")
+        let asrFile = option("asr-file")
+        if let endpoint = option("endpoint") { model.endpoint = endpoint }
+        if let servedModel = option("model") { model.model = servedModel }
+        if let size = option("image-size") { model.imageSize = size }
+        if let voice = option("voice") { model.audioVoice = voice }
+        appearance.wrappedValue = option("theme") ?? "light"
+        await settle()
+
+        // Server-free fault regression. It drives the real model, client and
+        // player through a scripted transport, so it needs neither a server nor
+        // a socket. `--automation` alone stays the live-server GUI gate.
+        if arguments.contains("--faults") {
+            let report = await FaultGate.run()
+            let passed = report["passed"] as? Bool ?? false
+            do {
+                let data = try JSONSerialization.data(
+                    withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: URL(fileURLWithPath: output))
+            } catch {
+                FileHandle.standardError.write(
+                    Data("ummmlx fault gate: \(error)\n".utf8))
+                exit(2)
+            }
+            exit(passed ? 0 : 1)
+        }
+
+        var stopChecked = false
+        var stopStatus = "NOT_REQUESTED"
+        var passed = true
+        var failure = ""
+        var responseText = ""
+        var followupText = ""
+        var errorChecked = false
+        var errorStatus = "NOT_REQUESTED"
+        var errorText = ""
+        var requests: [[String]] = []
+        var successTurns: [[String: String]] = []
+        var asrChecked = false
+        var asrText = ""
+        var asrOnDevice = false
+        var artifacts: [[String: String]] = []
+        var screens: [String] = []
+        model.onRequest = { requests.append($0.map(\.role)) }
+
+        // Local file recognition through SFSpeechURLRecognitionRequest with
+        // requiresOnDeviceRecognition. No network, no umm server.
+        if let asrFile {
+            asrChecked = true
+            asrOnDevice = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))?
+                .supportsOnDeviceRecognition ?? false
+            do {
+                asrText = try await model.transcribeFile(
+                    URL(fileURLWithPath: asrFile))
+                if asrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    passed = false
+                    failure = "The local recognizer returned empty text."
+                }
+            } catch {
+                passed = false
+                let ns = error as NSError
+                failure = "Local ASR failed: \(ns.domain) \(ns.code): \(ns.localizedDescription)"
+            }
+            await settle()
+            do {
+                // Capture the transcript and the on-device disclosure before
+                // the theme loop so the evidence names the recognizer.
+                screens.append(try capture(name: "asr", directory: screenshots))
+            } catch {
+                passed = false
+                failure = error.localizedDescription
+            }
+        }
+
+        if multimodal {
+            model.imageOutput = true
+            model.audioOutput = true
+            model.prompt = prompt
+            model.send()
+            if await waitForIdle(timeout: 600) {
+                responseText = model.turns.last { $0.role == .assistant }?.text ?? ""
+                let assistant = model.turns.last { $0.role == .assistant }
+                artifacts = (assistant?.artifacts ?? []).map { artifact in
+                    [
+                        "artifact_id": artifact.id,
+                        "media_type": artifact.mediaType,
+                        "mime_type": artifact.mimeType,
+                        "bytes": String(artifact.data.count),
+                        "sha256": artifact.sha256
+                    ]
+                }
+                if !model.status.hasPrefix("Completed") || responseText.isEmpty {
+                    passed = false
+                    failure = model.error ?? "The multimodal request did not complete with text."
+                } else if model.sessionID.isEmpty {
+                    passed = false
+                    failure = "The server did not report a session id."
+                } else if !artifacts.contains(where: { $0["media_type"] == "image" })
+                            || !artifacts.contains(where: { $0["media_type"] == "audio" }) {
+                    passed = false
+                    failure = "The multimodal request did not return one image and one audio artifact."
+                }
+            } else {
+                passed = false
+                failure = "Timed out waiting for the multimodal completion."
+                model.stop()
+            }
+            successTurns = model.turns.map {
+                ["role": $0.role.rawValue, "state": state($0.state)]
+            }
+        } else if audioOnly {
+            // Audio-only: the client sends audio.stream=true and plays each
+            // PCM chunk as it arrives, so this is the path a listener hears.
+            model.audioOutput = true
+            model.prompt = prompt
+            model.send()
+            if await waitForIdle(timeout: 300) {
+                responseText = model.turns.last { $0.role == .assistant }?.text ?? ""
+                if !model.status.hasPrefix("Completed") || responseText.isEmpty {
+                    passed = false
+                    failure = model.error ?? "The audio request did not complete with text."
+                }
+            } else {
+                passed = false
+                failure = "Timed out waiting for the audio completion."
+                model.stop()
+            }
+            successTurns = model.turns.map {
+                ["role": $0.role.rawValue, "state": state($0.state)]
+            }
+        } else if !prompt.isEmpty {
+            var runCompletion = true
+            if arguments.contains("--stop-first") {
+                model.onFirstDelta = { [weak self] in
+                    guard let self else { return }
+                    stopChecked = true
+                    self.model.onFirstDelta = nil
+                    self.model.stop()
+                }
+                model.prompt = prompt
+                model.send()
+                if await waitForIdle() {
+                    stopStatus = model.status
+                    if !stopChecked || model.status != "Stopped" {
+                        passed = false
+                        failure = "The first real stream did not stop after a delta."
+                    }
+                } else {
+                    passed = false
+                    failure = "Timed out waiting for the stopped request."
+                    runCompletion = false
+                    model.stop()
+                }
+                model.newChat()
+            }
+
+            if runCompletion {
+                model.prompt = prompt
+                model.send()
+                if await waitForIdle() {
+                    responseText = model.turns.last { $0.role == .assistant }?.text ?? ""
+                    if !model.status.hasPrefix("Completed") || responseText.isEmpty {
+                        passed = false
+                        failure = model.error ?? "The real request did not complete with text."
+                    }
+                } else {
+                    passed = false
+                    failure = "Timed out waiting for the real completion."
+                    model.stop()
+                }
+            }
+
+            // Second turn in the same session. It must carry the first
+            // exchange; the runner checks the request roles.
+            if runCompletion && passed {
+                model.prompt = followup
+                model.send()
+                if await waitForIdle() {
+                    followupText = model.turns.last { $0.role == .assistant }?.text ?? ""
+                    if !model.status.hasPrefix("Completed") || followupText.isEmpty {
+                        passed = false
+                        failure = model.error
+                            ?? "The second same-session request did not complete with text."
+                    } else {
+                        let roles = model.turns.map { $0.role.rawValue }
+                        let states = model.turns.map { turn -> String in
+                            switch turn.state {
+                            case .complete: return "complete"
+                            case .streaming: return "streaming"
+                            case .stopped: return "stopped"
+                            case .failed: return "failed"
+                            }
+                        }
+                        if roles != ["user", "assistant", "user", "assistant"]
+                            || states.contains(where: { $0 != "complete" }) {
+                            passed = false
+                            failure = "The same session did not keep two complete exchanges."
+                        }
+                    }
+                } else {
+                    passed = false
+                    failure = "Timed out waiting for the second same-session completion."
+                    model.stop()
+                }
+            }
+            // Snapshot now: the rejected request below appends one user turn.
+            successTurns = model.turns.map {
+                ["role": $0.role.rawValue, "state": state($0.state)]
+            }
+        }
+
+        var paths: [String] = screens
+        for theme in ["light", "dark"] {
+            appearance.wrappedValue = theme
+            await settle()
+            do {
+                paths.append(try capture(name: theme, directory: screenshots))
+            } catch {
+                passed = false
+                failure = error.localizedDescription
+            }
+        }
+
+        // Visualise a real server rejection: the model name is not served, so
+        // the frozen server answers 400 and the client must show its message.
+        if passed && !multimodal && !prompt.isEmpty && !errorModel.isEmpty {
+            errorChecked = true
+            appearance.wrappedValue = "light"
+            await settle()
+            let restore = model.model
+            model.model = errorModel
+            model.prompt = prompt
+            model.send()
+            if await waitForIdle() {
+                errorStatus = model.status
+                errorText = model.error ?? ""
+                if errorStatus != "Error" || errorText.isEmpty {
+                    passed = false
+                    failure = "The real server error was not visible."
+                }
+            } else {
+                passed = false
+                failure = "Timed out waiting for the rejected request."
+                model.stop()
+            }
+            model.model = restore
+            await settle()
+            do {
+                paths.append(try capture(name: "error", directory: screenshots))
+            } catch {
+                passed = false
+                failure = error.localizedDescription
+            }
+        }
+
+        let result: [String: Any] = [
+            "passed": passed,
+            "static_only": prompt.isEmpty && !multimodal,
+            "status": model.status,
+            "error": model.error ?? "",
+            "failure": failure,
+            "response": responseText,
+            "followup_response": followupText,
+            "requests": requests,
+            "turns": successTurns,
+            "stop_checked": stopChecked,
+            "stop_status": stopStatus,
+            "error_checked": errorChecked,
+            "error_status": errorStatus,
+            "error_text": errorText,
+            "endpoint": model.endpoint,
+            "model": model.model,
+            "session_id": model.sessionID,
+            "multimodal": multimodal,
+            "artifacts": artifacts,
+            "asr_checked": asrChecked,
+            "asr_text": asrText,
+            "asr_on_device": asrOnDevice,
+            "asr_network": "none: SFSpeechURLRecognitionRequest with requiresOnDeviceRecognition=true",
+            "screenshots": paths
+        ]
+        do {
+            let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: URL(fileURLWithPath: output))
+        } catch {
+            FileHandle.standardError.write(Data("ummmlx automation: \(error)\n".utf8))
+            exit(2)
+        }
+        exit(passed ? 0 : 1)
+    }
+
+    private func state(_ value: ChatTurn.State) -> String {
+        switch value {
+        case .complete: return "complete"
+        case .streaming: return "streaming"
+        case .stopped: return "stopped"
+        case .failed: return "failed"
+        }
+    }
+
+    private func settle() async {
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    private func waitForIdle(timeout: TimeInterval = 120) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        for _ in 0..<(Int(timeout / 0.1) + 10) {
+            if !model.isRunning { return true }
+            if Date() >= deadline { return false }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return !model.isRunning
+    }
+
+    private func capture(name: String, directory: String) throws -> String {
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
+              let view = window.contentView else {
+            throw NSError(domain: "ummmlx", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "No visible app window."])
+        }
+        window.layoutIfNeeded()
+        view.layoutSubtreeIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            throw NSError(domain: "ummmlx", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot allocate window bitmap."])
+        }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            throw NSError(domain: "ummmlx", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot encode window PNG."])
+        }
+        let manager = FileManager.default
+        try manager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let path = (directory as NSString).appendingPathComponent("ummmlx-\(name).png")
+        try data.write(to: URL(fileURLWithPath: path))
+        return path
+    }
+}
