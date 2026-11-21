@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-21T06:10:17Z",
+  "updated_at": "2026-11-21T06:38:15Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "1074f35592f7aad43110ceb04001bb26f6029414ab4880f9cfc578ccd7793b20",
-      "size": 179953,
-      "normalized_sha256": "1074f35592f7aad43110ceb04001bb26f6029414ab4880f9cfc578ccd7793b20"
+      "sha256": "d58f6f023684025b55ec27a4aebe429dd90ace79b524e1c5f7b732a8395e024a",
+      "size": 179729,
+      "normalized_sha256": "d58f6f023684025b55ec27a4aebe429dd90ace79b524e1c5f7b732a8395e024a"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -311,9 +311,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "4646c043b1c76b497da18a8124f8f459ed51275362539cb81df9723ed3b9ea2f",
-      "size": 58761,
-      "normalized_sha256": "4646c043b1c76b497da18a8124f8f459ed51275362539cb81df9723ed3b9ea2f"
+      "sha256": "c063b9bce0ddf56fb61805149367086bd196d1005bbf704c0009f95c98fbcb59",
+      "size": 59077,
+      "normalized_sha256": "c063b9bce0ddf56fb61805149367086bd196d1005bbf704c0009f95c98fbcb59"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "include/umminfer/obs/metrics.hpp": {
       "role": "index",
-      "sha256": "2dd77dec6cfd176b9673fb7bb1b88d70c72c6b00f3a829ddc7425302853d19dd",
-      "size": 6120,
-      "normalized_sha256": "2dd77dec6cfd176b9673fb7bb1b88d70c72c6b00f3a829ddc7425302853d19dd"
+      "sha256": "889500cbd6b0b4180c4be5919216587f4ce683d8ef23d47af620e689ddc8db72",
+      "size": 6419,
+      "normalized_sha256": "889500cbd6b0b4180c4be5919216587f4ce683d8ef23d47af620e689ddc8db72"
     },
     "include/umminfer/pipeline/pipeline.hpp": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "include/umminfer/pipeline/unified.hpp": {
       "role": "index",
-      "sha256": "b4656673033bfbb43a65db4680d25b69b477703d7870aa21578fa559757680c3",
-      "size": 20039,
-      "normalized_sha256": "b4656673033bfbb43a65db4680d25b69b477703d7870aa21578fa559757680c3"
+      "sha256": "fe5202ca73730038391b875b1524b66f5d138e7f78a9b2e65687e61e59cb2d38",
+      "size": 20245,
+      "normalized_sha256": "fe5202ca73730038391b875b1524b66f5d138e7f78a9b2e65687e61e59cb2d38"
     },
     "include/umminfer/proto/messages.hpp": {
       "role": "index",
@@ -1673,9 +1673,9 @@
     },
     "src/obs/metrics.cpp": {
       "role": "index",
-      "sha256": "86318ac588f70a6f62648ed15ee9201c25772fad3772733080cbff2f28cf57ce",
-      "size": 25186,
-      "normalized_sha256": "86318ac588f70a6f62648ed15ee9201c25772fad3772733080cbff2f28cf57ce"
+      "sha256": "1eb7021d56024f9e71919c572e30ea99286253d38480788bd890dd04bd45246a",
+      "size": 26388,
+      "normalized_sha256": "1eb7021d56024f9e71919c572e30ea99286253d38480788bd890dd04bd45246a"
     },
     "src/pipeline/pipeline.cpp": {
       "role": "index",
@@ -1691,9 +1691,9 @@
     },
     "src/pipeline/unified.cpp": {
       "role": "index",
-      "sha256": "fec8efce3dbf3b098c888c049362463976fbd8973f393b88af272c938ddabe99",
-      "size": 47271,
-      "normalized_sha256": "fec8efce3dbf3b098c888c049362463976fbd8973f393b88af272c938ddabe99"
+      "sha256": "d2e8ce51ce2bd8930fa1d43bf0aee81ba817e76025d4a641f6c7b91eba7ee26c",
+      "size": 48178,
+      "normalized_sha256": "d2e8ce51ce2bd8930fa1d43bf0aee81ba817e76025d4a641f6c7b91eba7ee26c"
     },
     "src/pipeline/unified_schema.cpp": {
       "role": "index",
@@ -1907,9 +1907,9 @@
     },
     "tests/video_live_e2e.py": {
       "role": "observe",
-      "sha256": "ac564ec8e10bccde64e31ae09e263cda0465c1894527de41a51019f420114772",
-      "size": 14123,
-      "normalized_sha256": "ac564ec8e10bccde64e31ae09e263cda0465c1894527de41a51019f420114772"
+      "sha256": "e5c24ce54fe4b1bf56bb8614e285839e2da5d9d984cc235ee8aea515c953e666",
+      "size": 16160,
+      "normalized_sha256": "e5c24ce54fe4b1bf56bb8614e285839e2da5d9d984cc235ee8aea515c953e666"
     },
     "tests/video_stage_contract_test.py": {
       "role": "observe",
