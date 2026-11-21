@@ -438,6 +438,38 @@ void Metrics::trace_leg(const std::string& request_id,
   write_trace_line(line);
 }
 
+void Metrics::trace_legs_snapshot(const std::string& request_id,
+                                  const std::string& phase,
+                                  const std::vector<TraceLegSnapshot>& legs) {
+  if (!trace_enabled()) return;
+  const int64_t epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::system_clock::now().time_since_epoch())
+                               .count();
+  std::string line = "{\"request_id\":\"";
+  append_label_value(line, request_id);
+  line += "\",\"event\":\"legs_snapshot\",\"phase\":\"";
+  append_label_value(line, phase);
+  line += "\",\"epoch_ms\":";
+  line += std::to_string(epoch_ms);
+  line += ",\"legs\":[";
+  for (size_t i = 0; i < legs.size(); ++i) {
+    if (i > 0) line += ',';
+    line += "{\"modality\":\"";
+    append_label_value(line, legs[i].modality);
+    line += "\",\"stage\":\"";
+    append_label_value(line, legs[i].stage);
+    line += "\",\"state\":\"";
+    append_label_value(line, legs[i].state);
+    if (!legs[i].error.empty()) {
+      line += "\",\"error\":\"";
+      append_label_value(line, legs[i].error);
+    }
+    line += "\"}";
+  }
+  line += "]}";
+  write_trace_line(line);
+}
+
 void Metrics::trace(const TraceRecord& record) {
   if (!trace_enabled()) return;
   std::string line = "{\"request_id\":\"";

@@ -75,6 +75,13 @@ class Nvml {
 // One structured request record. It carries identifiers, a stage name, two
 // epoch timestamps, a terminal status and leg durations. It has no field that
 // can hold prompt text, request bodies or credentials.
+struct TraceLegSnapshot {
+  std::string modality;
+  std::string stage;
+  std::string state;
+  std::string error;
+};
+
 struct TraceRecord {
   std::string request_id;
   std::string stage;
@@ -127,6 +134,9 @@ class Metrics {
                    int64_t start_epoch_ms);
   void trace_leg(const std::string& request_id, const std::string& leg_name,
                  const std::string& status, double duration_ms);
+  void trace_legs_snapshot(const std::string& request_id,
+                           const std::string& phase,
+                           const std::vector<TraceLegSnapshot>& legs);
   void trace(const TraceRecord& record);
 
   // Full Prometheus text exposition, including a live GPU sample.

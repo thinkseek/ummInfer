@@ -308,6 +308,41 @@ def verify_leg_failure(base_url, model):
     }
 
 
+def verify_trace_transitions(trace_file: Path, expected_by_req: dict[str, list[str]]):
+    """Verify real UnifiedEngine legs_snapshot transitions from UMM_TRACE_FILE."""
+    if not trace_file.is_file():
+        raise RuntimeError(f"trace file does not exist: {trace_file}")
+    snapshots_by_req: dict[str, list[dict]] = {req_id: [] for req_id in expected_by_req}
+    for raw in trace_file.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        rec = json.loads(raw)
+        if rec.get("event") != "legs_snapshot":
+            continue
+        req_id = rec.get("request_id")
+        if req_id in snapshots_by_req:
+            snapshots_by_req[req_id].append(rec)
+
+    verified = {}
+    for req_id, expected_states in expected_by_req.items():
+        snaps = snapshots_by_req[req_id]
+        observed = []
+        for snap in snaps:
+            for leg in snap.get("legs", []):
+                if leg.get("stage") == "video":
+                    observed.append(leg.get("state"))
+        if observed != expected_states:
+            raise RuntimeError(
+                f"video leg lifecycle mismatch for {req_id}: "
+                f"expected {expected_states}, observed {observed} (snapshots={snaps})")
+        verified[req_id] = {
+            "video_states": observed,
+            "snapshots": snaps,
+        }
+    return verified
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
@@ -318,6 +353,8 @@ def main():
     parser.add_argument("--fps", type=int, default=16)
     parser.add_argument("--seed", type=int, default=20261121)
     parser.add_argument("--abort-delay-s", type=float, default=3.0)
+    parser.add_argument("--trace-file", type=Path, default=None,
+                        help="Optional UMM_TRACE_FILE JSONL to assert real UnifiedEngine legs_snapshot transitions")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -340,6 +377,16 @@ def main():
     )
     failure_report = verify_leg_failure(args.url, args.model)
     st_health, final_health = http_json(f"{args.url.rstrip('/')}/health")
+    trace_report = None
+    if args.trace_file is not None:
+        trace_report = verify_trace_transitions(
+            args.trace_file,
+            {
+                gen_report["request_id"]: ["pending", "running", "completed"],
+                cancel_report["request_id"]: ["pending", "running", "aborted"],
+                failure_report["request_id"]: ["pending", "running", "failed"],
+            },
+        )
     report = {
         "url": args.url,
         "model": args.model,
@@ -347,6 +394,7 @@ def main():
         "generation": gen_report,
         "cancel": cancel_report,
         "leg_failure": failure_report,
+        "legs_snapshot_trace": trace_report,
         "final_health": {"status": st_health, "body": final_health},
     }
     report_path = args.out_dir / "video_live_report.json"
