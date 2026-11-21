@@ -385,6 +385,9 @@ class UnifiedEngine {
   void on_legs_drained_locked(const std::string& request_id, Record& record);
   // The legs array carried by the terminal event; nil when no output leg ran.
   Value legs_value_locked(const Record& record) const;
+  std::vector<LegSnapshot> legs_snapshot_locked(const Record& record) const;
+  void trace_legs_locked(const std::string& request_id, const char* phase,
+                         const Record& record) const;
   void record_session_turn_locked(const Record& record);
   UnifiedEvent finish_locked(const std::string& request_id, Record& record,
                              UnifiedEvent::Kind kind, std::string error,

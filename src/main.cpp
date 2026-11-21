@@ -54,7 +54,8 @@ CommandOptions command_options(const std::string& command) {
              "upstream-model", "upstream-api-key", "upstream-variant",
              "upstream-cb-failures", "upstream-cb-cooldown", "vlm-entry",
              "vlm-entry-endpoint", "image-entry", "image-entry-endpoint",
-             "tts-entry", "tts-entry-endpoint", "max-in-flight", "web-root"},
+             "tts-entry", "tts-entry-endpoint", "video-entry",
+             "video-entry-endpoint", "max-in-flight", "web-root"},
             {"demo", "session-history"},
             {}};
   }

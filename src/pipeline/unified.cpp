@@ -275,6 +275,7 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   obs::Metrics::instance().queue_depth("unified_admission", admission_.size());
   obs::Metrics::instance().trace_start(request_id, req_type, initial_stage,
                                        start_epoch);
+  trace_legs_locked(request_id, "submit", records_[request_id]);
   return request_id;
 }
 
@@ -328,13 +329,9 @@ std::optional<RequestInfo> UnifiedEngine::info(const std::string& request_id) {
   return it->second.public_info;
 }
 
-std::vector<LegSnapshot> UnifiedEngine::legs_snapshot(
-    const std::string& request_id) const {
-  std::lock_guard<std::mutex> lock(mu_);
+std::vector<LegSnapshot> UnifiedEngine::legs_snapshot_locked(
+    const Record& record) const {
   std::vector<LegSnapshot> out;
-  auto it = records_.find(request_id);
-  if (it == records_.end()) return out;
-  const Record& record = it->second;
   if (record.has_audio) {
     out.push_back({UnifiedModality::kAudio, kAsrStageId, record.asr_state,
                    record.asr_error});
@@ -374,6 +371,28 @@ std::vector<LegSnapshot> UnifiedEngine::legs_snapshot(
                    record.video_leg.state, record.video_leg.error});
   }
   return out;
+}
+
+void UnifiedEngine::trace_legs_locked(const std::string& request_id,
+                                      const char* phase,
+                                      const Record& record) const {
+  if (!obs::Metrics::instance().trace_enabled()) return;
+  const std::vector<LegSnapshot> legs = legs_snapshot_locked(record);
+  std::vector<obs::TraceLegSnapshot> out;
+  out.reserve(legs.size());
+  for (const LegSnapshot& leg : legs) {
+    out.push_back({to_string(leg.modality), leg.stage_id, to_string(leg.state),
+                   leg.error});
+  }
+  obs::Metrics::instance().trace_legs_snapshot(request_id, phase, out);
+}
+
+std::vector<LegSnapshot> UnifiedEngine::legs_snapshot(
+    const std::string& request_id) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = records_.find(request_id);
+  if (it == records_.end()) return {};
+  return legs_snapshot_locked(it->second);
 }
 
 bool UnifiedEngine::release(const std::string& request_id) {
@@ -1039,6 +1058,7 @@ void UnifiedEngine::start_outputs_locked(const std::string& request_id,
       start_tts_locked(request_id, record, record.vlm_text, true);
     }
   }
+  trace_legs_locked(request_id, "outputs_started", record);
   if (record.legs_remaining == 0) on_legs_drained_locked(request_id, record);
 }
 
@@ -1149,6 +1169,7 @@ void UnifiedEngine::settle_output_leg_locked(
     obs::Metrics::instance().trace_leg(request_id, leg_name,
                                        to_string(leg.state), ms);
   }
+  trace_legs_locked(request_id, "leg_settled", record);
   if (kind != UnifiedEvent::Kind::kComplete) {
     if (leg.stage_id == kTtsStageId && leg.state == LegState::kFailed) {
       record.tts_failed = true;
