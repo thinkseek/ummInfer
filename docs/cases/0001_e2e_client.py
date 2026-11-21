@@ -7,7 +7,7 @@ Input parts: real text prompt + real 16 kHz WAV. Output: text answer, PNG, WAV.
 One request, one request_id, one SSE stream.
 
 Usage:
-  python3 -I e2e_client.py run --url http://172.17.0.2:43301 \
+  python3 -I e2e_client.py run --url http://127.0.0.1:43301 \
       --audio asr_en_pcm16.wav --prompt "..." --out out/run1
   python3 -I e2e_client.py abortrun --url ... --out out/abort
 """

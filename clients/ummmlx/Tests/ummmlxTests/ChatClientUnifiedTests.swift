@@ -236,9 +236,9 @@ final class ChatClientUnifiedTests: XCTestCase {
     @MainActor
     func testPrivatePlainHTTPHostsAreAccepted() throws {
         XCTAssertEqual(
-            try ChatClient.chatURL(base: "http://172.17.0.2:43301/v1",
+            try ChatClient.chatURL(base: "http://172.16.0.2:43301/v1",
                                    allowedHTTPHosts: []).absoluteString,
-            "http://172.17.0.2:43301/v1/chat/completions")
+            "http://172.16.0.2:43301/v1/chat/completions")
         XCTAssertEqual(
             try ChatClient.chatURL(base: "http://10.0.0.8/v1",
                                    allowedHTTPHosts: []).absoluteString,

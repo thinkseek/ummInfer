@@ -968,17 +968,23 @@ def write_samples(path, rows):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default="http://172.17.0.2:43301")
+    parser.add_argument("--base-url",
+                        default=os.environ.get("UMM_SOAK_URL", "http://127.0.0.1:43301"),
+                        help="service base URL (override with --base-url or UMM_SOAK_URL)")
     parser.add_argument("--mode", choices=("soak", "faults", "all"), default="all")
     parser.add_argument("--duration-s", type=float, default=1800.0)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--sample-interval-s", type=float, default=20.0)
     parser.add_argument("--out", help="output directory")
     parser.add_argument("--state-file",
-                        default="/root/umm-native-service/run/state.json")
+                        default=os.environ.get("UMM_SOAK_STATE_FILE",
+                                               "/opt/umminfer/native-service/run/state.json"))
     parser.add_argument("--wav",
-                        default="/root/umm-native-asr-20261116/inputs/asr_en_pcm16.wav")
-    parser.add_argument("--image", default="/root/man_ironing.png")
+                        default=os.environ.get("UMM_SOAK_WAV",
+                                               "/opt/umminfer/inputs/asr_en_pcm16.wav"))
+    parser.add_argument("--image",
+                        default=os.environ.get("UMM_SOAK_IMAGE",
+                                               "/opt/umminfer/inputs/man_ironing.png"))
     parser.add_argument("--gpus", default="2,3,4,5")
     parser.add_argument("--skip-warmup", action="store_true")
     parser.add_argument("--self-check", action="store_true",

@@ -214,7 +214,7 @@ committed evidence were removed in `ab51cf5`. Use the case reproduction below.
 Full request-level reproduction of a four-stage deployment:
 
 ```sh
-SSH_OPTS="-o ControlPath=$HOME/.ssh/cm/tn-h20b" sh docs/cases/0001_repro.sh
+TARGET=<h20b-ssh-host> CONTAINER=<gpu-container> sh docs/cases/0001_repro.sh
 ```
 
 Case record, per-leg timings and hashes: [docs/cases/0001-end-to-end-native.md](docs/cases/0001-end-to-end-native.md).

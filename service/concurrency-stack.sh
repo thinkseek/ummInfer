@@ -2,8 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Independent stack used for the concurrency and capacity measurements.
 #
-#   server 172.17.0.2:43302
+#   server ${UMM_CONCURRENCY_HOST:-127.0.0.1}:${UMM_CONCURRENCY_PORT:-43302}
 #   asr    GPU 2      qwen38 GPU 2      image GPU 6      tts GPU 7
+#
+# Set UMM_CONCURRENCY_HOST=<container-private-ip> when binding a container
+# bridge address, and override UMM_CONCURRENCY_ROOT / UMM_CONCURRENCY_MODELS /
+# UMM_CONCURRENCY_*_MODEL / LD_LIBRARY_PATH for your environment.
 #
 # It never touches the resident service on 43300/43301 or GPUs 0/1/3/4/5.
 # The image and TTS legs take stage-level workload caps so a case stays
@@ -13,19 +17,20 @@
 # usage: concurrency-stack.sh start|stop|status
 set -eu
 
-ROOT=${UMM_CONCURRENCY_ROOT:-/root/umm-concurrency-20261117}
+ROOT=${UMM_CONCURRENCY_ROOT:-/opt/umminfer/concurrency}
 IPC=${UMM_CONCURRENCY_IPC:-/tmp/umminfer-concurrency-ipc}
-HOST=${UMM_CONCURRENCY_HOST:-172.17.0.2}
+HOST=${UMM_CONCURRENCY_HOST:-127.0.0.1}
 PORT=${UMM_CONCURRENCY_PORT:-43302}
 BIN=$ROOT/bin
+MODELS=${UMM_CONCURRENCY_MODELS:-$ROOT/models}
 IMAGE_STEPS=${IMAGE_STEPS:-8}
 TTS_FRAMES=${TTS_FRAMES:-200}
 MAX_IN_FLIGHT=${MAX_IN_FLIGHT:-32}
-ASR_MODEL=${UMM_CONCURRENCY_ASR_MODEL:-/root/omniinfer-model-validation-20261111-k3/models/asr}
-QWEN38_MODEL=${UMM_CONCURRENCY_QWEN38_MODEL:-/root/models/qwen3.8-27b}
-IMAGE_MODEL=${UMM_CONCURRENCY_IMAGE_MODEL:-/root/umm-mixed-output-20261116/models/Qwen-Image-2512}
-TTS_MODEL=${UMM_CONCURRENCY_TTS_MODEL:-/root/umm-mixed-output-20261116/models/qwen3-tts}
-export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-/root/umm-c6rt-ckl/deps/lib:/root/umm-c6rt-ckl/curl-prefix/lib}
+ASR_MODEL=${UMM_CONCURRENCY_ASR_MODEL:-$MODELS/asr}
+QWEN38_MODEL=${UMM_CONCURRENCY_QWEN38_MODEL:-$MODELS/qwen3.8-27b}
+IMAGE_MODEL=${UMM_CONCURRENCY_IMAGE_MODEL:-$MODELS/Qwen-Image-2512}
+TTS_MODEL=${UMM_CONCURRENCY_TTS_MODEL:-$MODELS/qwen3-tts}
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-/opt/umminfer/deps/lib:/opt/umminfer/curl-prefix/lib}
 
 mkdir -p "$ROOT/run" "$ROOT/logs" "$IPC"
 

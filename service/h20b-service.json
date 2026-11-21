@@ -1,35 +1,35 @@
 {
   "name": "umminfer-h20b-native",
-  "run_dir": "/root/umm-native-service/run",
-  "log_dir": "/root/umm-native-service/logs",
+  "run_dir": "/opt/umminfer/native-service/run",
+  "log_dir": "/opt/umminfer/native-service/logs",
   "ipc_dir": "/tmp/umminfer-native-ipc",
-  "host": "172.17.0.2",
+  "host": "127.0.0.1",
   "port": 43301,
-  "binary": "/root/umm-native-service/bin/umm-infer",
-  "stage_binary_dir": "/root/umm-native-service/bin",
+  "binary": "/opt/umminfer/native-service/bin/umm-infer",
+  "stage_binary_dir": "/opt/umminfer/native-service/bin",
   "model": "qwen3-native",
   "vlm_stage": "qwen38",
   "native_stages": [
     {
       "name": "asr",
-      "model": "/root/omniinfer-model-validation-20261111-k3/models/asr",
+      "model": "/opt/umminfer/models/asr",
       "gpu": 2
     },
     {
       "name": "qwen38",
       "kind": "qwen38",
-      "model": "/root/models/qwen3.8-27b",
+      "model": "/opt/umminfer/models/qwen3.8-27b",
       "gpu": 3,
       "args": ["--max-new-tokens", "96", "--batch-size", "8"]
     },
     {
       "name": "image",
-      "model": "/root/umm-mixed-output-20261116/models/Qwen-Image-2512",
+      "model": "/opt/umminfer/models/Qwen-Image-2512",
       "gpu": 4
     },
     {
       "name": "tts",
-      "model": "/root/umm-mixed-output-20261116/models/qwen3-tts",
+      "model": "/opt/umminfer/models/qwen3-tts",
       "gpu": 5
     }
   ],
@@ -37,13 +37,13 @@
     {
       "name": "omni",
       "kind": "omni",
-      "model": "/root/omniinfer-model-validation-20261111-k3/models/omni",
+      "model": "/opt/umminfer/models/omni",
       "gpu": 3,
       "args": ["--max-new-tokens", "96"]
     }
   ],
   "env": {
-    "LD_LIBRARY_PATH": "/root/umm-c6rt-ckl/deps/lib:/root/umm-c6rt-ckl/curl-prefix/lib"
+    "LD_LIBRARY_PATH": "/opt/umminfer/deps/lib:/opt/umminfer/curl-prefix/lib"
   },
   "health_path": "/health",
   "ready_path": "/ready",

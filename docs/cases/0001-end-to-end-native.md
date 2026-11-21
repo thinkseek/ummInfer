@@ -13,13 +13,14 @@ probed it with `GET /health` and did not start or stop that service (section 7).
 Source: commit `1f851a08ff685ad059b8a5496add4f6da35cc4f7`, `git archive HEAD`
 SHA256 `aae4e74c10e4176ce4b0d7adca2985474f9b8329e39c104ebedc803e51c0170f`.
 
-Clean rebuild inside container `linyu-dev`:
+Clean rebuild inside the H20B GPU container (with `ZIG_BIN`, `CURL_PREFIX`,
+and `DEPS_PREFIX` pointing to your local toolchain/dependency prefixes):
 
 ```sh
 rm -rf .zig-cache zig-out build
-/root/umm-c6rt-ckl/zig/zig build -Doptimize=ReleaseFast \
-  -Dcurl-prefix=/root/umm-c6rt-ckl/curl-prefix \
-  -Ddeps-prefix=/root/umm-c6rt-ckl/deps
+"$ZIG_BIN" build -Doptimize=ReleaseFast \
+  -Dcurl-prefix="$CURL_PREFIX" \
+  -Ddeps-prefix="$DEPS_PREFIX"
 cmake -S native/stage_cli -B build -DUMM_STAGE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 ```
@@ -58,7 +59,7 @@ Resident service (`python3 -I python/umminfer_service.py --config config.json`):
 | Piece | PID | GPU | Endpoint |
 | --- | --- | --- | --- |
 | supervisor | 529298 | - | `/root/umm-native-service/run` |
-| server | 529299 | - | `172.17.0.2:43301` |
+| server | 529299 | - | `<container-ip>:43301` |
 | ASR stage | 529532 | 2 | `ipc:///tmp/umminfer-native-ipc/asr` |
 | Omni stage | 529534 | 3 | `ipc:///tmp/umminfer-native-ipc/omni` |
 | Image stage | 529536 | 4 | `ipc:///tmp/umminfer-native-ipc/image` |
@@ -184,7 +185,7 @@ GPU memory peak during each request, sampled every 200 ms with `nvidia-smi`
 
 Run 1 overlapped other tenants' containers, which held 11,118 MiB on each of
 GPU2, 3, 4, 5 and 11,125 MiB on GPU6 (`nvidia-smi --query-compute-apps`
-reported host PIDs that are not in `linyu-dev`). Run 5 overlapped a foreign
+reported host PIDs that are not in the GPU container). Run 5 overlapped a foreign
 allocation of about 64.8 GiB on GPU2, which is why its GPU2 peak is 67,204 MiB
 while the ASR stage holds 2,387 MiB. Run 2 and run 3 had no foreign allocation.
 The image stage's first request after start loads the model, which adds about
@@ -217,7 +218,7 @@ native stage tts ready kind=tts
 tts request voice=vivian language=english samples=441600 duration_s=18.4 rms=0.0489132 peak=0.42575 non_silence=0.601404 wav_bytes=883244 elapsed_ms=110468
 ...
 == server.log (38 bytes)
-umm-infer serving on 172.17.0.2:43301
+umm-infer serving on <container-ip>:43301
 ```
 
 Full logs are in the evidence archive; the supervisor caps each child log at
@@ -295,7 +296,7 @@ the sampler came from the ad-hoc run scripts used to record GPU peaks.
 Full live-process check, excluding state `Z`:
 
 ```sh
-docker exec linyu-dev bash -lc "ps -eo pid,ppid,stat,args \
+docker exec "$CONTAINER" bash -lc "ps -eo pid,ppid,stat,args \
   | awk '\$3 !~ /Z/' \
   | grep -E 'gpu_sampler|e2e_client|/root/umm-e2e|/root/case0001|umm-infer serve|umm-native-stage|umminfer_service|nvidia-smi' \
   | grep -v grep || echo NONE-LIVE"
@@ -372,7 +373,8 @@ Other limits:
 From a checkout of the recorded commit, with the WAV fixture present:
 
 ```sh
-SSH_OPTS="-o ControlPath=$HOME/.ssh/cm/tn-h20b" sh docs/cases/0001_repro.sh
+TARGET=<h20b-ssh-host> CONTAINER=<gpu-container> SERVICE_HOST=<container-ip> \
+  sh docs/cases/0001_repro.sh
 ```
 
 The script archives `HEAD`, copies the source and the client into the
@@ -392,7 +394,7 @@ and 43301 both answered `000`.
 The client is `docs/cases/0001_e2e_client.py`; without the script it is:
 
 ```sh
-python3 -I 0001_e2e_client.py run --url http://172.17.0.2:43301 \
+python3 -I 0001_e2e_client.py run --url "http://${SERVICE_HOST:-127.0.0.1}:43301" \
   --audio input.wav --out out/run1 --timeout 1200
 ```
 

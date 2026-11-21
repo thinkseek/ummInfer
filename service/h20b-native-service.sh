@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
-# Native-only deployment on H20B (container linyu-dev). Five processes:
+# Native-only deployment on H20B (GPU container). Five processes:
 # one umm-infer server and one native stage per model. No Python, PyTorch or
 # SGLang on the serving path.
 #
@@ -26,22 +26,26 @@
 #
 # The omni stage is retained but not started. Set UMM_NATIVE_OMNI=1 to run it
 # as the VLM stage instead of qwen38; only one of the two may hold GPU_VLM.
-#   Server 172.17.0.2:43301, completion/abort under the same ipc dir.
+#   Server ${UMM_NATIVE_HOST:-127.0.0.1}:${UMM_NATIVE_PORT:-43301},
+#   completion/abort under the same ipc dir.
+# Set UMM_NATIVE_HOST=<container-private-ip> when binding a container bridge
+# address, and override UMM_NATIVE_ROOT / UMM_NATIVE_MODELS / UMM_NATIVE_*_MODEL
+# to match your local install and weight directories.
 #
 # The port is distinct from the retired phase7 service on 43300.
 #
 # usage: h20b-native-service.sh start|stop|status
 set -eu
 
-ROOT=${UMM_NATIVE_ROOT:-/root/umm-native-service}
+ROOT=${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}
 RUN_DIR=$ROOT/run
 LOG_DIR=$ROOT/logs
 IPC_DIR=${UMM_NATIVE_IPC:-/tmp/umminfer-native-ipc}
-HOST=${UMM_NATIVE_HOST:-172.17.0.2}
+HOST=${UMM_NATIVE_HOST:-127.0.0.1}
 PORT=${UMM_NATIVE_PORT:-43301}
-MODELS=${UMM_NATIVE_MODELS:-/root/omniinfer-model-validation-20261111-k3/models}
+MODELS=${UMM_NATIVE_MODELS:-$ROOT/models}
 ASR_MODEL=${UMM_NATIVE_ASR_MODEL:-$MODELS/asr}
-QWEN38_MODEL=${UMM_NATIVE_QWEN38_MODEL:-/root/models/qwen3.8-27b}
+QWEN38_MODEL=${UMM_NATIVE_QWEN38_MODEL:-$MODELS/qwen3.8-27b}
 OMNI_MODEL=${UMM_NATIVE_OMNI_MODEL:-$MODELS/omni}
 # GPU per stage. Only one process may hold a card. Override when the defaults
 # are held by another service on the same host.
@@ -51,8 +55,8 @@ GPU_IMAGE=${UMM_NATIVE_GPU_IMAGE:-4}
 GPU_TTS=${UMM_NATIVE_GPU_TTS:-5}
 if [ "${UMM_NATIVE_OMNI:-0}" = "1" ]; then VLM_STAGE=omni; else VLM_STAGE=qwen38; fi
 VLM_MODEL=$([ "$VLM_STAGE" = omni ] && echo "$OMNI_MODEL" || echo "$QWEN38_MODEL")
-TTS_MODEL=${UMM_NATIVE_TTS_MODEL:-/root/umm-mixed-output-20261116/models/qwen3-tts}
-IMAGE_MODEL=${UMM_NATIVE_IMAGE_MODEL:-/root/umm-mixed-output-20261116/models/Qwen-Image-2512}
+TTS_MODEL=${UMM_NATIVE_TTS_MODEL:-$MODELS/qwen3-tts}
+IMAGE_MODEL=${UMM_NATIVE_IMAGE_MODEL:-$MODELS/Qwen-Image-2512}
 BIN=$ROOT/bin
 
 started() {

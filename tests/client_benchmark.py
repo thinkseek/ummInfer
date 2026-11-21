@@ -37,12 +37,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("--iterations", type=int, default=5)
+    repo_root = Path(__file__).resolve().parents[1]
     parser.add_argument("--stage", type=Path,
-                        default=Path("/Users/bytedance/code/omniInfer/python/umminfer_mlx_stage.py"))
+                        default=Path(os.environ.get(
+                            "UMM_MLX_STAGE",
+                            str(repo_root / "python/umminfer_mlx_stage.py"))))
     parser.add_argument("--model", type=Path,
-                        default=Path("/Users/bytedance/.cache/huggingface/hub/"
-                                     "models--mlx-community--Qwen2.5-0.5B-Instruct-4bit/"
-                                     "snapshots/a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3"))
+                        default=Path(os.environ.get(
+                            "UMM_MLX_MODEL",
+                            str(Path.home() / ".cache/huggingface/hub/"
+                                "models--mlx-community--Qwen2.5-0.5B-Instruct-4bit/"
+                                "snapshots/a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3"))))
     args = parser.parse_args()
     if not 5 <= args.iterations <= MAX_ITERATIONS:
         parser.error(f"--iterations must be between 5 and {MAX_ITERATIONS}")

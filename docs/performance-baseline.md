@@ -19,7 +19,7 @@ derived from them.
 | --- | --- |
 | Control plane | Apple Silicon Mac, `umm-infer` built by `zig build` |
 | Accelerator host | NVIDIA H20B, 8 × H20 97871 MiB, driver 535.161.08 |
-| Container | `linyu-dev` |
+| Container | H20B GPU container (`$CONTAINER`) |
 | ASR backend | SGLang, `qwen3-asr`, GPU 1, `:31000`, PID 34134 |
 | VLM backend | SGLang, `qwen3-omni`, GPU 0, `:31001`, PID 35212 |
 | SGLang | `0.5.15.post2.dev55+gc6b67186a` |
@@ -30,7 +30,7 @@ derived from them.
 
 Both backends were already running and healthy. The benchmark reused them and
 did not start or stop any backend process. Local SSH forwards carried
-`127.0.0.1:43100 → 172.17.0.2:31000` and `127.0.0.1:43101 → 172.17.0.2:31001`.
+`127.0.0.1:43100 → <container-ip>:31000` and `127.0.0.1:43101 → <container-ip>:31001`.
 
 ## Model snapshot and provenance
 

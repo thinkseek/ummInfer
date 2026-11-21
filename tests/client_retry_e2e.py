@@ -676,16 +676,21 @@ def run_asr_case(binary, asr_stage, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
+    repo_root = Path(__file__).resolve().parents[1]
     parser.add_argument("--stage", type=Path,
-                        default=Path("/Users/bytedance/code/omniInfer/python/"
-                                     "umminfer_mlx_stage.py"))
+                        default=Path(os.environ.get(
+                            "UMM_MLX_STAGE",
+                            str(repo_root / "python/umminfer_mlx_stage.py"))))
     parser.add_argument("--model", type=Path,
-                        default=Path("/Users/bytedance/.cache/huggingface/hub/"
-                                     "models--mlx-community--Qwen2.5-0.5B-Instruct-4bit/"
-                                     "snapshots/a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3"))
+                        default=Path(os.environ.get(
+                            "UMM_MLX_MODEL",
+                            str(Path.home() / ".cache/huggingface/hub/"
+                                "models--mlx-community--Qwen2.5-0.5B-Instruct-4bit/"
+                                "snapshots/a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3"))))
     parser.add_argument("--asr-stage", type=Path,
-                        default=Path("/Users/bytedance/code/omniInfer/python/"
-                                     "umminfer_tiny_asr_stage.py"))
+                        default=Path(os.environ.get(
+                            "UMM_ASR_STAGE",
+                            str(repo_root / "python/umminfer_tiny_asr_stage.py"))))
     parser.add_argument("--skip-asr", action="store_true",
                         help="run only the chat retry and stall cases")
     args = parser.parse_args()

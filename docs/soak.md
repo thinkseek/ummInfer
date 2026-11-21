@@ -10,7 +10,7 @@ deployment described in [Environment](#environment). No number is estimated.
 | Item | Value |
 | --- | --- |
 | Commit under test | `889b727c504db49c6acd64ac01be0b9fee487b7c` |
-| Host | H20B, container `linyu-dev` |
+| Host | H20B GPU container |
 | GPU | 4 x NVIDIA H20, driver `535.161.08` |
 | GPU assignment | ASR 2, Qwen3.8-27B 3, Qwen-Image-2512 4, TTS 5 |
 | CPU / RAM | Xeon Platinum 8457C, 180 cores / 1928 GiB |
@@ -18,7 +18,7 @@ deployment described in [Environment](#environment). No number is estimated.
 | CUDA | 12.4.131 (nvcc) |
 | Python | 3.12.3 |
 | Zig | 0.16.0 |
-| Server | `172.17.0.2:43301`, supervisor `service/h20b-service.json` |
+| Server | `<container-ip>:43301` (`$UMM_SOAK_URL`), supervisor `service/h20b-service.json` |
 
 Installed binary SHA256, built from `889b727` on the host:
 

@@ -122,7 +122,7 @@ Determinism limits, stated rather than hidden:
 
 ## How to run
 
-On H20B, inside the `linyu-dev` container, with a cu124-compatible torch in a
+On H20B, inside the GPU container, with a cu124-compatible torch in a
 user venv (driver 535 cannot use the container's default cu130 torch):
 
 ```
@@ -152,7 +152,7 @@ phase-2 test remains.
 
 ## Measured H20B run (2026-11-14)
 
-One complete run on GPU 4 of H20B, container `linyu-dev`, in a user venv
+One complete run on GPU 4 of H20B (GPU container), in a user venv
 (torch 2.6.0+cu124, transformers 4.51.3, Python 3.12). The full evidence is
 in the container at `/root/rl-validation-20261114/evidence/run`; a
 non-weight subset is under `/tmp/umminfer-phase6-rl-h20b-evidence/run`.

@@ -10,7 +10,7 @@ exclusive (no other compute process resident).
 | Item | Value |
 | --- | --- |
 | GPU | NVIDIA H20, 97871 MiB |
-| Driver / container | 535.161.08 / `linyu-dev` |
+| Driver / container | 535.161.08 / H20B GPU container |
 | Toolchain | CUDA 12.4 (`nvcc`), CMake 3.31, arch `sm_90` |
 | SMs / clock / L2 | 78 / 1.98 GHz / 60 MiB (`cudaDeviceGetAttribute`) |
 | Profilers | Nsight Systems 2023.4 (works); Nsight Compute 13.0 (unusable) |
@@ -263,14 +263,14 @@ Not modified; their files are absent from this commit. Qwen3.8 measures
 ## Reproduction
 
 ```bash
-# Container linyu-dev, source at /root/ckl17zq8m/src
+# Inside the H20B GPU container, from <repo-root>; set UMM_QWEN38_MODEL to your local weights path
 cmake -S native -B build-q38 -DUMM_QWEN38_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake -S native/omni -B build-omni -DUMM_OMNI_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake -S native/image2 -B build-img2 -DUMM_IMAGE2_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake -S native/tts -B build-tts -DUMM_TTS_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 
 CUDA_VISIBLE_DEVICES=6 nsys profile -o prof/q38 --trace=cuda \
-  build-q38/umm-qwen38-native --model /root/models/qwen3.8-27b \
+  build-q38/umm-qwen38-native --model "${UMM_QWEN38_MODEL:-/opt/umminfer/models/qwen3.8-27b}" \
   --prompt "用一句话介绍你自己。" --gpu 0 --max-new-tokens 128
 nsys stats --report cuda_gpu_kern_sum --report cuda_gpu_trace prof/q38.nsys-rep
 ```

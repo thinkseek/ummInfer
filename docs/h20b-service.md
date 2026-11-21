@@ -1,15 +1,15 @@
 # H20B resident service
 
 This page is the runbook for the resident ummInfer service on H20B: one C++
-server and one native C++/CUDA stage per model, all inside the container
-`linyu-dev`. No Python model runtime, PyTorch or SGLang is on the serving path.
+server and one native C++/CUDA stage per model, all inside the H20B GPU
+container. No Python model runtime, PyTorch or SGLang is on the serving path.
 `python/` appears only as the optional process supervisor and as legacy code.
 
 ## Topology
 
 | Piece | Process | GPU |
 | --- | --- | --- |
-| ummInfer server | `bin/umm-infer serve` on `172.17.0.2:43301` | none |
+| ummInfer server | `bin/umm-infer serve` on `<container-ip>:43301` (`$UMM_NATIVE_HOST:43301`) | none |
 | ASR stage | `bin/umm-native-stage-asr` | 2 |
 | VLM stage | `bin/umm-native-stage-qwen38` (default) | 3 |
 | VLM stage, optional | `bin/umm-native-stage-omni` | 3 |
@@ -28,16 +28,18 @@ default): `asr`, `qwen38` or `omni`, `image`, `tts`, plus the shared
 
 ## Address and exposure
 
-The server binds `172.17.0.2`, the container's private bridge address. It does
-not bind `0.0.0.0`, it does not bind the host public interface, and no Docker
-port is published. The supervisor refuses a configuration whose `host` is
-`0.0.0.0` or `::`.
+The server binds `127.0.0.1` by default, or the container's private bridge
+address (`<container-ip>`, configured via `UMM_NATIVE_HOST` or `"host"` in
+`service/h20b-service.json`). It does not bind `0.0.0.0`, it does not bind the
+host public interface, and no Docker port is published. The supervisor refuses
+a configuration whose `host` is `0.0.0.0` or `::`.
 
-A Mac cannot reach `172.17.0.2` directly. SSH `-L` on the H20B host reaches the
+A Mac cannot reach `<container-ip>` directly. SSH `-L` on the H20B host
+(substituting your real `<container-ip>` and `<h20b-ssh-host>`) reaches the
 container bridge address:
 
 ```sh
-/usr/bin/ssh -N -L 43301:172.17.0.2:43301 h20b
+/usr/bin/ssh -N -L 43301:<container-ip>:43301 <h20b-ssh-host>
 ```
 
 `127.0.0.1:43301` on the Mac then reaches the container service through the H20B
@@ -47,34 +49,37 @@ host.
 
 Two build systems produce the artifact set. `zig build` builds only the server;
 `native/stage_cli` builds the five stage binaries. Neither builds the other.
+Set `CURL_PREFIX`, `DEPS_PREFIX`, and `UMM_NATIVE_ROOT` to your local prefixes:
 
 ```sh
 zig build -Doptimize=ReleaseFast \
-  -Dcurl-prefix=/root/umm-c6rt-ckl/curl-prefix \
-  -Ddeps-prefix=/root/umm-c6rt-ckl/deps
+  -Dcurl-prefix="${CURL_PREFIX:-/opt/umminfer/curl-prefix}" \
+  -Ddeps-prefix="${DEPS_PREFIX:-/opt/umminfer/deps}"
 
 cmake -S native/stage_cli -B build -DUMM_STAGE_CUDA=ON \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=90
 cmake --build build -j 16
 
-install -m755 zig-out/bin/umm-infer build/umm-native-stage-* /root/umm-native-service/bin/
+install -m755 zig-out/bin/umm-infer build/umm-native-stage-* "${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}/bin/"
 ```
 
 `service/h20b-native-service.sh` expects those binaries in `$UMM_NATIVE_ROOT/bin`
-(`/root/umm-native-service/bin` by default). The supervisor reads
-`service/h20b-service.json`, which names `binary`, `stage_binary_dir` and the
-four `native_stages`.
+(`/opt/umminfer/native-service/bin` by default). The supervisor reads
+`service/h20b-service.json`, which names `binary`, `stage_binary_dir`, `host`,
+`env.LD_LIBRARY_PATH`, and the four `native_stages` (edit those paths and
+`host` to match your container before starting).
 
 Install the config next to the supervisor:
 
 ```sh
-install -m644 service/h20b-service.json /root/umm-native-service/config.json
+install -m644 service/h20b-service.json "${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}/config.json"
 ```
 
 Record the identity of the deployed bytes:
 
 ```sh
-sha256sum /root/umm-native-service/bin/umm-infer /root/umm-native-service/bin/umm-native-stage-*
+sha256sum "${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}"/bin/umm-infer \
+  "${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}"/bin/umm-native-stage-*
 git rev-parse HEAD
 ```
 

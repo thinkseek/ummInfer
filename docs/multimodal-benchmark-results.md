@@ -43,10 +43,10 @@ Both failures are intermittent; section 7 records the reproduction.
 | Item | Value |
 | --- | --- |
 | Host | H20B, 8 × H20 97871 MiB, driver 535.161.08 |
-| Container | `linyu-dev` |
+| Container | H20B GPU container (`$CONTAINER`) |
 | GPUs used | 6 (ASR), 7 (Omni). GPU 0/1 untouched |
-| Service port | `172.17.0.2:43301` (43300 untouched) |
-| Client | Mac, harness connects through `ssh -L 43301:172.17.0.2:43301 h20b` |
+| Service port | `<container-ip>:43301` (43300 untouched) |
+| Client | Mac, harness connects through `ssh -L 43301:<container-ip>:43301 <h20b-ssh-host>` |
 | Service commit | `a83ae44` (`umm-infer` built from it) |
 | Harness commit | `1a0e321` (adds the three fixes in section 6) |
 | ASR model | `/root/omniinfer-model-validation-20261111-k3/models/asr`, 1.8 G |
@@ -264,8 +264,8 @@ python3 -I tests/multimodal_benchmark_test.py
 
 # 3. Service: SGLang is not on the path. Build the server and the stages:
 zig build -Doptimize=ReleaseFast \
-  -Dcurl-prefix=/root/umm-c6rt-ckl/curl-prefix \
-  -Ddeps-prefix=/root/umm-c6rt-ckl/deps
+  -Dcurl-prefix="${CURL_PREFIX:-/opt/umminfer/curl-prefix}" \
+  -Ddeps-prefix="${DEPS_PREFIX:-/opt/umminfer/deps}"
 cmake -S native/stage_cli -B build -DUMM_STAGE_CUDA=ON \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=90
 cmake --build build -j 16
@@ -300,12 +300,12 @@ Setup, unchanged from section 3 except port and GPU:
 
 | Item | Value |
 | --- | --- |
-| Service | one instance, `172.17.0.2:43302`, started fresh, never restarted during the 5 rounds |
+| Service | one instance, `<container-ip>:43302`, started fresh, never restarted during the 5 rounds |
 | GPUs | ASR stage 6, Omni stage 7. GPU 0/1 untouched, port 43300 untouched |
 | Resident 43301 service | running throughout on GPUs 2-5; it is the same service that ran during the baseline window and was not touched |
 | Binaries | `umm-infer` `5953963c…30864`, `umm-native-stage-asr` `1bf9485f…cf072`, `umm-native-stage-omni` `8ca0225d…dadd8` (identical to section 3) |
 | Harness | `3d747bc`, same manifest `2026-11-15.1`, same cached inputs, `--baseline /tmp/mmbench/evidence-v5/baseline.json` |
-| Client | Mac through `ssh -L 43302:172.17.0.2:43302 h20b` |
+| Client | Mac through `ssh -L 43302:<container-ip>:43302 <h20b-ssh-host>` |
 | Evidence | `/tmp/mmbench/stability/round-{1..5}/round-1/` (`cases.jsonl`, `events/`, `answers/`, `transcripts/`, `failures.json`, `report.json`) |
 
 ### Per-round results
@@ -620,7 +620,7 @@ Code changes in the server, and what was not changed:
 
 ### 15.3 Verification: three rounds of the same 54 cases
 
-The client ran inside the container against `172.17.0.2:43310`, the container's
+The client ran inside the container against `<container-ip>:43310`, the container's
 bridge address. That is a real veth path, not loopback. Each round is a separate
 process; the harness stops after one round when the case set is a subset, so
 `--rounds 3` produced one round and the three rounds were started separately.
@@ -739,7 +739,7 @@ The first window ran the 54 English cases with the client inside the container.
 This window restores the original client path and runs the Mandarin cases that
 `74ed3f2` pinned but never scored.
 
-Client: Mac, `ssh -L 43310:172.17.0.2:43310 h20b`, measured round trip 0.6 s.
+Client: Mac, `ssh -L 43310:<container-ip>:43310 <h20b-ssh-host>`, measured round trip 0.6 s.
 Service: one instance on port 43310, ASR stage GPU 6, Omni stage GPU 7. GPUs 0/1
 and port 43300 were not touched.
 

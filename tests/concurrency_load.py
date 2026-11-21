@@ -7,6 +7,7 @@ Usage: umm-load.py --kind text|image|tts --concurrency N --requests M
 """
 import argparse
 import json
+import os
 import random
 import statistics
 import sys
@@ -158,7 +159,10 @@ def pct(values, q):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default="http://172.17.0.2:43302")
+    parser.add_argument("--url",
+                        default=os.environ.get("UMM_CONCURRENCY_URL",
+                                               "http://127.0.0.1:43302"),
+                        help="service URL (override with --url or UMM_CONCURRENCY_URL)")
     parser.add_argument("--kind", choices=["text", "image", "tts"], default="text")
     parser.add_argument("--concurrency", type=int, required=True)
     parser.add_argument("--requests", type=int, default=0,

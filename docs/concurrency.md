@@ -1,8 +1,8 @@
 # Concurrency and capacity
 
-Measured 2026-11-17 on H20B container `linyu-dev`, commit `455f671` plus the
+Measured 2026-11-17 on an H20B GPU container, commit `455f671` plus the
 change described below. One independent stack was used: server
-`172.17.0.2:43302`, ASR and Qwen3.8 on GPU 2, image on GPU 6, TTS on GPU 7.
+`<container-ip>:43302` (`$UMM_CONCURRENCY_HOST:43302`), ASR and Qwen3.8 on GPU 2, image on GPU 6, TTS on GPU 7.
 The shared backends on GPU 0/1/3/4/5 and the resident service on 43300/43301
 were not touched.
 
@@ -170,15 +170,18 @@ Measured single-GPU capacity and the tail bound:
 ## Reproduction
 
 ```sh
-# container, GPU 2/6/7 only
+# container, GPU 2/6/7 only; set UMM_CONCURRENCY_HOST=<container-ip> if binding a bridge IP
+UMM_CONCURRENCY_HOST=${UMM_CONCURRENCY_HOST:-127.0.0.1} \
 IMAGE_STEPS=8 TTS_FRAMES=200 MAX_IN_FLIGHT=2 \
   sh service/concurrency-stack.sh start
 
 # closed-loop load: one in flight per worker, latency to the terminal event
-python3 -I tests/concurrency_load.py --kind text --concurrency 8 --requests 16
+python3 -I tests/concurrency_load.py \
+  --url "http://${UMM_CONCURRENCY_HOST:-127.0.0.1}:43302" \
+  --kind text --concurrency 8 --requests 16
 # scrape /metrics once per second while a case runs; the gauge maxima and the
 # counter deltas are what the tables above report
-curl -s http://172.17.0.2:43302/metrics
+curl -s "http://${UMM_CONCURRENCY_HOST:-127.0.0.1}:43302/metrics"
 ```
 
 `GET /metrics` exposes the admission queue, the per-stage in-flight gauge, the

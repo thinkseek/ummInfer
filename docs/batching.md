@@ -1,6 +1,6 @@
 # Decode continuous batching
 
-Measured 2026-11-18 on H20B container `linyu-dev`, branch `feat/batching`
+Measured 2026-11-18 on an H20B GPU container, branch `feat/batching`
 based on `c7ac443`. One independent stack was used: server on port 43304,
 Qwen3.8 stage exclusively on GPU 6 (3 MiB before and after the run; no other
 process used it). GPU 0/1/2/3/4/5/7 and ports 43300/43301 were not touched.

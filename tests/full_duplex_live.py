@@ -137,7 +137,9 @@ def main():
     parser.add_argument("--audio", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--gpu", type=int, default=2)
-    parser.add_argument("--host", default="172.17.0.2")
+    parser.add_argument("--host",
+                        default=os.environ.get("UMM_DUPLEX_HOST", "127.0.0.1"),
+                        help="bind host (override with --host or UMM_DUPLEX_HOST)")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     logs = {}

@@ -37,7 +37,7 @@ macOS build host:
 - Zig 0.16.0
 - `brew install zeromq msgpack-c curl libwebsockets`
 
-Linux CUDA build host (reference: H20B, container `linyu-dev`):
+Linux CUDA build host (reference: H20B GPU container):
 
 - Zig 0.16.0
 - CUDA 12.4 toolkit, `cmake` 3.24 or newer
@@ -51,14 +51,15 @@ Linux CUDA build host (reference: H20B, container `linyu-dev`):
 Commit the release tooling first. The script archives `main`, so the templates
 must be on that branch.
 
+# Substitute your actual SSH host, container name, and dependency prefixes:
 ```sh
 DEPS_PREFIX=/opt/homebrew \
 CURL_PREFIX=/opt/homebrew/opt/curl \
-STAGE_SSH=h20b \
-STAGE_CONTAINER=linyu-dev \
-STAGE_DEPS_PREFIX=/root/umm-c6rt-ckl/deps \
-STAGE_CURL_PREFIX=/root/umm-c6rt-ckl/curl-prefix \
-STAGE_ZIG=/root/umm-c6rt-ckl/zig/zig \
+STAGE_SSH=<h20b-ssh-host> \
+STAGE_CONTAINER=<gpu-container> \
+STAGE_DEPS_PREFIX=<remote-deps-prefix> \
+STAGE_CURL_PREFIX=<remote-curl-prefix> \
+STAGE_ZIG=<remote-zig-bin> \
 tools/publish-release.sh v0.2.0
 ```
 

@@ -67,7 +67,7 @@ and duplicate or out-of-order handling. It does not load a model.
 the committed case reproduction:
 
 ```sh
-SSH_OPTS="-o ControlPath=$HOME/.ssh/cm/tn-h20b" sh docs/cases/0001_repro.sh
+TARGET=<h20b-ssh-host> CONTAINER=<gpu-container> sh docs/cases/0001_repro.sh
 ```
 
 Case record, per-leg timings and hashes:

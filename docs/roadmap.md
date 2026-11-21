@@ -335,7 +335,7 @@ model acceptance, and a simulator never replaces the real model.
 ### H20B status
 
 **ACCESSIBLE; real Qwen worker and unified audio-only runs recorded.** The H20B
-container `linyu-dev` served `qwen3-asr` on GPU 1, port 31000, and `qwen3-omni`
+GPU container served `qwen3-asr` on GPU 1, port 31000, and `qwen3-omni`
 on GPU 0, port 31001. The final path used public CLI/HTTP -> `umm-infer` ->
 `UnifiedEngine` -> both external workers -> those SGLang backends. The final
 snapshot used 88581 MiB on GPU 0 and 86167 MiB on GPU 1. Model revisions are

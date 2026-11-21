@@ -41,10 +41,11 @@ import msgpack
 import zmq
 
 
-MODEL_PATH = Path(
-    "/Users/bytedance/.cache/huggingface/hub/"
-    "models--mlx-community--Qwen2.5-0.5B-Instruct-4bit/"
-    "snapshots/a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3")
+MODEL_PATH = Path(os.environ.get(
+    "UMM_MLX_MODEL",
+    str(Path.home() / ".cache/huggingface/hub/"
+        "models--mlx-community--Qwen2.5-0.5B-Instruct-4bit/"
+        "snapshots/a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3")))
 SERVED_MODEL = "Qwen2.5-0.5B-Instruct-4bit"
 PROMPT = "Give one concise inference tip."
 TEMPERATURE = 0.0

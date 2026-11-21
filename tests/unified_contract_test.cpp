@@ -1590,7 +1590,7 @@ void test_joint_image_remote_url() {
   EventLog log;
   engine.on_event = [&](const UnifiedEvent& event) { log.add(event); };
 
-  const std::string url = "http://172.17.0.1:18080/man_ironing.png";
+  const std::string url = "http://198.51.100.10:18080/man_ironing.png";
   const std::string id = engine.submit(joint_request("", url));
   auto asr_submit = h.next_submit(h.asr_recv);
   check(asr_submit.has_value(), "ASR stage received no submit");

@@ -60,12 +60,13 @@ and need neither a microphone nor permissions. The default language is en-US.
 - hosts listed in `UMMMLX_HTTP_HOSTS` (comma-separated).
 
 Credentials in the URL, a query, a fragment, and redirects are rejected.
-`http://172.17.0.2:43301/v1` is accepted because it is a private literal
-address. This Mac cannot reach the container bridge directly; use the existing
-SSH tunnel and the loopback address on this side:
+A private literal such as `http://<container-ip>:43301/v1` (in RFC 1918
+`172.16.0.0/12`) is accepted. When a Mac cannot reach the container bridge
+directly, forward it over SSH (substituting your real `<container-ip>` and
+`<h20b-ssh-host>`) and point the app at loopback:
 
 ```sh
-/usr/bin/ssh -N -L 43301:172.17.0.2:43301 h20b
+/usr/bin/ssh -N -L 43301:<container-ip>:43301 <h20b-ssh-host>
 # then use http://127.0.0.1:43301/v1 in the app
 ```
 

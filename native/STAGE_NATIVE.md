@@ -242,7 +242,7 @@ GPU host:
 
 ```sh
 cmake -S native/stage_cli -B build -DUMM_STAGE_CUDA=ON \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/root/umm-c6rt-ckl/deps
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${DEPS_PREFIX:-/opt/umminfer/deps}"
 cmake --build build -j
 ```
 

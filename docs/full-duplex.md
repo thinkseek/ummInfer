@@ -60,24 +60,24 @@ The native ASR engine already had an abort hook (`native/umm_asr_native/engine.h
 
 ## Measured on H20B, 2026-11-17
 
-Environment: container `linyu-dev`, native ASR on GPU 2, model
-`/root/omniinfer-model-validation-20261111-k3/models/asr`, real speech
-`asr_en_pcm16.wav` from `/root/umm-native-asr-20261116/inputs/`, server and
+Environment: H20B GPU container, native ASR on GPU 2, local Qwen3-ASR model
+directory (`$UMM_ASR_MODEL`), real speech `asr_en_pcm16.wav`, server and
 stage built from this commit. The server used ephemeral ports; the resident
 services on 43300 and 43301 and GPU 0, 1, 4, 5 were not touched.
 
 Command, inside the container, using the committed script
-`tests/full_duplex_live.py`:
+`tests/full_duplex_live.py` (supply your real `--bin-dir`, `--model`, `--audio`,
+`--out`, and `--host` / `UMM_DUPLEX_HOST`):
 
 ```sh
 python3 -I tests/full_duplex_live.py \
-  --bin-dir /root/umm-duplex-20261117/bin \
-  --model /root/omniinfer-model-validation-20261111-k3/models/asr \
-  --audio /root/umm-native-asr-20261116/inputs/asr_en_pcm16.wav \
-  --out /root/umm-duplex-20261117/evidence-repo --gpu 2 --host 172.17.0.2
+  --bin-dir "$UMM_BIN_DIR" \
+  --model "$UMM_ASR_MODEL" \
+  --audio "$UMM_ASR_AUDIO" \
+  --out "$UMM_OUT_DIR/evidence-repo" --gpu 2 --host "${UMM_DUPLEX_HOST:-127.0.0.1}"
 ```
 
-Raw evidence: `/root/umm-duplex-20261117/evidence-repo/live-duplex-evidence.json`,
+Raw evidence: `$UMM_OUT_DIR/evidence-repo/live-duplex-evidence.json`,
 `server.log`, `stage.log`. It is not a committed artifact. The script exits 0
 only when every check below passes and the barge-in interrupt was observed.
 
@@ -225,10 +225,8 @@ prompt instead of being dropped. The stage reports `prefix_reused`,
 
 ## Measured on H20B, 2026-11-17 (L2)
 
-Environment: container `linyu-dev`, native ASR on GPU 2, native Omni thinker on
-GPU 7, native Qwen3-TTS on GPU 5, model directories
-`/root/omniinfer-model-validation-20261111-k3/models/{asr,omni}` and
-`/root/umm-mixed-output-20261116/models/qwen3-tts`, real speech
+Environment: H20B GPU container, native ASR on GPU 2, native Omni thinker on
+GPU 7, native Qwen3-TTS on GPU 5, local model directories (`$UMM_MODELS_DIR/{asr,omni,qwen3-tts}`), real speech
 `asr_en_pcm16.wav`, server and stages built from this commit. Ports were
 ephemeral; the resident services and GPU 0/1 were not touched.
 

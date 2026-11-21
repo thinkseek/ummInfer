@@ -23,7 +23,7 @@
 - `未验证`：代码已实现，但仓库内无自动化测试断言（本轮 `NOT_RUN`）。
 - `计划中`：尚未实现，见第 9 节与 [roadmap.md](roadmap.md)。
 
-> **真模型验证声明**：本轮于 H20B（`linyu-dev` 容器独立栈 `127.0.0.1:43391`，GPU 0/1，不冲突于常驻 `43301` GPU 2–5）完成了**真实视频 Stage 端到端实测**（`Wan-AI/Wan2.2-TI2V-5B-Diffusers` Apache-2.0，本地 revision `UNKNOWN`，`model_index.json` SHA-256 `6a72faeb…`，704×480 29 帧 16 fps H.264 MP4 `163,552 B` SHA-256 `074f6d67…`，并通过 `UMM_TRACE=1` `legs_snapshot` 实测录证 `pending→running→completed/aborted/failed` 全生命周期与中途 `/abort`）；其余 GPU 核、`/v1/audio/speech` 真 TTS、外部授权 `/v1/videos` 上游实测及 H20B 常驻服务 `43301` 变更仍为 `NOT_RUN`。历史实测记录（附环境、SHA-256 与日志路径）保留在 [docs/multimodal-benchmark-results.md](multimodal-benchmark-results.md)、[docs/cases/0001-end-to-end-native.md](cases/0001-end-to-end-native.md)、[docs/batching.md](batching.md)、[docs/concurrency.md](concurrency.md)、[docs/full-duplex.md](full-duplex.md)、[docs/soak.md](soak.md) 与 [docs/h20b-service.md](h20b-service.md)。
+> **真模型验证声明**：本轮于 H20B（GPU 容器独立栈 `127.0.0.1:43391`，GPU 0/1，不冲突于常驻 `43301` GPU 2–5）完成了**真实视频 Stage 端到端实测**（`Wan-AI/Wan2.2-TI2V-5B-Diffusers` Apache-2.0，本地 revision `UNKNOWN`，`model_index.json` SHA-256 `6a72faeb…`，704×480 29 帧 16 fps H.264 MP4 `163,552 B` SHA-256 `074f6d67…`，并通过 `UMM_TRACE=1` `legs_snapshot` 实测录证 `pending→running→completed/aborted/failed` 全生命周期与中途 `/abort`）；其余 GPU 核、`/v1/audio/speech` 真 TTS、外部授权 `/v1/videos` 上游实测及 H20B 常驻服务 `43301` 变更仍为 `NOT_RUN`。历史实测记录（附环境、SHA-256 与日志路径）保留在 [docs/multimodal-benchmark-results.md](multimodal-benchmark-results.md)、[docs/cases/0001-end-to-end-native.md](cases/0001-end-to-end-native.md)、[docs/batching.md](batching.md)、[docs/concurrency.md](concurrency.md)、[docs/full-duplex.md](full-duplex.md)、[docs/soak.md](soak.md) 与 [docs/h20b-service.md](h20b-service.md)。
 
 ## 1. 对外接口（HTTP / SSE / WebSocket）
 
