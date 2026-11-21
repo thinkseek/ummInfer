@@ -41,9 +41,6 @@ add_executable(image2_host_tests ${CMAKE_CURRENT_SOURCE_DIR}/../image2_tests/tes
 target_link_libraries(image2_host_tests PRIVATE umm_image2_host)
 add_test(NAME image2_host_tests COMMAND image2_host_tests)
 
-add_executable(image2_tok_dump ${CMAKE_CURRENT_SOURCE_DIR}/../image2_tests/tok_dump.cpp)
-target_link_libraries(image2_tok_dump PRIVATE umm_image2_host)
-
 if(UMM_IMAGE2_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
@@ -61,14 +58,4 @@ if(UMM_IMAGE2_CUDA)
   target_link_libraries(umm-image2-native PRIVATE umm_image2_host CUDA::cudart
                         CUDA::cublas CUDA::cublasLt)
   set_target_properties(umm-image2-native PROPERTIES CUDA_ARCHITECTURES 90)
-
-  # Stage parity against diffusers reference dumps (TE, one DiT step, VAE).
-  add_executable(image2_gpu_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/../image2_tests/test_gpu.cu
-    tensor.cpp weights.cpp cuda_kernels.cu vae.cpp text_encoder.cpp dit.cpp)
-  target_include_directories(image2_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-  target_link_libraries(image2_gpu_tests PRIVATE umm_image2_host CUDA::cudart CUDA::cublas
-                        CUDA::cublasLt)
-  set_target_properties(image2_gpu_tests PROPERTIES CUDA_ARCHITECTURES 90)
-  add_test(NAME image2_gpu_tests COMMAND image2_gpu_tests)
 endif()

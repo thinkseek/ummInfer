@@ -32,6 +32,7 @@ constexpr size_t kMaxVideoBytes = 512u << 20;
 // Mixed-output chat mirrors the server's frozen decoded-byte contract.
 constexpr size_t kMixedMaxImageBytes = 48u << 20;
 constexpr size_t kMixedMaxAudioBytes = 48u << 20;
+constexpr size_t kMixedMaxVideoBytes = 48u << 20;
 constexpr size_t kMixedMaxAggregateBytes = 60u << 20;
 // The largest legal mixed stream on the wire: 60 MiB decoded is ~80 MiB of
 // base64; this leaves envelope headroom. Text-only streams keep the 64 MiB
@@ -349,13 +350,16 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                       request.first_token_timeout.count() > 0 || request.stall_timeout.count() > 0;
   bool audio_output = false;
   bool image_output = false;
+  bool video_output = false;
   for (const auto& modality : request.modalities) {
-    if (modality != "text" && modality != "audio" && modality != "image") {
+    if (modality != "text" && modality != "audio" && modality != "image" &&
+        modality != "video") {
       throw Error(ErrorCode::kConfig,
-                  "modalities values must be text, image or audio");
+                  "modalities values must be text, image, audio or video");
     }
     audio_output = audio_output || modality == "audio";
     image_output = image_output || modality == "image";
+    video_output = video_output || modality == "video";
   }
   if (request.image) {
     if (!image_output) {
@@ -395,7 +399,33 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
   } else if (audio_output) {
     throw Error(ErrorCode::kConfig, "audio output requires audio.voice");
   }
-  const bool mixed_output = image_output || audio_output;
+  if (request.video) {
+    if (!video_output) {
+      throw Error(ErrorCode::kConfig,
+                  "video output requires modalities to include video");
+    }
+    if (request.video->output_format != "mp4") {
+      throw Error(ErrorCode::kConfig, "video.output_format must be mp4");
+    }
+    if (request.video->size.empty()) {
+      throw Error(ErrorCode::kConfig, "video.size must be non-empty");
+    }
+    if (request.video->seconds && *request.video->seconds < 1) {
+      throw Error(ErrorCode::kConfig, "video.seconds must be positive");
+    }
+    if (request.video->fps && *request.video->fps < 1) {
+      throw Error(ErrorCode::kConfig, "video.fps must be positive");
+    }
+    if (request.video->seed && *request.video->seed < 0) {
+      throw Error(ErrorCode::kConfig, "video.seed must not be negative");
+    }
+    if (!stream) {
+      throw Error(ErrorCode::kConfig, "video output requires stream");
+    }
+  } else if (video_output && !stream) {
+    throw Error(ErrorCode::kConfig, "video output requires stream");
+  }
+  const bool mixed_output = image_output || audio_output || video_output;
   const Milliseconds timeout = request.timeout.count() > 0 ? request.timeout : config_.timeout;
   bool emitted_delta = false;
 
@@ -427,6 +457,17 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
       }
       if (request.image->seed) image["seed"] = *request.image->seed;
       body["image"] = std::move(image);
+    }
+    if (request.video) {
+      json video = {{"size", request.video->size},
+                    {"output_format", request.video->output_format}};
+      if (!request.video->prompt.empty()) {
+        video["prompt"] = request.video->prompt;
+      }
+      if (request.video->seconds) video["seconds"] = *request.video->seconds;
+      if (request.video->fps) video["fps"] = *request.video->fps;
+      if (request.video->seed) video["seed"] = *request.video->seed;
+      body["video"] = std::move(video);
     }
     if (request.temperature) body["temperature"] = *request.temperature;
     if (request.top_p) body["top_p"] = *request.top_p;
@@ -596,7 +637,9 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                     progress.token();
                     aggregated += gained;
                   }
-                  if (aggregated > kMaxJsonResponseBytes) {
+                  const size_t stream_cap = mixed_output ? kMixedStreamWireBytes
+                                                         : kMaxJsonResponseBytes;
+                  if (aggregated > stream_cap) {
                     throw Error(ErrorCode::kBadResponse,
                                 "streamed response exceeds its size limit");
                   }
@@ -639,8 +682,8 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                 const std::string id = a["artifact_id"].get<std::string>();
                 const std::string media = a["media_type"].get<std::string>();
                 const std::string mime = a["mime_type"].get<std::string>();
-                if (media != "image" && media != "audio") {
-                  fail_artifact("artifact media_type must be image or audio");
+                if (media != "image" && media != "audio" && media != "video") {
+                  fail_artifact("artifact media_type must be image, audio or video");
                 }
                 if (a["encoding"].get<std::string>() != "base64") {
                   fail_artifact("artifact encoding must be base64");
@@ -668,9 +711,9 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                 }
                 std::string decoded = detail::base64_decode(
                     encoded, kMixedChunkDecodedBytes);
-                const size_t per_leg = media == "image"
-                                           ? kMixedMaxImageBytes
-                                           : kMixedMaxAudioBytes;
+                const size_t per_leg = media == "image"   ? kMixedMaxImageBytes
+                                       : media == "video" ? kMixedMaxVideoBytes
+                                                          : kMixedMaxAudioBytes;
                 if (slot.bytes.size() + decoded.size() > per_leg) {
                   throw Error(ErrorCode::kBadResponse,
                               media + " artifact exceeds its size limit");
@@ -688,7 +731,9 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                   fail_artifact("artifact total changed between chunks");
                 }
                 aggregated += encoded.size();
-                if (aggregated > kMaxJsonResponseBytes && !mixed_output) {
+                const size_t stream_cap = mixed_output ? kMixedStreamWireBytes
+                                                       : kMaxJsonResponseBytes;
+                if (aggregated > stream_cap) {
                   throw Error(ErrorCode::kBadResponse,
                               "streamed response exceeds its size limit");
                 }

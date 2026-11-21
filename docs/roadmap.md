@@ -19,8 +19,9 @@ protocol, HTTP/SSE/WebSocket adapters, CLI, and clients stay. A model runs in it
 own worker process behind that control plane; the control plane must not learn
 model internals.
 
-The target architecture figure and the implemented-versus-planned split are in
-[README](../README.md#target-architecture). This file holds the phases, their
+The architecture figure lives in [README](../README.md#architecture), and the
+code-anchored implemented-versus-unverified/planned split lives in
+[feature-map.md](feature-map.md). This file holds the phases, their
 gates, the model plan, and the verification split.
 
 ## Phases
@@ -39,7 +40,7 @@ Optional multi-turn session history landed on 2026-11-14. `session_id` remains
 a grouping label by default; with `--session-history` and the per-request
 `session_history=true` opt-in, prior completed turns of the same session are
 prepended to the next VLM prompt. The store bounds, eviction, HTTP 400 contracts,
-and the full rule set are in [README](../README.md#optional-multi-turn-session-history);
+and the full rule set are tracked in [feature-map.md](feature-map.md#5-会话);
 deterministic contract coverage and the real H20B validation are in
 [validation 5d](validation.md#5d-optional-multi-turn-session-history). H20B
 multi-turn validation passed on 2026-11-14, including cancel/error exclusion and
@@ -252,8 +253,8 @@ optimize it without changing output.
 | Stability | The coefficient of variation is reported; `cv > 0.10` means the window was not quiet and the run repeats. |
 | Attribution | The report separates model time from control-plane time. |
 
-The existing text-chat optimization record keeps its own convention; it is not a
-unified-engine baseline. [README](../README.md#measured-stage-result) gives the
+The existing MLX text-chat optimization record keeps its own convention; it is
+not a unified-engine baseline. [docs/mlx.md](mlx.md) gives the
 number and its conditions.
 
 The first real H20B unified baseline is recorded in
@@ -376,6 +377,11 @@ result table are in [validation section 3a](validation.md#3a-h20b-realtime-live-
 2. Repeat the H20B CUDA window under real model load, and add zero-copy
    device-tensor transfer and multi-host IPC if a use case needs them.
 3. Keep the fixed-upstream proxy independent of the local unified path.
+4. Resolve remaining control-plane technical debt tracked in
+   [architecture.md](architecture.md#4-已知技术债与治理边界): replace the
+   `http-` prefix check in `RealtimeApi::drain_unified` with explicit ownership,
+   align HTTP-vs-`unified_schema` validation rules, and expand unit coverage for
+   `SimpleScheduler`, streamed TTS limits, and `cancel_for_session`.
 
 ## Explicitly unverified or unsupported
 
@@ -389,5 +395,7 @@ result table are in [validation section 3a](validation.md#3a-h20b-realtime-live-
 - A first-party HTTP 429 with `Retry-After` from this server.
 - A successful upstream forward through the proxy. The in-tree tests prove
   configuration, route gating, and a connect failure only.
-- Dynamic batching, model usage accounting, and per-worker queue statistics.
+- Multi-stage dynamic batching (opt-in decode continuous batching is implemented
+  for `qwen38` only; see [batching.md](batching.md)), model usage accounting,
+  and per-worker queue statistics.
 - Full Phase 2/3 acceptance across every modality and hardware profile.

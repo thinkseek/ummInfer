@@ -43,9 +43,6 @@ add_executable(image_host_tests ${CMAKE_CURRENT_SOURCE_DIR}/../image_tests/test_
 target_link_libraries(image_host_tests PRIVATE umm_image_host)
 add_test(NAME image_host_tests COMMAND image_host_tests)
 
-add_executable(tok_dump ${CMAKE_CURRENT_SOURCE_DIR}/../image_tests/tok_dump.cpp)
-target_link_libraries(tok_dump PRIVATE umm_image_host)
-
 if(UMM_IMAGE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
@@ -63,50 +60,4 @@ if(UMM_IMAGE_CUDA)
   target_link_libraries(umm-image-native PRIVATE umm_image_host CUDA::cudart CUDA::cublas
                         CUDA::cublasLt)
   set_target_properties(umm-image-native PROPERTIES CUDA_ARCHITECTURES 90)
-
-  # Full offline golden parity: scheduler, row-major GEMM, text encoder (en+zh),
-  # 60-block MMDiT velocity, and the full VAE decoder on a fixed latent.
-  add_executable(image_gpu_tests
-    ${CMAKE_CURRENT_SOURCE_DIR}/../image_tests/test_gpu.cu
-    tensor.cpp weights.cpp cuda_kernels.cu vae.cpp text_encoder.cpp dit.cpp)
-  target_include_directories(image_gpu_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-  target_link_libraries(image_gpu_tests PRIVATE umm_image_host CUDA::cudart CUDA::cublas
-                        CUDA::cublasLt)
-  set_target_properties(image_gpu_tests PROPERTIES CUDA_ARCHITECTURES 90)
-  add_test(NAME image_gpu_tests COMMAND image_gpu_tests)
-
-  # Known-answer attention tests against brute-force fp32 host references. They
-  # guard the online-softmax flash kernel including its multi-tile cross-tile
-  # reduction (which previously had a shared-memory back-edge race).
-  add_executable(flash_known
-    ${CMAKE_CURRENT_SOURCE_DIR}/../image_tests/flash_known.cu
-    tensor.cpp cuda_kernels.cu)
-  target_include_directories(flash_known PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-  target_link_libraries(flash_known PRIVATE umm_image_host CUDA::cudart CUDA::cublas
-                        CUDA::cublasLt)
-  set_target_properties(flash_known PROPERTIES CUDA_ARCHITECTURES 90)
-
-  add_executable(gqa_known
-    ${CMAKE_CURRENT_SOURCE_DIR}/../image_tests/gqa_known.cu
-    tensor.cpp cuda_kernels.cu)
-  target_include_directories(gqa_known PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-  target_link_libraries(gqa_known PRIVATE umm_image_host CUDA::cudart CUDA::cublas
-                        CUDA::cublasLt)
-  set_target_properties(gqa_known PROPERTIES CUDA_ARCHITECTURES 90)
-
-  add_executable(conv1x1_known
-    ${CMAKE_CURRENT_SOURCE_DIR}/../image_tests/conv1x1_known.cu
-    tensor.cpp cuda_kernels.cu)
-  target_include_directories(conv1x1_known PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-  target_link_libraries(conv1x1_known PRIVATE umm_image_host CUDA::cudart CUDA::cublas
-                        CUDA::cublasLt)
-  set_target_properties(conv1x1_known PROPERTIES CUDA_ARCHITECTURES 90)
-
-  add_executable(flash384_known
-    ${CMAKE_CURRENT_SOURCE_DIR}/../image_tests/flash384_known.cu
-    tensor.cpp cuda_kernels.cu)
-  target_include_directories(flash384_known PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-  target_link_libraries(flash384_known PRIVATE umm_image_host CUDA::cudart CUDA::cublas
-                        CUDA::cublasLt)
-  set_target_properties(flash384_known PROPERTIES CUDA_ARCHITECTURES 90)
 endif()

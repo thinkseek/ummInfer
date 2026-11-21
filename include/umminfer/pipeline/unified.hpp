@@ -42,12 +42,25 @@
 
 namespace umminfer {
 
-// Modalities understood by the unified contract. Audio and text run today;
-// image and video are capability declarations only.
+// Modalities understood by the unified contract. Text, image, audio and video
+// share one modality representation and leg lifecycle in UnifiedEngine.
 enum class UnifiedModality { kAudio, kText, kImage, kVideo };
 
 const char* to_string(UnifiedModality modality);
 std::optional<UnifiedModality> modality_from_string(const std::string& token);
+
+// Unified lifecycle states shared by every request leg (ASR, VLM, image,
+// audio/TTS, video).
+enum class LegState { kPending, kRunning, kCompleted, kFailed, kAborted };
+
+const char* to_string(LegState state);
+
+struct LegSnapshot {
+  UnifiedModality modality = UnifiedModality::kText;
+  std::string stage_id;
+  LegState state = LegState::kPending;
+  std::string error;
+};
 
 // Stage ids used inside unified events. They are contract values, not
 // Coordinator stage names: deployed stages keep their configured names.
@@ -55,16 +68,19 @@ inline constexpr const char* kAsrStageId = "asr";
 inline constexpr const char* kVlmStageId = "vlm";
 inline constexpr const char* kImageStageId = "image";
 inline constexpr const char* kTtsStageId = "tts";
+inline constexpr const char* kVideoStageId = "video";
 
 // Child request id suffixes submitted after the VLM barrier. Like ":vlm" they
 // never advance the Coordinator id counter.
 inline constexpr const char* kImageSuffix = ":image";
 inline constexpr const char* kTtsSuffix = ":tts";
+inline constexpr const char* kVideoSuffix = ":video";
 
 // Mixed-output byte contract (frozen). The HTTP boundary rejects anything past
 // these limits; the client library mirrors the same values.
 inline constexpr size_t kMaxArtifactImageBytes = 48u << 20;
 inline constexpr size_t kMaxArtifactAudioBytes = 48u << 20;
+inline constexpr size_t kMaxArtifactVideoBytes = 48u << 20;
 inline constexpr size_t kMaxArtifactAggregateBytes = 60u << 20;
 // Raw bytes per artifact chunk. Its base64 line stays around 2.7 MiB, below
 // both the 3 MiB wire ceiling and the 4 MiB SSE parser limit.
@@ -81,7 +97,7 @@ struct UnifiedEvent {
     kAsrPartial,  // streaming ASR transcript, is_final == false
     kAsrFinal,    // terminal ASR transcript, is_final == true
     kVlmDelta,    // streaming VLM token
-    kArtifact,    // one generated image/audio chunk (see artifact fields)
+    kArtifact,    // one generated image/audio/video chunk (see artifact fields)
     kLegError,    // an optional output leg failed; the request still completes
     kComplete,    // terminal success
     kError,       // terminal failure
@@ -90,8 +106,8 @@ struct UnifiedEvent {
 
   std::string request_id;
   std::string session_id;
-  // kAsrStageId / kVlmStageId / kImageStageId / kTtsStageId; empty on
-  // kCancelled.
+  // kAsrStageId / kVlmStageId / kImageStageId / kTtsStageId / kVideoStageId;
+  // empty on kCancelled.
   std::string stage_id;
   Kind kind = Kind::kError;
   int64_t seq = 0;
@@ -131,6 +147,7 @@ struct UnifiedConfig {
   // text-only server.
   std::string image_stage;
   std::string tts_stage;
+  std::string video_stage;
   // Hard backpressure: requests past this many in-flight are rejected at
   // submission instead of being buffered without limit.
   size_t max_in_flight = 32;
@@ -208,17 +225,27 @@ class UnifiedEngine {
   bool release(const std::string& request_id);
   // Returns only unified state: unified id, public stage id, and unified result.
   std::optional<RequestInfo> info(const std::string& request_id);
+  // Returns the current unified leg lifecycle states (pending, running,
+  // completed, failed, aborted) for every leg of an active or terminal request.
+  std::vector<LegSnapshot> legs_snapshot(const std::string& request_id) const;
   size_t in_flight() const;
   // Whether the optional output stage was configured. The HTTP boundary uses
   // these to reject an unregistered modality with 400 before submit.
   bool image_output_enabled() const { return !config_.image_stage.empty(); }
   bool tts_output_enabled() const { return !config_.tts_stage.empty(); }
+  bool video_output_enabled() const { return !config_.video_stage.empty(); }
   // Whether the engine was constructed with session history enabled.
   bool history_enabled() const { return config_.session_history.enabled; }
   // Whether an optional output stage is registered in this process. The HTTP
   // boundary turns a false into a 400 before any submit.
   bool image_enabled() const { return !config_.image_stage.empty(); }
   bool tts_enabled() const { return !config_.tts_stage.empty(); }
+  bool video_enabled() const { return !config_.video_stage.empty(); }
+  // Coordinator stage name of the TTS worker, empty when none is registered.
+  // The standalone /v1/audio/speech route submits to that same stage.
+  const std::string& tts_stage_name() const { return config_.tts_stage; }
+  // Coordinator stage name of the video worker, empty when none is registered.
+  const std::string& video_stage_name() const { return config_.video_stage; }
 
   // Fires for every ASR partial/final and VLM delta, in sequence order.
   std::function<void(const UnifiedEvent&)> on_event;
@@ -231,13 +258,13 @@ class UnifiedEngine {
 
   // One optional output leg's runtime state.
   struct OutputLeg {
+    UnifiedModality modality = UnifiedModality::kText;
     std::string stage_name;  // Coordinator stage, empty when unused
-    std::string child_id;    // request_id + kImageSuffix / kTtsSuffix
-    std::string stage_id;    // kImageStageId / kTtsStageId
+    std::string child_id;    // request_id + :image / :tts / :video
+    std::string stage_id;    // kImageStageId / kTtsStageId / kVideoStageId
     bool enabled = false;
     bool submitted = false;
-    // completed, failed, or aborted; empty while running.
-    std::string state;
+    LegState state = LegState::kPending;
     std::string error;
     std::chrono::steady_clock::time_point started;
   };
@@ -246,6 +273,11 @@ class UnifiedEngine {
     std::string session_id;
     Phase phase = Phase::kAsr;
     bool terminal_dispatched = false;
+    bool has_audio = false;
+    LegState asr_state = LegState::kPending;
+    std::string asr_error;
+    LegState vlm_state = LegState::kPending;
+    std::string vlm_error;
     // Metrics and tracing. steady_clock measures durations; start_epoch_ms is
     // the wall-clock start the trace record carries. A negative leg value means
     // that leg did not run for this request.
@@ -258,6 +290,7 @@ class UnifiedEngine {
     double vlm_ms = -1;
     double image_ms = -1;
     double tts_ms = -1;
+    double video_ms = -1;
     RequestInfo public_info;
     int64_t next_seq = 0;
     bool asr_final_seen = false;
@@ -282,10 +315,12 @@ class UnifiedEngine {
     // are stripped from the VLM prompt and consumed only by the legs.
     Value::Map image_options;
     Value::Map audio_options;
+    Value::Map video_options;
     // Opt-in generated outputs. The legs exist only when the request named
     // the modality; legs_remaining counts submitted legs that have not
     // reached a terminal state yet.
     OutputLeg image_leg;
+    OutputLeg video_leg;
     std::vector<OutputLeg> tts_legs;
     bool tts_enabled = false;
     std::string tts_voice;
@@ -307,12 +342,6 @@ class UnifiedEngine {
     size_t artifact_bytes_total = 0;
   };
 
-  // One completed user/assistant turn kept in process-local session history.
-  struct SessionTurn {
-    std::string user;
-    std::string assistant;
-  };
-
   void handle_stream(const StreamMessage& msg);
   void handle_complete(const RequestInfo& info);
   void drain_dispatch();
@@ -320,6 +349,7 @@ class UnifiedEngine {
   // Optional output legs, submitted together at the single VLM barrier.
   void start_outputs_locked(const std::string& request_id, Record& record);
   void start_image_locked(const std::string& request_id, Record& record);
+  void start_video_locked(const std::string& request_id, Record& record);
   // Submits one TTS leg. `first` keeps the contract child id <id>:tts for the
   // single-leg (non-streaming) request; streamed sentences use :tts:0, :tts:1.
   void start_tts_locked(const std::string& request_id, Record& record,
@@ -336,6 +366,11 @@ class UnifiedEngine {
   // Collects active TTS child ids so the caller can abort them outside mu_
   // without self-deadlocking on Coordinator::abort -> on_complete -> mu_.
   static void collect_tts_aborts_locked(
+      const Record& record, const char* reason,
+      std::vector<std::pair<std::string, const char*>>& out);
+  // Collects every active output child id (image, video, tts) for aborting
+  // outside mu_.
+  static void collect_output_aborts_locked(
       const Record& record, const char* reason,
       std::vector<std::pair<std::string, const char*>>& out);
   // Turns a successful output-leg completion into kArtifact events with

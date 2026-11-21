@@ -24,6 +24,7 @@
 
 #include "asr_common.hpp"
 #include "serve/upstream_proxy.hpp"
+#include "umminfer/audio/audio.hpp"
 #include "umminfer/client/client.hpp"
 #include "umminfer/obs/metrics.hpp"
 #include "umminfer/pipeline/unified.hpp"
@@ -393,9 +394,11 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
 }
 
 bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
-                        Value::Map& engine_inputs, std::string& error) {
+                        bool video_enabled, Value::Map& engine_inputs,
+                        std::string& error) {
   bool image_output = false;
   bool audio_output = false;
+  bool video_output = false;
   if (body.contains("modalities") && !body["modalities"].is_null()) {
     const json& modalities = body["modalities"];
     if (!modalities.is_array() || modalities.empty()) {
@@ -411,8 +414,9 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
       if (name == "text") continue;
       if (name == "image") image_output = true;
       else if (name == "audio") audio_output = true;
+      else if (name == "video") video_output = true;
       else {
-        error = "modalities values must be text, image or audio";
+        error = "modalities values must be text, image, audio or video";
         return false;
       }
     }
@@ -473,9 +477,56 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     }
     audio_output = true;
   }
-  if (!image_output && !audio_output) return true;
+  if (body.contains("video") && !body["video"].is_null()) {
+    const json& video = body["video"];
+    if (!video.is_object()) {
+      error = "video must be an object";
+      return false;
+    }
+    if (video.contains("prompt") && !video["prompt"].is_null()) {
+      if (!video["prompt"].is_string() ||
+          video["prompt"].get_ref<const std::string&>().empty()) {
+        error = "video.prompt must be a non-empty string";
+        return false;
+      }
+    }
+    if (video.contains("size") && !video["size"].is_null()) {
+      if (!video["size"].is_string() || video["size"].get<std::string>().empty()) {
+        error = "video.size must be a non-empty string";
+        return false;
+      }
+    }
+    if (video.contains("seconds") && !video["seconds"].is_null()) {
+      if (!video["seconds"].is_number_integer() ||
+          video["seconds"].get<int64_t>() < 1) {
+        error = "video.seconds must be a positive integer";
+        return false;
+      }
+    }
+    if (video.contains("fps") && !video["fps"].is_null()) {
+      if (!video["fps"].is_number_integer() ||
+          video["fps"].get<int64_t>() < 1) {
+        error = "video.fps must be a positive integer";
+        return false;
+      }
+    }
+    if (video.contains("seed") && !video["seed"].is_null() &&
+        !video["seed"].is_number_integer()) {
+      error = "video.seed must be an integer";
+      return false;
+    }
+    if (video.contains("output_format") && !video["output_format"].is_null()) {
+      if (!video["output_format"].is_string() ||
+          video["output_format"].get<std::string>() != "mp4") {
+        error = "video.output_format must be mp4";
+        return false;
+      }
+    }
+    video_output = true;
+  }
+  if (!image_output && !audio_output && !video_output) return true;
   if (!body.value("stream", false)) {
-    error = "image and audio output require stream=true";
+    error = "image, audio and video output require stream=true";
     return false;
   }
   if (image_output && !image_enabled) {
@@ -486,9 +537,14 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     error = "audio output is not enabled on this server";
     return false;
   }
+  if (video_output && !video_enabled) {
+    error = "video output is not enabled on this server";
+    return false;
+  }
   Value::Array selected;
   if (image_output) selected.push_back(Value("image"));
   if (audio_output) selected.push_back(Value("audio"));
+  if (video_output) selected.push_back(Value("video"));
   engine_inputs["output_modalities"] = Value(std::move(selected));
   if (image_output) {
     Value::Map options;
@@ -520,6 +576,29 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     options["sample_rate"] = Value(int64_t{24000});
     if (audio.value("stream", false)) options["stream"] = Value(true);
     engine_inputs["audio_options"] = Value(std::move(options));
+  }
+  if (video_output) {
+    Value::Map options;
+    const json empty_video = json::object();
+    const json& video = body.contains("video") && body["video"].is_object()
+                            ? body["video"]
+                            : empty_video;
+    if (video.contains("prompt") && !video["prompt"].is_null()) {
+      options["prompt"] = Value(video["prompt"].get<std::string>());
+    }
+    options["size"] = Value(video.value("size", std::string("1280x720")));
+    if (video.contains("seconds") && !video["seconds"].is_null()) {
+      options["seconds"] = Value(video["seconds"].get<int64_t>());
+    }
+    if (video.contains("fps") && !video["fps"].is_null()) {
+      options["fps"] = Value(video["fps"].get<int64_t>());
+    }
+    if (video.contains("seed") && !video["seed"].is_null()) {
+      options["seed"] = Value(video["seed"].get<int64_t>());
+    }
+    options["output_format"] =
+        Value(video.value("output_format", std::string("mp4")));
+    engine_inputs["video_options"] = Value(std::move(options));
   }
   return true;
 }
@@ -784,11 +863,8 @@ class OpenAIApi::Impl {
     });
 
     server_.Post("/v1/audio/speech",
-                 [](const httplib::Request&, httplib::Response& res) {
-                   res.status = 501;
-                   res.set_content(
-                       R"({"error":{"message":"speech is not implemented by this server"}})",
-                       "application/json");
+                 [this](const httplib::Request& req, httplib::Response& res) {
+                   handle_speech(req, res);
                  });
 
     // Opt-in static hosting for the bundled browser client. cpp-httplib's mount
@@ -1076,6 +1152,158 @@ class OpenAIApi::Impl {
                     "text/event-stream");
   }
 
+  // POST /v1/audio/speech. One text-to-speech request against the TTS stage
+  // the unified engine already registered: the same Coordinator submit/abort
+  // path, no second protocol. The stage speaks WAV only, so a pcm response
+  // drops the RIFF container here and the stage stays one format.
+  void handle_speech(const httplib::Request& req, httplib::Response& res) {
+    RouteMetric route_metric{"speech", &res};
+    auto reject = [&res](int status, const std::string& message,
+                         const char* type) {
+      res.status = status;
+      res.set_content(
+          json{{"error", {{"message", util::utf8_sanitized(message)},
+                          {"type", type}}}}
+              .dump(),
+          "application/json");
+    };
+    if (!config_.upstream_kind.empty()) {
+      proxy_.reject_route(res, "audio speech");
+      return;
+    }
+    if (unified_engine_ == nullptr || !unified_engine_->tts_enabled()) {
+      reject(501,
+             "speech is not implemented by this server: no TTS stage is registered",
+             "unsupported_route");
+      return;
+    }
+    const json body = json::parse(req.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) {
+      reject(400, "request body must be a JSON object", "invalid_request");
+      return;
+    }
+    static const std::set<std::string> kAllowedFields = {
+        "model", "input", "voice", "response_format"};
+    for (auto it = body.begin(); it != body.end(); ++it) {
+      if (!kAllowedFields.count(it.key())) {
+        reject(400, "unsupported field: " + it.key(), "invalid_request");
+        return;
+      }
+    }
+    if (body.contains("model") && !body["model"].is_null()) {
+      if (!body["model"].is_string()) {
+        reject(400, "model must be a string", "invalid_request");
+        return;
+      }
+      const std::string model = body["model"].get<std::string>();
+      if (model != config_.served_model_name) {
+        reject(400, "unsupported model: " + model + "; this server serves " +
+                        config_.served_model_name,
+               "invalid_request");
+        return;
+      }
+    }
+    if (!body.contains("input") || !body["input"].is_string() ||
+        body["input"].get_ref<const std::string&>().empty()) {
+      reject(400, "input must be a nonempty string", "invalid_request");
+      return;
+    }
+    const std::string input = body["input"].get<std::string>();
+    // The stage treats voice as a free label and defaults to vivian; only the
+    // empty string is a contract error here.
+    std::string voice = "vivian";
+    if (body.contains("voice") && !body["voice"].is_null()) {
+      if (!body["voice"].is_string() ||
+          body["voice"].get_ref<const std::string&>().empty()) {
+        reject(400, "voice must be a nonempty string", "invalid_request");
+        return;
+      }
+      voice = body["voice"].get<std::string>();
+    }
+    std::string response_format = "wav";
+    if (body.contains("response_format") && !body["response_format"].is_null()) {
+      if (!body["response_format"].is_string()) {
+        reject(400, "response_format must be a string", "invalid_request");
+        return;
+      }
+      response_format = body["response_format"].get<std::string>();
+    }
+    if (response_format != "wav" && response_format != "pcm") {
+      reject(400,
+             "unsupported response_format: " + response_format +
+                 "; this server serves wav and pcm",
+             "invalid_request");
+      return;
+    }
+
+    AdmissionGuard guard(active_http_requests_, config_.max_in_flight);
+    if (!guard.admitted()) {
+      reject_overloaded(res);
+      return;
+    }
+    StagePayload payload;
+    Value::Map inputs;
+    inputs["text"] = Value(input);
+    inputs["voice"] = Value(voice);
+    inputs["format"] = Value("wav");
+    payload.request.inputs = Value(std::move(inputs));
+    std::string request_id;
+    try {
+      request_id = coordinator_.submit(std::move(payload),
+                                       unified_engine_->tts_stage_name());
+    } catch (const std::exception& error) {
+      reject(503, error.what(), "pipeline_error");
+      return;
+    }
+    bool settled = false;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::duration<double>(config_.request_timeout_s);
+    while (!settled && !req.is_connection_closed()) {
+      const auto remaining = deadline - std::chrono::steady_clock::now();
+      if (remaining <= std::chrono::steady_clock::duration::zero()) break;
+      settled = coordinator_.wait(
+          request_id,
+          std::min(0.1, std::chrono::duration<double>(remaining).count()));
+    }
+    if (req.is_connection_closed()) {
+      coordinator_.abort(request_id, "client");
+      coordinator_.release(request_id);
+      reject(503, "client closed the connection before the speech finished",
+             "speech_error");
+      return;
+    }
+    auto info = coordinator_.info(request_id);
+    if (!settled || !info) {
+      coordinator_.abort(request_id, "timeout");
+      coordinator_.release(request_id);
+      reject(504, "speech timed out", "speech_error");
+      return;
+    }
+    coordinator_.release(request_id);
+    if (info->state != "completed") {
+      reject(500, info->error.empty() ? "speech failed" : info->error,
+             "speech_error");
+      return;
+    }
+    const Value* data =
+        info->result.is_map() ? info->result.find("data") : nullptr;
+    if (data == nullptr || !data->is_bin() || data->as_bin().empty()) {
+      reject(500, "the TTS stage returned no audio bytes", "speech_error");
+      return;
+    }
+    if (response_format == "wav") {
+      res.set_content(data->as_bin(), "audio/wav");
+      return;
+    }
+    try {
+      const std::string pcm(audio::parse_wav_pcm16(data->as_bin()).pcm);
+      res.set_content(pcm, "audio/pcm");
+    } catch (const std::exception& error) {
+      reject(500, std::string("invalid TTS WAV container: ") + error.what(),
+             "speech_error");
+    }
+  }
+
   void handle_chat(const httplib::Request& req, httplib::Response& res) {
     RouteMetric route_metric{"chat", &res};
     const json body = json::parse(req.body, nullptr, false);
@@ -1149,7 +1377,7 @@ class OpenAIApi::Impl {
         "model", "messages", "stream", "temperature", "max_tokens",
         "max_completion_tokens", "top_p", "seed", "stop", "response_format",
         "stream_options", "session_id", "session_history", "modalities",
-        "image", "audio"};
+        "image", "audio", "video"};
     for (auto it = body.begin(); it != body.end(); ++it) {
       if (!kAllowedFields.count(it.key()) && !it.value().is_null()) {
         reject("unsupported field: " + it.key());
@@ -1244,13 +1472,16 @@ class OpenAIApi::Impl {
       std::string mixed_error;
       if (!valid_mixed_output(
               body, unified_engine_->image_output_enabled(),
-              unified_engine_->tts_output_enabled(), mixed_engine_inputs,
+              unified_engine_->tts_output_enabled(),
+              unified_engine_->video_output_enabled(), mixed_engine_inputs,
               mixed_error)) {
         reject(mixed_error);
         return;
       }
-    } else if (body.contains("modalities") || body.contains("image") ||
-               body.contains("audio")) {
+    } else if ((body.contains("modalities") && !body["modalities"].is_null()) ||
+               (body.contains("image") && !body["image"].is_null()) ||
+               (body.contains("audio") && !body["audio"].is_null()) ||
+               (body.contains("video") && !body["video"].is_null())) {
       reject("mixed output requires unified mode");
       return;
     }

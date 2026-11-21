@@ -247,7 +247,7 @@ struct ArtifactCollector {
     }
 
     static let supportedMimeTypes: Set<String> = [
-        "image/png", "image/jpeg", "audio/wav", "audio/pcm"
+        "image/png", "image/jpeg", "audio/wav", "audio/pcm", "video/mp4"
     ]
 
     private var slots: [String: Slot] = [:]
@@ -261,9 +261,9 @@ struct ArtifactCollector {
     }
 
     mutating func ingest(_ chunk: ArtifactChunk) throws -> GeneratedArtifact? {
-        guard chunk.mediaType == "image" || chunk.mediaType == "audio" else {
+        guard chunk.mediaType == "image" || chunk.mediaType == "audio" || chunk.mediaType == "video" else {
             throw ChatClientError.invalidResponse(
-                "artifact media_type must be image or audio")
+                "artifact media_type must be image, audio or video")
         }
         guard Self.supportedMimeTypes.contains(chunk.mimeType),
               chunk.mimeType.hasPrefix(chunk.mediaType + "/") else {

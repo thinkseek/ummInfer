@@ -136,6 +136,17 @@ std::optional<UnifiedModality> modality_from_string(const std::string& token) {
   return std::nullopt;
 }
 
+const char* to_string(LegState state) {
+  switch (state) {
+    case LegState::kPending: return "pending";
+    case LegState::kRunning: return "running";
+    case LegState::kCompleted: return "completed";
+    case LegState::kFailed: return "failed";
+    case LegState::kAborted: return "aborted";
+  }
+  return "unknown";
+}
+
 const char* to_string(UnifiedEvent::Kind kind) {
   switch (kind) {
     case UnifiedEvent::Kind::kAsrPartial: return "asr_partial";
@@ -191,6 +202,9 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   }
   Record record;
   record.session_id = std::move(session_id);
+  record.has_audio = parsed.has_audio;
+  record.asr_state = parsed.has_audio ? LegState::kRunning : LegState::kPending;
+  record.vlm_state = parsed.has_audio ? LegState::kPending : LegState::kRunning;
   record.started = std::chrono::steady_clock::now();
   record.start_epoch_ms = epoch_millis();
   if (parsed.has_audio) record.asr_started = record.started;
@@ -201,9 +215,17 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.user_text = std::move(parsed.user_text);
   record.image_options = std::move(parsed.image_options);
   record.audio_options = std::move(parsed.audio_options);
+  record.video_options = std::move(parsed.video_options);
+  record.image_leg.modality = UnifiedModality::kImage;
   record.image_leg.enabled = parsed.image_output;
   record.image_leg.stage_name = config_.image_stage;
   record.image_leg.stage_id = kImageStageId;
+  record.image_leg.state = LegState::kPending;
+  record.video_leg.modality = UnifiedModality::kVideo;
+  record.video_leg.enabled = parsed.video_output;
+  record.video_leg.stage_name = config_.video_stage;
+  record.video_leg.stage_id = kVideoStageId;
+  record.video_leg.state = LegState::kPending;
   record.tts_enabled = parsed.audio_output;
   if (parsed.audio_output) {
     const auto voice = record.audio_options.find("voice");
@@ -213,7 +235,7 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     const auto stream = record.audio_options.find("stream");
     record.tts_stream = stream != record.audio_options.end() &&
                         stream->second.is_bool() && stream->second.as_bool() &&
-                        !parsed.image_output;
+                        !parsed.image_output && !parsed.video_output;
   }
   for (Value::Map* metadata : {&record.vlm_metadata, &payload.request.metadata}) {
     (*metadata)["request_type"] = Value("chat");
@@ -275,6 +297,7 @@ UnifiedEngine::CancelStatus UnifiedEngine::cancel_for_session(
     record.cancel_requested = true;
     if (!record.vlm_id.empty()) active_ids.push_back(record.vlm_id);
     if (record.image_leg.submitted) active_ids.push_back(record.image_leg.child_id);
+    if (record.video_leg.submitted) active_ids.push_back(record.video_leg.child_id);
     for (const OutputLeg& leg : record.tts_legs) {
       if (leg.submitted) active_ids.push_back(leg.child_id);
     }
@@ -305,6 +328,54 @@ std::optional<RequestInfo> UnifiedEngine::info(const std::string& request_id) {
   return it->second.public_info;
 }
 
+std::vector<LegSnapshot> UnifiedEngine::legs_snapshot(
+    const std::string& request_id) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::vector<LegSnapshot> out;
+  auto it = records_.find(request_id);
+  if (it == records_.end()) return out;
+  const Record& record = it->second;
+  if (record.has_audio) {
+    out.push_back({UnifiedModality::kAudio, kAsrStageId, record.asr_state,
+                   record.asr_error});
+  }
+  out.push_back({UnifiedModality::kText, kVlmStageId, record.vlm_state,
+                 record.vlm_error});
+  if (record.image_leg.enabled) {
+    out.push_back({record.image_leg.modality, record.image_leg.stage_id,
+                   record.image_leg.state, record.image_leg.error});
+  }
+  if (record.tts_enabled) {
+    LegState tts_state = LegState::kPending;
+    if (record.tts_failed) {
+      tts_state = LegState::kFailed;
+    } else if (record.tts_legs.empty()) {
+      tts_state = record.phase == Phase::kDone && record.cancel_requested
+                      ? LegState::kAborted
+                      : LegState::kPending;
+    } else {
+      bool any_running = false;
+      bool all_aborted = true;
+      for (const OutputLeg& leg : record.tts_legs) {
+        if (leg.state == LegState::kRunning || leg.state == LegState::kPending) {
+          any_running = true;
+        }
+        if (leg.state != LegState::kAborted) all_aborted = false;
+      }
+      tts_state = any_running ? LegState::kRunning
+                : all_aborted ? LegState::kAborted
+                              : LegState::kCompleted;
+    }
+    out.push_back({UnifiedModality::kAudio, kTtsStageId, tts_state,
+                   record.tts_failed ? record.tts_error : std::string{}});
+  }
+  if (record.video_leg.enabled) {
+    out.push_back({record.video_leg.modality, record.video_leg.stage_id,
+                   record.video_leg.state, record.video_leg.error});
+  }
+  return out;
+}
+
 bool UnifiedEngine::release(const std::string& request_id) {
   std::vector<std::string> child_ids;
   bool removed = false;
@@ -322,6 +393,10 @@ bool UnifiedEngine::release(const std::string& request_id) {
       child_ids.push_back(it->second.image_leg.child_id);
       child_to_unified_.erase(it->second.image_leg.child_id);
     }
+    if (it->second.video_leg.submitted) {
+      child_ids.push_back(it->second.video_leg.child_id);
+      child_to_unified_.erase(it->second.video_leg.child_id);
+    }
     for (const OutputLeg& leg : it->second.tts_legs) {
       if (leg.submitted) {
         child_ids.push_back(leg.child_id);
@@ -336,6 +411,7 @@ bool UnifiedEngine::release(const std::string& request_id) {
         break;
       }
     }
+    obs::Metrics::instance().queue_depth("unified_admission", admission_.size());
     removed = true;
   }
   coordinator_.release(request_id);
@@ -375,7 +451,22 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
           record.vlm_text += delta;
           if (record.tts_stream && !record.tts_failed) {
             record.sentence_buf += delta;
-            drain_sentences_locked(unified_id, record);
+            try {
+              drain_sentences_locked(unified_id, record);
+            } catch (const std::exception& error) {
+              record.tts_failed = true;
+              if (record.tts_error.empty()) record.tts_error = error.what();
+              record.sentence_buf.clear();
+              collect_tts_aborts_locked(record, "vlm_failure", deferred_aborts);
+              UnifiedEvent leg_error;
+              leg_error.request_id = unified_id;
+              leg_error.session_id = record.session_id;
+              leg_error.stage_id = kTtsStageId;
+              leg_error.kind = UnifiedEvent::Kind::kLegError;
+              leg_error.seq = record.next_seq++;
+              leg_error.error = record.tts_error;
+              dispatch_queue_.push_back(std::move(leg_error));
+            }
           }
           UnifiedEvent event;
           event.request_id = unified_id;
@@ -390,8 +481,9 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
         if (record.tts_stream) {
           emit_tts_chunk_locked(unified_id, record, msg.chunk, deferred_aborts);
         }
-      } else if (msg.from_stage == record.image_leg.stage_name) {
-        // Image leg delivers its PNG bytes in complete.result.
+      } else if (msg.from_stage == record.image_leg.stage_name ||
+                 msg.from_stage == record.video_leg.stage_name) {
+        // Image and video legs deliver their artifact bytes in complete.result.
       } else if (record.phase != Phase::kVlm) {
         const bool is_final = unified_detail::chunk_is_final(msg.chunk);
         bool emit = true;
@@ -511,6 +603,7 @@ void UnifiedEngine::start_vlm_locked(const std::string& request_id,
   vlm_payload.request.params = record.vlm_params;
   vlm_payload.request.metadata = record.vlm_metadata;
   record.phase = Phase::kVlm;
+  record.vlm_state = LegState::kRunning;
   record.public_info.current_stage = kVlmStageId;
   record.vlm_started = std::chrono::steady_clock::now();
   coordinator_.submit(vlm_payload, config_.vlm_stage);
@@ -544,6 +637,31 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
     event.text = record.vlm_text;
   } else if (kind == UnifiedEvent::Kind::kError) {
     event.stage_id = record.vlm_id.empty() ? kAsrStageId : kVlmStageId;
+  }
+  if (kind == UnifiedEvent::Kind::kCancelled) {
+    if (record.has_audio && record.asr_state == LegState::kRunning) {
+      record.asr_state = LegState::kAborted;
+    }
+    if (record.vlm_state == LegState::kPending ||
+        record.vlm_state == LegState::kRunning) {
+      record.vlm_state = LegState::kAborted;
+    }
+    if (record.image_leg.enabled && record.image_leg.state == LegState::kPending) {
+      record.image_leg.state = LegState::kAborted;
+    }
+    if (record.video_leg.enabled && record.video_leg.state == LegState::kPending) {
+      record.video_leg.state = LegState::kAborted;
+    }
+  } else if (kind == UnifiedEvent::Kind::kError) {
+    if (record.vlm_id.empty()) {
+      if (record.has_audio && record.asr_state == LegState::kRunning) {
+        record.asr_state = LegState::kFailed;
+        record.asr_error = event.error;
+      }
+    } else if (record.vlm_state == LegState::kRunning) {
+      record.vlm_state = LegState::kFailed;
+      record.vlm_error = event.error;
+    }
   }
   record.public_info.state = kind == UnifiedEvent::Kind::kComplete
                                  ? "completed"
@@ -579,6 +697,7 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
     trace.vlm_ms = record.vlm_ms;
     trace.image_ms = record.image_ms;
     trace.tts_ms = record.tts_ms;
+    trace.video_ms = record.video_ms;
     obs::Metrics::instance().trace(trace);
   }
   return event;
@@ -595,7 +714,12 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
       const bool image_child =
           record.image_leg.submitted &&
           info.request_id == record.image_leg.child_id;
-      OutputLeg* output_leg = image_child ? &record.image_leg : nullptr;
+      const bool video_child =
+          record.video_leg.submitted &&
+          info.request_id == record.video_leg.child_id;
+      OutputLeg* output_leg = image_child   ? &record.image_leg
+                              : video_child ? &record.video_leg
+                                            : nullptr;
       if (output_leg == nullptr) {
         for (OutputLeg& leg : record.tts_legs) {
           if (leg.submitted && leg.child_id == info.request_id) {
@@ -694,9 +818,12 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
             unified_id, record, UnifiedEvent::Kind::kCancelled, {}, {}));
       } else if (record.vlm_id.empty()) {
         record_primary_leg("completed");
+        record.asr_state = LegState::kCompleted;
         if (!record.asr_final_seen) {
           const auto text = unified_detail::asr_result_text(info.result);
           if (!text) {
+            record.asr_state = LegState::kFailed;
+            record.asr_error = "ASR stage returned no text";
             dispatch_queue_.push_back(finish_locked(
                 unified_id, record, UnifiedEvent::Kind::kError,
                 "ASR stage returned no text", {}));
@@ -727,11 +854,14 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
         const auto text = unified_detail::vlm_result_text(info.result);
         record_primary_leg(text ? "completed" : "failed");
         if (!text) {
+          record.vlm_state = LegState::kFailed;
+          record.vlm_error = "VLM stage returned no text";
           collect_tts_aborts_locked(record, "vlm_failure", deferred_aborts);
           dispatch_queue_.push_back(finish_locked(
               unified_id, record, UnifiedEvent::Kind::kError,
               "VLM stage returned no text", {}));
         } else {
+          record.vlm_state = LegState::kCompleted;
           const double prefill = obs::result_ms(info.result, "prefill_ms");
           if (prefill >= 0) {
             obs::Metrics::instance().vlm_phase("prefill", prefill / 1000.0);
@@ -743,11 +873,12 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
           if (record.vlm_text.empty()) record.vlm_text = *text;
           record.vlm_result = info.result;
           record.vlm_done = true;
-          if (record.image_leg.enabled || record.tts_enabled) {
+          if (record.image_leg.enabled || record.tts_enabled ||
+              record.video_leg.enabled) {
             try {
               start_outputs_locked(unified_id, record);
             } catch (const std::exception& error) {
-              collect_tts_aborts_locked(record, "vlm_failure", deferred_aborts);
+              collect_output_aborts_locked(record, "vlm_failure", deferred_aborts);
               dispatch_queue_.push_back(finish_locked(
                   unified_id, record, UnifiedEvent::Kind::kError,
                   error.what(), {}));
@@ -781,11 +912,38 @@ void UnifiedEngine::start_image_locked(const std::string& request_id,
   payload.request.params = record.vlm_params;
   payload.request.metadata = record.vlm_metadata;
   leg.submitted = true;
+  leg.state = LegState::kRunning;
   leg.started = std::chrono::steady_clock::now();
   try {
     coordinator_.submit(payload, leg.stage_name);
   } catch (...) {
     leg.submitted = false;
+    leg.state = LegState::kFailed;
+    child_to_unified_.erase(leg.child_id);
+    throw;
+  }
+  ++record.legs_remaining;
+}
+
+void UnifiedEngine::start_video_locked(const std::string& request_id,
+                                       Record& record) {
+  OutputLeg& leg = record.video_leg;
+  leg.child_id = request_id + kVideoSuffix;
+  child_to_unified_[leg.child_id] = request_id;
+  StagePayload payload;
+  payload.request_id = leg.child_id;
+  payload.request.inputs =
+      unified_detail::build_video_inputs(record.video_options, record.vlm_text);
+  payload.request.params = record.vlm_params;
+  payload.request.metadata = record.vlm_metadata;
+  leg.submitted = true;
+  leg.state = LegState::kRunning;
+  leg.started = std::chrono::steady_clock::now();
+  try {
+    coordinator_.submit(payload, leg.stage_name);
+  } catch (...) {
+    leg.submitted = false;
+    leg.state = LegState::kFailed;
     child_to_unified_.erase(leg.child_id);
     throw;
   }
@@ -796,6 +954,7 @@ void UnifiedEngine::start_tts_locked(const std::string& request_id,
                                      Record& record, std::string text,
                                      bool first) {
   OutputLeg leg;
+  leg.modality = UnifiedModality::kAudio;
   leg.enabled = true;
   leg.stage_name = config_.tts_stage;
   leg.stage_id = kTtsStageId;
@@ -811,6 +970,7 @@ void UnifiedEngine::start_tts_locked(const std::string& request_id,
   payload.request.params = record.vlm_params;
   payload.request.metadata = record.vlm_metadata;
   leg.submitted = true;
+  leg.state = LegState::kRunning;
   leg.started = std::chrono::steady_clock::now();
   try {
     coordinator_.submit(payload, leg.stage_name);
@@ -867,8 +1027,11 @@ void UnifiedEngine::start_outputs_locked(const std::string& request_id,
                                          Record& record) {
   record.phase = Phase::kOutputs;
   record.public_info.current_stage =
-      record.image_leg.enabled ? kImageStageId : kTtsStageId;
+      record.image_leg.enabled   ? kImageStageId
+      : record.video_leg.enabled ? kVideoStageId
+                                 : kTtsStageId;
   if (record.image_leg.enabled) start_image_locked(request_id, record);
+  if (record.video_leg.enabled) start_video_locked(request_id, record);
   if (record.tts_enabled) {
     if (record.tts_stream) {
       flush_sentences_locked(request_id, record);
@@ -925,10 +1088,24 @@ void UnifiedEngine::collect_tts_aborts_locked(
     const Record& record, const char* reason,
     std::vector<std::pair<std::string, const char*>>& out) {
   for (const OutputLeg& leg : record.tts_legs) {
-    if (leg.submitted && leg.state.empty()) {
+    if (leg.submitted && leg.state == LegState::kRunning) {
       out.emplace_back(leg.child_id, reason);
     }
   }
+}
+
+void UnifiedEngine::collect_output_aborts_locked(
+    const Record& record, const char* reason,
+    std::vector<std::pair<std::string, const char*>>& out) {
+  if (record.image_leg.submitted &&
+      record.image_leg.state == LegState::kRunning) {
+    out.emplace_back(record.image_leg.child_id, reason);
+  }
+  if (record.video_leg.submitted &&
+      record.video_leg.state == LegState::kRunning) {
+    out.emplace_back(record.video_leg.child_id, reason);
+  }
+  collect_tts_aborts_locked(record, reason, out);
 }
 
 void UnifiedEngine::emit_artifact_locked(const std::string& request_id,
@@ -949,26 +1126,31 @@ void UnifiedEngine::settle_output_leg_locked(
   const bool aborted_for_limit =
       kind == UnifiedEvent::Kind::kCancelled && !record.cancel_requested &&
       record.tts_failed;
-  leg.state = kind == UnifiedEvent::Kind::kComplete ? "completed"
+  leg.state = kind == UnifiedEvent::Kind::kComplete ? LegState::kCompleted
             : (kind == UnifiedEvent::Kind::kCancelled && !aborted_for_limit)
-                ? "aborted"
-                : "failed";
+                ? LegState::kAborted
+                : LegState::kFailed;
   if (aborted_for_limit && !record.tts_error.empty()) {
     error = record.tts_error;
   }
   leg.error = error;
   {
     const double ms = ms_since(leg.started);
-    const bool is_tts = leg.stage_id == kTtsStageId;
-    if (is_tts) record.tts_ms = ms;
-    else record.image_ms = ms;
-    const char* leg_name = is_tts ? "tts" : "image";
-    obs::Metrics::instance().leg(leg_name, record.request_type, leg.state,
-                                 ms / 1000.0);
-    obs::Metrics::instance().trace_leg(request_id, leg_name, leg.state, ms);
+    const char* leg_name = leg.stage_id.c_str();
+    if (leg.stage_id == kTtsStageId) {
+      record.tts_ms = ms;
+    } else if (leg.stage_id == kVideoStageId) {
+      record.video_ms = ms;
+    } else {
+      record.image_ms = ms;
+    }
+    obs::Metrics::instance().leg(leg_name, record.request_type,
+                                 to_string(leg.state), ms / 1000.0);
+    obs::Metrics::instance().trace_leg(request_id, leg_name,
+                                       to_string(leg.state), ms);
   }
   if (kind != UnifiedEvent::Kind::kComplete) {
-    if (leg.stage_id == kTtsStageId) {
+    if (leg.stage_id == kTtsStageId && leg.state == LegState::kFailed) {
       record.tts_failed = true;
       if (record.tts_error.empty()) record.tts_error = error;
     }
@@ -993,7 +1175,7 @@ Value UnifiedEngine::legs_value_locked(const Record& record) const {
     if (!leg.enabled) return;
     Value::Map item;
     item["stage"] = Value(leg.stage_id);
-    item["state"] = Value(leg.state);
+    item["state"] = Value(to_string(leg.state));
     if (!leg.error.empty()) item["error"] = Value(leg.error);
     legs.push_back(Value(std::move(item)));
   };
@@ -1003,7 +1185,7 @@ Value UnifiedEngine::legs_value_locked(const Record& record) const {
     item["stage"] = Value(kTtsStageId);
     bool all_aborted = !record.tts_legs.empty();
     for (const OutputLeg& leg : record.tts_legs) {
-      if (leg.state != "aborted") all_aborted = false;
+      if (leg.state != LegState::kAborted) all_aborted = false;
     }
     item["state"] = Value(record.tts_failed ? "failed"
                         : all_aborted       ? "aborted"
@@ -1013,6 +1195,7 @@ Value UnifiedEngine::legs_value_locked(const Record& record) const {
     }
     legs.push_back(Value(std::move(item)));
   }
+  add(record.video_leg);
   return Value(std::move(legs));
 }
 

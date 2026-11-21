@@ -2,7 +2,9 @@
 // OpenAI-compatible HTTP surface.
 //
 // Served routes: health, ready, models, chat completions, audio
-// transcriptions, and abort. /v1/audio/speech answers 501. Realtime uses a
+// transcriptions, audio speech, and abort. /v1/audio/speech submits one text
+// to the TTS stage the unified engine already registered and answers wav or
+// pcm bytes; it answers 501 when no TTS stage is registered. Realtime uses a
 // separate WebSocket route.
 //
 // The surface accepts only behavior this server implements. Unsupported

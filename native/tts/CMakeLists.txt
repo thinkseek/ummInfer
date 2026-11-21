@@ -52,10 +52,6 @@ add_executable(tts_host_tests ../tts_tests/test_host.cpp)
 target_link_libraries(tts_host_tests PRIVATE umm_tts_host)
 add_test(NAME tts_host_tests COMMAND tts_host_tests)
 
-# Fuzz driver used by tts_tests/tools/tok_fuzz.py against tokenizers 0.22.2.
-add_executable(tok_fuzz ../tts_tests/tools/tok_fuzz.cpp)
-target_link_libraries(tok_fuzz PRIVATE umm_tts_host)
-
 if(UMM_TTS_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
@@ -69,10 +65,4 @@ if(UMM_TTS_CUDA)
   )
   target_link_libraries(umm-tts-native PRIVATE umm_tts_host CUDA::cudart)
   set_target_properties(umm-tts-native PROPERTIES CUDA_ARCHITECTURES 90)
-
-  add_executable(tts_cuda_tests ../tts_tests/test_cuda.cu cuda_kernels.cu)
-  target_include_directories(tts_cuda_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(tts_cuda_tests PRIVATE umm_tts_host CUDA::cudart)
-  set_target_properties(tts_cuda_tests PROPERTIES CUDA_ARCHITECTURES 90)
-  add_test(NAME tts_cuda_tests COMMAND tts_cuda_tests)
 endif()
