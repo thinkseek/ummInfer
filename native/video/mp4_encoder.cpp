@@ -193,7 +193,8 @@ std::string encode_rgb24_frames_mp4(
     argv.push_back(nullptr);
     ::execvp(ffmpeg_bin.c_str(), argv.data());
     const char* msg = "execvp(ffmpeg) failed\n";
-    (void)::write(STDERR_FILENO, msg, std::strlen(msg));
+    const ssize_t ignored = ::write(STDERR_FILENO, msg, std::strlen(msg));
+    (void)ignored;
     ::_exit(127);
   }
 

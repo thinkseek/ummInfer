@@ -32,6 +32,12 @@ __global__ void latent_denorm_f32_kernel(float* latents, const float* mean,
   }
 }
 
+__device__ __forceinline__ uint8_t float_n1p1_to_u8(float v) {
+  const float clamped = fminf(1.0f, fmaxf(-1.0f, v));
+  const float scaled = (clamped * 0.5f + 0.5f) * 255.0f;
+  return static_cast<uint8_t>(rintf(scaled));
+}
+
 __global__ void frames_n1p1_to_rgb24_kernel(const float* frames_tchw,
                                             uint8_t* rgb24_out, int num_frames,
                                             int height, int width) {
@@ -49,16 +55,10 @@ __global__ void frames_n1p1_to_rgb24_kernel(const float* frames_tchw,
   const float g = frames_tchw[frame_base + 1u * hw + pix];
   const float b = frames_tchw[frame_base + 2u * hw + pix];
 
-  auto to_u8 = [] __device__(float v) -> uint8_t {
-    const float clamped = fminf(1.0f, fmaxf(-1.0f, v));
-    const float scaled = (clamped * 0.5f + 0.5f) * 255.0f;
-    return static_cast<uint8_t>(rintf(scaled));
-  };
-
   const size_t out_base = idx * 3u;
-  rgb24_out[out_base + 0u] = to_u8(r);
-  rgb24_out[out_base + 1u] = to_u8(g);
-  rgb24_out[out_base + 2u] = to_u8(b);
+  rgb24_out[out_base + 0u] = float_n1p1_to_u8(r);
+  rgb24_out[out_base + 1u] = float_n1p1_to_u8(g);
+  rgb24_out[out_base + 2u] = float_n1p1_to_u8(b);
 }
 
 }  // namespace

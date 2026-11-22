@@ -177,13 +177,37 @@ def terminate_proc(proc: subprocess.Popen, name: str):
         raise RuntimeError(f"{name} did not exit cleanly on SIGTERM")
 
 
-def run_contract(server_bin: Path, stage_bin: Path):
+def run_contract(
+    server_bin: Path,
+    stage_bin: Path,
+    video_backend: str = "contract-stub",
+    gpu: int = 0,
+    model_dir: Path | None = None,
+    size: str = "160x128",
+    fps: int = 8,
+    steps: int = 8,
+    step_delay_ms: int = 120,
+):
+    expected_backend_tag = (
+        "native-cuda-scaffold"
+        if video_backend in ("cuda-scaffold", "cuda_scaffold")
+        else "native-cpp-contract-stub"
+    )
+    evidence_class = (
+        "real-gpu-cuda-scaffold-test"
+        if expected_backend_tag == "native-cuda-scaffold"
+        else "offline-contract-test"
+    )
+    expected_w, expected_h = [int(x) for x in size.lower().split("x")]
     with tempfile.TemporaryDirectory(prefix="umminfer-native-video-") as tmp_str:
         tmp = Path(tmp_str)
-        model_dir = tmp / "Wan2.2-TI2V-5B-manifest"
-        model_dir.mkdir(parents=True)
-        (model_dir / "model_index.json").write_text(
-            json.dumps({"_class_name": "WanPipeline"}), encoding="utf-8")
+        if model_dir is not None:
+            resolved_model_dir = model_dir
+        else:
+            resolved_model_dir = tmp / "Wan2.2-TI2V-5B-manifest"
+            resolved_model_dir.mkdir(parents=True)
+            (resolved_model_dir / "model_index.json").write_text(
+                json.dumps({"_class_name": "WanPipeline"}), encoding="utf-8")
 
         ipc_dir = tmp / "ipc"
         ipc_dir.mkdir(mode=0o700)
@@ -193,22 +217,23 @@ def run_contract(server_bin: Path, stage_bin: Path):
         comp_ep = f"ipc://{ipc_dir}/completion"
         abort_ep = f"ipc://{ipc_dir}/abort"
 
-        # 1) Safety gate: default --video-backend cuda must fail loudly on host build.
+        # 1) Safety gate: default --video-backend cuda must fail loudly.
         gate = subprocess.run(
             [
                 str(stage_bin),
                 "--kind", "video",
-                "--model", str(model_dir),
+                "--model", str(resolved_model_dir),
+                "--gpu", str(gpu),
                 "--recv-endpoint", video_ep,
                 "--coordinator-endpoint", comp_ep,
                 "--abort-endpoint", abort_ep,
             ],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=15,
         )
         if gate.returncode == 0:
-            raise RuntimeError("expected default --video-backend cuda to refuse non-CUDA execution")
+            raise RuntimeError("expected default --video-backend cuda to refuse silent fallback")
 
         port = free_port()
         base_url = f"http://127.0.0.1:{port}"
@@ -270,12 +295,13 @@ def run_contract(server_bin: Path, stage_bin: Path):
                     str(stage_bin),
                     "--kind", "video",
                     "--name", "video",
-                    "--model", str(model_dir),
-                    "--video-backend", "contract-stub",
-                    "--size", "160x128",
-                    "--fps", "8",
-                    "--steps", "8",
-                    "--step-delay-ms", "120",
+                    "--model", str(resolved_model_dir),
+                    "--gpu", str(gpu),
+                    "--video-backend", video_backend,
+                    "--size", size,
+                    "--fps", str(fps),
+                    "--steps", str(steps),
+                    "--step-delay-ms", str(step_delay_ms),
                     "--recv-endpoint", video_ep,
                     "--coordinator-endpoint", comp_ep,
                     "--abort-endpoint", abort_ep,
@@ -315,9 +341,9 @@ def run_contract(server_bin: Path, stage_bin: Path):
                         "messages": [{"role": "user", "content": "Describe a calm pond."}],
                         "video": {
                             "prompt": "A paper boat floating on a calm pond",
-                            "size": "160x128",
+                            "size": size,
                             "seconds": 1,
-                            "fps": 8,
+                            "fps": fps,
                             "seed": 20261122,
                             "output_format": "mp4",
                         },
@@ -340,7 +366,8 @@ def run_contract(server_bin: Path, stage_bin: Path):
                 vleg = next(l for l in terminal["legs"] if l["stage"] == "video")
                 assert vleg["state"] == "completed", f"video leg not completed: {vleg}"
                 assert artifact_meta is not None
-                assert artifact_meta["backend"] == "native-cpp-contract-stub"
+                assert artifact_meta["backend"] == expected_backend_tag, (
+                    f"expected backend {expected_backend_tag}, got {artifact_meta['backend']}")
                 mp4_bytes = b"".join(chunks[i] for i in range(int(artifact_meta["total"])))
                 assert len(mp4_bytes) >= 12 and mp4_bytes[4:8] == b"ftyp"
                 mp4_sha = hashlib.sha256(mp4_bytes).hexdigest()
@@ -350,8 +377,10 @@ def run_contract(server_bin: Path, stage_bin: Path):
                 probe = ffprobe_mp4(mp4_path)
                 vstream = next(s for s in probe["streams"] if s["codec_type"] == "video")
                 assert vstream["codec_name"] == "h264"
-                assert int(vstream["width"]) == 160 and int(vstream["height"]) == 128
-                assert int(vstream["nb_frames"]) == 5  # align_video_frames(1, 8, 81, 4) == 5
+                assert int(vstream["width"]) == expected_w and int(vstream["height"]) == expected_h
+                expected_frames = max(5, ((max(5, fps) - 1) // 4) * 4 + 1)
+                assert int(vstream["nb_frames"]) == expected_frames, (
+                    f"expected {expected_frames} frames, got {vstream['nb_frames']}")
                 wait_for_in_flight_zero(base_url)
 
                 # 3) Mid-generation /abort path (wrong session 403 -> matching session 200)
@@ -473,8 +502,11 @@ def run_contract(server_bin: Path, stage_bin: Path):
                 )
 
                 summary = {
-                    "evidence_class": "offline-contract-test",
-                    "backend": "native-cpp-contract-stub",
+                    "evidence_class": evidence_class,
+                    "backend": expected_backend_tag,
+                    "gpu": gpu,
+                    "model_dir": str(resolved_model_dir),
+                    "cuda_default_gate_rejected": True,
                     "completed": {
                         "request_id": gen_req_id,
                         "mp4_bytes": len(mp4_bytes),
@@ -482,11 +514,14 @@ def run_contract(server_bin: Path, stage_bin: Path):
                         "codec": vstream["codec_name"],
                         "size": f"{vstream['width']}x{vstream['height']}",
                         "frames": int(vstream["nb_frames"]),
+                        "r_frame_rate": vstream.get("r_frame_rate"),
+                        "duration": probe.get("format", {}).get("duration"),
                     },
                     "cancelled": {
                         "request_id": cancel_req_id,
                         "abort_wrong_session": abort_info["wrong"],
                         "abort_matching_session": abort_info["ok"],
+                        "stage_abort_logged": True,
                     },
                     "failed": {
                         "request_id": fail_req_id,
@@ -507,8 +542,26 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server-bin", type=Path, required=True)
     parser.add_argument("--stage-bin", type=Path, required=True)
+    parser.add_argument("--video-backend", default="contract-stub",
+                        choices=["contract-stub", "cuda-scaffold"])
+    parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--model-dir", type=Path, default=None)
+    parser.add_argument("--size", default="160x128")
+    parser.add_argument("--fps", type=int, default=8)
+    parser.add_argument("--steps", type=int, default=8)
+    parser.add_argument("--step-delay-ms", type=int, default=120)
     args = parser.parse_args()
-    run_contract(args.server_bin, args.stage_bin)
+    run_contract(
+        args.server_bin,
+        args.stage_bin,
+        video_backend=args.video_backend,
+        gpu=args.gpu,
+        model_dir=args.model_dir,
+        size=args.size,
+        fps=args.fps,
+        steps=args.steps,
+        step_delay_ms=args.step_delay_ms,
+    )
 
 
 if __name__ == "__main__":
