@@ -75,10 +75,32 @@ add_executable(tts_tail_trim_test
 target_include_directories(tts_tail_trim_test PRIVATE ${NATIVE_DIR}/tts)
 add_test(NAME tts_tail_trim_test COMMAND tts_tail_trim_test)
 
+add_executable(stage_video_common_test
+  video_stage_common_test.cpp
+)
+target_link_libraries(stage_video_common_test PRIVATE umm_stage_common)
+add_test(NAME stage_video_common_test COMMAND stage_video_common_test)
+
+# ---- Video (host contract-stub always available; CUDA kernels when UMM_STAGE_CUDA=ON) ----
+add_executable(umm-native-stage-video
+  main.cpp video_stage.cpp
+  ${NATIVE_DIR}/video/config.cpp
+  ${NATIVE_DIR}/video/scheduler.cpp
+  ${NATIVE_DIR}/video/mp4_encoder.cpp
+  ${NATIVE_DIR}/video/engine.cpp
+)
+target_include_directories(umm-native-stage-video PRIVATE ${NATIVE_DIR})
+target_link_libraries(umm-native-stage-video PRIVATE umm_stage_common)
+
 
 if(UMM_STAGE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
+
+  target_sources(umm-native-stage-video PRIVATE ${NATIVE_DIR}/video/cuda_kernels.cu)
+  target_compile_definitions(umm-native-stage-video PRIVATE UMM_VIDEO_CUDA=1)
+  target_link_libraries(umm-native-stage-video PRIVATE CUDA::cudart)
+  set_target_properties(umm-native-stage-video PROPERTIES CUDA_ARCHITECTURES 90)
 
   # ---- ASR ----
   add_executable(umm-native-stage-asr
