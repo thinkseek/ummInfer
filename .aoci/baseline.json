@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-22T04:42:41Z",
+  "updated_at": "2026-11-22T12:03:20Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "14041cb088da9bffb3a2afef8c36464fca49edeb7c8b265aeb563af550fbfbd0",
+      "sha256": "2686fd3a2b7602487014ea1257b244ab50b1491bcfe1fa19d92b9bf94cf076fd",
       "size": 178716,
-      "normalized_sha256": "14041cb088da9bffb3a2afef8c36464fca49edeb7c8b265aeb563af550fbfbd0"
+      "normalized_sha256": "2686fd3a2b7602487014ea1257b244ab50b1491bcfe1fa19d92b9bf94cf076fd"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -335,9 +335,9 @@
     },
     "docs/index.html": {
       "role": "index",
-      "sha256": "cf45c98543f978f431a12e2e0d2fc14eb6535f4b5530acfbbda994dbf472a879",
-      "size": 11887,
-      "normalized_sha256": "cf45c98543f978f431a12e2e0d2fc14eb6535f4b5530acfbbda994dbf472a879"
+      "sha256": "8cdc6985957f26510bb20aebf2240157c89d7e27b3a886a134e8a3254ab4ea7e",
+      "size": 11874,
+      "normalized_sha256": "8cdc6985957f26510bb20aebf2240157c89d7e27b3a886a134e8a3254ab4ea7e"
     },
     "docs/joint-optimization.md": {
       "role": "index",
