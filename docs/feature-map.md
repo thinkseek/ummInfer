@@ -1,8 +1,8 @@
 # ummInfer 功能映射
 
-基线 commit `6b19d93add2da3159669e1cedf7d00aec19a5874`（继承原 `ccf9b64` 的 130 行代码映射并新增原生 C++/CUDA 视频 Stage 最小垂直切片、CMake/ctest 构建与离线/GPU `cuda-scaffold` 端到端契约回归，共 133 行代码映射）。下表全部 `文件:行号` 在 `6b19d93` 下已逐条校验有效；之后任何代码提交都可能使行号漂移。
+基线 commit `26362cd1190c1ca9dd2316b77cf57ea7b4910f55`（合入脱敏重构、控制面 P2 修复与第 1–8 节离线/SM90 验证，共 136 行代码映射）。下表全部 `文件:行号` 在 `26362cd` 下已逐条校验有效；之后任何代码提交都可能使行号漂移。
 
-校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show 6b19d93:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
+校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show 26362cd:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
 
 > **单一事实源原则**：本文件是 `ummInfer` 唯一的功能映射与能力状态台账（与 `aoci.txt` / `aoci.code.txt` 协同维护），**不新增第二套功能清单、并行表格或重复跟踪系统**。
 
