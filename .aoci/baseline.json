@@ -327,7 +327,7 @@
       "size": 13746,
       "normalized_sha256": "9834415c01b978636328a6397e26c1adc3a9790f673c82f4dcfb67bd765143f7"
     },
-    "docs/h20b-service.md": {
+    "docs/native-service.md": {
       "role": "index",
       "sha256": "dc2bc60d576823bcc1ff3f62bac839ba606cafb127cddf822037f01a7ae9e29e",
       "size": 8647,
@@ -1671,13 +1671,13 @@
       "size": 3813,
       "normalized_sha256": "333f1db8fc73dbefb571b9745cf0a5919ff01394defcf4a74c8d39fee14f28ac"
     },
-    "service/h20b-native-service.sh": {
+    "service/native-service.sh": {
       "role": "index",
       "sha256": "3f7f82d0c9b4315df366c3d372e781113bc94ed453a0284187ca37813f6a42ba",
       "size": 5869,
       "normalized_sha256": "3f7f82d0c9b4315df366c3d372e781113bc94ed453a0284187ca37813f6a42ba"
     },
-    "service/h20b-service.json": {
+    "service/native-service.json": {
       "role": "index",
       "sha256": "0ebba0c17c2ad296c8327947a861b79bd3cae7986393f245bc61b420070b49ed",
       "size": 1511,
@@ -1911,7 +1911,7 @@
       "size": 14094,
       "normalized_sha256": "450d7f633fd8a5690762fe7a6045c79468c1bb8d60aa569bfb6d189cfb6572ee"
     },
-    "tests/h20b_service_live.py": {
+    "tests/native_service_live.py": {
       "role": "observe",
       "sha256": "ea2c473f6a8b1a3c0e1f997dfeb8690ecfa169eb4e783d637c09d3f09bb96ef9",
       "size": 11119,

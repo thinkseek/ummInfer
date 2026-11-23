@@ -115,17 +115,17 @@ flowchart TB
 > - **P1**：`UnifiedEngine::settle_output_leg_locked` 取消 TTS leg 误报 `failed` 修复与回归测试（`src/pipeline/unified.cpp`、`tests/unified_contract_test.cpp`，已做 Red/Green 验证）；
 > - **P1**：`UnifiedEngine::handle_stream` 中 `drain_sentences_locked` 流式 TTS 句切分提交异常边界保护与回归测试（`src/pipeline/unified.cpp`、`tests/unified_contract_test.cpp`，已做 Red/Green 验证）；
 > - **P1**：恢复 `native/{omni,tts,image,image2}` CPU host 单元测试并删除 `CMakeLists.txt` 中指向已删除测试/工具的失效 target（已做 Red/Green 验证）；
+> - **P2**：`RealtimeApi::drain_unified` 移除 `http-` 前缀硬编码耦合，改为显式 `unified_owned_` 所有权集合追踪（`src/serve/realtime_api.cpp`）；
+> - **P2**：对齐 HTTP 边界与 `unified_schema` 校验规则（统一单 text part 与 `image.output_format=png` 约束，`src/serve/openai_api.cpp`、`src/pipeline/unified_schema.cpp`）；
+> - **P2**：补齐 `UnifiedEngine` 取消竞态 `record_primary_leg("aborted")` 记账与 `release()` 非终态 `unified_admission` 指标刷新及回归测试（`src/pipeline/unified.cpp`、`tests/unified_contract_test.cpp`）；
 > - **P3**：移除私有死代码 `UnifiedEngine::SessionTurn`（`include/umminfer/pipeline/unified.hpp`）。
 
 剩余未在当前范围改动的架构与整洁性债务（后续优先级见 [docs/roadmap.md#next-priorities](roadmap.md#next-priorities)）：
 
-- **P2 · `request_id` 命名空间与前缀硬编码耦合**：非流式 chat 由 `Coordinator` 分配 `req-N`（`src/pipeline/pipeline.cpp:748`），流式 chat 由 `OpenAIApi` 分配 `http-N`（`src/serve/openai_api.cpp:1532`），`RealtimeApi` 分配 `realtime-N`（`src/serve/realtime_api.cpp:428`）；`RealtimeApi::drain_unified`（`src/serve/realtime_api.cpp:1084`）依赖 `request_id.rfind("http-", 0) != 0` 避免误释放 HTTP 请求。
-- **P2 · HTTP 边界与 `unified_schema` 校验分叉**：`src/serve/openai_api.cpp:309,346` 限制统一 chat 最多 1 个 text part，`src/pipeline/unified_schema.cpp:105-139` 不限制；`src/serve/openai_api.cpp:447` 允许 `image.output_format="jpeg"`，而原生 `image_stage` 仅产出 PNG。
-- **P2 · 指标记账小缺口**：`src/pipeline/unified.cpp:706-709` 取消竞态完成分支未调 `record_primary_leg("aborted")`；`src/pipeline/unified.cpp:331-339` 在 `release()` 移除未终态记录时未刷新 `unified_admission` 队列深度指标。
-- **P3 · 元数据透传与未来多格式扩展性**：`src/pipeline/unified.cpp:918-919`（`emit_tts_chunk_locked`）当前写入固定的 `sample_rate=24000`、`channels=1`；现有原生路径（`native/stage_cli/tts_stage.cpp`、`stage_common.cpp`）本身也仅产生与接受该格式，当前无输出错误，后续接入多采样率/多声道 TTS 后端时再改为从 chunk 元数据透传。
+- **P3 · 元数据透传与未来多格式扩展性**：`src/pipeline/unified.cpp`（`emit_tts_chunk_locked`）当前写入固定的 `sample_rate=24000`、`channels=1`；现有原生路径（`native/stage_cli/tts_stage.cpp`、`stage_common.cpp`）本身也仅产生与接受该格式，当前无输出错误，后续接入多采样率/多声道 TTS 后端时再改为从 chunk 元数据透传。
 - **P3 · 有意保留项与测试覆盖边界**：
   - `include/umminfer/pipeline/unified.hpp:214-224` 两组等价公开访问器（`image_output_enabled`/`image_enabled`、`tts_output_enabled`/`tts_enabled`）为保持公开头文件兼容而保留；
   - `native/{omni,qwen38}/{stb_image.h,unicode_ranges.hpp}` 仅为 2~3 行 `#include "../common/..."` 转发壳，为兼容各引擎独立 include 路径而保留；
   - `src/proto/messages.cpp:40-81` 的旧版 `DataRef.header` 宽松 Base64 解码器接受无填充（如 `Zg`）与非规范尾位输入，为保持对旧发送端的公开协议兼容而保留，未替换为严格的 `util::base64_decode`；
   - `src/main.cpp:154` 与 `native/stage_cli/main.cpp:43` 的 15 行 `ensure_ipc_parent` 位于两个独立可执行文件入口，避免为少量代码引入额外公共头耦合；
-  - `SimpleScheduler` 批处理/墓碑、流式 TTS 句切分与字节上限中止、跨会话 `cancel_for_session` 403 及 `/v1/audio/speech` 控制面契约均已在 `tests/unified_contract_test.cpp` 覆盖；真实 TTS Stage 与 SM90 GPU 端到端验证仍为 `NOT_RUN`。
+  - `SimpleScheduler` 批处理/墓碑、流式 TTS 句切分与字节上限中止、跨会话 `cancel_for_session` 403、`/v1/models`、`--web-root`、上游媒体代理、控制面消息解析、`EnergyVad`、`umminfer_service.py` 守护进程、CLI `image`/`video`、macOS `Theme` 与 Web UI 均已有离线自动化回归；`/v1/audio/speech` 已完成 Linux SM90 GPU 真实 `umm-native-stage-tts` 端到端实测（WAV/PCM 均 200 且非静音）。

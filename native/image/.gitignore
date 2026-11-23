@@ -1,4 +1,4 @@
-# Build artifacts (local and on H20B)
+# Build artifacts (local and remote CUDA host)
 build/
 cuda-build/
 *.o
