@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -67,9 +68,17 @@ class TtsEngine {
 // True when the chunks a stream sink received, concatenated in order, equal
 // the waveform the same synthesize call returned. `first_diff` receives the
 // index of the first unequal sample, or the common length when one vector is a
-// prefix of the other.
-bool stream_matches(const std::vector<float>& streamed,
-                    const std::vector<float>& terminal,
-                    size_t* first_diff = nullptr);
+// prefix of the other. Host-only and inline so the host tests can check it
+// without the CUDA engine.
+inline bool stream_matches(const std::vector<float>& streamed,
+                           const std::vector<float>& terminal,
+                           size_t* first_diff = nullptr) {
+  size_t i = 0;
+  const size_t common = streamed.size() < terminal.size() ? streamed.size()
+                                                          : terminal.size();
+  while (i < common && streamed[i] == terminal[i]) ++i;
+  if (first_diff != nullptr) *first_diff = i;
+  return streamed.size() == terminal.size() && i == common;
+}
 
 }  // namespace umminfer::native

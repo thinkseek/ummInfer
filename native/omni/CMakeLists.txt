@@ -20,6 +20,7 @@ add_library(umm_omni_host STATIC
   ${OMNI_DIR}/safetensors_mmap.cpp
   ${OMNI_DIR}/image_preprocess.cpp
   ${OMNI_DIR}/tokenizer.cpp
+  ${OMNI_DIR}/mrope.cpp
 )
 target_include_directories(umm_omni_host PUBLIC ${OMNI_DIR}/..)
 find_package(nlohmann_json QUIET)

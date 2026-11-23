@@ -5,6 +5,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <cstring>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -44,7 +46,37 @@ int main() {
     RgbaImage img(3, 2);
     for (size_t i = 0; i < img.rgba.size(); ++i) img.rgba[i] = static_cast<uint8_t>(i * 7);
     const std::string png = encode_png(img);
-    check(png.size() > 8 && static_cast<unsigned char>(png[1]) == 'P', "png signature");
+    // Full chunk walk: signature, IHDR fields, IDAT present, IEND last.
+    static const unsigned char kSig[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+    check(png.size() > 40 &&
+              std::memcmp(png.data(), kSig, sizeof(kSig)) == 0,
+          "png signature");
+    check(png.compare(12, 4, "IHDR") == 0, "png IHDR first");
+    const auto be32 = [&](size_t off) {
+      return (static_cast<uint32_t>(static_cast<unsigned char>(png[off])) << 24) |
+             (static_cast<uint32_t>(static_cast<unsigned char>(png[off + 1])) << 16) |
+             (static_cast<uint32_t>(static_cast<unsigned char>(png[off + 2])) << 8) |
+             static_cast<uint32_t>(static_cast<unsigned char>(png[off + 3]));
+    };
+    check(be32(8) == 13, "png IHDR length");
+    check(be32(16) == 3 && be32(20) == 2, "png IHDR dimensions");
+    check(static_cast<unsigned char>(png[24]) == 8 &&
+              static_cast<unsigned char>(png[25]) == 6,
+          "png IHDR 8-bit RGBA");
+    bool saw_idat = false, saw_iend = false;
+    size_t pos = 8;
+    while (pos + 12 <= png.size()) {
+      const uint32_t len = be32(pos);
+      const std::string type = png.substr(pos + 4, 4);
+      if (type == "IDAT") saw_idat = true;
+      if (type == "IEND") {
+        saw_iend = true;
+        check(len == 0 && pos + 12 == png.size(), "png IEND is last and empty");
+      }
+      pos += 12 + len;
+    }
+    check(saw_idat, "png has IDAT");
+    check(saw_iend, "png has IEND");
 
     // [-1,1] -> [0,255]: -1 -> 0, 1 -> 255, 0 -> 128 (round half to even).
     float px[4] = {-1.0f, 0.0f, 1.0f, 0.0f};

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Assert-based host tests for the native omni slice. No GPU, no framework.
-// Golden data under golden/ is downloaded from the H20B reference and is not
-// committed; tests needing it skip cleanly when the directory is absent.
+// Golden data under golden/ is downloaded from the Linux SM90 GPU reference and
+// is not committed; tests needing it skip cleanly when the directory is absent.
 #include "omni/image_preprocess.hpp"
+#include "omni/mrope.hpp"
 #include "omni/tokenizer.hpp"
 
 #include <cmath>
@@ -102,6 +103,79 @@ void test_smart_resize() {
     threw = true;
   }
   check(threw, "smart_resize rejects aspect ratio > 200");
+}
+
+void test_preprocess_rgb_normalization() {
+  using umminfer::omni::preprocess_rgb;
+  // 32x32 frame: already a multiple of 32, so resize is identity.
+  std::vector<uint8_t> white(32 * 32 * 3, 255);
+  const auto img = preprocess_rgb(white.data(), 32, 32, 1024, 12845056);
+  check(img.grid_t == 1 && img.grid_h == 2 && img.grid_w == 2,
+        "preprocess_rgb white 32x32 grid [1,2,2]");
+  check(img.resized_h == 32 && img.resized_w == 32,
+        "preprocess_rgb keeps the aligned 32x32 source");
+  check(img.rows() == 4 && img.pixel_values.size() == 4u * 1536u,
+        "preprocess_rgb white rows and element count");
+  bool all_one = true;
+  for (float v : img.pixel_values)
+    if (!std::isfinite(v) || std::fabs(v - 1.0f) > 1e-6f) all_one = false;
+  check(all_one, "white 255 normalizes to +1.0 (x/127.5 - 1)");
+
+  std::vector<uint8_t> black(32 * 32 * 3, 0);
+  const auto dark = preprocess_rgb(black.data(), 32, 32, 1024, 12845056);
+  bool all_minus_one = true;
+  for (float v : dark.pixel_values)
+    if (!std::isfinite(v) || std::fabs(v + 1.0f) > 1e-6f) all_minus_one = false;
+  check(all_minus_one, "black 0 normalizes to -1.0");
+
+  // Mid gray 128 is the neutral point: 128/127.5 - 1 = 0.00392.
+  std::vector<uint8_t> gray(32 * 32 * 3, 128);
+  const auto mid = preprocess_rgb(gray.data(), 32, 32, 1024, 12845056);
+  check(std::fabs(mid.pixel_values[0] - (128.0f / 127.5f - 1.0f)) < 1e-6f,
+        "gray 128 normalizes near zero");
+
+  // Channel order stays RGB: a pure red frame lights the C0 slab of every
+  // row and leaves C1/C2 at -1. Row layout is (c, temporal, py, px).
+  std::vector<uint8_t> red(32 * 32 * 3, 0);
+  for (size_t i = 0; i < red.size(); i += 3) red[i] = 255;
+  const auto rgb = preprocess_rgb(red.data(), 32, 32, 1024, 12845056);
+  bool channel_ok = true;
+  for (size_t r = 0; r < 4; ++r) {
+    const float* row = rgb.pixel_values.data() + r * 1536;
+    for (int i = 0; i < 512; ++i)
+      if (std::fabs(row[i] - 1.0f) > 1e-6f) channel_ok = false;
+    for (int i = 512; i < 1536; ++i)
+      if (std::fabs(row[i] + 1.0f) > 1e-6f) channel_ok = false;
+  }
+  check(channel_ok, "preprocess_rgb keeps RGB channel order");
+}
+
+void test_build_positions() {
+  using umminfer::omni::build_positions;
+  // Text-only prompt: t = h = w = index.
+  const std::vector<int> text = {10, 11, 12, 13};
+  const auto flat = build_positions(text, 151676, 151669, 151670, 0, 0, false);
+  check(flat.t == std::vector<int>({0, 1, 2, 3}), "mrope t text-only");
+  check(flat.h == flat.t && flat.w == flat.t, "mrope h/w text-only");
+  check(flat.next_pos == 4, "mrope next_pos text-only");
+
+  // Image prompt: 2 prefix tokens, four pads, two suffix tokens; a 4x4
+  // patch grid merges to 2x2 = 4 decoder pads.
+  const std::vector<int> ids = {1, 2, 7, 7, 7, 7, 3, 4};
+  const auto pos = build_positions(ids, 7, 151669, 151670, 4, 4, true);
+  check(pos.t == std::vector<int>({0, 1, 2, 2, 2, 2, 4, 5}),
+        "mrope t image region shares the first grid slot");
+  check(pos.h == std::vector<int>({0, 1, 2, 2, 3, 3, 4, 5}), "mrope h grid rows");
+  check(pos.w == std::vector<int>({0, 1, 2, 3, 2, 3, 4, 5}), "mrope w grid cols");
+  check(pos.next_pos == 6, "mrope next_pos leaves room for the full grid");
+
+  bool threw = false;
+  try {
+    (void)build_positions({1, 7, 7, 7, 2}, 7, 151669, 151670, 4, 4, true);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  check(threw, "mrope rejects a pad count that does not match the grid");
 }
 
 void test_preprocess_errors() {
@@ -282,6 +356,8 @@ int main(int argc, char** argv) {
   const std::string image_path = env_img ? env_img : "";
 
   test_smart_resize();
+  test_preprocess_rgb_normalization();
+  test_build_positions();
   test_preprocess_errors();
   test_image_golden(golden, image_path);
   test_tokenizer_synthetic(here);

@@ -30,6 +30,11 @@ else()
   endif()
 endif()
 
+enable_testing()
+add_executable(asr_host_tests umm_asr_native/test_host.cpp)
+target_link_libraries(asr_host_tests PRIVATE umm_asr_host)
+add_test(NAME asr_host_tests COMMAND asr_host_tests)
+
 if(UMM_ASR_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)

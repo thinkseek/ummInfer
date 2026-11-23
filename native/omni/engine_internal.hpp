@@ -10,6 +10,7 @@
 #include "bf16.hpp"
 #include "cuda_kernels_omni.hpp"
 #include "image_preprocess.hpp"
+#include "mrope.hpp"
 #include "omni_gemm.hpp"
 #include "omni_engine.hpp"
 #include "safetensors_mmap.hpp"
@@ -100,15 +101,6 @@ void vision_forward(const EngineWeights& w, EngineScratch& s,
 
 void text_layer(const EngineWeights& w, EngineScratch& s, int layer, int m,
                 int history);
-
-struct PositionIds {
-  std::vector<int> t, h, w;
-  int next_pos;
-};
-
-PositionIds build_positions(const std::vector<int>& ids, int image_pad_id,
-                            int vision_start_id, int vision_end_id,
-                            int grid_h, int grid_w, bool has_image);
 
 void build_text_rope_table(const int pos_t[], const int pos_h[],
                            const int pos_w[], int n, EngineScratch& s);

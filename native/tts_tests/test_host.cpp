@@ -4,6 +4,7 @@
 // as argv[1] (or UMM_TTS_TEST_DATA); it only needs vocab.json, merges.txt and
 // tokenizer_config.json.
 #include "bpe_tokenizer.hpp"
+#include "engine.hpp"
 #include "prompt.hpp"
 #include "safetensors.hpp"
 #include "wav_io.hpp"
@@ -11,6 +12,8 @@
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -76,6 +79,117 @@ static void test_tokenizer(const std::string& data_dir) {
   check_eq(tok.encode("  hi "), {220, 15588, 220}, "spaces");
   check_eq(tok.encode("a,b/c\nd"), {64, 8402, 2899, 198, 67}, "punct and newline");
   check_eq(tok.encode("abc ABC aB"), {13683, 19360, 264, 33}, "case split P");
+}
+
+// GPT-2 byte -> printable-unicode symbol, as UTF-8 (same table the tokenizer
+// builds internally). Kept local so the fixture needs no model weights.
+static std::string byte_symbol(int b) {
+  auto printable = [](int c) {
+    return (c >= 33 && c <= 126) || (c >= 161 && c <= 172) ||
+           (c >= 174 && c <= 255);
+  };
+  uint32_t cp;
+  if (printable(b)) {
+    cp = static_cast<uint32_t>(b);
+  } else {
+    int n = 0;
+    for (int x = 0; x < b; ++x)
+      if (!printable(x)) ++n;
+    cp = 256u + static_cast<uint32_t>(n);
+  }
+  std::string s;
+  if (cp < 0x80) {
+    s.push_back(static_cast<char>(cp));
+  } else if (cp < 0x800) {
+    s.push_back(static_cast<char>(0xc0 | (cp >> 6)));
+    s.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+  } else {
+    s.push_back(static_cast<char>(0xe0 | (cp >> 12)));
+    s.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3f)));
+    s.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+  }
+  return s;
+}
+
+// JSON string body for a symbol: quote, backslash and control bytes must be
+// escaped or the fixture is not valid JSON.
+static std::string json_escape(const std::string& s) {
+  std::string out;
+  for (unsigned char c : s) {
+    if (c == '"' || c == '\\') {
+      out.push_back('\\');
+      out.push_back(static_cast<char>(c));
+    } else if (c < 0x20) {
+      static const char* hex = "0123456789abcdef";
+      out += "\\u00";
+      out.push_back(hex[c >> 4]);
+      out.push_back(hex[c & 0xf]);
+    } else {
+      out.push_back(static_cast<char>(c));
+    }
+  }
+  return out;
+}
+
+// Synthetic vocab/merges/config so tokenizer coverage never depends on the
+// model data directory.
+static void test_tokenizer_synthetic() {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "umm_tts_tok_fixture";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+
+  // Byte 34 (") and byte 92 (\) are printable symbols and must be JSON-escaped.
+  auto json_str = [](const std::string& raw) {
+    return "\"" + json_escape(raw) + "\"";
+  };
+  std::string vocab = "{";
+  int next_id = 0;
+  for (int b = 0; b < 256; ++b) {
+    if (next_id) vocab += ",";
+    vocab += json_str(byte_symbol(b)) + ":" + std::to_string(next_id++);
+  }
+  const std::string merged = byte_symbol('a') + byte_symbol('b');
+  vocab += "," + json_str(merged) + ":" + std::to_string(next_id++) + "}";
+  {
+    std::ofstream f(dir / "vocab.json");
+    f << vocab;
+  }
+  {
+    std::ofstream f(dir / "merges.txt");
+    f << "#version: 0.2\n" << byte_symbol('a') << " " << byte_symbol('b') << "\n";
+  }
+  {
+    std::ofstream f(dir / "tokenizer_config.json");
+    f << R"({"added_tokens_decoder":{
+      "151644":{"content":"<|im_start|>","special":true},
+      "151645":{"content":"<|im_end|>","special":true},
+      "151671":{"content":"<tts_pad>","special":true}}})";
+  }
+
+  Qwen2BpeTokenizer tok(dir.string());
+  CHECK(tok.encode("ab") == std::vector<int>({256}));  // the one merge
+  CHECK(tok.encode("a") == std::vector<int>({97}));
+  CHECK(tok.encode("12") == std::vector<int>({49, 50}));  // digits never merge
+  CHECK(tok.encode("<|im_start|>ab<|im_end|>") ==
+        std::vector<int>({151644, 256, 151645}));  // specials stay atomic
+  CHECK(tok.encode("<tts_pad>") == std::vector<int>({151671}));
+  CHECK(tok.encode("").empty());
+  fs::remove_all(dir, ec);
+}
+
+static void test_stream_matches() {
+  using umminfer::native::stream_matches;
+  const std::vector<float> a = {0.0f, 0.5f, -0.5f, 1.0f};
+  size_t first_diff = 999;
+  CHECK(stream_matches(a, a, &first_diff) && first_diff == a.size());
+  std::vector<float> b = a;
+  b[2] = 0.25f;
+  CHECK(!stream_matches(a, b, &first_diff) && first_diff == 2);
+  std::vector<float> short_a(a.begin(), a.end() - 1);
+  CHECK(!stream_matches(short_a, a, &first_diff) && first_diff == short_a.size());
+  CHECK(stream_matches({}, {}, &first_diff) && first_diff == 0);
 }
 
 static void test_prompt() {
@@ -200,8 +314,10 @@ int main(int argc, char** argv) {
   if (!data_dir.empty()) {
     test_tokenizer(data_dir);
   } else {
-    std::cout << "SKIP test_tokenizer (no MODEL_DATA_DIR / UMM_TTS_TEST_DATA)\n";
+    std::cout << "SKIP test_tokenizer golden (no MODEL_DATA_DIR / UMM_TTS_TEST_DATA)\n";
   }
+  test_tokenizer_synthetic();
+  test_stream_matches();
   test_prompt();
   test_wav();
   test_safetensors();

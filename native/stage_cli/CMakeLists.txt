@@ -81,6 +81,12 @@ add_executable(stage_video_common_test
 target_link_libraries(stage_video_common_test PRIVATE umm_stage_common)
 add_test(NAME stage_video_common_test COMMAND stage_video_common_test)
 
+add_executable(stage_common_test
+  stage_common_test.cpp
+)
+target_link_libraries(stage_common_test PRIVATE umm_stage_common)
+add_test(NAME stage_common_test COMMAND stage_common_test)
+
 # ---- Video (host contract-stub always available; CUDA kernels when UMM_STAGE_CUDA=ON) ----
 add_executable(umm-native-stage-video
   main.cpp video_stage.cpp
@@ -120,6 +126,7 @@ if(UMM_STAGE_CUDA)
     ${NATIVE_DIR}/omni/safetensors_mmap.cpp
     ${NATIVE_DIR}/omni/image_preprocess.cpp
     ${NATIVE_DIR}/omni/tokenizer.cpp
+    ${NATIVE_DIR}/omni/mrope.cpp
     ${NATIVE_DIR}/omni/cuda_kernels_omni.cu
     ${NATIVE_DIR}/omni/omni_gemm.cu
     ${NATIVE_DIR}/omni/vision_forward.cu

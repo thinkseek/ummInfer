@@ -671,14 +671,4 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   return samples;
 }
 
-bool stream_matches(const std::vector<float>& streamed,
-                    const std::vector<float>& terminal,
-                    size_t* first_diff) {
-  size_t i = 0;
-  const size_t common = std::min(streamed.size(), terminal.size());
-  while (i < common && streamed[i] == terminal[i]) ++i;
-  if (first_diff != nullptr) *first_diff = i;
-  return streamed.size() == terminal.size() && i == common;
-}
-
 }  // namespace umminfer::native
