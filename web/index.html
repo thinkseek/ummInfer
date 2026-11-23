@@ -110,6 +110,7 @@
   }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
   .artifacts audio { border-radius: var(--r-control); }
+  .artifacts video { max-width: 100%; border-radius: var(--r-card); border: 1px solid var(--line); }
   .legs { font-size: var(--f-caption); color: var(--danger); }
 
   .wave { display: flex; align-items: flex-end; gap: 3px; height: 20px; }
@@ -468,6 +469,11 @@ function deliver(chunk, bytes) {
     audio.controls = true;
     audio.src = url;
     turn.artifacts.append(audio);
+  } else if (mime === 'video/mp4') {
+    const video = document.createElement('video');
+    video.controls = true;
+    video.src = url;
+    turn.artifacts.append(video);
   } else {
     const note = document.createElement('div');
     note.className = 'legs';
