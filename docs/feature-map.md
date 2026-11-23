@@ -1,8 +1,8 @@
 # ummInfer 功能映射
 
-基线 commit `02b7437a73a69e51a3e085e647dd623ae3ea33ec`（合入 Wave 2：Qwen3.8 PrefixCache+采样、非流式混合输出、原生 Wan2.2 3D-VAE 解码器与脚本/SM90 验证，共 140 行代码映射）。下表全部 `文件:行号` 在 `02b7437` 下已逐条校验有效；之后任何代码提交都可能使行号漂移。
+基线 commit `8e0b241ecee0c55d1f41439a6d8954b82c1edd28`（合入 Wave 2 及原生 Wan2.2 3D-VAE `2fb1758` 1 GiB `im2col` 显存收敛修复，共 140 行代码映射）。下表全部 `文件:行号` 在 `8e0b241` 下已逐条校验有效；之后任何代码提交都可能使行号漂移。
 
-校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show 02b7437:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
+校验：`python3 -I tools/check_feature_map.py`。脚本用 `git show 8e0b241:<path>` 读取基线 blob，逐条确认行号存在、非空，且反引号内符号确实出现在该行；「验证」列的路径与行号同样按基线 blob 校验。
 
 > **单一事实源原则**：本文件是 `ummInfer` 唯一的功能映射与能力状态台账（与 `aoci.txt` / `aoci.code.txt` 协同维护），**不新增第二套功能清单、并行表格或重复跟踪系统**。
 
