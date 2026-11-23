@@ -73,6 +73,23 @@ std::vector<int> expand_image_pads(std::vector<int> ids, int image_tokens) {
 
 const char* compiled_kind() { return "omni"; }
 
+const char* stage_usage_flags() {
+  return "[--max-new-tokens N] [--max-seq N] ";
+}
+
+bool parse_stage_flag(const std::string& key, const std::string& value,
+                      StageOptions& options) {
+  if (key == "max-new-tokens") {
+    options.max_new_tokens = parse_stage_int(value, "--max-new-tokens");
+    return true;
+  }
+  if (key == "max-seq") {
+    options.max_seq = parse_stage_int(value, "--max-seq");
+    return true;
+  }
+  return false;
+}
+
 CancellableComputeFn make_compute(const StageOptions& options) {
   const int max_new_tokens =
       options.max_new_tokens > 0 ? options.max_new_tokens : kDefaultMaxNewTokens;

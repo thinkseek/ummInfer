@@ -28,6 +28,17 @@ constexpr int kSampleRate = 24000;
 
 const char* compiled_kind() { return "tts"; }
 
+const char* stage_usage_flags() { return "[--max-frames N] "; }
+
+bool parse_stage_flag(const std::string& key, const std::string& value,
+                      StageOptions& options) {
+  if (key == "max-frames") {
+    options.max_frames = parse_stage_int(value, "--max-frames");
+    return true;
+  }
+  return false;
+}
+
 CancellableComputeFn make_compute(const StageOptions& options) {
   const int max_frames =
       options.max_frames > 0 ? options.max_frames : kDefaultMaxFrames;

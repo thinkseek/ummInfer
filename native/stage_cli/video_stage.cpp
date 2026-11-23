@@ -18,6 +18,49 @@ namespace umminfer::stage {
 
 const char* compiled_kind() { return "video"; }
 
+const char* stage_usage_flags() {
+  return "[--video-backend cuda|cuda-scaffold|contract-stub] [--size WxH] "
+         "[--fps N] [--max-seconds N] [--max-frames N] [--steps N] "
+         "[--step-delay-ms N] [--ffmpeg-bin PATH] ";
+}
+
+bool parse_stage_flag(const std::string& key, const std::string& value,
+                      StageOptions& options) {
+  if (key == "video-backend") {
+    options.video_backend = value;
+    return true;
+  }
+  if (key == "size") {
+    options.image_size = value;
+    return true;
+  }
+  if (key == "fps") {
+    options.video_fps = parse_stage_int(value, "--fps");
+    return true;
+  }
+  if (key == "max-seconds") {
+    options.video_max_seconds = parse_stage_int(value, "--max-seconds");
+    return true;
+  }
+  if (key == "max-frames") {
+    options.max_frames = parse_stage_int(value, "--max-frames");
+    return true;
+  }
+  if (key == "steps") {
+    options.steps = parse_stage_int(value, "--steps");
+    return true;
+  }
+  if (key == "step-delay-ms") {
+    options.video_step_delay_ms = parse_stage_int(value, "--step-delay-ms");
+    return true;
+  }
+  if (key == "ffmpeg-bin") {
+    options.ffmpeg_bin = value;
+    return true;
+  }
+  return false;
+}
+
 CancellableComputeFn make_compute(const StageOptions& options) {
   const video::VideoBackendMode mode =
       video::parse_video_backend_mode(options.video_backend);

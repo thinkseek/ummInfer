@@ -38,6 +38,27 @@ void require_model_paths(const std::string& model_dir, ImageBackend backend,
 
 const char* compiled_kind() { return "image"; }
 
+const char* stage_usage_flags() {
+  return "[--steps N] [--image-backend 2512|2.1] [--size WxH] ";
+}
+
+bool parse_stage_flag(const std::string& key, const std::string& value,
+                      StageOptions& options) {
+  if (key == "steps") {
+    options.steps = parse_stage_int(value, "--steps");
+    return true;
+  }
+  if (key == "image-backend") {
+    options.image_backend = value;
+    return true;
+  }
+  if (key == "size") {
+    options.image_size = value;
+    return true;
+  }
+  return false;
+}
+
 CancellableComputeFn make_compute(const StageOptions& options) {
   const ImageBackend backend = parse_image_backend(options.image_backend);
   if (!options.image_size.empty()) {

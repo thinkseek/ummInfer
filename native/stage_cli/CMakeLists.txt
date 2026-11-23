@@ -87,6 +87,20 @@ add_executable(stage_common_test
 target_link_libraries(stage_common_test PRIVATE umm_stage_common)
 add_test(NAME stage_common_test COMMAND stage_common_test)
 
+# Stage CLI hooks. Links video_stage.cpp, so the checks run against the same
+# parse_stage_flag the executable uses, on a host with no CUDA.
+add_executable(stage_flag_test
+  stage_flag_test.cpp
+  video_stage.cpp
+  ${NATIVE_DIR}/video/config.cpp
+  ${NATIVE_DIR}/video/scheduler.cpp
+  ${NATIVE_DIR}/video/mp4_encoder.cpp
+  ${NATIVE_DIR}/video/engine.cpp
+)
+target_include_directories(stage_flag_test PRIVATE ${NATIVE_DIR})
+target_link_libraries(stage_flag_test PRIVATE umm_stage_common)
+add_test(NAME stage_flag_test COMMAND stage_flag_test)
+
 # ---- Video (host contract-stub always available; CUDA kernels when UMM_STAGE_CUDA=ON) ----
 add_executable(umm-native-stage-video
   main.cpp video_stage.cpp
@@ -97,6 +111,16 @@ add_executable(umm-native-stage-video
 )
 target_include_directories(umm-native-stage-video PRIVATE ${NATIVE_DIR})
 target_link_libraries(umm-native-stage-video PRIVATE umm_stage_common)
+
+# Process-level checks: --help exits 0, and a flag of another stage exits
+# non-zero before any model load.
+add_test(NAME stage_video_help COMMAND umm-native-stage-video --help)
+add_test(NAME stage_video_rejects_image_backend
+  COMMAND umm-native-stage-video --kind video --image-backend 2512)
+add_test(NAME stage_video_rejects_batch_size
+  COMMAND umm-native-stage-video --kind video --batch-size 4)
+set_tests_properties(stage_video_rejects_image_backend stage_video_rejects_batch_size
+  PROPERTIES WILL_FAIL TRUE)
 
 
 if(UMM_STAGE_CUDA)

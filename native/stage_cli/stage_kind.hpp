@@ -7,6 +7,7 @@
 // against the compiled kind.
 #pragma once
 
+#include <stdexcept>
 #include <string>
 
 #include "umminfer/pipeline/pipeline.hpp"
@@ -35,6 +36,37 @@ struct StageOptions {
 // The kind this executable was built for: "asr", "omni", "qwen38", "tts",
 // "image" or "video".
 const char* compiled_kind();
+
+// Stage-specific CLI hooks. Each *_stage.cpp implements both for its compiled
+// kind, so an executable accepts only its own flags. main.cpp parses the
+// transport flags.
+
+// The stage's optional-flag fragment for usage(). The fragment is empty or
+// ends with a space.
+const char* stage_usage_flags();
+
+// Parses one stage-specific option into options.
+// Returns true when key is a flag of this stage.
+// Returns false when key is not a flag of this stage; the caller reports it.
+// Throws std::runtime_error when the value is invalid.
+bool parse_stage_flag(const std::string& key, const std::string& value,
+                      StageOptions& options);
+
+// Shared integer parsing for stage flags: a non-negative decimal int that
+// covers the whole value. Throws std::runtime_error otherwise.
+inline int parse_stage_int(const std::string& text, const std::string& option) {
+  size_t used = 0;
+  int value = 0;
+  try {
+    value = std::stoi(text, &used);
+  } catch (const std::exception&) {
+    throw std::runtime_error("invalid " + option + ": " + text);
+  }
+  if (used != text.size() || value < 0) {
+    throw std::runtime_error("invalid " + option + ": " + text);
+  }
+  return value;
+}
 
 // Loads the model synchronously and returns the function the Stage runs. The
 // function receives the per-request abort check and must stop at its next

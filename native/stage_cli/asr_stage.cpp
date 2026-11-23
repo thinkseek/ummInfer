@@ -28,6 +28,17 @@ constexpr int kDefaultMaxNewTokens = 256;
 
 const char* compiled_kind() { return "asr"; }
 
+const char* stage_usage_flags() { return "[--max-new-tokens N] "; }
+
+bool parse_stage_flag(const std::string& key, const std::string& value,
+                      StageOptions& options) {
+  if (key == "max-new-tokens") {
+    options.max_new_tokens = parse_stage_int(value, "--max-new-tokens");
+    return true;
+  }
+  return false;
+}
+
 CancellableComputeFn make_compute(const StageOptions& options) {
   const int max_new_tokens =
       options.max_new_tokens > 0 ? options.max_new_tokens : kDefaultMaxNewTokens;

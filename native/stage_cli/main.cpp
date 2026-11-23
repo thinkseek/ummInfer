@@ -32,11 +32,9 @@ void on_signal(int) { g_running = false; }
 void usage() {
   std::cerr << "usage: umm-native-stage-<asr|omni|qwen38|tts|image|video> --kind KIND --model DIR "
                "--recv-endpoint EP --coordinator-endpoint EP --abort-endpoint EP "
-               "[--name NAME] [--gpu N] [--max-new-tokens N] [--max-frames N] "
-               "[--max-seq N] [--steps N] [--image-backend 2512|2.1] "
-               "[--video-backend cuda|cuda-scaffold|contract-stub] [--size WxH] "
-               "[--fps N] [--max-seconds N] [--step-delay-ms N] [--ffmpeg-bin PATH] "
-               "[--batch-size N] [--next name=EP] [--peer name=EP]\n";
+               "[--name NAME] [--gpu N] "
+            << umminfer::stage::stage_usage_flags()
+            << "[--next name=EP] [--peer name=EP]\n";
 }
 
 // ZMQ binds an ipc path but never creates its parent directory. Restrict newly
@@ -59,119 +57,66 @@ void ensure_ipc_parent(const std::string& endpoint) {
   }
 }
 
-int parse_int(const std::string& text, const std::string& option) {
-  size_t used = 0;
-  int value = 0;
-  try {
-    value = std::stoi(text, &used);
-  } catch (const std::exception&) {
-    throw std::runtime_error("invalid " + option + ": " + text);
-  }
-  if (used != text.size() || value < 0) {
-    throw std::runtime_error("invalid " + option + ": " + text);
-  }
-  return value;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
 
-  static const std::set<std::string> kKnownFlags = {
-      "kind",          "model",       "recv-endpoint", "coordinator-endpoint",
-      "abort-endpoint", "name",       "gpu",           "max-new-tokens",
-      "max-frames",    "max-seq",     "steps",         "image-backend",
-      "video-backend", "size",        "fps",           "max-seconds",
-      "step-delay-ms", "ffmpeg-bin",  "batch-size"};
+  // Transport flags: the Stage protocol wiring. Every other flag belongs to
+  // the stage and is parsed by its *_stage.cpp.
+  static const std::set<std::string> kTransportFlags = {
+      "kind", "model", "name", "gpu", "recv-endpoint", "coordinator-endpoint",
+      "abort-endpoint"};
   Flags flags;
   Repeats repeats;
-  for (int index = 1; index < argc; ++index) {
-    const std::string arg = argv[index];
-    if (arg == "--help" || arg == "-h") {
-      usage();
-      return 0;
-    }
-    if (arg.rfind("--", 0) != 0 || index + 1 >= argc) {
-      std::cerr << "unexpected argument: " << arg << "\n";
-      usage();
-      return 2;
-    }
-    const std::string key = arg.substr(2);
-    const std::string value = argv[++index];
-    if (key == "next" || key == "peer") {
-      repeats.emplace(key, value);
-    } else if (kKnownFlags.count(key)) {
-      flags[key] = value;
-    } else {
-      std::cerr << "unknown option: --" << key << "\n";
-      usage();
-      return 2;
-    }
-  }
-
-  const std::string kind = flags.count("kind") ? flags["kind"] : "";
-  if (kind != umminfer::stage::compiled_kind()) {
-    std::cerr << "this executable implements --kind " << umminfer::stage::compiled_kind()
-              << ", got '" << kind << "'\n";
-    return 2;
-  }
-  const std::string model = flags.count("model") ? flags["model"] : "";
-  const std::string recv = flags.count("recv-endpoint") ? flags["recv-endpoint"] : "";
-  const std::string coordinator =
-      flags.count("coordinator-endpoint") ? flags["coordinator-endpoint"] : "";
-  const std::string abort = flags.count("abort-endpoint") ? flags["abort-endpoint"] : "";
-  if (model.empty() || recv.empty() || coordinator.empty() || abort.empty()) {
-    usage();
-    return 2;
-  }
-
+  umminfer::stage::StageOptions options;
   try {
-    umminfer::stage::StageOptions options;
+    for (int index = 1; index < argc; ++index) {
+      const std::string arg = argv[index];
+      if (arg == "--help" || arg == "-h") {
+        usage();
+        return 0;
+      }
+      if (arg.rfind("--", 0) != 0 || index + 1 >= argc) {
+        std::cerr << "unexpected argument: " << arg << "\n";
+        usage();
+        return 2;
+      }
+      const std::string key = arg.substr(2);
+      const std::string value = argv[++index];
+      if (key == "next" || key == "peer") {
+        repeats.emplace(key, value);
+      } else if (kTransportFlags.count(key)) {
+        flags[key] = value;
+      } else if (!umminfer::stage::parse_stage_flag(key, value, options)) {
+        std::cerr << "unknown option: --" << key << "\n";
+        usage();
+        return 2;
+      }
+    }
+
+    const std::string kind = flags.count("kind") ? flags["kind"] : "";
+    if (kind != umminfer::stage::compiled_kind()) {
+      std::cerr << "this executable implements --kind "
+                << umminfer::stage::compiled_kind() << ", got '" << kind << "'\n";
+      return 2;
+    }
+    const std::string model = flags.count("model") ? flags["model"] : "";
+    const std::string recv = flags.count("recv-endpoint") ? flags["recv-endpoint"] : "";
+    const std::string coordinator =
+        flags.count("coordinator-endpoint") ? flags["coordinator-endpoint"] : "";
+    const std::string abort =
+        flags.count("abort-endpoint") ? flags["abort-endpoint"] : "";
+    if (model.empty() || recv.empty() || coordinator.empty() || abort.empty()) {
+      usage();
+      return 2;
+    }
+
     options.model_dir = model;
-    options.gpu = flags.count("gpu") ? parse_int(flags["gpu"], "--gpu") : 0;
-    options.max_new_tokens = flags.count("max-new-tokens")
-                                 ? parse_int(flags["max-new-tokens"], "--max-new-tokens")
-                                 : 0;
-    options.max_frames =
-        flags.count("max-frames") ? parse_int(flags["max-frames"], "--max-frames") : 0;
-    options.max_seq =
-        flags.count("max-seq") ? parse_int(flags["max-seq"], "--max-seq") : 0;
-    options.steps = flags.count("steps") ? parse_int(flags["steps"], "--steps") : 0;
-    options.image_backend =
-        flags.count("image-backend") ? flags["image-backend"] : "";
-    options.image_size = flags.count("size") ? flags["size"] : "";
-    options.video_backend =
-        flags.count("video-backend") ? flags["video-backend"] : "";
-    options.video_fps =
-        flags.count("fps") ? parse_int(flags["fps"], "--fps") : 0;
-    options.video_max_seconds =
-        flags.count("max-seconds")
-            ? parse_int(flags["max-seconds"], "--max-seconds")
-            : 0;
-    options.video_step_delay_ms =
-        flags.count("step-delay-ms")
-            ? parse_int(flags["step-delay-ms"], "--step-delay-ms")
-            : 0;
-    options.ffmpeg_bin =
-        flags.count("ffmpeg-bin") ? flags["ffmpeg-bin"] : "";
-    if (kind != "image" && !options.image_backend.empty()) {
-      throw std::runtime_error("--image-backend is supported only for --kind image");
-    }
-    if (kind != "image" && kind != "video" && !options.image_size.empty()) {
-      throw std::runtime_error("--size is supported only for --kind image or video");
-    }
-    if (kind != "video" &&
-        (!options.video_backend.empty() || options.video_fps > 0 ||
-         options.video_max_seconds > 0 || options.video_step_delay_ms > 0 ||
-         !options.ffmpeg_bin.empty())) {
-      throw std::runtime_error(
-          "--video-backend, --fps, --max-seconds, --step-delay-ms and "
-          "--ffmpeg-bin are supported only for --kind video");
-    }
-    options.batch_size =
-        flags.count("batch-size") ? parse_int(flags["batch-size"], "--batch-size") : 0;
+    options.gpu = flags.count("gpu")
+                      ? umminfer::stage::parse_stage_int(flags["gpu"], "--gpu")
+                      : 0;
 
     umminfer::Stage::Config config;
     config.name = flags.count("name") ? flags["name"] : kind;
