@@ -102,9 +102,9 @@ make_remote_script() {
   cat > "$out" <<EOF
 #!/bin/bash
 set -eu
-R=/root/umm-release-$VERSION
+R=/opt/umminfer/umm-release-$VERSION
 rm -rf "\$R"; mkdir -p "\$R"
-tar xzf /root/umm-release-$VERSION-src.tar.gz -C "\$R"
+tar xzf /opt/umminfer/umm-release-$VERSION-src.tar.gz -C "\$R"
 cd "\$R"
 export LD_LIBRARY_PATH="$STAGE_DEPS_PREFIX/lib:$STAGE_CURL_PREFIX/lib"
 "$STAGE_ZIG" build -Doptimize=ReleaseFast \\
@@ -138,16 +138,17 @@ if [ "$STAGE_BUILD" = remote ]; then
 set -eu
 OUT=/tmp/umm-release-$VERSION-out
 if [ -n "$CONTAINER" ]; then
-  docker cp "/tmp/umm-release-$VERSION-src.tar.gz" "$CONTAINER:/root/umm-release-$VERSION-src.tar.gz"
-  docker cp "/tmp/umm-release-$VERSION-build.sh" "$CONTAINER:/root/umm-release-$VERSION-build.sh"
-  docker exec "$CONTAINER" bash "/root/umm-release-$VERSION-build.sh"
+  docker exec "$CONTAINER" mkdir -p /opt/umminfer
+  docker cp "/tmp/umm-release-$VERSION-src.tar.gz" "$CONTAINER:/opt/umminfer/umm-release-$VERSION-src.tar.gz"
+  docker cp "/tmp/umm-release-$VERSION-build.sh" "$CONTAINER:/opt/umminfer/umm-release-$VERSION-build.sh"
+  docker exec "$CONTAINER" bash "/opt/umminfer/umm-release-$VERSION-build.sh"
   rm -rf "$OUT"; mkdir -p "$OUT"
-  docker cp "$CONTAINER:/root/umm-release-$VERSION/out/." "$OUT/"
+  docker cp "$CONTAINER:/opt/umminfer/umm-release-$VERSION/out/." "$OUT/"
 else
-  mkdir -p /root
-  cp "/tmp/umm-release-$VERSION-src.tar.gz" "/root/umm-release-$VERSION-src.tar.gz"
+  mkdir -p /opt/umminfer
+  cp "/tmp/umm-release-$VERSION-src.tar.gz" "/opt/umminfer/umm-release-$VERSION-src.tar.gz"
   bash "/tmp/umm-release-$VERSION-build.sh"
-  OUT="/root/umm-release-$VERSION/out"
+  OUT="/opt/umminfer/umm-release-$VERSION/out"
 fi
 rm -f "/tmp/umm-release-$VERSION-out.tgz"
 tar czf "/tmp/umm-release-$VERSION-out.tgz" -C "$OUT" .

@@ -1,4 +1,4 @@
-# GPU utilization of the native executors — H20B, 2026-11-17
+# GPU utilization of the native executors — SM90, 2026-11-17
 
 Baseline commit `31cf1fd`. Measurements and changes were made on GPUs 6 and 7
 of the shared H20 host; GPUs 0/1/3/4/5 were in use by other jobs and were not
@@ -10,7 +10,7 @@ exclusive (no other compute process resident).
 | Item | Value |
 | --- | --- |
 | GPU | NVIDIA H20, 97871 MiB |
-| Driver / container | 535.161.08 / H20B GPU container |
+| Driver / container | 535.161.08 / SM90 GPU container |
 | Toolchain | CUDA 12.4 (`nvcc`), CMake 3.31, arch `sm_90` |
 | SMs / clock / L2 | 78 / 1.98 GHz / 60 MiB (`cudaDeviceGetAttribute`) |
 | Profilers | Nsight Systems 2023.4 (works); Nsight Compute 13.0 (unusable) |
@@ -233,15 +233,15 @@ clock, which confirms the reading.
 Not modified; their files are absent from this commit. Qwen3.8 measures
 41.2–41.5 tok/s before and after, with byte-identical `gen_ids.i32`.
 
-## Qwen3-TTS talker loop: device-side sub-codebook argmax — H20B, 2026-11-20
+## Qwen3-TTS talker loop: device-side sub-codebook argmax — SM90, 2026-11-20
 
 Branch `task/tts-talker-async`, base commit `258803e`. Files changed:
 `native/tts/engine.cpp`, `native/tts/cuda_kernels.hpp`,
 `native/tts/cuda_kernels.cu`, `native/tts/CMakeLists.txt`.
 
 All runs on GPU 6 of the shared H20 host, exclusive (no other compute process
-resident), container `linyu-dev`, model
-`/root/umm-mixed-output-20261116/models/qwen3-tts`, CUDA 12.4, arch `sm_90`,
+resident), container `<gpu-container>`, model
+`/opt/umminfer/umm-mixed-output-20261116/models/qwen3-tts`, CUDA 12.4, arch `sm_90`,
 `CMAKE_BUILD_TYPE=Release`.
 
 ### Change
@@ -329,7 +329,7 @@ synchronisation was not the cause of the larger figure.
 cmake -S native/tts -B build-tts -DUMM_TTS_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build-tts -j 32
 CUDA_VISIBLE_DEVICES=6 UMM_TTS_DUMP_FRAMES=/tmp/ids.bin \
-  build-tts/umm-tts-native --model /root/umm-mixed-output-20261116/models/qwen3-tts \
+  build-tts/umm-tts-native --model /opt/umminfer/umm-mixed-output-20261116/models/qwen3-tts \
   --text "用一句话介绍你自己。" --language chinese --gpu 0 --out /tmp/zh.wav
 CUDA_VISIBLE_DEVICES=6 nsys profile --trace=cuda -o prof/tts \
   build-tts/umm-tts-native --model ... --gpu 0 --out /tmp/zh.wav
@@ -376,7 +376,7 @@ added to this build directory, so the command above configures and
 ## Reproduction
 
 ```bash
-# Inside the H20B GPU container, from <repo-root>; set UMM_QWEN38_MODEL to your local weights path
+# Inside the SM90 GPU container, from <repo-root>; set UMM_QWEN38_MODEL to your local weights path
 cmake -S native -B build-q38 -DUMM_QWEN38_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake -S native/omni -B build-omni -DUMM_OMNI_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake -S native/image2 -B build-img2 -DUMM_IMAGE2_CUDA=ON -DCMAKE_BUILD_TYPE=Release

@@ -1,4 +1,4 @@
-# Joint worker concurrency optimization — real H20B, 2026-11-13
+# Joint worker concurrency optimization — real SM90, 2026-11-13
 
 Baseline commit `4b13fe16cfc1055c2cac09ea8b8bfa4a9aae71ec` (branch `main`).
 Change under test: branch `phase5/joint-optimization`.
@@ -218,7 +218,7 @@ abort before `dispatch`, so the queued path hid the defect.
 `drain_outbox` releases it when the request thread finishes.
 `test_running_abort_is_registered_and_released` pins the running-request path.
 
-Re-verified on the same H20B backends: 10/10 realtime client runs, 10/10
+Re-verified on the same SM90 backends: 10/10 realtime client runs, 10/10
 realtime server runs, all unit suites, and a concurrency-4 unified smoke with
 6/6 blocks and 30/30 successes. The worker perf logs show peak request overlap 4
 on both workers. A real-backend cancel reported `SGLANG_ABORT_CONFIRMED

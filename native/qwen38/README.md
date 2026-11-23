@@ -108,8 +108,8 @@ Targets: `umm-qwen38-native`, `qwen38_host_tests`, `qwen38_kernel_tests`,
 
 ```sh
 CUDA_VISIBLE_DEVICES=6 native/build/umm-qwen38-native \
-  --model /root/models/qwen3.8-27b --gpu 0 \
-  --image /root/qwen38-test.png \
+  --model /opt/umminfer/models/qwen3.8-27b --gpu 0 \
+  --image /opt/umminfer/qwen38-test.png \
   --prompt "Describe the shapes and colors in this image in one sentence." \
   --max-new-tokens 64
 ```
@@ -135,20 +135,21 @@ identical inputs.
 ```sh
 # BF16 reference and native run (dumps)
 python native/qwen38_tests/reference.py --model DIR --prompt TEXT \
-    [--image PATH] --max-new-tokens N --out /root/ref
+    [--image PATH] --max-new-tokens N --out /opt/umminfer/ref
 native/build/umm-qwen38-native --model DIR --prompt TEXT [--image PATH] \
-    --max-new-tokens N --dump-dir /root/nat
+    --max-new-tokens N --dump-dir /opt/umminfer/nat
 
 # FP32 anchor (CPU; one GPU cannot hold 112 GB of FP32 weights)
 python native/qwen38_tests/fp32_dump.py --model DIR --prompt TEXT \
-    [--image PATH] --out /root/ref-fp32
+    [--image PATH] --out /opt/umminfer/ref-fp32
 
 # End-to-end comparison
-python native/qwen38_tests/compare_layers.py --ref /root/ref --native /root/nat \
-    --fp32-ref /root/ref-fp32
+python native/qwen38_tests/compare_layers.py --ref /opt/umminfer/ref \
+    --native /opt/umminfer/nat --fp32-ref /opt/umminfer/ref-fp32
 
 # Per-layer linear-attention operator (same input to both implementations)
-python native/qwen38_tests/op_parity.py --model DIR --native /root/nat --gpu 0
+python native/qwen38_tests/op_parity.py --model DIR \
+    --native /opt/umminfer/nat --gpu 0
 ```
 
 Criteria, identical to the constants in the scripts:
@@ -160,7 +161,7 @@ Criteria, identical to the constants in the scripts:
   reference's own BF16 path.
 - Functional: prompt ids, first-token argmax and generated ids equal.
 
-## Measurements (H20B, single GPU 6)
+## Measurements (Linux SM90 GPU host, GPU 6)
 
 `CUDA_VISIBLE_DEVICES=6`, weights in the page cache, greedy decoding, one
 process per request. `load_ms` includes the 55.6 GB H2D copy; `prefill_ms`

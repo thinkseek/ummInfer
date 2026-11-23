@@ -177,7 +177,7 @@ final class ChatClient {
             return
         }
         let configuration = URLSessionConfiguration.ephemeral
-        // Image generation measured 227 s on the H20B native chain; the text
+        // Image generation measured 227 s on the NVIDIA Hopper (SM90) native chain; the text
         // path is unchanged in practice. Stop still cancels immediately.
         configuration.timeoutIntervalForRequest = 600
         configuration.timeoutIntervalForResource = 900

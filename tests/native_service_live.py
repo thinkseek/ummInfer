@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live validation of the resident ummInfer service on H20B.
+"""Live validation of the resident ummInfer service on an SM90 GPU host.
 
 Talks to an already running service over public HTTP/SSE. It never starts or
 stops the service; the supervisor owns those processes. It covers:

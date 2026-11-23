@@ -504,7 +504,7 @@ def environment(repo, binary, model, tiny_model, audio_path, config):
             "The real MLX model proves the text leg only.",
             "Both stages run serially in one process each; concurrency 2 "
             "measures server-side admission and isolation, not throughput.",
-            "No H20B, CUDA, or SGLang backend was contacted.",
+            "No SM90 GPU host, CUDA, or SGLang backend was contacted.",
         ],
     }
 

@@ -198,7 +198,7 @@ private final class BodyCaptureProtocol: URLProtocol {
             client?.urlProtocolDidFinishLoading(self)
             return
         }
-        // The H20B deployment has no server-side history and rejects the flag.
+        // The native-service deployment has no server-side history and rejects the flag.
         if count == 2 {
             let payload = Data(#"{"error":{"message":"session_history is not enabled on this server"}}"#.utf8)
             let response = HTTPURLResponse(

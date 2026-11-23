@@ -1,10 +1,10 @@
 # External stage architecture
 
-> **Current default serving path:** On GPU hosts (H20B), `umm-infer serve` now
+> **Current default serving path:** On GPU hosts (SM90), `umm-infer serve` now
 > drives native C++/CUDA stage processes (`umm-native-stage-*`, built from
 > `native/stage_cli`) over the C++ `Stage` / ZeroMQ / POSIX shared-memory
 > contract. See [native/STAGE_NATIVE.md](../native/STAGE_NATIVE.md) and
-> [h20b-service.md](h20b-service.md). The Python stage section below describes
+> [native-service.md](native-service.md). The Python stage section below describes
 > the legacy/local external Python stage path (`umminfer_mlx_stage.py`,
 > `umminfer_tiny_asr_stage.py`).
 

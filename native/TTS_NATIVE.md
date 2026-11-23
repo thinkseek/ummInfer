@@ -128,10 +128,10 @@ output is a real 24 kHz mono PCM16 WAV. Speaker presets are fixed to Vivian
 
 ## Verification evidence
 
-Auditable artifacts for the acceptance run live on the H20B build host at
-`/root/umm-native-tts-20261116/evidence/final/` (binary WAVs, raw logs) with
-the text-only manifest and host-test log committed under
-`native/tts_tests/evidence/`. Per-log size is hard-capped at 64 KiB.
+Auditable artifacts for the acceptance run live on the Linux SM90 GPU host at
+`/opt/umminfer/umm-native-tts-20261116/evidence/final/`
+(binary WAVs, raw logs) with the text-only manifest and host-test log committed
+under `native/tts_tests/evidence/`. Per-log size is hard-capped at 64 KiB.
 
 - Codec parity from reference codes: English 55 frames and Chinese 77 frames
   decode to waveform correlation 0.99989 and 0.99949 against the reference

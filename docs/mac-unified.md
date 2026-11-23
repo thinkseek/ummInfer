@@ -19,7 +19,7 @@ Two stages run in separate processes:
 TinyCTC is an initialized inference test model. The run proves the contract,
 not speech recognition. The MLX model proves the text leg only.
 
-The harness does not contact H20B, CUDA, SGLang, or any remote service. All
+The harness does not contact SM90, CUDA, SGLang, or any remote service. All
 traffic is localhost HTTP and local IPC.
 
 ## Prerequisites
@@ -114,7 +114,7 @@ stage reason. Total failures: 0.
 The first-event time includes the ASR leg. At concurrency 2 the second request
 waits behind the first in the serial ASR stage, so its first event is later.
 Five and four samples are small. p95 equals the maximum. These numbers are not
-a performance guarantee and they do not predict H20B behavior.
+a performance guarantee and they do not predict SM90 behavior.
 
 ## Evidence
 
@@ -158,7 +158,7 @@ Expected result: every line reports `OK` and the `find` command prints nothing.
   memory leaks, and long-run stability are not.
 - On this Mac profile, chunked SSE partial ASR through the unified route is not
   covered: the engine submits the ASR leg with `stream=false`. The same route
-  with opt-in partials passed on H20B; see `docs/validation.md` section 5c
+  with opt-in partials passed on SM90; see `docs/validation.md` section 5c
   (now retired). Realtime partials are also covered by `docs/validation.md`.
 - The recorded run used baseline `a412d0d4` with the uncommitted harness. The
   commit adds only the harness, its unit test, and documentation. It changes no

@@ -63,10 +63,10 @@ Apache-2.0 transformers source. See `THIRD_PARTY_NOTICES.md`.
 
 ## Verification
 
-All GPU numbers come from offline diffusers 0.36 bf16 golden blobs on H20B
-GPU4. Deep bf16 networks diverge in elementwise max from fp32 reduction-order
-differences, so the deep-net gates use relative L2 and cosine similarity
-(content preservation), not max-abs.
+All GPU numbers come from offline diffusers 0.36 bf16 golden blobs on GPU 4
+of an NVIDIA Hopper (SM90) GPU host. Deep bf16 networks diverge in elementwise
+max from fp32 reduction-order differences, so the deep-net gates use relative L2
+and cosine similarity (content preservation), not max-abs.
 
 - Host (`image_host_tests`, also builds/runs on macOS without CUDA): scheduler
   arrays vs independently computed tables; PNG chunk/CRC and inflate round-trip;

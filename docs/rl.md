@@ -273,4 +273,4 @@ claimed in phase 1.
 
 The deterministic suite `tests/rl_architecture_test.py` was removed in
 `ab51cf5`. No automated RL test remains; the RL modules are exercised only by
-the recorded H20B runs in this document and `rl-phase2.md`.
+the recorded SM90 runs in this document and `rl-phase2.md`.

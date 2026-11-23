@@ -28,8 +28,8 @@ default deployment does not start it. Exactly one VLM stage runs at a time.
 | Binary | `--kind` | Engine | Default `max_new_tokens` / frames |
 | --- | --- | --- | --- |
 | `umm-native-stage-asr` | `asr` | `native::AsrEngine` | 256 |
-| `umm-native-stage-omni` | `omni` | `omni::OmniEngine` | 512 (`--max-new-tokens`); the H20B launcher sets 96 |
-| `umm-native-stage-qwen38` | `qwen38` | `qwen38::Engine` | 256 (`--max-new-tokens`); the H20B launcher sets 96 |
+| `umm-native-stage-omni` | `omni` | `omni::OmniEngine` | 512 (`--max-new-tokens`); the native-service launcher sets 96 |
+| `umm-native-stage-qwen38` | `qwen38` | `qwen38::Engine` | 256 (`--max-new-tokens`); the native-service launcher sets 96 |
 | `umm-native-stage-tts` | `tts` | `native::TtsEngine` | 8192 (`--max-frames`) |
 | `umm-native-stage-image` | `image` | `image::ImageEngine` (`2512`, default) / `image2::Image2Engine` (`2.1`) via `--image-backend` | 50 (`2512`) / 40 (`2.1`) (`--steps`) |
 
@@ -37,10 +37,11 @@ The compute function runs on the `Stage` scheduler thread, whose CUDA current
 device defaults to 0. Every kind calls `cudaSetDevice(--gpu)` at the start of
 each request; the engines set the device only in their constructors.
 
-Measured on H20B: after the MoE host-path fix ([OMNI_NATIVE.md](OMNI_NATIVE.md)),
+Measured on an NVIDIA Hopper (SM90) GPU host: after the MoE host-path fix
+([OMNI_NATIVE.md](OMNI_NATIVE.md)),
 the Omni engine decodes at 30.6 tok/s on the image case and 14.79 ms/token on
 the text case (earlier pre-fix runs decoded at ~2 s/token, which is why the
-H20B launcher defaulted to 96 tokens).
+native-service launcher defaulted to 96 tokens).
 The Qwen3.8-27B engine decodes at 42.0 tok/s for text and 29.2 tok/s for an
 image prompt, with 0.16 s and 1.05 s prefill. The ASR stage returns a 15 s
 clip in about 1 s after model load.
@@ -249,8 +250,8 @@ cmake --build build -j
 ## Run
 
 ```sh
-service/h20b-native-service.sh start     # server + four stages
-service/h20b-native-service.sh stop
+service/native-service.sh start     # server + four stages
+service/native-service.sh stop
 ```
 
 The live smoke harness `native/stage_tests/native_stage_smoke.py` was removed in

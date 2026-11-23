@@ -1,4 +1,4 @@
-# Multimodal benchmark results — H20B, 2026-11-19
+# Multimodal benchmark results — SM90, 2026-11-19
 
 First recorded real-model run of `tests/multimodal_benchmark.py` against the
 native service. The accepted baseline is run D below: 54 cases, 0
@@ -42,15 +42,15 @@ Both failures are intermittent; section 7 records the reproduction.
 
 | Item | Value |
 | --- | --- |
-| Host | H20B, 8 × H20 97871 MiB, driver 535.161.08 |
-| Container | H20B GPU container (`$CONTAINER`) |
+| Host | SM90, 8 × H20 97871 MiB, driver 535.161.08 |
+| Container | SM90 GPU container (`$CONTAINER`) |
 | GPUs used | 6 (ASR), 7 (Omni). GPU 0/1 untouched |
 | Service port | `<container-ip>:43301` (43300 untouched) |
-| Client | Mac, harness connects through `ssh -L 43301:<container-ip>:43301 <h20b-ssh-host>` |
+| Client | Mac, harness connects through `ssh -L 43301:<container-ip>:43301 <gpu-host>` |
 | Service commit | `a83ae44` (`umm-infer` built from it) |
 | Harness commit | `1a0e321` (adds the three fixes in section 6) |
-| ASR model | `/root/omniinfer-model-validation-20261111-k3/models/asr`, 1.8 G |
-| Omni model | `/root/omniinfer-model-validation-20261111-k3/models/omni`, 66 G, 15 shards |
+| ASR model | `/opt/umminfer/omniinfer-model-validation-20261111-k3/models/asr`, 1.8 G |
+| Omni model | `/opt/umminfer/omniinfer-model-validation-20261111-k3/models/omni`, 66 G, 15 shards |
 | ASR `config.json` SHA-256 | `76d3ae4601ce939830b2517f4a6cadb86cc51316c3900af6b020b051c21a478c` |
 | Omni `config.json` SHA-256 | `eab5093d47807aaf894119506b238b2b1cee70d08456e894fee9a012d88f2e0d` |
 | ASR weights SHA-256 | `79d6cbd4c98c7bbffe9db2edac07f56cd6637d0d5944b27f6c2b8353840323ea` |
@@ -183,13 +183,13 @@ The native Omni engine does not accept audio directly
 Repository documentation drift found during this run, and its state on
 2026-11-19 (section 13):
 
-- `docs/h20b-service.md` described the retired phase-7 topology (Python
+- `docs/native-service.md` described the retired phase-7 topology (Python
   workers plus SGLang backends). Fixed: rewritten for the native topology.
-- `service/h20b-native-service.sh` did not state where its binaries come from.
+- `service/native-service.sh` did not state where its binaries come from.
   Fixed: the header now names both build systems.
 - `README.md` was reported as invoking `umm-native-stage-*` from `zig build`.
   It already separated the two build systems at commit `44de086`; the only
-  wrong sentence was "configured by `service/h20b-service.json`" for the
+  wrong sentence was "configured by `service/native-service.json`" for the
   shell-only path. Fixed.
 
 ## 9. Per-case results
@@ -285,7 +285,7 @@ python3 -I tests/multimodal_benchmark.py \
 | GPU 6 used | 2389 MiB | 3 MiB |
 | GPU 7 used | 78757 MiB | 3 MiB |
 
-The server, ASR stage and Omni stage were stopped by PID. No `/root/mmbench/bin/`
+The server, ASR stage and Omni stage were stopped by PID. No `/opt/umminfer/mmbench/bin/`
 process remains. The SSH tunnel on port 43301 was stopped and the port is free.
 GPU 0/1 were never touched. The 43300 service was never started or stopped.
 
@@ -305,7 +305,7 @@ Setup, unchanged from section 3 except port and GPU:
 | Resident 43301 service | running throughout on GPUs 2-5; it is the same service that ran during the baseline window and was not touched |
 | Binaries | `umm-infer` `5953963c…30864`, `umm-native-stage-asr` `1bf9485f…cf072`, `umm-native-stage-omni` `8ca0225d…dadd8` (identical to section 3) |
 | Harness | `3d747bc`, same manifest `2026-11-15.1`, same cached inputs, `--baseline /tmp/mmbench/evidence-v5/baseline.json` |
-| Client | Mac through `ssh -L 43302:<container-ip>:43302 <h20b-ssh-host>` |
+| Client | Mac through `ssh -L 43302:<container-ip>:43302 <gpu-host>` |
 | Evidence | `/tmp/mmbench/stability/round-{1..5}/round-1/` (`cases.jsonl`, `events/`, `answers/`, `transcripts/`, `failures.json`, `report.json`) |
 
 ### Per-round results
@@ -417,13 +417,13 @@ already correct.
 
 | Item | State at `3d747bc` | Action |
 | --- | --- | --- |
-| `docs/h20b-service.md` | described the retired phase-7 topology: Python workers `umminfer_qwen_asr_stage.py` / `umminfer_qwen_omni_worker.py` and SGLang backends on GPU 0/1 | rewritten for the native topology, with the phase-7 record compressed to one history paragraph |
-| `service/h20b-native-service.sh` | never stated where `$BIN/umm-infer` and `$BIN/umm-native-stage-*` come from | header now names both build systems and the install line |
-| `README.md` | already separated `zig build` from `native/stage_cli` at commit `44de086`; it wrongly said the shell script is "configured by `service/h20b-service.json`" | sentence corrected: the script reads `UMM_NATIVE_*`; the JSON is the supervisor's config |
+| `docs/native-service.md` | described the retired phase-7 topology: Python workers `umminfer_qwen_asr_stage.py` / `umminfer_qwen_omni_worker.py` and SGLang backends on GPU 0/1 | rewritten for the native topology, with the phase-7 record compressed to one history paragraph |
+| `service/native-service.sh` | never stated where `$BIN/umm-infer` and `$BIN/umm-native-stage-*` come from | header now names both build systems and the install line |
+| `README.md` | already separated `zig build` from `native/stage_cli` at commit `44de086`; it wrongly said the shell script is "configured by `service/native-service.json`" | sentence corrected: the script reads `UMM_NATIVE_*`; the JSON is the supervisor's config |
 
 The claim that both build systems are separate is verified, not asserted: the
-CMake output `/root/mmbench/stage-build/umm-native-stage-asr` and the deployed
-`/root/mmbench/bin/umm-native-stage-asr` (the binary used in the baseline run)
+CMake output `/opt/umminfer/mmbench/stage-build/umm-native-stage-asr` and the deployed
+`/opt/umminfer/mmbench/bin/umm-native-stage-asr` (the binary used in the baseline run)
 have the same SHA-256 `1bf9485f9a103b0b14e946e0235b2a7397271251184c4f6f47ecadad106cf072`.
 
 ### Startup verification
@@ -431,20 +431,20 @@ have the same SHA-256 `1bf9485f9a103b0b14e946e0235b2a7397271251184c4f6f47ecadad1
 Run on the container, from a fresh root, using the binaries the runbook names:
 
 ```sh
-ROOT=/root/umm-native-verify
+ROOT=/opt/umminfer/umm-native-verify
 mkdir -p $ROOT/bin $ROOT/run $ROOT/logs
-install -m755 /root/mmbench/src/zig-out/bin/umm-infer $ROOT/bin/
-install -m755 /root/mmbench/stage-build/umm-native-stage-* $ROOT/bin/
+install -m755 /opt/umminfer/mmbench/src/zig-out/bin/umm-infer $ROOT/bin/
+install -m755 /opt/umminfer/mmbench/stage-build/umm-native-stage-* $ROOT/bin/
 
 UMM_NATIVE_ROOT=$ROOT UMM_NATIVE_PORT=43302 \
 UMM_NATIVE_IPC=/tmp/umminfer-native-verify-ipc \
 UMM_NATIVE_GPU_ASR=6 UMM_NATIVE_GPU_VLM=6 \
 UMM_NATIVE_GPU_IMAGE=7 UMM_NATIVE_GPU_TTS=7 \
-  /root/h20b-native-service.sh start
+  /opt/umminfer/native-service.sh start
 ```
 
 The GPU overrides exist because GPUs 2-5 and port 43301 are held by the live
-resident service; the defaults in the script and in `service/h20b-service.json`
+resident service; the defaults in the script and in `service/native-service.json`
 are unchanged.
 
 Observed output:
@@ -739,7 +739,7 @@ The first window ran the 54 English cases with the client inside the container.
 This window restores the original client path and runs the Mandarin cases that
 `74ed3f2` pinned but never scored.
 
-Client: Mac, `ssh -L 43310:<container-ip>:43310 <h20b-ssh-host>`, measured round trip 0.6 s.
+Client: Mac, `ssh -L 43310:<container-ip>:43310 <gpu-host>`, measured round trip 0.6 s.
 Service: one instance on port 43310, ASR stage GPU 6, Omni stage GPU 7. GPUs 0/1
 and port 43300 were not touched.
 

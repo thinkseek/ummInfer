@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fast local black-box integration gate.
 
-Runs the local suites that need no H20B, no CUDA and no RL training, one after
+Runs the local suites that need no NVIDIA Hopper GPU, CUDA or RL training, one after
 another, and reuses them as they are. This file adds no assertions: every suite
 keeps its own checks and its own exit code, which is reported as REAL_EXIT.
 
@@ -9,7 +9,7 @@ Each suite runs in its own session. Its combined stdout and stderr is capped at
 LOG_CAP bytes (tail kept), and the whole process group is killed on every exit,
 so no child outlives the gate. The gate exits non-zero if any suite fails.
 
-This is a fast gate, not hardware evidence. Real H20B, CUDA and RL training
+This is a fast gate, not hardware evidence. Real Hopper GPU, CUDA and RL training
 results still need the dedicated runs in docs/validation.md.
 """
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
-# Native-only deployment on H20B (GPU container). Five processes:
+# Native-only deployment in an NVIDIA Hopper (SM90) GPU container. Five processes:
 # one umm-infer server and one native stage per model. No Python, PyTorch or
 # SGLang on the serving path.
 #
@@ -34,7 +34,7 @@
 #
 # The port is distinct from the retired phase7 service on 43300.
 #
-# usage: h20b-native-service.sh start|stop|status
+# usage: native-service.sh start|stop|status
 set -eu
 
 ROOT=${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}

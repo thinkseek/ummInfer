@@ -6,7 +6,7 @@ versioned in `benchmarks/multimodal_manifest.json`. The runner is
 `tests/multimodal_benchmark.py`; the downloader is
 `benchmarks/multimodal_data.py`.
 
-The branch that added this system did not operate H20B. A separate agent
+The branch that added this system did not operate SM90. A separate agent
 deploys the long-running service. The main controller runs this harness against
 that service and reports the evidence. Mock servers exist only in
 `tests/multimodal_benchmark_test.py` and are labelled `contract-test`.
@@ -44,7 +44,7 @@ download the LibriSpeech corpus from a mirror that lacks the official MD5.
 | Capability | Cases | Metric | Verifiable |
 | --- | ---: | --- | --- |
 | English ASR (`asr_en`) | 16 | corpus WER and CER | yes |
-| Mandarin ASR (`asr_zh`) | 16 | corpus CER (and jieba WER) | yes; measured on H20B in [multimodal-benchmark-results.md](multimodal-benchmark-results.md#173-fix-and-re-test) (CER 0.0916, WER 0.0503) |
+| Mandarin ASR (`asr_zh`) | 16 | corpus CER (and jieba WER) | yes; measured on SM90 in [multimodal-benchmark-results.md](multimodal-benchmark-results.md#173-fix-and-re-test) (CER 0.0916, WER 0.0503) |
 | GSM8K numeric answer | 16 | exact integer after `####` | yes |
 | Image VQA | 16 | official VQA accuracy | yes |
 | Joint image + real speech | 6 | ASR WER plus caption-keyword hit | partial; answer goes to human review |
@@ -57,7 +57,7 @@ download the LibriSpeech corpus from a mirror that lacks the official MD5.
   downloader fetches the audio archive directly and pins it by SHA-256.
   AISHELL-1 and THCHS-30 are Apache-2.0 but 15 GB and 6.4 GB; both exceed the
   byte cap, so neither is used. The 16 Mandarin cases have since been scored
-  across three identical 70-case H20B rounds (corpus CER 0.0916, jieba WER
+  across three identical 70-case SM90 rounds (corpus CER 0.0916, jieba WER
   0.0503; see [multimodal-benchmark-results.md](multimodal-benchmark-results.md#174-mandarin-wer)).
 - **Joint answer quality:** the joint answer is open-ended. The harness scores
   two objective sub-metrics and saves the full answer with

@@ -110,9 +110,10 @@ stages exchange.
 
 ## Measured performance
 
-H20B, GPU 7 (`CUDA_VISIBLE_DEVICES=7`), 512x512, 40 steps, bf16, two runs
-(English prompt seed 1234, Chinese prompt seed 2024). Encode, denoise and VAE
-times differ by at most 0.4% between runs; load time differs by 232 ms (4.9%).
+NVIDIA Hopper (SM90) GPU 7 (`CUDA_VISIBLE_DEVICES=7`), 512x512, 40 steps, bf16,
+two runs (English prompt seed 1234, Chinese prompt seed 2024). Encode, denoise
+and VAE times differ by at most 0.4% between runs; load time differs by 232 ms
+(4.9%).
 
 | Phase | Time |
 |---|---|
@@ -136,7 +137,7 @@ street. Both match their prompts.
 ## Usage
 
 ```
-umm-image2-native --model /root/models/qwen-image-2.1 --gpu 0 \
+umm-image2-native --model /opt/umminfer/models/qwen-image-2.1 --gpu 0 \
   --prompt "A red fox in a snowy forest at dawn" --size 512x512 \
   --seed 1234 --steps 40 --out out.png
 ```
