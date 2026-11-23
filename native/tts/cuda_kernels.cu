@@ -486,6 +486,9 @@ int argmax_f32(const float* x, int n, int* scratch, cudaStream_t st) {
   cudaStreamSynchronize(st);
   return idx;
 }
+void argmax_f32_dev(const float* x, int n, int* out, cudaStream_t st) {
+  argmax_kernel<<<1, min(1024, n), 0, st>>>(x, n, out);
+}
 void suppress_logits(float* logits, int lo, int hi, int keep, cudaStream_t st) {
   suppress_kernel<<<(hi - lo + kBlock - 1) / kBlock, kBlock, 0, st>>>(logits, lo, hi,
                                                                        keep);

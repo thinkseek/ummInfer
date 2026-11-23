@@ -219,16 +219,127 @@ brought it to 899.3 ms.
 
 **The TTS busy percentage falls, and that is not an improvement claim.** It is
 busy/span. The span fell 25.34 → 3.51 s and the busy time fell 23.70 → 1.82 s,
-while absolute idle stayed at 1.6–1.7 s. The engine is now host-bound: 1.69 s of
-the 3.51 s trace has no kernel resident, because the autoregressive talker loop
-does 16 host-synchronised `argmax` calls and 15 host-side embedding gathers per
-audio frame. Raising the busy percentage from here means cutting host latency,
-not GPU work. Throughput and energy improved; the utilization ratio did not.
+while the absolute idle figure, measured across all GPU activity, stayed at
+1.6–1.7 s. Throughput and energy improved; the utilization ratio did not.
+
+The 1.69 s of that span is the gap between the model upload and the first
+kernel, not host idle in the talker loop. Measured inside the loop, the kernel
+span is 1.95 s with 0.17 s of idle and 91.3% GPU busy. The 2026-11-20 section
+below removes the per-frame host synchronisation and measures no change in wall
+clock, which confirms the reading.
 
 ### Qwen3.8-27B and Qwen-Image-2.1
 
 Not modified; their files are absent from this commit. Qwen3.8 measures
 41.2–41.5 tok/s before and after, with byte-identical `gen_ids.i32`.
+
+## Qwen3-TTS talker loop: device-side sub-codebook argmax — H20B, 2026-11-20
+
+Branch `task/tts-talker-async`, base commit `258803e`. Files changed:
+`native/tts/engine.cpp`, `native/tts/cuda_kernels.hpp`,
+`native/tts/cuda_kernels.cu`, `native/tts/CMakeLists.txt`.
+
+All runs on GPU 6 of the shared H20 host, exclusive (no other compute process
+resident), container `linyu-dev`, model
+`/root/umm-mixed-output-20261116/models/qwen3-tts`, CUDA 12.4, arch `sm_90`,
+`CMAKE_BUILD_TYPE=Release`.
+
+### Change
+
+Before: each audio frame resolved 16 argmax results on the host, one for the
+frame's c0 and 15 for the code predictor. `argmax_f32` is a kernel, a 4-byte
+D2H copy and a `cudaStreamSynchronize`, so every frame drained the stream 16
+times. Each resolved id then went back to the device as a 4-byte H2D copy
+before the next embedding gather.
+
+After: `argmax_f32_dev` launches the same `argmax_kernel`, with the same
+arithmetic and the same strict `>` tie-breaking, and writes the winner into
+device memory. The frame's ids live in `d_codes[16]`: `[0]` is the c0 the
+predictor expands, `[1..15]` are the residual ids it produces. The embedding
+gathers read their ids from device memory, so the predictor chain stays queued
+on one stream.
+
+Two host snapshots remain per frame, at the two boundaries the host must cross
+anyway:
+
+* after the predictor, because the ids feed the host-side codec decode;
+* after the codec head, because c0 decides whether the loop continues.
+
+Abort checks, chunk boundaries and the order of operations inside a frame are
+unchanged.
+
+### Equivalence
+
+Fixed prompts, greedy decode, three runs each. `UMM_TTS_DUMP_FRAMES` writes
+every codec id in emission order, 16 per frame.
+
+| Language | Prompt | Frames | Codec ids | Differing ids |
+| --- | --- | ---: | ---: | ---: |
+| Chinese | `用一句话介绍你自己。` | 61 | 976 | 0 |
+| English | `Introduce yourself in one sentence.` | 46 | 736 | 0 |
+
+All six before/after pairs are bit-identical. `--stream 1` reports
+`identical=1` for both languages (117,120 and 72,240 samples).
+`ctest -R tts_tail_trim_test` passes. The codec is not bit-repeatable across
+decodes, so two runs of the same binary differ in WAV bytes as well; the codec
+token ids are the parity gate, and `rms`/`peak` match to the printed precision.
+
+### Before and after
+
+Wall clock is five runs per cell, median in parentheses. Trace figures are two
+`nsys` profiles per cell.
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Wall clock, Chinese | 7460 / 7471 / 7511 / 7462 / 7478 ms (7471) | 7552 / 7474 / 7425 / 7462 / 7424 ms (7462) |
+| Wall clock, English | 7011 / 7099 / 7060 / 7068 / 7118 ms (7068) | 6986 / 6965 / 6954 / 6955 / 7097 ms (6965) |
+| Kernel span, Chinese | 1951 / 1967 ms | 1949 / 1944 ms |
+| Kernel span, English | 1489 / 1476 ms | 1505 / 1463 ms |
+| GPU busy, Chinese | 91.3% / 90.5% | 91.2% / 91.4% |
+| GPU busy, English | 90.4% / 91.2% | 89.3% / 91.9% |
+| Idle inside kernel span, Chinese | 170 / 186 ms | 171 / 166 ms |
+| Idle inside kernel span, English | 143 / 129 ms | 161 / 119 ms |
+| Memcpy ops per run, Chinese | 16,720 | 13,975 |
+| Memcpy ops per run, English | 12,646 | 10,576 |
+| Kernels per run | 113,572 (zh) / 85,863 (en) | unchanged |
+| Peak memory | 5,145 MiB (zh) / 4,935 MiB (en) | unchanged |
+| First audio, `--stream 1` | 102.99 / 102.69 / 103.18 ms | 102.13 / 105.80 / 102.44 ms |
+
+### Why the wall clock does not move
+
+The talker loop is GPU-bound. Its kernel span is 1.95 s and its GPU busy
+fraction is 91%; the idle left inside that span is 0.17 s, or about 2.8 ms per
+audio frame. Removing 14 of the 16 stream drains per frame cuts the memcpy
+count by 16% and the host wake-ups by 87%, but it recovers only that 0.17 s
+ceiling, and most of it is codec stage boundaries rather than argmax.
+
+The rest of the 7.5 s wall clock is model load. A run with `--max-frames 1`
+takes 5.78 s, and the longest single GPU gap in every trace is 1.49 s of no
+activity between the model upload and the first kernel.
+
+This corrects the earlier reading of this document. The 1.69 s "absolute idle"
+recorded for Qwen3-TTS in the section above is measured over the whole activity
+range, which starts at the model-upload memcpy. It is not host idle inside the
+talker loop. The talker loop has 0.17 s of idle, and the per-frame
+synchronisation was not the cause of the larger figure.
+
+### Reproduction
+
+```bash
+cmake -S native/tts -B build-tts -DUMM_TTS_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-tts -j 32
+CUDA_VISIBLE_DEVICES=6 UMM_TTS_DUMP_FRAMES=/tmp/ids.bin \
+  build-tts/umm-tts-native --model /root/umm-mixed-output-20261116/models/qwen3-tts \
+  --text "用一句话介绍你自己。" --language chinese --gpu 0 --out /tmp/zh.wav
+CUDA_VISIBLE_DEVICES=6 nsys profile --trace=cuda -o prof/tts \
+  build-tts/umm-tts-native --model ... --gpu 0 --out /tmp/zh.wav
+nsys stats --force-export=true --report cuda_gpu_trace --format csv prof/tts.nsys-rep
+```
+
+`native/tts/CMakeLists.txt` referenced `../tts_tests/`, which commit `ab51cf5`
+deleted. The dead unit-test targets were removed and `tts_tail_trim_test` was
+added to this build directory, so the command above configures and
+`ctest -R tts_tail_trim_test` runs.
 
 ## H20 hardware features
 
@@ -256,9 +367,11 @@ Not modified; their files are absent from this commit. Qwen3.8 measures
 * **Qwen3.8 GEMV kernel tuning.** A 2-way software-pipelined load loop, with and
   without `__ldcs`, measured 37.2–37.8 tok/s against 41.4 tok/s. Reverted; the
   kernel is within 9% of the measured streaming rate.
-* **TTS host loop.** 1.69 s of absolute idle remains in the talker loop. It is
-  the next target, but it is a sequencing change in the frame loop, not a
-  launch-overhead fix, and it needs its own parity gate.
+* **TTS host loop.** The talker loop is 91% GPU-busy and has 0.17 s of idle
+  inside its kernel span. The 1.69 s of "absolute idle" in the row above spans
+  the model upload and the first kernel, so it is not loop idle. Moving the
+  sub-codebook argmax to the device (2026-11-20 section) therefore does not
+  move the wall clock.
 
 ## Reproduction
 

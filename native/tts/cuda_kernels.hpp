@@ -61,6 +61,10 @@ void gemm_t(T* y, const T* x, const T* w, const T* bias, int m, int k, int out,
 template <typename T>
 void gemv_t(const T* w, const T* x, float* out, int n_out, int k, cudaStream_t stream);
 int argmax_f32(const float* logits, int n, int* scratch, cudaStream_t stream);
+// Same kernel and same tie-breaking, but the winning index stays on the device:
+// it is written to `out` and the caller reads it after its own synchronisation.
+// Used by the talker frame loop, which must not stall per sub-codebook.
+void argmax_f32_dev(const float* logits, int n, int* out, cudaStream_t stream);
 // Set logits[idx] = -inf for every idx in [lo, hi) except keep.
 void suppress_logits(float* logits, int lo, int hi, int keep, cudaStream_t stream);
 // HF repetition penalty over the emitted id history (applied before argmax).

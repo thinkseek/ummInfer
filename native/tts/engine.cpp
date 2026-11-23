@@ -70,7 +70,11 @@ struct TtsEngine::Impl {
       *attn = nullptr, *gate = nullptr, *up = nullptr, *proj = nullptr,
       *text2048 = nullptr, *text_out = nullptr;
   float* logits = nullptr;
-  int *d_ids = nullptr, *d_pos = nullptr, *d_argmax = nullptr;
+  int *d_ids = nullptr, *d_pos = nullptr;
+  // The frame's codec ids live on the device: [0] is the talker's c0 for the
+  // frame the predictor is about to expand, [1..15] are the residual ids it
+  // produces. Nothing in the predictor loop round-trips through the host.
+  int* d_codes = nullptr;
   int* d_hist = nullptr;  // emitted c0 ids for repetition penalty
   float* d_inv = nullptr;
   Bf16* talker_kv = nullptr;
@@ -231,7 +235,7 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
   UMM_CUDA_CHECK(cudaMalloc(&im.logits, kCodecVocab * sizeof(float)));
   UMM_CUDA_CHECK(cudaMalloc(&im.d_ids, W * sizeof(int)));
   UMM_CUDA_CHECK(cudaMalloc(&im.d_pos, W * sizeof(int)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_argmax, sizeof(int)));
+  UMM_CUDA_CHECK(cudaMalloc(&im.d_codes, kGroups * sizeof(int)));
   UMM_CUDA_CHECK(cudaMalloc(&im.d_hist, kMaxSlots * sizeof(int)));
   UMM_CUDA_CHECK(cudaMalloc(&im.d_inv, (kHD / 2) * sizeof(float)));
   UMM_CUDA_CHECK(cudaMalloc(&im.d_pad, kH * sizeof(Bf16)));
@@ -310,7 +314,7 @@ TtsEngine::~TtsEngine() {
   cudaFree(im.d_bos);
   cudaFree(im.d_pad);
   cudaFree(im.d_inv);
-  cudaFree(im.d_argmax);
+  cudaFree(im.d_codes);
   cudaFree(im.d_hist);
   cudaFree(im.d_pos);
   cudaFree(im.d_ids);
@@ -408,7 +412,7 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
   // moving. ponytail: hard cap; replace with no-repeat-ngram if needed.
   int kRunBan = 4;
   if (const char* e = std::getenv("UMM_TTS_RUN_BAN")) kRunBan = std::stoi(e);
-  auto select_c0 = [&](bool allow_eos, int n_hist, int ban_id) -> int {
+  auto select_c0 = [&](bool allow_eos, int n_hist, int ban_id) {
     rms_norm_t<Bf16>(im.hidden + static_cast<size_t>(seq_len - 1) * kH,
                      im.wb("talker.model.norm.weight"), im.norm, 1, kH, kEps,
                      im.stream);
@@ -425,19 +429,18 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
                       std::ios::binary);
       f.write(reinterpret_cast<const char*>(h.data()), h.size() * sizeof(float));
     }
-    return argmax_f32(im.logits, kCodecVocab, im.d_argmax, im.stream);
+    argmax_f32_dev(im.logits, kCodecVocab, im.d_codes, im.stream);
   };
 
-  // Run the 5-layer code predictor for one frame; returns c1..c15.
-  auto run_predictor = [&](const Bf16* past_hidden, int c0) -> std::vector<int> {
-    Bf16 emb[1];
-    (void)emb;
+  // Run the 5-layer code predictor for one frame. c0 is read from d_codes[0]
+  // and c1..c15 are written to d_codes[1..15]. No host round-trip: every
+  // sub-codebook argmax leaves its id in device memory, and the next step's
+  // embedding gather reads it from there.
+  auto run_predictor = [&](const Bf16* past_hidden) {
     // Prefill rows: [past_hidden, codec_embed(c0)].
     UMM_CUDA_CHECK(cudaMemcpyAsync(im.proj, past_hidden, kH * sizeof(Bf16),
                                    cudaMemcpyDeviceToDevice, im.stream));
-    UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, &c0, sizeof(int), cudaMemcpyHostToDevice,
-                                   im.stream));
-    gather_rows_t<Bf16>(im.wb("talker.model.codec_embedding.weight"), im.d_ids,
+    gather_rows_t<Bf16>(im.wb("talker.model.codec_embedding.weight"), im.d_codes,
                         im.proj + kH, 1, kH, im.stream);
     int pp[2] = {0, 1};
     UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_pos, pp, sizeof(pp), cudaMemcpyHostToDevice,
@@ -447,17 +450,13 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
                      im.norm, 1, kH, kEps, im.stream);
     gemv_t<Bf16>(im.wb("talker.code_predictor.lm_head.0.weight"), im.norm, im.logits,
                  kCpVocab, kH, im.stream);
-    std::vector<int> codes(15);
-    codes[0] = argmax_f32(im.logits, kCpVocab, im.d_argmax, im.stream);
+    argmax_f32_dev(im.logits, kCpVocab, im.d_codes + 1, im.stream);
     int cp_len = 2;
     for (int j = 1; j < 15; ++j) {
-      const int prev = codes[j - 1];
-      UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, &prev, sizeof(int),
-                                     cudaMemcpyHostToDevice, im.stream));
       gather_rows_t<Bf16>(
           im.wb("talker.code_predictor.model.codec_embedding." +
                 std::to_string(j - 1) + ".weight"),
-          im.d_ids, im.hidden, 1, kH, im.stream);
+          im.d_codes + j, im.hidden, 1, kH, im.stream);
       int pos = cp_len;
       UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_pos, &pos, sizeof(int),
                                      cudaMemcpyHostToDevice, im.stream));
@@ -468,12 +467,28 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
       gemv_t<Bf16>(
           im.wb("talker.code_predictor.lm_head." + std::to_string(j) + ".weight"),
           im.norm, im.logits, kCpVocab, kH, im.stream);
-      codes[j] = argmax_f32(im.logits, kCpVocab, im.d_argmax, im.stream);
+      argmax_f32_dev(im.logits, kCpVocab, im.d_codes + j + 1, im.stream);
     }
-    return codes;
   };
 
-  int c0 = select_c0(/*allow_eos=*/false, /*n_hist=*/0, /*ban_id=*/-1);
+  // Two host snapshots per frame, each at a boundary the host must cross
+  // anyway: the residual ids feed the host-side codec decode, and c0 decides
+  // whether the loop continues. Both keep the frame's order of operations
+  // unchanged, so time-to-first-audio does not move.
+  int hc[16];
+  auto fetch_rest = [&]() {
+    UMM_CUDA_CHECK(cudaMemcpyAsync(hc + 1, im.d_codes + 1, 15 * sizeof(int),
+                                   cudaMemcpyDeviceToHost, im.stream));
+    UMM_CUDA_CHECK(cudaStreamSynchronize(im.stream));
+  };
+  auto fetch_c0 = [&]() {
+    UMM_CUDA_CHECK(cudaMemcpyAsync(hc, im.d_codes, sizeof(int),
+                                   cudaMemcpyDeviceToHost, im.stream));
+    UMM_CUDA_CHECK(cudaStreamSynchronize(im.stream));
+  };
+  select_c0(/*allow_eos=*/false, /*n_hist=*/0, /*ban_id=*/-1);
+  fetch_c0();
+  int c0 = hc[0];
   std::vector<int> frames;
   std::vector<int> c0_trace;
   // Streaming policy: the first chunk is short so audio starts early, later
@@ -560,10 +575,11 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
       throw std::runtime_error("tts text too long for the talker buffers");
     UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_hist + step, &c0, sizeof(int),
                                    cudaMemcpyHostToDevice, im.stream));
-    const std::vector<int> rest = run_predictor(im.hidden + (seq_len - 1) * kH, c0);
+    run_predictor(im.hidden + (seq_len - 1) * kH);
+    fetch_rest();
     frames.push_back(c0);
     if (step == 0 && timings != nullptr) timings->first_frame_ms = elapsed_ms();
-    for (int x : rest) frames.push_back(x);
+    for (int j = 0; j < 15; ++j) frames.push_back(hc[1 + j]);
     const int frame_count = static_cast<int>(frames.size() / kGroups);
     if (on_chunk && frame_count >= next_stream_frame) {
       take(im.codec->decode(frames, frame_count, abort), frame_count);
@@ -571,17 +587,13 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
     }
 
     // Frame vector: codec_embed(c0) + 15 predictor embeddings + tts_pad.
-    UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, &c0, sizeof(int), cudaMemcpyHostToDevice,
-                                   im.stream));
-    gather_rows_t<Bf16>(im.wb("talker.model.codec_embedding.weight"), im.d_ids,
+    gather_rows_t<Bf16>(im.wb("talker.model.codec_embedding.weight"), im.d_codes,
                         im.proj, 1, kH, im.stream);
     for (int j = 0; j < 15; ++j) {
-      UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, &rest[j], sizeof(int),
-                                     cudaMemcpyHostToDevice, im.stream));
       gather_rows_t<Bf16>(
           im.wb("talker.code_predictor.model.codec_embedding." +
                 std::to_string(j) + ".weight"),
-          im.d_ids, im.hidden, 1, kH, im.stream);
+          im.d_codes + 1 + j, im.hidden, 1, kH, im.stream);
       add_residual_t<Bf16>(im.proj, im.hidden, kH, im.stream);
     }
     add_residual_t<Bf16>(im.proj, im.d_pad, kH, im.stream);
@@ -603,7 +615,9 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
         run = run && c0_trace[z] == c0_trace.back();
       if (run) ban_id = c0_trace.back();
     }
-    const int next = select_c0(allow_eos, step + 1, ban_id);
+    select_c0(allow_eos, step + 1, ban_id);
+    fetch_c0();
+    const int next = hc[0];
     if (next == kCodecEos) break;
     c0 = next;
     c0_trace.push_back(c0);
@@ -612,6 +626,13 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
     std::ofstream f(dump, std::ios::binary);
     f.write(reinterpret_cast<const char*>(c0_trace.data()),
             c0_trace.size() * sizeof(int));
+  }
+  // Every codec id in emission order, 16 per frame. Diagnostic only: the file
+  // is written from a vector that already exists, so decoding is unchanged.
+  if (const char* dump = std::getenv("UMM_TTS_DUMP_FRAMES")) {
+    std::ofstream f(dump, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(frames.data()),
+            static_cast<std::streamsize>(frames.size() * sizeof(int)));
   }
   UMM_CUDA_CHECK(cudaStreamSynchronize(im.stream));
   // The waveform decoder checks between its own stages too; this boundary
