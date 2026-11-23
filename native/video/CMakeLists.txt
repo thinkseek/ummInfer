@@ -17,6 +17,8 @@ add_library(umm_video_host STATIC
   scheduler.cpp
   mp4_encoder.cpp
   engine.cpp
+  safetensors_mmap.cpp
+  wan_vae.cpp
 )
 target_include_directories(umm_video_host PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -37,10 +39,13 @@ endif()
 if(UMM_VIDEO_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
-  target_sources(umm_video_host PRIVATE cuda_kernels.cu)
+  target_sources(umm_video_host PRIVATE cuda_kernels.cu wan_vae_kernels.cu)
   target_compile_definitions(umm_video_host PUBLIC UMM_VIDEO_CUDA=1)
-  target_link_libraries(umm_video_host PUBLIC CUDA::cudart)
+  target_link_libraries(umm_video_host PUBLIC CUDA::cudart CUDA::cublas)
   set_target_properties(umm_video_host PROPERTIES CUDA_ARCHITECTURES 90)
+  add_executable(umm-video-vae-test
+    ${CMAKE_CURRENT_SOURCE_DIR}/../video_tests/test_vae.cpp)
+  target_link_libraries(umm-video-vae-test PRIVATE umm_video_host)
 endif()
 
 enable_testing()
