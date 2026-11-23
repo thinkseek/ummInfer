@@ -67,6 +67,10 @@ else()
   message(FATAL_ERROR "nlohmann/json.hpp not found")
 endif()
 
+add_executable(qwen38_host_tests qwen38_tests/test_host.cpp)
+target_link_libraries(qwen38_host_tests PRIVATE qwen38_host)
+add_test(NAME qwen38_host_tests COMMAND qwen38_host_tests)
+
 if(UMM_QWEN38_CUDA)
   include(CheckLanguage)
   check_language(CUDA)

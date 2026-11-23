@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -35,6 +36,43 @@ namespace {
 constexpr int kDefaultMaxNewTokens = 256;
 constexpr int kMinPixels = 65536;
 constexpr int kMaxPixels = 16777216;
+
+// Reads temperature / top_p / seed from the bound request params. An absent
+// field keeps the greedy default, so a request without sampling knobs stays
+// bit-identical to the previous release.
+qwen38::SamplingParams parse_sampling(const Value::Map& params) {
+  qwen38::SamplingParams sampling;
+  auto number = [&params](const char* key, bool* found) {
+    const auto it = params.find(key);
+    if (it == params.end() || it->second.is_nil()) return 0.0;
+    if (!it->second.is_int() && !it->second.is_float())
+      throw ProtocolError(std::string(key) + " must be a number");
+    *found = true;
+    return it->second.as_double();
+  };
+  bool has_temperature = false;
+  const double temperature = number("temperature", &has_temperature);
+  if (has_temperature) {
+    if (!std::isfinite(temperature) || temperature < 0.0 || temperature > 2.0)
+      throw ProtocolError("temperature must be between 0 and 2");
+    sampling.temperature = static_cast<float>(temperature);
+  }
+  bool has_top_p = false;
+  const double top_p = number("top_p", &has_top_p);
+  if (has_top_p) {
+    if (!std::isfinite(top_p) || top_p <= 0.0 || top_p > 1.0)
+      throw ProtocolError("top_p must be in (0, 1]");
+    sampling.top_p = static_cast<float>(top_p);
+  }
+  const auto seed = params.find("seed");
+  if (seed != params.end() && !seed->second.is_nil()) {
+    if (!seed->second.is_int() || seed->second.as_int() < 0)
+      throw ProtocolError("seed must be a non-negative integer");
+    sampling.seed = static_cast<uint64_t>(seed->second.as_int());
+    sampling.has_seed = true;
+  }
+  return sampling;
+}
 
 qwen38::PreprocessedImage decode_image(const std::string& url) {
   const std::string bytes = load_image_bytes(url);
@@ -82,6 +120,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const OmniWork input = parse_qwen38_work(work);
     const int req_max_new_tokens =
         resolve_max_new_tokens(bound_request_params(), max_new_tokens, max_seq);
+    const qwen38::SamplingParams sampling =
+        parse_sampling(bound_request_params());
 
     std::unique_ptr<qwen38::PreprocessedImage> image;
     int image_tokens = 0;
@@ -141,12 +181,14 @@ CancellableComputeFn make_compute(const StageOptions& options) {
         request.prompt_ids = std::move(ids);
         request.image = image.get();
         request.max_new_tokens = req_max_new_tokens;
+        request.sampling = sampling;
         request.abort = [&tracker] { return tracker(); };
         request.on_token = emit_token;
         result = engine->generate_batched(request);
       } else {
         result = engine->generate(ids, image.get(), req_max_new_tokens, "",
-                                  [&tracker] { return tracker(); }, emit_token);
+                                  [&tracker] { return tracker(); }, emit_token,
+                                  sampling);
       }
     } catch (const qwen38::GenerationAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -167,6 +209,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const char* finish_reason = result.stopped_by_eos ? "stop" : "length";
     std::cerr << "qwen38 request request_id=" << req_id
               << " prompt_tokens=" << result.prompt_tokens
+              << " prefill_tokens=" << result.prefill_tokens
+              << " prefix_reused=" << result.reused_tokens
               << " image_tokens=" << result.image_tokens
               << " generated_tokens=" << result.ids.size()
               << " finish_reason=" << finish_reason

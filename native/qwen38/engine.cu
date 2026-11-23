@@ -11,18 +11,22 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <exception>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
 
+#include "prefix_cache.hpp"
 #include "qwen38_ops.hpp"
 #include "safetensors_mmap.hpp"
+#include "sampling.hpp"
 
 namespace umminfer::qwen38 {
 namespace {
@@ -238,6 +242,10 @@ struct BatchJob {
   int seq_len = 0;   // tokens already in the KV cache
   int next_pos = 0;  // mRoPE position of next_token
   int next_token = 0;
+  // Seeded on the calling thread before the job is queued, so a request's
+  // sampling sequence depends only on its own seed. The batch thread is the
+  // only reader.
+  std::mt19937_64 rng{0};
   std::chrono::steady_clock::time_point decode_started;
 };
 
@@ -277,6 +285,16 @@ struct Engine::Impl {
   Bf16* kv = nullptr;            // [16 slots][2][max_seq][4][256]
   float* rec_state = nullptr;    // [48 linear layers][48][128][128]
   Bf16* conv_state = nullptr;    // [48][10240][3]
+
+  // Prefix snapshot: the state a successful text-only prefill leaves at its
+  // prompt boundary. Allocated on the first snapshot so a disabled cache and
+  // image-only workloads never pay for it.
+  bool prefix_cache = true;
+  std::vector<int> cached_ids;
+  int cached_len = 0;
+  Bf16* kv_snap = nullptr;    // same layout as `kv` for one sequence
+  float* rec_snap = nullptr;  // same size as `rec_state`
+  Bf16* conv_snap = nullptr;  // same size as `conv_state`
 
   // Vision workspaces.
   Bf16 *d_pixels = nullptr, *v_hidden = nullptr, *v_norm = nullptr,
@@ -430,6 +448,9 @@ Engine::Engine(const std::string& model_dir, int gpu, int max_seq,
   impl_->batch_capacity = std::max(batch_capacity, 1);
   if (impl_->batch_capacity > kMaxBatch)
     throw std::runtime_error("batch_capacity exceeds kMaxBatch");
+  if (const char* env = std::getenv("UMM_QWEN38_PREFIX_CACHE")) {
+    impl_->prefix_cache = std::atoi(env) != 0;
+  }
   UMM_QWEN38_CUDA_CHECK(cudaSetDevice(gpu));
   impl_->load_weights(model_dir);
   impl_->alloc();
@@ -467,6 +488,7 @@ Engine::~Engine() {
   fb(im.v); fb(im.o); fb(im.mlp_gate); fb(im.mlp_up); fb(im.mlp_act);
   fb(im.mixed); fb(im.mixed_conv); fb(im.z); fb(im.b); fb(im.a); fb(im.core);
   fb(im.gated); fb(im.mrope_cos); fb(im.mrope_sin); fb(im.kv); fb(im.conv_state);
+  fb(im.kv_snap); fb(im.conv_snap); ff(im.rec_snap);
   fb(im.last_hidden);
   ff(im.qn); ff(im.kn); ff(im.beta); ff(im.decay); ff(im.logits); ff(im.rec_state);
   fb(im.d_pixels); fb(im.v_hidden); fb(im.v_norm); fb(im.v_qkv); fb(im.v_q);
@@ -705,6 +727,71 @@ void run_layer(Engine::Impl& im, int layer, int m, int history,
 // ---- continuous batching --------------------------------------------------
 constexpr size_t kKvRow = static_cast<size_t>(kKvHeads) * kHeadDim;
 
+// ---- prefix snapshot ------------------------------------------------------
+// The snapshot copies exactly what carries across a prefill boundary: the KV
+// rows of every full-attention layer and the recurrent + conv state the linear
+// layers leave behind. Decode only ever writes beyond the prompt boundary, so
+// the copy stays valid for the rest of the request.
+constexpr int kKvSlots = kLayers / 4;
+
+size_t rec_state_bytes() {
+  return sizeof(float) * kLayers * kLVH * kLVD * kLVD;
+}
+size_t conv_state_bytes() {
+  return sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1);
+}
+
+void ensure_snapshot_buffers(Engine::Impl& im) {
+  if (im.kv_snap != nullptr) return;
+  const size_t kv_bytes = static_cast<size_t>(kKvSlots) * 2 * im.max_seq * kKvRow;
+  UMM_QWEN38_CUDA_CHECK(
+      cudaMalloc(reinterpret_cast<void**>(&im.kv_snap), kv_bytes * sizeof(Bf16)));
+  UMM_QWEN38_CUDA_CHECK(
+      cudaMalloc(reinterpret_cast<void**>(&im.rec_snap), rec_state_bytes()));
+  UMM_QWEN38_CUDA_CHECK(
+      cudaMalloc(reinterpret_cast<void**>(&im.conv_snap), conv_state_bytes()));
+}
+
+void copy_kv_rows(Bf16* dst, const Bf16* src, int len, size_t stride,
+                  cudaStream_t st) {
+  const size_t bytes = static_cast<size_t>(len) * kKvRow * sizeof(Bf16);
+  for (int s = 0; s < kKvSlots; ++s) {
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+        dst + static_cast<size_t>(s) * 2 * stride, src + static_cast<size_t>(s) * 2 * stride,
+        bytes, cudaMemcpyDeviceToDevice, st));
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+        dst + static_cast<size_t>(s) * 2 * stride + stride,
+        src + static_cast<size_t>(s) * 2 * stride + stride, bytes,
+        cudaMemcpyDeviceToDevice, st));
+  }
+}
+
+void snapshot_prefix(Engine::Impl& im, const std::vector<int>& ids,
+                     cudaStream_t st) {
+  ensure_snapshot_buffers(im);
+  const size_t stride = static_cast<size_t>(im.max_seq) * kKvRow;
+  copy_kv_rows(im.kv_snap, im.kv, static_cast<int>(ids.size()), stride, st);
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.rec_snap, im.rec_state,
+                                        rec_state_bytes(),
+                                        cudaMemcpyDeviceToDevice, st));
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.conv_snap, im.conv_state,
+                                        conv_state_bytes(),
+                                        cudaMemcpyDeviceToDevice, st));
+  im.cached_ids = ids;
+  im.cached_len = static_cast<int>(ids.size());
+}
+
+void restore_prefix(Engine::Impl& im, int len, cudaStream_t st) {
+  const size_t stride = static_cast<size_t>(im.max_seq) * kKvRow;
+  copy_kv_rows(im.kv, im.kv_snap, len, stride, st);
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.rec_state, im.rec_snap,
+                                        rec_state_bytes(),
+                                        cudaMemcpyDeviceToDevice, st));
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.conv_state, im.conv_snap,
+                                        conv_state_bytes(),
+                                        cudaMemcpyDeviceToDevice, st));
+}
+
 void finish_job(const std::shared_ptr<BatchJob>& job) {
   {
     std::lock_guard<std::mutex> lock(job->mu);
@@ -850,8 +937,9 @@ void run_layer_seg(Engine::Impl& im, int layer, int rows, const SeqSpans& sp,
 
 // Runs every layer over `rows` workspace rows and returns one sampled token per
 // span, taken from the last row of that span.
-std::vector<int> batch_forward(Engine::Impl& im, const SeqSpans& sp, int nseq,
-                               int rows, bool use_gemv, const int* logit_rows) {
+std::vector<int> batch_forward(
+    Engine::Impl& im, const SeqSpans& sp, int nseq, int rows, bool use_gemv,
+    const int* logit_rows, const std::vector<std::shared_ptr<BatchJob>>& jobs) {
   cudaStream_t st = im.stream;
   for (int l = 0; l < kLayers; ++l) run_layer_seg(im, l, rows, sp, nseq, use_gemv);
   // A launch configuration error is reported by the launch itself, not by the
@@ -865,13 +953,31 @@ std::vector<int> batch_forward(Engine::Impl& im, const SeqSpans& sp, int nseq,
                          im.last_hidden, nseq, kHidden, kEps, st);
   gemv_bf16_f32_batch(im.bf("lm_head.weight"), im.last_hidden, im.logits, nseq,
                       kVocab, kHidden, st);
-  argmax_rows(im.logits, nseq, kVocab, im.argmax_idx, st);
-  UMM_QWEN38_CUDA_CHECK(cudaGetLastError());
+  bool sample_any = false;
+  for (int i = 0; i < nseq; ++i)
+    if (jobs[i]->req.sampling.temperature > 0.0f) sample_any = true;
   std::vector<int> out(static_cast<size_t>(nseq));
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(out.data(), im.argmax_idx,
-                                        static_cast<size_t>(nseq) * sizeof(int),
+  if (!sample_any) {
+    argmax_rows(im.logits, nseq, kVocab, im.argmax_idx, st);
+    UMM_QWEN38_CUDA_CHECK(cudaGetLastError());
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(out.data(), im.argmax_idx,
+                                          static_cast<size_t>(nseq) * sizeof(int),
+                                          cudaMemcpyDeviceToHost, st));
+    UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
+    return out;
+  }
+  // A sampled row needs its whole logit vector on the host. Greedy rows in the
+  // same group take the same host path, so a row's result never depends on
+  // which other requests share its forward.
+  std::vector<float> host(static_cast<size_t>(nseq) * kVocab);
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(host.data(), im.logits,
+                                        host.size() * sizeof(float),
                                         cudaMemcpyDeviceToHost, st));
   UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
+  for (int i = 0; i < nseq; ++i)
+    out[static_cast<size_t>(i)] =
+        sample_token(host.data() + static_cast<size_t>(i) * kVocab, kVocab,
+                     jobs[i]->req.sampling, jobs[i]->rng);
   return out;
 }
 
@@ -965,11 +1071,12 @@ void prefill_group(Engine::Impl& im,
   // executor does for m == 1. Groups are homogeneous, so no call mixes paths.
   const bool use_gemv = (rows == nseq);
   const std::vector<int> tokens =
-      batch_forward(im, sp, nseq, rows, use_gemv, logit_rows.data());
+      batch_forward(im, sp, nseq, rows, use_gemv, logit_rows.data(), jobs);
   const double prefill_ms = ms_since(t0);
   for (int i = 0; i < nseq; ++i) {
     auto& job = jobs[i];
     job->result.prompt_tokens = sp.len[i];
+    job->result.prefill_tokens = sp.len[i];
     job->result.image_tokens = n_img[i];
     job->result.vision_ms = vision_ms[i];
     job->result.prefill_ms = prefill_ms;
@@ -1017,7 +1124,7 @@ void step_decode(Engine::Impl& im,
                                         cudaMemcpyHostToDevice, st));
   const auto t0 = Clock::now();
   const std::vector<int> tokens =
-      batch_forward(im, sp, m, m, /*use_gemv=*/true, logit_rows.data());
+      batch_forward(im, sp, m, m, /*use_gemv=*/true, logit_rows.data(), jobs);
   // One line per decode step: the batch size and the wall time of the forward.
   std::fprintf(stderr, "qwen38 batch step m=%d rows=%d ms=%.2f\n", m, m,
                ms_since(t0));
@@ -1179,7 +1286,8 @@ void batch_loop(Engine::Impl& im) {
 GenResult Engine::generate(const std::vector<int>& prompt_ids,
                            const PreprocessedImage* image, int max_new_tokens,
                            const std::string& dump_dir, const AbortCheck& abort,
-                           const TokenCallback& on_token) {
+                           const TokenCallback& on_token,
+                           const SamplingParams& sampling) {
   Impl& im = *impl_;
   if (im.batch_capacity > 1)
     throw std::runtime_error(
@@ -1198,8 +1306,45 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
                prompt_ids.size() * sizeof(int));
   }
 
+  // Prefix reuse: continue from the snapshot the previous successful pure-text
+  // prefill left behind when this prompt extends it exactly. A parity dump
+  // always runs the full prompt.
+  int prefix = 0;
+  if (dump_dir.empty() && image == nullptr)
+    prefix = match_prefix(im.cached_ids, prompt_ids, /*has_image=*/false,
+                          im.prefix_cache);
+  im.cached_len = 0;
+  im.cached_ids.clear();
+  // Any failure leaves the live caches in an unknown state, so the snapshot is
+  // published only when the call reaches its normal return.
+  struct SnapshotGuard {
+    Engine::Impl& im;
+    bool keep = false;
+    ~SnapshotGuard() {
+      if (!keep) {
+        im.cached_len = 0;
+        im.cached_ids.clear();
+      }
+    }
+  } snapshot_guard{im};
+  const int M = P - prefix;
+
+  std::mt19937_64 rng(sampling.has_seed ? sampling.seed : std::random_device{}());
+  auto pick_token = [&]() -> int {
+    if (!(sampling.temperature > 0.0f))
+      return argmax_f32(im.logits, kVocab, im.argmax_scratch, st);
+    std::vector<float> host(static_cast<size_t>(kVocab));
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(host.data(), im.logits,
+                                          host.size() * sizeof(float),
+                                          cudaMemcpyDeviceToHost, st));
+    UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
+    return sample_token(host.data(), kVocab, sampling, rng);
+  };
+
   GenResult result;
   result.prompt_tokens = P;
+  result.prefill_tokens = M;
+  result.reused_tokens = prefix;
 
   double vision_ms = 0.0;
   int n_img = 0;
@@ -1222,17 +1367,21 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   const auto t_prefill = Clock::now();
   // The linear-attention recurrent state and the conv history are cumulative.
   // They are allocated once for the process, so every request must start from
-  // zero: otherwise request N+1 continues from request N's history. The KV
-  // cache needs no reset because prefill rewrites positions [0, P).
-  UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(
-      im.rec_state, 0, sizeof(float) * kLayers * kLVH * kLVD * kLVD, st));
-  UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(
-      im.conv_state, 0, sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1), st));
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, prompt_ids.data(),
-                                        P * sizeof(int), cudaMemcpyHostToDevice,
+  // zero: otherwise request N+1 continues from request N's history. A reused
+  // prefix instead restores the state the snapshot holds at its boundary. The
+  // KV cache needs no reset because prefill rewrites positions [0, P).
+  if (prefix == 0) {
+    UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(im.rec_state, 0, rec_state_bytes(), st));
+    UMM_QWEN38_CUDA_CHECK(
+        cudaMemsetAsync(im.conv_state, 0, conv_state_bytes(), st));
+  } else {
+    restore_prefix(im, prefix, st);
+  }
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, prompt_ids.data() + prefix,
+                                        M * sizeof(int), cudaMemcpyHostToDevice,
                                         st));
   index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
-                   im.hidden, P, kHidden, st);
+                   im.hidden, M, kHidden, st);
   if (image) {
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
         im.hidden + static_cast<size_t>(img_start) * kHidden, im.pooler,
@@ -1244,12 +1393,12 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
       prompt_ids, image ? image->grid_h : 0, image ? image->grid_w : 0, image != nullptr);
   std::vector<Bf16> cos, sin;
   build_text_rope(pos, P, &cos, &sin);
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(),
-                                        cos.size() * sizeof(Bf16),
-                                        cudaMemcpyHostToDevice, st));
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, sin.data(),
-                                        sin.size() * sizeof(Bf16),
-                                        cudaMemcpyHostToDevice, st));
+  const size_t rope_off = static_cast<size_t>(prefix) * kRotaryDim;
+  const size_t rope_bytes = static_cast<size_t>(M) * kRotaryDim * sizeof(Bf16);
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data() + rope_off,
+                                        rope_bytes, cudaMemcpyHostToDevice, st));
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, sin.data() + rope_off,
+                                        rope_bytes, cudaMemcpyHostToDevice, st));
 
   if (!dump_dir.empty()) {
     dump_dev(im, dump_dir, "embed.bf16", im.hidden,
@@ -1264,14 +1413,17 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
 
   for (int l = 0; l < kLayers; ++l) {
     check_abort("prefill");
-    run_layer(im, l, P, 0, dump_dir);
+    run_layer(im, l, M, prefix, dump_dir);
   }
 
-  rms_norm_zero_centered(im.hidden + static_cast<size_t>(P - 1) * kHidden,
+  // Snapshot at the prompt boundary, before the first decode row is written.
+  if (image == nullptr && im.prefix_cache) snapshot_prefix(im, prompt_ids, st);
+
+  rms_norm_zero_centered(im.hidden + static_cast<size_t>(M - 1) * kHidden,
                          im.bf("model.language_model.norm.weight"), im.norm, 1,
                          kHidden, kEps, st);
   gemv_bf16_f32(im.bf("lm_head.weight"), im.norm, im.logits, kVocab, kHidden, st);
-  int next = argmax_f32(im.logits, kVocab, im.argmax_scratch, st);
+  int next = pick_token();
   UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
   result.prefill_ms = ms_since(t_prefill);
   if (!dump_dir.empty())
@@ -1303,7 +1455,7 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     rms_norm_zero_centered(im.hidden, im.bf("model.language_model.norm.weight"),
                            im.norm, 1, kHidden, kEps, st);
     gemv_bf16_f32(im.bf("lm_head.weight"), im.norm, im.logits, kVocab, kHidden, st);
-    next = argmax_f32(im.logits, kVocab, im.argmax_scratch, st);
+    next = pick_token();
     ++seq_len;
     ++next_pos;
     ++decode_forwards;
@@ -1317,6 +1469,7 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     write_file(dump_dir, "gen_ids.i32", result.ids.data(),
                result.ids.size() * sizeof(int));
   }
+  snapshot_guard.keep = true;
   return result;
 }
 
@@ -1329,6 +1482,10 @@ GenResult Engine::generate_batched(const BatchRequest& request) {
     throw std::runtime_error("max_new_tokens must be positive");
   auto job = std::make_shared<BatchJob>();
   job->req = request;
+  // Seed here, on the calling thread: the batch thread only advances the rng,
+  // and a request's draw sequence must depend on its own seed alone.
+  job->rng.seed(request.sampling.has_seed ? request.sampling.seed
+                                          : std::random_device{}());
   {
     std::lock_guard<std::mutex> lock(im.queue_mu);
     if (im.stopping) throw std::runtime_error("engine is stopping");

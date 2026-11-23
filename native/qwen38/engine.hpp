@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -22,10 +23,24 @@ using AbortCheck = std::function<bool()>;
 // Receives each generated token id before the next forward pass.
 using TokenCallback = std::function<void(int)>;
 
+// Sampling knobs for one request. The defaults are exactly the original
+// executor: temperature <= 0 selects argmax, so an unset request stays greedy
+// and bit-identical to the previous release.
+struct SamplingParams {
+  float temperature = 0.0f;
+  float top_p = 1.0f;
+  uint64_t seed = 0;
+  bool has_seed = false;
+};
+
 struct GenResult {
   std::vector<int> ids;        // generated token ids, EOS excluded
   bool stopped_by_eos = false;
+  // prompt_tokens is the whole prompt; prefill_tokens is what this call
+  // actually computed, and reused_tokens came from the prefix snapshot.
   int prompt_tokens = 0;
+  int prefill_tokens = 0;
+  int reused_tokens = 0;
   int image_tokens = 0;
   double vision_ms = 0.0;      // image tower + merger
   double prefill_ms = 0.0;     // embedding -> first-token logits (excludes vision)
@@ -38,6 +53,7 @@ struct BatchRequest {
   std::vector<int> prompt_ids;
   const PreprocessedImage* image = nullptr;  // must outlive the call
   int max_new_tokens = 0;
+  SamplingParams sampling;
   AbortCheck abort;
   TokenCallback on_token;
 };
@@ -64,11 +80,17 @@ class Engine {
   // prompt_ids must already contain one image_pad id per merged vision token.
   // dump_dir, when non-empty, receives per-layer bf16 tensors for parity tests.
   // An empty abort check and an empty token callback keep the original run.
+  //
+  // A pure-text call whose ids extend the previous successful pure-text prompt
+  // reuses that call's snapshot: KV rows, the linear-attention recurrent state
+  // and the conv history at the cached length. The reused region was written
+  // by prefill, so a reused run is bit-identical to a full prefill.
   GenResult generate(const std::vector<int>& prompt_ids,
                      const PreprocessedImage* image, int max_new_tokens,
                      const std::string& dump_dir = "",
                      const AbortCheck& abort = {},
-                     const TokenCallback& on_token = {});
+                     const TokenCallback& on_token = {},
+                     const SamplingParams& sampling = {});
 
   // Continuous batching: the request joins the batch thread's queue, decodes
   // next to the other active requests, and leaves the batch on EOS or at its
