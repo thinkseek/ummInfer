@@ -212,6 +212,67 @@ void read_audio_field(const json& object, std::string& audio, std::string& trans
   audio += detail::base64_decode(data, remaining);
 }
 
+// Appends the whole artifacts of one non-streaming mixed response. Unlike the
+// SSE path there is no chunking: each entry is one independently decodable
+// base64 blob plus its byte count and sha256, both verified here.
+void read_artifacts_field(const json& root, ChatResponse& out, std::string_view raw,
+                          std::string_view secret) {
+  const auto it = root.find("artifacts");
+  if (it == root.end() || it->is_null()) return;
+  if (!it->is_array()) bad_response(raw, secret);
+  size_t decoded_total = 0;
+  for (const json& item : *it) {
+    if (!item.is_object()) bad_response(raw, secret);
+    Artifact artifact;
+    artifact.artifact_id = response_string(item, "artifact_id", raw, secret);
+    artifact.media_type = response_string(item, "media_type", raw, secret);
+    artifact.mime_type = response_string(item, "mime_type", raw, secret);
+    if (artifact.media_type != "image" && artifact.media_type != "audio" &&
+        artifact.media_type != "video") {
+      throw Error(ErrorCode::kBadResponse,
+                  "artifact media_type must be image, audio or video");
+    }
+    if (response_string(item, "encoding", raw, secret) != "base64") {
+      throw Error(ErrorCode::kBadResponse, "artifact encoding must be base64");
+    }
+    const size_t per_leg = artifact.media_type == "image"   ? kMixedMaxImageBytes
+                           : artifact.media_type == "video" ? kMixedMaxVideoBytes
+                                                            : kMixedMaxAudioBytes;
+    const std::string encoded = response_string(item, "data", raw, secret);
+    if (encoded.empty() || encoded.size() % 4 != 0) {
+      throw Error(ErrorCode::kBadResponse, "artifact data is not legal base64");
+    }
+    artifact.data = detail::base64_decode(encoded, per_leg);
+    const auto bytes = item.find("bytes");
+    if (bytes == item.end() || !bytes->is_number_integer() ||
+        bytes->get<int64_t>() != static_cast<int64_t>(artifact.data.size())) {
+      throw Error(ErrorCode::kBadResponse, "artifact byte count does not match");
+    }
+    artifact.sha256 = response_string(item, "sha256", raw, secret);
+    if (artifact.sha256.empty() ||
+        artifact.sha256 != detail::sha256_hex(artifact.data)) {
+      throw Error(ErrorCode::kBadResponse, "artifact sha256 mismatch");
+    }
+    if (decoded_total + artifact.data.size() > kMixedMaxAggregateBytes) {
+      throw Error(ErrorCode::kBadResponse,
+                  "mixed output artifacts exceed the aggregate limit");
+    }
+    decoded_total += artifact.data.size();
+    artifact.descriptor = item;
+    out.artifacts.push_back(std::move(artifact));
+  }
+}
+
+// Carries the terminal legs array through unchanged. Its shape is the same one
+// the SSE terminal reports: [{stage, state, error?}, ...].
+void read_legs_field(const json& root, ChatResponse& out, std::string_view raw,
+                     std::string_view secret) {
+  const auto it = root.find("legs");
+  if (it == root.end() || it->is_null()) return;
+  if (!it->is_array()) bad_response(raw, secret);
+  out.legs = *it;
+}
+
 detail::HttpRequest media_request(const OpenAIConfig& config, const std::string& base_url,
                                   const std::string& path, detail::HttpMethod method,
                                   Milliseconds timeout, CancelFlag cancel) {
@@ -376,9 +437,6 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     if (request.image->seed && *request.image->seed < 0) {
       throw Error(ErrorCode::kConfig, "image.seed must not be negative");
     }
-    if (!stream) {
-      throw Error(ErrorCode::kConfig, "image output requires stream");
-    }
   }
   if (request.audio) {
     if (!audio_output) {
@@ -392,9 +450,6 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     }
     if (request.audio->sample_rate != 24000) {
       throw Error(ErrorCode::kConfig, "audio.sample_rate must be 24000");
-    }
-    if (!stream) {
-      throw Error(ErrorCode::kConfig, "audio output requires stream");
     }
   } else if (audio_output) {
     throw Error(ErrorCode::kConfig, "audio output requires audio.voice");
@@ -419,11 +474,6 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     if (request.video->seed && *request.video->seed < 0) {
       throw Error(ErrorCode::kConfig, "video.seed must not be negative");
     }
-    if (!stream) {
-      throw Error(ErrorCode::kConfig, "video output requires stream");
-    }
-  } else if (video_output && !stream) {
-    throw Error(ErrorCode::kConfig, "video output requires stream");
   }
   const bool mixed_output = image_output || audio_output || video_output;
   const Milliseconds timeout = request.timeout.count() > 0 ? request.timeout : config_.timeout;
@@ -525,7 +575,10 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
           http.stream_limit = mixed_output ? kMixedStreamWireBytes
                                            : kMaxJsonResponseBytes;
         } else {
-          http.body_limit = kMaxJsonResponseBytes;
+          // A non-streaming mixed body carries the same aggregate artifacts as
+          // a stream, so it needs the mixed wire bound, not the text one.
+          http.body_limit = mixed_output ? kMixedStreamWireBytes
+                                         : kMaxJsonResponseBytes;
         }
         http.progress = &progress;
         http.no_proxy = lower(endpoint_).rfind("http://", 0) == 0;
@@ -557,6 +610,8 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
             out.text = response_string(*message, "content", response.body, config_.api_key);
             read_audio_field(*message, out.audio, out.audio_transcript, response.body,
                              config_.api_key);
+            read_artifacts_field(root, out, response.body, config_.api_key);
+            read_legs_field(root, out, response.body, config_.api_key);
             const std::string refusal =
                 response_string(*message, "refusal", response.body, config_.api_key);
             const std::string reason =

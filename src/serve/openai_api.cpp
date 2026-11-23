@@ -21,6 +21,7 @@
 #include <set>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "asr_common.hpp"
 #include "serve/upstream_proxy.hpp"
@@ -526,10 +527,6 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     video_output = true;
   }
   if (!image_output && !audio_output && !video_output) return true;
-  if (!body.value("stream", false)) {
-    error = "image, audio and video output require stream=true";
-    return false;
-  }
   if (image_output && !image_enabled) {
     error = "image output is not enabled on this server";
     return false;
@@ -540,6 +537,12 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
   }
   if (video_output && !video_enabled) {
     error = "video output is not enabled on this server";
+    return false;
+  }
+  // Streamed PCM chunks are SSE-only, so they cannot ride a single JSON body.
+  if (!body.value("stream", false) && audio_output &&
+      body["audio"].is_object() && body["audio"].value("stream", false)) {
+    error = "audio.stream=true requires stream=true";
     return false;
   }
   Value::Array selected;
@@ -934,6 +937,156 @@ class OpenAIApi::Impl {
   void release_chat(const std::string& request_id) {
     if (unified_engine_) unified_engine_->release(request_id);
     else coordinator_.release(request_id);
+  }
+
+  // stream=false with optional output legs. Collects the same unified events
+  // the SSE path forwards, reassembles each complete artifact, and answers with one
+  // chat.completion JSON body. A failed optional leg keeps HTTP 200; a failed
+  // primary leg answers the same error shape the text-only path uses.
+  void handle_nonstream_mixed(const httplib::Request& req,
+                              httplib::Response& res, StagePayload payload,
+                              int64_t created) {
+    const std::string request_id = "http-" + std::to_string(++next_request_id_);
+    payload.request_id = request_id;
+    auto sink = std::make_shared<SseSink>();
+    {
+      std::lock_guard<std::mutex> lock(streams_mu_);
+      streams_[request_id] = sink;
+    }
+    try {
+      submit_chat(std::move(payload));
+    } catch (const QueueFullError&) {
+      {
+        std::lock_guard<std::mutex> lock(streams_mu_);
+        streams_.erase(request_id);
+      }
+      reject_overloaded(res);
+      return;
+    } catch (const std::exception& exc) {
+      {
+        std::lock_guard<std::mutex> lock(streams_mu_);
+        streams_.erase(request_id);
+      }
+      res.status = 503;
+      res.set_content(
+          json{{"error", {{"message", exc.what()}, {"type", "pipeline_error"}}}}
+              .dump(),
+          "application/json");
+      return;
+    }
+    // Cancels and releases on every exit, including a client disconnect.
+    auto cleanup = std::shared_ptr<void>(
+        nullptr, [this, request_id](void*) {
+          cancel_chat(request_id);
+          {
+            std::lock_guard<std::mutex> lock(streams_mu_);
+            streams_.erase(request_id);
+          }
+          release_chat(request_id);
+        });
+
+    bool done = false;
+    std::string stream_error;
+    std::optional<UnifiedEvent> terminal;
+    std::vector<UnifiedEvent> artifacts;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::duration<double>(config_.request_timeout_s);
+    while (!done && !req.is_connection_closed()) {
+      const double remaining = std::chrono::duration<double>(
+                                   deadline - std::chrono::steady_clock::now())
+                                   .count();
+      if (remaining <= 0) break;
+      SseItem item;
+      if (sink->pop(item, std::min(0.1, remaining))) {
+        if (auto* event = std::get_if<UnifiedEvent>(&item);
+            event != nullptr &&
+            event->kind == UnifiedEvent::Kind::kArtifact) {
+          artifacts.push_back(*event);
+        }
+        continue;
+      }
+      std::lock_guard<std::mutex> lock(sink->mu);
+      done = sink->done;
+      if (done) {
+        stream_error = sink->error;
+        terminal = sink->terminal;
+      }
+    }
+    if (req.is_connection_closed()) return;
+    if (!done) {
+      cancel_chat(request_id, "timeout");
+      res.status = 504;
+      res.set_content(json{{"error", {{"message", "request timed out"}}}}.dump(),
+                      "application/json");
+      return;
+    }
+    if (!stream_error.empty() || !terminal ||
+        terminal->kind == UnifiedEvent::Kind::kError ||
+        terminal->kind == UnifiedEvent::Kind::kCancelled) {
+      const auto info = info_chat(request_id);
+      std::string message = stream_error;
+      if (message.empty() && info) message = info->error;
+      if (message.empty()) message = "request failed";
+      res.status = 500;
+      res.set_content(
+          json{{"error", {{"message", message}, {"type", "generation_error"}}}}
+              .dump(),
+          "application/json");
+      return;
+    }
+
+    // One artifact is one whole decoded blob. Its chunks arrive in index order,
+    // so the descriptor of the first chunk plus every chunk's bytes is enough.
+    struct Pending {
+      json descriptor;
+      std::string bytes;
+      bool started = false;
+    };
+    std::map<std::string, Pending> pending;
+    json artifacts_json = json::array();
+    for (const UnifiedEvent& event : artifacts) {
+      if (!event.artifact_bytes) continue;
+      const json descriptor = value_to_json(event.artifact);
+      const std::string id = descriptor.value("artifact_id", std::string());
+      const int64_t index = descriptor.value("index", int64_t{-1});
+      const int64_t total = descriptor.value("total", int64_t{-1});
+      Pending& slot = pending[id];
+      if (!slot.started) {
+        slot.descriptor = descriptor;
+        slot.started = true;
+      }
+      slot.bytes.append(event.artifact_bytes->data() + event.artifact_offset,
+                        event.artifact_length);
+      if (index + 1 != total) continue;
+      json out = std::move(slot.descriptor);
+      out.erase("index");
+      out.erase("total");
+      out["encoding"] = "base64";
+      out["data"] = util::base64_encode(slot.bytes);
+      out["bytes"] = static_cast<int64_t>(slot.bytes.size());
+      out["sha256"] = util::sha256_hex(slot.bytes);
+      artifacts_json.push_back(std::move(out));
+      pending.erase(id);
+    }
+
+    const Value& result = terminal->result;
+    std::string text = terminal->text;
+    if (!result.is_nil()) text = result_text(result);
+    const std::string finish = result_finish_reason(result);
+    json out = {
+        {"id", request_id},
+        {"object", "chat.completion"},
+        {"created", created},
+        {"model", config_.served_model_name},
+        {"session_id", terminal->session_id},
+        {"choices",
+         {{{"index", 0},
+           {"message", {{"role", "assistant"}, {"content", text}}},
+           {"finish_reason", finish.empty() ? json(nullptr) : json(finish)}}}},
+        {"artifacts", std::move(artifacts_json)},
+        {"legs", terminal->legs.is_array() ? value_to_json(terminal->legs)
+                                           : json::array()}};
+    res.set_content(out.dump(), "application/json");
   }
 
   void handle_transcription(const httplib::Request& req, httplib::Response& res) {
@@ -1486,6 +1639,11 @@ class OpenAIApi::Impl {
       reject("mixed output requires unified mode");
       return;
     }
+    // At least one optional output leg was requested; the non-streaming path
+    // then collects the unified events into one JSON body instead of one
+    // terminal result.
+    const bool mixed_output =
+        mixed_engine_inputs.find("output_modalities") != mixed_engine_inputs.end();
     try {
       inputs["messages"] = json_to_value(body["messages"]);
       if (unified_engine_) {
@@ -1550,6 +1708,10 @@ class OpenAIApi::Impl {
     }
 
     if (!stream) {
+      if (unified_engine_ && mixed_output) {
+        handle_nonstream_mixed(req, res, std::move(payload), created);
+        return;
+      }
       std::string request_id;
       try {
         request_id = submit_chat(std::move(payload));

@@ -19,7 +19,8 @@ without them is byte-identical to the current text path.
     full aggregated VLM answer. Never a transcript or a streaming delta.
   - `size`: string, default `"512x512"` (matching the native `umm-native-stage-image` `--image-backend 2512|2.1` stages).
   - `seed`: optional integer.
-  - `output_format`: `"png"` (default) or `"jpeg"`.
+  - `output_format`: only `"png"` (default). The image stage emits PNG only,
+    so any other value is rejected.
 - `audio`: object, required when `modalities` includes `audio`.
   - `voice`: non-empty string.
   - `format`: only `"wav"`.
@@ -41,8 +42,11 @@ without them is byte-identical to the current text path.
   - `fps`: optional positive integer.
   - `seed`: optional integer.
   - `output_format`: optional string, only `"mp4"` (default `"mp4"`).
-- Any request with `image`, `audio` or `video` output must set `stream=true` or
-  the server answers 400. Non-streaming mixed output is not implemented.
+- Any request with `image`, `audio` or `video` output works with `stream=true`
+  (SSE) and `stream=false` (one JSON body, see "Non-streaming mixed output").
+- `audio.stream=true` with `stream=false` is rejected with 400:
+  `audio.stream=true requires stream=true`. Streamed PCM chunks have no place
+  in one JSON body.
 - When the matching optional stage is not registered in this process, the
   requested modality is rejected at the HTTP layer with 400 before submit:
   `image output is not enabled on this server` /
@@ -129,6 +133,46 @@ exactly one `data: [DONE]`.
   `legs` key is absent when no optional leg ran.
 - All artifact and leg_error events are enqueued before the terminal.
 
+## Non-streaming mixed output
+
+`stream=false` with `image`, `audio` and/or `video` answers one
+`chat.completion` JSON body instead of SSE. The server collects the same
+unified events the SSE path forwards, reassembles each artifact, and writes the
+response only at the single terminal event.
+
+Text-only requests without optional output keys are unchanged: no `artifacts`,
+no `legs` and no `session_id` key appears.
+
+```json
+{"id":"http-7","object":"chat.completion","created":1763900000,
+ "model":"qwen3-unified","session_id":"sess-1",
+ "choices":[{"index":0,
+             "message":{"role":"assistant","content":"<VLM answer>"},
+             "finish_reason":"stop"}],
+ "artifacts":[{"artifact_id":"art-0","media_type":"image",
+               "mime_type":"image/png","encoding":"base64",
+               "data":"<whole base64 artifact>","bytes":184320,
+               "sha256":"<hex of decoded artifact>",
+               "format":"png","size":"512x512","seed":42}],
+ "legs":[{"stage":"image","state":"completed"},
+         {"stage":"tts","state":"failed","error":"tts unavailable"}]}
+```
+
+- `artifacts` carries one whole decoded artifact per successful optional leg:
+  no `index`/`total` chunk fields, one `data` blob, plus `bytes` and `sha256`
+  of the whole decoded artifact. It is an empty array when no leg succeeded.
+- `legs` is the terminal legs array, identical to the SSE terminal
+  `unified.legs`: `[{stage, state, error?}, ...]` with `state` one of
+  `completed`, `failed`, `aborted`.
+- `session_id` echoes the request label, or the generated label when the
+  request had none.
+- Partial failure: a failed optional leg keeps HTTP 200 with the VLM text, the
+  artifacts that did succeed, and the failure named in `legs`. An ASR or VLM
+  failure answers the same HTTP error shape the text-only `stream=false` path
+  uses (HTTP 500 `generation_error`).
+- A client disconnect cancels and releases the request before the response is
+  written.
+
 ## Byte limits
 
 Frozen values, enforced at the HTTP boundary and mirrored by the C++ client:
@@ -138,10 +182,11 @@ Frozen values, enforced at the HTTP boundary and mirrored by the C++ client:
 - one decoded video: at most 48 MiB;
 - decoded artifact bytes per request aggregated: at most 60 MiB;
 - one SSE frame on the wire: at most 3 MiB (the parser hard limit is 4 MiB);
-- the C++ client keeps its 64 MiB hard cap for text-only streams and uses a
-  96 MiB wire/aggregated stream cap (`kMixedStreamWireBytes`) for mixed output
-  (giving base64 + SSE/JSON envelope headroom for the 60 MiB decoded aggregate),
-  failing deterministically rather than truncating.
+- the C++ client keeps its 64 MiB hard cap for text-only responses and uses a
+  96 MiB wire/aggregated cap (`kMixedStreamWireBytes`) for mixed output, on both
+  the SSE stream and the non-streaming JSON body (giving base64 + envelope
+  headroom for the 60 MiB decoded aggregate), failing deterministically rather
+  than truncating.
 
 Worker -> engine transport is one msgpack Bin in the existing
 `CompleteMessage.result`; no new top-level message type. The result map is
