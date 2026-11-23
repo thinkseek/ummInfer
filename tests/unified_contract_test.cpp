@@ -4430,6 +4430,439 @@ void test_public_http_mixed_partial_failure() {
              "partial-failure request stayed in flight");
 }
 
+// One non-streaming chat.completion body carrying text plus every optional
+// modality. Each artifact arrives whole: one base64 blob, its decoded byte
+// count and its sha256, with no SSE chunk fields.
+void test_public_http_nonstream_mixed_all_modalities() {
+  Harness h("nonstreammixed");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "non-streaming mixed server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  // 3 MiB forces two chunks for the image; audio and video stay single-chunk.
+  const std::string image_bytes(3u << 20, '\x11');
+  const std::string audio_bytes(1024, '\x22');
+  const std::string video_bytes(2048, '\x33');
+  nlohmann::json body = {
+      {"model", "qwen3-unified"},
+      {"messages", nlohmann::json::array(
+                       {nlohmann::json{{"role", "user"}, {"content", "hi"}}})},
+      {"stream", false},
+      {"session_id", "nonstream-sess"},
+      {"modalities", nlohmann::json::array({"text", "image", "audio", "video"})},
+      {"image", {{"output_format", "png"}, {"size", "1024x1024"}}},
+      {"audio", {{"voice", "Tina"}, {"format", "wav"}, {"sample_rate", 24000}}},
+      {"video", {{"size", "1280x720"}, {"seconds", 4}, {"fps", 24}}}};
+
+  auto response_future = std::async(std::launch::async, [&] {
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{15000};
+    return test_http::perform(request);
+  });
+
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "non-streaming mixed request did not reach the VLM");
+  if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("the answer"));
+  auto image_submit = h.next_submit(h.image_recv);
+  auto tts_submit = h.next_submit(h.tts_recv);
+  auto video_submit = h.next_submit(h.video_recv);
+  check(image_submit.has_value() && tts_submit.has_value() &&
+            video_submit.has_value(),
+        "a non-streaming mixed leg did not start");
+  if (image_submit) {
+    h.complete(image_submit->request_id, "image", true,
+               artifact_result("image", "image/png", image_bytes));
+  }
+  if (tts_submit) {
+    Value::Map extra;
+    extra["sample_rate"] = Value(int64_t{24000});
+    extra["channels"] = Value(int64_t{1});
+    h.complete(tts_submit->request_id, "tts", true,
+               artifact_result("audio", "audio/wav", audio_bytes,
+                               std::move(extra)));
+  }
+  if (video_submit) {
+    Value::Map extra;
+    extra["format"] = Value("mp4");
+    extra["size"] = Value("1280x720");
+    h.complete(video_submit->request_id, "video", true,
+               artifact_result("video", "video/mp4", video_bytes,
+                               std::move(extra)));
+  }
+
+  const auto response = response_future.get();
+  api.stop();
+  server_thread.join();
+  check(response.status == 200,
+        "non-streaming mixed request returned an HTTP error");
+  check(response.body.find("data: ") == std::string::npos,
+        "non-streaming mixed response is not a single JSON body");
+
+  const json out = json::parse(response.body);
+  check(out["object"] == "chat.completion" && out["id"].is_string() &&
+            out["created"].is_number_integer() &&
+            out["model"] == "qwen3-unified",
+        "non-streaming mixed response lost a standard OpenAI field");
+  check(out["session_id"] == "nonstream-sess",
+        "non-streaming mixed response lost its session_id");
+  check(out["choices"][0]["message"]["role"] == "assistant" &&
+            out["choices"][0]["message"]["content"] == "the answer",
+        "non-streaming mixed response lost the VLM text");
+
+  const std::map<std::string, std::string> expected = {
+      {"image", image_bytes}, {"audio", audio_bytes}, {"video", video_bytes}};
+  std::map<std::string, std::string> decoded;
+  check(out["artifacts"].is_array() && out["artifacts"].size() == 3,
+        "expected one whole artifact per output modality");
+  for (const json& artifact : out["artifacts"]) {
+    const std::string media = artifact["media_type"].get<std::string>();
+    check(artifact["encoding"] == "base64" &&
+              !artifact.contains("index") && !artifact.contains("total"),
+          "a whole artifact kept SSE chunk fields or lost its encoding");
+    const std::string bytes =
+        util::base64_decode(artifact["data"].get<std::string>(),
+                            kArtifactChunkTargetBytes * 4);
+    check(artifact["bytes"].get<int64_t>() ==
+              static_cast<int64_t>(bytes.size()),
+          "artifact byte count does not match its decoded data");
+    check(artifact["sha256"] == util::sha256_hex(bytes),
+          "artifact sha256 does not match its decoded data");
+    check(expected.count(media) == 1 && expected.at(media) == bytes,
+          "artifact bytes do not match the stage output");
+    decoded[media] = bytes;
+  }
+  check(decoded.size() == 3, "an output modality produced no artifact");
+
+  std::map<std::string, std::string> leg_states;
+  check(out["legs"].is_array() && out["legs"].size() == 3,
+        "expected one terminal leg per output modality");
+  for (const json& leg : out["legs"]) {
+    leg_states[leg["stage"].get<std::string>()] = leg["state"].get<std::string>();
+  }
+  check(leg_states["image"] == "completed" && leg_states["tts"] == "completed" &&
+            leg_states["video"] == "completed",
+        "a non-streaming mixed leg did not report completed");
+  wait_until([&] { return engine.in_flight() == 0; },
+             "non-streaming mixed request stayed in flight");
+}
+
+// A failed optional leg keeps HTTP 200: the VLM text and the other artifacts
+// stay valid, and the legs array names the failure.
+void test_public_http_nonstream_mixed_partial_failure() {
+  Harness h("nonstreamfail");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "non-streaming partial-failure server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  nlohmann::json body = {
+      {"model", "qwen3-unified"},
+      {"messages", nlohmann::json::array(
+                       {nlohmann::json{{"role", "user"}, {"content", "hi"}}})},
+      {"stream", false},
+      {"modalities", nlohmann::json::array({"text", "image", "video"})},
+      {"image", nlohmann::json::object()},
+      {"video", nlohmann::json::object()}};
+  auto response_future = std::async(std::launch::async, [&] {
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{15000};
+    return test_http::perform(request);
+  });
+
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "partial-failure request did not reach the VLM");
+  if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("answer"));
+  auto image_submit = h.next_submit(h.image_recv);
+  auto video_submit = h.next_submit(h.video_recv);
+  if (image_submit) {
+    h.complete(image_submit->request_id, "image", true,
+               artifact_result("image", "image/png", std::string(40, '\x90')));
+  }
+  if (video_submit) {
+    h.complete(video_submit->request_id, "video", false, Value(),
+               std::string("video unavailable"));
+  }
+
+  const auto response = response_future.get();
+  api.stop();
+  server_thread.join();
+  check(response.status == 200,
+        "a failed optional leg dropped the non-streaming HTTP 200");
+  const json out = json::parse(response.body);
+  check(out["choices"][0]["message"]["content"] == "answer",
+        "partial failure dropped the VLM text");
+  check(out["artifacts"].size() == 1 &&
+            out["artifacts"][0]["media_type"] == "image",
+        "partial failure dropped the succeeded artifact");
+  std::map<std::string, std::string> leg_states;
+  for (const json& leg : out["legs"]) {
+    leg_states[leg["stage"].get<std::string>()] = leg["state"].get<std::string>();
+    if (leg["stage"] == "video") {
+      check(leg.contains("error") &&
+                leg["error"].get<std::string>() == "video unavailable",
+            "the failed leg did not report its error");
+    }
+  }
+  check(leg_states["image"] == "completed" && leg_states["video"] == "failed",
+        "the legs array does not name both final states");
+  wait_until([&] { return engine.in_flight() == 0; },
+             "partial-failure non-streaming request stayed in flight");
+}
+
+// Streamed PCM chunks have no place in one JSON body, so audio.stream=true
+// still requires stream=true. Unregistered output stages still answer 400.
+void test_public_http_nonstream_mixed_rejections() {
+  Harness h("nonstreamreject");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 5.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "non-streaming rejection server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  auto post = [&](const nlohmann::json& payload) {
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = payload.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{5000};
+    try {
+      test_http::perform(request);
+    } catch (const client::Error& exc) {
+      return std::string(exc.what());
+    }
+    return std::string();
+  };
+  auto base = [](nlohmann::json extra) {
+    extra["model"] = "qwen3-unified";
+    extra["stream"] = false;
+    extra["messages"] = nlohmann::json::array(
+        {nlohmann::json{{"role", "user"}, {"content", "hi"}}});
+    return extra;
+  };
+
+  std::string error = post(base({{"modalities", nlohmann::json::array({"text", "audio"})},
+                                 {"audio", {{"voice", "Tina"}, {"format", "wav"},
+                                            {"stream", true}}}}));
+  check(error.find("HTTP 400") != std::string::npos &&
+            error.find("audio.stream=true requires stream=true") !=
+                std::string::npos,
+        "non-streaming audio.stream=true was not rejected with 400");
+
+  api.stop();
+  server_thread.join();
+
+  // An engine with no optional output stage registered rejects the modality.
+  Harness h2("nonstreamnostage");
+  ApiConfig config2;
+  config2.host = "127.0.0.1";
+  config2.port = 0;
+  config2.model = "qwen3-unified";
+  config2.request_timeout_s = 5.0;
+  OpenAIApi api2(h2.coordinator, config2);
+  UnifiedEngine engine2(h2.coordinator, UnifiedConfig{});
+  api2.set_unified_engine(engine2, "vlm");
+  check(api2.bind(), "no-stage non-streaming server did not bind");
+  h2.start_pump();
+  std::thread server2([&] { api2.listen(); });
+
+  auto post2 = [&](const nlohmann::json& payload) {
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api2.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = payload.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{5000};
+    try {
+      test_http::perform(request);
+    } catch (const client::Error& exc) {
+      return std::string(exc.what());
+    }
+    return std::string();
+  };
+  for (const auto& [key, value, message] :
+       std::vector<std::tuple<std::string, nlohmann::json, std::string>>{
+           {"image", nlohmann::json::object(), "image output is not enabled on this server"},
+           {"audio", nlohmann::json{{"voice", "Tina"}, {"format", "wav"}}, "audio output is not enabled on this server"},
+           {"video", nlohmann::json::object(), "video output is not enabled on this server"}}) {
+    std::string rejected =
+        post2(base({{"modalities", nlohmann::json::array({"text", key})},
+                    {key, value}}));
+    const std::string detail =
+        "an unregistered " + key + " stage was not rejected with 400";
+    check(rejected.find("HTTP 400") != std::string::npos &&
+              rejected.find(message) != std::string::npos,
+          detail.c_str());
+  }
+  api2.stop();
+  server2.join();
+}
+
+// A text-only non-streaming request keeps the exact previous JSON shape: no
+// artifacts, no legs, no session_id unless the caller supplied one.
+void test_public_http_nonstream_text_only_compatible() {
+  Harness h("nonstreamtext");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "text-only non-streaming server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  auto response_future = std::async(std::launch::async, [&] {
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = nlohmann::json{
+                       {"model", "qwen3-unified"},
+                       {"messages", nlohmann::json::array(
+                                        {nlohmann::json{{"role", "user"},
+                                                        {"content", "hi"}}})},
+                       {"stream", false}}
+                       .dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{10000};
+    return test_http::perform(request);
+  });
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "text-only non-streaming request did not reach the VLM");
+  if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("plain answer"));
+  const auto response = response_future.get();
+  api.stop();
+  server_thread.join();
+
+  check(response.status == 200, "text-only non-streaming request failed");
+  const json out = json::parse(response.body);
+  check(out["choices"][0]["message"]["content"] == "plain answer",
+        "text-only non-streaming text changed");
+  check(!out.contains("artifacts") && !out.contains("legs") &&
+            !out.contains("session_id"),
+        "the text-only non-streaming response gained a mixed-output field");
+  wait_until([&] { return engine.in_flight() == 0; },
+             "text-only non-streaming request stayed in flight");
+}
+
+// The C++ client decodes and verifies a non-streaming mixed body end to end.
+void test_openai_client_nonstream_mixed_roundtrip() {
+  Harness h("clientnonstream");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "client non-streaming mixed server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  client::OpenAIConfig cfg;
+  cfg.base_url = "http://127.0.0.1:" + std::to_string(api.bound_port()) + "/v1";
+  cfg.model = "qwen3-unified";
+  cfg.max_attempts = 1;
+  client::OpenAIClient client(cfg);
+
+  const std::string image_bytes(256 * 1024, '\x41');
+  const std::string audio_bytes(4096, '\x42');
+  client::ChatRequest req;
+  req.messages = {client::Message{"user", "draw and speak", {}}};
+  req.modalities = {"text", "image", "audio"};
+  req.stream = false;
+  req.image = client::ImageOutput{};
+  client::AudioOutput voice;
+  voice.voice = "Tina";
+  req.audio = voice;
+
+  auto resp_future = std::async(std::launch::async, [&] {
+    try {
+      return std::pair<std::optional<client::ChatResponse>, std::string>{
+          client.chat(req), ""};
+    } catch (const std::exception& err) {
+      return std::pair<std::optional<client::ChatResponse>, std::string>{
+          std::nullopt, err.what()};
+    }
+  });
+
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "client non-streaming request did not reach the VLM");
+  if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("mixed answer"));
+  auto image_submit = h.next_submit(h.image_recv);
+  auto tts_submit = h.next_submit(h.tts_recv);
+  check(image_submit.has_value() && tts_submit.has_value(),
+        "a client non-streaming leg did not start");
+  if (image_submit) {
+    h.complete(image_submit->request_id, "image", true,
+               artifact_result("image", "image/png", image_bytes));
+  }
+  if (tts_submit) {
+    h.complete(tts_submit->request_id, "tts", true,
+               artifact_result("audio", "audio/wav", audio_bytes));
+  }
+
+  auto [response, error] = resp_future.get();
+  api.stop();
+  server_thread.join();
+  const std::string failure = "OpenAIClient rejected a non-streaming mixed response: " + error;
+  check(error.empty() && response.has_value(), failure.c_str());
+  if (response) {
+    check(response->text == "mixed answer",
+          "OpenAIClient lost the non-streaming mixed text");
+    std::map<std::string, std::string> decoded;
+    for (const client::Artifact& artifact : response->artifacts) {
+      decoded[artifact.media_type] = artifact.data;
+      check(artifact.sha256 == util::sha256_hex(artifact.data),
+            "OpenAIClient kept an unverified artifact digest");
+    }
+    check(decoded.size() == 2 && decoded["image"] == image_bytes &&
+              decoded["audio"] == audio_bytes,
+          "OpenAIClient did not decode the non-streaming artifacts");
+    std::map<std::string, std::string> leg_states;
+    for (const json& leg : response->legs) {
+      leg_states[leg["stage"].get<std::string>()] =
+          leg["state"].get<std::string>();
+    }
+    check(leg_states["image"] == "completed" && leg_states["tts"] == "completed",
+          "OpenAIClient lost the non-streaming legs array");
+  }
+  wait_until([&] { return engine.in_flight() == 0; },
+             "client non-streaming mixed request stayed in flight");
+}
+
 void test_realtime_spoken_audio_format_and_leg_error() {
   Harness h("rtspoken");
   ApiConfig rt_config;
@@ -5474,29 +5907,7 @@ void test_public_http_mixed_video_stream_and_abort() {
   const std::string base_url =
       "http://127.0.0.1:" + std::to_string(api.bound_port());
 
-  // 1) stream=false with video output must be rejected with HTTP 400.
-  {
-    test_http::HttpRequest req;
-    req.url = base_url + "/v1/chat/completions";
-    req.body = nlohmann::json{
-                   {"model", "qwen3-unified"},
-                   {"messages", nlohmann::json::array(
-                                    {nlohmann::json{{"role", "user"},
-                                                    {"content", "make video"}}})},
-                   {"stream", false},
-                   {"modalities", nlohmann::json::array({"text", "video"})}}
-                   .dump();
-    req.headers.emplace("Content-Type", "application/json");
-    bool got_400 = false;
-    try {
-      test_http::perform(req);
-    } catch (const client::Error& err) {
-      got_400 = (err.status() == 400);
-    }
-    check(got_400, "non-streaming video request was not rejected with 400");
-  }
-
-  // 2) Streaming 5 MiB fake MP4 video artifact -> 3 base64 chunks + sha256.
+  // 1) Streaming 5 MiB fake MP4 video artifact -> 3 base64 chunks + sha256.
   const std::string video_bytes(5u << 20, '\x66');
   nlohmann::json body = {
       {"model", "qwen3-unified"},
@@ -5691,20 +6102,6 @@ void test_openai_client_video_and_wire_limit_boundary() {
   client::OpenAIClient client(cfg);
 
   // Client-side validation checks.
-  {
-    client::ChatRequest bad;
-    bad.messages = {client::Message{"user", "clip", {}}};
-    bad.modalities = {"text", "video"};
-    bad.stream = false;
-    bad.video = client::VideoOutput{};
-    bool rejected = false;
-    try {
-      client.chat(bad);
-    } catch (const client::Error& err) {
-      rejected = (err.code() == client::ErrorCode::kConfig);
-    }
-    check(rejected, "OpenAIClient accepted non-streaming video request");
-  }
   {
     client::ChatRequest bad;
     bad.messages = {client::Message{"user", "clip", {}}};
@@ -6682,6 +7079,11 @@ int main() {
   RUN(test_mixed_previous_stream_tolerates_bin_chunk());
   RUN(test_public_http_mixed_artifact_stream());
   RUN(test_public_http_mixed_partial_failure());
+  RUN(test_public_http_nonstream_mixed_all_modalities());
+  RUN(test_public_http_nonstream_mixed_partial_failure());
+  RUN(test_public_http_nonstream_mixed_rejections());
+  RUN(test_public_http_nonstream_text_only_compatible());
+  RUN(test_openai_client_nonstream_mixed_roundtrip());
   RUN(test_realtime_spoken_audio_format_and_leg_error());
   RUN(test_public_http_finish_reason_length_and_router_reset());
   RUN(test_public_http_audio_speech());

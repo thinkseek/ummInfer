@@ -97,9 +97,9 @@ void usage(const std::string& command, std::ostream& out) {
            "[--top-p X] [--timeout-ms N] [--first-token-ms N] [--stall-ms N] "
            "[--max-attempts N]\n"
            "       [--image-url URL ...] [--video-url URL ...] [--audio PATH]\n"
-           "       [--audio-out PATH --voice NAME]  speech output, requires --stream\n"
+           "       [--audio-out PATH --voice NAME]  speech output\n"
            "       [--image-out PATH --image-prompt TEXT --image-size WxH\n"
-           "        --image-seed N --image-format png|jpeg]  generated image, requires --stream\n";
+           "        --image-seed N --image-format png|jpeg]  generated image\n";
   } else if (command == "transcribe") {
     out << "usage: umm-infer transcribe --url http://127.0.0.1:8000 --model M --file PATH "
            "[--format wav|pcm] [--language L] [--prompt TEXT] [--max-new-tokens N] "
@@ -455,7 +455,6 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
     AudioOutput output;
     output.voice = options.get("voice");
     if (output.voice.empty()) throw UsageError("--audio-out requires --voice");
-    if (!request.stream) throw UsageError("--audio-out requires --stream");
     // Checked before the request: the speech is billable and local failure must
     // not discard it.
     check_output(audio_out);
@@ -481,7 +480,6 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
     if (output.output_format != "png" && output.output_format != "jpeg") {
       throw UsageError("--image-format must be png or jpeg");
     }
-    if (!request.stream) throw UsageError("--image-out requires --stream");
     check_output(image_out);
     request.modalities.push_back("image");
     request.image = std::move(output);

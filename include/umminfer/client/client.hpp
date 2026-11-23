@@ -88,7 +88,8 @@ struct OpenAIConfig {
   Milliseconds max_retry_after{60000};
 };
 
-// Requested speech output. The route supports wav only and requires stream.
+// Requested speech output. The route supports wav only. Works with stream=true
+// (SSE artifact events) and stream=false (one JSON completion body).
 struct AudioOutput {
   std::string voice;
   std::string format = "wav";
@@ -96,7 +97,7 @@ struct AudioOutput {
 };
 
 // Requested generated image. An empty prompt makes the server use the full
-// aggregated text answer. Requires stream.
+// aggregated text answer.
 struct ImageOutput {
   std::string prompt;
   std::string size = "512x512";
@@ -105,7 +106,7 @@ struct ImageOutput {
 };
 
 // Requested generated video. An empty prompt makes the server use the full
-// aggregated text answer. Requires stream.
+// aggregated text answer.
 struct VideoOutput {
   std::string prompt;
   std::string size = "1280x720";
