@@ -39,7 +39,7 @@ constexpr size_t kMaxHttpPayloadBytes = 64u << 20;
 // How long one socket read may wait for the next byte. The body is read before
 // any handler runs, so this value alone decides whether a slow upload survives.
 // httplib's 5 s default aborts a 1 MB audio upload on any link that stalls for
-// longer than that: measured on the H20B window, the server logged
+// longer than that: measured on a loaded deployment, the server logged
 // "Failed to read" with recv returning EAGAIN while the client's send had
 // already completed. 30 s exceeds a worst-case TCP retransmission backoff and
 // still reclaims a dead connection.
@@ -446,10 +446,11 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
       return false;
     }
     if (image.contains("output_format") && !image["output_format"].is_null()) {
+      // The unified image leg is the native image stage, and it emits PNG only.
+      // Accepting jpeg here would promise bytes the stage cannot produce.
       if (!image["output_format"].is_string() ||
-          (image["output_format"].get<std::string>() != "png" &&
-           image["output_format"].get<std::string>() != "jpeg")) {
-        error = "image.output_format must be png or jpeg";
+          image["output_format"].get<std::string>() != "png") {
+        error = "image.output_format must be png: the image stage emits PNG only";
         return false;
       }
     }

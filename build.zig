@@ -107,7 +107,9 @@ pub fn build(b: *std.Build) void {
         .name = "unified_contract_test",
         .root_module = module(b, target, optimize),
     });
-    configure(test_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, false);
+    // The contract suite also covers private server headers (serve/energy_vad.hpp),
+    // so it needs the same `src` include path as the library it links.
+    configure(test_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, true);
     test_exe.root_module.sanitize_thread = tsan;
     test_exe.root_module.linkLibrary(core);
     test_exe.root_module.addCSourceFiles(.{

@@ -323,6 +323,17 @@ class RealtimeApi::Impl {
            kMaxRealtimeSessions;
   }
 
+  // Unified requests this listener submitted. Ownership is tracked explicitly
+  // so a terminal event is released only when this WebSocket path created it;
+  // the HTTP SSE path owns its own ids. libwebsockets thread only.
+  void own_unified_response(const std::string& id) { unified_owned_.insert(id); }
+  bool owns_unified_response(const std::string& id) const {
+    return unified_owned_.count(id) != 0;
+  }
+  void disown_unified_response(const std::string& id) {
+    unified_owned_.erase(id);
+  }
+
   void cancel_and_release_response(RealtimeSession* session,
                                    const char* reason) {
     session->response_leg_error.clear();
@@ -333,6 +344,7 @@ class RealtimeApi::Impl {
       unified_->cancel(id, reason);
       unified_->release(id);
     }
+    disown_unified_response(id);
   }
 
   void established(lws* wsi, RealtimeSession* session) {
@@ -867,6 +879,7 @@ class RealtimeApi::Impl {
     try {
       session->response_leg_error.clear();
       session->response_request_id = unified_->submit(std::move(payload));
+      own_unified_response(session->response_request_id);
       session->response_segment = session->segment_id;
       session->response_deadline =
           Clock::now() + std::chrono::duration_cast<Clock::duration>(
@@ -924,6 +937,7 @@ class RealtimeApi::Impl {
         if (session->close_after_write) {
           if (terminal) {
             if (unified_ != nullptr) unified_->release(event.request_id);
+            disown_unified_response(event.request_id);
             session->response_request_id.clear();
             session->response_leg_error.clear();
           }
@@ -1060,6 +1074,7 @@ class RealtimeApi::Impl {
                    {{"type", "response.completed"}, {"segment_id", segment}});
             }
             if (unified_ != nullptr) unified_->release(event.request_id);
+            disown_unified_response(event.request_id);
             session->response_request_id.clear();
             break;
           case UnifiedEvent::Kind::kError:
@@ -1067,11 +1082,13 @@ class RealtimeApi::Impl {
                                 {"segment_id", segment},
                                 {"error", event.error}});
             if (unified_ != nullptr) unified_->release(event.request_id);
+            disown_unified_response(event.request_id);
             session->response_request_id.clear();
             session->response_leg_error.clear();
             break;
           case UnifiedEvent::Kind::kCancelled:
             if (unified_ != nullptr) unified_->release(event.request_id);
+            disown_unified_response(event.request_id);
             session->response_request_id.clear();
             session->response_leg_error.clear();
             break;
@@ -1081,13 +1098,15 @@ class RealtimeApi::Impl {
         break;
       }
       if (!matched && terminal && unified_ != nullptr &&
-          event.request_id.rfind("http-", 0) != 0) {
-        // Release an orphaned realtime response whose session closed or moved
-        // on before the terminal event was drained; never touch HTTP SSE ids.
+          owns_unified_response(event.request_id)) {
+        // Release a realtime response whose session closed or moved on before
+        // the terminal event was drained. Only ids this listener submitted are
+        // eligible; an HTTP SSE id is never released here.
         if (const auto info = unified_->info(event.request_id);
             info && info->state != "running" && info->state != "pending") {
           unified_->release(event.request_id);
         }
+        disown_unified_response(event.request_id);
       }
     }
   }
@@ -1124,6 +1143,7 @@ class RealtimeApi::Impl {
   UnifiedEngine* unified_ = nullptr;
   std::mutex unified_mu_;
   std::deque<UnifiedEvent> unified_queue_;
+  std::set<std::string> unified_owned_;
   int bound_port_ = -1;
 };
 

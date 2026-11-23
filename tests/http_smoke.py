@@ -126,6 +126,40 @@ def check_demo(binary, root, log):
             process.wait()
 
 
+def check_models_and_web_root(binary, root, log):
+    port = free_port()
+    ipc_dir = os.path.join(root, "static")
+    web = os.path.join(root, "web-root")
+    os.makedirs(web, exist_ok=True)
+    with open(os.path.join(web, "index.html"), "w") as handle:
+        handle.write("<!doctype html><title>smoke-web-root</title>\n")
+    process = subprocess.Popen(
+        [binary, "serve", "--demo", "--host", "127.0.0.1", "--port", str(port),
+         "--ipc-dir", ipc_dir, "--api-key", API_KEY, "--model", "web-model",
+         "--web-root", web],
+        stdout=log, stderr=subprocess.STDOUT)
+    try:
+        wait_ready(process, port)
+        status, body = request(port, path="/v1/models")
+        assert status == 200, (status, body)
+        models = json.loads(body)
+        assert models["object"] == "list", models
+        assert models["data"][0]["object"] == "model", models
+        assert models["data"][0]["id"] == "web-model", models
+
+        status, body = request(port, path="/")
+        assert status == 200, (status, body)
+        assert "smoke-web-root" in body, body[:200]
+        status, body = request(port, path="/missing.txt")
+        assert status == 404, (status, body)
+        stop_process(process)
+        print("models: list and served id; web-root: index and 404 passed")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
 def check_custom_entry(binary, root, log):
     port = free_port()
     ipc_dir = os.path.join(root, "custom")
@@ -279,6 +313,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="omni-http-") as root:
         with open(os.path.join(root, "processes.log"), "w") as log:
             check_demo(binary, root, log)
+            check_models_and_web_root(binary, root, log)
             check_custom_entry(binary, root, log)
             check_disconnect_and_shutdown(binary, root, log)
             check_startup_shutdown(binary, root)

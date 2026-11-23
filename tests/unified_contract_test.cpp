@@ -27,6 +27,7 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <variant>
 #include <vector>
 
 #include "umminfer/comm/comm.hpp"
@@ -37,6 +38,8 @@
 #include "umminfer/client/client.hpp"
 #include "umminfer/serve/realtime_api.hpp"
 #include "umminfer/util/codec.hpp"
+#include "umminfer/obs/metrics.hpp"
+#include "serve/energy_vad.hpp"
 #include <curl/curl.h>
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -6105,6 +6108,501 @@ void test_mixed_artifact_aggregate_60mib_boundary() {
   }
 }
 
+// ---- Section 1/2 offline contracts --------------------------------------
+// Control-plane parsing, the stage submit path, the energy VAD, the fixed
+// upstream media proxy and the two unified metric gaps. None of these need a
+// model, a GPU or a real upstream.
+
+// Every control message the stage and coordinator exchange parses from its
+// wire map; a foreign protocol version, an unknown type and a missing type are
+// rejected instead of guessed.
+void test_control_message_parse_contract() {
+  const auto parse = [](Value::Map fields) {
+    return parse_message(Value(std::move(fields)));
+  };
+
+  {
+    Value::Map ref;
+    ref["object_id"] = Value("obj-1");
+    Value::Map m;
+    m["type"] = Value("data_ready");
+    m["request_id"] = Value("req-dr");
+    m["from_stage"] = Value("asr");
+    m["to_stage"] = Value("vlm");
+    m["data_ref"] = Value(std::move(ref));
+    const Message msg = parse(std::move(m));
+    check(std::holds_alternative<DataReadyMessage>(msg),
+          "data_ready did not parse");
+    check(std::get<DataReadyMessage>(msg).request_id == "req-dr" &&
+              std::get<DataReadyMessage>(msg).to_stage == "vlm",
+          "data_ready lost its routing fields");
+  }
+  {
+    Value::Map chunk;
+    chunk["text"] = Value("hello");
+    Value::Map m;
+    m["type"] = Value("stream");
+    m["request_id"] = Value("req-stream");
+    m["from_stage"] = Value("vlm");
+    m["chunk"] = Value(std::move(chunk));
+    const Message msg = parse(std::move(m));
+    check(std::holds_alternative<StreamMessage>(msg), "stream did not parse");
+    check(std::get<StreamMessage>(msg).chunk.find("text")->as_str() == "hello",
+          "stream lost its chunk");
+  }
+  {
+    Value::Map m;
+    m["type"] = Value("complete");
+    m["request_id"] = Value("req-complete");
+    m["from_stage"] = Value("vlm");
+    m["success"] = Value(true);
+    m["result"] = Value(text_result("answer"));
+    const Message msg = parse(std::move(m));
+    check(std::holds_alternative<CompleteMessage>(msg),
+          "complete did not parse");
+    check(std::get<CompleteMessage>(msg).success,
+          "complete lost its success flag");
+  }
+  {
+    Value::Map data;
+    data["request_id"] = Value("req-submit");
+    Value::Map m;
+    m["type"] = Value("submit");
+    m["request_id"] = Value("req-submit");
+    m["data"] = Value(std::move(data));
+    const Message msg = parse(std::move(m));
+    check(std::holds_alternative<SubmitMessage>(msg), "submit did not parse");
+    check(std::get<SubmitMessage>(msg).request_id == "req-submit",
+          "submit lost its request_id");
+  }
+  {
+    Value::Map m;
+    m["type"] = Value("abort");
+    m["request_id"] = Value("req-abort");
+    check(std::holds_alternative<AbortMessage>(parse(std::move(m))),
+          "abort did not parse");
+  }
+  {
+    Value::Map m;
+    m["type"] = Value("stage_ready");
+    m["from_stage"] = Value("tts");
+    const Message msg = parse(std::move(m));
+    check(std::holds_alternative<StageReadyMessage>(msg),
+          "stage_ready did not parse");
+    check(std::get<StageReadyMessage>(msg).from_stage == "tts",
+          "stage_ready lost its stage name");
+  }
+  {
+    Value::Map operation;
+    operation["op_id"] = Value("op-1");
+    operation["action"] = Value("model_info");
+    Value::Map m;
+    m["type"] = Value("admin");
+    m["operation"] = Value(std::move(operation));
+    const Message msg = parse(std::move(m));
+    check(std::holds_alternative<AdminMessage>(msg), "admin did not parse");
+    check(std::get<AdminMessage>(msg).operation.action == "model_info",
+          "admin lost its action");
+  }
+
+  const auto rejects = [&](Value::Map m, const char* why) {
+    bool threw = false;
+    try {
+      (void)parse(std::move(m));
+    } catch (const ProtocolError&) {
+      threw = true;
+    }
+    check(threw, why);
+  };
+  Value::Map bad_version;
+  bad_version["type"] = Value("abort");
+  bad_version["request_id"] = Value("r");
+  bad_version["protocol_version"] = Value(int64_t{2});
+  rejects(std::move(bad_version), "protocol_version 2 was accepted");
+  Value::Map string_version;
+  string_version["type"] = Value("abort");
+  string_version["request_id"] = Value("r");
+  string_version["protocol_version"] = Value("1");
+  rejects(std::move(string_version), "a string protocol_version was accepted");
+  Value::Map unknown;
+  unknown["type"] = Value("nonesuch");
+  rejects(std::move(unknown), "an unknown message type was accepted");
+  Value::Map missing;
+  missing["request_id"] = Value("r");
+  rejects(std::move(missing), "a message without a type was accepted");
+}
+
+std::string make_pcm_frame(int16_t sample, size_t samples) {
+  std::string bytes(samples * 2, '\0');
+  for (size_t i = 0; i < samples; ++i) {
+    const auto value = static_cast<uint16_t>(sample);
+    bytes[i * 2] = static_cast<char>(value & 0xFF);
+    bytes[i * 2 + 1] = static_cast<char>((value >> 8) & 0xFF);
+  }
+  return bytes;
+}
+
+// Energy VAD: silence stays silent, a loud frame opens the turn, and exactly
+// the configured continuous-silence window closes it. All frames are
+// synthetic 10 ms PCM16 at 16 kHz.
+void test_energy_vad_speech_transitions() {
+  constexpr size_t kFrameSamples = 160;
+  constexpr size_t kFrameBytes = kFrameSamples * 2;
+  serve_detail::VadConfig config;
+  config.frame_ms = 10;
+  config.silence_ms = 100;  // ten frames
+  serve_detail::EnergyVad vad(config);
+  check(vad.frame_bytes() == kFrameBytes, "a 10 ms frame is not 320 bytes");
+
+  const std::string silence = make_pcm_frame(0, kFrameSamples);
+  const std::string speech = make_pcm_frame(8000, kFrameSamples);
+
+  std::string warmup;
+  for (int i = 0; i < 20; ++i) warmup += silence;
+  check(vad.push(warmup.data(), warmup.size()).empty(),
+        "silence before speech reported an event");
+  check(!vad.speech(), "the VAD started in speech");
+
+  const auto started = vad.push(speech.data(), speech.size());
+  check(started.size() == 1 &&
+            started[0].event == serve_detail::EnergyVad::Event::kSpeechStarted,
+        "a loud frame did not start speech");
+  check(!started.empty() && started[0].bytes_consumed == kFrameBytes,
+        "speech start did not report its frame boundary");
+  check(vad.speech(), "the VAD did not enter speech");
+
+  for (int i = 0; i < 5; ++i) {
+    check(vad.push(speech.data(), speech.size()).empty(),
+          "a continuing loud frame reported an event");
+  }
+
+  // One frame short of the window must not close the turn.
+  for (int i = 0; i < 9; ++i) {
+    check(vad.push(silence.data(), silence.size()).empty(),
+          "an early silent frame ended the turn");
+  }
+  check(vad.speech(), "the turn ended before the silence window elapsed");
+
+  const auto stopped = vad.push(silence.data(), silence.size());
+  check(stopped.size() == 1 &&
+            stopped[0].event == serve_detail::EnergyVad::Event::kSpeechStopped,
+        "the silence window did not end the turn");
+  check(!stopped.empty() && stopped[0].bytes_consumed == kFrameBytes,
+        "speech stop was not reported at the window boundary");
+  check(!vad.speech(), "the VAD stayed in speech after the stop");
+}
+
+// Stage::on_submit and Stage::fail_request over the real control sockets: a
+// submit without payload data computes on request.inputs, and a payload whose
+// request_id disagrees with its submit fails that request with a non-success
+// completion.
+void test_stage_submit_fallback_and_failure_completion() {
+  IpcDir dir = IpcDir::create("stagesubmit");
+  PubSocket aborts(dir.endpoint("abort"));
+  aborts.bind();
+  PullSocket completions(dir.endpoint("done"), /*bind=*/true);
+  completions.start();
+
+  std::mutex mu;
+  std::vector<Value> work;
+  auto compute = [&](const Value& input) {
+    std::lock_guard<std::mutex> lock(mu);
+    work.push_back(input);
+    return input;
+  };
+  Stage::Config config;
+  config.name = "entry";
+  config.recv_endpoint = dir.endpoint("asr");
+  config.coordinator_endpoint = dir.endpoint("done");
+  config.abort_endpoint = dir.endpoint("abort");
+  Stage stage(config, ComputeFn(compute));
+  std::thread stage_thread([&] { stage.run(); });
+  PushSocket submits(config.recv_endpoint);
+  submits.connect();
+
+  Value::Map fallback_inputs;
+  fallback_inputs["probe"] = Value("inputs-fallback");
+  StagePayload fallback;
+  fallback.request_id = "stage-fallback";
+  fallback.request.inputs = Value(std::move(fallback_inputs));
+  SubmitMessage first;
+  first.request_id = "stage-fallback";
+  first.data = fallback.to_value();
+  submits.send(Message{first});
+
+  StagePayload mismatched;
+  mismatched.request_id = "other-id";
+  SubmitMessage second;
+  second.request_id = "stage-mismatch";
+  second.data = mismatched.to_value();
+  submits.send(Message{second});
+
+  std::vector<CompleteMessage> done;
+  const auto deadline = std::chrono::steady_clock::now() + kStateWait;
+  while (done.size() < 2 && std::chrono::steady_clock::now() < deadline) {
+    auto msg = completions.recv_timeout(50);
+    if (!msg) continue;
+    if (auto* complete = std::get_if<CompleteMessage>(&*msg)) {
+      done.push_back(*complete);
+    }
+  }
+  check(done.size() == 2, "the stage did not complete both submits");
+  if (done.size() == 2) {
+    check(done[0].request_id == "stage-fallback" && done[0].success,
+          "the fallback submit did not complete successfully");
+    const Value* probe = done[0].result.find("probe");
+    check(probe != nullptr && probe->as_str() == "inputs-fallback",
+          "a submit without payload.data did not compute on request.inputs");
+    check(work.size() == 1 && work[0].find("probe") != nullptr,
+          "the scheduler received the wrong fallback input");
+    check(done[1].request_id == "stage-mismatch" && !done[1].success,
+          "a payload request_id mismatch did not fail its request");
+    check(done[1].error && done[1].error->find("differs") != std::string::npos,
+          "the failure completion lost its reason");
+  }
+  stage.stop();
+  stage_thread.join();
+  submits.close();
+  completions.close();
+  aborts.close();
+}
+
+// Fixed-upstream media proxy: happy-path forwarding keeps status and body and
+// substitutes the upstream model; an upstream 4xx reaches the caller unchanged.
+void test_upstream_media_proxy_routes() {
+  httplib::Server upstream;
+  std::mutex mu;
+  std::vector<std::string> seen;
+  std::string edit_model;
+  auto note = [&](const char* route) {
+    std::lock_guard<std::mutex> lock(mu);
+    seen.push_back(route);
+  };
+  const std::string mp4 = std::string("\0\0\0\x18", 4) + "ftypmp42video";
+  upstream.Post("/v1/images/generations",
+                [&](const httplib::Request& req, httplib::Response& res) {
+                  const json body = json::parse(req.body, nullptr, false);
+                  note("POST /v1/images/generations");
+                  if (body.is_discarded() || !body.is_object() ||
+                      body.value("prompt", "") == "teapot") {
+                    res.status = 418;
+                    res.set_content(
+                        R"({"error":{"message":"upstream teapot"}})",
+                        "application/json");
+                    return;
+                  }
+                  if (body.value("model", "") != "upstream-image") {
+                    res.status = 400;
+                    res.set_content(
+                        R"({"error":{"message":"model was not replaced"}})",
+                        "application/json");
+                    return;
+                  }
+                  res.set_content(R"({"data":[{"b64_json":"aW1n"}]})",
+                                  "application/json");
+                });
+  upstream.Post("/v1/images/edits",
+                [&](const httplib::Request& req, httplib::Response& res) {
+                  {
+                    std::lock_guard<std::mutex> lock(mu);
+                    seen.push_back("POST /v1/images/edits");
+                    edit_model = req.form.get_field("model");
+                  }
+                  if (!req.is_multipart_form_data() ||
+                      !req.form.has_file("image")) {
+                    res.status = 400;
+                    res.set_content(
+                        R"({"error":{"message":"missing multipart image"}})",
+                        "application/json");
+                    return;
+                  }
+                  res.set_content(R"({"data":[{"b64_json":"ZWRpdA=="}]})",
+                                  "application/json");
+                });
+  upstream.Post("/v1/videos",
+                [&](const httplib::Request&, httplib::Response& res) {
+                  note("POST /v1/videos");
+                  res.set_content(
+                      R"({"id":"vid-1","object":"video","status":"queued"})",
+                      "application/json");
+                });
+  upstream.Get(R"(/v1/videos/([A-Za-z0-9_\-]{1,128}))",
+               [&](const httplib::Request&, httplib::Response& res) {
+                 note("GET /v1/videos/{id}");
+                 res.set_content(
+                     R"({"id":"vid-1","object":"video","status":"completed"})",
+                     "application/json");
+               });
+  upstream.Get(R"(/v1/videos/([A-Za-z0-9_\-]{1,128})/content)",
+               [&](const httplib::Request&, httplib::Response& res) {
+                 note("GET /v1/videos/{id}/content");
+                 res.set_content(mp4, "video/mp4");
+               });
+  upstream.Delete(R"(/v1/videos/([A-Za-z0-9_\-]{1,128}))",
+                  [&](const httplib::Request&, httplib::Response& res) {
+                    note("DELETE /v1/videos/{id}");
+                    res.set_content(R"({"id":"vid-1","deleted":true})",
+                                    "application/json");
+                  });
+
+  const int upstream_port = upstream.bind_to_any_port("127.0.0.1");
+  check(upstream_port > 0, "the mock upstream did not bind");
+  std::thread upstream_thread([&] { upstream.listen_after_bind(); });
+
+  Harness h("upstreamproxy");
+  const std::string upstream_base =
+      "http://127.0.0.1:" + std::to_string(upstream_port);
+
+  ApiConfig image_config;
+  image_config.host = "127.0.0.1";
+  image_config.port = 0;
+  image_config.model = "local-image";
+  image_config.upstream_kind = "sglang";
+  image_config.upstream_base_url = upstream_base;
+  image_config.upstream_model = "upstream-image";
+  image_config.upstream_variant = "image";
+  OpenAIApi image_api(h.coordinator, image_config);
+  check(image_api.bind(), "the image proxy did not bind");
+  std::thread image_thread([&] { image_api.listen(); });
+
+  httplib::Client image_client("127.0.0.1", image_api.bound_port());
+  image_client.set_read_timeout(10, 0);
+  const auto generated = image_client.Post(
+      "/v1/images/generations",
+      json{{"model", "local-image"}, {"prompt", "a cat"}}.dump(),
+      "application/json");
+  check(generated && generated->status == 200,
+        "image generation did not forward the upstream 200");
+  check(generated && generated->body.find("b64_json") != std::string::npos,
+        "image generation lost the upstream body");
+
+  httplib::UploadFormDataItems edit_items = {
+      {"image", std::string("img-bytes"), "a.png", "image/png"},
+      {"prompt", "edit it", "", "text/plain"},
+      {"model", "local-image", "", "text/plain"},
+  };
+  const auto edited = image_client.Post("/v1/images/edits", edit_items);
+  check(edited && edited->status == 200,
+        "image edit did not forward the upstream 200");
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    check(edit_model == "upstream-image",
+          "image edit did not replace the model with the upstream model");
+  }
+
+  const auto teapot = image_client.Post(
+      "/v1/images/generations", json{{"prompt", "teapot"}}.dump(),
+      "application/json");
+  check(teapot && teapot->status == 418,
+        "an upstream 4xx did not reach the caller unchanged");
+  check(teapot && teapot->body.find("\"type\":\"upstream_error\"") !=
+                      std::string::npos,
+        "an upstream error lost its error type");
+
+  ApiConfig video_config = image_config;
+  video_config.model = "local-video";
+  video_config.upstream_model = "upstream-video";
+  video_config.upstream_variant = "video";
+  OpenAIApi video_api(h.coordinator, video_config);
+  check(video_api.bind(), "the video proxy did not bind");
+  std::thread video_thread([&] { video_api.listen(); });
+
+  httplib::Client video_client("127.0.0.1", video_api.bound_port());
+  video_client.set_read_timeout(10, 0);
+  const auto created = video_client.Post(
+      "/v1/videos", json{{"model", "local-video"}, {"prompt", "a river"}}.dump(),
+      "application/json");
+  check(created && created->status == 200 &&
+            created->body.find("\"id\":\"vid-1\"") != std::string::npos,
+        "video create did not forward the upstream job");
+  const auto video_status = video_client.Get("/v1/videos/vid-1");
+  check(video_status && video_status->status == 200 &&
+            video_status->body.find("completed") != std::string::npos,
+        "video status did not forward the upstream job state");
+  const auto content = video_client.Get("/v1/videos/vid-1/content");
+  check(content && content->status == 200 &&
+            content->body.find("ftypmp42") != std::string::npos,
+        "video content did not stream the upstream bytes");
+  check(content &&
+            content->get_header_value("Content-Type").rfind("video/mp4", 0) == 0,
+        "video content lost its media type");
+  const auto removed = video_client.Delete("/v1/videos/vid-1");
+  check(removed && removed->status == 200 &&
+            removed->body.find("\"deleted\":true") != std::string::npos,
+        "video delete did not forward the upstream response");
+
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    for (const char* route :
+         {"POST /v1/images/generations", "POST /v1/images/edits",
+          "POST /v1/videos", "GET /v1/videos/{id}",
+          "GET /v1/videos/{id}/content", "DELETE /v1/videos/{id}"}) {
+      bool found = false;
+      for (const std::string& entry : seen) found = found || entry == route;
+      check(found, "a proxy route never reached the upstream");
+    }
+  }
+
+  image_api.stop();
+  video_api.stop();
+  image_thread.join();
+  video_thread.join();
+  upstream.stop();
+  upstream_thread.join();
+}
+
+// Reads a rendered Prometheus counter or gauge value. Returns 0 when the
+// series is absent, which is the correct reading for a counter never touched
+// and for a gauge the server never set.
+size_t metric_value(const std::string& text, const std::string& prefix) {
+  const size_t at = text.find(prefix);
+  if (at == std::string::npos) return 0;
+  return static_cast<size_t>(
+      std::strtoull(text.c_str() + at + prefix.size(), nullptr, 10));
+}
+
+// Metrics gaps: a completion that races a cancel counts the primary leg as
+// aborted, and releasing a non-terminal record drops the admission gauge.
+void test_unified_metrics_cancel_race_and_release_gauge() {
+  const std::string leg_prefix =
+      "umm_leg_requests_total{leg=\"vlm\",request_type=\"chat\",status=\"aborted\"} ";
+  const std::string gauge_prefix =
+      "umm_queue_depth{queue=\"unified_admission\"} ";
+  const size_t aborted_before =
+      metric_value(obs::Metrics::instance().render(), leg_prefix);
+
+  Harness h("metrics");
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  h.start_pump();
+  EventLog log;
+  engine.on_terminal = [&](const UnifiedEvent& event) { log.finish(event); };
+
+  const std::string id = engine.submit(image_part_request());
+  check(h.next_submit(h.vlm_recv).has_value(),
+        "the metrics request never reached the VLM stage");
+  check(metric_value(obs::Metrics::instance().render(), gauge_prefix) == 1,
+        "admission was not published at submit");
+
+  check(engine.cancel(id), "cancel rejected the active request");
+  // The stage completes after the cancel: the terminal is still kCancelled and
+  // the primary leg must be recorded as aborted.
+  h.complete(id, "vlm", true, text_result("late answer"));
+  wait_until([&] { return log.has_terminal(id); },
+             "the cancel-race completion produced no terminal");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kCancelled,
+        "a completion that raced a cancel was not aborted");
+
+  engine.release(id);
+  wait_until([&] { return engine.in_flight() == 0; },
+             "the released request kept its admission slot");
+  check(metric_value(obs::Metrics::instance().render(), gauge_prefix) == 0,
+        "release did not refresh the admission gauge");
+  const size_t aborted_after =
+      metric_value(obs::Metrics::instance().render(), leg_prefix);
+  check(aborted_after == aborted_before + 1,
+        "the cancel-race completion did not record the primary leg as aborted");
+}
 }  // namespace
 
 int main() {
@@ -6200,5 +6698,10 @@ int main() {
   RUN(test_non_unified_null_video_field_compatible());
   RUN(test_direct_engine_video_input_modality_rejected_even_with_video_stage());
   RUN(test_mixed_artifact_aggregate_60mib_boundary());
+  RUN(test_control_message_parse_contract());
+  RUN(test_energy_vad_speech_transitions());
+  RUN(test_stage_submit_fallback_and_failure_completion());
+  RUN(test_upstream_media_proxy_routes());
+  RUN(test_unified_metrics_cancel_race_and_release_gauge());
   return g_failures == 0 ? 0 : 1;
 }

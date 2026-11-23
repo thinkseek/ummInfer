@@ -832,6 +832,9 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
             unified_id, record, UnifiedEvent::Kind::kError,
             info.error.empty() ? "stage failure" : info.error, {}));
       } else if (record.cancel_requested) {
+        // The stage finished before it saw the abort. The request still ends
+        // aborted, so the primary leg must be counted as aborted, not dropped.
+        record_primary_leg("aborted");
         collect_tts_aborts_locked(record, "client", deferred_aborts);
         dispatch_queue_.push_back(finish_locked(
             unified_id, record, UnifiedEvent::Kind::kCancelled, {}, {}));
