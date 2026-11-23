@@ -26,10 +26,15 @@ WanVaeConfig load_wan_vae_config(const std::filesystem::path& vae_dir) {
     config.z_dim = json.at("z_dim").get<int>();
     // Wan2.2 configs name the encoder width "base_dim"; older configs use "dim".
     config.dim = json.value("base_dim", json.value("dim", 0));
-    config.decoder_base_dim = json.value("decoder_base_dim", config.dim);
+    config.decoder_base_dim = json.contains("decoder_base_dim") &&
+                                      !json.at("decoder_base_dim").is_null()
+                                  ? json.at("decoder_base_dim").get<int>()
+                                  : config.dim;
     config.num_res_blocks = json.at("num_res_blocks").get<int>();
     config.out_channels = json.value("out_channels", 3);
-    config.patch_size = json.value("patch_size", 1);
+    config.patch_size = json.contains("patch_size") && !json.at("patch_size").is_null()
+                            ? json.at("patch_size").get<int>()
+                            : 1;
     config.is_residual = json.value("is_residual", false);
     config.dim_mult = json.at("dim_mult").get<std::vector<int>>();
     config.temperal_downsample =
@@ -41,11 +46,15 @@ WanVaeConfig load_wan_vae_config(const std::filesystem::path& vae_dir) {
     throw std::invalid_argument("invalid Wan VAE config " + path.string() +
                                 ": " + err.what());
   }
+  const int64_t patch_area =
+      config.patch_size > 0
+          ? static_cast<int64_t>(config.patch_size) * config.patch_size
+          : 0;
   if (config.z_dim <= 0 || config.decoder_base_dim <= 0 ||
-      config.num_res_blocks <= 0 || config.out_channels <= 0 ||
-      config.patch_size <= 0 || config.dim_mult.empty() ||
+      config.num_res_blocks <= 0 || config.out_channels <= 0 || patch_area <= 0 ||
+      config.dim_mult.empty() ||
       config.dim_mult.size() != config.temperal_downsample.size() + 1 ||
-      config.out_channels % (config.patch_size * config.patch_size) != 0) {
+      config.out_channels % patch_area != 0) {
     throw std::invalid_argument("Wan VAE dimensions or temporal scales are invalid");
   }
   for (const int multiplier : config.dim_mult) {

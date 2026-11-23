@@ -18,7 +18,6 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <math_constants.h>
-#include <math_constants.h>
 
 #include <algorithm>
 #include <chrono>
@@ -220,11 +219,12 @@ __global__ void denormalize_kernel(float* x, size_t positions, int64_t channels,
 __global__ void im2col_causal_kernel(const float* input, float* columns,
                                      int64_t channels, int64_t time, int64_t height,
                                      int64_t width, int64_t kd, int64_t kh,
-                                     int64_t kw) {
+                                     int64_t kw, int64_t position_begin,
+                                     int64_t chunk_positions) {
   const int64_t spatial = height * width;
-  const int64_t positions = time * spatial;
-  const int64_t n = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (n >= positions) return;
+  const int64_t local = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (local >= chunk_positions) return;
+  const int64_t n = position_begin + local;
   const int64_t ow = n % width;
   const int64_t oh = (n / width) % height;
   const int64_t ot = n / spatial;
@@ -241,18 +241,21 @@ __global__ void im2col_causal_kernel(const float* input, float* columns,
               iw < width) {
             value = input[((c * time + it) * height + ih) * width + iw];
           }
-          columns[k * positions + n] = value;
+          columns[k * chunk_positions + local] = value;
         }
       }
     }
   }
 }
 
-__global__ void bias_kernel(float* x, size_t positions, int64_t channels,
-                            const float* bias) {
-  const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (index >= positions * static_cast<size_t>(channels)) return;
-  x[index] += bias[index / positions];
+__global__ void bias_chunk_kernel(float* x, int64_t positions,
+                                  int64_t position_begin, int64_t chunk_positions,
+                                  int64_t channels, const float* bias) {
+  const int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= chunk_positions * channels) return;
+  const int64_t channel = index / chunk_positions;
+  const int64_t local = index % chunk_positions;
+  x[channel * positions + position_begin + local] += bias[channel];
 }
 
 class CudaContext {
@@ -271,40 +274,43 @@ class CudaContext {
   cublasHandle_t handle_ = nullptr;
 };
 
-// out[o, n] = sum_k weight[o, k] * columns[k, n] where columns is row-major
-// [K, positions]. Interpreted column-major this is A = positions x K with
-// leading dimension positions and B = K x out with leading dimension K.
+// out[o, n] = sum_k weight[o, k] * columns[k, n]. Position chunks cap the
+// temporary im2col allocation at 1 GiB; the output keeps full NCTHW strides.
 Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv) {
   if (input.channels != conv.input_channels) {
     throw std::invalid_argument("convolution input channel mismatch");
   }
   const int64_t positions = input.positions();
-  const int64_t kernel_size =
-      conv.input_channels * conv.kd * conv.kh * conv.kw;
+  const int64_t kernel_size = conv.input_channels * conv.kd * conv.kh * conv.kw;
   if (positions > std::numeric_limits<int>::max() ||
       kernel_size > std::numeric_limits<int>::max() ||
       conv.output_channels > std::numeric_limits<int>::max()) {
     throw std::overflow_error("convolution dimensions exceed cuBLAS limits");
   }
-  DeviceBuffer columns(checked_product({kernel_size, positions}));
-  im2col_causal_kernel<<<grid_for(positions), 256>>>(
-      input.data(), columns.data(), input.channels, input.time, input.height,
-      input.width, conv.kd, conv.kh, conv.kw);
-  UMM_CUDA(cudaGetLastError());
-
+  constexpr int64_t kMaxColumnElements = 1LL << 28;
+  const int64_t chunk_capacity =
+      std::max<int64_t>(1, std::min(positions, kMaxColumnElements / kernel_size));
+  DeviceBuffer columns(checked_product({kernel_size, chunk_capacity}));
   Tensor output(conv.output_channels, input.time, input.height, input.width);
   const float alpha = 1.0f;
   const float beta = 0.0f;
-  UMM_CUBLAS(cublasSgemm(
-      context.handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-      static_cast<int>(positions), static_cast<int>(conv.output_channels),
-      static_cast<int>(kernel_size), &alpha, columns.data(),
-      static_cast<int>(positions), conv.weight.data(),
-      static_cast<int>(kernel_size), &beta, output.data(),
-      static_cast<int>(positions)));
-  bias_kernel<<<grid_for(output.numel()), 256>>>(
-      output.data(), positions, conv.output_channels, conv.bias.data());
-  UMM_CUDA(cudaGetLastError());
+  for (int64_t begin = 0; begin < positions; begin += chunk_capacity) {
+    const int64_t chunk = std::min(chunk_capacity, positions - begin);
+    im2col_causal_kernel<<<grid_for(chunk), 256>>>(
+        input.data(), columns.data(), input.channels, input.time, input.height,
+        input.width, conv.kd, conv.kh, conv.kw, begin, chunk);
+    UMM_CUDA(cudaGetLastError());
+    UMM_CUBLAS(cublasSgemm(
+        context.handle(), CUBLAS_OP_N, CUBLAS_OP_N, static_cast<int>(chunk),
+        static_cast<int>(conv.output_channels), static_cast<int>(kernel_size), &alpha,
+        columns.data(), static_cast<int>(chunk), conv.weight.data(),
+        static_cast<int>(kernel_size), &beta, output.data() + begin,
+        static_cast<int>(positions)));
+    bias_chunk_kernel<<<grid_for(chunk * conv.output_channels), 256>>>(
+        output.data(), positions, begin, chunk, conv.output_channels,
+        conv.bias.data());
+    UMM_CUDA(cudaGetLastError());
+  }
   return output;
 }
 
@@ -425,8 +431,10 @@ __global__ void zero_first_frame_kernel(float* x, size_t total, int64_t time,
 
 Tensor temporal_upsample(CudaContext& context, const Tensor& input,
                          const Conv& time_conv) {
-  if (time_conv.kd != 3) {
-    throw std::invalid_argument("time convolution must have kernel depth 3");
+  if (time_conv.kd != 3 || time_conv.kh != 1 || time_conv.kw != 1 ||
+      time_conv.input_channels != input.channels ||
+      time_conv.output_channels != input.channels * 2) {
+    throw std::invalid_argument("time convolution must be C -> 2C with a 3x1x1 kernel");
   }
   Tensor zeroed = clone_tensor(input);
   zero_first_frame_kernel<<<grid_for(zeroed.numel()), 256>>>(
@@ -726,7 +734,7 @@ __global__ void unpatchify_clamp_kernel(const float* input, float* output,
   const int64_t input_channel = (c * patch + s) * patch + r;
   const float value =
       input[((input_channel * time + t) * height + y / patch) * width + x / patch];
-  output[index] = fmaxf(-1.0f, fminf(1.0f, value));
+  output[index] = value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
 }
 
 Tensor unpatchify_clamp(const Tensor& input, int64_t output_channels, int64_t patch) {
@@ -790,7 +798,6 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
     throw std::invalid_argument("latent buffer size does not match its shape");
   }
 
-  const auto begin = std::chrono::steady_clock::now();
   g_peak_device_bytes = 0;
   CudaContext context(gpu);
   const auto safetensors = vae_dir / "diffusion_pytorch_model.safetensors";
@@ -806,6 +813,7 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
                       input.numel() * sizeof(float), cudaMemcpyDeviceToDevice));
 
   // Latent denormalization exactly as the Wan pipeline does before decoding.
+  const auto begin = std::chrono::steady_clock::now();
   DeviceBuffer mean = upload(config.latents_mean);
   DeviceBuffer stddev = upload(config.latents_std);
   denormalize_kernel<<<grid_for(input.numel()), 256>>>(
@@ -829,8 +837,8 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
   current = rms_norm(current, decoder.norm_out);
   silu_inplace(current);
   current = conv3d(context, current, decoder.conv_out);
-  const int64_t output_channels =
-      config.out_channels / (config.patch_size * config.patch_size);
+  const int64_t patch_area = static_cast<int64_t>(config.patch_size) * config.patch_size;
+  const int64_t output_channels = config.out_channels / patch_area;
   current = unpatchify_clamp(current, output_channels, config.patch_size);
 
   UMM_CUDA(cudaDeviceSynchronize());

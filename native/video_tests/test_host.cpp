@@ -20,6 +20,7 @@
 #include "video/mp4_encoder.hpp"
 #include "video/safetensors_mmap.hpp"
 #include "video/scheduler.hpp"
+#include "video/wan_vae.hpp"
 
 namespace {
 
@@ -195,6 +196,29 @@ void test_wan_config_loading() {
         "latents_mean parsed");
 }
 
+void test_wan_vae_config_loading() {
+  using namespace umminfer::video;
+  TempDir tmp("wan-vae-cfg");
+  const auto path = tmp.path / "config.json";
+  write_text(path,
+             R"({"z_dim":1,"base_dim":2,"decoder_base_dim":null,"num_res_blocks":1,"out_channels":3,"patch_size":null,"is_residual":true,"dim_mult":[1],"temperal_downsample":[],"attn_scales":[],"latents_mean":[0.0],"latents_std":[1.0]})");
+  const auto config = load_wan_vae_config(tmp.path);
+  check(config.dim == 2 && config.decoder_base_dim == 2,
+        "VAE decoder width falls back to base_dim");
+  check(config.patch_size == 1 && config.is_residual,
+        "null VAE patch size uses identity unpatchify");
+
+  write_text(path,
+             R"({"z_dim":1,"base_dim":2,"num_res_blocks":1,"out_channels":12,"patch_size":65536,"is_residual":true,"dim_mult":[1],"temperal_downsample":[],"attn_scales":[],"latents_mean":[0.0],"latents_std":[1.0]})");
+  bool rejected = false;
+  try {
+    (void)load_wan_vae_config(tmp.path);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  check(rejected, "overflowing VAE patch size rejected without a signal");
+}
+
 void test_flow_match_schedule_and_euler() {
   using namespace umminfer::video;
   FlowMatchConfig cfg;
@@ -293,6 +317,7 @@ int main() {
   const std::pair<const char*, void (*)()> tests[] = {
       {"size_and_frame_alignment", test_size_and_frame_alignment},
       {"wan_config_loading", test_wan_config_loading},
+      {"wan_vae_config_loading", test_wan_vae_config_loading},
       {"safetensors_mmap", test_safetensors_mmap},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"mp4_encode_and_abort", test_mp4_encode_and_abort},
