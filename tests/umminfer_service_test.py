@@ -24,6 +24,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -395,6 +397,68 @@ def test_health_failure_restarts_server_with_backoff_counter():
         cleanup(root)
 
 
+def test_server_restart_preserves_running_workers():
+    root = make_root()
+    port = free_port()
+    config = config_for(root, port, ready_path="/ready", ready_grace_s=0.2,
+                        health_grace_s=0.1)
+    config_path = write_config(root, config)
+    try:
+        result = run_service(config_path, "start")
+        require(result.returncode == 0, f"start failed: {result.stderr}")
+
+        def healthy():
+            record = child_record(root, "server")
+            stage = child_record(root, "omni")
+            state = state_payload(root) or {}
+            if not (record and record["alive"] and state.get("health", {}).get("ok") is True):
+                return None
+            if not (stage and stage["alive"] and stage["pid"]):
+                return None
+            return record["pid"], stage["pid"]
+
+        server_pid, stage_pid = wait_for(healthy, START_TIMEOUT_S,
+                                         "the service never became healthy")
+
+        # Crash only the gateway. The stage process must survive the restart.
+        os.kill(server_pid, signal.SIGKILL)
+
+        def recovered():
+            record = child_record(root, "server")
+            stage = child_record(root, "omni")
+            state = state_payload(root) or {}
+            if not (record and record["alive"] and record["pid"] != server_pid):
+                return None
+            if not (stage and stage["alive"] and stage["pid"] == stage_pid):
+                return None
+            if state.get("health", {}).get("ok") is not True:
+                return None
+            try:
+                with urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}/ready", timeout=2) as response:
+                    ready = response.status
+            except (urllib.error.URLError, OSError):
+                return None
+            return record["pid"] if ready == 200 else None
+
+        wait_for(recovered, START_TIMEOUT_S,
+                 "the server did not restart while preserving the stage")
+
+        stage_after = child_record(root, "omni") or {}
+        require(stage_after.get("pid") == stage_pid,
+                "the stage PID changed across the server restart")
+        require(stage_after.get("restarts") == 0,
+                f"the stage must not be restarted: {stage_after.get('restarts')}")
+
+        supervisor_log = (root / "log" / "supervisor.log").read_text(errors="replace")
+        require("stages preserved because server" in supervisor_log,
+                "the supervisor did not record worker preservation")
+
+        stop(root, config_path)
+    finally:
+        cleanup(root)
+
+
 def test_foreign_pid_is_not_signalled():
     root = make_root()
     victim = subprocess.Popen(["sleep", "30"])
@@ -458,6 +522,7 @@ def main():
         test_config_rejects_duplicate_stage_names,
         test_full_lifecycle,
         test_health_failure_restarts_server_with_backoff_counter,
+        test_server_restart_preserves_running_workers,
         test_foreign_pid_is_not_signalled,
         test_rolling_log_cap,
     ]

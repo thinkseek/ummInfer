@@ -159,6 +159,14 @@ void PushSocket::send(const Message& msg) {
   send_bytes(socket_, serialize_message(msg));
 }
 
+void PushSocket::send_dontwait(const Message& msg) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (socket_ == nullptr) throw ProtocolError("Socket not connected");
+  const std::string data = serialize_message(msg);
+  const int rc = zmq_send(socket_, data.data(), data.size(), ZMQ_DONTWAIT);
+  if (rc < 0) throw ProtocolError("zmq_send failed: " + std::string(zmq_strerror(errno)));
+}
+
 void PushSocket::close() {
   monitor_running_ = false;
   {
@@ -389,7 +397,13 @@ void StageControlPlane::send_to_stage(const std::string& next_stage,
 
 void StageControlPlane::send_ready(const StageReadyMessage& msg) {
   if (!coordinator_socket_) throw ProtocolError("Control plane not started");
-  coordinator_socket_->send(Message{msg});
+  // Readiness is periodic, so a transient failure is not fatal: the next
+  // heartbeat retries. Blocking here would stall Stage::run() while the
+  // coordinator is down, which is exactly the case this path must survive.
+  try {
+    coordinator_socket_->send_dontwait(Message{msg});
+  } catch (const ProtocolError&) {
+  }
 }
 
 void StageControlPlane::send_complete(const CompleteMessage& msg) {

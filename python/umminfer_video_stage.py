@@ -47,6 +47,10 @@ ABORT_TOMBSTONE_TTL_S = 60.0
 # fail fast inside the stage with a clear error message.
 MAX_VIDEO_ARTIFACT_BYTES = 48 * 1024 * 1024
 
+# Periodic stage_ready re-registration. A restarted gateway rebuilds its ready
+# set from these frames, so a server restart never requires a stage restart.
+READY_HEARTBEAT_S = 1.0
+
 
 class RequestAborted(Exception):
     """Raised inside a backend when the stage receives a coordinator abort."""
@@ -553,7 +557,7 @@ class VideoStage:
         self.poller = zmq.Poller()
         self.poller.register(self.recv_socket, zmq.POLLIN)
         self.poller.register(self.abort_socket, zmq.POLLIN)
-        self.emit({"type": "stage_ready", "from_stage": self.name})
+        self.announce_ready()
         print(
             f"ready kind=video name={self.name} "
             f"model={getattr(self.backend, 'model_id', getattr(self.backend, 'model', 'UNKNOWN'))} "
@@ -584,6 +588,21 @@ class VideoStage:
             self.outbox.put(message)
             return
         self.coordinator_socket.send(pack_message(message))
+
+    def announce_ready(self):
+        """Re-register with the coordinator without ever blocking the loop.
+
+        A dead or restarting gateway fills the PUSH queue; NOBLOCK drops this
+        frame and the next heartbeat retries.
+        """
+        if self.coordinator_socket is None:
+            return
+        try:
+            self.coordinator_socket.send(
+                pack_message({"type": "stage_ready", "from_stage": self.name}),
+                zmq.NOBLOCK)
+        except zmq.Again:
+            pass
 
     def expire_aborts(self):
         now = time.monotonic()
@@ -868,11 +887,18 @@ class VideoStage:
 
     def run(self):
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{self.name}-worker")
+        next_ready = time.monotonic() + READY_HEARTBEAT_S
         try:
             while self.running:
                 self.poll_events(5 if self.inflight else 100)
                 self.dispatch(pool)
                 self.drain_outbox()
+                # Re-announce readiness so a restarted gateway re-learns this
+                # stage without the supervisor killing it.
+                now = time.monotonic()
+                if now >= next_ready:
+                    next_ready = now + READY_HEARTBEAT_S
+                    self.announce_ready()
         finally:
             self.running = False
             for flag in list(self.abort_flags.values()):
