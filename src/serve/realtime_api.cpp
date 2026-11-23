@@ -16,6 +16,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -241,23 +242,23 @@ class RealtimeApi::Impl {
       batch.swap(partial_queue_);
     }
     for (auto& [request_id, delta] : batch) {
-      for (lws* wsi : sessions_) {
-        auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
-        if (session == nullptr || session->request_id != request_id ||
-            session->close_after_write) {
-          continue;
-        }
-        session->partial_text += delta;
-        // ponytail: drop preview events under outbound backpressure; the final
-        // segment still carries the complete text.
-        if (session->outbound.size() >= 512) break;
-        send(wsi, session, {{"type", "transcription.segment"},
-                            {"event_index", 0},
-                            {"segment_id", session->segment_id},
-                            {"text", session->partial_text},
-                            {"is_final", false}});
-        break;
+      const auto active = active_request_sessions_.find(request_id);
+      if (active == active_request_sessions_.end()) continue;
+      lws* wsi = active->second;
+      auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
+      if (session == nullptr || session->request_id != request_id ||
+          session->close_after_write) {
+        continue;
       }
+      session->partial_text += delta;
+      // ponytail: drop preview events under outbound backpressure; the final
+      // segment still carries the complete text.
+      if (session->outbound.size() >= 512) continue;
+      send(wsi, session, {{"type", "transcription.segment"},
+                          {"event_index", 0},
+                          {"segment_id", session->segment_id},
+                          {"text", session->partial_text},
+                          {"is_final", false}});
     }
   }
 
@@ -356,6 +357,7 @@ class RealtimeApi::Impl {
 
   void closed(lws* wsi, RealtimeSession* session) {
     if (!session->request_id.empty()) {
+      active_request_sessions_.erase(session->request_id);
       coordinator_.abort(session->request_id);
       coordinator_.release(session->request_id);
     }
@@ -394,6 +396,7 @@ class RealtimeApi::Impl {
     session->last_interrupt_ms = epoch_millis();
     coordinator_.abort(request_id);
     coordinator_.release(request_id);
+    active_request_sessions_.erase(session->request_id);
     session->request_id.clear();
     session->request_is_final = false;
     std::cerr << "realtime interrupt reason=" << reason
@@ -446,10 +449,12 @@ class RealtimeApi::Impl {
       if (final) session->final_committed = session->audio.size();
       session->deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
           std::chrono::duration<double>(config_.request_timeout_s));
+      active_request_sessions_.emplace(session->request_id, wsi);
       coordinator_.submit(std::move(payload), config_.entry_stage);
       return true;
     } catch (const std::exception& error) {
       if (!session->request_id.empty()) coordinator_.release(session->request_id);
+      active_request_sessions_.erase(session->request_id);
       session->request_id.clear();
       session->request_is_final = false;
       if (final) fail(wsi, session, error.what());
@@ -788,6 +793,7 @@ class RealtimeApi::Impl {
         if (now >= session->deadline) {
           coordinator_.abort(request_id);
           coordinator_.release(request_id);
+          active_request_sessions_.erase(session->request_id);
           session->request_id.clear();
           // A preview that overruns its deadline is dropped; only a committed
           // final turn times the session out.
@@ -800,6 +806,7 @@ class RealtimeApi::Impl {
       }
       auto info = coordinator_.info(request_id);
       coordinator_.release(request_id);
+      active_request_sessions_.erase(session->request_id);
       session->request_id.clear();
       if (!session->request_is_final) {
         // A preview failure is not a turn failure: the next window retries.
@@ -1133,6 +1140,8 @@ class RealtimeApi::Impl {
   std::atomic<bool> running_{false};
   std::atomic<size_t> active_session_count_{0};
   std::set<lws*> sessions_;
+  // Request ownership is resolved on the libwebsockets thread only.
+  std::unordered_map<std::string, lws*> active_request_sessions_;
   Coordinator::StreamSink previous_stream_;
   Coordinator::CompleteSink previous_complete_;
   std::mutex partial_mu_;
