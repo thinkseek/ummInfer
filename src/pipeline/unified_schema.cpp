@@ -104,10 +104,18 @@ ValidatedSubmission validate_submission(const Value& inputs,
 
   size_t image_count = 0;
   size_t audio_part_count = 0;
+  size_t text_part_count = 0;
   for (const Value& message : inputs.find("messages")->as_array()) {
     if (!message.is_map()) continue;
     const Value* content = message.find("content");
-    if (content == nullptr || content->is_str()) continue;
+    if (content == nullptr) continue;
+    if (content->is_str()) {
+      // The HTTP boundary and this schema apply one rule: one text part.
+      if (++text_part_count > 1) {
+        throw ProtocolError("unified request accepts at most one text part");
+      }
+      continue;
+    }
     if (!content->is_array()) {
       throw ProtocolError(
           "message content must be a text string or a content part array");
@@ -121,7 +129,11 @@ ValidatedSubmission validate_submission(const Value& inputs,
         throw ProtocolError(std::string("content part ") + type->as_str() +
                             " is declared but has no worker in unified engine v1");
       }
-      if (modality == UnifiedModality::kAudio) {
+      if (modality == UnifiedModality::kText) {
+        if (++text_part_count > 1) {
+          throw ProtocolError("unified request accepts at most one text part");
+        }
+      } else if (modality == UnifiedModality::kAudio) {
         ++audio_part_count;
       } else if (modality == UnifiedModality::kImage) {
         const Value* image_url = part.find("image_url");
@@ -179,6 +191,13 @@ ValidatedSubmission validate_submission(const Value& inputs,
   if (const Value* options = out.original_inputs.find("image_options");
       options != nullptr) {
     if (!options->is_map()) throw ProtocolError("image_options must be a map");
+    if (const Value* format = options->find("output_format");
+        format != nullptr && !format->is_nil()) {
+      if (!format->is_str() || format->as_str() != "png") {
+        throw ProtocolError(
+            "image_options.output_format must be png: the image stage emits PNG only");
+      }
+    }
     out.image_options = options->as_map();
   }
   if (const Value* options = out.original_inputs.find("audio_options");
