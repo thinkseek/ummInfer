@@ -7,6 +7,7 @@
 //   - VideoEngine contract-stub execution, step abort, and default CUDA safety gate
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -17,6 +18,7 @@
 #include "video/config.hpp"
 #include "video/engine.hpp"
 #include "video/mp4_encoder.hpp"
+#include "video/safetensors_mmap.hpp"
 #include "video/scheduler.hpp"
 
 namespace {
@@ -51,6 +53,91 @@ void write_text(const std::filesystem::path& path, const std::string& text) {
   std::filesystem::create_directories(path.parent_path());
   std::ofstream out(path);
   out << text;
+}
+
+void append_u16(std::ofstream& out, uint16_t value) {
+  const char bytes[] = {static_cast<char>(value & 0xff),
+                        static_cast<char>(value >> 8)};
+  out.write(bytes, 2);
+}
+
+void append_u32(std::ofstream& out, uint32_t value) {
+  const char bytes[] = {static_cast<char>(value & 0xff),
+                        static_cast<char>((value >> 8) & 0xff),
+                        static_cast<char>((value >> 16) & 0xff),
+                        static_cast<char>(value >> 24)};
+  out.write(bytes, 4);
+}
+
+void test_safetensors_mmap() {
+  using namespace umminfer::video;
+  TempDir tmp("safetensors");
+  const auto path = tmp.path / "synthetic.safetensors";
+  std::string header =
+      R"({"__metadata__":{"test":"native"},"f32":{"dtype":"F32","shape":[2],"data_offsets":[0,8]},"bf16":{"dtype":"BF16","shape":[3],"data_offsets":[8,14]},"f16":{"dtype":"F16","shape":[2],"data_offsets":[14,18]}})";
+  const size_t padded_header = (header.size() + 7) / 8 * 8;
+  header.resize(padded_header, ' ');
+  {
+    std::ofstream out(path, std::ios::binary);
+    const uint64_t header_size = header.size();
+    for (unsigned i = 0; i < 8; ++i) {
+      out.put(static_cast<char>((header_size >> (i * 8)) & 0xff));
+    }
+    out.write(header.data(), header.size());
+    float f32[] = {1.25f, -2.5f};
+    for (const float value : f32) {
+      uint32_t bits;
+      std::memcpy(&bits, &value, sizeof(bits));
+      append_u32(out, bits);
+    }
+    append_u16(out, 0x3f80);  // BF16 1.0
+    append_u16(out, 0xc000);  // BF16 -2.0
+    append_u16(out, 0x3f40);  // BF16 0.75
+    append_u16(out, 0x3c00);  // F16 1.0
+    append_u16(out, 0x0001);  // Smallest positive F16 subnormal.
+  }
+
+  SafetensorsMmap file(path);
+  check(file.contains("f32") && !file.contains("missing"),
+        "tensor lookup by name");
+  const auto& f32_view = file.tensor("f32", {2});
+  check(f32_view.numel() == 2 && f32_view.size_bytes == 8,
+        "F32 shape and byte size");
+  const auto f32 = f32_view.to_f32();
+  check(f32[0] == 1.25f && f32[1] == -2.5f, "F32 lookup values");
+  const auto bf16 = file.tensor("bf16", {3}).to_f32();
+  check(bf16[0] == 1.0f && bf16[1] == -2.0f && bf16[2] == 0.75f,
+        "BF16 conversion");
+  const auto f16 = file.tensor("f16", {2}).to_f32();
+  check(f16[0] == 1.0f && std::fabs(f16[1] - 5.9604644775390625e-8f) < 1e-12f,
+        "F16 conversion including subnormal");
+
+  bool wrong_shape = false;
+  try {
+    (void)file.tensor("f32", {1, 2});
+  } catch (const std::invalid_argument&) {
+    wrong_shape = true;
+  }
+  check(wrong_shape, "shape mismatch rejected");
+
+  bool missing = false;
+  try {
+    (void)file.tensor("missing");
+  } catch (const std::out_of_range&) {
+    missing = true;
+  }
+  check(missing, "missing tensor rejected");
+
+  const auto truncated = tmp.path / "truncated.safetensors";
+  std::filesystem::copy_file(path, truncated);
+  std::filesystem::resize_file(truncated, std::filesystem::file_size(path) - 1);
+  bool invalid = false;
+  try {
+    SafetensorsMmap bad(truncated);
+  } catch (const std::runtime_error&) {
+    invalid = true;
+  }
+  check(invalid, "out-of-file tensor data rejected");
 }
 
 void test_size_and_frame_alignment() {
@@ -206,6 +293,7 @@ int main() {
   const std::pair<const char*, void (*)()> tests[] = {
       {"size_and_frame_alignment", test_size_and_frame_alignment},
       {"wan_config_loading", test_wan_config_loading},
+      {"safetensors_mmap", test_safetensors_mmap},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"mp4_encode_and_abort", test_mp4_encode_and_abort},
       {"engine_contract_stub_and_cuda_gate", test_engine_contract_stub_and_cuda_gate},
