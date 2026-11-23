@@ -37,7 +37,7 @@ macOS build host:
 - Zig 0.16.0
 - `brew install zeromq msgpack-c curl libwebsockets`
 
-Linux CUDA build host (reference: H20B GPU container):
+Linux CUDA build host (reference: SM90 GPU container):
 
 - Zig 0.16.0
 - CUDA 12.4 toolkit, `cmake` 3.24 or newer
@@ -55,7 +55,7 @@ must be on that branch.
 ```sh
 DEPS_PREFIX=/opt/homebrew \
 CURL_PREFIX=/opt/homebrew/opt/curl \
-STAGE_SSH=<h20b-ssh-host> \
+STAGE_SSH=<gpu-host> \
 STAGE_CONTAINER=<gpu-container> \
 STAGE_DEPS_PREFIX=<remote-deps-prefix> \
 STAGE_CURL_PREFIX=<remote-curl-prefix> \

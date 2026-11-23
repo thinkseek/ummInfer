@@ -17,7 +17,7 @@ code, printed as `REAL_EXIT <suite> <code>`. The gate exits non-zero if any
 suite fails.
 
 Included suites: `build`, `zig-test`, `smoke`, `unified-test`, and the two
-realtime contract E2Es. All of them run without H20B, CUDA, SGLang, or RL
+realtime contract E2Es. All of them run without SM90, CUDA, SGLang, or RL
 training.
 
 Behavior: suites run serially in their own session; combined output per suite
@@ -26,7 +26,7 @@ is capped at 64 KiB (tail kept); a suite that exceeds `--timeout` (default
 and `--binary` when the defaults under `/opt/homebrew` and `zig-out/bin` do not
 match this host.
 
-Boundary. A pass proves the local contracts only. It does not replace the H20B
+Boundary. A pass proves the local contracts only. It does not replace the SM90
 runs in this document: real Qwen3 backends, the realtime live run, or the real
 RL optimizer-step validation. Those still need their dedicated evidence
 directories.
@@ -67,7 +67,7 @@ and duplicate or out-of-order handling. It does not load a model.
 the committed case reproduction:
 
 ```sh
-TARGET=<h20b-ssh-host> CONTAINER=<gpu-container> sh docs/cases/0001_repro.sh
+TARGET=<gpu-host> CONTAINER=<gpu-container> sh docs/cases/0001_repro.sh
 ```
 
 Case record, per-leg timings and hashes:
@@ -124,9 +124,9 @@ Expected results:
 Check each script's argument help if its local stage defaults differ from your
 checkout. Do not use `--skip-real` when validating the end-to-end journey.
 
-### 3a. H20B realtime live run
+### 3a. SM90 realtime live run
 
-The H20B container ships libcurl 8.5.0 without the `ws` protocol, so the
+The SM90 container ships libcurl 8.5.0 without the `ws` protocol, so the
 realtime client refused to start. Build libcurl 8.5.0 from source with
 `--enable-websockets` into a dedicated prefix, then pass that prefix to the
 build. Do not replace the system library.
@@ -145,7 +145,7 @@ zig build -Doptimize=ReleaseFast -Dcurl-prefix="$PREFIX" \
 
 `curl-config --protocols` must list `ws` and `wss`. The harness
 `tests/realtime_streaming_live.py` was removed in `7542ba0`; the build recipe
-below remains valid and the results are a historical record. On H20B 2026-11-14
+below remains valid and the results are a historical record. On SM90 2026-11-14
 a dedicated `qwen3-asr` backend ran on GPU 5, port 31005. It needed
 `LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat` because the installed driver
 535.161.08 is older than the container CUDA 13 build.
@@ -163,7 +163,7 @@ historical record; none of it is reproducible on the current source:
 | Backend abort | `PASS real_gpu_abort_confirmed` with `SGLANG_ABORT_REQUEST`, `SGLANG_ABORT_CONFIRMED`, `finish=abort` |
 | Recovery | `PASS real_request_after_cancel`; a later stream completed |
 
-Evidence is in `/tmp/umminfer-phase6-realtime-h20b-evidence/`: build command and
+Evidence is in `/tmp/umminfer-phase6-realtime-sm90-evidence/`: build command and
 `curl-config` output, libcurl and binary SHA256, raw frame JSON with payload
 hashes, stage abort lines, capped server, stage and backend logs, and
 `SHA256SUMS`.
@@ -224,7 +224,7 @@ evidence.
 
 RETIRED. `tests/unified_partial_abort_live.py` was removed in `ab51cf5`, and the
 SGLang backends it drove were retired in `7542ba0`. The paragraph below is a
-historical record of the 2026-11-13 H20B run; it cannot be reproduced on the
+historical record of the 2026-11-13 SM90 run; it cannot be reproduced on the
 current source. The deterministic partial and abort contracts remain in
 `zig build unified-test` (section 5d).
 
@@ -232,7 +232,7 @@ current source. The deterministic partial and abort contracts remain in
 workers through public HTTP/SSE. It required `UMMINFER_LIVE_OPT_IN=1`, the
 ReleaseFast binary, both SGLang backends, and real audio.
 
-Expected result, recorded on H20B 2026-11-13: a default request carried one
+Expected result, recorded on SM90 2026-11-13: a default request carried one
 `asr_final` and no `asr_partial`; `stream_options.include_asr_partials` added
 ordered `asr_partial` deltas before one `asr_final`, then `vlm_delta`, with
 gap-free `seq` and one terminal; a cancel during the VLM stream yielded exactly
@@ -258,7 +258,7 @@ eviction, the global session cap, default-off behavior at both gates, the
 non-unified and disabled-engine HTTP 400 responses, and history loss across an
 engine restart. These are contract tests, not real-model validation.
 
-Real H20B multi-turn validation was recorded on 2026-11-14 with
+Real SM90 multi-turn validation was recorded on 2026-11-14 with
 `tests/unified_remote_image_history_live.py`. That harness was removed in
 `ab51cf5` with the SGLang backends in `7542ba0`, so the description and command
 below are a historical record, not a runnable test. It started the real server
@@ -272,7 +272,7 @@ the image checked that the image answer was not generic.
 with `ffmpeg -i asr_en.wav -ar 16000 -ac 1 -sample_fmt s16 -c:a pcm_s16le`;
 the original is 48 kHz 24-bit and the server correctly rejects it.
 
-Expected result, recorded three times on H20B:
+Expected result, recorded three times on SM90:
 
 | Check | Expected |
 | --- | --- |
@@ -287,7 +287,7 @@ Expected result, recorded three times on H20B:
 
 The worker prompt log, raw SSE frames, health responses, image access log, input
 SHA256 values, commands, and `SHA256SUMS` are in
-`/tmp/umminfer-phase5-final-h20b-evidence/live/`.
+`/tmp/umminfer-phase5-final-sm90-evidence/live/`.
 
 ## 5e. Backend decode stop: scheduler, SSE, and GPU hardware evidence
 
@@ -303,7 +303,7 @@ different questions and are not interchangeable. Before 2026-11-14 only levels
 
 1. Scheduler abort. `tests/sglang_abort_probe.py` sampled the backend
    scheduler counter `/v1/loads` before, during and after the request, then
-   posted `/abort_request`. Recorded on H20B 2026-11-14 in 10 consecutive runs:
+   posted `/abort_request`. Recorded on SM90 2026-11-14 in 10 consecutive runs:
    `/abort_request` 200; `num_running_reqs` went 0 -> 1 -> 0;
    `counter_decode_stopped=true`. This was the scheduler's view of the running
    batch, not a GPU hardware counter.
@@ -511,7 +511,7 @@ and SHA256.
 ### MiniMaxAI/MiniMax-H3
 
 **IN_PROGRESS — integration planning.** Establish the full-stack BF16 baseline
-on H20B for high-precision acceptance and quality/resource comparisons. Include
+on SM90 for high-precision acceptance and quality/resource comparisons. Include
 DiT, complete text encoders, VAE, activations, offload, and host RAM. Official
 Hugging Face metadata for the original H3 FL2VA partition is approximately
 144.05 GB. This disk size is not a VRAM requirement.
@@ -532,9 +532,9 @@ There is no official quantized checkpoint. Official weights with runtime online
 quantization are distinct from third-party converted or pruned quantized
 packages. Verify a third-party package's revision, license, tensor completeness,
 hashes, and real outputs. Do not call it official MiniMax quantization. A trusted
-quantized run may execute before the H20B baseline, but it is a separate
+quantized run may execute before the SM90 baseline, but it is a separate
 precision configuration. Compare its real outputs and resource use with the
-BF16 baseline when H20B is available. Without a trusted artifact or compatible
+BF16 baseline when SM90 is available. Without a trusted artifact or compatible
 hardware, mark the case `BLOCKED` or `NOT_COVERED`.
 
 There is no H3-specific Mac validation, memory guarantee, or performance
@@ -564,12 +564,12 @@ commitment, and execution stays limited to low-resource real-model tests. Any
 editing, reference-count, or output-format case that was not executed remains
 `NOT_COVERED`.
 
-## 8. CUDA build, IPC, sanitizer and stress on H20B
+## 8. CUDA build, IPC, sanitizer and stress on SM90
 
 RETIRED. `tests/cuda_ipc_test.cpp`, `tests/cuda_pipeline_test.cpp`,
 `tests/cuda_sanitize.py`, and `tests/cuda_stress.py` were removed in `ab51cf5`,
 and the `cuda-stress` build step no longer exists. The measurement below is a
-historical record of the 2026-11-14 H20B run.
+historical record of the 2026-11-14 SM90 run.
 
 The only CUDA checks that remain on the current source are the build and the
 relay benchmark:
@@ -585,7 +585,7 @@ zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda \
 `libzmq`, `libmsgpackc`, `libcurl`, and `libwebsockets` libraries. The build
 puts that prefix before distro headers.
 
-Historical results, recorded on H20B 2026-11-14 on GPUs 2 and 3:
+Historical results, recorded on SM90 2026-11-14 on GPUs 2 and 3:
 
 | Check | Expected |
 | --- | --- |

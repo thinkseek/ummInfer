@@ -1,7 +1,7 @@
-# H20B resident service
+# SM90 resident service
 
-This page is the runbook for the resident ummInfer service on H20B: one C++
-server and one native C++/CUDA stage per model, all inside the H20B GPU
+This page is the runbook for the resident ummInfer service on SM90: one C++
+server and one native C++/CUDA stage per model, all inside the SM90 GPU
 container. No Python model runtime, PyTorch or SGLang is on the serving path.
 `python/` appears only as the optional process supervisor and as legacy code.
 
@@ -15,9 +15,9 @@ container. No Python model runtime, PyTorch or SGLang is on the serving path.
 | VLM stage, optional | `bin/umm-native-stage-omni` | 3 |
 | Image stage | `bin/umm-native-stage-image` | 4 |
 | TTS stage | `bin/umm-native-stage-tts` | 5 |
-| Supervisor, optional | `python3 -I python/umminfer_service.py --config service/h20b-service.json` | none |
+| Supervisor, optional | `python3 -I python/umminfer_service.py --config service/native-service.json` | none |
 
-Exactly one VLM stage runs at a time: `vlm_stage` in `service/h20b-service.json`
+Exactly one VLM stage runs at a time: `vlm_stage` in `service/native-service.json`
 selects `qwen38` or `omni`, and only one of them may hold GPU 3. GPUs 0 and 1
 are not part of this service.
 
@@ -30,19 +30,19 @@ default): `asr`, `qwen38` or `omni`, `image`, `tts`, plus the shared
 
 The server binds `127.0.0.1` by default, or the container's private bridge
 address (`<container-ip>`, configured via `UMM_NATIVE_HOST` or `"host"` in
-`service/h20b-service.json`). It does not bind `0.0.0.0`, it does not bind the
+`service/native-service.json`). It does not bind `0.0.0.0`, it does not bind the
 host public interface, and no Docker port is published. The supervisor refuses
 a configuration whose `host` is `0.0.0.0` or `::`.
 
-A Mac cannot reach `<container-ip>` directly. SSH `-L` on the H20B host
-(substituting your real `<container-ip>` and `<h20b-ssh-host>`) reaches the
+A Mac cannot reach `<container-ip>` directly. SSH `-L` on the Linux SM90 GPU host
+(substituting your real `<container-ip>` and `<gpu-host>`) reaches the
 container bridge address:
 
 ```sh
-/usr/bin/ssh -N -L 43301:<container-ip>:43301 <h20b-ssh-host>
+/usr/bin/ssh -N -L 43301:<container-ip>:43301 <gpu-host>
 ```
 
-`127.0.0.1:43301` on the Mac then reaches the container service through the H20B
+`127.0.0.1:43301` on the Mac then reaches the container service through the SM90
 host.
 
 ## Install
@@ -63,16 +63,16 @@ cmake --build build -j 16
 install -m755 zig-out/bin/umm-infer build/umm-native-stage-* "${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}/bin/"
 ```
 
-`service/h20b-native-service.sh` expects those binaries in `$UMM_NATIVE_ROOT/bin`
+`service/native-service.sh` expects those binaries in `$UMM_NATIVE_ROOT/bin`
 (`/opt/umminfer/native-service/bin` by default). The supervisor reads
-`service/h20b-service.json`, which names `binary`, `stage_binary_dir`, `host`,
+`service/native-service.json`, which names `binary`, `stage_binary_dir`, `host`,
 `env.LD_LIBRARY_PATH`, and the four `native_stages` (edit those paths and
 `host` to match your container before starting).
 
 Install the config next to the supervisor:
 
 ```sh
-install -m644 service/h20b-service.json "${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}/config.json"
+install -m644 service/native-service.json "${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}/config.json"
 ```
 
 Record the identity of the deployed bytes:
@@ -88,15 +88,15 @@ git rev-parse HEAD
 Without supervision:
 
 ```sh
-service/h20b-native-service.sh start
-service/h20b-native-service.sh status
-service/h20b-native-service.sh stop
+service/native-service.sh start
+service/native-service.sh status
+service/native-service.sh stop
 ```
 
 With the supervisor, which restarts unhealthy children:
 
 ```sh
-CFG=/root/umm-native-service/config.json
+CFG=/opt/umminfer/umm-native-service/config.json
 python3 -I python/umminfer_service.py --config $CFG start
 python3 -I python/umminfer_service.py --config $CFG status
 python3 -I python/umminfer_service.py --config $CFG logs --name asr
@@ -139,7 +139,7 @@ log.
 - Model revisions stay `UNKNOWN`; the model directories carry no `.git`
   metadata. See
   [performance baseline](performance-baseline.md#model-snapshot-and-provenance).
-- `service/h20b-native-service.sh` does no supervision: it writes pid files,
+- `service/native-service.sh` does no supervision: it writes pid files,
   and `stop` signals those pids. Use the supervisor when restart matters.
 - Neither launcher cleans up other users' processes. Each signals only the PIDs
   it recorded.
@@ -157,11 +157,11 @@ Qwen3.8-27B) and GPU 7 (image, TTS), because GPUs 2-5 are held by the resident
 ### Unsupervised path
 
 ```sh
-UMM_NATIVE_ROOT=/root/umm-native-verify UMM_NATIVE_PORT=43302 \
+UMM_NATIVE_ROOT=/opt/umminfer/umm-native-verify UMM_NATIVE_PORT=43302 \
 UMM_NATIVE_IPC=/tmp/umminfer-native-verify-ipc \
 UMM_NATIVE_GPU_ASR=6 UMM_NATIVE_GPU_VLM=6 \
 UMM_NATIVE_GPU_IMAGE=7 UMM_NATIVE_GPU_TTS=7 \
-  /root/h20b-native-service.sh start
+  /opt/umminfer/native-service.sh start
 ```
 
 | Check | Result |
@@ -182,16 +182,16 @@ identical to the binary used in the accepted benchmark baseline.
 
 ### Supervised path
 
-The same root and GPUs, with a copy of `service/h20b-service.json` edited for
+The same root and GPUs, with a copy of `service/native-service.json` edited for
 port 43302, its own `run_dir`, `log_dir` and `ipc_dir`, and GPUs 6/6/7/7:
 
 ```sh
-python3 -I /root/umm-native-verify/umminfer_service.py \
-  --config /root/umm-native-verify/config.json start
-python3 -I /root/umm-native-verify/umminfer_service.py \
-  --config /root/umm-native-verify/config.json status
-python3 -I /root/umm-native-verify/umminfer_service.py \
-  --config /root/umm-native-verify/config.json stop
+python3 -I /opt/umminfer/umm-native-verify/umminfer_service.py \
+  --config /opt/umminfer/umm-native-verify/config.json start
+python3 -I /opt/umminfer/umm-native-verify/umminfer_service.py \
+  --config /opt/umminfer/umm-native-verify/config.json status
+python3 -I /opt/umminfer/umm-native-verify/umminfer_service.py \
+  --config /opt/umminfer/umm-native-verify/config.json stop
 ```
 
 | Check | Result |

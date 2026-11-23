@@ -1,20 +1,20 @@
 #!/bin/sh
 # One-command reproduction of docs/cases/0001-end-to-end-native.md.
 #
-#   TARGET=<h20b-ssh-host> CONTAINER=<gpu-container> \
+#   TARGET=<gpu-host> CONTAINER=<gpu-container> \
 #   SERVICE_HOST=<container-private-ip> \
 #   ZIG_BIN=/opt/umminfer/zig/zig CURL_PREFIX=/opt/umminfer/curl-prefix \
 #   DEPS_PREFIX=/opt/umminfer/deps \
 #     sh docs/cases/0001_repro.sh
 #
-# Needs: git checkout of the recorded commit, ssh access to the H20B host
-# (TARGET), a running GPU docker container (CONTAINER), and the 16 kHz WAV
-# fixture (AUDIO). Optional: SSH_OPTS, SERVICE_HOST, SERVICE_PORT, ROOT, CASE,
-# ZIG_BIN, CURL_PREFIX, DEPS_PREFIX. The script stops the resident service at
-# the end and leaves every stage GPU released.
+# Needs: git checkout of the recorded commit, ssh access to the Linux SM90 GPU
+# host (TARGET), a running GPU docker container (CONTAINER), and the 16 kHz WAV
+# fixture (AUDIO). Optional: TARGET, SSH_OPTS, SERVICE_HOST, SERVICE_PORT, ROOT,
+# CASE, ZIG_BIN, CURL_PREFIX, DEPS_PREFIX. The script stops the resident service
+# at the end and leaves every stage GPU released.
 set -eu
 
-TARGET=${TARGET:?set TARGET to the H20B SSH host}
+TARGET=${TARGET:-127.0.0.1}
 CONTAINER=${CONTAINER:?set CONTAINER to the GPU container name}
 AUDIO=${AUDIO:-/tmp/umminfer-phase4-bench-evidence/inputs/asr_en_pcm16.wav}
 SSH_OPTS=${SSH_OPTS:-}
@@ -63,7 +63,7 @@ for kind in asr omni image tts; do
   install -m755 "src/build/umm-native-stage-$kind" "bin/umm-native-stage-$kind"
 done
 cp src/python/umminfer_service.py python/umminfer_service.py
-cp src/service/h20b-service.json config.json
+cp src/service/native-service.json config.json
 sha256sum bin/*
 python3 -I python/umminfer_service.py --config config.json start
 tries=0

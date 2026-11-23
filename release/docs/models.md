@@ -6,7 +6,7 @@ in Hugging Face safetensors layout. The operator supplies the directory with
 
 ## Supported models
 
-Measured on H20B, BF16, greedy decoding, one request in flight.
+Measured on SM90, BF16, greedy decoding, one request in flight.
 
 | Model | Stage binary | GPU | Measured |
 | --- | --- | --- | --- |

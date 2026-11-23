@@ -1,6 +1,6 @@
 # Concurrency and capacity
 
-Measured 2026-11-17 on an H20B GPU container, commit `455f671` plus the
+Measured 2026-11-17 on an SM90 GPU container, commit `455f671` plus the
 change described below. One independent stack was used: server
 `<container-ip>:43302` (`$UMM_CONCURRENCY_HOST:43302`), ASR and Qwen3.8 on GPU 2, image on GPU 6, TTS on GPU 7.
 The shared backends on GPU 0/1/3/4/5 and the resident service on 43300/43301

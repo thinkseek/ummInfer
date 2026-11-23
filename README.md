@@ -35,7 +35,7 @@ optional image and TTS output legs. Every stage registers with the existing
 `Stage::Config` contract (`recv`, `coordinator`, `abort`, `announce_ready`).
 Each process loads one model on one GPU; stages default to one request at a
 time, while `qwen38` supports opt-in decode continuous batching via
-`--batch-size N` (set to `8` in `service/h20b-service.json`).
+`--batch-size N` (set to `8` in `service/native-service.json`).
 Exactly one VLM stage runs at a time: `vlm_stage` in the service config picks
 `qwen38` (default) or `omni`.
 
@@ -122,18 +122,18 @@ curl -sS -F model=qwen3-native -F file=@input_16k.wav \
   http://127.0.0.1:43301/v1/audio/transcriptions
 ```
 
-On H20B the same layout is launched by
-`service/h20b-native-service.sh start|stop|status`, which reads the
+On SM90 the same layout is launched by
+`service/native-service.sh start|stop|status`, which reads the
 `UMM_NATIVE_*` environment variables. The supervised path is
-`python3 -I python/umminfer_service.py --config service/h20b-service.json
+`python3 -I python/umminfer_service.py --config service/native-service.json
 start`, which takes the same layout from that file and restarts unhealthy
 children. Set `UMM_NATIVE_OMNI=1` to serve Omni instead of Qwen3.8-27B as the
 VLM leg. Both paths need `zig-out/bin/umm-infer` and `build/umm-native-stage-*`
-installed in the same directory; see [the H20B runbook](docs/h20b-service.md).
+installed in the same directory; see [the SM90 runbook](docs/native-service.md).
 
 ## Supported models
 
-Measured on H20B, BF16, greedy decoding, one request in flight. Each engine's
+Measured on SM90, BF16, greedy decoding, one request in flight. Each engine's
 own document has the full conditions and limits.
 
 | Model | Native implementation | GPU | Measured |
@@ -166,7 +166,7 @@ native/stage_cli/               the five umm-native-stage-* binaries
 clients/ummmlx/                 native macOS SwiftUI client + Swift unit tests
 web/                            single-file browser client (index.html)
 benchmarks/                     multimodal benchmark manifest (70 cases) and data fetcher
-service/                        H20B launcher, concurrency stack, supervisor config
+service/                        SM90 launcher, concurrency stack, supervisor config
 tests/                          C++ contract tests, Python E2E, live/benchmark harnesses
 tools/                          feature-map anchor checker, audio analysis, release publisher
 release/                        public release templates and verify script
@@ -214,7 +214,7 @@ committed evidence were removed in `ab51cf5`. Use the case reproduction below.
 Full request-level reproduction of a four-stage deployment:
 
 ```sh
-TARGET=<h20b-ssh-host> CONTAINER=<gpu-container> sh docs/cases/0001_repro.sh
+TARGET=<gpu-host> CONTAINER=<gpu-container> sh docs/cases/0001_repro.sh
 ```
 
 Case record, per-leg timings and hashes: [docs/cases/0001-end-to-end-native.md](docs/cases/0001-end-to-end-native.md).
@@ -232,7 +232,7 @@ zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/hom
   decode continuous batching is implemented only for `qwen38` (`--batch-size N`,
   see [docs/batching.md](docs/batching.md)). There is no multi-GPU model split.
 - `max_new_tokens` reaches the `qwen38` and `omni` stages (clamped to
-  `max_seq`; default 96 in the H20B launcher/config), and `audio.stream` reaches
+  `max_seq`; default 96 in the SM90 launcher/config), and `audio.stream` reaches
   the `tts` stage. `temperature`, sampling, beam search and repetition controls
   are ignored: all native executors are greedy and deterministic.
 - Both `qwen38` and `omni` stages stream UTF-8-safe `vlm_delta` chunks per
@@ -286,7 +286,7 @@ zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/hom
 
 | Document | Contents |
 | --- | --- |
-| [docs/h20b-service.md](docs/h20b-service.md) | H20B native resident service runbook, topology, supervisor (`umminfer_service.py`) |
+| [docs/native-service.md](docs/native-service.md) | SM90 native resident service runbook, topology, supervisor (`umminfer_service.py`) |
 | [docs/observability.md](docs/observability.md) | Prometheus `/metrics`, NVML GPU gauges, `UMM_TRACE=1` JSONL request tracing |
 | [docs/release.md](docs/release.md) | Release packaging (`tools/publish-release.sh`), verification (`release/tools/verify.sh`), rollback |
 | [docs/client.md](docs/client.md) | C++ client library and `umm-infer` CLI |
@@ -298,13 +298,13 @@ zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/hom
 | Document | Contents |
 | --- | --- |
 | [docs/benchmark-system.md](docs/benchmark-system.md) | Multimodal benchmark datasets (70 cases), metrics, stability gate |
-| [docs/multimodal-benchmark-results.md](docs/multimodal-benchmark-results.md) | H20B real-model multimodal benchmark results (English/Mandarin ASR, GSM8K, VQA, SpokenCOCO) |
-| [docs/batching.md](docs/batching.md) | Qwen3.8 decode continuous batching design and H20B measurements |
+| [docs/multimodal-benchmark-results.md](docs/multimodal-benchmark-results.md) | SM90 real-model multimodal benchmark results (English/Mandarin ASR, GSM8K, VQA, SpokenCOCO) |
+| [docs/batching.md](docs/batching.md) | Qwen3.8 decode continuous batching design and SM90 measurements |
 | [docs/concurrency.md](docs/concurrency.md) | Admission control (`--max-in-flight`), 503 shedding and capacity measurements |
 | [docs/gpu-utilization.md](docs/gpu-utilization.md) | Measured GPU busy fraction, bandwidth, kernel hotspots |
-| [docs/soak.md](docs/soak.md) | Soak and fault recovery on the native H20B service |
+| [docs/soak.md](docs/soak.md) | Soak and fault recovery on the native SM90 service |
 | [docs/cases/0001-end-to-end-native.md](docs/cases/0001-end-to-end-native.md) | One recorded four-stage end-to-end request with hashes and timings |
-| [docs/validation.md](docs/validation.md) | User journeys, H20B/Mac runs, what remains `NOT_COVERED` |
+| [docs/validation.md](docs/validation.md) | User journeys, SM90/Mac runs, what remains `NOT_COVERED` |
 | [docs/mac-unified.md](docs/mac-unified.md) | Apple Silicon low-resource unified validation |
 
 ### Historical baselines, legacy backends and RL
@@ -315,7 +315,7 @@ zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/hom
 | [docs/joint-optimization.md](docs/joint-optimization.md) | Historical worker-concurrency optimization record (2026-11-13) |
 | [docs/mlx.md](docs/mlx.md) | MLX-LM text backend on Apple Silicon (legacy local path) |
 | [docs/rl.md](docs/rl.md) | RL architecture phase 1: rollout, trajectory export, reward boundary |
-| [docs/rl-phase2.md](docs/rl-phase2.md) | RL phase 2: real optimizer-step validation on H20B |
+| [docs/rl-phase2.md](docs/rl-phase2.md) | RL phase 2: real optimizer-step validation on SM90 |
 
 Licensed under Apache-2.0. Third-party derivations are listed in
 [native/THIRD_PARTY_NOTICES.md](native/THIRD_PARTY_NOTICES.md) and each

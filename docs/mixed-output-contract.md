@@ -32,7 +32,7 @@ without them is byte-identical to the current text path.
     `"streamed": true`, so the engine does not append the whole WAV afterwards:
     a streamed request yields only `audio/pcm` artifacts. When `false`, the
     request yields exactly one `audio/wav` artifact after synthesis completes.
-    Measured on H20B: first `audio/pcm` chunk at 0.36-0.39 s of a 9.1 s request.
+    Measured on SM90: first `audio/pcm` chunk at 0.36-0.39 s of a 9.1 s request.
 - `video`: object, optional.
   - `prompt`: optional non-empty string. When absent the video prompt is the
     full aggregated VLM answer.

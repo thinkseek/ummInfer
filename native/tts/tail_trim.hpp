@@ -17,11 +17,11 @@ namespace umminfer::native {
 // window. The cut stays inside that one run.
 //
 // A final fricative passes the zero-crossing test, so the run must also be
-// dark: at least 0.79 of its energy below 8 kHz. Measured on H20B, the
-// decoder's run holds 0.81-0.85 below 8 kHz and a final /s/, /f/ or /S/ only
-// 0.54-0.76, so a bright run is left in place. The run must carry at least
-// 30 ms of noise. At most 0.6 s of noise is removed; the silence around it is
-// removed with it but does not consume that budget. Trailing silence on its
+// dark: at least 0.79 of its energy below 8 kHz. Measured on a Linux SM90 GPU
+// host, the decoder's run holds 0.81-0.85 below 8 kHz and a final /s/, /f/ or
+// /S/ only 0.54-0.76, so a bright run is left in place. The run must carry at
+// least 30 ms of noise. At most 0.6 s of noise is removed; the silence around it
+// is removed with it but does not consume that budget. Trailing silence on its
 // own is kept.
 std::size_t trailing_noise_cut(const std::vector<float>& samples, int sample_rate);
 

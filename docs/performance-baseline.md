@@ -1,4 +1,4 @@
-# Unified performance baseline — real H20B, 2026-11-13
+# Unified performance baseline — real SM90, 2026-11-13
 
 Baseline commit `127907e2a12406af3e1074a5f66144ac6f77b20b`, branch `phase4/bench`.
 > **Update 2026-11-13.** The queueing described below comes from one serial
@@ -18,8 +18,8 @@ derived from them.
 | Item | Value |
 | --- | --- |
 | Control plane | Apple Silicon Mac, `umm-infer` built by `zig build` |
-| Accelerator host | NVIDIA H20B, 8 × H20 97871 MiB, driver 535.161.08 |
-| Container | H20B GPU container (`$CONTAINER`) |
+| Accelerator host | NVIDIA Hopper (SM90) GPU, 8 × H20 97871 MiB, driver 535.161.08 |
+| Container | SM90 GPU container (`$CONTAINER`) |
 | ASR backend | SGLang, `qwen3-asr`, GPU 1, `:31000`, PID 34134 |
 | VLM backend | SGLang, `qwen3-omni`, GPU 0, `:31001`, PID 35212 |
 | SGLang | `0.5.15.post2.dev55+gc6b67186a` |
@@ -39,7 +39,7 @@ Collected 2026-11-13 with `tests/model_provenance.py`, which was removed in
 reproduction commands are in
 `/tmp/umminfer-phase5-provenance-evidence/` (`provenance.json`,
 `SHA256SUMS`). Every remote operation was read-only; weight hashes were
-computed on the H20B host, no weight byte was copied out, and no backend
+computed on the Linux SM90 GPU host, no weight byte was copied out, and no backend
 process was started or stopped.
 
 | Item | qwen3-asr | qwen3-omni |
@@ -167,9 +167,9 @@ request at a time. Concurrency 1 is the recommended mode for this deployment.
   plane.
 * This baseline ran at `127907e`, before the Phase 4 joint-input and streaming
   commits. Image through `UnifiedEngine`, joint image + audio, and realtime
-  partials were not exercised by this benchmark; their separate H20B evidence is
+  partials were not exercised by this benchmark; their separate SM90 evidence is
   recorded in [validation.md](validation.md) and
-  [roadmap.md](roadmap.md#h20b-status). ASR partials through the
+  [roadmap.md](roadmap.md#sm90-status). ASR partials through the
   unified chat route and the VLM/Omni GPU abort were validated separately on
   2026-11-13; this benchmark does not measure them.
 * Cancellation latency, queue depth, and per-worker model-time attribution were

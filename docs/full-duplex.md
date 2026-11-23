@@ -1,7 +1,7 @@
 # Full duplex, L1: streaming input, server endpointing, interruption
 
 This page defines the first full-duplex layer, records what was measured on
-H20B, and lists what L2 and L3 still need. It does not claim any behavior
+SM90, and lists what L2 and L3 still need. It does not claim any behavior
 that was not run.
 
 ## Definition of L1
@@ -58,9 +58,9 @@ L1 is complete when all five statements hold:
 The native ASR engine already had an abort hook (`native/umm_asr_native/engine.hpp`,
 `AbortCheck`), so L1 uses it; no new checkpoint was needed in the stage.
 
-## Measured on H20B, 2026-11-17
+## Measured on SM90, 2026-11-17
 
-Environment: H20B GPU container, native ASR on GPU 2, local Qwen3-ASR model
+Environment: SM90 GPU container, native ASR on GPU 2, local Qwen3-ASR model
 directory (`$UMM_ASR_MODEL`), real speech `asr_en_pcm16.wav`, server and
 stage built from this commit. The server used ephemeral ports; the resident
 services on 43300 and 43301 and GPU 0, 1, 4, 5 were not touched.
@@ -223,9 +223,9 @@ renders every message of the request, so `session_history` is part of the
 prompt instead of being dropped. The stage reports `prefix_reused`,
 `prefill_tokens` and `prefill_ms` per request.
 
-## Measured on H20B, 2026-11-17 (L2)
+## Measured on SM90, 2026-11-17 (L2)
 
-Environment: H20B GPU container, native ASR on GPU 2, native Omni thinker on
+Environment: SM90 GPU container, native ASR on GPU 2, native Omni thinker on
 GPU 7, native Qwen3-TTS on GPU 5, local model directories (`$UMM_MODELS_DIR/{asr,omni,qwen3-tts}`), real speech
 `asr_en_pcm16.wav`, server and stages built from this commit. Ports were
 ephemeral; the resident services and GPU 0/1 were not touched.

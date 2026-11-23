@@ -41,11 +41,11 @@ a grouping label by default; with `--session-history` and the per-request
 `session_history=true` opt-in, prior completed turns of the same session are
 prepended to the next VLM prompt. The store bounds, eviction, HTTP 400 contracts,
 and the full rule set are tracked in [feature-map.md](feature-map.md#5-会话);
-deterministic contract coverage and the real H20B validation are in
-[validation 5d](validation.md#5d-optional-multi-turn-session-history). H20B
+deterministic contract coverage and the real SM90 validation are in
+[validation 5d](validation.md#5d-optional-multi-turn-session-history). SM90
 multi-turn validation passed on 2026-11-14, including cancel/error exclusion and
 the default-off gate; evidence is in
-`/tmp/umminfer-phase5-final-h20b-evidence/live/`. Remote `http(s)` image URLs
+`/tmp/umminfer-phase5-final-sm90-evidence/live/`. Remote `http(s)` image URLs
 were validated in the same window with the repository image served from a local
 HTTP server.
 
@@ -53,12 +53,12 @@ HTTP server.
 
 Phases 0–3 were **partial**, not complete, as of this date. The integrated
 branch exposed the existing public chat route through `UnifiedEngine` to real
-Qwen ASR and Qwen Omni workers. On H20B, public HTTP/SSE and the real CLI
+Qwen ASR and Qwen Omni workers. On SM90, public HTTP/SSE and the real CLI
 completed ASR -> VLM with real Chinese and English recordings. The recorded run
 also passed a cancel after ASR final with no VLM execution, an ASR failure with
 no VLM execution, and a successful later request. Event order, parent/child
 request ids, one terminal, and `in_flight=0` are in
-`/tmp/umminfer-integration-logs/h20b-final/`. A later run cancelled while the
+`/tmp/umminfer-integration-logs/sm90-final/`. A later run cancelled while the
 VLM was streaming and failed the ASR leg by stopping its real backend; evidence
 is in `/tmp/umminfer-phase4-cancel-failure-evidence/`.
 
@@ -77,7 +77,7 @@ reached PASS on 2026-11-14 ([validation
 a real decode NaN injection passed the same day ([validation
 5f](validation.md#5f-real-model-compute-nan-failure-recorded-on-2026-11-14));
 CUDA build, IPC, sanitizer, and stress passed on dedicated GPUs 2 and 3 (see
-[H20B status](#h20b-status)).
+[SM90 status](#sm90-status)).
 
 As of this 2026-11-13 snapshot the full Phase 3 Mac profile, weights hashes, full
 resource attribution, and output reproducibility were not a complete record. The
@@ -188,7 +188,7 @@ models, on the named hardware, with the Phase 0 contract in force.
 - A recorded run: model ids and revisions, weights hashes, precision,
   quantization method, parameters, seeds, artifact SHA256, wall time, output
   length, peak accelerator memory, host RAM.
-- The Mac profile and the H20B profile, recorded separately.
+- The Mac profile and the SM90 profile, recorded separately.
 
 **Acceptance gate.**
 
@@ -196,7 +196,7 @@ models, on the named hardware, with the Phase 0 contract in force.
 | --- | --- |
 | Path | CLI or public API to ummInfer server to real workers to real models to decoded artifact. A direct backend run is supporting evidence only. |
 | Mac profile | Low-resource real-model run completes and its artifact decodes. |
-| H20B profile | High-precision run completes and its artifact decodes. The 2026-11-13 audio-only run is evidence for the public path, but it does not complete the full profile or its record requirements. |
+| SM90 profile | High-precision run completes and its artifact decodes. The 2026-11-13 audio-only run is evidence for the public path, but it does not complete the full profile or its record requirements. |
 | Reproducibility | The recorded parameters reproduce the recorded artifact hash, or the difference is explained. |
 | Status honesty | Any unrun modality or model is recorded `BLOCKED` or `NOT_RUN`. |
 
@@ -257,7 +257,7 @@ The existing MLX text-chat optimization record keeps its own convention; it is
 not a unified-engine baseline. [docs/mlx.md](mlx.md) gives the
 number and its conditions.
 
-The first real H20B unified baseline is recorded in
+The first real SM90 unified baseline is recorded in
 [performance-baseline.md](performance-baseline.md): 10 scenario blocks, 200
 successful requests, and unified concurrency 1/2/4. In that pre-change baseline
 one serial Omni worker delivered about 20 output tokens/s and concurrency 2/4
@@ -297,7 +297,7 @@ learning, without putting training inside the serving process.
 | No unverified claim | No phase claims an RL result that has not run on real models and recorded hardware. |
 
 **Phase 6 step 2 — real optimizer-step validation (2026-11-14).** The
-architecture above was exercised end to end on H20B GPU 4 with a real 0.5B
+architecture above was exercised end to end on SM90 GPU 4 with a real 0.5B
 causal LM, real GSM8K rollouts, a verifiable exact-match reward, and real
 REINFORCE/AdamW updates in the separate worker process. This validates the
 training architecture, not a business model-training result. The measured
@@ -313,8 +313,8 @@ are in [validation section 7](validation.md#7-future-model-acceptance-gates).
 | Model | Status | Target and constraints |
 | --- | --- | --- |
 | `Qwen3.5-Omni` | **PLANNED** | Authorized official API only. The documented model IDs are `qwen3.5-omni-plus` and `qwen3.5-omni-flash`; their documented interface accepts text, image, audio, and video input and returns text or streaming speech. Authorized access is unverified, so every execution case is `NOT_COVERED`. Do not claim image or video generation. |
-| `MiniMaxAI/MiniMax-H3` | **IN_PROGRESS — integration planning** | Full-stack BF16 baseline on H20B. The open H3-Base path is limited to 768p; 2K needs hosted Context-IR/Regenerate-2K modules that are not fully open. |
-| `MiniMaxAI/MiniMax-H3-Image` | **IN_PROGRESS — integration planning** | Full-stack BF16 baseline on H20B. Text-to-image and editing with up to 16 reference images. |
+| `MiniMaxAI/MiniMax-H3` | **IN_PROGRESS — integration planning** | Full-stack BF16 baseline on SM90. The open H3-Base path is limited to 768p; 2K needs hosted Context-IR/Regenerate-2K modules that are not fully open. |
+| `MiniMaxAI/MiniMax-H3-Image` | **IN_PROGRESS — integration planning** | Full-stack BF16 baseline on SM90. Text-to-image and editing with up to 16 reference images. |
 
 The BF16 scope, the 144.05 GB / 135.38 GB disk-size figures (not VRAM), the
 no-official-quantized-checkpoint rule, and the final-acceptance path all live in
@@ -327,14 +327,14 @@ Two hardware profiles, with different jobs:
 | Profile | Job | Limits |
 | --- | --- | --- |
 | Apple Silicon Mac | Low-consumption development. Control-plane tests, stage contract tests, small real-model chat and audio runs, CLI and client checks. | No CUDA. No H3 or H3-Image acceptance. No performance commitment. A model that cannot run inside the Mac limits stays `NOT_COVERED` on Mac. |
-| NVIDIA H20B | High-precision acceptance and quality/resource comparison. BF16 baseline, CUDA build and IPC runs, sanitizer and stress runs. | Only one owner runs builds and benchmarks at a time, in an agreed window. Do not run benchmarks concurrently with sanitizer or stress runs. |
+| NVIDIA Hopper (SM90) GPU | High-precision acceptance and quality/resource comparison. BF16 baseline, CUDA build and IPC runs, sanitizer and stress runs. | Only one owner runs builds and benchmarks at a time, in an agreed window. Do not run benchmarks concurrently with sanitizer or stress runs. |
 
 Mac runs stay at low resource; generic MPS or offload examples do not establish
 model acceptance, and a simulator never replaces the real model.
 
-### H20B status
+### SM90 status
 
-**ACCESSIBLE; real Qwen worker and unified audio-only runs recorded.** The H20B
+**ACCESSIBLE; real Qwen worker and unified audio-only runs recorded.** The SM90
 GPU container served `qwen3-asr` on GPU 1, port 31000, and `qwen3-omni`
 on GPU 0, port 31001. The final path used public CLI/HTTP -> `umm-infer` ->
 `UnifiedEngine` -> both external workers -> those SGLang backends. The final
@@ -342,7 +342,7 @@ snapshot used 88581 MiB on GPU 0 and 86167 MiB on GPU 1. Model revisions are
 `UNKNOWN`; the Omni config declares `bfloat16`.
 
 The 2026-11-13 evidence directory is
-`/tmp/umminfer-integration-logs/h20b-final/`. It contains the topology, model
+`/tmp/umminfer-integration-logs/sm90-final/`. It contains the topology, model
 metadata, real audio hashes, transcripts, answers, event timings, Worker receive
 logs, cancellation and failure checks, GPU snapshot, and `SHA256SUMS`. The run
 is local evidence, not a committed result artifact. Within this audio-only
@@ -355,7 +355,7 @@ A separate window on 2026-11-14 covered the CUDA path in the same container.
 It used `CUDA_VISIBLE_DEVICES=2,3`, so the SGLang workers on GPUs 0 and 1 were
 not touched, and no benchmark ran at the same time. The CUDA build, IPC tests,
 compute-sanitizer, and a 10/10 stress run all passed; the commands and result
-table are in [validation section 8](validation.md#8-cuda-build-ipc-sanitizer-and-stress-on-h20b),
+table are in [validation section 8](validation.md#8-cuda-build-ipc-sanitizer-and-stress-on-sm90),
 with the run record in README. The window needed two Linux build fixes (the
 dependency prefix now precedes distro headers, and `src/client/openai.cpp`
 names the `std::min` type). Evidence is in
@@ -365,8 +365,8 @@ zero-copy device-tensor transfer, and multi-host IPC remain `NOT_COVERED`.
 A third window on 2026-11-14 covered realtime live in the same container. The
 real CLI, realtime server and Qwen3-ASR stage passed incremental partials,
 PING/PONG interleaving, cancel, GPU abort, and a later request. Evidence is in
-`/tmp/umminfer-phase6-realtime-h20b-evidence/`; the libcurl build recipe and
-result table are in [validation section 3a](validation.md#3a-h20b-realtime-live-run).
+`/tmp/umminfer-phase6-realtime-sm90-evidence/`; the libcurl build recipe and
+result table are in [validation section 3a](validation.md#3a-sm90-realtime-live-run).
 
 ## Next priorities
 
@@ -374,7 +374,7 @@ result table are in [validation section 3a](validation.md#3a-h20b-realtime-live-
    attribution. Weights hashes and HF byte-identity are already recorded in
    [performance-baseline.md](performance-baseline.md#model-snapshot-and-provenance);
    the SGLang `revision` field stays `UNKNOWN`.
-2. Repeat the H20B CUDA window under real model load, and add zero-copy
+2. Repeat the SM90 CUDA window under real model load, and add zero-copy
    device-tensor transfer and multi-host IPC if a use case needs them.
 3. Keep the fixed-upstream proxy independent of the local unified path.
 4. Resolve remaining control-plane technical debt tracked in
@@ -387,7 +387,7 @@ result table are in [validation section 3a](validation.md#3a-h20b-realtime-live-
 
 - CUDA relay under real model load, zero-copy device-tensor transfer, and
   multi-host CUDA IPC. The build, IPC tests, compute-sanitizer, and stress pass
-  are recorded for H20B on 2026-11-14.
+  are recorded for SM90 on 2026-11-14.
 - The full Phase 3 Mac profile and trained-ASR recognition quality. The
   low-resource Mac unified profile passed with the TinyCTC inference test model
   ([validation 5b](validation.md#5b-mac-unified-low-resource-profile)); TinyCTC

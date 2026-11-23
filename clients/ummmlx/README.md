@@ -63,10 +63,10 @@ Credentials in the URL, a query, a fragment, and redirects are rejected.
 A private literal such as `http://<container-ip>:43301/v1` (in RFC 1918
 `172.16.0.0/12`) is accepted. When a Mac cannot reach the container bridge
 directly, forward it over SSH (substituting your real `<container-ip>` and
-`<h20b-ssh-host>`) and point the app at loopback:
+`<gpu-host>`) and point the app at loopback:
 
 ```sh
-/usr/bin/ssh -N -L 43301:<container-ip>:43301 <h20b-ssh-host>
+/usr/bin/ssh -N -L 43301:<container-ip>:43301 <gpu-host>
 # then use http://127.0.0.1:43301/v1 in the app
 ```
 
@@ -76,7 +76,7 @@ directly, forward it over SSH (substituting your real `<container-ip>` and
 - A request must end with `data: [DONE]`; a truncated stream is an error.
 - Per artifact: 48 MiB decoded (image and audio); per request: 60 MiB decoded.
 - The client timeout is 600 s per request and 900 s per resource. Image
-  generation measured about 225 s on the H20B native chain.
+  generation measured about 225 s on the NVIDIA Hopper (SM90) native chain.
 
 ## Build and test
 

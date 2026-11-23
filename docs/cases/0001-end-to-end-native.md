@@ -1,4 +1,4 @@
-# Case 0001: one native end-to-end request on H20B
+# Case 0001: one native end-to-end request on SM90
 
 Status: the four native stages served one real request end to end. One request
 with one `request_id` returned a text answer, a PNG and a WAV. The same request
@@ -13,7 +13,7 @@ probed it with `GET /health` and did not start or stop that service (section 7).
 Source: commit `1f851a08ff685ad059b8a5496add4f6da35cc4f7`, `git archive HEAD`
 SHA256 `aae4e74c10e4176ce4b0d7adca2985474f9b8329e39c104ebedc803e51c0170f`.
 
-Clean rebuild inside the H20B GPU container (with `ZIG_BIN`, `CURL_PREFIX`,
+Clean rebuild inside the SM90 GPU container (with `ZIG_BIN`, `CURL_PREFIX`,
 and `DEPS_PREFIX` pointing to your local toolchain/dependency prefixes):
 
 ```sh
@@ -58,7 +58,7 @@ Resident service (`python3 -I python/umminfer_service.py --config config.json`):
 
 | Piece | PID | GPU | Endpoint |
 | --- | --- | --- | --- |
-| supervisor | 529298 | - | `/root/umm-native-service/run` |
+| supervisor | 529298 | - | `/opt/umminfer/umm-native-service/run` |
 | server | 529299 | - | `<container-ip>:43301` |
 | ASR stage | 529532 | 2 | `ipc:///tmp/umminfer-native-ipc/asr` |
 | Omni stage | 529534 | 3 | `ipc:///tmp/umminfer-native-ipc/omni` |
@@ -72,7 +72,7 @@ same addresses and GPUs.
 
 ## 2. Request
 
-Input audio: `/root/umm-e2e/asr_en_pcm16.wav`, 16 kHz mono PCM16, 240,820
+Input audio: `/opt/umminfer/umm-e2e/asr_en_pcm16.wav`, 16 kHz mono PCM16, 240,820
 samples (15.051 s), 481,718 bytes, SHA256
 `64fbd9f7ecafc160ba457595570f4a8b338f10e16acc0933be30aedc7eedf86d`.
 
@@ -128,8 +128,8 @@ evidence directory):
 
 | Artifact | Path | Bytes | SHA256 | Geometry / format |
 | --- | --- | --- | --- | --- |
-| PNG | `/root/umm-e2e/out/run1/art-1.png` | 486,463 | `65b506b879c695ec4ab1f198f201ffa3b405c2311fe0ac5eb949c060e6517a34` | 512x512, 8-bit PNG, seed 42, 50 steps |
-| WAV | `/root/umm-e2e/out/run1/art-0.wav` | 883,244 | `54a57092c21036a7c930b1919314cab7f49d1d74c9745acc018e00507e489ede` | 24 kHz, mono, PCM16, 441,600 samples, 18.4 s |
+| PNG | `/opt/umminfer/umm-e2e/out/run1/art-1.png` | 486,463 | `65b506b879c695ec4ab1f198f201ffa3b405c2311fe0ac5eb949c060e6517a34` | 512x512, 8-bit PNG, seed 42, 50 steps |
+| WAV | `/opt/umminfer/umm-e2e/out/run1/art-0.wav` | 883,244 | `54a57092c21036a7c930b1919314cab7f49d1d74c9745acc018e00507e489ede` | 24 kHz, mono, PCM16, 441,600 samples, 18.4 s |
 
 WAV level from the TTS stage log: RMS 0.0489132, peak 0.42575, non-silence
 fraction 0.601404. The artifact descriptor's `sha256` matched the bytes
@@ -195,20 +195,20 @@ Server log tail (each file is far below the 64 KiB cap):
 
 ```
 == asr.log (1017 bytes)
-native stage model loaded kind=asr model=/root/omniinfer-model-validation-20261111-k3/models/asr gpu=2 load_ms=4685
+native stage model loaded kind=asr model=/opt/umminfer/omniinfer-model-validation-20261111-k3/models/asr gpu=2 load_ms=4685
 native stage asr ready kind=asr
 asr request audio_samples=240820 generated_tokens=46 chars=180 elapsed_ms=1014
 asr request audio_samples=240820 generated_tokens=46 chars=180 elapsed_ms=1010
 ...
 == omni.log (1225 bytes)
 loaded 19218 thinker tensors, 57.87 GiB weights
-native stage model loaded kind=omni model=/root/omniinfer-model-validation-20261111-k3/models/omni gpu=3 load_ms=16318
+native stage model loaded kind=omni model=/opt/umminfer/omniinfer-model-validation-20261111-k3/models/omni gpu=3 load_ms=16318
 native stage omni ready kind=omni
 omni request prompt_tokens=78 image_tokens=0 generated_tokens=40 chars=196 elapsed_ms=989
 omni request prompt_tokens=78 image_tokens=0 generated_tokens=40 chars=196 elapsed_ms=986
 ...
 == image.log (539 bytes)
-native stage model loaded kind=image model=/root/umm-mixed-output-20261116/models/Qwen-Image-2512 gpu=4 load_ms=0
+native stage model loaded kind=image model=/opt/umminfer/umm-mixed-output-20261116/models/Qwen-Image-2512 gpu=4 load_ms=0
 native stage image ready kind=image
 image request size=512x512 steps=50 seed=42 png_bytes=486463 load_ms=9995 encode_ms=43 denoise_ms=216386 vae_ms=764 elapsed_ms=228837
 image request size=512x512 steps=50 seed=42 png_bytes=486463 load_ms=8818 encode_ms=31 denoise_ms=216379 vae_ms=781 elapsed_ms=227487
@@ -284,7 +284,7 @@ scan found one live sampler left by the ad-hoc run 5 script:
 | --- | --- |
 | PID / PPID | 545513 / 1 |
 | Started | Tue Nov 17 05:49:05 2026 (UTC); `/proc/545513/stat` starttime 525357957 |
-| Command | `sh /root/umm-e2e/gpu_sampler.sh /root/umm-e2e/out/run5/gpu.csv 0.2` |
+| Command | `sh /opt/umminfer/umm-e2e/gpu_sampler.sh /opt/umminfer/umm-e2e/out/run5/gpu.csv 0.2` |
 | Match | command line names the run 5 output file; no other task artifact matched |
 | Action | `kill -TERM 545513` |
 | Result | process stopped; entry is now state `Z` with PPID 1 |
@@ -298,7 +298,7 @@ Full live-process check, excluding state `Z`:
 ```sh
 docker exec "$CONTAINER" bash -lc "ps -eo pid,ppid,stat,args \
   | awk '\$3 !~ /Z/' \
-  | grep -E 'gpu_sampler|e2e_client|/root/umm-e2e|/root/case0001|umm-infer serve|umm-native-stage|umminfer_service|nvidia-smi' \
+  | grep -E 'gpu_sampler|e2e_client|/opt/umminfer/umm-e2e|/opt/umminfer/case0001|umm-infer serve|umm-native-stage|umminfer_service|nvidia-smi' \
   | grep -v grep || echo NONE-LIVE"
 NONE-LIVE
 ```
@@ -373,7 +373,7 @@ Other limits:
 From a checkout of the recorded commit, with the WAV fixture present:
 
 ```sh
-TARGET=<h20b-ssh-host> CONTAINER=<gpu-container> SERVICE_HOST=<container-ip> \
+TARGET=<gpu-host> CONTAINER=<gpu-container> SERVICE_HOST=<container-ip> \
   sh docs/cases/0001_repro.sh
 ```
 
@@ -400,7 +400,7 @@ python3 -I 0001_e2e_client.py run --url "http://${SERVICE_HOST:-127.0.0.1}:43301
 
 ## 9. Evidence
 
-Container: `/root/umm-e2e/out/{run1,run2,run3,run5,abort1,abort2}/` with
+Container: `/opt/umminfer/umm-e2e/out/{run1,run2,run3,run5,abort1,abort2}/` with
 `request.json`, `response.sse`, `events.json`, `art-1.png` / `art-0.wav`,
 `gpu.csv`, `result.json`, `text.txt`, `transcript.txt`. `run5/result.json`
 carries `stage_timings` with the stage-measured `prefill_ms` and `decode_ms`.

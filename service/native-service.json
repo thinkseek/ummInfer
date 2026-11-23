@@ -1,5 +1,5 @@
 {
-  "name": "umminfer-h20b-native",
+  "name": "umminfer-native-service",
   "run_dir": "/opt/umminfer/native-service/run",
   "log_dir": "/opt/umminfer/native-service/logs",
   "ipc_dir": "/tmp/umminfer-native-ipc",

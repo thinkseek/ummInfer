@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Long-run stability and fault-recovery test for the native H20B service.
+"""Long-run stability and fault-recovery test for the SM90 native service.
 
 Runs inside the container next to the service, because it also reads the
 service's own process state (`/proc` RSS) and NVML through `nvidia-smi`. It
@@ -7,7 +7,7 @@ talks to the server over its public HTTP surface only; it never starts, stops
 or reconfigures the service except for the deliberate fault injection, which
 signals only the child PIDs that the supervisor's own state file lists.
 
-  python3 -I tests/soak_native.py --out /root/soak-out --duration-s 1800
+  python3 -I tests/soak_native.py --out /opt/umminfer/soak-out --duration-s 1800
 
 Modes:
   soak    mixed request load for --duration-s, with a memory/queue time series

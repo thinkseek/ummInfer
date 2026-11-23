@@ -1,4 +1,4 @@
-# Soak and fault recovery on the native H20B service
+# Soak and fault recovery on the native SM90 service
 
 Repeatable long-run test of the native deployment: mixed request load, a
 memory and queue time series, and three fault injections with measured
@@ -10,7 +10,7 @@ deployment described in [Environment](#environment). No number is estimated.
 | Item | Value |
 | --- | --- |
 | Commit under test | `889b727c504db49c6acd64ac01be0b9fee487b7c` |
-| Host | H20B GPU container |
+| Host | SM90 GPU container |
 | GPU | 4 x NVIDIA H20, driver `535.161.08` |
 | GPU assignment | ASR 2, Qwen3.8-27B 3, Qwen-Image-2512 4, TTS 5 |
 | CPU / RAM | Xeon Platinum 8457C, 180 cores / 1928 GiB |
@@ -18,7 +18,7 @@ deployment described in [Environment](#environment). No number is estimated.
 | CUDA | 12.4.131 (nvcc) |
 | Python | 3.12.3 |
 | Zig | 0.16.0 |
-| Server | `<container-ip>:43301` (`$UMM_SOAK_URL`), supervisor `service/h20b-service.json` |
+| Server | `<container-ip>:43301` (`$UMM_SOAK_URL`), supervisor `service/native-service.json` |
 
 Installed binary SHA256, built from `889b727` on the host:
 
@@ -30,11 +30,11 @@ Installed binary SHA256, built from `889b727` on the host:
 | `umm-native-stage-image` | `97e9406ee2b1d82bb1883cfe9362a9cb767b1d050428c82c6c0eb5c91d3ccfbc` |
 | `umm-native-stage-tts` | `9424cb6b5f37c9c5cc2b2498df918133b09e7d5ff238c820e443abe004e88fc0` |
 
-The binaries were built from `git archive HEAD` on the H20B host
+The binaries were built from `git archive HEAD` on the Linux SM90 GPU host
 (`zig build -Doptimize=ReleaseFast`; CMake `-DUMM_STAGE_CUDA=ON`), installed
 over the previous deployment, and the supervisor was restarted through its own
 `stop` / `start` commands. The previous binaries are kept in
-`/root/umm-native-service/bin/pre-soak-20261117/`.
+`/opt/umminfer/umm-native-service/bin/pre-soak-20261117/`.
 
 The 30 minute soak numbers come from that `889b727` build. The three fault
 injections were re-measured after the stage-death fix, on a server built from
@@ -373,13 +373,13 @@ These three measurements were taken on the fixed build (which includes
 Inside the container, next to the service:
 
 ```sh
-python3 -I tests/soak_native.py --out /root/soak-out --duration-s 1800
-python3 -I tests/soak_native.py --mode faults --out /root/soak-faults
+python3 -I tests/soak_native.py --out /opt/umminfer/soak-out --duration-s 1800
+python3 -I tests/soak_native.py --mode faults --out /opt/umminfer/soak-faults
 python3 -I tests/soak_native.py --self-check
 ```
 
-Raw output of the reported run: `/root/soak-out-run2/` on the H20B host
+Raw output of the reported run: `/opt/umminfer/soak-out-run2/` on the Linux SM90 GPU host
 (`soak-summary.json`, `soak-samples.csv`, `soak-requests.jsonl`,
-`console.log`); faults after the fix: `/root/soak-faults-fix2/`
+`console.log`); faults after the fix: `/opt/umminfer/soak-faults-fix2/`
 (`fault-report.json`, `soak-summary.json`); the pre-fix fault run is
-`/root/soak-faults-run3/`. None of these directories is committed.
+`/opt/umminfer/soak-faults-run3/`. None of these directories is committed.

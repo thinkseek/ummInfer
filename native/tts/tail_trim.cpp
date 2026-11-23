@@ -16,9 +16,9 @@ constexpr double kNoiseZcrRatio = 0.4;
 constexpr int kWindowMs = 10;
 constexpr int kMinNoiseMs = 30;
 constexpr int kMaxNoiseMs = 600;
-// Energy fraction at or above 8 kHz. Measured on H20B: the decoder's run is
-// 0.146-0.191, a final /s/, /f/ or /S/ is 0.236-0.465. Zero crossing rate
-// cannot separate them; the band can.
+// Energy fraction at or above 8 kHz. Measured on a Linux SM90 GPU host: the
+// decoder's run is 0.146-0.191, a final /s/, /f/ or /S/ is 0.236-0.465. Zero
+// crossing rate cannot separate them; the band can.
 constexpr double kNoiseMaxHighBand = 0.21;
 constexpr int kBandTaps = 63;
 constexpr double kPi = 3.14159265358979323846;
