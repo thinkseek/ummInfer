@@ -239,6 +239,10 @@ struct BatchJob {
   GenResult result;
   std::exception_ptr error;
   int slot = -1;
+  // Tokens this job takes from the prefix snapshot instead of prefilling.
+  // Resolved once, before the job joins a group, so grouping can key on the
+  // rows it will actually compute.
+  int prefix = 0;
   int seq_len = 0;   // tokens already in the KV cache
   int next_pos = 0;  // mRoPE position of next_token
   int next_token = 0;
@@ -741,6 +745,17 @@ size_t conv_state_bytes() {
   return sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1);
 }
 
+// Element strides between two batch slots. The batched path stacks one full
+// serial-sized cache per slot, so slot s owns
+// [s * stride, (s + 1) * stride) of each cache.
+size_t kv_slot_stride(const Engine::Impl& im) {
+  return static_cast<size_t>(kKvSlots) * 2 * im.max_seq * kKvRow;
+}
+size_t rec_slot_stride() { return static_cast<size_t>(kLayers) * kLVH * kLVD * kLVD; }
+size_t conv_slot_stride() {
+  return static_cast<size_t>(kLayers) * kConvDim * (kConvK - 1);
+}
+
 void ensure_snapshot_buffers(Engine::Impl& im) {
   if (im.kv_snap != nullptr) return;
   const size_t kv_bytes = static_cast<size_t>(kKvSlots) * 2 * im.max_seq * kKvRow;
@@ -766,30 +781,35 @@ void copy_kv_rows(Bf16* dst, const Bf16* src, int len, size_t stride,
   }
 }
 
-void snapshot_prefix(Engine::Impl& im, const std::vector<int>& ids,
+// The snapshot holds one sequence's worth of KV rows, recurrent state and conv
+// history, so it is copied from and into exactly one batch slot. The serial
+// executor owns slot 0.
+void snapshot_prefix(Engine::Impl& im, int slot, const std::vector<int>& ids,
                      cudaStream_t st) {
   ensure_snapshot_buffers(im);
   const size_t stride = static_cast<size_t>(im.max_seq) * kKvRow;
-  copy_kv_rows(im.kv_snap, im.kv, static_cast<int>(ids.size()), stride, st);
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.rec_snap, im.rec_state,
-                                        rec_state_bytes(),
-                                        cudaMemcpyDeviceToDevice, st));
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.conv_snap, im.conv_state,
-                                        conv_state_bytes(),
-                                        cudaMemcpyDeviceToDevice, st));
+  copy_kv_rows(im.kv_snap, im.kv + static_cast<size_t>(slot) * kv_slot_stride(im),
+               static_cast<int>(ids.size()), stride, st);
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+      im.rec_snap, im.rec_state + static_cast<size_t>(slot) * rec_slot_stride(),
+      rec_state_bytes(), cudaMemcpyDeviceToDevice, st));
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+      im.conv_snap, im.conv_state + static_cast<size_t>(slot) * conv_slot_stride(),
+      conv_state_bytes(), cudaMemcpyDeviceToDevice, st));
   im.cached_ids = ids;
   im.cached_len = static_cast<int>(ids.size());
 }
 
-void restore_prefix(Engine::Impl& im, int len, cudaStream_t st) {
+void restore_prefix(Engine::Impl& im, int slot, int len, cudaStream_t st) {
   const size_t stride = static_cast<size_t>(im.max_seq) * kKvRow;
-  copy_kv_rows(im.kv, im.kv_snap, len, stride, st);
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.rec_state, im.rec_snap,
-                                        rec_state_bytes(),
-                                        cudaMemcpyDeviceToDevice, st));
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.conv_state, im.conv_snap,
-                                        conv_state_bytes(),
-                                        cudaMemcpyDeviceToDevice, st));
+  copy_kv_rows(im.kv + static_cast<size_t>(slot) * kv_slot_stride(im), im.kv_snap,
+               len, stride, st);
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+      im.rec_state + static_cast<size_t>(slot) * rec_slot_stride(), im.rec_snap,
+      rec_state_bytes(), cudaMemcpyDeviceToDevice, st));
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+      im.conv_state + static_cast<size_t>(slot) * conv_slot_stride(), im.conv_snap,
+      conv_state_bytes(), cudaMemcpyDeviceToDevice, st));
 }
 
 void finish_job(const std::shared_ptr<BatchJob>& job) {
@@ -992,16 +1012,23 @@ void prefill_group(Engine::Impl& im,
   std::vector<int> img_start(static_cast<size_t>(nseq), -1);
   std::vector<int> n_img(static_cast<size_t>(nseq), 0);
   std::vector<double> vision_ms(static_cast<size_t>(nseq), 0.0);
+  // Tokens each job takes from the prefix snapshot. The batch loop resolved
+  // them before it grouped the jobs, so the snapshot this group publishes
+  // cannot change what a later job in the same group reuses.
+  std::vector<int> prefix(static_cast<size_t>(nseq), 0);
   int rows = 0;
   for (int i = 0; i < nseq; ++i) {
     const BatchJob& job = *jobs[i];
     const int P = static_cast<int>(job.req.prompt_ids.size());
+    prefix[i] = job.prefix;
+    const int m = P - prefix[i];
     sp.off[i] = rows;
-    sp.len[i] = P;
-    sp.hist[i] = 0;
+    sp.len[i] = m;
+    sp.hist[i] = prefix[i];
     sp.slot[i] = job.slot;
-    rows += P;
-    all_ids.insert(all_ids.end(), job.req.prompt_ids.begin(),
+    rows += m;
+    all_ids.insert(all_ids.end(),
+                   job.req.prompt_ids.begin() + prefix[i],
                    job.req.prompt_ids.end());
     const PreprocessedImage* image = job.req.image;
     if (image != nullptr) {
@@ -1022,21 +1049,27 @@ void prefill_group(Engine::Impl& im,
     }
     pos[i] = build_positions(job.req.prompt_ids, image ? image->grid_h : 0,
                              image ? image->grid_w : 0, image != nullptr);
-    logit_rows[i] = sp.off[i] + P - 1;
+    logit_rows[i] = sp.off[i] + m - 1;
   }
   if (rows > im.max_seq) throw std::runtime_error("batch rows exceed max_seq");
 
-  // The recurrent state is cumulative, so every joining sequence starts at
-  // zero. Each sequence owns its own block; no other sequence can touch it.
+  // The recurrent state is cumulative, so a sequence that starts from an empty
+  // cache begins at zero. A sequence that reuses a prefix starts from the state
+  // the snapshot holds at its boundary instead. Each sequence owns its own
+  // block; no other sequence can touch it.
   const size_t rec_bytes = sizeof(float) * kLayers * kLVH * kLVD * kLVD;
   const size_t conv_bytes = sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1);
   for (int i = 0; i < nseq; ++i) {
+    if (prefix[i] > 0) {
+      restore_prefix(im, sp.slot[i], prefix[i], st);
+      continue;
+    }
     UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(
-        im.rec_state + static_cast<size_t>(sp.slot[i]) * kLayers * kLVH * kLVD * kLVD,
-        0, rec_bytes, st));
+        im.rec_state + static_cast<size_t>(sp.slot[i]) * rec_slot_stride(), 0,
+        rec_bytes, st));
     UMM_QWEN38_CUDA_CHECK(cudaMemsetAsync(
-        im.conv_state + static_cast<size_t>(sp.slot[i]) * kLayers * kConvDim * (kConvK - 1),
-        0, conv_bytes, st));
+        im.conv_state + static_cast<size_t>(sp.slot[i]) * conv_slot_stride(), 0,
+        conv_bytes, st));
   }
   UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, all_ids.data(),
                                         static_cast<size_t>(rows) * sizeof(int),
@@ -1054,10 +1087,14 @@ void prefill_group(Engine::Impl& im,
   cos.reserve(static_cast<size_t>(rows) * kRotaryDim);
   sin.reserve(static_cast<size_t>(rows) * kRotaryDim);
   for (int i = 0; i < nseq; ++i) {
+    // Text positions are absolute, so a reused prefix shifts the rope window
+    // rather than the positions inside it.
     std::vector<Bf16> c, s2;
-    build_text_rope(pos[i], sp.len[i], &c, &s2);
-    cos.insert(cos.end(), c.begin(), c.end());
-    sin.insert(sin.end(), s2.begin(), s2.end());
+    build_text_rope(pos[i], static_cast<int>(jobs[i]->req.prompt_ids.size()), &c,
+                    &s2);
+    const size_t from = static_cast<size_t>(prefix[i]) * kRotaryDim;
+    cos.insert(cos.end(), c.begin() + from, c.end());
+    sin.insert(sin.end(), s2.begin() + from, s2.end());
   }
   UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(),
                                         cos.size() * sizeof(Bf16),
@@ -1075,15 +1112,27 @@ void prefill_group(Engine::Impl& im,
   const double prefill_ms = ms_since(t0);
   for (int i = 0; i < nseq; ++i) {
     auto& job = jobs[i];
-    job->result.prompt_tokens = sp.len[i];
-    job->result.prefill_tokens = sp.len[i];
+    const int P = static_cast<int>(job->req.prompt_ids.size());
+    job->result.prompt_tokens = P;
+    job->result.prefill_tokens = P - prefix[i];
+    job->result.reused_tokens = prefix[i];
     job->result.image_tokens = n_img[i];
     job->result.vision_ms = vision_ms[i];
     job->result.prefill_ms = prefill_ms;
-    job->seq_len = sp.len[i];
+    job->seq_len = P;
     job->next_pos = pos[i].next;
     job->next_token = tokens[i];
   }
+  // Publish the snapshot at the prompt boundary, before the first decode row is
+  // written into these slots. The snapshot holds one sequence, so the last
+  // pure-text job of the group refreshes it; an image job leaves it alone
+  // because the vision tower writes its own hidden rows.
+  if (im.prefix_cache)
+    for (int i = nseq - 1; i >= 0; --i) {
+      if (jobs[i]->req.image != nullptr) continue;
+      snapshot_prefix(im, jobs[i]->slot, jobs[i]->req.prompt_ids, st);
+      break;
+    }
 }
 
 void step_decode(Engine::Impl& im,
@@ -1175,6 +1224,12 @@ void batch_loop(Engine::Impl& im) {
         finish_job(job);
         continue;
       }
+      // Resolve the prefix here, before any group prefills: the group a job
+      // joins depends on how many rows it will actually compute, and every job
+      // admitted in one iteration must see the snapshot as it stood before any
+      // of them touched it.
+      job->prefix = match_prefix(im.cached_ids, job->req.prompt_ids,
+                                 job->req.image != nullptr, im.prefix_cache);
       job->slot = im.free_slots.back();
       im.free_slots.pop_back();
       admitted.push_back(job);
@@ -1186,7 +1241,8 @@ void batch_loop(Engine::Impl& im) {
     std::vector<int> group_rows;
     for (auto& job : admitted) {
       const int P = static_cast<int>(job->req.prompt_ids.size());
-      const bool single = (P == 1);
+      const int rows_i = P - job->prefix;
+      const bool single = (rows_i == 1);
       // The vision tower writes one shared workspace and the pooler is copied
       // after the embedding pass, so an image request prefills alone.
       const bool loner = (job->req.image != nullptr);
@@ -1194,18 +1250,18 @@ void batch_loop(Engine::Impl& im) {
       if (!loner)
         for (size_t g = 0; g < groups.size(); ++g) {
           if (groups[g].front()->req.image != nullptr) continue;
-          const int first =
-              static_cast<int>(groups[g].front()->req.prompt_ids.size());
+          const int first = static_cast<int>(groups[g].front()->req.prompt_ids.size()) -
+                            groups[g].front()->prefix;
           if ((first == 1) != single) continue;
-          if (group_rows[g] + P > im.max_seq) continue;
+          if (group_rows[g] + rows_i > im.max_seq) continue;
           groups[g].push_back(job);
-          group_rows[g] += P;
+          group_rows[g] += rows_i;
           placed = true;
           break;
         }
       if (!placed) {
         groups.push_back({job});
-        group_rows.push_back(P);
+        group_rows.push_back(rows_i);
       }
     }
 
@@ -1375,7 +1431,7 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     UMM_QWEN38_CUDA_CHECK(
         cudaMemsetAsync(im.conv_state, 0, conv_state_bytes(), st));
   } else {
-    restore_prefix(im, prefix, st);
+    restore_prefix(im, /*slot=*/0, prefix, st);
   }
   UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, prompt_ids.data() + prefix,
                                         M * sizeof(int), cudaMemcpyHostToDevice,
@@ -1417,7 +1473,8 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   }
 
   // Snapshot at the prompt boundary, before the first decode row is written.
-  if (image == nullptr && im.prefix_cache) snapshot_prefix(im, prompt_ids, st);
+  if (image == nullptr && im.prefix_cache)
+    snapshot_prefix(im, /*slot=*/0, prompt_ids, st);
 
   rms_norm_zero_centered(im.hidden + static_cast<size_t>(M - 1) * kHidden,
                          im.bf("model.language_model.norm.weight"), im.norm, 1,
