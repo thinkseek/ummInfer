@@ -235,6 +235,9 @@ void Stage::start() {
 
 void Stage::run() {
   if (!running_ && !stopped_) start();
+  const bool heartbeat = config_.announce_ready && config_.ready_heartbeat_ms > 0;
+  auto next_ready = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(config_.ready_heartbeat_ms);
   while (running_) {
     std::optional<Message> msg;
     try {
@@ -244,8 +247,18 @@ void Stage::run() {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
       continue;
     }
-    if (!msg) continue;
-    handle_message(std::move(*msg));
+    if (msg) handle_message(std::move(*msg));
+    if (!heartbeat) continue;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_ready) continue;
+    next_ready = now + std::chrono::milliseconds(config_.ready_heartbeat_ms);
+    try {
+      // Idempotent re-registration: a Coordinator restarted on the same
+      // endpoints rebuilds its ready set from this heartbeat. A transient send
+      // failure is swallowed so a dead gateway never stops the stage.
+      control_plane_->send_ready(StageReadyMessage{config_.name});
+    } catch (const std::exception&) {
+    }
   }
 }
 
@@ -858,9 +871,12 @@ void Coordinator::handle_event(const Message& msg) {
       std::lock_guard<std::mutex> lock(mu_);
       const auto endpoint = endpoints_.find(ready->from_stage);
       if (endpoint == endpoints_.end()) return;
-      if (!ready_stages_.insert(ready->from_stage).second) return;
+      // A periodic stage_ready heartbeat repeats for the whole stage lifetime.
+      // Only the not-ready -> ready transition may announce peers or take the
+      // ready-set insert cost; a duplicate still drains queued submits.
+      const bool became_ready = ready_stages_.insert(ready->from_stage).second;
       const bool restarted = !ever_ready_stages_.insert(ready->from_stage).second;
-      if (restarted) {
+      if (became_ready && restarted) {
         for (const auto& [peer_name, peer_ep] : endpoints_) {
           if (peer_name != ready->from_stage &&
               ready_stages_.count(peer_name) > 0) {

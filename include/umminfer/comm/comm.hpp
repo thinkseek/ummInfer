@@ -40,6 +40,9 @@ class PushSocket {
   // thread, at most once per dropped connection. Call after connect().
   void on_disconnect(std::function<void()> callback);
   void send(const Message& msg);
+  // Never blocks on a full queue or a dead peer. Throws ProtocolError on
+  // EAGAIN so a periodic sender can drop the frame and retry next tick.
+  void send_dontwait(const Message& msg);
   void close();
 
  private:

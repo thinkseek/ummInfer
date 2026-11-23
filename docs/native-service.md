@@ -122,9 +122,16 @@ log.
   restarted.
 - Restart. A dead child is restarted with backoff `1, 2, 4, 8, 15, 30` s,
   capped at 30 s, reset after 60 s of stable uptime.
-- Dependency. A server restart also restarts every stage, because the
-  Coordinator loses the one-shot `stage_ready` registration the stages send at
-  startup. Stages are started only after the server answers `/health`.
+- Dependency. Stages are started only after the server answers `/health`, but a
+  server restart no longer restarts them. Each stage re-sends an idempotent
+  `stage_ready` heartbeat (C++ `Stage::Config::ready_heartbeat_ms`, default
+  1000; Python video stage: 1.0 s), so a new Coordinator on the same IPC
+  endpoints re-registers the already-running stage and its GPU weights stay
+  resident. The supervisor keeps the stage children alive through a server
+  exit or failed health check. If `/ready` is still failing `ready_grace_s`
+  after the new server is up, the supervisor falls back to restarting the
+  stages once. Set `"restart_workers_on_server_restart": true` in the config to
+  restore the old restart-everything behaviour.
 - Logs. Child stdout and stderr are merged and capped at 65536 bytes each
   (`server.log`, `asr.log`, `qwen38.log`, `image.log`, `tts.log`); the
   supervisor keeps its own `supervisor.log` under the same cap. The cap is a

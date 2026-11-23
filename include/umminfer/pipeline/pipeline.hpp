@@ -56,6 +56,10 @@ class Stage {
     // Announces stage_ready after the control plane and abort subscription start.
     // Embedded users that do not gate Submit can leave this disabled.
     bool announce_ready = false;
+    // Re-sends stage_ready from run() at this interval. A restarted Coordinator
+    // rebuilds its ready set from these heartbeats, so a gateway restart never
+    // forces a GPU stage restart. 0 keeps announce_ready one-shot.
+    int ready_heartbeat_ms = 1000;
     // Concurrent compute calls. Above 1 the compute function must come from an
     // engine that declares itself thread-safe (see EngineContract).
     int max_concurrency = 1;

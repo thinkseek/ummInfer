@@ -6764,6 +6764,65 @@ void test_stage_submit_fallback_and_failure_completion() {
   aborts.close();
 }
 
+// A running Stage re-registers with a brand-new Coordinator on the same IPC
+// endpoints through its periodic stage_ready heartbeat. The gateway (~10 MB)
+// restarts; the stage, which in production holds 120+ GiB of GPU weights, keeps
+// running and serves the new gateway without a reload.
+void test_stage_heartbeat_reregisters_after_coordinator_restart() {
+  IpcDir dir = IpcDir::create("stageheartbeat");
+  auto compute = [](const Value& input) { return input; };
+  Stage::Config config;
+  config.name = "entry";
+  config.recv_endpoint = dir.endpoint("asr");
+  config.coordinator_endpoint = dir.endpoint("done");
+  config.abort_endpoint = dir.endpoint("abort");
+  config.announce_ready = true;
+  config.ready_heartbeat_ms = 50;
+  Stage stage(config, ComputeFn(compute));
+  std::thread stage_thread([&] { stage.run(); });
+
+  auto run_request = [](Coordinator& coordinator) {
+    StagePayload payload;
+    Value::Map inputs;
+    inputs["probe"] = Value("heartbeat");
+    payload.request.inputs = Value(std::move(inputs));
+    const std::string id = coordinator.submit(std::move(payload), "entry");
+    if (!coordinator.wait(id, static_cast<double>(kStateWait.count()))) {
+      return false;
+    }
+    const auto info = coordinator.info(id);
+    const bool completed = info && info->state == "completed";
+    coordinator.release(id);
+    return completed;
+  };
+
+  {
+    Coordinator first(dir.endpoint("done"), dir.endpoint("abort"));
+    first.register_stage("entry", dir.endpoint("asr"), /*require_ready=*/true);
+    first.start();
+    std::thread pump([&] { first.run(); });
+    wait_until([&] { return first.stage_ready("entry"); },
+               "coordinator #1 never saw the stage ready");
+    check(run_request(first), "request through coordinator #1 did not complete");
+    first.stop();
+    pump.join();
+  }  // The destructor closes and unbinds the completion and abort endpoints.
+
+  // Same endpoints, new process identity: the stage is still running.
+  Coordinator second(dir.endpoint("done"), dir.endpoint("abort"));
+  second.register_stage("entry", dir.endpoint("asr"), /*require_ready=*/true);
+  second.start();
+  std::thread pump([&] { second.run(); });
+  wait_until([&] { return second.stage_ready("entry"); },
+             "the running stage did not re-register with coordinator #2");
+  check(run_request(second), "request through coordinator #2 did not complete");
+  second.stop();
+  pump.join();
+
+  stage.stop();
+  stage_thread.join();
+}
+
 // Fixed-upstream media proxy: happy-path forwarding keeps status and body and
 // substitutes the upstream model; an upstream 4xx reaches the caller unchanged.
 void test_upstream_media_proxy_routes() {
@@ -7103,6 +7162,7 @@ int main() {
   RUN(test_control_message_parse_contract());
   RUN(test_energy_vad_speech_transitions());
   RUN(test_stage_submit_fallback_and_failure_completion());
+  RUN(test_stage_heartbeat_reregisters_after_coordinator_restart());
   RUN(test_upstream_media_proxy_routes());
   RUN(test_unified_metrics_cancel_race_and_release_gauge());
   return g_failures == 0 ? 0 : 1;

@@ -294,9 +294,15 @@ class Supervisor:
         child.pid = None
         child.starttime = None
 
-    def restart_workers(self, reason):
-        # A server restart drops every stage's one-shot stage_ready, so each
-        # stage child must restart, not only the first two.
+    def restart_workers(self, reason, force=False):
+        # Stages now re-announce stage_ready periodically, so a restarted
+        # gateway re-registers them without a stage restart. Reloading 120+ GiB
+        # of GPU weights is the expensive path, so it is opt-in and forced only
+        # when /ready proves re-registration did not happen.
+        if not (force or self.config.get("restart_workers_on_server_restart", False)):
+            self.log(f"stages preserved because server {reason}; "
+                     "they re-register by heartbeat")
+            return
         for child in self.children:
             if child.name == "server":
                 continue
@@ -349,7 +355,8 @@ class Supervisor:
                         if self.ready_failures >= self.config.get("ready_failures", 5):
                             self.ready_failures = 0
                             self.log("ready threshold reached, restarting stages")
-                            self.restart_workers("remained unready past grace")
+                            self.restart_workers("remained unready past grace",
+                                                 force=True)
             return
         self.health_ok = False
         self.health_failures += 1
