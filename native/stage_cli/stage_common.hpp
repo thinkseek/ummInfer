@@ -148,6 +148,31 @@ struct ImageWork {
 
 ImageWork parse_image_work(const Value& work);
 
+struct VideoWork {
+  std::string prompt;
+  std::string negative_prompt;
+  std::string output_format = "mp4";
+  int width = 480;
+  int height = 320;
+  int seconds = 1;
+  int fps = 16;
+  int num_frames = 13;
+  int steps = 20;
+  float guidance_scale = 5.0f;
+  uint64_t seed = 0;
+  bool has_seed = false;
+};
+
+// Parses UnifiedEngine video leg inputs ({prompt, size?, seconds?, fps?,
+// num_frames?, steps?, guidance_scale?, seed?, negative_prompt?,
+// output_format?}) with Wan spatial alignment and temporal stride rules.
+VideoWork parse_video_work(const Value& work, int default_width = 480,
+                           int default_height = 320, int spatial_align = 32,
+                           int default_seconds = 1, int max_seconds = 10,
+                           int default_fps = 16, int max_frames = 81,
+                           int temporal_stride = 4, int default_steps = 20,
+                           int max_steps = 100);
+
 // Selects the codec language id from the text script.
 bool text_is_mostly_cjk(const std::string& text);
 
@@ -172,5 +197,10 @@ Value tts_result(std::string wav_bytes, int sample_rate, int channels,
                  double total_ms = -1, bool streamed = false);
 Value image_result(std::string png_bytes, int width, int height,
                    uint64_t seed, int steps, double denoise_ms = -1);
+Value video_result(std::string mp4_bytes, int width, int height, int fps,
+                   int frames, double seconds, uint64_t seed, int steps,
+                   const std::string& model, const std::string& revision,
+                   const std::string& backend, double denoise_ms = -1,
+                   double encode_ms = -1);
 
 }  // namespace umminfer::stage

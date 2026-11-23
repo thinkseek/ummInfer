@@ -30,10 +30,12 @@ std::atomic<bool> g_running{true};
 void on_signal(int) { g_running = false; }
 
 void usage() {
-  std::cerr << "usage: umm-native-stage-<asr|omni|qwen38|tts|image> --kind KIND --model DIR "
+  std::cerr << "usage: umm-native-stage-<asr|omni|qwen38|tts|image|video> --kind KIND --model DIR "
                "--recv-endpoint EP --coordinator-endpoint EP --abort-endpoint EP "
                "[--name NAME] [--gpu N] [--max-new-tokens N] [--max-frames N] "
-               "[--max-seq N] [--steps N] [--image-backend 2512|2.1] [--size WxH] "
+               "[--max-seq N] [--steps N] [--image-backend 2512|2.1] "
+               "[--video-backend cuda|cuda-scaffold|contract-stub] [--size WxH] "
+               "[--fps N] [--max-seconds N] [--step-delay-ms N] [--ffmpeg-bin PATH] "
                "[--batch-size N] [--next name=EP] [--peer name=EP]\n";
 }
 
@@ -78,10 +80,11 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, on_signal);
 
   static const std::set<std::string> kKnownFlags = {
-      "kind",         "model",    "recv-endpoint", "coordinator-endpoint",
-      "abort-endpoint", "name",   "gpu",           "max-new-tokens",
-      "max-frames",   "max-seq",  "steps",         "image-backend",
-      "size",         "batch-size"};
+      "kind",          "model",       "recv-endpoint", "coordinator-endpoint",
+      "abort-endpoint", "name",       "gpu",           "max-new-tokens",
+      "max-frames",    "max-seq",     "steps",         "image-backend",
+      "video-backend", "size",        "fps",           "max-seconds",
+      "step-delay-ms", "ffmpeg-bin",  "batch-size"};
   Flags flags;
   Repeats repeats;
   for (int index = 1; index < argc; ++index) {
@@ -139,10 +142,33 @@ int main(int argc, char** argv) {
     options.image_backend =
         flags.count("image-backend") ? flags["image-backend"] : "";
     options.image_size = flags.count("size") ? flags["size"] : "";
-    if (kind != "image" &&
-        (!options.image_backend.empty() || !options.image_size.empty())) {
+    options.video_backend =
+        flags.count("video-backend") ? flags["video-backend"] : "";
+    options.video_fps =
+        flags.count("fps") ? parse_int(flags["fps"], "--fps") : 0;
+    options.video_max_seconds =
+        flags.count("max-seconds")
+            ? parse_int(flags["max-seconds"], "--max-seconds")
+            : 0;
+    options.video_step_delay_ms =
+        flags.count("step-delay-ms")
+            ? parse_int(flags["step-delay-ms"], "--step-delay-ms")
+            : 0;
+    options.ffmpeg_bin =
+        flags.count("ffmpeg-bin") ? flags["ffmpeg-bin"] : "";
+    if (kind != "image" && !options.image_backend.empty()) {
+      throw std::runtime_error("--image-backend is supported only for --kind image");
+    }
+    if (kind != "image" && kind != "video" && !options.image_size.empty()) {
+      throw std::runtime_error("--size is supported only for --kind image or video");
+    }
+    if (kind != "video" &&
+        (!options.video_backend.empty() || options.video_fps > 0 ||
+         options.video_max_seconds > 0 || options.video_step_delay_ms > 0 ||
+         !options.ffmpeg_bin.empty())) {
       throw std::runtime_error(
-          "--image-backend and --size are supported only for --kind image");
+          "--video-backend, --fps, --max-seconds, --step-delay-ms and "
+          "--ffmpeg-bin are supported only for --kind video");
     }
     options.batch_size =
         flags.count("batch-size") ? parse_int(flags["batch-size"], "--batch-size") : 0;

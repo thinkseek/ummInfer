@@ -18,17 +18,22 @@ struct StageOptions {
   int gpu = 0;
   // 0 selects the kind's default.
   int max_new_tokens = 0;
-  int max_frames = 0;  // TTS only
+  int max_frames = 0;  // TTS and Video
   int max_seq = 0;     // Omni and Qwen3.8
-  int steps = 0;       // Image only
+  int steps = 0;       // Image and Video
   std::string image_backend;  // Image only: "" / "2512" (default) or "2.1"
-  std::string image_size;     // Image only: optional startup WxH gate
+  std::string image_size;     // Image and Video: optional default/gate WxH
+  std::string video_backend;  // Video only: "" / "cuda" | "cuda-scaffold" | "contract-stub"
+  int video_fps = 0;          // Video only: default fps (0 -> 16)
+  int video_max_seconds = 0;  // Video only: max seconds (0 -> 10)
+  int video_step_delay_ms = 0;  // Video only: optional per-step delay for abort tests
+  std::string ffmpeg_bin;     // Video only: ffmpeg binary path (empty -> "ffmpeg")
   // Requests decoded together. 0 or 1 keeps the single-request executor.
   int batch_size = 0;
 };
 
-// The kind this executable was built for: "asr", "omni", "qwen38", "tts" or
-// "image".
+// The kind this executable was built for: "asr", "omni", "qwen38", "tts",
+// "image" or "video".
 const char* compiled_kind();
 
 // Loads the model synchronously and returns the function the Stage runs. The

@@ -380,6 +380,171 @@ ImageWork parse_image_work(const Value& work) {
   return out;
 }
 
+VideoWork parse_video_work(const Value& work, int default_width,
+                           int default_height, int spatial_align,
+                           int default_seconds, int max_seconds,
+                           int default_fps, int max_frames,
+                           int temporal_stride, int default_steps,
+                           int max_steps) {
+  const Value& inputs = unwrap_inputs(work);
+  VideoWork out;
+  const Value* prompt = inputs.find("prompt");
+  if (prompt == nullptr || !prompt->is_str() || prompt->as_str().empty()) {
+    bad("video.prompt must be a non-empty string");
+  }
+  const std::string& raw_prompt = prompt->as_str();
+  const size_t first_non_ws = raw_prompt.find_first_not_of(" \t\r\n");
+  if (first_non_ws == std::string::npos) {
+    bad("video.prompt must be a non-empty string");
+  }
+  const size_t last_non_ws = raw_prompt.find_last_not_of(" \t\r\n");
+  out.prompt = raw_prompt.substr(first_non_ws, last_non_ws - first_non_ws + 1);
+
+  if (const Value* negative = inputs.find("negative_prompt");
+      negative != nullptr && !negative->is_nil()) {
+    if (!negative->is_str()) bad("video.negative_prompt must be a string");
+    out.negative_prompt = negative->as_str();
+  }
+
+  if (const Value* format = inputs.find("output_format");
+      format != nullptr && !format->is_nil()) {
+    if (!format->is_str() || format->as_str() != "mp4") {
+      bad("video.output_format must be mp4");
+    }
+    out.output_format = "mp4";
+  }
+
+  // Size parsing and Wan spatial alignment check.
+  std::string size_str;
+  if (const Value* size = inputs.find("size");
+      size != nullptr && !size->is_nil()) {
+    if (!size->is_str()) bad("video.size must be formatted as WIDTHxHEIGHT");
+    size_str = size->as_str();
+  }
+  int width = default_width;
+  int height = default_height;
+  if (!size_str.empty()) {
+    std::string lower = size_str;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const size_t split = lower.find('x');
+    if (split == std::string::npos || split == 0 || split + 1 == lower.size() ||
+        lower.find('x', split + 1) != std::string::npos) {
+      bad("video.size must be formatted as WIDTHxHEIGHT");
+    }
+    const std::string w_str = lower.substr(0, split);
+    const std::string h_str = lower.substr(split + 1);
+    auto all_digits = [](const std::string& s) {
+      return !s.empty() &&
+             std::all_of(s.begin(), s.end(),
+                         [](unsigned char c) { return std::isdigit(c) != 0; });
+    };
+    if (!all_digits(w_str) || !all_digits(h_str)) {
+      bad("video.size must contain positive integers WIDTHxHEIGHT");
+    }
+    try {
+      width = std::stoi(w_str);
+      height = std::stoi(h_str);
+    } catch (const std::exception&) {
+      bad("video.size must contain positive integers WIDTHxHEIGHT");
+    }
+  }
+  if (width < 128 || height < 128 || width > 1280 || height > 1280) {
+    bad("video.size " + std::to_string(width) + "x" + std::to_string(height) +
+        " is outside [128, 1280]");
+  }
+  if (spatial_align > 1 &&
+      (width % spatial_align != 0 || height % spatial_align != 0)) {
+    bad("video.size " + std::to_string(width) + "x" + std::to_string(height) +
+        " must be divisible by " + std::to_string(spatial_align));
+  }
+  out.width = width;
+  out.height = height;
+
+  out.seconds = default_seconds;
+  if (const Value* sec = inputs.find("seconds");
+      sec != nullptr && !sec->is_nil()) {
+    if (!sec->is_int() || sec->as_int() < 1) {
+      bad("video.seconds must be a positive integer");
+    }
+    if (sec->as_int() > max_seconds) {
+      bad("video.seconds " + std::to_string(sec->as_int()) + " exceeds max " +
+          std::to_string(max_seconds));
+    }
+    out.seconds = static_cast<int>(sec->as_int());
+  }
+
+  out.fps = default_fps;
+  if (const Value* fps = inputs.find("fps"); fps != nullptr && !fps->is_nil()) {
+    if (!fps->is_int() || fps->as_int() < 1 || fps->as_int() > 60) {
+      bad("video.fps must be an integer in [1, 60]");
+    }
+    out.fps = static_cast<int>(fps->as_int());
+  }
+
+  if (const Value* nf = inputs.find("num_frames");
+      nf != nullptr && !nf->is_nil()) {
+    if (!nf->is_int() || nf->as_int() < 1) {
+      bad("video.num_frames must be a positive integer");
+    }
+    if (nf->as_int() > max_frames) {
+      bad("video.num_frames " + std::to_string(nf->as_int()) + " exceeds max " +
+          std::to_string(max_frames));
+    }
+    if (temporal_stride > 1 && (nf->as_int() - 1) % temporal_stride != 0) {
+      bad("video.num_frames " + std::to_string(nf->as_int()) +
+          " must satisfy (n - 1) % " + std::to_string(temporal_stride) +
+          " == 0");
+    }
+    out.num_frames = static_cast<int>(nf->as_int());
+  } else {
+    const int raw = out.seconds * out.fps;
+    int target = std::max(temporal_stride + 1, std::min(raw, max_frames));
+    if (temporal_stride > 1) {
+      int k = std::max(1, (target - 1) / temporal_stride);
+      target = k * temporal_stride + 1;
+      while (target > max_frames && k > 1) {
+        --k;
+        target = k * temporal_stride + 1;
+      }
+    }
+    out.num_frames = target;
+  }
+
+  out.steps = default_steps;
+  const Value* steps = inputs.find("steps");
+  if (steps == nullptr || steps->is_nil()) {
+    steps = inputs.find("num_inference_steps");
+  }
+  if (steps != nullptr && !steps->is_nil()) {
+    if (!steps->is_int() || steps->as_int() < 1 || steps->as_int() > max_steps) {
+      bad("video.steps must be an integer in [1, " + std::to_string(max_steps) +
+          "]");
+    }
+    out.steps = static_cast<int>(steps->as_int());
+  }
+
+  if (const Value* guidance = inputs.find("guidance_scale");
+      guidance != nullptr && !guidance->is_nil()) {
+    if ((!guidance->is_float() && !guidance->is_int()) ||
+        !std::isfinite(guidance->as_double()) || guidance->as_double() <= 0.0) {
+      bad("video.guidance_scale must be a finite positive number");
+    }
+    out.guidance_scale = static_cast<float>(guidance->as_double());
+  }
+
+  if (const Value* seed = inputs.find("seed");
+      seed != nullptr && !seed->is_nil()) {
+    if (!seed->is_int() || seed->as_int() < 0) {
+      bad("video.seed must be a non-negative integer");
+    }
+    out.seed = static_cast<uint64_t>(seed->as_int());
+    out.has_seed = true;
+  }
+
+  return out;
+}
+
 bool text_is_mostly_cjk(const std::string& text) {
   size_t cjk = 0;
   size_t latin = 0;
@@ -487,6 +652,35 @@ Value image_result(std::string png_bytes, int width, int height,
   out["steps"] = Value(static_cast<int64_t>(steps));
   if (denoise_ms >= 0) out["denoise_ms"] = Value(denoise_ms);
   out["data"] = Value::bin(std::move(png_bytes));
+  return Value(std::move(out));
+}
+
+Value video_result(std::string mp4_bytes, int width, int height, int fps,
+                   int frames, double seconds, uint64_t seed, int steps,
+                   const std::string& model, const std::string& revision,
+                   const std::string& backend, double denoise_ms,
+                   double encode_ms) {
+  if (mp4_bytes.size() < 12 || mp4_bytes.compare(4, 4, "ftyp") != 0) {
+    bad("video produced invalid MP4 bytes (missing ftyp box)");
+  }
+  Value::Map out;
+  out["media_type"] = Value("video");
+  out["mime_type"] = Value("video/mp4");
+  out["format"] = Value("mp4");
+  out["size"] = Value(std::to_string(width) + "x" + std::to_string(height));
+  out["width"] = Value(static_cast<int64_t>(width));
+  out["height"] = Value(static_cast<int64_t>(height));
+  out["fps"] = Value(static_cast<int64_t>(fps));
+  out["frames"] = Value(static_cast<int64_t>(frames));
+  out["seconds"] = Value(seconds);
+  out["seed"] = Value(static_cast<int64_t>(seed));
+  out["steps"] = Value(static_cast<int64_t>(steps));
+  if (!model.empty()) out["model"] = Value(model);
+  if (!revision.empty()) out["revision"] = Value(revision);
+  if (!backend.empty()) out["backend"] = Value(backend);
+  if (denoise_ms >= 0) out["denoise_ms"] = Value(denoise_ms);
+  if (encode_ms >= 0) out["encode_ms"] = Value(encode_ms);
+  out["data"] = Value::bin(std::move(mp4_bytes));
   return Value(std::move(out));
 }
 
