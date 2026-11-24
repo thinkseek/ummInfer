@@ -510,6 +510,107 @@ void test_engine_contract_stub_and_cuda_gate() {
   check(step_aborted, "engine aborts cleanly at denoising step boundary");
 }
 
+// Reference values produced by Diffusers 0.43 UniPCMultistepScheduler loaded
+// from Wan2.2-TI2V-5B-Diffusers/scheduler/scheduler_config.json (solver_order=2,
+// solver_type="bh2", predict_x0=true, prediction_type="flow_prediction",
+// use_flow_sigmas=true, flow_shift=5.0, lower_order_final=true,
+// final_sigmas_type="zero", disable_corrector=[]).
+void test_unipc_bh2_matches_diffusers() {
+  using namespace umminfer::video;
+  FlowMatchConfig cfg;
+  cfg.flow_shift = 5.0;
+  cfg.num_train_timesteps = 1000;
+
+  cfg.steps = 20;
+  const FlowMatchSchedule s20 = build_flow_match_schedule(cfg);
+  const float ref_sigmas20[21] = {
+      0.9999989867210388f, 0.9895941615104675f, 0.978284478187561f,
+      0.9659478068351746f, 0.9524376392364502f, 0.9375780820846558f,
+      0.9211564660072327f, 0.9029127359390259f, 0.8825258612632751f,
+      0.8595945835113525f, 0.8336109519004822f, 0.8039219379425049f,
+      0.7696741223335266f, 0.7297303080558777f, 0.6825404167175293f,
+      0.6259360909461975f, 0.55678790807724f,   0.4704066216945648f,
+      0.3594328761100769f, 0.21162153780460358f, 0.0f};
+  const float ref_timesteps20[20] = {
+      999, 989, 978, 965, 952, 937, 921, 902, 882, 859,
+      833, 803, 769, 729, 682, 625, 556, 470, 359, 211};
+  check(s20.sigmas.size() == 21 && s20.timesteps.size() == 20,
+        "20-step schedule sizes");
+  for (size_t i = 0; i < 21; ++i) {
+    check(std::fabs(s20.sigmas[i] - ref_sigmas20[i]) < 1e-6f,
+          "sigma[" + std::to_string(i) + "] matches Diffusers");
+  }
+  for (size_t i = 0; i < 20; ++i) {
+    check(s20.timesteps[i] == ref_timesteps20[i],
+          "timestep[" + std::to_string(i) + "] matches Diffusers int64 cast");
+  }
+
+  cfg.steps = 6;
+  const FlowMatchSchedule s6 = build_flow_match_schedule(cfg);
+  const float ref_sigmas6[7] = {
+      0.9999989867210388f, 0.9615828394889832f, 0.9092148542404175f,
+      0.8336109519004822f, 0.7148972749710083f, 0.5014970302581787f, 0.0f};
+  for (size_t i = 0; i < 7; ++i) {
+    check(std::fabs(s6.sigmas[i] - ref_sigmas6[i]) < 1e-6f,
+          "6-step sigma[" + std::to_string(i) + "] matches Diffusers");
+  }
+
+  // Fixed model-output sequence (all values are exact binary fractions), so the
+  // only difference between this loop and the Diffusers loop is solver math.
+  const float ref_steps[6][4] = {
+      {0.7403959035873413f, 1.2307919263839722f, 1.721187949180603f,
+       2.2115838527679443f},
+      {0.7633533477783203f, 1.231645107269287f, 1.6999366283416748f,
+       2.1682281494140625f},
+      {0.8466852903366089f, 1.2705178260803223f, 1.6943503618240356f,
+       2.11818265914917f},
+      {1.0312597751617432f, 1.3718507289886475f, 1.7124415636062622f,
+       2.053032159805298f},
+      {1.4824192523956299f, 1.6435328722000122f, 1.8046461343765259f,
+       1.9657593965530396f},
+      {2.6107876300811768f, 2.3330912590026855f, 2.0553946495056152f,
+       1.777698040008545f},
+  };
+  const int expected_order[6] = {1, 2, 2, 2, 2, 1};
+
+  UniPCFlowMatchSolver solver;
+  solver.reset(s6);
+  std::vector<float> sample = {0.75f, 1.25f, 1.75f, 2.25f};
+  for (int k = 0; k < 6; ++k) {
+    const float model_output[4] = {
+        static_cast<float>((0 + 1) * 0.25 - k * 0.5 + 0 * k * 0.125),
+        static_cast<float>((1 + 1) * 0.25 - k * 0.5 + 1 * k * 0.125),
+        static_cast<float>((2 + 1) * 0.25 - k * 0.5 + 2 * k * 0.125),
+        static_cast<float>((3 + 1) * 0.25 - k * 0.5 + 3 * k * 0.125)};
+    solver.step(k, sample.data(), model_output, sample.size());
+    check(solver.last_order() == expected_order[k],
+          "UniPC order at step " + std::to_string(k) + " (lower_order_final)");
+    for (size_t j = 0; j < sample.size(); ++j) {
+      check(std::fabs(sample[j] - ref_steps[k][j]) < 1e-5f,
+            "UniPC step " + std::to_string(k) + " element " +
+                std::to_string(j) + " matches Diffusers within 1e-5");
+    }
+  }
+
+  // reset() must fully clear the multistep history.
+  solver.reset(s6);
+  std::vector<float> replay = {0.75f, 1.25f, 1.75f, 2.25f};
+  const float first_model_output[4] = {0.25f, 0.5f, 0.75f, 1.0f};
+  solver.step(0, replay.data(), first_model_output, replay.size());
+  for (size_t j = 0; j < replay.size(); ++j) {
+    check(std::fabs(replay[j] - ref_steps[0][j]) < 1e-5f,
+          "UniPC reset() replays step 0 identically");
+  }
+
+  bool rejected = false;
+  try {
+    solver.step(6, replay.data(), first_model_output, replay.size());
+  } catch (const std::out_of_range&) {
+    rejected = true;
+  }
+  check(rejected, "UniPC rejects out-of-range step index");
+}
+
 }  // namespace
 
 int main() {
@@ -523,6 +624,7 @@ int main() {
       {"umt5_relative_position_buckets", test_umt5_relative_position_buckets},
       {"wan_dit_host_helpers", test_wan_dit_host_helpers},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
+      {"unipc_bh2_matches_diffusers", test_unipc_bh2_matches_diffusers},
       {"mp4_encode_and_abort", test_mp4_encode_and_abort},
       {"engine_contract_stub_and_cuda_gate", test_engine_contract_stub_and_cuda_gate},
   };
