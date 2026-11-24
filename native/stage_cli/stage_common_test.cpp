@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 
 namespace {
@@ -120,6 +121,112 @@ void test_tts_result() {
         "tts_result rejects empty audio");
 }
 
+void test_sampling_params() {
+  using umminfer::Value;
+  using umminfer::stage::parse_sampling_params;
+
+  // Absent fields keep the greedy default, so the request is bit-identical to
+  // the release that had no sampling knobs.
+  Value::Map empty;
+  const auto greedy = parse_sampling_params(empty);
+  check(greedy.temperature == 0.0f, "sampling: default temperature is greedy");
+  check(greedy.top_p == 1.0f, "sampling: default top_p is 1");
+  check(!greedy.has_seed, "sampling: no seed by default");
+  check(greedy.seed == 0, "sampling: default seed value is zero");
+
+  Value::Map nil;
+  nil["temperature"] = Value();
+  nil["top_p"] = Value();
+  nil["seed"] = Value();
+  check(!parse_sampling_params(nil).has_seed, "sampling: nil seed is absent");
+
+  Value::Map valid;
+  valid["temperature"] = Value(0.8);
+  valid["top_p"] = Value(0.9);
+  valid["seed"] = Value(static_cast<int64_t>(42));
+  const auto seeded = parse_sampling_params(valid);
+  check(seeded.temperature == 0.8f, "sampling: temperature parsed");
+  check(seeded.top_p == 0.9f, "sampling: top_p parsed");
+  check(seeded.has_seed, "sampling: seed recorded");
+  check(seeded.seed == 42, "sampling: positive seed keeps its value");
+
+  // Boundary values of both ranges are accepted.
+  Value::Map edges;
+  edges["temperature"] = Value(2.0);
+  edges["top_p"] = Value(1.0);
+  const auto upper = parse_sampling_params(edges);
+  check(upper.temperature == 2.0f, "sampling: temperature 2 accepted");
+  check(upper.top_p == 1.0f, "sampling: top_p 1 accepted");
+  edges["temperature"] = Value(0.0);
+  edges["top_p"] = Value(0.001);
+  const auto lower = parse_sampling_params(edges);
+  check(lower.temperature == 0.0f, "sampling: temperature 0 accepted");
+  check(lower.top_p == 0.001f, "sampling: small top_p accepted");
+
+  // seed is a signed int64. Zero is a seed, not an absent field.
+  Value::Map zero_seed;
+  zero_seed["seed"] = Value(static_cast<int64_t>(0));
+  const auto zero = parse_sampling_params(zero_seed);
+  check(zero.has_seed, "sampling: seed 0 is present");
+  check(zero.seed == 0, "sampling: seed 0 keeps its value");
+
+  // Negative seeds are accepted and map by two's-complement conversion.
+  Value::Map negative;
+  negative["seed"] = Value(static_cast<int64_t>(-42));
+  const auto negative_seed = parse_sampling_params(negative);
+  check(negative_seed.has_seed, "sampling: negative seed recorded");
+  check(negative_seed.seed == static_cast<uint64_t>(-42),
+        "sampling: -42 maps to two's-complement uint64");
+  check(negative_seed.seed == ~uint64_t{41}, "sampling: -42 equals ~41");
+
+  Value::Map lowest;
+  lowest["seed"] = Value(std::numeric_limits<int64_t>::min());
+  const auto lowest_seed = parse_sampling_params(lowest);
+  check(lowest_seed.has_seed, "sampling: INT64_MIN recorded");
+  check(lowest_seed.seed == uint64_t{1} << 63,
+        "sampling: INT64_MIN maps to 2^63");
+
+  Value::Map highest;
+  highest["seed"] = Value(std::numeric_limits<int64_t>::max());
+  check(parse_sampling_params(highest).seed ==
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()),
+        "sampling: INT64_MAX keeps its value");
+
+  // The mapping is injective: -42 and 42 must not collide.
+  check(negative_seed.seed != seeded.seed,
+        "sampling: -42 and 42 map to different uint64 seeds");
+
+  // Invalid values are rejected, not clamped or silently ignored.
+  auto rejects = [](const char* key, Value value) {
+    Value::Map params;
+    params[key] = std::move(value);
+    return throws_protocol([&] { (void)parse_sampling_params(params); });
+  };
+  check(rejects("temperature", Value(-0.1)), "sampling: temperature -0.1 rejected");
+  check(rejects("temperature", Value(2.1)), "sampling: temperature 2.1 rejected");
+  check(rejects("temperature", Value(std::nan(""))),
+        "sampling: NaN temperature rejected");
+  check(rejects("temperature", Value(std::string("0.8"))),
+        "sampling: string temperature rejected");
+  check(rejects("temperature", Value(true)), "sampling: bool temperature rejected");
+
+  check(rejects("top_p", Value(0.0)), "sampling: top_p 0 rejected");
+  check(rejects("top_p", Value(1.1)), "sampling: top_p 1.1 rejected");
+  check(rejects("top_p", Value(std::nan(""))), "sampling: NaN top_p rejected");
+  check(rejects("top_p", Value(std::string("0.9"))),
+        "sampling: string top_p rejected");
+
+  check(rejects("seed", Value(1.5)), "sampling: float seed rejected");
+  check(rejects("seed", Value(std::string("42"))), "sampling: string seed rejected");
+  check(rejects("seed", Value(true)), "sampling: bool seed rejected");
+
+  // An integer temperature is a number, not a type error.
+  Value::Map int_temperature;
+  int_temperature["temperature"] = Value(static_cast<int64_t>(1));
+  check(parse_sampling_params(int_temperature).temperature == 1.0f,
+        "sampling: integer temperature accepted as a number");
+}
+
 }  // namespace
 
 int main() {
@@ -127,6 +234,7 @@ int main() {
   test_text_is_mostly_cjk();
   test_tts_work();
   test_tts_result();
+  test_sampling_params();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;
