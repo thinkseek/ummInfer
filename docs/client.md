@@ -57,13 +57,15 @@ The route accepts an explicit allowlist of top-level chat fields: `model`,
 `messages`, `stream`, `temperature`, `max_tokens`, `max_completion_tokens`,
 `top_p`, `seed`, `stop`, `response_format` and `stream_options`. Any other
 non-null top-level field returns HTTP 400 `unsupported field: NAME`, whether or
-not this server knows the name. A null value is treated as absent. A non-null
-`top_p`, `seed` or non-empty `stop` is rejected, as is `response_format` other
-than type `text`, `stream_options` other than `include_usage: false`, and
-message content that is not a text string. A field with the wrong JSON type
-returns 400, not 500. The client sends `top_p` and `seed` only when the caller
-sets them. It never adds `stream_options`, and it never drops a caller field and
-retries: an unsupported field is reported as an error.
+not this server knows the name. A null value is treated as absent. A non-empty
+`stop` is rejected, as is `response_format` other than type `text`,
+`stream_options` other than `include_usage: false`, and message content that is
+not a text string. `top_p` must be a number in `(0, 1]`; `seed` must be a signed
+64-bit integer. Both are forwarded to the generation stage and are absent from
+the request when the caller omits them. A field with the wrong JSON type returns
+400, not 500. The client sends `top_p` and `seed` only when the caller sets them.
+It never adds `stream_options`, and it never drops a caller field and retries: an
+unsupported field is reported as an error.
 
 ### Token usage in a stream
 

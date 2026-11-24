@@ -190,6 +190,10 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     payload.request.inputs = std::move(parsed.asr_inputs);
     payload.request.params["stream"] = Value(parsed.asr_partials);
     payload.request.params["temperature"] = Value(0.0);
+    // Sampling knobs belong to the VLM leg only. The ASR leg is deterministic
+    // and must not see them. `record.vlm_params` already holds the copy above.
+    payload.request.params.erase("top_p");
+    payload.request.params.erase("seed");
   }
   std::string session_id =
       parsed.explicit_session

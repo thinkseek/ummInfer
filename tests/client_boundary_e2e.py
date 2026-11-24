@@ -425,7 +425,9 @@ def check_real_chat(binary, stage, model, env, root):
         print(f"PASS real_chat output={base.stdout.decode(errors='replace').strip()!r}",
               flush=True)
 
-        for value in ("0", "0.5", "1"):
+        # top_p is honored end to end: a value in (0, 1] reaches the real server
+        # and the real stage accepts it.
+        for value in ("0.5", "1"):
             result = run([binary, "chat", "--url", f"http://127.0.0.1:{port}/v1",
                           "--model", MODEL_NAME, "--prompt", PROMPT,
                           "--max-tokens", "16", "--temperature", "0",
@@ -434,17 +436,22 @@ def check_real_chat(binary, stage, model, env, root):
             require(b"unknown option" not in result.stderr,
                     f"--top-p {value} was rejected as an unknown option: "
                     f"{result.stderr!r}")
-            # The current server contract does not implement top_p. A success
-            # here would let a missing serialization pass as green.
-            require(result.returncode == 1,
-                    f"--top-p {value} was not rejected by the server: "
+            require(result.returncode == 0 and result.stdout.strip(),
+                    f"--top-p {value} was rejected: "
                     f"{result.stdout!r} {result.stderr!r}")
-            require(b"HTTP 400" in result.stderr and
-                    b"top_p is not implemented by this server" in result.stderr,
-                    f"--top-p {value} did not reach the server as an unsupported "
-                    f"field: {result.stderr!r}")
-            print(f"PASS real_top_p value={value} reached_server status=400 "
-                  f"unsupported_field=top_p", flush=True)
+            print(f"PASS real_top_p value={value} accepted_by_server", flush=True)
+
+        # 0 is outside (0, 1]. The public client rejects it before sending, so
+        # the value never reaches the server.
+        zero = run([binary, "chat", "--url", f"http://127.0.0.1:{port}/v1",
+                    "--model", MODEL_NAME, "--prompt", PROMPT,
+                    "--max-tokens", "16", "--temperature", "0",
+                    "--top-p", "0", "--max-attempts", "1",
+                    "--timeout-ms", "60000"], chat_env)
+        require(zero.returncode == 1 and b"top_p must be in (0, 1]" in zero.stderr,
+                f"--top-p 0 was not rejected by the client: "
+                f"{zero.stdout!r} {zero.stderr!r}")
+        print("PASS real_top_p value=0 rejected_by_client", flush=True)
 
         # The same unspaced token is a valid bearer and a rejected model. The
         # server authenticates first, then echoes the model in its 400, so the

@@ -389,8 +389,8 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     throw Error(ErrorCode::kConfig, "temperature must be between 0 and 2");
   }
   if (request.top_p &&
-      (!std::isfinite(*request.top_p) || *request.top_p < 0 || *request.top_p > 1)) {
-    throw Error(ErrorCode::kConfig, "top_p must be between 0 and 1");
+      (!std::isfinite(*request.top_p) || *request.top_p <= 0 || *request.top_p > 1)) {
+    throw Error(ErrorCode::kConfig, "top_p must be in (0, 1]");
   }
   if (request.stop.size() > 4) throw Error(ErrorCode::kConfig, "at most four stop strings are allowed");
   if (!request.response_format.is_null() && !request.response_format.is_object()) {

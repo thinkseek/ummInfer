@@ -2,7 +2,9 @@
 #include "openai_internal.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <ctime>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -246,12 +248,26 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
     }
   }
   if (body.contains("top_p") && !body["top_p"].is_null()) {
-    reject("top_p is not implemented by this server");
-    return;
+    const json& top_p = body["top_p"];
+    if (!top_p.is_number()) {
+      reject("top_p must be a number in (0, 1]");
+      return;
+    }
+    const double value = top_p.get<double>();
+    if (!std::isfinite(value) || value <= 0.0 || value > 1.0) {
+      reject("top_p must be a number in (0, 1]");
+      return;
+    }
   }
   if (body.contains("seed") && !body["seed"].is_null()) {
-    reject("seed is not implemented by this server");
-    return;
+    const json& seed = body["seed"];
+    if (!seed.is_number_integer() ||
+        (seed.is_number_unsigned() &&
+         seed.get<uint64_t>() >
+             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))) {
+      reject("seed must be an integer");
+      return;
+    }
   }
   if (body.contains("stop") && !body["stop"].is_null()) {
     const json& stop = body["stop"];
@@ -437,6 +453,12 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
   if (token_limit) params["max_new_tokens"] = Value(token_limit->get<int64_t>());
   if (body.contains("temperature") && !body["temperature"].is_null()) {
     params["temperature"] = Value(body["temperature"].get<double>());
+  }
+  if (body.contains("top_p") && !body["top_p"].is_null()) {
+    params["top_p"] = Value(body["top_p"].get<double>());
+  }
+  if (body.contains("seed") && !body["seed"].is_null()) {
+    params["seed"] = Value(body["seed"].get<int64_t>());
   }
   params["stream"] = Value(stream);
   payload.request.params = std::move(params);

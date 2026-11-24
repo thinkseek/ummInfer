@@ -4776,6 +4776,293 @@ void test_public_http_nonstream_text_only_compatible() {
              "text-only non-streaming request stayed in flight");
 }
 
+// top_p and seed pass through the public HTTP boundary into the VLM leg's
+// params. The knobs are accepted only in (0, 1] and as signed integers, they
+// stay absent when omitted or null, and the ASR leg never sees them.
+void test_public_http_top_p_seed_passthrough() {
+  Harness h("toppseed");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "top_p/seed server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string url =
+      "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+      "/v1/chat/completions";
+
+  auto make_request = [&](const nlohmann::json& body) {
+    test_http::HttpRequest request;
+    request.url = url;
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{5000};
+    return request;
+  };
+  auto text_body = [](bool stream) {
+    return nlohmann::json{
+        {"model", "qwen3-unified"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"},
+                                         {"content", "hello"}}})},
+        {"stream", stream}};
+  };
+  auto has_param = [](const StagePayload& payload, const char* key) {
+    return payload.request.params.find(key) != payload.request.params.end();
+  };
+
+  // Streaming: top_p 0.9 and seed 42 reach the VLM leg.
+  {
+    nlohmann::json body = text_body(true);
+    body["top_p"] = 0.9;
+    body["seed"] = 42;
+    auto future = std::async(std::launch::async,
+                             [&] { return test_http::perform(make_request(body)); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "streaming top_p/seed request did not reach the VLM");
+    if (vlm) {
+      StagePayload payload = StagePayload::from_value(vlm->data);
+      check(has_param(payload, "top_p") &&
+                payload.request.params.at("top_p").is_float() &&
+                payload.request.params.at("top_p").as_double() == 0.9 &&
+                has_param(payload, "seed") &&
+                payload.request.params.at("seed").is_int() &&
+                payload.request.params.at("seed").as_int() == 42,
+            "streaming top_p/seed did not reach the VLM params");
+      h.stream(vlm->request_id, "vlm", text_chunk("hi", false));
+      auto result = text_result("hi");
+      result["finish_reason"] = Value("stop");
+      h.complete(vlm->request_id, "vlm", true, Value(std::move(result)));
+    }
+    const auto response = future.get();
+    check(response.status == 200,
+          "streaming top_p/seed request returned an HTTP error");
+  }
+
+  // Non-streaming: top_p 1.0 and seed 0 reach the VLM leg.
+  {
+    nlohmann::json body = text_body(false);
+    body["top_p"] = 1.0;
+    body["seed"] = 0;
+    auto future = std::async(std::launch::async,
+                             [&] { return test_http::perform(make_request(body)); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(),
+          "non-streaming top_p/seed request did not reach the VLM");
+    if (vlm) {
+      StagePayload payload = StagePayload::from_value(vlm->data);
+      check(has_param(payload, "top_p") &&
+                payload.request.params.at("top_p").as_double() == 1.0 &&
+                has_param(payload, "seed") &&
+                payload.request.params.at("seed").as_int() == 0,
+            "non-streaming top_p/seed did not reach the VLM params");
+      h.complete(vlm->request_id, "vlm", true, text_result("plain answer"));
+    }
+    const auto response = future.get();
+    check(response.status == 200 &&
+              response.body.find("plain answer") != std::string::npos,
+          "non-streaming top_p/seed request returned the wrong response");
+  }
+
+  // A negative seed is a valid signed int64 and reaches the VLM leg.
+  {
+    nlohmann::json body = text_body(false);
+    body["seed"] = -7;
+    auto future = std::async(std::launch::async,
+                             [&] { return test_http::perform(make_request(body)); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "negative seed request did not reach the VLM");
+    if (vlm) {
+      StagePayload payload = StagePayload::from_value(vlm->data);
+      check(has_param(payload, "seed") &&
+                payload.request.params.at("seed").as_int() == -7,
+            "a negative seed was not forwarded");
+      h.complete(vlm->request_id, "vlm", true, text_result("neg"));
+    }
+    const auto response = future.get();
+    check(response.status == 200, "a negative seed request was rejected");
+  }
+
+  // Omitted and null knobs stay absent from the VLM params.
+  for (bool null_knobs : {false, true}) {
+    nlohmann::json body = text_body(false);
+    if (null_knobs) {
+      body["top_p"] = nullptr;
+      body["seed"] = nullptr;
+    }
+    auto future = std::async(std::launch::async,
+                             [&] { return test_http::perform(make_request(body)); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "absent-knob request did not reach the VLM");
+    if (vlm) {
+      StagePayload payload = StagePayload::from_value(vlm->data);
+      check(!has_param(payload, "top_p") && !has_param(payload, "seed"),
+            "an omitted or null knob was added to the VLM params");
+      h.complete(vlm->request_id, "vlm", true, text_result("compat"));
+    }
+    const auto response = future.get();
+    check(response.status == 200,
+          "an omitted or null knob request was rejected");
+  }
+
+  // Audio: the ASR leg is pinned and never sees top_p/seed; the VLM leg does.
+  {
+    nlohmann::json body = public_audio_body();
+    body["top_p"] = 0.5;
+    body["seed"] = 7;
+    auto future = std::async(std::launch::async,
+                             [&] { return test_http::perform(make_request(body)); });
+    auto asr = h.next_submit(h.asr_recv);
+    check(asr.has_value(), "audio top_p/seed request did not reach the ASR leg");
+    if (asr) {
+      StagePayload payload = StagePayload::from_value(asr->data);
+      check(payload.request.params.at("temperature").as_double() == 0.0 &&
+                !has_param(payload, "top_p") && !has_param(payload, "seed"),
+            "the ASR leg received VLM sampling knobs");
+      h.complete(asr->request_id, "asr", true, text_result("spoken"));
+    }
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "audio top_p/seed request did not reach the VLM leg");
+    if (vlm) {
+      StagePayload payload = StagePayload::from_value(vlm->data);
+      check(has_param(payload, "top_p") &&
+                payload.request.params.at("top_p").as_double() == 0.5 &&
+                has_param(payload, "seed") &&
+                payload.request.params.at("seed").as_int() == 7,
+            "the VLM leg lost top_p/seed on the audio path");
+      auto result = text_result("answer");
+      result["finish_reason"] = Value("stop");
+      h.complete(vlm->request_id, "vlm", true, Value(std::move(result)));
+    }
+    const auto response = future.get();
+    check(response.status == 200,
+          "audio top_p/seed request returned an HTTP error");
+  }
+
+  // Invalid knobs are rejected at the HTTP boundary before any stage submits.
+  auto rejected_with_400 = [&](nlohmann::json body) {
+    try {
+      test_http::perform(make_request(body));
+    } catch (const client::Error& exc) {
+      return std::string(exc.what()).find("HTTP 400") != std::string::npos;
+    }
+    return false;
+  };
+  const std::vector<std::pair<const char*, nlohmann::json>> bad_top_p = {
+      {"top_p", 0},   {"top_p", -0.1}, {"top_p", 1.01},
+      {"top_p", "0.9"}, {"top_p", true}};
+  for (const auto& [key, value] : bad_top_p) {
+    nlohmann::json body = text_body(false);
+    body[key] = value;
+    check(rejected_with_400(body), "an invalid top_p was accepted");
+    check(h.no_submit(h.vlm_recv), "an invalid top_p reached the VLM stage");
+  }
+  const std::vector<std::pair<const char*, nlohmann::json>> bad_seed = {
+      {"seed", "42"},
+      {"seed", 1.5},
+      {"seed", true},
+      {"seed", nlohmann::json::parse("99999999999999999999")},
+      {"seed", std::numeric_limits<uint64_t>::max()}};
+  for (const auto& [key, value] : bad_seed) {
+    nlohmann::json body = text_body(false);
+    body[key] = value;
+    check(rejected_with_400(body), "an invalid seed was accepted");
+    check(h.no_submit(h.vlm_recv), "an invalid seed reached the VLM stage");
+  }
+
+  api.stop();
+  server_thread.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "top_p/seed requests stayed in flight");
+}
+
+// Non-unified mode forwards top_p/seed to the single entry stage and applies
+// the same range checks.
+void test_public_http_nonunified_top_p_seed_passthrough() {
+  Harness h("nonuniftopp");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "legacy-chat";
+  config.entry_stage = "vlm";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  check(api.bind(), "non-unified top_p/seed server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string url =
+      "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+      "/v1/chat/completions";
+
+  auto make_request = [&](const nlohmann::json& body) {
+    test_http::HttpRequest request;
+    request.url = url;
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{5000};
+    return request;
+  };
+  auto text_body = [](bool stream) {
+    return nlohmann::json{
+        {"model", "legacy-chat"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"},
+                                         {"content", "hello"}}})},
+        {"stream", stream}};
+  };
+
+  for (bool stream : {false, true}) {
+    nlohmann::json body = text_body(stream);
+    body["top_p"] = 0.9;
+    body["seed"] = 42;
+    auto future = std::async(std::launch::async,
+                             [&] { return test_http::perform(make_request(body)); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(),
+          "non-unified top_p/seed request did not reach the entry stage");
+    if (vlm) {
+      StagePayload payload = StagePayload::from_value(vlm->data);
+      const Value::Map& params = payload.request.params;
+      check(params.find("top_p") != params.end() &&
+                params.at("top_p").as_double() == 0.9 &&
+                params.find("seed") != params.end() &&
+                params.at("seed").as_int() == 42,
+            "non-unified mode did not forward top_p/seed");
+      auto result = text_result("entry answer");
+      result["finish_reason"] = Value("stop");
+      if (stream) h.stream(vlm->request_id, "vlm", text_chunk("entry", false));
+      h.complete(vlm->request_id, "vlm", true, Value(std::move(result)));
+    }
+    const auto response = future.get();
+    check(response.status == 200,
+          "non-unified top_p/seed request returned an HTTP error");
+  }
+
+  for (const auto& [key, value] :
+       std::vector<std::pair<const char*, nlohmann::json>>{
+           {"top_p", 0}, {"top_p", 1.5}, {"seed", 1.5}, {"seed", "42"}}) {
+    nlohmann::json body = text_body(false);
+    body[key] = value;
+    bool rejected = false;
+    try {
+      test_http::perform(make_request(body));
+    } catch (const client::Error& exc) {
+      rejected = std::string(exc.what()).find("HTTP 400") != std::string::npos;
+    }
+    check(rejected, "an invalid knob was accepted in non-unified mode");
+    check(h.no_submit(h.vlm_recv),
+          "an invalid non-unified request reached the entry stage");
+  }
+
+  api.stop();
+  server_thread.join();
+}
+
 // The C++ client decodes and verifies a non-streaming mixed body end to end.
 void test_openai_client_nonstream_mixed_roundtrip() {
   Harness h("clientnonstream");
@@ -7123,6 +7410,8 @@ int main() {
   RUN(test_public_http_joint_input());
   RUN(test_public_http_vlm_only());
   RUN(test_public_http_vlm_only_stream());
+  RUN(test_public_http_top_p_seed_passthrough());
+  RUN(test_public_http_nonunified_top_p_seed_passthrough());
   RUN(test_public_http_unified_errors());
   RUN(test_public_http_session_history());
   RUN(test_public_http_session_id_requires_unified());
