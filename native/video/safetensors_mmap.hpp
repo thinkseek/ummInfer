@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -44,6 +45,24 @@ class SafetensorsMmap {
   const std::byte* mapping_ = nullptr;
   size_t mapping_size_ = 0;
   std::unordered_map<std::string, SafetensorView> tensors_;
+};
+
+class ShardedSafetensorsMmap {
+ public:
+  // Accepts a single .safetensors file or a model.safetensors.index.json path.
+  explicit ShardedSafetensorsMmap(const std::filesystem::path& path);
+
+  bool contains(const std::string& name) const;
+  const SafetensorView& tensor(const std::string& name) const;
+  const SafetensorView& tensor(
+      const std::string& name,
+      std::initializer_list<int64_t> expected_shape) const;
+
+ private:
+  const SafetensorsMmap& owner(const std::string& name) const;
+
+  std::vector<std::unique_ptr<SafetensorsMmap>> files_;
+  std::unordered_map<std::string, size_t> tensor_files_;
 };
 
 }  // namespace umminfer::video

@@ -7,7 +7,10 @@
 #include <cmath>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <limits>
+#include <map>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -232,6 +235,70 @@ const SafetensorView& SafetensorsMmap::tensor(
     throw std::invalid_argument("tensor '" + name + "': " + err.what());
   }
   return view;
+}
+
+ShardedSafetensorsMmap::ShardedSafetensorsMmap(
+    const std::filesystem::path& path) {
+  if (path.extension() != ".json") {
+    files_.push_back(std::make_unique<SafetensorsMmap>(path));
+    return;
+  }
+
+  std::ifstream input(path);
+  if (!input) throw std::runtime_error("failed to open Safetensors index: " + path.string());
+  const auto index = nlohmann::json::parse(input);
+  const auto& weight_map = index.at("weight_map");
+  if (!weight_map.is_object() || weight_map.empty()) {
+    throw std::runtime_error("Safetensors index has no weight_map entries");
+  }
+
+  std::map<std::string, size_t> shard_files;
+  for (const auto& [name, shard] : weight_map.items()) {
+    const std::string filename = shard.get<std::string>();
+    auto [it, inserted] = shard_files.emplace(filename, files_.size());
+    if (inserted) {
+      files_.push_back(
+          std::make_unique<SafetensorsMmap>(path.parent_path() / filename));
+    }
+    if (!tensor_files_.emplace(name, it->second).second) {
+      throw std::runtime_error("duplicate tensor in Safetensors index: " + name);
+    }
+  }
+  for (const auto& [name, file_index] : tensor_files_) {
+    if (!files_[file_index]->contains(name)) {
+      throw std::runtime_error("indexed tensor '" + name +
+                               "' is absent from its Safetensors shard");
+    }
+  }
+}
+
+bool ShardedSafetensorsMmap::contains(const std::string& name) const {
+  if (tensor_files_.empty() && files_.size() == 1) {
+    return files_[0]->contains(name);
+  }
+  return tensor_files_.find(name) != tensor_files_.end();
+}
+
+const SafetensorsMmap& ShardedSafetensorsMmap::owner(
+    const std::string& name) const {
+  if (tensor_files_.empty() && files_.size() == 1) {
+    if (files_[0]->contains(name)) return *files_[0];
+  } else {
+    const auto it = tensor_files_.find(name);
+    if (it != tensor_files_.end()) return *files_[it->second];
+  }
+  throw std::out_of_range("Safetensors tensor not found: " + name);
+}
+
+const SafetensorView& ShardedSafetensorsMmap::tensor(
+    const std::string& name) const {
+  return owner(name).tensor(name);
+}
+
+const SafetensorView& ShardedSafetensorsMmap::tensor(
+    const std::string& name,
+    std::initializer_list<int64_t> expected_shape) const {
+  return owner(name).tensor(name, expected_shape);
 }
 
 }  // namespace umminfer::video
