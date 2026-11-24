@@ -296,6 +296,12 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       latents[i] = dist(rng);
     }
 
+    // Wan2.2-TI2V-5B ships UniPCMultistepScheduler with solver_order=2,
+    // solver_type="bh2", predict_x0=true, lower_order_final=true and
+    // final_sigmas_type="zero"; the solver below replays that update exactly.
+    UniPCFlowMatchSolver solver;
+    solver.reset(schedule);
+
     for (int step = 0; step < params.steps; ++step) {
       check_abort(abort, "aborted before step " + std::to_string(step + 1) +
                              "/" + std::to_string(params.steps));
@@ -319,8 +325,7 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
         }
       }
 
-      euler_step_host(latents.data(), velocity.data(),
-                      schedule.dt[static_cast<size_t>(step)], latent_count);
+      solver.step(step, latents.data(), velocity.data(), latent_count);
       if (params.step_delay_ms > 0) {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(params.step_delay_ms));
