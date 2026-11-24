@@ -244,87 +244,133 @@ __global__ void __launch_bounds__(128) gemv_kernel(const bf16* __restrict__ w,
   }
 }
 
-// Batched decode GEMV. Each warp owns four output rows and keeps one fp32
-// accumulator per (row, input) pair. An input vector element is loaded once and
-// multiplied against all four weight rows, so the load-instruction count per
-// weight byte stays low. Per (row, input) the k reduction order and the warp
-// shuffle match gemv_kernel, so the value is bitwise equal to running that row
-// alone.
-template <typename OutT>
-__global__ void __launch_bounds__(128) gemv_batch_kernel(
+// Batched decode GEMV, small m. One warp owns one output row; the kM input
+// rows stay in registers, so a single 128-bit weight load is multiplied against
+// every input row before it leaves the register file. kUnroll weight chunks are
+// fetched ahead of the first use, because a load issued at its own use
+// serialises the whole chunk behind L1/L2 latency; at m = 1 to 2 the kernel is
+// latency-bound and four chunks in flight pay, at m = 3 to 8 it is issue-bound
+// and one is enough.
+//
+// Bitwise equality with gemv_kernel is a hard requirement, not an accident of
+// codegen: lane L accumulates the same chunks (L*8 + 256*t) in the same
+// increasing order with the same `acc += a*b + c*d` expression, and the warp
+// reduction is the same shuffle tree. kUnroll only moves loads earlier; the
+// arithmetic sequence per accumulator is unchanged.
+template <int kM, int kUnroll, typename OutT>
+__global__ void __launch_bounds__(128) gemv_small_m_kernel(
     const bf16* __restrict__ w, const bf16* __restrict__ x,
-    OutT* __restrict__ out, int m, int n_out, int k) {
-  constexpr int kRowsPerWarp = 4;
-  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-  const int row0 = (blockIdx.x * 4 + warp) * kRowsPerWarp;
-  if (row0 >= n_out) return;
-  const bf16* wr = w + static_cast<size_t>(row0) * k;
-  float acc[kRowsPerWarp][kMaxBatch];
-  #pragma unroll
-  for (int r = 0; r < kRowsPerWarp; ++r)
-    #pragma unroll
-    for (int b = 0; b < kMaxBatch; ++b) acc[r][b] = 0.0f;
+    OutT* __restrict__ out, int n_out, int k) {
+  constexpr int kStr = 32 * 8;
+  const int row = blockIdx.x * 4 + (threadIdx.x >> 5);
+  if (row >= n_out) return;
+  const int lane = threadIdx.x & 31;
+  const bf16* wr = w + static_cast<size_t>(row) * k;
 
-  const int step = 32 * 8;
+  float acc[kM];
+  #pragma unroll
+  for (int b = 0; b < kM; ++b) acc[b] = 0.0f;
+
   int i = lane * 8;
-  for (; i + 8 <= k; i += step) {
-    uint4 xv[kMaxBatch];
+  const int group_end = k - ((kUnroll - 1) * kStr + 8);
+  for (; i <= group_end; i += kUnroll * kStr) {
+    uint4 wv[kUnroll];
     #pragma unroll
-    for (int b = 0; b < kMaxBatch; ++b) {
-      if (b >= m) continue;
-      xv[b] = *reinterpret_cast<const uint4*>(x + static_cast<size_t>(b) * k + i);
-    }
+    for (int u = 0; u < kUnroll; ++u)
+      wv[u] = *reinterpret_cast<const uint4*>(wr + i + u * kStr);
     #pragma unroll
-    for (int r = 0; r < kRowsPerWarp; ++r) {
-      if (row0 + r >= n_out) continue;
-      const uint4 v =
-          *reinterpret_cast<const uint4*>(wr + static_cast<size_t>(r) * k + i);
-      const __nv_bfloat162* vb = reinterpret_cast<const __nv_bfloat162*>(&v);
+    for (int u = 0; u < kUnroll; ++u) {
+      // Every input row of this chunk is fetched before the first use.
+      uint4 xv[kM];
       #pragma unroll
-      for (int b = 0; b < kMaxBatch; ++b) {
-        if (b >= m) continue;
-        const __nv_bfloat162* ub =
-            reinterpret_cast<const __nv_bfloat162*>(&xv[b]);
+      for (int b = 0; b < kM; ++b)
+        xv[b] = *reinterpret_cast<const uint4*>(
+            x + static_cast<size_t>(b) * k + i + u * kStr);
+      const __nv_bfloat162* vb = reinterpret_cast<const __nv_bfloat162*>(&wv[u]);
+      float fw[8];
+      #pragma unroll
+      for (int e = 0; e < 4; ++e) {
+        const float2 fv = __bfloat1622float2(vb[e]);
+        fw[2 * e] = fv.x;
+        fw[2 * e + 1] = fv.y;
+      }
+      #pragma unroll
+      for (int b = 0; b < kM; ++b) {
+        const __nv_bfloat162* ub = reinterpret_cast<const __nv_bfloat162*>(&xv[b]);
         #pragma unroll
         for (int e = 0; e < 4; ++e) {
-          const float2 fv = __bfloat1622float2(vb[e]);
           const float2 fu = __bfloat1622float2(ub[e]);
-          acc[r][b] += fv.x * fu.x + fv.y * fu.y;
+          acc[b] += fw[2 * e] * fu.x + fw[2 * e + 1] * fu.y;
         }
       }
     }
   }
-  for (; i < k; ++i) {
+  for (; i + 8 <= k; i += kStr) {
+    const uint4 v = *reinterpret_cast<const uint4*>(wr + i);
+    const __nv_bfloat162* vb = reinterpret_cast<const __nv_bfloat162*>(&v);
     #pragma unroll
-    for (int r = 0; r < kRowsPerWarp; ++r) {
-      if (row0 + r >= n_out) continue;
-      const float wv = __bfloat162float(wr[static_cast<size_t>(r) * k + i]);
+    for (int b = 0; b < kM; ++b) {
+      const uint4 xu =
+          *reinterpret_cast<const uint4*>(x + static_cast<size_t>(b) * k + i);
+      const __nv_bfloat162* ub = reinterpret_cast<const __nv_bfloat162*>(&xu);
       #pragma unroll
-      for (int b = 0; b < kMaxBatch; ++b) {
-        if (b >= m) continue;
-        acc[r][b] += wv * __bfloat162float(x[static_cast<size_t>(b) * k + i]);
+      for (int e = 0; e < 4; ++e) {
+        const float2 fv = __bfloat1622float2(vb[e]);
+        const float2 fu = __bfloat1622float2(ub[e]);
+        acc[b] += fv.x * fu.x + fv.y * fu.y;
       }
     }
   }
-  #pragma unroll
-  for (int r = 0; r < kRowsPerWarp; ++r) {
-    if (row0 + r >= n_out) continue;
+  for (; i < k; ++i) {
+    const float wf = __bfloat162float(wr[i]);
     #pragma unroll
-    for (int b = 0; b < kMaxBatch; ++b) {
-      if (b >= m) continue;
-      #pragma unroll
-      for (int off = 16; off > 0; off >>= 1)
-        acc[r][b] += __shfl_down_sync(0xffffffffu, acc[r][b], off);
+    for (int b = 0; b < kM; ++b)
+      acc[b] += wf * __bfloat162float(x[static_cast<size_t>(b) * k + i]);
+  }
+  #pragma unroll
+  for (int b = 0; b < kM; ++b) {
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+      acc[b] += __shfl_down_sync(0xffffffffu, acc[b], off);
+  }
+  if (lane == 0) {
+    #pragma unroll
+    for (int b = 0; b < kM; ++b) {
+      const size_t o = static_cast<size_t>(b) * n_out + row;
+      if (sizeof(OutT) == 4) out[o] = acc[b];
+      else out[o] = static_cast<OutT>(__float2bfloat16(acc[b]));
     }
-    if (lane == 0) {
-      #pragma unroll
-      for (int b = 0; b < kMaxBatch; ++b) {
-        if (b >= m) continue;
-        const size_t o = static_cast<size_t>(b) * n_out + row0 + r;
-        if (sizeof(OutT) == 4) out[o] = acc[r][b];
-        else out[o] = static_cast<OutT>(__float2bfloat16(acc[r][b]));
-      }
-    }
+  }
+}
+
+// m = 1 and 2 are latency-bound, three or more rows are issue-bound; the split
+// is measured, not derived.
+constexpr int gemv_unroll_for(int m) { return m <= 2 ? 4 : 1; }
+
+template <int kM, typename OutT>
+void launch_small_m(const bf16* w, const bf16* x, OutT* out, int n_out, int k,
+                    cudaStream_t stream) {
+  const int blocks = (n_out + 3) / 4;
+  if constexpr (gemv_unroll_for(kM) == 4)
+    gemv_small_m_kernel<kM, 4, OutT>
+        <<<blocks, 128, 0, stream>>>(w, x, out, n_out, k);
+  else
+    gemv_small_m_kernel<kM, 1, OutT>
+        <<<blocks, 128, 0, stream>>>(w, x, out, n_out, k);
+}
+
+template <typename OutT>
+void launch_small_m_dyn(const bf16* w, const bf16* x, OutT* out, int m,
+                        int n_out, int k, cudaStream_t stream) {
+  switch (m) {
+    case 1: launch_small_m<1, OutT>(w, x, out, n_out, k, stream); break;
+    case 2: launch_small_m<2, OutT>(w, x, out, n_out, k, stream); break;
+    case 3: launch_small_m<3, OutT>(w, x, out, n_out, k, stream); break;
+    case 4: launch_small_m<4, OutT>(w, x, out, n_out, k, stream); break;
+    case 5: launch_small_m<5, OutT>(w, x, out, n_out, k, stream); break;
+    case 6: launch_small_m<6, OutT>(w, x, out, n_out, k, stream); break;
+    case 7: launch_small_m<7, OutT>(w, x, out, n_out, k, stream); break;
+    default: launch_small_m<8, OutT>(w, x, out, n_out, k, stream); break;
   }
 }
 
@@ -367,17 +413,17 @@ void gemv_bf16_bf16(const Bf16* w, const Bf16* x, Bf16* out, int n_out, int k,
 void gemv_bf16_f32_batch(const Bf16* w, const Bf16* x, float* out, int m,
                          int n_out, int k, cudaStream_t stream) {
   if (m <= 0 || n_out <= 0 || k <= 0) return;
-  gemv_batch_kernel<float><<<m * ((n_out + 3) / 4), 128, 0, stream>>>(
-      reinterpret_cast<const bf16*>(w), reinterpret_cast<const bf16*>(x), out,
-      m, n_out, k);
+  launch_small_m_dyn(reinterpret_cast<const bf16*>(w),
+                     reinterpret_cast<const bf16*>(x), out, m, n_out, k,
+                     stream);
 }
 
 void gemv_bf16_bf16_batch(const Bf16* w, const Bf16* x, Bf16* out, int m,
                           int n_out, int k, cudaStream_t stream) {
   if (m <= 0 || n_out <= 0 || k <= 0) return;
-  gemv_batch_kernel<bf16><<<m * ((n_out + 3) / 4), 128, 0, stream>>>(
-      reinterpret_cast<const bf16*>(w), reinterpret_cast<const bf16*>(x),
-      reinterpret_cast<bf16*>(out), m, n_out, k);
+  launch_small_m_dyn(reinterpret_cast<const bf16*>(w),
+                     reinterpret_cast<const bf16*>(x),
+                     reinterpret_cast<bf16*>(out), m, n_out, k, stream);
 }
 
 }  // namespace umminfer::qwen38
