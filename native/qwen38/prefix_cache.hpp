@@ -23,4 +23,12 @@ inline int match_prefix(const std::vector<int>& cached_ids,
   return static_cast<int>(cached_ids.size());
 }
 
+// Snapshot boundary for a request that may cut its prompt at a turn boundary.
+// -1, 0 and any value outside (0, prompt_len) keep the historical behaviour of
+// snapshotting the whole prompt; an interior value is used as given.
+inline int resolve_snapshot_len(int prompt_len, int cache_prefix_len) {
+  if (cache_prefix_len <= 0 || cache_prefix_len >= prompt_len) return prompt_len;
+  return cache_prefix_len;
+}
+
 }  // namespace umminfer::qwen38

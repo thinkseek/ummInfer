@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Assert-based host checks for the Qwen3.8-27B sampling and prefix-reuse
 // helpers. No GPU, no framework.
+#include "qwen38/engine.hpp"
 #include "qwen38/prefix_cache.hpp"
 #include "qwen38/sampling.hpp"
 
@@ -18,7 +19,12 @@
 
 namespace {
 
+using umminfer::qwen38::ChatTurn;
 using umminfer::qwen38::match_prefix;
+using umminfer::qwen38::render_chat_prompt;
+using umminfer::qwen38::render_chat_prompt_parts;
+using umminfer::qwen38::RenderedChatPrompt;
+using umminfer::qwen38::resolve_snapshot_len;
 using umminfer::qwen38::SamplingParams;
 using umminfer::qwen38::sample_token;
 
@@ -348,6 +354,105 @@ void test_prefix_match() {
         "an empty cache returns no reuse");
 }
 
+// ---- turn-boundary prompt split --------------------------------------------
+
+// The split renderer must be a pure refactor of the whole-prompt renderer.
+void test_render_parts_matches_full() {
+  const std::vector<std::vector<ChatTurn>> cases = {
+      {{"user", "hello", false}},
+      {{"system", "be brief", false}, {"user", "  hi there \n", false}},
+      {{"user", "q1", false}, {"assistant", "a1", false}, {"user", "q2", false}},
+      {{"user", "", false}},
+      {{"user", "with image", true}},
+      {{"", "empty role", false}},
+  };
+  for (const auto& turns : cases) {
+    for (bool thinking : {false, true}) {
+      const RenderedChatPrompt parts = render_chat_prompt_parts(turns, thinking);
+      check(parts.full() == render_chat_prompt(turns, thinking),
+            "parts.full() equals render_chat_prompt byte for byte");
+      check(!parts.prefix.empty() && !parts.suffix.empty(),
+            "both prompt parts are non-empty");
+      check(parts.prefix.size() + parts.suffix.size() == parts.full().size(),
+            "the parts concatenate without a gap");
+    }
+  }
+  bool threw = false;
+  try {
+    render_chat_prompt_parts({}, false);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  check(threw, "an empty turn list still throws");
+}
+
+// Turn 1's cacheable prefix must survive every assistant reply and every
+// later turn, because the boundary sits on a special token.
+void test_turn_boundary_prefix_is_stable() {
+  const std::vector<std::string> replies = {
+      "",
+      "ok",
+      "Sure, here is the answer.",
+      "\xE4\xB8\xAD\xE6\x96\x87\xE5\x9B\x9E\xE5\xA4\x8D\xEF\xBC\x9A\xE4\xBD\xA0\xE5\xA5\xBD",
+      "\n\nleading newlines",
+      "```cpp\nint main() { return 0; }\n```",
+      "line one\nline two\n",
+      "  trailing spaces  ",
+  };
+  for (bool thinking : {false, true}) {
+    const std::vector<ChatTurn> turn1 = {{"user", "u1", false}};
+    const RenderedChatPrompt p1 = render_chat_prompt_parts(turn1, thinking);
+    for (const std::string& reply : replies) {
+      const std::vector<ChatTurn> turn2 = {{"user", "u1", false},
+                                           {"assistant", reply, false},
+                                           {"user", "u2", false}};
+      const std::vector<ChatTurn> turn3 = {{"user", "u1", false},
+                                           {"assistant", reply, false},
+                                           {"user", "u2", false},
+                                           {"assistant", "a2", false},
+                                           {"user", "u3", false}};
+      const RenderedChatPrompt p2 = render_chat_prompt_parts(turn2, thinking);
+      const RenderedChatPrompt p3 = render_chat_prompt_parts(turn3, thinking);
+      check(p2.prefix.compare(0, p1.prefix.size(), p1.prefix) == 0,
+            "turn 1 prefix prefixes turn 2 prefix");
+      check(p2.full().compare(0, p1.prefix.size(), p1.prefix) == 0,
+            "turn 1 prefix prefixes turn 2 full prompt");
+      check(p3.prefix.compare(0, p2.prefix.size(), p2.prefix) == 0,
+            "each turn prefix extends the previous one");
+      check(p1.suffix == p2.suffix && p2.suffix == p3.suffix,
+            "the assistant header suffix never changes");
+    }
+  }
+}
+
+void test_resolve_snapshot_len() {
+  check(resolve_snapshot_len(100, -1) == 100, "-1 snapshots the whole prompt");
+  check(resolve_snapshot_len(100, 0) == 100, "0 snapshots the whole prompt");
+  check(resolve_snapshot_len(100, 100) == 100,
+        "a cut at the prompt length snapshots the whole prompt");
+  check(resolve_snapshot_len(100, 250) == 100,
+        "a cut past the prompt length is clamped to the prompt length");
+  check(resolve_snapshot_len(100, 7) == 7, "an interior cut is kept");
+  check(resolve_snapshot_len(1, 0) == 1, "a one-token prompt stays whole");
+}
+
+// The bug this wave fixes: a snapshot at the full prompt never matches the next
+// turn, while a snapshot at the turn boundary always does.
+void test_prefix_boundary_reuses_next_turn() {
+  // ids[:cut] is the turn-boundary prefix; the two suffixes differ.
+  const std::vector<int> full_turn1{1, 2, 3, 4, 5, 6, 7, 8};
+  const std::vector<int> turn1_prefix{1, 2, 3, 4, 5};
+  const std::vector<int> turn2{1, 2, 3, 4, 5, 90, 91, 20, 21, 22, 6, 7, 8};
+  const int cut = static_cast<int>(turn1_prefix.size());
+  check(match_prefix(turn1_prefix, turn2, false, true) == cut,
+        "a turn-boundary snapshot hits the next turn");
+  check(match_prefix(full_turn1, turn2, false, true) == 0,
+        "a whole-prompt snapshot misses the next turn");
+  // The split is only safe when it is an interior cut with rows on both sides.
+  check(resolve_snapshot_len(static_cast<int>(turn2.size()), cut) == cut,
+        "the boundary cut is a valid snapshot length");
+}
+
 }  // namespace
 
 int main() {
@@ -357,6 +462,10 @@ int main() {
   test_top_p_excludes_tail();
   test_extreme_logits();
   test_prefix_match();
+  test_render_parts_matches_full();
+  test_turn_boundary_prefix_is_stable();
+  test_resolve_snapshot_len();
+  test_prefix_boundary_reuses_next_turn();
   test_fast_matches_reference();
   test_large_vocab_latency();
   if (g_failures != 0) {

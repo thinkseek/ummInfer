@@ -21,27 +21,34 @@ std::string_view trim_ascii(std::string_view s) {
 
 }  // namespace
 
-std::string render_chat_prompt(const std::vector<ChatTurn>& turns,
-                               bool enable_thinking) {
+RenderedChatPrompt render_chat_prompt_parts(const std::vector<ChatTurn>& turns,
+                                            bool enable_thinking) {
   if (turns.empty()) {
     throw std::invalid_argument("render_chat_prompt requires at least one turn");
   }
-  std::string out;
+  RenderedChatPrompt parts;
   for (const ChatTurn& turn : turns) {
     const std::string& role = turn.role.empty() ? std::string("user") : turn.role;
-    out += "<|im_start|>" + role + "\n";
-    if (turn.has_image) out += "<|vision_start|><|image_pad|><|vision_end|>";
+    parts.prefix += "<|im_start|>" + role + "\n";
+    if (turn.has_image) {
+      parts.prefix += "<|vision_start|><|image_pad|><|vision_end|>";
+    }
     // The Jinja template applies |trim to the rendered content of each turn.
     const std::string_view trimmed = trim_ascii(turn.text);
-    out.append(trimmed.data(), trimmed.size());
-    out += "<|im_end|>\n";
+    parts.prefix.append(trimmed.data(), trimmed.size());
+    parts.prefix += "<|im_end|>\n";
   }
-  out += "<|im_start|>assistant\n";
   const std::string think_open = "<" "think" ">";
   const std::string think_close = "</" "think" ">";
-  out += enable_thinking ? think_open + "\n"
-                         : think_open + "\n\n" + think_close + "\n\n";
-  return out;
+  parts.suffix = "<|im_start|>assistant\n";
+  parts.suffix += enable_thinking ? think_open + "\n"
+                                 : think_open + "\n\n" + think_close + "\n\n";
+  return parts;
+}
+
+std::string render_chat_prompt(const std::vector<ChatTurn>& turns,
+                               bool enable_thinking) {
+  return render_chat_prompt_parts(turns, enable_thinking).full();
 }
 
 std::string render_chat_prompt(const std::string& user_text, bool has_image,

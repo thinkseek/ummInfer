@@ -7,6 +7,7 @@
 // still receives the aggregate result at completion.
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -154,7 +155,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       image_tokens = image->rows() / 4;
     }
     std::vector<qwen38::ChatTurn> turns;
-    turns.reserve(input.messages.size());
+    turns.reserve(input.messages.size() + 1);
     for (size_t i = 0; i < input.messages.size(); ++i) {
       turns.push_back(qwen38::ChatTurn{
           input.messages[i].role,
@@ -163,11 +164,26 @@ CancellableComputeFn make_compute(const StageOptions& options) {
                                i + 1 == input.messages.size()),
       });
     }
-    std::vector<int> ids = tokenizer->encode(
-        turns.empty() ? qwen38::render_chat_prompt(input.text, image != nullptr,
-                                                   /*enable_thinking=*/false)
-                      : qwen38::render_chat_prompt(turns,
-                                                   /*enable_thinking=*/false));
+    if (turns.empty()) {
+      turns.push_back(qwen38::ChatTurn{"user", input.text, image != nullptr});
+    }
+    // The prompt splits into the completed turns and the open assistant header.
+    // The header is not cacheable: the next turn replaces it with the reply, so
+    // a snapshot taken after it never matches.
+    const qwen38::RenderedChatPrompt parts =
+        qwen38::render_chat_prompt_parts(turns, /*enable_thinking=*/false);
+    std::vector<int> ids = tokenizer->encode(parts.full());
+    // Snapshot at the turn boundary. Only a prefix that tokenizes to a leading
+    // slice of the full prompt is usable; anything else keeps the whole-prompt
+    // snapshot rather than risk a wrong prefix.
+    int cache_prefix_len = -1;
+    if (image == nullptr) {
+      const std::vector<int> prefix_ids = tokenizer->encode(parts.prefix);
+      if (prefix_ids.size() < ids.size() &&
+          std::equal(prefix_ids.begin(), prefix_ids.end(), ids.begin())) {
+        cache_prefix_len = static_cast<int>(prefix_ids.size());
+      }
+    }
     if (image != nullptr) {
       ids = qwen38::expand_image_pads(ids, image_tokens);
     }
@@ -205,11 +221,12 @@ CancellableComputeFn make_compute(const StageOptions& options) {
         request.sampling = sampling;
         request.abort = [&tracker] { return tracker(); };
         request.on_token = emit_token;
+        request.cache_prefix_len = cache_prefix_len;
         result = engine->generate_batched(request);
       } else {
         result = engine->generate(ids, image.get(), req_max_new_tokens, "",
                                   [&tracker] { return tracker(); }, emit_token,
-                                  sampling);
+                                  sampling, cache_prefix_len);
       }
     } catch (const qwen38::GenerationAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
