@@ -514,12 +514,49 @@ def test_rolling_log_cap():
         cleanup(root)
 
 
+def test_config_loads_shipped_native_service_and_launcher_stages():
+    shipped = SERVICE_MODULE.load_config(REPO_ROOT / "service" / "native-service.json")
+    optional = {stage["name"]: stage for stage in shipped.get("optional_stages", [])}
+    require("flux2" in optional and optional["flux2"]["kind"] == "flux2",
+            "shipped config must load optional flux2 stage")
+    require("video" in optional and optional["video"]["kind"] == "video",
+            "shipped config must load optional video stage")
+
+    root = make_root()
+    try:
+        stages = [
+            {"name": "omni", "model": "demo-model", "gpu": 0},
+            {"name": "flux2", "kind": "flux2", "model": "/models/flux2", "gpu": 6,
+             "launcher": "python/umminfer_flux2_stage.py",
+             "args": ["--backend", "mock"]},
+            {"name": "video", "kind": "video", "model": "/models/wan22", "gpu": 7,
+             "args": ["--video-backend", "cuda"]},
+        ]
+        sup = SERVICE_MODULE.Supervisor(config_for(root, free_port(), native_stages=stages))
+        server = sup.by_name["server"]
+        require("--image-entry" in server.argv and "flux2" in server.argv,
+                f"flux2 should wire image-entry when no image stage is named: {server.argv}")
+        require("--video-entry" in server.argv and "video" in server.argv,
+                f"started video stage should wire --video-entry: {server.argv}")
+        flux2 = sup.by_name["flux2"]
+        require(flux2.argv[1] == "python/umminfer_flux2_stage.py",
+                f"launcher stage should invoke Python script: {flux2.argv}")
+        require("--recv" in flux2.argv and "--coordinator" in flux2.argv,
+                f"launcher stage should pass Python stage flags: {flux2.argv}")
+        video = sup.by_name["video"]
+        require(video.argv[0].endswith("umm-native-stage-video"),
+                f"native video stage should invoke native binary: {video.argv}")
+    finally:
+        cleanup(root)
+
+
 def main():
     tests = [
         test_config_rejects_wildcard_hosts,
         test_config_accepts_loopback,
         test_config_rejects_unknown_vlm_stage,
         test_config_rejects_duplicate_stage_names,
+        test_config_loads_shipped_native_service_and_launcher_stages,
         test_full_lifecycle,
         test_health_failure_restarts_server_with_backoff_counter,
         test_server_restart_preserves_running_workers,

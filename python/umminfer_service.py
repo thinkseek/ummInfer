@@ -188,31 +188,61 @@ class Supervisor:
         # The VLM leg is whichever started stage the config names, so the
         # deployment can run omni or qwen38 on the same server binary.
         vlm = cfg.get("vlm_stage", "omni")
-        children = [Child("server", [
+        started_by_kind = {
+            stage.get("kind", stage["name"]): stage["name"]
+            for stage in cfg["native_stages"]
+        }
+        image_entry = cfg.get(
+            "image_stage",
+            "image"
+            if any(s["name"] == "image" for s in cfg["native_stages"])
+            else started_by_kind.get("flux2", "image"),
+        )
+        server_argv = [
             cfg["binary"], "serve",
             "--host", cfg["host"], "--port", str(cfg["port"]),
             "--model", cfg["model"],
             "--entry", "asr", "--entry-endpoint", f"ipc://{ipc}/asr",
             "--vlm-entry", vlm, "--vlm-entry-endpoint", f"ipc://{ipc}/{vlm}",
-            "--image-entry", "image", "--image-entry-endpoint", f"ipc://{ipc}/image",
+            "--image-entry", image_entry,
+            "--image-entry-endpoint", f"ipc://{ipc}/{image_entry}",
             "--tts-entry", "tts", "--tts-entry-endpoint", f"ipc://{ipc}/tts",
             "--completion", f"ipc://{ipc}/done",
             "--abort", f"ipc://{ipc}/abort",
-        ] + list(cfg.get("server_args", [])))]
+        ]
+        if "video" in started_by_kind:
+            video_entry = started_by_kind["video"]
+            server_argv += [
+                "--video-entry", video_entry,
+                "--video-entry-endpoint", f"ipc://{ipc}/{video_entry}",
+            ]
+        children = [Child("server", server_argv + list(cfg.get("server_args", [])))]
         binary_dir = cfg["stage_binary_dir"]
         for stage in cfg["native_stages"]:
             name = stage["name"]
             kind = stage.get("kind", name)
-            argv = [
-                str(Path(binary_dir) / f"umm-native-stage-{kind}"),
-                "--kind", kind, "--name", name,
-                "--model", stage["model"], "--gpu", str(stage["gpu"]),
-                "--recv-endpoint", f"ipc://{ipc}/{name}",
-                "--coordinator-endpoint", f"ipc://{ipc}/done",
-                "--abort-endpoint", f"ipc://{ipc}/abort",
-            ]
-            if stage.get("image_backend"):
-                argv += ["--image-backend", str(stage["image_backend"])]
+            launcher = stage.get("launcher")
+            if launcher:
+                argv = [
+                    str(stage.get("python", sys.executable)),
+                    str(launcher),
+                    "--name", name,
+                    "--model", stage["model"], "--gpu", str(stage["gpu"]),
+                    "--recv", f"ipc://{ipc}/{name}",
+                    "--coordinator", f"ipc://{ipc}/done",
+                    "--abort", f"ipc://{ipc}/abort",
+                ]
+            else:
+                argv = [
+                    str(Path(binary_dir) / f"umm-native-stage-{kind}"),
+                    "--kind", kind, "--name", name,
+                    "--model", stage["model"], "--gpu", str(stage["gpu"]),
+                    "--recv-endpoint", f"ipc://{ipc}/{name}",
+                    "--coordinator-endpoint", f"ipc://{ipc}/done",
+                    "--abort-endpoint", f"ipc://{ipc}/abort",
+                ]
+                if stage.get("image_backend"):
+                    argv += ["--image-backend", str(stage["image_backend"])]
             argv += list(stage.get("args", []))
             children.append(Child(name, argv, depends_on="server"))
         return children
@@ -481,7 +511,7 @@ class Supervisor:
                 pass
 
 
-STAGE_KINDS = ("asr", "omni", "qwen38", "tts", "image")
+STAGE_KINDS = ("asr", "omni", "qwen38", "tts", "image", "flux2", "video")
 
 
 def validate_stage(stage, where):
@@ -503,6 +533,11 @@ def validate_stage(stage, where):
         raise SystemExit(f"{where} {name} gpu must be a non-negative integer")
     if not isinstance(stage.get("args", []), list):
         raise SystemExit(f"{where} {name} args must be an array")
+    for opt_key in ("launcher", "python"):
+        if opt_key in stage and (not isinstance(stage[opt_key], str)
+                                 or not stage[opt_key]):
+            raise SystemExit(
+                f"{where} {name} {opt_key} must be a nonempty string")
 
 
 def load_config(path):
