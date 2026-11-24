@@ -161,6 +161,12 @@ does not exist. Both launch paths were exercised live on GPU 6 (ASR,
 Qwen3.8-27B) and GPU 7 (image, TTS), because GPUs 2-5 are held by the resident
 43301 service.
 
+> **Update, 2026-11-24:** `tests/umminfer_service_test.py` now exists (9 stdlib
+> `unittest` cases, run with `python3 -I tests/umminfer_service_test.py`),
+> including gateway-restart worker preservation and health-failure backoff
+> coverage. The 2026-11-19 statement above is kept as the historical record for
+> that validation run.
+
 ### Unsupervised path
 
 ```sh
