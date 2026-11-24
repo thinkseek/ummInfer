@@ -3,12 +3,20 @@
 
 #include "cuda_kernels.hpp"
 #include "scheduler.hpp"
+#if defined(UMM_VIDEO_CUDA) && defined(UMM_VIDEO_WAN_FULL)
+#include "umt5_encoder.hpp"
+#include "umt5_tokenizer.hpp"
+#include "wan_dit.hpp"
+#include "wan_vae.hpp"
+#endif
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -141,24 +149,48 @@ const char* video_backend_mode_name(VideoBackendMode mode) {
   return "native-cuda-wan";
 }
 
+struct VideoEngine::WanCudaState {
+#if defined(UMM_VIDEO_CUDA) && defined(UMM_VIDEO_WAN_FULL)
+  Umt5Tokenizer tokenizer;
+  Umt5Encoder text_encoder;
+  WanDit dit;
+
+  WanCudaState(const std::filesystem::path& root, int gpu)
+      : tokenizer(root / "tokenizer" / "tokenizer.json"),
+        text_encoder(root / "text_encoder", gpu),
+        dit(root, gpu) {}
+#endif
+};
+
+VideoEngine::~VideoEngine() = default;
+
 VideoEngine::VideoEngine(int gpu, const std::string& model_dir,
                          VideoBackendMode mode, std::string ffmpeg_bin)
-    : gpu_(gpu), mode_(mode), ffmpeg_bin_(std::move(ffmpeg_bin)) {
+    : gpu_(gpu),
+      model_dir_(model_dir),
+      mode_(mode),
+      ffmpeg_bin_(std::move(ffmpeg_bin)) {
   config_ = load_wan_model_config(model_dir);
 
   if (mode_ == VideoBackendMode::kCuda) {
-#ifndef UMM_VIDEO_CUDA
+#if !defined(UMM_VIDEO_CUDA)
     throw std::runtime_error(
         "umm-native-stage-video was built without CUDA; rebuild with "
         "-DUMM_STAGE_CUDA=ON on a CUDA GPU host, or pass --video-backend "
         "contract-stub for offline contract testing only");
-#else
+#elif !defined(UMM_VIDEO_WAN_FULL)
     validate_wan_checkpoint_paths(model_dir);
     throw std::runtime_error(
-        "native C++/CUDA Wan2.2 DiT/UMT5/3D-VAE weight forward kernels are not "
-        "yet implemented; use --video-backend cuda-scaffold for GPU "
-        "lifecycle/kernel/abort verification or python/umminfer_video_stage.py "
-        "--backend diffusers for real Wan2.2 generation");
+        "native C++/CUDA Wan2.2 full pipeline requires UMM_VIDEO_WAN_FULL=1");
+#else
+    try {
+      validate_wan_checkpoint_paths(model_dir);
+    } catch (const std::invalid_argument& err) {
+      throw std::runtime_error(err.what());
+    }
+    cuda_check_video(cudaSetDevice(gpu_), "cudaSetDevice");
+    wan_cuda_ = std::make_unique<WanCudaState>(
+        std::filesystem::path(model_dir_), gpu_);
 #endif
   }
 
@@ -211,7 +243,126 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
   std::vector<std::vector<uint8_t>> rgb_frames;
   size_t peak_gpu_bytes = 0;
 
-  if (mode_ == VideoBackendMode::kCudaScaffold) {
+  if (mode_ == VideoBackendMode::kCuda) {
+#if !defined(UMM_VIDEO_CUDA) || !defined(UMM_VIDEO_WAN_FULL)
+    throw std::runtime_error("native Wan2.2 CUDA pipeline is not enabled in this build");
+#else
+    cuda_check_video(cudaSetDevice(gpu_), "cudaSetDevice");
+    const auto update_peak_vram = [&peak_gpu_bytes](size_t candidate) {
+      if (candidate > peak_gpu_bytes) peak_gpu_bytes = candidate;
+      size_t free_bytes = 0;
+      size_t total_bytes = 0;
+      if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess &&
+          total_bytes >= free_bytes) {
+        const size_t used = total_bytes - free_bytes;
+        if (used > peak_gpu_bytes) peak_gpu_bytes = used;
+      }
+    };
+
+    check_abort(abort, "aborted before text encoding");
+    const Umt5TokenBatch pos_tokens =
+        wan_cuda_->tokenizer.encode(params.prompt, 512, true);
+    const Umt5EncoderOutput pos_ctx = wan_cuda_->text_encoder.encode(pos_tokens);
+    update_peak_vram(pos_ctx.peak_native_device_bytes);
+
+    const bool use_cfg = params.guidance_scale > 1.0f;
+    std::vector<float> neg_hidden;
+    int neg_len = 512;
+    if (use_cfg) {
+      check_abort(abort, "aborted before negative text encoding");
+      const Umt5TokenBatch neg_tokens =
+          wan_cuda_->tokenizer.encode(params.negative_prompt, 512, true);
+      const Umt5EncoderOutput neg_ctx = wan_cuda_->text_encoder.encode(neg_tokens);
+      update_peak_vram(neg_ctx.peak_native_device_bytes);
+      neg_hidden = neg_ctx.hidden_states;
+      neg_len = static_cast<int>(neg_tokens.ids.size());
+    }
+    const int pos_len = static_cast<int>(pos_tokens.ids.size());
+
+    const int channels = std::max(1, config_.latent_channels);
+    const int latent_t =
+        1 + (params.num_frames - 1) / std::max(1, config_.temporal_stride);
+    const int latent_h = std::max(1, params.height / 16);
+    const int latent_w = std::max(1, params.width / 16);
+    const size_t latent_count = static_cast<size_t>(channels) *
+                                static_cast<size_t>(latent_t) *
+                                static_cast<size_t>(latent_h) *
+                                static_cast<size_t>(latent_w);
+
+    std::mt19937_64 rng(params.seed);
+    std::normal_distribution<float> dist(0.0f, 1.0f);
+    std::vector<float> latents(latent_count);
+    for (size_t i = 0; i < latent_count; ++i) {
+      latents[i] = dist(rng);
+    }
+
+    for (int step = 0; step < params.steps; ++step) {
+      check_abort(abort, "aborted before step " + std::to_string(step + 1) +
+                             "/" + std::to_string(params.steps));
+      const float t_val = schedule.timesteps[static_cast<size_t>(step)];
+      WanDitOutput cond = wan_cuda_->dit.forward(
+          latents.data(), latent_t, latent_h, latent_w, t_val,
+          pos_ctx.hidden_states.data(), pos_len);
+      update_peak_vram(cond.stats.peak_vram_bytes);
+
+      std::vector<float> velocity = std::move(cond.velocity);
+      if (use_cfg) {
+        check_abort(abort, "aborted mid-step CFG " + std::to_string(step + 1) +
+                               "/" + std::to_string(params.steps));
+        WanDitOutput uncond = wan_cuda_->dit.forward(
+            latents.data(), latent_t, latent_h, latent_w, t_val,
+            neg_hidden.data(), neg_len);
+        update_peak_vram(uncond.stats.peak_vram_bytes);
+        const float gs = params.guidance_scale;
+        for (size_t i = 0; i < latent_count; ++i) {
+          velocity[i] = uncond.velocity[i] + gs * (velocity[i] - uncond.velocity[i]);
+        }
+      }
+
+      euler_step_host(latents.data(), velocity.data(),
+                      schedule.dt[static_cast<size_t>(step)], latent_count);
+      if (params.step_delay_ms > 0) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(params.step_delay_ms));
+      }
+      check_abort(abort, "aborted at step " + std::to_string(step + 1) + "/" +
+                             std::to_string(params.steps));
+    }
+
+    check_abort(abort, "aborted before VAE decode");
+    const std::vector<int64_t> latent_shape = {
+        1, channels, latent_t, latent_h, latent_w};
+    const WanVaeOutput decoded = decode_wan_vae_fp32(
+        std::filesystem::path(model_dir_) / "vae", latents, latent_shape, gpu_);
+    update_peak_vram(decoded.peak_native_device_bytes);
+    if (decoded.shape.size() != 5 || decoded.shape[0] != 1 ||
+        decoded.shape[1] != 3 || decoded.shape[2] != params.num_frames ||
+        decoded.shape[3] != params.height || decoded.shape[4] != params.width) {
+      throw std::runtime_error("unexpected Wan2.2 VAE decoded output shape");
+    }
+
+    const int64_t out_t = decoded.shape[2];
+    const int64_t out_h = decoded.shape[3];
+    const int64_t out_w = decoded.shape[4];
+    rgb_frames.resize(static_cast<size_t>(out_t));
+    for (int64_t t = 0; t < out_t; ++t) {
+      auto& frame = rgb_frames[static_cast<size_t>(t)];
+      frame.resize(static_cast<size_t>(out_h * out_w * 3));
+      for (int64_t y = 0; y < out_h; ++y) {
+        for (int64_t x = 0; x < out_w; ++x) {
+          for (int64_t c = 0; c < 3; ++c) {
+            const size_t src = static_cast<size_t>(
+                ((c * out_t + t) * out_h + y) * out_w + x);
+            const float clamped =
+                std::max(-1.0f, std::min(1.0f, decoded.data[src]));
+            frame[static_cast<size_t>((y * out_w + x) * 3 + c)] =
+                static_cast<uint8_t>(std::lround((clamped + 1.0f) * 127.5f));
+          }
+        }
+      }
+    }
+#endif
+  } else if (mode_ == VideoBackendMode::kCudaScaffold) {
 #ifndef UMM_VIDEO_CUDA
     throw std::runtime_error("cuda-scaffold requires CUDA build");
 #else
