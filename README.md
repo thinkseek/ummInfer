@@ -233,8 +233,10 @@ zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/hom
   see [docs/batching.md](docs/batching.md)). There is no multi-GPU model split.
 - `max_new_tokens` reaches the `qwen38` and `omni` stages (clamped to
   `max_seq`; default 96 in the SM90 launcher/config), and `audio.stream` reaches
-  the `tts` stage. `temperature`, sampling, beam search and repetition controls
-  are ignored: all native executors are greedy and deterministic.
+  the `tts` stage. The `qwen38` stage applies `temperature`, `top_p` and a
+  signed-int64 `seed` (`temperature <= 0` stays bitwise greedy; fixed seeds are
+  byte-reproducible). ASR, Omni and TTS remain greedy; beam search and
+  repetition controls are ignored.
 - Both `qwen38` and `omni` stages stream UTF-8-safe `vlm_delta` chunks per
   generated token and keep the aggregated terminal result; `omni` also supports
   pure-text prefix KV reuse (`UMM_OMNI_PREFIX_CACHE`).

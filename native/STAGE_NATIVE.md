@@ -1,7 +1,10 @@
 # Native stages behind the UnifiedEngine
 
-The five accepted native executors run as external stage processes. At
-runtime the deployment loads no Python, PyTorch or SGLang: the stage binary
+Six native stage executors exist. The five accepted executors
+(`asr`, `qwen38`, `omni`, `tts`, `image`) run in resident deployments; the
+sixth, `video` (`umm-native-stage-video`, Wave 5 Wan2.2), builds and has
+real-weight SM90 evidence but is not yet in `service/native-service.json`.
+At runtime the deployment loads no Python, PyTorch or SGLang: the stage binary
 holds the engine, the server holds the `Coordinator` and `UnifiedEngine`.
 
 ```
@@ -114,8 +117,10 @@ the unified engine in front of it, so any future check cannot rely on the server
 having already removed these fields.
 
 `max_new_tokens` from request `params` is read via `bound_request_params()`
-and clamped to `max_seq` (falling back to `--max-new-tokens` when omitted);
-`temperature` and sampling controls are ignored (greedy decoding).
+and clamped to `max_seq` (falling back to `--max-new-tokens` when omitted).
+The `qwen38` stage reads `temperature`, `top_p` and a signed-int64 `seed`
+into `SamplingParams` (Wave 5; `temperature <= 0` is bitwise greedy). The
+other stages ignore sampling controls and decode greedily.
 
 TTS (the audio leg, from `UnifiedEngine::build_tts_inputs`):
 
@@ -221,7 +226,8 @@ API impact:
 
 - Request `params`: `max_new_tokens` reaches `qwen38` and `omni` via
   `bound_request_params()` (clamped to `max_seq`), and `inputs.stream` reaches
-  `tts`. `temperature`, sampling controls and `asr_partials` are ignored by the
+  `tts`. `qwen38` applies `temperature`, `top_p` and signed `seed`; the other
+  native stages ignore sampling controls. `asr_partials` is ignored by the
   native stages; the ASR leg delivers its final transcript (realtime previews
   are driven by the server's 200 ms preview loop in `realtime_api.cpp`).
 - Stages default to one request at a time (`SimpleScheduler` `kSerial`);
