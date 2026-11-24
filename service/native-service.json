@@ -40,6 +40,23 @@
       "model": "/opt/umminfer/models/omni",
       "gpu": 3,
       "args": ["--max-new-tokens", "96"]
+    },
+    {
+      "name": "flux2",
+      "kind": "flux2",
+      "model": "/opt/umminfer/models/FLUX.2-klein-4B",
+      "gpu": 6,
+      "args": ["--backend", "diffusers", "--default-steps", "4",
+               "--default-size", "1024x1024"],
+      "launcher": "python/umminfer_flux2_stage.py"
+    },
+    {
+      "name": "video",
+      "kind": "video",
+      "model": "/opt/umminfer/models/Wan2.2-TI2V-5B-Diffusers",
+      "gpu": 7,
+      "args": ["--backend", "diffusers", "--default-seconds", "2"],
+      "launcher": "python/umminfer_video_stage.py"
     }
   ],
   "env": {
