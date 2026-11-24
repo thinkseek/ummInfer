@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -13,8 +14,9 @@
 namespace umminfer::video {
 
 enum class VideoBackendMode {
-  // Default: real native Wan2.2 CUDA weight inference (currently unimplemented
-  // and fails loudly; never silently falls back to synthetic frames).
+  // Default: real native Wan2.2 C++/CUDA pipeline (UMT5-XXL + DiT + 3D VAE + MP4).
+  // Fails loudly when built without CUDA or when weights are missing; never silently
+  // falls back to synthetic frames.
   kCuda,
   // Explicit CUDA kernel/lifecycle/abort/VRAM-cleanup vertical slice on GPU.
   kCudaScaffold,
@@ -61,7 +63,7 @@ class VideoEngine {
  public:
   VideoEngine(int gpu, const std::string& model_dir, VideoBackendMode mode,
               std::string ffmpeg_bin = "ffmpeg");
-  ~VideoEngine() = default;
+  ~VideoEngine();
 
   VideoEngine(const VideoEngine&) = delete;
   VideoEngine& operator=(const VideoEngine&) = delete;
@@ -74,10 +76,13 @@ class VideoEngine {
                           const AbortCheck& abort = {});
 
  private:
+  struct WanCudaState;
   int gpu_ = 0;
+  std::string model_dir_;
   VideoBackendMode mode_ = VideoBackendMode::kCuda;
   std::string ffmpeg_bin_;
   WanModelConfig config_;
+  std::unique_ptr<WanCudaState> wan_cuda_;
   std::mutex mu_;
 };
 

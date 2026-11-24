@@ -25,6 +25,7 @@
 #include "video/umt5_encoder.hpp"
 #include "video/umt5_tokenizer.hpp"
 #include "video/wan_vae.hpp"
+#include "video/wan_dit.hpp"
 
 namespace {
 
@@ -359,6 +360,64 @@ void test_wan_vae_config_loading() {
   check(rejected, "overflowing VAE patch size rejected without a signal");
 }
 
+void test_wan_dit_host_helpers() {
+  using namespace umminfer::video;
+  TempDir tmp("wan-dit-host");
+  write_text(tmp.path / "transformer" / "config.json",
+             R"({"num_layers":30,"num_attention_heads":24,"attention_head_dim":128,"ffn_dim":14336,"in_channels":48,"out_channels":48,"patch_size":[1,2,2],"text_dim":4096,"freq_dim":256,"rope_max_seq_len":1024,"cross_attn_norm":true,"qk_norm":"rms_norm_across_heads","eps":0.000001,"image_dim":null,"added_kv_proj_dim":null})");
+  const WanDitConfig config = load_wan_dit_config(tmp.path.string());
+  check(config.inner_dim == 3072 && config.num_layers == 30 &&
+            config.ffn_dim == 14336 && config.patch_h == 2,
+        "Wan DiT config dimensions");
+
+  const auto zero = wan_sinusoidal_timestep_embedding(0.0f, 256);
+  check(zero.size() == 256, "timestep embedding size");
+  for (int i = 0; i < 128; ++i) {
+    check(zero[i] == 1.0f && zero[i + 128] == 0.0f,
+          "timestep cosine/sine layout at zero");
+  }
+  const auto embedding = wan_sinusoidal_timestep_embedding(500.0f, 256);
+  const double frequency = std::exp(-std::log(10000.0) * 7 / 128);
+  check(std::fabs(embedding[7] - std::cos(500.0 * frequency)) < 2e-5 &&
+            std::fabs(embedding[135] - std::sin(500.0 * frequency)) < 2e-5,
+        "timestep frequencies match Diffusers");
+
+  const auto rope = wan_build_rope_3d(2, 4, 6, 128);
+  check(rope.frames == 2 && rope.height == 2 && rope.width == 3 &&
+            rope.cos.size() == 12 * 128 && rope.sin.size() == rope.cos.size(),
+        "3D RoPE post-patch shape");
+  for (int d = 0; d < 128; d += 2) {
+    check(rope.cos[d] == 1.0f && rope.sin[d] == 0.0f &&
+              rope.cos[d] == rope.cos[d + 1] && rope.sin[d] == rope.sin[d + 1],
+          "RoPE origin and repeat-interleave pairs");
+  }
+  const size_t last_token = 11 * 128;
+  check(std::fabs(rope.cos[last_token] - std::cos(1.0)) < 1e-6f &&
+            std::fabs(rope.sin[last_token] - std::sin(1.0)) < 1e-6f &&
+            std::fabs(rope.cos[last_token + 44] - std::cos(1.0)) < 1e-6f &&
+            std::fabs(rope.sin[last_token + 86] - std::sin(2.0)) < 1e-6f,
+        "RoPE temporal, height, and width axes");
+  const double rope_frequency = std::pow(10000.0, -2.0 / 44.0);
+  check(std::fabs(rope.cos[last_token + 2] - std::cos(rope_frequency)) < 1e-6f,
+        "RoPE FP64 frequency calculation");
+
+  std::vector<float> latent(2 * 2 * 4 * 6);
+  for (size_t i = 0; i < latent.size(); ++i) latent[i] = static_cast<float>(i) * 0.125f - 3.0f;
+  const auto tokens = wan_patchify_host(latent.data(), 2, 2, 4, 6);
+  const auto restored = wan_unpatchify_host(tokens.data(), 2, 2, 4, 6);
+  check(tokens.size() == 2 * 2 * 3 * 2 * 4 && restored == latent,
+        "patchify/unpatchify exact round trip and component order");
+
+  std::vector<float> projected(16);
+  for (size_t i = 0; i < projected.size(); ++i) projected[i] = (i / 8) * 10 + (i % 8);
+  const auto explicit_output = wan_unpatchify_host(projected.data(), 2, 1, 2, 4);
+  const std::vector<float> expected = {
+      0, 2, 10, 12, 4, 6, 14, 16,
+      1, 3, 11, 13, 5, 7, 15, 17,
+  };
+  check(explicit_output == expected, "proj_out patch, row, column, channel order");
+}
+
 void test_flow_match_schedule_and_euler() {
   using namespace umminfer::video;
   FlowMatchConfig cfg;
@@ -462,6 +521,7 @@ int main() {
       {"sharded_safetensors_mmap", test_sharded_safetensors_mmap},
       {"umt5_tokenizer", test_umt5_tokenizer},
       {"umt5_relative_position_buckets", test_umt5_relative_position_buckets},
+      {"wan_dit_host_helpers", test_wan_dit_host_helpers},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"mp4_encode_and_abort", test_mp4_encode_and_abort},
       {"engine_contract_stub_and_cuda_gate", test_engine_contract_stub_and_cuda_gate},

@@ -21,6 +21,7 @@ add_library(umm_video_host STATIC
   umt5_tokenizer.cpp
   umt5_encoder.cpp
   wan_vae.cpp
+  wan_dit.cpp
 )
 target_include_directories(umm_video_host PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -44,8 +45,9 @@ if(UMM_VIDEO_CUDA)
   target_sources(umm_video_host PRIVATE
     cuda_kernels.cu
     wan_vae_kernels.cu
-    umt5_kernels.cu)
-  target_compile_definitions(umm_video_host PUBLIC UMM_VIDEO_CUDA=1)
+    umt5_kernels.cu
+    wan_dit_kernels.cu)
+  target_compile_definitions(umm_video_host PUBLIC UMM_VIDEO_CUDA=1 UMM_VIDEO_WAN_FULL=1)
   target_link_libraries(umm_video_host PUBLIC CUDA::cudart CUDA::cublas)
   set_target_properties(umm_video_host PROPERTIES CUDA_ARCHITECTURES 90)
   add_executable(umm-video-vae-test
@@ -54,6 +56,9 @@ if(UMM_VIDEO_CUDA)
   add_executable(umm-video-umt5-test
     ${CMAKE_CURRENT_SOURCE_DIR}/../video_tests/test_umt5.cpp)
   target_link_libraries(umm-video-umt5-test PRIVATE umm_video_host)
+  add_executable(umm-video-dit-test
+    ${CMAKE_CURRENT_SOURCE_DIR}/../video_tests/test_dit.cpp)
+  target_link_libraries(umm-video-dit-test PRIVATE umm_video_host)
 endif()
 
 enable_testing()
