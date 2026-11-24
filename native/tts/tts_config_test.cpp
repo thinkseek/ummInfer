@@ -6,7 +6,9 @@
 // development host. With a model directory as argv[1] (or UMM_TTS_TEST_DATA)
 // it also parses that real config.json.
 #include "model_config.hpp"
+#include "speaker_encoder.hpp"
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -404,6 +406,14 @@ static std::string replaced(std::string text, const std::string& from,
   return text.replace(at, from.size(), to);
 }
 
+static std::string base_config() {
+  nlohmann::json j = nlohmann::json::parse(kConfig17b);
+  j["tts_model_type"] = "base";
+  j["talker_config"]["spk_id"] = nlohmann::json::object();
+  j["speaker_encoder_config"] = {{"enc_dim", 2048}, {"sample_rate", 24000}};
+  return j.dump();
+}
+
 static void expect_reject(const std::string& json, const char* label) {
   try {
     (void)TtsModelConfig::from_json_text(json);
@@ -428,6 +438,9 @@ static void check_same(const TtsModelConfig& got, const TtsModelConfig& want,
   if (got.tts_eos_token_id != want.tts_eos_token_id) fail("tts_eos_token_id");
   if (got.model_size != want.model_size) fail("tts_model_size");
   if (got.model_type != want.model_type) fail("tts_model_type");
+  if (got.speaker_encoder.enc_dim != want.speaker_encoder.enc_dim ||
+      got.speaker_encoder.sample_rate != want.speaker_encoder.sample_rate)
+    fail("speaker_encoder_config");
   if (got.hidden != want.hidden) fail("hidden");
   if (got.inter != want.inter) fail("inter");
   if (got.layers != want.layers) fail("layers");
@@ -489,6 +502,13 @@ static void test_parsing() {
   CHECK(c17.cp_hidden == 1024 && c17.cp_inter == 3072);
   CHECK(c17.has_mtp_projection());
   CHECK(c17.speaker_id("vivian") == 3065 && c17.speaker_id("ryan") == 3061);
+
+  nlohmann::json no_speakers = nlohmann::json::parse(base_config());
+  no_speakers["talker_config"].erase("spk_id");
+  const TtsModelConfig base = TtsModelConfig::from_json_text(no_speakers.dump());
+  CHECK(base.is_base() && base.speaker_ids.empty());
+  CHECK(base.speaker_encoder.enc_dim == 2048 &&
+        base.speaker_encoder.sample_rate == 24000);
 }
 
 static void test_shape_plan() {
@@ -534,6 +554,20 @@ static void test_shape_plan() {
   const TensorShape* lh17 =
       find_shape(p17, "talker.code_predictor.lm_head.14.weight");
   CHECK(lh17 != nullptr && lh17->dims == std::vector<size_t>({2048, 1024}));
+
+  const TtsModelConfig base = TtsModelConfig::from_json_text(base_config());
+  const auto pb = base.tensor_shape_plan();
+  CHECK(pb.size() == p17.size() + 76);
+  const TensorShape* first =
+      find_shape(pb, "speaker_encoder.blocks.0.conv.weight");
+  CHECK(first != nullptr && first->dims == std::vector<size_t>({512, 128, 5}));
+  const TensorShape* res2 =
+      find_shape(pb, "speaker_encoder.blocks.3.res2net_block.blocks.6.conv.weight");
+  CHECK(res2 != nullptr && res2->dims == std::vector<size_t>({64, 64, 3}));
+  const TensorShape* asp = find_shape(pb, "speaker_encoder.asp.tdnn.conv.weight");
+  CHECK(asp != nullptr && asp->dims == std::vector<size_t>({128, 4608, 1}));
+  const TensorShape* fc = find_shape(pb, "speaker_encoder.fc.weight");
+  CHECK(fc != nullptr && fc->dims == std::vector<size_t>({2048, 3072, 1}));
 }
 
 static void test_rejects() {
@@ -549,8 +583,20 @@ static void test_rejects() {
                          "\n    \"num_key_value_heads\": 7,"),
                 "kv head split");
   expect_reject(replaced(kConfig06b, "\"tts_model_type\": \"custom_voice\"",
-                         "\"tts_model_type\": \"base\""),
-                "non-custom-voice model");
+                         "\"tts_model_type\": \"unknown\""),
+                "unknown model type");
+  nlohmann::json bad_base = nlohmann::json::parse(base_config());
+  bad_base.erase("speaker_encoder_config");
+  expect_reject(bad_base.dump(), "missing speaker_encoder_config");
+  bad_base = nlohmann::json::parse(base_config());
+  bad_base["speaker_encoder_config"].erase("enc_dim");
+  expect_reject(bad_base.dump(), "missing speaker enc_dim");
+  bad_base = nlohmann::json::parse(base_config());
+  bad_base["speaker_encoder_config"]["sample_rate"] = 16000;
+  expect_reject(bad_base.dump(), "speaker sample rate");
+  bad_base = nlohmann::json::parse(base_config());
+  bad_base["speaker_encoder_config"]["enc_dim"] = 1024;
+  expect_reject(bad_base.dump(), "speaker output width");
   expect_reject(replaced(kConfig06b, "\"head_dim\": 128,", "\"head_dim\": 32,"),
                 "predictor head width");
   expect_reject(replaced(kConfig06b, "\"ryan\": 3061,", ""), "missing ryan");
@@ -583,13 +629,49 @@ static void test_projection_rule() {
   CHECK(lh != nullptr && lh->dims == std::vector<size_t>({2048, 2048}));
 }
 
+static void test_speaker_mel() {
+  constexpr double pi = 3.14159265358979323846;
+  std::vector<float> pcm(24000);
+  for (int i = 0; i < 24000; ++i)
+    pcm[i] = static_cast<float>(0.5 * std::sin(2.0 * pi * 440.0 * i / 24000.0));
+  const SpeakerMel mel = compute_speaker_log_mel(pcm);
+  CHECK(mel.frames == 93 && mel.log_mel.size() == 128 * 93);
+  struct Golden { int channel, frame; float value; };
+  const Golden golden[] = {{0, 0, -1.16011894f}, {5, 10, -7.24690628f},
+                           {20, 50, -4.52280998f}, {127, 92, -7.87227249f}};
+  for (const Golden& g : golden) {
+    const float got = mel.log_mel[static_cast<size_t>(g.channel) * 93 + g.frame];
+    if (!(std::fabs(got - g.value) < 2e-4f)) {
+      std::cerr << "mel mismatch channel=" << g.channel << " frame=" << g.frame
+                << " got=" << got << " want=" << g.value << "\n";
+      std::exit(1);
+    }
+  }
+  bool threw = false;
+  try {
+    (void)compute_speaker_log_mel(std::vector<float>(384));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+}
+
 static void test_real_config(const std::string& model_dir) {
   if (model_dir.empty()) {
     std::cout << "SKIP test_real_config (no model dir)\n";
     return;
   }
   const TtsModelConfig cfg = TtsModelConfig::from_model_dir(model_dir);
-  if (cfg.model_size == "0b6")
+  if (cfg.is_base()) {
+    CHECK(cfg.model_size == "1b7");
+    TtsModelConfig expected = TtsModelConfig::preset_1_7b();
+    expected.model_type = "base";
+    expected.speaker_encoder = {2048, 24000};
+    expected.speaker_ids.clear();
+    expected.language_ids.erase("beijing_dialect");
+    expected.language_ids.erase("sichuan_dialect");
+    check_same(cfg, expected, "real Base 1.7B");
+  } else if (cfg.model_size == "0b6")
     check_same(cfg, TtsModelConfig::preset_0_6b(), "real 0.6B");
   else if (cfg.model_size == "1b7")
     check_same(cfg, TtsModelConfig::preset_1_7b(), "real 1.7B");
@@ -607,6 +689,7 @@ int main(int argc, char** argv) {
   test_shape_plan();
   test_rejects();
   test_projection_rule();
+  test_speaker_mel();
   const char* env = std::getenv("UMM_TTS_TEST_DATA");
   test_real_config(argc > 1 ? argv[1] : (env ? env : ""));
   std::cout << "all tts config tests passed\n";

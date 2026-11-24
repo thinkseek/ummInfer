@@ -25,11 +25,10 @@ inline constexpr int kLangEnglish = 2050;
 inline constexpr int kSpkVivian = 3065;
 inline constexpr int kSpkRyan = 3061;
 
-// One additive term of a prefill row. Text terms go through text_embedding
-// [151936,2048] then the text_projection MLP into width 1024; codec terms and
-// the precomputed tts_* vectors already have width 1024.
+// One additive term of a prefill row. Text terms go through text_embedding and
+// text_projection; codec, x-vector, and precomputed tts_* terms are talker-width.
 struct PromptTerm {
-  enum Kind { kTextProj, kCodec, kTtsPad, kTtsBos, kTtsEos };
+  enum Kind { kTextProj, kCodec, kTtsPad, kTtsBos, kTtsEos, kXVector };
   Kind kind;
   int id = 0;  // text or codec id when kind requires it
 };
@@ -45,6 +44,10 @@ struct PromptPlan {
 // wrapper R || body || S (R and S are 3 and 5 tokens).
 PromptPlan build_prompt_plan(const std::vector<int>& text_ids, int language_id,
                              int speaker_id);
+
+// Base x-vector-only prefill. codec_prefill_ids[4] is -1 because no codec id
+// represents the supplied speaker vector.
+PromptPlan build_clone_prompt_plan(const std::vector<int>& text_ids, int language_id);
 
 // Resolves the CLI speaker/language names; throws on unsupported values.
 int speaker_id_from_name(const std::string& name);

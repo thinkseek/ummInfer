@@ -222,6 +222,21 @@ static void test_prompt() {
   CHECK(en.codec_prefill_ids ==
         std::vector<int>({2154, 2156, 2050, 2157, 3061, 2148, 2149}));
 
+  PromptPlan clone = build_clone_prompt_plan(zh_ids, kLangChinese);
+  CHECK(clone.rows.size() == zh.rows.size());
+  CHECK(clone.codec_prefill_ids ==
+        std::vector<int>({2154, 2156, 2055, 2157, -1, 2148, 2149}));
+  CHECK(clone.rows[7].size() == 2 &&
+        clone.rows[7][0].kind == PromptTerm::kXVector &&
+        clone.rows[7][1].kind == PromptTerm::kTtsPad);
+  for (size_t r = 0; r < zh.rows.size(); ++r) {
+    if (r == 7) continue;
+    CHECK(clone.rows[r].size() == zh.rows[r].size());
+    for (size_t j = 0; j < zh.rows[r].size(); ++j)
+      CHECK(clone.rows[r][j].kind == zh.rows[r][j].kind &&
+            clone.rows[r][j].id == zh.rows[r][j].id);
+  }
+
   bool threw = false;
   try {
     (void)speaker_id_from_name("nope");
@@ -268,6 +283,43 @@ static void test_wav() {
     threw = true;
   }
   CHECK(threw);
+
+  const std::filesystem::path path =
+      std::filesystem::temp_directory_path() / "umm_tts_wav_reader.wav";
+  auto write_file = [&](const std::string& bytes) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  };
+  write_file(wav);
+  const std::vector<float> decoded = read_wav_pcm16_mono(path.string());
+  CHECK(decoded.size() == samples.size());
+  CHECK(decoded[0] == 0.0f && decoded[1] > 0.499f && decoded[1] < 0.501f);
+  CHECK(decoded[2] < -0.499f && decoded[2] > -0.501f && decoded[6] == -1.0f);
+  threw = false;
+  try {
+    (void)read_wav_pcm16_mono(path.string(), 16000);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+  write_file(wav.substr(0, wav.size() - 1));
+  threw = false;
+  try {
+    (void)read_wav_pcm16_mono(path.string());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+  write_file(wav + "x");
+  threw = false;
+  try {
+    (void)read_wav_pcm16_mono(path.string());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
 
   const WavStats st = pcm_stats(samples, 24000);
   CHECK(st.samples == 8 && st.sample_rate == 24000);
