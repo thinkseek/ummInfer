@@ -127,9 +127,19 @@ if(UMM_STAGE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
 
-  target_sources(umm-native-stage-video PRIVATE ${NATIVE_DIR}/video/cuda_kernels.cu)
-  target_compile_definitions(umm-native-stage-video PRIVATE UMM_VIDEO_CUDA=1)
-  target_link_libraries(umm-native-stage-video PRIVATE CUDA::cudart)
+  target_sources(umm-native-stage-video PRIVATE
+    ${NATIVE_DIR}/video/safetensors_mmap.cpp
+    ${NATIVE_DIR}/video/umt5_tokenizer.cpp
+    ${NATIVE_DIR}/video/umt5_encoder.cpp
+    ${NATIVE_DIR}/video/wan_vae.cpp
+    ${NATIVE_DIR}/video/wan_dit.cpp
+    ${NATIVE_DIR}/video/cuda_kernels.cu
+    ${NATIVE_DIR}/video/wan_vae_kernels.cu
+    ${NATIVE_DIR}/video/umt5_kernels.cu
+    ${NATIVE_DIR}/video/wan_dit_kernels.cu
+  )
+  target_compile_definitions(umm-native-stage-video PRIVATE UMM_VIDEO_CUDA=1 UMM_VIDEO_WAN_FULL=1)
+  target_link_libraries(umm-native-stage-video PRIVATE CUDA::cudart CUDA::cublas)
   set_target_properties(umm-native-stage-video PROPERTIES CUDA_ARCHITECTURES 90)
 
   # ---- ASR ----
