@@ -82,6 +82,22 @@ OmniWork parse_qwen38_work(const Value& work);
 int resolve_max_new_tokens(const Value::Map& params, int default_tokens,
                            int max_seq);
 
+// Sampling knobs for one request. The defaults select argmax, so a request
+// without sampling fields stays bit-identical to the greedy release.
+struct SamplingParams {
+  float temperature = 0.0f;
+  float top_p = 1.0f;
+  uint64_t seed = 0;
+  bool has_seed = false;
+};
+
+// Reads temperature / top_p / seed from Stage request params. An absent or nil
+// field keeps its default. seed is any signed int64, including negative
+// values; it maps to uint64 by two's-complement conversion, so non-negative
+// seeds keep their exact value and negative seeds stay distinct from every
+// non-negative one.
+SamplingParams parse_sampling_params(const Value::Map& params);
+
 // Chat turn exactly as native/omni_cli renders it. The vision block is two
 // adjacent special tokens; the caller expands the image pads between them.
 std::string render_omni_chat(const std::string& text, bool has_image);

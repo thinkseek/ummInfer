@@ -226,6 +226,42 @@ int resolve_max_new_tokens(const Value::Map& params, int default_tokens,
   return static_cast<int>(std::min<int64_t>(it->second.as_int(), max_seq));
 }
 
+SamplingParams parse_sampling_params(const Value::Map& params) {
+  SamplingParams sampling;
+  auto number = [&params](const char* key, bool* found) {
+    const auto it = params.find(key);
+    if (it == params.end() || it->second.is_nil()) return 0.0;
+    if (!it->second.is_int() && !it->second.is_float()) {
+      bad(std::string(key) + " must be a number");
+    }
+    *found = true;
+    return it->second.as_double();
+  };
+  bool has_temperature = false;
+  const double temperature = number("temperature", &has_temperature);
+  if (has_temperature) {
+    if (!std::isfinite(temperature) || temperature < 0.0 || temperature > 2.0) {
+      bad("temperature must be between 0 and 2");
+    }
+    sampling.temperature = static_cast<float>(temperature);
+  }
+  bool has_top_p = false;
+  const double top_p = number("top_p", &has_top_p);
+  if (has_top_p) {
+    if (!std::isfinite(top_p) || top_p <= 0.0 || top_p > 1.0) {
+      bad("top_p must be in (0, 1]");
+    }
+    sampling.top_p = static_cast<float>(top_p);
+  }
+  const auto seed = params.find("seed");
+  if (seed != params.end() && !seed->second.is_nil()) {
+    if (!seed->second.is_int()) bad("seed must be an integer");
+    sampling.seed = static_cast<uint64_t>(seed->second.as_int());
+    sampling.has_seed = true;
+  }
+  return sampling;
+}
+
 std::string render_omni_chat(const std::string& text, bool has_image) {
   std::string rendered = "<|im_start|>user\n";
   if (has_image) rendered += "<|vision_start|><|vision_end|>";
