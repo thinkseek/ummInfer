@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Assert-based host tests for the Qwen3-ASR host slice: WAV parsing, Whisper
-// log-mel frontend shape, and byte-level tokenizer decode. No CUDA and no
-// model weights: the vocab is written to a temp directory at run time.
+// log-mel frontend shape, byte-level tokenizer decode, single-file and sharded
+// safetensors loading, and config.json parsing. No CUDA and no model weights:
+// every fixture is written to a temp directory at run time.
 #include "feature_frontend.hpp"
 #include "model_config.hpp"
+#include "safetensors.hpp"
 #include "tokenizer.hpp"
 #include "wav.hpp"
 
@@ -312,6 +314,9 @@ const char* kConfig06b = R"({
   }
 })";
 
+// Qwen/Qwen3-ASR-1.7B config.json as published on ModelScope (sha256
+// 2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f). Only the
+// keys AsrModelConfig reads are kept; every value below is the published one.
 const char* kConfig17b = R"({
   "model_type": "qwen3_asr",
   "thinker_config": {
@@ -411,16 +416,33 @@ void test_model_config_06b() {
 void test_model_config_17b() {
   using namespace umminfer::native;
   const AsrModelConfig cfg = AsrModelConfig::from_json_text(kConfig17b);
+  check(cfg.num_mel_bins == 128, "1.7B num_mel_bins 128");
   check(cfg.audio_layers == 24, "1.7B audio layers 24");
   check(cfg.audio_d == 1024, "1.7B audio d_model 1024");
   check(cfg.audio_heads == 16, "1.7B audio heads 16");
   check(cfg.audio_ffn == 4096, "1.7B audio ffn 4096");
+  check(cfg.audio_down == 480, "1.7B downsample_hidden_size 480");
   check(cfg.audio_out == 2048, "1.7B audio output_dim 2048");
+  check(cfg.n_window == 50, "1.7B n_window 50");
+  check(cfg.n_window_infer == 800, "1.7B n_window_infer 800");
   check(cfg.text_h == 2048, "1.7B text hidden_size 2048");
   check(cfg.text_inter == 6144, "1.7B text intermediate_size 6144");
   check(cfg.text_layers == 28, "1.7B text layers 28");
+  check(cfg.text_q_heads == 16, "1.7B text q heads 16");
+  check(cfg.text_kv_heads == 8, "1.7B text kv heads 8");
+  check(cfg.text_head_dim == 128, "1.7B text head_dim 128");
+  check(cfg.vocab == 151936, "1.7B vocab_size 151936");
+  check(cfg.rms_norm_eps == 1e-6f, "1.7B rms_norm_eps 1e-6");
+  check(cfg.rope_theta == 1000000.0f, "1.7B rope_theta 1e6");
+  check(cfg.audio_start_id == 151669, "1.7B audio_start_token_id 151669");
+  check(cfg.audio_end_id == 151670, "1.7B audio_end_token_id 151670");
+  check(cfg.audio_token_id == 151676, "1.7B audio_token_id 151676");
+  // audio_out == text_h is what lets the projector rows be copied straight
+  // into the decoder hidden state; from_json_text() already enforced it.
+  check(cfg.audio_out == cfg.text_h, "1.7B projector width equals decoder width");
   check(cfg.audio_head_dim() == 64, "1.7B audio head_dim 64");
   check(cfg.window_len() == 104, "1.7B attention window 104");
+  check(cfg.audio_perm_row() == 480 * 16, "1.7B conv permute row 7680");
   check(cfg.au_norm_elements() == 390 * 7680, "1.7B au_norm element math");
 
   const size_t small = AsrModelConfig::preset_06b().estimate_workspace_bytes();
@@ -466,6 +488,161 @@ void test_model_config_rejects_invalid() {
   rejects("not json", "rejects malformed JSON");
 }
 
+// ---- safetensors ------------------------------------------------------------
+
+struct FakeTensor {
+  std::string name;
+  std::vector<size_t> shape;
+  std::string data;  // BF16 payload, 2 bytes per element
+};
+
+std::string make_shard(const std::vector<FakeTensor>& tensors) {
+  using namespace umminfer::native;
+  std::vector<std::pair<std::string, TensorInfo>> infos;
+  std::string data;
+  for (const auto& t : tensors) {
+    TensorInfo info;
+    info.dtype = "BF16";
+    info.shape = t.shape;
+    info.byte_offset = data.size();
+    info.byte_size = t.data.size();
+    infos.emplace_back(t.name, info);
+    data += t.data;
+  }
+  return SafeTensors::write(infos, data);
+}
+
+std::string bf16_payload(std::initializer_list<int> values) {
+  std::string out;
+  for (int v : values) {
+    out.push_back(static_cast<char>(v & 0xff));
+    out.push_back(static_cast<char>((v >> 8) & 0xff));
+  }
+  return out;
+}
+
+namespace fs = std::filesystem;
+
+// Temp model directory that removes itself.
+struct ModelDir {
+  fs::path path;
+  explicit ModelDir(const char* leaf) {
+    path = fs::temp_directory_path() / leaf;
+    std::error_code ec;
+    fs::remove_all(path, ec);
+    fs::create_directories(path, ec);
+  }
+  ~ModelDir() {
+    std::error_code ec;
+    fs::remove_all(path, ec);
+  }
+};
+
+void write_bytes(const fs::path& path, const std::string& bytes) {
+  std::ofstream f(path, std::ios::binary);
+  f << bytes;
+}
+
+void test_safetensors_single_file() {
+  using namespace umminfer::native;
+  const std::string payload = bf16_payload({0x0400, 0x0401, 0x0402});
+  const SafeTensors st(make_shard({{"a.weight", {3}, payload}}));
+  check(st.shard_count() == 1, "single file has one shard");
+  check(st.info("a.weight").byte_size == payload.size(), "single file tensor size");
+  check(st.tensor_bytes("a.weight") == std::string_view(payload), "single file tensor bytes");
+  check(throws_invalid([&] { (void)st.info("missing.weight"); }), "missing tensor rejected");
+}
+
+void test_safetensors_sharded_dir() {
+  using namespace umminfer::native;
+  ModelDir dir("umm_asr_sharded_fixture");
+  const std::string a = bf16_payload({1, 2});
+  const std::string b = bf16_payload({3, 4, 5, 6});
+  write_bytes(dir.path / "model-00001-of-00002.safetensors",
+              make_shard({{"a.weight", {2}, a}}));
+  write_bytes(dir.path / "model-00002-of-00002.safetensors",
+              make_shard({{"b.weight", {4}, b}}));
+  write_bytes(dir.path / "model.safetensors.index.json", R"({
+    "metadata": {"format": "pt"},
+    "weight_map": {
+      "a.weight": "model-00001-of-00002.safetensors",
+      "b.weight": "model-00002-of-00002.safetensors"
+    }
+  })");
+
+  const SafeTensors st = SafeTensors::from_model_dir(dir.path.string());
+  check(st.shard_count() == 2, "index loads both shards");
+  check(st.shard_name(0) == "model-00001-of-00002.safetensors", "shard 0 name");
+  check(st.info("a.weight").shard == 0, "a.weight resolved to shard 0");
+  check(st.info("b.weight").shard == 1, "b.weight resolved to shard 1");
+  check(st.tensor_bytes("a.weight") == std::string_view(a), "shard 0 tensor bytes");
+  check(st.tensor_bytes("b.weight") == std::string_view(b), "shard 1 tensor bytes");
+  check(st.data_region_bytes(0) >= a.size(), "shard 0 region covers its tensors");
+
+  // Both forms present: model.safetensors wins.
+  write_bytes(dir.path / "model.safetensors", make_shard({{"c.weight", {2}, a}}));
+  const SafeTensors single = SafeTensors::from_model_dir(dir.path.string());
+  check(single.shard_count() == 1, "model.safetensors preferred over the index");
+  check(single.info("c.weight").shard == 0, "single-file tensor loaded");
+}
+
+void test_safetensors_shard_rejections() {
+  using namespace umminfer::native;
+  ModelDir dir("umm_asr_shard_reject");
+  const std::string payload = bf16_payload({1, 2});
+  const auto write_index = [&](const std::string& json) {
+    write_bytes(dir.path / "model.safetensors.index.json", json);
+  };
+  const auto load = [&] { return SafeTensors::from_model_dir(dir.path.string()); };
+  const std::string shard1 = dir.path.string() + "/model-00001-of-00002.safetensors";
+  const std::string shard2 = dir.path.string() + "/model-00002-of-00002.safetensors";
+
+  // Neither checkout form exists.
+  check(throws_invalid([&] { (void)load(); }), "directory without checkpoint rejected");
+
+  // The index names a shard that is not on disk.
+  write_index(R"({"weight_map": {"a.weight": "model-00009-of-00009.safetensors"}})");
+  check(throws_invalid([&] { (void)load(); }), "missing shard file rejected");
+
+  // A shard name must be a plain file name inside the model directory.
+  for (const char* bad : {"../model-00001-of-00002.safetensors",
+                          "/tmp/model-00001-of-00002.safetensors",
+                          "sub/model-00001-of-00002.safetensors", "-rf", ".", ""}) {
+    write_index(std::string(R"({"weight_map": {"a.weight": ")") + bad + R"("}})");
+    check(throws_invalid([&] { (void)load(); }), "non-plain shard name rejected");
+  }
+
+  // Baseline: two shards, two listed tensors, loads clean.
+  write_bytes(shard1, make_shard({{"a.weight", {2}, payload}}));
+  write_bytes(shard2, make_shard({{"b.weight", {2}, payload}}));
+  write_index(R"({"weight_map": {
+      "a.weight": "model-00001-of-00002.safetensors",
+      "b.weight": "model-00002-of-00002.safetensors"}})");
+  check(load().shard_count() == 2, "consistent two-shard index loads");
+
+  // A shard holds a tensor the index does not list.
+  write_bytes(shard2, make_shard({{"b.weight", {2}, payload}, {"c.weight", {2}, payload}}));
+  check(throws_invalid([&] { (void)load(); }), "unlisted shard tensor rejected");
+
+  // The same tensor appears in two shards.
+  write_bytes(shard2, make_shard({{"a.weight", {2}, payload}}));
+  check(throws_invalid([&] { (void)load(); }), "tensor duplicated across shards rejected");
+
+  // The index lists a tensor that no shard holds.
+  write_index(R"({"weight_map": {
+      "a.weight": "model-00001-of-00002.safetensors",
+      "ghost.weight": "model-00001-of-00002.safetensors"}})");
+  check(throws_invalid([&] { (void)load(); }), "index entry missing from shard rejected");
+
+  // A tensor sits in a shard other than the one the index names.
+  write_bytes(shard2, make_shard({{"b.weight", {2}, payload}, {"c.weight", {2}, payload}}));
+  write_index(R"({"weight_map": {
+      "a.weight": "model-00001-of-00002.safetensors",
+      "b.weight": "model-00001-of-00002.safetensors",
+      "c.weight": "model-00002-of-00002.safetensors"}})");
+  check(throws_invalid([&] { (void)load(); }), "tensor mapped to the wrong shard rejected");
+}
+
 }  // namespace
 
 int main() {
@@ -477,6 +654,9 @@ int main() {
   test_model_config_06b();
   test_model_config_17b();
   test_model_config_rejects_invalid();
+  test_safetensors_single_file();
+  test_safetensors_sharded_dir();
+  test_safetensors_shard_rejections();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

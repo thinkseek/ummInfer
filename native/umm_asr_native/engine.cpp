@@ -6,9 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <numeric>
-#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -20,14 +18,6 @@
 
 namespace umminfer::native {
 namespace {
-
-std::string read_file(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
-  if (!f) throw std::invalid_argument("cannot open " + path);
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  return ss.str();
-}
 
 struct Dense {
   const Bf16* w = nullptr;  // [out, in], row-major
@@ -43,8 +33,7 @@ struct AsrEngine::Impl {
   int gpu_id = 0;
 
   std::unordered_map<std::string, Bf16*> weights;
-  Bf16* d_data = nullptr;  // single checkpoint data region on device
-  size_t data_bytes = 0;
+  std::vector<Bf16*> d_shards;  // one checkpoint data region per shard on device
 
   // Scratch / state.
   float *d_mel = nullptr, *d_inv_freq = nullptr, *d_logits = nullptr;
@@ -233,7 +222,9 @@ AsrEngine::AsrEngine(const std::string& model_dir, int gpu_id) {
   UMM_CUDA_CHECK(cudaSetDevice(gpu_id));
   UMM_CUDA_CHECK(cudaStreamCreate(&im.stream));
 
-  SafeTensors st(read_file(model_dir + "/model.safetensors"));
+  // Single-file model.safetensors or the shards named by
+  // model.safetensors.index.json; both are validated by the loader.
+  const SafeTensors st = SafeTensors::from_model_dir(model_dir);
   // Fail loudly when the checkpoint does not match config.json: a wrong shape
   // would otherwise read past the tensor or silently mis-run.
   auto expect = [&](const std::string& name, std::vector<size_t> want) {
@@ -290,18 +281,22 @@ AsrEngine::AsrEngine(const std::string& model_dir, int gpu_id) {
     expect(lp + "mlp.down_proj.weight", {text_h, static_cast<size_t>(c.text_inter)});
   }
 
-  // Tensor byte_offsets are relative to the data region which starts after
-  // the 8-byte length prefix and the JSON header.
-  const size_t data_start = st.data_region_offset();
-  const size_t region_bytes = st.bytes().size() - data_start;
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_data, region_bytes));
-  UMM_CUDA_CHECK(cudaMemcpy(im.d_data, st.bytes().data() + data_start, region_bytes,
-                            cudaMemcpyHostToDevice));
+  // One device buffer per shard. Tensor byte_offsets are relative to that
+  // shard's data region, which starts after its 8-byte length prefix and JSON
+  // header.
+  im.d_shards.assign(st.shard_count(), nullptr);
+  for (size_t s = 0; s < st.shard_count(); ++s) {
+    const size_t data_start = st.data_region_offset(s);
+    const size_t region_bytes = st.data_region_bytes(s);
+    UMM_CUDA_CHECK(cudaMalloc(&im.d_shards[s], region_bytes));
+    UMM_CUDA_CHECK(cudaMemcpy(im.d_shards[s], st.shard_bytes(s).data() + data_start,
+                              region_bytes, cudaMemcpyHostToDevice));
+  }
   for (const auto& [name, info] : st.tensors()) {
     if (info.dtype != "BF16") throw std::runtime_error("only BF16 weights supported: " + name);
     if (info.byte_offset % 2 != 0)
       throw std::runtime_error("BF16 tensor not 2-byte aligned: " + name);
-    im.weights.emplace(name, im.d_data + info.byte_offset / 2);
+    im.weights.emplace(name, im.d_shards[info.shard] + info.byte_offset / 2);
   }
 
   // Workspaces, every size derived from config.json.
@@ -383,7 +378,7 @@ AsrEngine::~AsrEngine() {
   cudaFree(im.d_logits);
   cudaFree(im.d_inv_freq);
   cudaFree(im.d_mel);
-  cudaFree(im.d_data);
+  for (Bf16* shard : im.d_shards) cudaFree(shard);
   if (im.stream) cudaStreamDestroy(im.stream);
 }
 
