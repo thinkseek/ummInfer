@@ -56,6 +56,12 @@ struct BatchRequest {
   SamplingParams sampling;
   AbortCheck abort;
   TokenCallback on_token;
+  // Token index where the prefix snapshot is published. -1 snapshots the whole
+  // prompt, which is the historical behaviour. A value in (0, prompt size)
+  // publishes the snapshot after the prefill reaches that index, so a chat
+  // prompt can be cached at the turn boundary instead of after the assistant
+  // header. Only pure-text requests use it.
+  int cache_prefix_len = -1;
 };
 
 // Native Qwen3.8-27B (Qwen3_5ForConditionalGeneration) executor.
@@ -85,12 +91,15 @@ class Engine {
   // reuses that call's snapshot: KV rows, the linear-attention recurrent state
   // and the conv history at the cached length. The reused region was written
   // by prefill, so a reused run is bit-identical to a full prefill.
+  // cache_prefix_len has the same meaning as in BatchRequest: the prefill is
+  // split at that index so the snapshot lands on the cacheable turn boundary.
   GenResult generate(const std::vector<int>& prompt_ids,
                      const PreprocessedImage* image, int max_new_tokens,
                      const std::string& dump_dir = "",
                      const AbortCheck& abort = {},
                      const TokenCallback& on_token = {},
-                     const SamplingParams& sampling = {});
+                     const SamplingParams& sampling = {},
+                     int cache_prefix_len = -1);
 
   // Continuous batching: the request joins the batch thread's queue, decodes
   // next to the other active requests, and leaves the batch on EOS or at its
@@ -117,6 +126,20 @@ std::string render_chat_prompt(const std::string& user_text, bool has_image,
                                bool enable_thinking);
 std::string render_chat_prompt(const std::vector<ChatTurn>& turns,
                                bool enable_thinking);
+
+// The rendered chat prompt in two parts. `prefix` ends at the last completed
+// `<|im_end|>\n`, so it is byte-identical across every later turn of the same
+// conversation; `suffix` is the open assistant generation header. Both
+// components are separated by a special token, so BPE never merges across the
+// boundary and encode(prefix) is an exact token prefix of encode(full()).
+struct RenderedChatPrompt {
+  std::string prefix;
+  std::string suffix;
+  std::string full() const { return prefix + suffix; }
+};
+
+RenderedChatPrompt render_chat_prompt_parts(const std::vector<ChatTurn>& turns,
+                                            bool enable_thinking);
 // Expand a single image_pad placeholder to n_tokens copies.
 std::vector<int> expand_image_pads(const std::vector<int>& ids, int n_tokens);
 
