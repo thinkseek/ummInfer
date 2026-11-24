@@ -377,11 +377,14 @@ result table are in [validation section 3a](validation.md#3a-sm90-realtime-live-
 2. Repeat the SM90 CUDA window under real model load, and add zero-copy
    device-tensor transfer and multi-host IPC if a use case needs them.
 3. Keep the fixed-upstream proxy independent of the local unified path.
-4. Resolve remaining control-plane technical debt tracked in
-   [architecture.md](architecture.md#4-已知技术债与治理边界): replace the
-   `http-` prefix check in `RealtimeApi::drain_unified` with explicit ownership,
-   align HTTP-vs-`unified_schema` validation rules, and expand unit coverage for
-   `SimpleScheduler`, streamed TTS limits, and `cancel_for_session`.
+4. Track remaining control-plane polish in
+   [architecture.md](architecture.md#4-已知技术债与治理边界): propagate TTS
+   chunk sample-rate/channel metadata dynamically when multi-rate backends are
+   added, and forward optional `steps`/`image` (`image_options`) and
+   `num_frames`/`steps`/`guidance_scale` (`video_options`) across the public
+   HTTP surface (earlier `RealtimeApi::drain_unified` ownership, `unified_schema`
+   alignment, `SimpleScheduler` tests, and `cancel_for_session` debt are now
+   resolved).
 
 ## Explicitly unverified or unsupported
 

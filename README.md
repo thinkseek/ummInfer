@@ -233,20 +233,31 @@ zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/hom
   see [docs/batching.md](docs/batching.md)). There is no multi-GPU model split.
 - `max_new_tokens` reaches the `qwen38` and `omni` stages (clamped to
   `max_seq`; default 96 in the SM90 launcher/config), and `audio.stream` reaches
-  the `tts` stage. `temperature`, sampling, beam search and repetition controls
-  are ignored: all native executors are greedy and deterministic.
+  the `tts` stage. `qwen38` also supports `temperature` `[0, 2]`, `top_p`
+  `(0, 1]`, and signed `int64` `seed` (greedy when `temperature=0`,
+  deterministic per seed when sampling); beam search and repetition penalties
+  remain unimplemented, and `omni` stays greedy.
 - Both `qwen38` and `omni` stages stream UTF-8-safe `vlm_delta` chunks per
-  generated token and keep the aggregated terminal result; `omni` also supports
-  pure-text prefix KV reuse (`UMM_OMNI_PREFIX_CACHE`).
-- ASR accepts 16 kHz mono PCM16 only, at most 30 s per request.
+  generated token, keep the aggregated terminal result, and support multi-turn
+  prefix KV reuse (`qwen38` on turn boundaries across serial and batched decode;
+  `omni` pure-text prefix reuse via `UMM_OMNI_PREFIX_CACHE`).
+- ASR accepts 16 kHz mono PCM16 only, at most 30 s per request (supports both
+  `Qwen3-ASR-0.6B` and multi-shard `1.7B` via `config.json`).
 - Qwen3.8-27B accepts one still image per request and `max_seq` 8192.
-- Image output is 512x512 PNG only (`--image-backend 2512|2.1`). Qwen-Image-2512
-  defaults to 512x512 (official default 1024x1024); Qwen-Image-2.1 has no true
-  CFG, no KV cache and no condition-image editing.
-- TTS has two fixed voice presets (`vivian`, `ryan`), Chinese and English.
-  Repeated runs differ by sub-LSB PCM16 amounts; waveforms are not bit-exact.
-- Mixed output requires `stream=true`. A non-streaming request with `image` or
-  `audio` output is rejected with HTTP 400.
+- Native `umm-native-stage-image` outputs 512x512 PNG (`--image-backend 2512|2.1`);
+  an optional Apache-2.0 `python/umminfer_flux2_stage.py` (`FLUX.2-klein-4B`)
+  supports 512x512/1024x1024 generation and `inputs.image` editing over the
+  stage protocol. Native `umm-native-stage-video` (`Wan2.2-TI2V-5B`, UniPC-BH2)
+  and optional `python/umminfer_video_stage.py` provide MP4 video generation.
+- TTS supports `Qwen3-TTS-12Hz-0.6B` and `1.7B-CustomVoice` (`vivian`, `ryan`,
+  Chinese/English) plus `1.7B-Base` zero-shot voice cloning via `--ref-audio` in
+  `umm-tts-native` (native C++ ECAPA-TDNN). Repeated runs differ by sub-LSB
+  PCM16 amounts; waveforms are not bit-exact across runs.
+- Non-streaming mixed output (`stream=false` with `image`/`audio`/`video`
+  modalities) is supported and returns `artifacts` + `legs`; `audio.stream=true`
+  with `stream=false` is rejected with HTTP 400. Public HTTP `image_options`
+  does not yet forward `steps`/`image`, and `video_options` does not yet forward
+  `num_frames`/`steps`/`guidance_scale`.
 - The image stage loads its weights on the first request after start (about
   9.5 s, +11 GiB), so the first render is slower than steady state.
 - Model revisions are `UNKNOWN`; the local model directories carry no `.git`.
