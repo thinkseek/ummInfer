@@ -15,11 +15,15 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "video/config.hpp"
 #include "video/engine.hpp"
 #include "video/mp4_encoder.hpp"
 #include "video/safetensors_mmap.hpp"
 #include "video/scheduler.hpp"
+#include "video/umt5_encoder.hpp"
+#include "video/umt5_tokenizer.hpp"
 #include "video/wan_vae.hpp"
 
 namespace {
@@ -68,6 +72,142 @@ void append_u32(std::ofstream& out, uint32_t value) {
                         static_cast<char>((value >> 16) & 0xff),
                         static_cast<char>(value >> 24)};
   out.write(bytes, 4);
+}
+
+void write_f32_shard(const std::filesystem::path& path,
+                     const std::string& name,
+                     const std::vector<float>& values) {
+  nlohmann::json header = {
+      {name,
+       {{"dtype", "F32"},
+        {"shape", {values.size()}},
+        {"data_offsets", {0, values.size() * sizeof(float)}}}}};
+  std::string text = header.dump();
+  std::ofstream out(path, std::ios::binary);
+  const uint64_t size = text.size();
+  for (unsigned i = 0; i < 8; ++i) out.put((size >> (i * 8)) & 0xff);
+  out.write(text.data(), text.size());
+  out.write(reinterpret_cast<const char*>(values.data()),
+            values.size() * sizeof(float));
+}
+
+void test_sharded_safetensors_mmap() {
+  using namespace umminfer::video;
+  TempDir tmp("sharded-safetensors");
+  write_f32_shard(tmp.path / "a.safetensors", "alpha", {1.0f, 2.0f});
+  write_f32_shard(tmp.path / "b.safetensors", "beta", {3.0f});
+  const nlohmann::json index = {
+      {"metadata", {{"total_size", 12}}},
+      {"weight_map", {{"alpha", "a.safetensors"}, {"beta", "b.safetensors"}}}};
+  write_text(tmp.path / "model.safetensors.index.json", index.dump());
+
+  ShardedSafetensorsMmap shards(tmp.path / "model.safetensors.index.json");
+  check(shards.contains("alpha") && shards.contains("beta") &&
+            !shards.contains("missing"),
+        "multi-shard tensor lookup");
+  check(shards.tensor("alpha", {2}).to_f32() == std::vector<float>({1.0f, 2.0f}),
+        "tensor loaded from first shard");
+  check(shards.tensor("beta", {1}).to_f32() == std::vector<float>({3.0f}),
+        "tensor loaded from second shard");
+
+  ShardedSafetensorsMmap single(tmp.path / "a.safetensors");
+  check(single.contains("alpha") && !single.contains("beta") &&
+            single.tensor("alpha", {2}).numel() == 2,
+        "single-file sharded reader compatibility");
+}
+
+void test_umt5_tokenizer() {
+  using namespace umminfer::video;
+  TempDir tmp("umt5-tokenizer");
+  nlohmann::json vocab = nlohmann::json::array({
+      {"<pad>", 0.0}, {"</s>", 0.0}, {"<unk>", -10.0},
+      {"▁hello", -0.1}, {"hello", -0.1}, {"▁", -0.5},
+      {"▁world", -0.1}, {"▁影", -0.2}, {"像", -0.3},
+      {"▁影像", -5.0}, {"▁cinematic", -0.2}, {"!", -0.1},
+      {"<0xF0>", 0.0}, {"<0x9F>", 0.0},
+      {"<0x98>", 0.0}, {"<0x80>", 0.0},
+      {"<extra_id_0>", 0.0}, {"▁a", -0.1}, {"▁▁", 0.0},
+      {"▁&", -0.1},
+  });
+  const auto write_tokenizer = [&](const std::filesystem::path& path,
+                                   bool byte_fallback) {
+    const nlohmann::json root = {
+        {"normalizer", nullptr},
+        {"pre_tokenizer",
+         {{"type", "Metaspace"},
+          {"replacement", "▁"},
+          {"prepend_scheme", "always"},
+          {"split", true}}},
+        {"added_tokens",
+         {{{"id", 16}, {"content", "<extra_id_0>"}, {"special", true}}}},
+        {"model",
+         {{"type", "Unigram"},
+          {"unk_id", 2},
+          {"byte_fallback", byte_fallback},
+          {"vocab", vocab}}}};
+    write_text(path, root.dump());
+  };
+  write_tokenizer(tmp.path / "tokenizer.json", true);
+  Umt5Tokenizer tokenizer(tmp.path / "tokenizer.json");
+
+  check(tokenizer.encode("  hello   world! ").ids ==
+            std::vector<int32_t>({3, 6, 11, 1}),
+        "ASCII whitespace cleanup and Unigram tokenization");
+  check(tokenizer.encode("影像").ids == std::vector<int32_t>({7, 8, 1}),
+        "CJK Viterbi path uses the best score sum");
+  check(tokenizer.encode("cinematic!").ids ==
+            std::vector<int32_t>({10, 11, 1}),
+        "ASCII punctuation tokenization");
+  check(tokenizer.encode("&amp;amp;").ids == std::vector<int32_t>({19, 1}),
+        "Wan prompt cleaning applies two HTML unescapes");
+  check(tokenizer.encode("<extra_id_0>").ids ==
+            std::vector<int32_t>({16, 1}) &&
+            tokenizer.encode("hello<extra_id_0>world").ids ==
+                std::vector<int32_t>({3, 16, 6, 1}),
+        "added tokens bypass Metaspace and split adjacent text");
+  check(tokenizer.encode("▁hello").ids == std::vector<int32_t>({3, 1}) &&
+            tokenizer.encode("a▁▁").ids ==
+                std::vector<int32_t>({17, 5, 5, 1}),
+        "Metaspace prefix and split boundaries");
+  check(tokenizer.encode("😀").ids ==
+            std::vector<int32_t>({5, 12, 13, 14, 15, 1}),
+        "unknown Unicode uses byte fallback tokens");
+  check(tokenizer.encode("").ids == std::vector<int32_t>({1}),
+        "empty prompt produces EOS only");
+
+  const auto padded = tokenizer.encode("hello", 5, true);
+  check(padded.ids == std::vector<int32_t>({3, 1, 0, 0, 0}) &&
+            padded.attention_mask == std::vector<int32_t>({1, 1, 0, 0, 0}),
+        "EOS and padding with attention mask");
+  check(tokenizer.encode("hello world", 2).ids ==
+            std::vector<int32_t>({3, 1}),
+        "truncation preserves final EOS");
+
+  write_tokenizer(tmp.path / "tokenizer-unk.json", false);
+  Umt5Tokenizer unk_tokenizer(tmp.path / "tokenizer-unk.json");
+  check(unk_tokenizer.encode("影像😀").ids ==
+            std::vector<int32_t>({7, 8, 2, 1}),
+        "unknown Unicode uses <unk> without byte fallback");
+  check(unk_tokenizer.encode("😀😀").ids ==
+            std::vector<int32_t>({5, 2, 1}),
+        "adjacent unknown codepoints fuse into one <unk>");
+}
+
+void test_umt5_relative_position_buckets() {
+  using umminfer::video::umt5_relative_position_bucket;
+  const std::pair<int, int> cases[] = {
+      {0, 0},   {1, 17},  {-1, 1},   {7, 23},  {-7, 7},
+      {8, 24},  {-8, 8},  {16, 26},  {-16, 10},
+      {128, 31}, {-128, 15}, {512, 31}, {-512, 15},
+  };
+  for (const auto& [distance, expected] : cases) {
+    check(umt5_relative_position_bucket(distance) == expected,
+          "UMT5 relative bucket at distance " + std::to_string(distance));
+  }
+  for (int distance = -512; distance <= 512; ++distance) {
+    const int bucket = umt5_relative_position_bucket(distance);
+    check(bucket >= 0 && bucket < 32, "UMT5 bucket remains in range");
+  }
 }
 
 void test_safetensors_mmap() {
@@ -319,6 +459,9 @@ int main() {
       {"wan_config_loading", test_wan_config_loading},
       {"wan_vae_config_loading", test_wan_vae_config_loading},
       {"safetensors_mmap", test_safetensors_mmap},
+      {"sharded_safetensors_mmap", test_sharded_safetensors_mmap},
+      {"umt5_tokenizer", test_umt5_tokenizer},
+      {"umt5_relative_position_buckets", test_umt5_relative_position_buckets},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"mp4_encode_and_abort", test_mp4_encode_and_abort},
       {"engine_contract_stub_and_cuda_gate", test_engine_contract_stub_and_cuda_gate},
