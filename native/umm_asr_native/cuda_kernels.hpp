@@ -53,18 +53,20 @@ void conv3x3s2_gelu(const Bf16* in, const Bf16* weight, const Bf16* bias, Bf16* 
 void mel_to_chunks(const float* mel, Bf16* out, int chunks, int valid_frames,
                    cudaStream_t stream);
 
-// [chunks, 480, 16, 13] -> [chunks, 13, 7680] (permute 0,3,1,2 + flatten).
-void conv_permute(const Bf16* in, Bf16* out, int chunks, cudaStream_t stream);
+// [chunks, down, 16, 13] -> [chunks, 13, down*16] (permute 0,3,1,2 + flatten).
+// `down` is config.json downsample_hidden_size (480 for both ASR sizes).
+void conv_permute(const Bf16* in, Bf16* out, int chunks, int down,
+                  cudaStream_t stream);
 
-// Add the Whisper-style sinusoidal position table [13, 896] to each chunk's
-// 13 rows. hidden is [chunks, 13, 896].
+// Add the Whisper-style sinusoidal position table [13, dim] to each chunk's
+// 13 rows. hidden is [chunks, 13, dim].
 void add_sinusoidal(Bf16* hidden, const float* pe, int chunks, int rows, int dim,
                     cudaStream_t stream);
 
 // GQA attention. q [nq, nqh, d], k/v [nkv, nkh, d], out [nq, nqh, d].
 // causal=true: decoder mask; q_offset is the key-space position of q row 0.
 // causal=false: audio encoder, bidirectional inside non-overlapping windows
-// of window_len (104 for this model).
+// of window_len (104 for both Qwen3-ASR sizes, from config.json).
 void gqa_attention(const Bf16* q, const Bf16* k, const Bf16* v, Bf16* out, int nq,
                    int nkv, int n_q_heads, int n_kv_heads, int head_dim, bool causal,
                    int window_len, int q_offset, cudaStream_t stream);
