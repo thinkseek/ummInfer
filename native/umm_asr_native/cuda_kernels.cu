@@ -358,22 +358,34 @@ void conv3x3s2_gelu(const Bf16* in, const Bf16* weight, const Bf16* bias, Bf16* 
       in, weight, bias, out, b, ci, co, h, w, oh, ow);
 }
 
-__global__ void conv_permute_kernel(const Bf16* in, Bf16* out, int chunks) {
-  // out [c,13,7680], in [c,480,16,13].
+// One 100-frame mel chunk becomes 13 conv tokens of `down` channels x 16
+// positions. Both factors below are fixed by the chunk geometry; only `down`
+// comes from config.json.
+constexpr int kConvTokensPerChunk = 13;
+constexpr int kConvPosPerToken = 16;
+
+__global__ void conv_permute_kernel(const Bf16* in, Bf16* out, int chunks, int row,
+                                    int total) {
+  // out [c,13,down*16], in [c,down,16,13].
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int total = chunks * 13 * 7680;
   if (idx >= total) return;
-  const int flat = idx % 7680;
-  const int t = (idx / 7680) % 13;
-  const int c = idx / (13 * 7680);
-  const int ch = flat / 16, fr = flat % 16;
-  out[idx] = in[(((static_cast<size_t>(c) * 480 + ch) * 16 + fr) * 13 + t)];
+  const int flat = idx % row;
+  const int t = (idx / row) % kConvTokensPerChunk;
+  const int c = idx / (kConvTokensPerChunk * row);
+  const int down = row / kConvPosPerToken;
+  const int ch = flat / kConvPosPerToken, fr = flat % kConvPosPerToken;
+  const size_t src =
+      ((static_cast<size_t>(c) * down + ch) * kConvPosPerToken + fr) * kConvTokensPerChunk +
+      t;
+  out[idx] = in[src];
 }
 
-void conv_permute(const Bf16* in, Bf16* out, int chunks, cudaStream_t stream) {
-  const int total = chunks * 13 * 7680;
-  conv_permute_kernel<<<(total + kBlock - 1) / kBlock, kBlock, 0, stream>>>(in, out,
-                                                                             chunks);
+void conv_permute(const Bf16* in, Bf16* out, int chunks, int down,
+                  cudaStream_t stream) {
+  const int row = down * kConvPosPerToken;
+  const int total = chunks * kConvTokensPerChunk * row;
+  conv_permute_kernel<<<(total + kBlock - 1) / kBlock, kBlock, 0, stream>>>(
+      in, out, chunks, row, total);
 }
 
 __global__ void mel_chunks_kernel(const float* mel, Bf16* out, int chunks,

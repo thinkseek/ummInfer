@@ -56,14 +56,19 @@ QwenTokenizer::QwenTokenizer(const std::string& vocab_json) {
 }
 
 std::vector<int> QwenTokenizer::build_asr_prompt(int audio_token_count) {
+  return build_asr_prompt(audio_token_count, kAudioStart, kAudioPad, kAudioEnd);
+}
+
+std::vector<int> QwenTokenizer::build_asr_prompt(int audio_token_count, int audio_start,
+                                                 int audio_pad, int audio_end) {
   if (audio_token_count <= 0)
     throw std::invalid_argument("audio token count must be positive");
   std::vector<int> ids;
   ids.reserve(11 + audio_token_count);
-  ids.insert(ids.end(), {kImStart, kUserToken, kNewline, kAudioStart});
-  ids.insert(ids.end(), audio_token_count, kAudioPad);
+  ids.insert(ids.end(), {kImStart, kUserToken, kNewline, audio_start});
+  ids.insert(ids.end(), audio_token_count, audio_pad);
   ids.insert(ids.end(),
-             {kAudioEnd, kImEnd, kNewline, kImStart, kAssistantToken, kNewline});
+             {audio_end, kImEnd, kNewline, kImStart, kAssistantToken, kNewline});
   return ids;
 }
 

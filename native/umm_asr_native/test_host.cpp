@@ -3,6 +3,7 @@
 // log-mel frontend shape, and byte-level tokenizer decode. No CUDA and no
 // model weights: the vocab is written to a temp directory at run time.
 #include "feature_frontend.hpp"
+#include "model_config.hpp"
 #include "tokenizer.hpp"
 #include "wav.hpp"
 
@@ -176,6 +177,9 @@ void test_tokenizer_prompt_and_decode() {
       151644, 872, 198, 151669, 151676, 151676, 151676, 151670,
       151645, 198, 151644, 77091, 198};
   check(prompt == want, "ASR prompt ids for 3 audio tokens");
+  const auto custom = QwenTokenizer::build_asr_prompt(2, 7, 8, 9);
+  check(custom[3] == 7 && custom[4] == 8 && custom[5] == 8 && custom[6] == 9,
+        "ASR prompt uses config-supplied audio token ids");
   check(throws_invalid([] { (void)QwenTokenizer::build_asr_prompt(0); }),
         "ASR prompt rejects zero audio tokens");
   check(QwenTokenizer::is_special(151643), "is_special on added token");
@@ -275,6 +279,193 @@ void test_tokenizer_decode() {
   fs::remove_all(dir, ec);
 }
 
+// Qwen3-ASR config.json as published. Keys sit on their own line so the
+// negative tests can rewrite exactly one value.
+const char* kConfig06b = R"({
+  "model_type": "qwen3_asr",
+  "thinker_config": {
+    "audio_start_token_id": 151669,
+    "audio_end_token_id": 151670,
+    "audio_token_id": 151676,
+    "audio_config": {
+      "num_mel_bins": 128,
+      "d_model": 896,
+      "encoder_attention_heads": 14,
+      "encoder_ffn_dim": 3584,
+      "encoder_layers": 18,
+      "downsample_hidden_size": 480,
+      "output_dim": 1024,
+      "n_window": 50,
+      "n_window_infer": 800
+    },
+    "text_config": {
+      "num_hidden_layers": 28,
+      "hidden_size": 1024,
+      "num_attention_heads": 16,
+      "num_key_value_heads": 8,
+      "head_dim": 128,
+      "intermediate_size": 3072,
+      "vocab_size": 151936,
+      "rms_norm_eps": 1e-06,
+      "rope_theta": 1000000
+    }
+  }
+})";
+
+const char* kConfig17b = R"({
+  "model_type": "qwen3_asr",
+  "thinker_config": {
+    "audio_start_token_id": 151669,
+    "audio_end_token_id": 151670,
+    "audio_token_id": 151676,
+    "audio_config": {
+      "num_mel_bins": 128,
+      "d_model": 1024,
+      "encoder_attention_heads": 16,
+      "encoder_ffn_dim": 4096,
+      "encoder_layers": 24,
+      "downsample_hidden_size": 480,
+      "output_dim": 2048,
+      "n_window": 50,
+      "n_window_infer": 800
+    },
+    "text_config": {
+      "num_hidden_layers": 28,
+      "hidden_size": 2048,
+      "num_attention_heads": 16,
+      "num_key_value_heads": 8,
+      "head_dim": 128,
+      "intermediate_size": 6144,
+      "vocab_size": 151936,
+      "rms_norm_eps": 1e-06,
+      "rope_theta": 1000000
+    }
+  }
+})";
+
+// Replaces one literal config snippet; a typo in the fixture itself fails the
+// test instead of silently passing an unrelated edit.
+std::string with_value(std::string json, const std::string& from, const std::string& to) {
+  const size_t pos = json.find(from);
+  if (pos == std::string::npos) {
+    check(false, "config fixture contains the edited value");
+    return json;
+  }
+  return json.replace(pos, from.size(), to);
+}
+
+void test_model_config_06b() {
+  using namespace umminfer::native;
+  const AsrModelConfig cfg = AsrModelConfig::from_json_text(kConfig06b);
+  const AsrModelConfig want = AsrModelConfig::preset_06b();
+  auto same = [&](long long got, long long expected, const char* what) {
+    check(got == expected, what);
+  };
+  same(cfg.num_mel_bins, want.num_mel_bins, "0.6B num_mel_bins");
+  same(cfg.audio_d, want.audio_d, "0.6B audio d_model");
+  same(cfg.audio_heads, want.audio_heads, "0.6B audio heads");
+  same(cfg.audio_ffn, want.audio_ffn, "0.6B audio ffn");
+  same(cfg.audio_layers, want.audio_layers, "0.6B audio layers");
+  same(cfg.audio_down, want.audio_down, "0.6B audio downsample size");
+  same(cfg.audio_out, want.audio_out, "0.6B audio output_dim");
+  same(cfg.n_window, want.n_window, "0.6B n_window");
+  same(cfg.n_window_infer, want.n_window_infer, "0.6B n_window_infer");
+  same(cfg.text_layers, want.text_layers, "0.6B text layers");
+  same(cfg.text_h, want.text_h, "0.6B text hidden_size");
+  same(cfg.text_q_heads, want.text_q_heads, "0.6B text q heads");
+  same(cfg.text_kv_heads, want.text_kv_heads, "0.6B text kv heads");
+  same(cfg.text_head_dim, want.text_head_dim, "0.6B text head_dim");
+  same(cfg.text_inter, want.text_inter, "0.6B text intermediate_size");
+  same(cfg.vocab, want.vocab, "0.6B vocab_size");
+  same(cfg.audio_start_id, want.audio_start_id, "0.6B audio_start_token_id");
+  same(cfg.audio_end_id, want.audio_end_id, "0.6B audio_end_token_id");
+  same(cfg.audio_token_id, want.audio_token_id, "0.6B audio_token_id");
+  check(cfg.rms_norm_eps == want.rms_norm_eps, "0.6B rms_norm_eps");
+  check(cfg.rope_theta == want.rope_theta, "0.6B rope_theta");
+
+  check(cfg.audio_head_dim() == 64, "0.6B audio head_dim 64");
+  check(cfg.window_len() == 104, "0.6B attention window 104");
+  check(cfg.audio_perm_row() == 7680, "0.6B conv permute row 7680");
+  check(cfg.max_audio_tokens() == 390, "0.6B max audio tokens 390");
+  check(cfg.au_norm_elements() == 390 * 7680, "0.6B au_norm element math");
+  check(cfg.kv_cache_elements() == 28u * 2u * 1024u * 8u * 128u, "0.6B KV cache size");
+  check(cfg.estimate_workspace_bytes() > 0, "0.6B workspace estimate positive");
+
+  // from_model_dir reads <dir>/config.json, the same path the engine uses.
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "umm_asr_config_fixture";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+  {
+    std::ofstream f(dir / "config.json");
+    f << kConfig06b;
+  }
+  const AsrModelConfig from_dir = AsrModelConfig::from_model_dir(dir.string());
+  check(from_dir.audio_d == want.audio_d, "from_model_dir reads config.json");
+  check(throws_invalid([&] { (void)AsrModelConfig::from_model_dir((dir / "nope").string()); }),
+        "from_model_dir rejects a directory without config.json");
+  fs::remove_all(dir, ec);
+}
+
+void test_model_config_17b() {
+  using namespace umminfer::native;
+  const AsrModelConfig cfg = AsrModelConfig::from_json_text(kConfig17b);
+  check(cfg.audio_layers == 24, "1.7B audio layers 24");
+  check(cfg.audio_d == 1024, "1.7B audio d_model 1024");
+  check(cfg.audio_heads == 16, "1.7B audio heads 16");
+  check(cfg.audio_ffn == 4096, "1.7B audio ffn 4096");
+  check(cfg.audio_out == 2048, "1.7B audio output_dim 2048");
+  check(cfg.text_h == 2048, "1.7B text hidden_size 2048");
+  check(cfg.text_inter == 6144, "1.7B text intermediate_size 6144");
+  check(cfg.text_layers == 28, "1.7B text layers 28");
+  check(cfg.audio_head_dim() == 64, "1.7B audio head_dim 64");
+  check(cfg.window_len() == 104, "1.7B attention window 104");
+  check(cfg.au_norm_elements() == 390 * 7680, "1.7B au_norm element math");
+
+  const size_t small = AsrModelConfig::preset_06b().estimate_workspace_bytes();
+  const size_t big = cfg.estimate_workspace_bytes();
+  check(big > small, "1.7B workspace estimate exceeds 0.6B");
+  // The decoder shape is identical across the two sizes, so the KV cache is
+  // the one buffer that does not grow.
+  check(cfg.kv_cache_elements() == AsrModelConfig::preset_06b().kv_cache_elements(),
+        "1.7B KV cache equals 0.6B (same decoder shape)");
+  // Overflow guard: every element count and the byte total must stay exact
+  // when widened to size_t.
+  check(cfg.au_qkv_elements() == 390 * 1024, "1.7B au_qkv element math");
+  check(cfg.conv1_elements() == 30 * 480 * 64 * 50, "1.7B conv1 element math");
+  check(big / sizeof(float) > cfg.kv_cache_elements(),
+        "1.7B workspace estimate not truncated or wrapped");
+}
+
+void test_model_config_rejects_invalid() {
+  using namespace umminfer::native;
+  const std::string base = kConfig06b;
+  auto rejects = [&](const std::string& json, const char* what) {
+    check(throws_invalid([&] { (void)AsrModelConfig::from_json_text(json); }), what);
+  };
+  rejects(with_value(base, "\"d_model\": 896", "\"d_model\": 900"),
+          "rejects audio width not divisible by heads");
+  rejects(with_value(base, "\"output_dim\": 1024", "\"output_dim\": 512"),
+          "rejects audio output_dim != text hidden_size");
+  rejects(with_value(base, "\"num_mel_bins\": 128", "\"num_mel_bins\": 80"),
+          "rejects num_mel_bins != 128");
+  rejects(with_value(base, "\"num_attention_heads\": 16", "\"num_attention_heads\": 15"),
+          "rejects text q heads not divisible by kv heads");
+  rejects(with_value(base, "\"encoder_layers\": 18", "\"encoder_layers\": 0"),
+          "rejects non-positive audio layers");
+  rejects(with_value(base, "\"n_window\": 50", "\"n_window\": 0"),
+          "rejects non-positive n_window");
+  rejects(with_value(base, "\"n_window_infer\": 800", "\"n_window_infer\": 810"),
+          "rejects n_window_infer not a multiple of 2 * n_window");
+  rejects(with_value(base, "\"head_dim\": 128", "\"head_dim\": 127"),
+          "rejects odd text head_dim");
+  rejects("{\"model_type\": \"qwen3_asr\"}", "rejects config without thinker_config");
+  rejects(with_value(base, "\"n_window\": 50", "\"n_window\": \"wide\""),
+          "rejects non-numeric field");
+  rejects("not json", "rejects malformed JSON");
+}
+
 }  // namespace
 
 int main() {
@@ -283,6 +474,9 @@ int main() {
   test_mel_frontend();
   test_tokenizer_prompt_and_decode();
   test_tokenizer_decode();
+  test_model_config_06b();
+  test_model_config_17b();
+  test_model_config_rejects_invalid();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

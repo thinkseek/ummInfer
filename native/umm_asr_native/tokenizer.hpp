@@ -31,6 +31,9 @@ class QwenTokenizer {
   // <|im_start|>user\n <|audio_start|> audio_pad*N <|audio_end|>
   // <|im_end|>\n<|im_start|>assistant\n
   static std::vector<int> build_asr_prompt(int audio_token_count);
+  // Same prompt with the checkpoint's own audio token ids (config.json).
+  static std::vector<int> build_asr_prompt(int audio_token_count, int audio_start,
+                                           int audio_pad, int audio_end);
 
   static bool is_eos(int id) { return id == kEndOfText || id == kImEnd; }
   static bool is_special(int id);
