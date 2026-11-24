@@ -9,10 +9,9 @@ namespace {
 PromptTerm text(int id) { return {PromptTerm::kTextProj, id}; }
 PromptTerm codec(int id) { return {PromptTerm::kCodec, id}; }
 PromptTerm fixed(PromptTerm::Kind k) { return {k, 0}; }
-}  // namespace
 
-PromptPlan build_prompt_plan(const std::vector<int>& text_ids, int language_id,
-                             int speaker_id) {
+PromptPlan build_plan(const std::vector<int>& text_ids, int language_id,
+                      int speaker_id, bool clone) {
   // R = first 3 ids, S = last 5 ids, body T in between.
   if (text_ids.size() < 9)
     throw std::invalid_argument("wrapped prompt must contain R + body + S");
@@ -21,7 +20,7 @@ PromptPlan build_prompt_plan(const std::vector<int>& text_ids, int language_id,
 
   // Codec id stream C (explicit language, speaker present), length 7.
   std::vector<int> c = {kCodecThink, kCodecThinkBos, language_id, kCodecThinkEos,
-                        speaker_id, kCodecPad, kCodecBos};
+                        clone ? -1 : speaker_id, kCodecPad, kCodecBos};
 
   PromptPlan plan;
   plan.codec_prefill_ids = c;
@@ -32,8 +31,9 @@ PromptPlan build_prompt_plan(const std::vector<int>& text_ids, int language_id,
 
   // Stage B: first 6 codec entries, five tts_pad then one tts_bos.
   for (int j = 0; j < 6; ++j)
-    plan.rows.push_back({codec(c[j]), j == 5 ? fixed(PromptTerm::kTtsBos)
-                                             : fixed(PromptTerm::kTtsPad)});
+    plan.rows.push_back({clone && j == 4 ? fixed(PromptTerm::kXVector) : codec(c[j]),
+                         j == 5 ? fixed(PromptTerm::kTtsBos)
+                                : fixed(PromptTerm::kTtsPad)});
 
   // Stage C: body text plus tts_eos, each offset by codec_pad embedding.
   for (int id : body) plan.rows.push_back({text(id), codec(kCodecPad)});
@@ -42,6 +42,16 @@ PromptPlan build_prompt_plan(const std::vector<int>& text_ids, int language_id,
   // Stage D: final codec_bos position with tts_pad.
   plan.rows.push_back({fixed(PromptTerm::kTtsPad), codec(kCodecBos)});
   return plan;
+}
+}  // namespace
+
+PromptPlan build_prompt_plan(const std::vector<int>& text_ids, int language_id,
+                             int speaker_id) {
+  return build_plan(text_ids, language_id, speaker_id, false);
+}
+
+PromptPlan build_clone_prompt_plan(const std::vector<int>& text_ids, int language_id) {
+  return build_plan(text_ids, language_id, 0, true);
 }
 
 int speaker_id_from_name(const std::string& name) {

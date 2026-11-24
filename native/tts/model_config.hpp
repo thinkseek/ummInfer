@@ -23,6 +23,11 @@ struct TensorShape {
   std::vector<size_t> dims;
 };
 
+struct SpeakerEncoderConfig {
+  int enc_dim = 0;
+  int sample_rate = 0;
+};
+
 // Dimensions of one Qwen3-TTS CustomVoice checkpoint, read from
 // <model_dir>/config.json. Covers both wired sizes, 0.6B and 1.7B: their
 // talker_config blocks differ only in hidden_size (1024/2048) and
@@ -40,7 +45,8 @@ struct TtsModelConfig {
   int tts_eos_token_id = 0;
 
   std::string model_size;  // "0b6" or "1b7"
-  std::string model_type;  // must be "custom_voice"
+  std::string model_type;  // "custom_voice" or "base"
+  SpeakerEncoderConfig speaker_encoder;
 
   // Talker (Qwen3 decoder with a codec head).
   int hidden = 0;
@@ -86,6 +92,7 @@ struct TtsModelConfig {
   // True when the talker width differs from the predictor width, which is the
   // case for 1.7B only. The checkpoint then carries the projection weights.
   bool has_mtp_projection() const { return hidden != cp_hidden; }
+  bool is_base() const { return model_type == "base"; }
 
   int language_id(const std::string& name) const {
     auto it = language_ids.find(name);
@@ -235,6 +242,11 @@ struct TtsModelConfig {
     c.tts_eos_token_id = as_int(root, "tts_eos_token_id");
     c.model_size = as_str(root, "tts_model_size");
     c.model_type = as_str(root, "tts_model_type");
+    if (c.model_type == "base") {
+      const nlohmann::json& speaker = obj(root, "speaker_encoder_config");
+      c.speaker_encoder.enc_dim = as_int(speaker, "enc_dim");
+      c.speaker_encoder.sample_rate = as_int(speaker, "sample_rate");
+    }
 
     c.hidden = as_int(talker, "hidden_size");
     c.inter = as_int(talker, "intermediate_size");
@@ -307,9 +319,16 @@ struct TtsModelConfig {
     positive(cp_head_dim, "code_predictor head_dim");
     positive(cp_vocab, "code_predictor vocab_size");
 
-    if (model_type != "custom_voice")
-      throw std::invalid_argument("config.json tts_model_type must be custom_voice, got " +
-                                  model_type);
+    if (model_type != "custom_voice" && model_type != "base")
+      throw std::invalid_argument(
+          "config.json tts_model_type must be custom_voice or base, got " + model_type);
+    if (is_base()) {
+      if (speaker_encoder.enc_dim != hidden)
+        throw std::invalid_argument("config.json speaker encoder enc_dim must equal talker "
+                                    "hidden_size");
+      if (speaker_encoder.sample_rate != 24000)
+        throw std::invalid_argument("config.json speaker encoder sample_rate must be 24000");
+    }
     if (code_groups != 16)
       throw std::invalid_argument("config.json num_code_groups must be 16, got " +
                                   std::to_string(code_groups));
@@ -350,9 +369,10 @@ struct TtsModelConfig {
       if (language_ids.find(name) == language_ids.end())
         throw std::invalid_argument(std::string("config.json codec_language_id has no ") +
                                     name);
-    for (const char* name : {"vivian", "ryan"})
-      if (speaker_ids.find(name) == speaker_ids.end())
-        throw std::invalid_argument(std::string("config.json spk_id has no ") + name);
+    if (!is_base())
+      for (const char* name : {"vivian", "ryan"})
+        if (speaker_ids.find(name) == speaker_ids.end())
+          throw std::invalid_argument(std::string("config.json spk_id has no ") + name);
     for (const auto& [name, id] : language_ids)
       if (id < 0 || id >= codec_vocab)
         throw std::invalid_argument("config.json language id for " + name +
@@ -422,6 +442,35 @@ struct TtsModelConfig {
       // the projection above narrows them to the predictor width.
       add("talker.code_predictor.model.codec_embedding." + s + ".weight",
           {static_cast<size_t>(cp_vocab), H});
+    }
+
+    if (is_base()) {
+      add("speaker_encoder.blocks.0.conv.weight", {512, 128, 5});
+      add("speaker_encoder.blocks.0.conv.bias", {512});
+      for (int b = 1; b <= 3; ++b) {
+        const std::string p = "speaker_encoder.blocks." + std::to_string(b);
+        for (const char* conv : {"tdnn1", "tdnn2"}) {
+          add(p + "." + conv + ".conv.weight", {512, 512, 1});
+          add(p + "." + conv + ".conv.bias", {512});
+        }
+        for (int j = 0; j < 7; ++j) {
+          const std::string r = p + ".res2net_block.blocks." + std::to_string(j);
+          add(r + ".conv.weight", {64, 64, 3});
+          add(r + ".conv.bias", {64});
+        }
+        add(p + ".se_block.conv1.weight", {128, 512, 1});
+        add(p + ".se_block.conv1.bias", {128});
+        add(p + ".se_block.conv2.weight", {512, 128, 1});
+        add(p + ".se_block.conv2.bias", {512});
+      }
+      add("speaker_encoder.mfa.conv.weight", {1536, 1536, 1});
+      add("speaker_encoder.mfa.conv.bias", {1536});
+      add("speaker_encoder.asp.tdnn.conv.weight", {128, 4608, 1});
+      add("speaker_encoder.asp.tdnn.conv.bias", {128});
+      add("speaker_encoder.asp.conv.weight", {1536, 128, 1});
+      add("speaker_encoder.asp.conv.bias", {1536});
+      add("speaker_encoder.fc.weight", {static_cast<size_t>(speaker_encoder.enc_dim), 3072, 1});
+      add("speaker_encoder.fc.bias", {static_cast<size_t>(speaker_encoder.enc_dim)});
     }
     return out;
   }

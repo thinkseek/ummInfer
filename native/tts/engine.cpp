@@ -17,6 +17,7 @@
 #include "model_config.hpp"
 #include "prompt.hpp"
 #include "safetensors.hpp"
+#include "speaker_encoder.hpp"
 #include "tail_trim.hpp"
 
 namespace umminfer::native {
@@ -64,6 +65,7 @@ struct TtsEngine::Impl {
   std::unordered_map<std::string, const float*> fw;  // codec F32
   float* d_f32 = nullptr;
   std::unique_ptr<CodecDecoder> codec;
+  std::unique_ptr<SpeakerEncoder> speaker_encoder;
 
   // Talker-width scratch.
   Bf16 *hidden = nullptr, *norm = nullptr, *q = nullptr, *k = nullptr, *v = nullptr,
@@ -81,6 +83,7 @@ struct TtsEngine::Impl {
   Bf16* talker_kv = nullptr;
   Bf16* cp_kv = nullptr;
   Bf16 *d_pad = nullptr, *d_bos = nullptr, *d_eos = nullptr;
+  Bf16* d_xvector = nullptr;
   Bf16* cp_past = nullptr;  // talker-width final-norm row for the predictor
 
   const Bf16* wb(const std::string& n) const {
@@ -207,7 +210,8 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
   if (cfg.language_id("chinese") != kLangChinese ||
       cfg.language_id("english") != kLangEnglish)
     throw std::runtime_error("config.json language ids differ from the wired prompt");
-  if (cfg.speaker_id("vivian") != kSpkVivian || cfg.speaker_id("ryan") != kSpkRyan)
+  if (!cfg.is_base() &&
+      (cfg.speaker_id("vivian") != kSpkVivian || cfg.speaker_id("ryan") != kSpkRyan))
     throw std::runtime_error("config.json speaker ids differ from the wired prompt");
   if (cfg.tts_pad_token_id != kTtsPad || cfg.tts_bos_token_id != kTtsBos ||
       cfg.tts_eos_token_id != kTtsEos)
@@ -230,6 +234,7 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
   {
     SafeTensors st(read_file(model_dir + "/model.safetensors"));
     im.validate_shapes(st);
+    if (cfg.is_base()) im.speaker_encoder = std::make_unique<SpeakerEncoder>(st, cfg);
     const size_t start = st.data_region_offset();
     const size_t bytes = st.bytes().size() - start;
     UMM_CUDA_CHECK(cudaMalloc(&im.d_bf, bytes));
@@ -295,6 +300,8 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
   UMM_CUDA_CHECK(cudaMalloc(&im.d_pad, H * sizeof(Bf16)));
   UMM_CUDA_CHECK(cudaMalloc(&im.d_bos, H * sizeof(Bf16)));
   UMM_CUDA_CHECK(cudaMalloc(&im.d_eos, H * sizeof(Bf16)));
+  if (cfg.is_base())
+    UMM_CUDA_CHECK(cudaMalloc(&im.d_xvector, H * sizeof(Bf16)));
   UMM_CUDA_CHECK(cudaMalloc(&im.cp_past, H * sizeof(Bf16)));
   UMM_CUDA_CHECK(cudaMalloc(&im.talker_kv,
                             sizeof(Bf16) * cfg.layers * 2 * kMaxSlots * KVW));
@@ -382,6 +389,7 @@ TtsEngine::~TtsEngine() {
   cudaFree(im.d_eos);
   cudaFree(im.d_bos);
   cudaFree(im.d_pad);
+  cudaFree(im.d_xvector);
   cudaFree(im.cp_past);
   cudaFree(im.d_inv);
   cudaFree(im.d_codes);
@@ -406,12 +414,41 @@ TtsEngine::~TtsEngine() {
   if (im.stream) cudaStreamDestroy(im.stream);
 }
 
+std::vector<float> TtsEngine::extract_speaker_embedding(
+    const std::vector<float>& ref_pcm_24k) {
+  if (!impl_->cfg.is_base())
+    throw std::invalid_argument("speaker extraction requires a Base model");
+  return impl_->speaker_encoder->extract(ref_pcm_24k);
+}
+
 std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
                                          int language_id, int speaker_id,
-                                         int max_frames,
-                                         const AbortCheck& abort,
-                                         SynthTimings* timings,
-                                         const StreamSink& on_chunk) {
+                                         int max_frames, const AbortCheck& abort,
+                                         SynthTimings* timings, const StreamSink& on_chunk) {
+  if (impl_->cfg.is_base())
+    throw std::invalid_argument("Base models require synthesize_clone with a speaker embedding");
+  return synthesize_impl(text_ids, language_id, speaker_id, nullptr, max_frames, abort,
+                         timings, on_chunk);
+}
+
+std::vector<float> TtsEngine::synthesize_clone(
+    const std::vector<int>& text_ids, int language_id,
+    const std::vector<float>& speaker_embedding, int max_frames, const AbortCheck& abort,
+    SynthTimings* timings, const StreamSink& on_chunk) {
+  if (!impl_->cfg.is_base())
+    throw std::invalid_argument("voice cloning requires a Base model");
+  if (speaker_embedding.size() != static_cast<size_t>(impl_->cfg.hidden))
+    throw std::invalid_argument("speaker embedding width does not match the talker");
+  for (float v : speaker_embedding)
+    if (!std::isfinite(v)) throw std::invalid_argument("speaker embedding contains non-finite data");
+  return synthesize_impl(text_ids, language_id, -1, &speaker_embedding, max_frames, abort,
+                         timings, on_chunk);
+}
+
+std::vector<float> TtsEngine::synthesize_impl(
+    const std::vector<int>& text_ids, int language_id, int speaker_id,
+    const std::vector<float>* speaker_embedding, int max_frames, const AbortCheck& abort,
+    SynthTimings* timings, const StreamSink& on_chunk) {
   Impl& im = *impl_;
   const TtsModelConfig& cfg = im.cfg;
   const int H = cfg.hidden, INTER = cfg.inter, HD = cfg.head_dim;
@@ -425,7 +462,16 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
                std::chrono::steady_clock::now() - started)
         .count();
   };
-  const PromptPlan plan = build_prompt_plan(text_ids, language_id, speaker_id);
+  if (speaker_embedding != nullptr) {
+    std::vector<Bf16> host(speaker_embedding->size());
+    for (size_t i = 0; i < host.size(); ++i)
+      host[i] = __float2bfloat16((*speaker_embedding)[i]);
+    UMM_CUDA_CHECK(cudaMemcpy(im.d_xvector, host.data(), H * sizeof(Bf16),
+                              cudaMemcpyHostToDevice));
+  }
+  const PromptPlan plan = speaker_embedding != nullptr
+                              ? build_clone_prompt_plan(text_ids, language_id)
+                              : build_prompt_plan(text_ids, language_id, speaker_id);
   const int L = static_cast<int>(plan.rows.size());
   if (L > 200) throw std::runtime_error("prompt too long");
 
@@ -443,6 +489,8 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
         gather_rows_t<Bf16>(im.wb("talker.model.codec_embedding.weight"), im.d_ids,
                             im.proj, 1, H, im.stream);
         src = im.proj;
+      } else if (term.kind == PromptTerm::kXVector) {
+        src = im.d_xvector;
       } else {
         src = term.kind == PromptTerm::kTtsPad ? im.d_pad
              : term.kind == PromptTerm::kTtsBos ? im.d_bos
@@ -772,3 +820,7 @@ std::vector<float> TtsEngine::synthesize(const std::vector<int>& text_ids,
 }
 
 }  // namespace umminfer::native
+
+// native/stage_cli enumerates engine.cpp directly; include this implementation
+// here so both CUDA executables link without changing the Stage source list.
+#include "speaker_encoder.cpp"

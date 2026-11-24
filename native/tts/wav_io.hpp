@@ -13,6 +13,10 @@ namespace umminfer::native {
 // 24000.
 std::string write_wav_pcm16_mono(const std::vector<float>& samples, uint32_t sample_rate);
 
+// Reads a RIFF PCM16 mono file and rejects a sample rate other than expected.
+std::vector<float> read_wav_pcm16_mono(const std::string& path,
+                                       uint32_t expected_sample_rate = 24000);
+
 // PCM16 statistics used by the verification harness.
 struct WavStats {
   uint32_t sample_rate = 0;

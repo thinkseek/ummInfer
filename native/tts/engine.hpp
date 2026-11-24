@@ -60,7 +60,21 @@ class TtsEngine {
                                 SynthTimings* timings = nullptr,
                                 const StreamSink& on_chunk = {});
 
+  // Base x-vector-only voice cloning from 24 kHz mono FP32 PCM.
+  std::vector<float> extract_speaker_embedding(const std::vector<float>& ref_pcm_24k);
+  std::vector<float> synthesize_clone(const std::vector<int>& text_ids, int language_id,
+                                      const std::vector<float>& speaker_embedding,
+                                      int max_frames, const AbortCheck& abort = {},
+                                      SynthTimings* timings = nullptr,
+                                      const StreamSink& on_chunk = {});
+
  private:
+  std::vector<float> synthesize_impl(const std::vector<int>& text_ids, int language_id,
+                                     int speaker_id,
+                                     const std::vector<float>* speaker_embedding,
+                                     int max_frames, const AbortCheck& abort,
+                                     SynthTimings* timings, const StreamSink& on_chunk);
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

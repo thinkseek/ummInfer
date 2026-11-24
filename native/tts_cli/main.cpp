@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// umm-tts-native: native Qwen3-TTS CustomVoice CLI.
+// umm-tts-native: native Qwen3-TTS CustomVoice and Base voice-cloning CLI.
 //   umm-tts-native --model DIR --text "..." --out out.wav
-//                 [--speaker vivian|ryan] [--language chinese|english]
-//                 [--gpu N] [--max-frames N]
+//                 [--speaker vivian|ryan] [--ref-audio ref_24k.wav]
+//                 [--language chinese|english] [--gpu N] [--max-frames N]
+#include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -31,17 +33,22 @@ int main(int argc, char** argv) {
   const std::string text = flag(argc, argv, "--text", "");
   const std::string out = flag(argc, argv, "--out", "");
   const std::string speaker = flag(argc, argv, "--speaker", "vivian");
+  const std::string ref_audio = flag(argc, argv, "--ref-audio", "");
+  const std::string embedding_dump = flag(argc, argv, "--dump-speaker-embedding", "");
   const std::string language = flag(argc, argv, "--language", "chinese");
   const int gpu = std::stoi(flag(argc, argv, "--gpu", "0"));
   const int max_frames = std::stoi(flag(argc, argv, "--max-frames", "8192"));
   if (model.empty() || text.empty() || out.empty()) {
     std::cerr << "usage: umm-tts-native --model DIR --text TEXT --out WAV "
-                 "[--speaker vivian|ryan] [--language chinese|english] [--gpu N] "
-                 "[--max-frames N] [--stream 1]\n";
+                 "[--speaker vivian|ryan] [--ref-audio WAV_24K] "
+                 "[--language chinese|english] [--gpu N] [--max-frames N] [--stream 1] "
+                 "[--dump-speaker-embedding PATH]\n";
     return 2;
   }
   try {
-    const int spk = speaker_id_from_name(speaker);
+    if (!embedding_dump.empty() && ref_audio.empty())
+      throw std::invalid_argument("--dump-speaker-embedding requires --ref-audio");
+    const int spk = ref_audio.empty() ? speaker_id_from_name(speaker) : 0;
     const int lang = language_id_from_name(language);
     Qwen2BpeTokenizer tok(model);
     const std::string wrapped = "<|im_start|>assistant\n" + text +
@@ -60,9 +67,29 @@ int main(int argc, char** argv) {
         streamed.insert(streamed.end(), chunk.begin(), chunk.end());
       };
     }
-    const std::vector<float> wav = engine.synthesize(
-        text_ids, lang, spk, max_frames, {}, &timings,
-        stream ? sink : TtsEngine::StreamSink());
+    std::vector<float> wav;
+    if (ref_audio.empty()) {
+      wav = engine.synthesize(text_ids, lang, spk, max_frames, {}, &timings,
+                              stream ? sink : TtsEngine::StreamSink());
+    } else {
+      const std::vector<float> ref = read_wav_pcm16_mono(ref_audio);
+      const auto speaker_started = std::chrono::steady_clock::now();
+      const std::vector<float> embedding = engine.extract_speaker_embedding(ref);
+      if (std::getenv("UMM_TTS_TIMINGS"))
+        std::cerr << "tts speaker_encoder_ms="
+                  << std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - speaker_started)
+                         .count()
+                  << "\n";
+      if (!embedding_dump.empty()) {
+        std::ofstream f(embedding_dump, std::ios::binary);
+        if (!f) throw std::runtime_error("cannot open embedding output " + embedding_dump);
+        f.write(reinterpret_cast<const char*>(embedding.data()),
+                static_cast<std::streamsize>(embedding.size() * sizeof(float)));
+      }
+      wav = engine.synthesize_clone(text_ids, lang, embedding, max_frames, {}, &timings,
+                                    stream ? sink : TtsEngine::StreamSink());
+    }
     if (stream) {
       size_t first_diff = 0;
       const bool identical = stream_matches(streamed, wav, &first_diff);

@@ -54,7 +54,7 @@ add_test(NAME tts_host_tests COMMAND tts_host_tests)
 
 # Config parsing and weight-shape plan for both wired sizes. Header-only, no
 # CUDA and no weights, so it runs on the development host.
-add_executable(tts_config_test tts_config_test.cpp)
+add_executable(tts_config_test tts_config_test.cpp speaker_encoder.cpp)
 target_link_libraries(tts_config_test PRIVATE umm_tts_host)
 add_test(NAME tts_config_test COMMAND tts_config_test)
 
