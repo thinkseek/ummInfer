@@ -342,7 +342,8 @@ def main():
         argv = ["--base-url", f"http://127.0.0.1:{port}",
                 "--cache-dir", str(Path(tmp) / "cache"),
                 "--model", "mock-unified", "--evidence-dir", tmp,
-                "--evidence-class", "contract-test"]
+                "--evidence-class", "contract-test", "--asr-route", "chat",
+                "--asr-vlm-max-tokens", "1"]
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(mb.md, "resolve_case", resolve_fixture), \
                 mock.patch.object(mb.md, "ensure_librispeech",
@@ -382,6 +383,18 @@ def main():
             if counts["public_contract"] != 0:
                 failures.append(f"public-contract failures: {counts}")
             rows = (round_dir / "cases.jsonl").read_text().splitlines()
+            decoded_rows = [json.loads(row) for row in rows]
+            for case_row in decoded_rows:
+                expected_tokens = (1 if case_row["task"] == "asr" else 256)
+                if case_row["request"]["max_tokens"] != expected_tokens:
+                    failures.append(f"{case_row['case_id']}: wrong VLM max_tokens")
+                request = case_row["request"]
+                if (request.get("temperature") != 0 or request.get("top_p") is not None
+                        or request.get("seed") is not None or request.get("retry") is not False):
+                    failures.append(f"{case_row['case_id']}: sampling contract drift")
+            if report["config"].get("timeout_s") != 180.0 or \
+                    report["config"].get("retry") is not False:
+                failures.append("runner timeout/retry config was not recorded")
             if len(rows) != manifest["total_cases"]:
                 failures.append(f"{len(rows)} case rows, expected "
                                 f"{manifest['total_cases']}")

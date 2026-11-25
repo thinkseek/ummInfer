@@ -1510,3 +1510,67 @@ against the 2 ms limit. The quiet Release rerun passed all three tests. No sourc
 or threshold was changed. The failed client-prefix invocation was rerun with the
 actual local dependency prefixes; it had failed before executing any client case.
 Final validation logs are under `/tmp/umm-task27-final-validation/`.
+
+## 20. Frozen three-round stability orchestrator, 2026-11-26
+
+Task 29 added `tools/multimodal_stability.py`, the declared
+`benchmarks/multimodal-stability-sm90.json` configuration, and
+`tests/multimodal_stability_test.py` on newest main
+`6e2b3f6f728e80b6aee9d2f53025814e74037f5b`. The accepted combined coverage
+auditor from `13d9274cd2cac340e8176879f7ecc5df86249c0d` is reused unchanged.
+No narrative, realtime echo/VAD, or controlled visual-form implementation is
+changed.
+
+This is an **offline orchestration/verification implementation, not another real
+GPU round**. The subsequent real three-round execution is **NOT_RUN**. No GPU,
+remote service, or resident endpoint was accessed. The exact real command,
+prerequisites, evidence layout, verdict rules, and isolation boundaries are in
+[benchmark-system.md section 5.1](benchmark-system.md#51-frozen-three-round-orchestrator).
+
+### 20.1 Accepted baseline binding checked locally
+
+The loader read the retained accepted combined audit without running inference:
+`coverage-audit.json` SHA-256
+`d4514acd07f280d9d7097dac45bd2b8caa85d9298f8caba22102ba28ead5f6a5`, 70 unique
+cases, five task aggregates, numeric primary/auxiliary metrics, matching manifest
+SHA-256 `599963a3…caa9a3`, and matching resolved-input contract digest
+`837b150a6a912edaf5351483169feb832e166c2680d1d613ad3d491931fe0d14`.
+Its original `BASELINE_REQUIRED` and `stability_pass_claim=false` labels remain
+unchanged. This local read validates baseline compatibility only; it is not a new
+measurement.
+
+The three historical evidence sources remain disjoint coverage inputs. The new
+orchestrator never merges them into a measured round. Each new round must execute
+all 70 cases itself under one frozen source/binary/model/data/request/topology
+contract. The accepted combined audit supplies the comparison reference, not a
+same-stack stability claim.
+
+### 20.2 CPU replay and remaining real requirements
+
+The deterministic replay uses real-shaped synthetic SSE responses, including raw
+answers/transcripts, unique VLM terminals, ASR-before-VLM ordering, terminal legs,
+and TTFT/`asr_final`/terminal/total timings. Its mechanical three-round result can
+be `replay_stability_verdict=STABILITY_PASS`, but the public result is always
+`NOT_REAL_EVIDENCE`, with `real_model_evidence=false`,
+`real_stability_pass_claim=false`, and `real_execution=NOT_RUN`.
+
+Before the real command, an operator must:
+
+1. place the accepted audit at the configured path and verify its pinned hash;
+2. stage the exact gateway/ASR/VLM binaries and model/config/available-weight
+   manifests declared in the config (the recorded binary-build source is
+   `e51f1d9098899ed9cb9a4dc9df1576e60b95e097`; available-byte hashes are not
+   upstream revision claims);
+3. verify all 70 pinned inputs in the isolated cache with the benchmark
+   downloader and use Python with `jieba 0.42.1`;
+4. start a healthy isolated loopback stack at `127.0.0.1:43399`, with ASR on
+   explicitly idle GPU 1 and VLM on explicitly idle GPU 7, retain launcher proof
+   of exclusivity, and leave GPU 0 unused;
+5. keep GPUs 2–6 and resident port 43301 unused and uncontacted, then record
+   `in_flight=0`, process/GPU cleanup, and the resulting full evidence seal.
+
+A hash mismatch must stop the run; operators must not rewrite the frozen config
+or accepted baseline mid-run to make a candidate pass. Any new binary/model/data
+stack requires a newly reviewed run configuration and a fresh three-round
+execution. No real `STABILITY_PASS` is claimed until that execution actually
+produces three consecutive complete matching rounds.

@@ -632,7 +632,9 @@ def request_summary(payload, resolved):
                               "bytes": len(resolved["audio"]),
                               "sha256": hashes.get("sent_audio")})
     return {"model": payload["model"], "stream": True,
-            "max_tokens": payload["max_tokens"], "parts": parts}
+            "temperature": payload["temperature"],
+            "top_p": payload.get("top_p"), "seed": payload.get("seed"),
+            "retry": False, "max_tokens": payload["max_tokens"], "parts": parts}
 
 
 # ---- scoring and classification ------------------------------------------
@@ -1111,8 +1113,12 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
                     record = client.transcribe(
                         item["audio"], args.asr_max_new_tokens)
                 else:
-                    payload = build_request(case, item, args.model,
-                                            args.max_tokens)
+                    payload = build_request(
+                        case, item, args.model,
+                        args.asr_vlm_max_tokens
+                        if case["task"] == "asr" and args.asr_route == "chat"
+                        and args.asr_vlm_max_tokens is not None
+                        else args.max_tokens)
                     request = request_summary(payload, item)
                     log.write(f"[{index}/{len(cases)}] {case_id}: "
                               "/v1/chat/completions")
@@ -1239,7 +1245,10 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
             "p95_tolerance": args.p95_tolerance,
             "quality_tolerance": QUALITY_TOLERANCE,
             "case_latency_cap_ms": args.case_latency_cap_ms,
+            "timeout_s": args.timeout,
+            "temperature": 0, "top_p": None, "seed": None, "retry": False,
             "max_tokens": args.max_tokens,
+            "asr_vlm_max_tokens": args.asr_vlm_max_tokens,
             "asr_max_new_tokens": args.asr_max_new_tokens,
             "max_rounds": MAX_ROUNDS,
             "required_consecutive_rounds": REQUIRED_CONSECUTIVE,
@@ -1317,6 +1326,8 @@ def parse_args(argv):
     parser.add_argument("--evidence-class", choices=("real", "contract-test"),
                         default="real")
     parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument("--asr-vlm-max-tokens", type=int, default=None,
+                        help="optional auxiliary VLM output cap for chat-route ASR")
     parser.add_argument("--asr-max-new-tokens", type=int, default=256)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--asr-route", choices=("audio", "chat"),
@@ -1334,7 +1345,8 @@ def parse_args(argv):
     args = parser.parse_args(argv)
     if args.rounds < 1 or args.rounds > MAX_ROUNDS:
         parser.error(f"--rounds must be 1..{MAX_ROUNDS}")
-    if args.max_tokens < 1 or args.asr_max_new_tokens < 1:
+    if args.max_tokens < 1 or args.asr_max_new_tokens < 1 or \
+            (args.asr_vlm_max_tokens is not None and args.asr_vlm_max_tokens < 1):
         parser.error("token limits must be positive")
     return args, parser
 

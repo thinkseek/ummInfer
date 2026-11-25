@@ -283,6 +283,137 @@ infrastructure failure, has a public-contract P0/P1, or is labelled
 `contract-test`. A later run must use the same manifest version and the same
 case ids; otherwise the baseline is rejected with `BASELINE_MISMATCH`.
 
+### 5.1 Frozen three-round orchestrator
+
+`tools/multimodal_stability.py` is the fail-closed orchestration layer for the
+real 70-case benchmark. Its declared configuration is
+`benchmarks/multimodal-stability-sm90.json`. It invokes the existing runner in a
+fresh Python process for **one warmup followed by exactly three measured
+full-manifest attempts**. It does not start, stop, restart, or probe the resident
+service, and it does not execute any GPU operation. The service and its isolated
+GPU topology are prepared and verified by the operator before invocation.
+
+The declared `source.commit: HEAD` is resolved once to a full commit; the
+resulting `run-config.json` is the frozen effective configuration. Live runs
+require a clean tracked checkout. The effective config binds:
+
+- source commit/tree and the exact runner and independent-auditor SHA-256;
+- gateway, ASR, and VLM binary paths, byte hashes, and actual binary-build source
+  commits (kept distinct from the harness checkout commit);
+- ASR/VLM model ids, config-file hashes, available-weight manifest hashes, and
+  every Safetensors file hash in those manifests;
+- manifest SHA-256, cache location, and a derived 70-case resolved-input hash map
+  (`case_input_sha256_digest`), checked again against the accepted baseline;
+- model name, greedy `temperature=0`, omitted `top_p`/`seed`, SSE, no retry,
+  `max_tokens=256`, `asr_vlm_max_tokens=1`, and `asr_max_new_tokens=256`;
+- the isolated loopback base URL and IPC namespace, distinct ASR/VLM assignments
+  on declared idle GPUs 0/1/7, and rejection of resident port 43301; and
+- manifest case order, warmup/measured counts, per-case quality tolerances, and
+  blocking per-task median and nearest-rank p95 relative tolerances.
+
+The one-token `asr_vlm_max_tokens` applies only to the auxiliary downstream VLM
+answer on chat-route standalone ASR; it does not cap ASR decoding. Other tasks
+use 256 tokens. This matches the accepted evidence's request shapes without
+combining separately executed subsets. The runner default remains unchanged when
+`--asr-vlm-max-tokens` is not supplied.
+
+The accepted input is the combined coverage audit whose SHA-256 is pinned in the
+config. A normal live run requires `real_model_evidence=true`, `status=PASS`, all
+70 unique cases with completed terminals and numeric metrics, matching manifest
+and input hashes, and the original `BASELINE_REQUIRED` /
+`stability_pass_claim=false` coverage-only labels. Missing, corrupt, synthetic,
+incomplete, mismatched, or self-claimed-stable baselines are rejected before any
+request. The combined audit remains a **coverage/reference baseline**: its three
+disjoint historical sources are never represented as one measured stack.
+
+Each measured `round-N/` must independently contain all 70 cases in manifest
+order under the same frozen config. No case may be borrowed from warmup, another
+round, or another source/binary/data set. The verifier imports the independent
+coverage auditor, not the runner's scoring/gate functions, to rebuild every
+response and transcript from raw SSE, recompute per-case metrics and aggregates,
+and validate unique completed VLM terminals, terminal legs, ASR-before-VLM order,
+input identities, and TTFT/`asr_final`/terminal/total timing coverage.
+
+`comparison.json` records every per-case primary and auxiliary quality delta and
+all aggregate quality deltas. Error rates regress when they increase; accuracy
+and keyword hit regress when they decrease. Every task's median **and p95** are
+blocking at the declared symmetric relative tolerance (10% in the committed
+config). This is intentionally stricter than the legacy runner's observation-only
+p95 and joint-latency policy. The small-task nearest-rank p95 remains the maximum
+and is not hidden.
+
+Missing cases, metrics, responses, terminals, or timings are `MISSING`, fail the
+round, and never enter a reduced-denominator comparison as zero. Numeric zero is
+retained as a measurement and listed separately in `zero_valued_metrics`.
+Infrastructure, public-contract, and case-cap performance failures are hard round
+failures. Quality failures are compared with the baseline, so the two accepted
+GSM8K misses remain visible without becoming transport failures. Case failures do
+not cause later measured attempts to be silently omitted; a fatal warmup,
+provenance, configuration, or orchestration error stops execution and fails the
+run.
+
+Verdicts are machine-readable in `summary.json` and `stability.json`:
+
+| Verdict | Meaning |
+| --- | --- |
+| `STABILITY_PASS` | Real mode only; exactly three consecutive complete matching rounds, all quality/latency/provenance checks green, one frozen config. |
+| `STABILITY_PENDING` | Preflight-only or incomplete verification with no failed attempted round; fewer than three clean measured rounds cannot pass. |
+| `BASELINE_REQUIRED` | Missing, unsafe, non-real, corrupt, incomplete, or mismatched accepted baseline; no requests are sent. |
+| `FAIL` | Any attempted partial/failed round, quality or latency tolerance breach, changed source/binary/model/weight/data/config, or orchestration error. |
+
+The replay command is CPU-only and uses deterministic real-shaped synthetic SSE:
+
+```sh
+python3 -I tools/multimodal_stability.py \
+  --replay-self-check --output /tmp/umm-stability-replay
+```
+
+Python must provide pinned `jieba 0.42.1`. Replay writes one warmup and three
+measured synthetic rounds, but its outer verdict is always
+`NOT_REAL_EVIDENCE`; only `replay_stability_verdict` may say `STABILITY_PASS`.
+`real_model_evidence=false`, `real_execution=NOT_RUN`, and
+`real_stability_pass_claim=false` remain explicit. Synthetic fixtures cannot be
+loaded as a real baseline.
+
+Evidence layout additions:
+
+```text
+<evidence>/
+  run-config.json            # fully resolved frozen effective config
+  schedule.json              # deterministic warmup + three full case orders
+  accepted-baseline.json     # byte copy of the pinned reference
+  warmup/                    # independently audited; never counted as measured
+  round-{1,2,3}/
+    cases.jsonl, events/, answers/, transcripts/, human_review/
+    report.json, failures.json
+    runner-summary.json, runner-stability.json, runner-run.log
+    verification.json        # independent raw-SSE/metric/timing audit
+    comparison.json          # per-case and aggregate baseline deltas
+    provenance.json          # actual source/binary/model/data/config identities
+    SHA256SUMS               # every file in this round except itself
+  summary.json, stability.json
+  SHA256SUMS                 # recursive; excludes only the root file itself
+```
+
+Real execution remains **NOT_RUN** in the CPU-only implementation task. After an
+operator has placed the accepted audit, exact pinned binaries, model roots and
+available-weight manifests at the paths in the config, verified all 70 cached
+inputs, and started the healthy isolated stack on `127.0.0.1:43399` with ASR on
+idle GPU 1 and VLM on idle GPU 7, the exact subsequent command is:
+
+```sh
+python3 -I tools/multimodal_stability.py \
+  --config benchmarks/multimodal-stability-sm90.json
+```
+
+Run it with the benchmark Python environment containing `jieba 0.42.1`. The
+orchestrator verifies the declared endpoint on every report and freezes the GPU
+declaration on every round; actual process/GPU exclusivity and cleanup are
+operator/launcher evidence, not properties inferred from HTTP. GPU 0 stays
+unused, GPUs 2–6 and resident port 43301 must not be used or contacted. A
+`--preflight-only` invocation validates all local pins and data and returns
+`STABILITY_PENDING` without sending benchmark requests.
+
 ## 6. Feedback, fix, canary, and re-release
 
 ```text
@@ -318,6 +449,9 @@ Rules:
 ```sh
 python3 -I tests/multimodal_benchmark_test.py
 python3 -I tests/multimodal_coverage_audit_test.py
+python3 -I tests/multimodal_stability_test.py
+python3 -I tools/multimodal_stability.py \
+  --replay-self-check --output /tmp/umm-stability-replay
 python3 -I tests/multimodal_benchmark.py --verify-data
 ```
 
@@ -335,3 +469,9 @@ identity; explicit subset reporting; the 64 KiB log cap; and a local
 server is a fixture and is never presented as model evidence. The separate
 coverage-auditor test checks independent metric arithmetic, missing-versus-zero
 handling, raw SSE/terminal validation, and corrupt or unsafe checksum rejection.
+The stability suite additionally checks deterministic schedule/evidence, full
+recursive seals, three-round replay, pending state, missing/corrupt/unsafe
+baselines, changed source/binary/model/weight/manifest/data/config rejection,
+per-case and aggregate quality deltas, independent median/p95 failures, failed
+cases, and partial-round non-merging. Its fixtures are always
+`NOT_REAL_EVIDENCE`.

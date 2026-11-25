@@ -1,0 +1,107 @@
+{
+  "schema_version": "umm-multimodal-stability-run/v1",
+  "run_id": "native-qwen38-asr70-sm90-v1",
+  "evidence_dir": "/tmp/umm-stability-sm90/evidence",
+  "source": {
+    "root": "..",
+    "commit": "HEAD",
+    "require_clean": true,
+    "harness_sha256": "934f3530f96c8f7736afb309c4e6a29ab0b66c98009c4496384e020664fa9c86",
+    "auditor_sha256": "79b47f07036e25ba5d82a83ec7e23acd7583603558fa2d0728353d3a9a541a16"
+  },
+  "baseline": {
+    "path": "/tmp/umm-stability-sm90/accepted/coverage-audit.json",
+    "sha256": "d4514acd07f280d9d7097dac45bd2b8caa85d9298f8caba22102ba28ead5f6a5"
+  },
+  "manifest": {
+    "path": "benchmarks/multimodal_manifest.json",
+    "sha256": "599963a3851d5ce02d740b8b06c423726bae5c9c1e07d1931708074c83caa9a3"
+  },
+  "cache_dir": "/tmp/umm-stability-sm90/cache",
+  "binaries": {
+    "gateway": {
+      "path": "/tmp/umm-stability-sm90/bin/umm-infer",
+      "sha256": "d2bc15821190c043a734576c422e8dbed61134e79b219de0516b71a10777a5e4",
+      "source_commit": "e51f1d9098899ed9cb9a4dc9df1576e60b95e097"
+    },
+    "asr": {
+      "path": "/tmp/umm-stability-sm90/bin/umm-native-stage-asr",
+      "sha256": "cf8962464aa3c44ad0f3f812c9f756dc2939b4038c3da1376cece96e9f234a81",
+      "source_commit": "e51f1d9098899ed9cb9a4dc9df1576e60b95e097"
+    },
+    "vlm": {
+      "path": "/tmp/umm-stability-sm90/bin/umm-native-stage-qwen38",
+      "sha256": "446661e9a99ebb00688a01f6e52f21dcfc20a995308f4f092664dae151fd3fc5",
+      "source_commit": "e51f1d9098899ed9cb9a4dc9df1576e60b95e097"
+    }
+  },
+  "models": {
+    "asr": {
+      "id": "Qwen3-ASR-1.7B local snapshot; upstream revision UNKNOWN",
+      "root": "/tmp/umm-stability-sm90/models/asr",
+      "config_files": {
+        "config.json": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f"
+      },
+      "weights_manifest": {
+        "path": "/tmp/umm-stability-sm90/provenance/asr-available-weights-SHA256SUMS",
+        "sha256": "3b50bdd28d2c87395edfcc7bf111161bb6e9addae8f4f7afdc4aa168538c634b"
+      }
+    },
+    "vlm": {
+      "id": "Qwen3.8-27B local snapshot; upstream revision UNKNOWN",
+      "root": "/tmp/umm-stability-sm90/models/qwen38",
+      "config_files": {
+        "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+      },
+      "weights_manifest": {
+        "path": "/tmp/umm-stability-sm90/provenance/qwen38-available-weights-SHA256SUMS",
+        "sha256": "b7a23bc59e1bbdba42ad309d484b319060d0c2623fbfb086778738fa6e461743"
+      }
+    }
+  },
+  "request": {
+    "model": "qwen3-native",
+    "temperature": 0.0,
+    "top_p": null,
+    "seed": null,
+    "max_tokens": 256,
+    "asr_vlm_max_tokens": 1,
+    "asr_max_new_tokens": 256,
+    "stream": true,
+    "asr_route": "chat",
+    "timeout_s": 180.0,
+    "case_latency_cap_ms": 120000,
+    "retry": false
+  },
+  "topology": {
+    "base_url": "http://127.0.0.1:43399",
+    "ipc_namespace": "/tmp/umm-stability-sm90/ipc",
+    "gpu_by_stage": {
+      "asr": 1,
+      "vlm": 7
+    },
+    "allowed_idle_gpus": [0, 1, 7],
+    "resident_port_forbidden": 43301
+  },
+  "schedule": {
+    "warmup_rounds": 1,
+    "measured_rounds": 3,
+    "case_order": "manifest",
+    "runner_timeout_s": 21600
+  },
+  "tolerances": {
+    "quality": {
+      "asr_en_wer": 0.02,
+      "asr_en_cer": 0.02,
+      "asr_zh_cer": 0.02,
+      "asr_zh_wer": 0.02,
+      "vqa_accuracy": 0.05,
+      "gsm8k_accuracy": 0.05,
+      "joint_asr_wer": 0.05,
+      "joint_keyword_hit": 0.05
+    },
+    "median_relative": 0.10,
+    "p95_relative": 0.10,
+    "latency_tasks": ["asr_en", "asr_zh", "gsm8k", "joint", "vqa"]
+  }
+}
