@@ -14,7 +14,8 @@ private func unifiedEvent(
     stage: String = "vlm", isFinal: Bool = false, error: String? = nil,
     artifact: [String: Any]? = nil, slotID: String? = nil,
     slotIndex: Int? = nil, mediaType: String? = nil, prompt: String? = nil,
-    textOffset: Int? = nil
+    textOffset: Int? = nil, continuityMode: String? = nil,
+    anchorSlotIndex: Int? = nil
 ) -> [String: Any] {
     var object: [String: Any] = [
         "kind": kind, "seq": seq, "session_id": session, "stage": stage,
@@ -27,6 +28,8 @@ private func unifiedEvent(
     if let mediaType { object["media_type"] = mediaType }
     if let prompt { object["prompt"] = prompt }
     if let textOffset { object["text_offset"] = textOffset }
+    if let continuityMode { object["continuity_mode"] = continuityMode }
+    if let anchorSlotIndex { object["anchor_slot_index"] = anchorSlotIndex }
     return object
 }
 
@@ -101,7 +104,49 @@ final class UnifiedDecodeTests: XCTestCase {
         XCTAssertEqual(event.mediaType, "image")
         XCTAssertEqual(event.prompt, "a glowing red lantern over a misty lake")
         XCTAssertEqual(event.textOffset, 128)
+        XCTAssertNil(event.continuityMode)
+        XCTAssertNil(event.anchorSlotIndex)
         XCTAssertFalse(event.kind.isTerminal)
+    }
+
+    func testDecodesVisualSlotContinuityAttributionAndToleratesNulls() throws {
+        let chained = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "visual_slot", seq: 1, stage: "video",
+            slotID: "slot-1", slotIndex: 1, mediaType: "video",
+            prompt: "camera pans past the lantern", textOffset: 200,
+            continuityMode: "i2v_chain", anchorSlotIndex: 0)))
+        XCTAssertEqual(chained.kind, .visualSlot)
+        XCTAssertEqual(chained.continuityMode, "i2v_chain")
+        XCTAssertEqual(chained.anchorSlotIndex, 0)
+
+        let anchored = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "visual_slot", seq: 0, stage: "image",
+            slotID: "slot-0", slotIndex: 0, mediaType: "image",
+            prompt: "lantern over lake", textOffset: 40,
+            continuityMode: "prompt_anchor")))
+        XCTAssertEqual(anchored.continuityMode, "prompt_anchor")
+        XCTAssertNil(anchored.anchorSlotIndex)
+
+        var nullFields = unifiedEvent(
+            kind: "visual_slot", seq: 2, stage: "image",
+            slotID: "slot-2", slotIndex: 2, mediaType: "image")
+        nullFields["continuity_mode"] = NSNull()
+        nullFields["anchor_slot_index"] = NSNull()
+        let nullable = try UnifiedDecode.decode(eventData(nullFields))
+        XCTAssertNil(nullable.continuityMode)
+        XCTAssertNil(nullable.anchorSlotIndex)
+
+        var badMode = unifiedEvent(
+            kind: "visual_slot", seq: 3, stage: "video",
+            slotID: "slot-3", slotIndex: 3, mediaType: "video")
+        badMode["continuity_mode"] = 42
+        XCTAssertThrowsError(try UnifiedDecode.decode(eventData(badMode)))
+
+        var badAnchor = unifiedEvent(
+            kind: "visual_slot", seq: 4, stage: "video",
+            slotID: "slot-4", slotIndex: 4, mediaType: "video")
+        badAnchor["anchor_slot_index"] = true
+        XCTAssertThrowsError(try UnifiedDecode.decode(eventData(badAnchor)))
     }
 
     func testVisualSlotRequiresSlotIdentity() throws {

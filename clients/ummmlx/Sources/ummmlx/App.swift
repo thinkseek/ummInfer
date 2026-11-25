@@ -290,6 +290,22 @@ struct RootView: View {
                             .font(.system(size: theme.captionSize))
                             .foregroundStyle(theme.tertiary)
                     }
+                    HStack(spacing: 10) {
+                        Picker("Continuity", selection: $model.narrativeContinuityMode) {
+                            ForEach(NarrativeContinuityMode.allCases, id: \.self) { mode in
+                                Text(mode.displayLabel).tag(mode)
+                            }
+                        }
+                        .frame(width: 196)
+                        .disabled(!model.narrativeMode || model.isRunning || model.isLiveVoiceActive)
+                        .help("Cross-slot visual continuity across narrative visual beats")
+                        .accessibilityIdentifier("narrativeContinuity")
+                        labeledField("Style anchor", text: $model.narrativeStyleAnchor,
+                                     width: 240, placeholder: "Optional style cue (≤256B)")
+                            .disabled(!model.narrativeMode || model.isRunning || model.isLiveVoiceActive)
+                            .help("Optional cross-slot style cue (max 256 UTF-8 bytes)")
+                            .accessibilityIdentifier("narrativeStyleAnchor")
+                    }
                 }
                 .padding(.top, 4)
             }
@@ -462,6 +478,18 @@ struct RootView: View {
                 Image(systemName: slot.activeKind == "video" ? "video" : "photo")
                     .foregroundStyle(theme.accent)
                     .accessibilityHidden(true)
+                if let badge = slot.continuityBadgeText {
+                    let isChain = slot.continuityMode == NarrativeContinuityMode.i2vChain.rawValue
+                    Text(badge)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(isChain ? theme.accent : theme.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(isChain ? theme.accent.opacity(0.12) : theme.hover)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(isChain ? theme.accent.opacity(0.35) : theme.line))
+                        .accessibilityIdentifier("visual-slot-continuity")
+                }
                 Text(slot.prompt.isEmpty ? "Visual \(slot.slotIndex + 1)" : slot.prompt)
                     .font(.system(size: theme.captionSize))
                     .foregroundStyle(theme.secondary)

@@ -237,6 +237,22 @@ private final class UnifiedSSEProtocol: URLProtocol {
                   extra: ["slot_id": "slot-0", "slot_index": 0,
                           "media_type": "image"]),
             frame(kind: "complete", seq: 3, text: "Story. ")
+        ]),
+        // Cross-slot visual continuity: prompt-anchored image followed by I2V-chained video.
+        "10.1.2.14": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Act one. "),
+            frame(kind: "visual_slot", seq: 1, stage: "image", extra: [
+                "slot_id": "slot-0", "slot_index": 0, "media_type": "image",
+                "prompt": "lantern in rain", "text_offset": 9,
+                "continuity_mode": "prompt_anchor"
+            ]),
+            frame(kind: "vlm_delta", seq: 2, text: "Act two."),
+            frame(kind: "visual_slot", seq: 3, stage: "video", extra: [
+                "slot_id": "slot-1", "slot_index": 1, "media_type": "video",
+                "prompt": "lantern swaying in wind", "text_offset": 17,
+                "continuity_mode": "i2v_chain", "anchor_slot_index": 0
+            ]),
+            frame(kind: "complete", seq: 4, text: "Act one. Act two.")
         ])
     ]
 
@@ -1195,5 +1211,156 @@ final class ChatClientUnifiedTests: XCTestCase {
                 as? [String: Any])
         XCTAssertEqual(try XCTUnwrap(swapBody["teacache_thresh"] as? Double),
                        0.05, accuracy: 1e-9)
+    }
+
+    @MainActor
+    func testNarrativeContinuityDefaultsOmitWireKeysAndOptInEncodesExactSchema() throws {
+        // Default .off + nil/empty omits continuity_mode and style_anchor completely.
+        let defaultNarrative = NarrativeOptions()
+        XCTAssertEqual(defaultNarrative.continuityMode, .off)
+        XCTAssertNil(defaultNarrative.styleAnchor)
+
+        var defaultOpts = ChatStreamOptions()
+        defaultOpts.image = ImageOptions()
+        defaultOpts.narrative = defaultNarrative
+        let defaultBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "story")],
+            options: defaultOpts)
+        let defaultNav = try XCTUnwrap(defaultBody["narrative"] as? [String: Any])
+        XCTAssertEqual(defaultNav.count, 4)
+        XCTAssertNil(defaultNav["continuity_mode"])
+        XCTAssertNil(defaultNav["style_anchor"])
+
+        // Whitespace-only styleAnchor with .off also omits both keys.
+        var whitespaceOpts = ChatStreamOptions()
+        whitespaceOpts.image = ImageOptions()
+        whitespaceOpts.narrative = NarrativeOptions(
+            continuityMode: .off, styleAnchor: "  \t\n  ")
+        let whitespaceBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "story")],
+            options: whitespaceOpts)
+        let whitespaceNav = try XCTUnwrap(whitespaceBody["narrative"] as? [String: Any])
+        XCTAssertEqual(whitespaceNav.count, 4)
+        XCTAssertNil(whitespaceNav["continuity_mode"])
+        XCTAssertNil(whitespaceNav["style_anchor"])
+
+        // .i2vChain + valid styleAnchor (trimmed, including exact 256 UTF-8 byte multi-byte cue).
+        let exact256 = String(repeating: "墨", count: 85) + "a"
+        XCTAssertEqual(exact256.utf8.count, 256)
+        var chainOpts = ChatStreamOptions()
+        chainOpts.image = ImageOptions()
+        chainOpts.video = VideoOptions()
+        chainOpts.narrative = NarrativeOptions(
+            enabled: true, visualMode: "auto", maxSlots: 3, allowTextOnly: true,
+            continuityMode: .i2vChain, styleAnchor: "  \(exact256)  ")
+        let chainBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "story")],
+            options: chainOpts)
+        let chainNav = try XCTUnwrap(chainBody["narrative"] as? [String: Any])
+        XCTAssertEqual(chainNav["continuity_mode"] as? String, "i2v_chain")
+        XCTAssertEqual(chainNav["style_anchor"] as? String, exact256)
+
+        // .promptAnchor with nil styleAnchor omits style_anchor.
+        var anchorOpts = ChatStreamOptions()
+        anchorOpts.image = ImageOptions()
+        anchorOpts.narrative = NarrativeOptions(
+            continuityMode: .promptAnchor, styleAnchor: nil)
+        let anchorBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "story")],
+            options: anchorOpts)
+        let anchorNav = try XCTUnwrap(anchorBody["narrative"] as? [String: Any])
+        XCTAssertEqual(anchorNav["continuity_mode"] as? String, "prompt_anchor")
+        XCTAssertNil(anchorNav["style_anchor"])
+    }
+
+    @MainActor
+    func testValidateStyleAnchorRejectsOversizedUTF8BeforeTransport() async throws {
+        XCTAssertNil(try validateStyleAnchor(""))
+        XCTAssertNil(try validateStyleAnchor("   \n\t "))
+        let exact256 = String(repeating: "风", count: 85) + "a"
+        XCTAssertEqual(try validateStyleAnchor(" \(exact256) "), exact256)
+
+        let overASCII = String(repeating: "a", count: 257)
+        let overCJK = String(repeating: "风", count: 86) // 86 chars, 258 UTF-8 bytes
+        XCTAssertEqual(overCJK.count, 86)
+        XCTAssertEqual(overCJK.utf8.count, 258)
+        XCTAssertThrowsError(try validateStyleAnchor(overASCII))
+        XCTAssertThrowsError(try validateStyleAnchor(overCJK))
+
+        // ChatClient.stream must reject >256 UTF-8 bytes before URLSession.
+        UnifiedSSEProtocol.resetBodies()
+        var opts = ChatStreamOptions()
+        opts.image = ImageOptions()
+        opts.narrative = NarrativeOptions(
+            continuityMode: .i2vChain, styleAnchor: overCJK)
+        do {
+            _ = try await makeClient().stream(
+                base: "http://10.1.2.14/v1", model: "m",
+                messages: [ChatMessage(role: "user", content: "story")],
+                options: opts) { _ in }
+            XCTFail("oversized style_anchor must fail before URLSession")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("256 UTF-8 bytes"))
+        }
+        XCTAssertTrue(UnifiedSSEProtocol.bodies().isEmpty)
+    }
+
+    @MainActor
+    func testChatModelStyleAnchorValidationPreservesDraftAndDecodesContinuityBadges() async throws {
+        UnifiedSSEProtocol.resetBodies()
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        try artifactBytes.write(to: imageURL)
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        model.endpoint = "http://10.1.2.14/v1"
+        model.model = "m"
+        model.imageOutput = true
+        model.videoOutput = true
+        model.narrativeMode = true
+        model.narrativeContinuityMode = .i2vChain
+        model.narrativeStyleAnchor = String(repeating: "景", count: 86) // 258 UTF-8 bytes
+        model.attachedImageURL = imageURL
+        model.prompt = "two-act lantern tale"
+        model.send()
+
+        XCTAssertFalse(model.isRunning)
+        XCTAssertEqual(model.status, "Configuration error")
+        XCTAssertTrue(model.error?.contains("256 UTF-8 bytes") == true)
+        XCTAssertEqual(model.prompt, "two-act lantern tale",
+                       "validation failure must preserve draft prompt")
+        XCTAssertEqual(model.attachedImageURL, imageURL,
+                       "validation failure must preserve attachments")
+        XCTAssertTrue(model.turns.isEmpty)
+        XCTAssertTrue(UnifiedSSEProtocol.bodies().isEmpty,
+                      "oversized style_anchor must not hit URLSession")
+
+        // Fix style anchor and send: wire body carries both fields and slots decode badges.
+        model.narrativeStyleAnchor = "  warm watercolor ink  "
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(model.isRunning)
+        XCTAssertEqual(model.status, "Completed · stop")
+        XCTAssertEqual(UnifiedSSEProtocol.bodies().count, 1)
+
+        let sent = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: UnifiedSSEProtocol.bodies()[0]) as? [String: Any])
+        let nav = try XCTUnwrap(sent["narrative"] as? [String: Any])
+        XCTAssertEqual(nav["continuity_mode"] as? String, "i2v_chain")
+        XCTAssertEqual(nav["style_anchor"] as? String, "warm watercolor ink")
+
+        let turn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        let slots = turn.blocks.compactMap(\.visualSlot)
+        XCTAssertEqual(slots.count, 2)
+        XCTAssertEqual(slots[0].continuityMode, "prompt_anchor")
+        XCTAssertNil(slots[0].anchorSlotIndex)
+        XCTAssertEqual(slots[0].continuityBadgeText, "Anchor")
+        XCTAssertEqual(slots[1].continuityMode, "i2v_chain")
+        XCTAssertEqual(slots[1].anchorSlotIndex, 0)
+        XCTAssertEqual(slots[1].continuityBadgeText, "I2V ← Slot 1")
     }
 }

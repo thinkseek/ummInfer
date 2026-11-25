@@ -18,6 +18,21 @@ struct VisualSlotState: Identifiable, Equatable {
     /// Identifies the in-flight swap request, so a stale result is dropped
     /// after the user swapped again or a cached kind was shown instead.
     var swapToken: UUID?
+    /// Optional cross-slot continuity metadata reported on `visual_slot` events.
+    var continuityMode: String? = nil
+    /// Optional 0-based anchor slot index when chained via I2V.
+    var anchorSlotIndex: Int? = nil
+
+    var continuityBadgeText: String? {
+        if continuityMode == NarrativeContinuityMode.i2vChain.rawValue,
+           let anchorSlotIndex, anchorSlotIndex >= 0 {
+            return "I2V ← Slot \(anchorSlotIndex + 1)"
+        }
+        if continuityMode == NarrativeContinuityMode.promptAnchor.rawValue {
+            return "Anchor"
+        }
+        return nil
+    }
 }
 
 /// A run of assistant prose or an inline visual card. Prose after a visual
@@ -88,6 +103,8 @@ final class ChatModel: ObservableObject {
     @Published var narrativeVisualMode = "auto"
     @Published var narrativeMaxSlots = 3
     @Published var narrativeAllowTextOnly = true
+    @Published var narrativeContinuityMode: NarrativeContinuityMode = .off
+    @Published var narrativeStyleAnchor = ""
     @Published var maxTokensText = "256"
     @Published var temperatureText = "0"
     @Published var topPText = ""
@@ -231,6 +248,16 @@ final class ChatModel: ObservableObject {
             status = "Configuration error"
             return
         }
+        let validatedStyleAnchor: String?
+        do {
+            validatedStyleAnchor = narrativeMode
+                ? try NarrativeOptions.validateStyleAnchor(narrativeStyleAnchor)
+                : nil
+        } catch {
+            self.error = error.localizedDescription
+            status = "Configuration error"
+            return
+        }
         var attachedImageDataURL: String?
         var attachedImageBytes: Data?
         var attachedVideoDataURL: String?
@@ -350,7 +377,9 @@ final class ChatModel: ObservableObject {
             options.narrative = NarrativeOptions(
                 enabled: true, visualMode: mode,
                 maxSlots: min(max(narrativeMaxSlots, 1), 6),
-                allowTextOnly: narrativeAllowTextOnly)
+                allowTextOnly: narrativeAllowTextOnly,
+                continuityMode: narrativeContinuityMode,
+                styleAnchor: validatedStyleAnchor)
         }
 
         stopStreamingAudio()
@@ -427,7 +456,9 @@ final class ChatModel: ObservableObject {
                                 slotID: slotID, slotIndex: slotIndex,
                                 prompt: event.prompt,
                                 activeKind: isVideo ? "video" : "image",
-                                isLoading: true)))
+                                isLoading: true,
+                                continuityMode: event.continuityMode,
+                                anchorSlotIndex: event.anchorSlotIndex)))
                         }
                     case .legError:
                         let detail = event.error.isEmpty

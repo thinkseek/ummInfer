@@ -102,9 +102,32 @@ struct VideoFrameSelectionOptions: Equatable {
     }
 }
 
+/// Cross-slot visual continuity mode for interleaved narrative turns.
+enum NarrativeContinuityMode: String, CaseIterable, Equatable {
+    case off = "off"
+    case promptAnchor = "prompt_anchor"
+    case i2vChain = "i2v_chain"
+
+    var displayLabel: String {
+        switch self {
+        case .off: return "Off"
+        case .promptAnchor: return "Prompt anchor"
+        case .i2vChain: return "I2V chain"
+        }
+    }
+}
+
+/// Pure validator for `narrative.style_anchor`: trims whitespace, returns nil
+/// when empty, and rejects strings exceeding 256 UTF-8 bytes before transport.
+func validateStyleAnchor(_ text: String) throws -> String? {
+    try NarrativeOptions.validateStyleAnchor(text)
+}
+
 /// Interleaved narrative mode: the server's VLM director inserts visual beats
 /// into the prose and emits a `visual_slot` event for each one.
 struct NarrativeOptions: Equatable {
+    static let maxStyleAnchorUTF8Bytes = 256
+
     var enabled = true
     /// "auto", "image" or "video".
     var visualMode = "auto"
@@ -113,6 +136,27 @@ struct NarrativeOptions: Equatable {
     /// When true in auto mode, allows zero-visual-slot pure-text answers for
     /// math, code, or factual prompts.
     var allowTextOnly = true
+    /// Cross-slot visual continuity mode; `.off` is omitted on the wire.
+    var continuityMode: NarrativeContinuityMode = .off
+    /// Optional trimmed style cue (max 256 UTF-8 bytes); omitted when nil/empty.
+    var styleAnchor: String? = nil
+
+    static func validateStyleAnchor(_ text: String) throws -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let byteCount = trimmed.utf8.count
+        guard byteCount <= maxStyleAnchorUTF8Bytes else {
+            throw ChatClientError.invalidEndpoint(
+                "Style anchor must be at most \(maxStyleAnchorUTF8Bytes) UTF-8 bytes (currently \(byteCount) bytes).")
+        }
+        return trimmed
+    }
+
+    func validate() throws {
+        if let styleAnchor {
+            _ = try Self.validateStyleAnchor(styleAnchor)
+        }
+    }
 }
 
 struct ChatStreamOptions: Equatable {
@@ -463,12 +507,22 @@ final class ChatClient {
             body["video"] = object
         }
         if let narrative = options.narrative {
-            body["narrative"] = [
+            var object: [String: Any] = [
                 "enabled": narrative.enabled,
                 "visual_mode": narrative.visualMode,
                 "max_slots": narrative.maxSlots,
                 "allow_text_only": narrative.allowTextOnly
             ]
+            if narrative.continuityMode != .off {
+                object["continuity_mode"] = narrative.continuityMode.rawValue
+            }
+            if let rawAnchor = narrative.styleAnchor {
+                let trimmed = rawAnchor.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    object["style_anchor"] = trimmed
+                }
+            }
+            body["narrative"] = object
         }
         return body
     }
@@ -573,6 +627,7 @@ final class ChatClient {
                          onArtifact: ((GeneratedArtifact) -> Void)?,
                          onAudioChunk: ((AudioStreamChunk) -> Void)?) async throws -> ChatCompletion {
         try options.videoFrameSelection?.validate()
+        try options.narrative?.validate()
         let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw ChatClientError.modelRequired }
         let url = try Self.chatURL(base: base)

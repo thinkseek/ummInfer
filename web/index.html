@@ -195,6 +195,16 @@
     padding: 2px 6px; border-radius: 4px; background: var(--hover); color: var(--secondary);
   }
   .badge.image { color: var(--accent); }
+  .badge.continuity {
+    text-transform: none; letter-spacing: 0; font-weight: 500;
+    border: 1px solid var(--line);
+  }
+  .badge.continuity.i2v-chain {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  .badge.continuity.prompt-anchor { color: var(--secondary); }
   .slot-media {
     position: relative; min-height: 168px; border-radius: var(--r-control);
     overflow: hidden; background: var(--surface);
@@ -320,6 +330,12 @@
   </select></label>
   <label>Max slots<input id="maxSlots" type="number" min="1" max="4" value="3" style="width:64px"></label>
   <label class="check" title="In Narrative mode, allow pure-text responses for math, code, or factual prompts without redundant visuals"><input type="checkbox" id="allowTextOnly" checked> Smart text-only</label>
+  <label title="Cross-slot visual continuity across narrative visual beats">Continuity<select id="narrativeContinuity">
+    <option value="off" selected>Off</option>
+    <option value="prompt_anchor">Prompt anchor</option>
+    <option value="i2v_chain">I2V chain</option>
+  </select></label>
+  <label title="Optional cross-slot style cue (max 256 UTF-8 bytes)">Style anchor<input id="styleAnchor" type="text" placeholder="Optional style cue (≤256B)" style="width:190px"></label>
   <label class="check" title="Enable Wan2.2 TeaCache (0.05) for sub-10s video generation"><input type="checkbox" id="fastVideo"> Fast video</label>
   <details id="advanced">
     <summary>Options</summary>
@@ -389,7 +405,8 @@ const ui = {
   pickAudio: $('pickAudio'), mic: $('mic'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
   narrative: $('narrative'), visualMode: $('visualMode'), maxSlots: $('maxSlots'),
-  allowTextOnly: $('allowTextOnly'), fastVideo: $('fastVideo'),
+  allowTextOnly: $('allowTextOnly'), narrativeContinuity: $('narrativeContinuity'),
+  styleAnchor: $('styleAnchor'), fastVideo: $('fastVideo'),
   voiceToggle: $('voiceToggle'), voiceWave: $('voiceWave'),
   voiceStatus: $('voiceStatus'), voiceMute: $('voiceMute'), voiceStop: $('voiceStop'),
   realtimeToggle: $('realtimeToggle'), realtimeStatus: $('realtimeStatus'),
@@ -426,7 +443,8 @@ const SAME_ORIGIN_ENDPOINT =
 const SETTINGS = ['endpoint', 'realtimeEndpoint', 'model', 'voice', 'maxTokens', 'temperature', 'topP',
                   'seed', 'imageSize', 'imageSteps', 'videoSize', 'videoSeconds',
                   'videoFrames', 'videoSteps', 'videoGuidance', 'videoFramePolicy',
-                  'videoMotionThreshold', 'videoSceneThreshold', 'visualMode', 'maxSlots'];
+                  'videoMotionThreshold', 'videoSceneThreshold', 'visualMode', 'maxSlots',
+                  'narrativeContinuity', 'styleAnchor'];
 for (const key of SETTINGS) {
   const saved = localStorage.getItem('ummweb.' + key);
   if (saved !== null) ui[key].value = saved;
@@ -1030,7 +1048,7 @@ function appendText(delta) {
 
 // ---------- visual slot cards (interleaved narrative) ----------
 
-function createSlot(id, prompt, kind) {
+function createSlot(id, prompt, kind, continuity = null) {
   const el = document.createElement('div');
   el.className = 'slot';
   el.dataset.slot = id;
@@ -1040,11 +1058,19 @@ function createSlot(id, prompt, kind) {
   const badge = document.createElement('span');
   badge.className = 'badge ' + kind;
   badge.textContent = kind === 'video' ? 'Video' : 'Image';
+  head.append(badge);
+  if (continuity) {
+    const continuityBadge = document.createElement('span');
+    continuityBadge.className = 'badge continuity ' + continuity.kind;
+    continuityBadge.textContent = continuity.text;
+    continuityBadge.dataset.continuity = continuity.kind;
+    head.append(continuityBadge);
+  }
   const caption = document.createElement('span');
   caption.className = 'slot-caption';
   caption.textContent = prompt;
   caption.title = prompt;
-  head.append(badge, caption);
+  head.append(caption);
 
   const media = document.createElement('div');
   media.className = 'slot-media';
@@ -1136,9 +1162,10 @@ function onVisualSlot(unified) {
   if (turn.tailText) turn.tailText.classList.remove('caret');
   turn.tailText = null;
   const kind = (unified.media_type || unified.stage) === 'video' ? 'video' : 'image';
-  const slot = createSlot(unified.slot_id || `slot-${turn.slots.size}`,
-                          unified.prompt || '', kind);
-  turn.slots.set(unified.slot_id || `slot-${turn.slots.size}`, slot);
+  const slotId = unified.slot_id || `slot-${turn.slots.size}`;
+  const continuity = visualSlotContinuityBadge(unified);
+  const slot = createSlot(slotId, unified.prompt || '', kind, continuity);
+  turn.slots.set(slotId, slot);
   turn.flow.append(slot.el);
   scrollToEnd();
 }
@@ -2029,7 +2056,8 @@ async function consume(payload, st) {
 
 function syncNarrativeControls() {
   const disabled = running || !ui.narrative.checked;
-  for (const control of [ui.visualMode, ui.maxSlots, ui.allowTextOnly]) {
+  for (const control of [ui.visualMode, ui.maxSlots, ui.allowTextOnly,
+                         ui.narrativeContinuity, ui.styleAnchor]) {
     control.disabled = disabled;
     control.closest('label')?.classList.toggle('dimmed', disabled);
   }
@@ -2052,7 +2080,8 @@ function setBusy(busy) {
     ui.temperature, ui.topP, ui.seed, ui.apiKey, ui.imageSize, ui.imageSteps,
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
-    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly, ui.fastVideo,
+    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly,
+    ui.narrativeContinuity, ui.styleAnchor, ui.fastVideo,
     ui.videoFramePolicy, ui.videoMotionThreshold, ui.videoSceneThreshold]) {
     control.disabled = busy;
   }
@@ -2065,6 +2094,8 @@ ui.narrative.addEventListener('change', () => {
   syncNarrativeControls();
 });
 ui.allowTextOnly.addEventListener('change', saveSettings);
+ui.narrativeContinuity.addEventListener('change', saveSettings);
+ui.styleAnchor.addEventListener('change', saveSettings);
 ui.fastVideo.addEventListener('change', saveSettings);
 ui.videoFramePolicy.addEventListener('change', () => {
   saveSettings();
@@ -2138,6 +2169,61 @@ function videoURLPart(dataURL, frameSelection) {
 }
 // VIDEO_FRAME_SELECTION_END
 
+// NARRATIVE_CONTINUITY_BEGIN
+const MAX_STYLE_ANCHOR_BYTES = 256;
+const VALID_CONTINUITY_MODES = new Set(['off', 'prompt_anchor', 'i2v_chain']);
+
+function validateStyleAnchor(raw) {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed) return '';
+  const byteLength = new TextEncoder().encode(trimmed).length;
+  if (byteLength > MAX_STYLE_ANCHOR_BYTES) {
+    throw new Error(`Style anchor must be at most ${MAX_STYLE_ANCHOR_BYTES} UTF-8 bytes (currently ${byteLength} bytes).`);
+  }
+  return trimmed;
+}
+
+function buildNarrativeConfig({
+  visual_mode = 'auto',
+  max_slots = 3,
+  allow_text_only = true,
+  continuity_mode = 'off',
+  style_anchor = '',
+} = {}) {
+  const mode = String(continuity_mode || 'off');
+  if (!VALID_CONTINUITY_MODES.has(mode)) {
+    throw new Error("Continuity mode must be 'off', 'prompt_anchor', or 'i2v_chain'.");
+  }
+  const anchor = validateStyleAnchor(style_anchor);
+  const slotsVal = Number.parseInt(String(max_slots ?? '').trim(), 10);
+  const narrative = {
+    enabled: true,
+    visual_mode: visual_mode || 'auto',
+    max_slots: Number.isInteger(slotsVal) ? Math.min(6, Math.max(1, slotsVal)) : 3,
+    allow_text_only: Boolean(allow_text_only),
+  };
+  if (mode !== 'off') {
+    narrative.continuity_mode = mode;
+  }
+  if (anchor) {
+    narrative.style_anchor = anchor;
+  }
+  return narrative;
+}
+
+function visualSlotContinuityBadge(unified) {
+  const mode = typeof unified?.continuity_mode === 'string' ? unified.continuity_mode : '';
+  const anchorIdx = unified?.anchor_slot_index;
+  if (mode === 'i2v_chain' && Number.isInteger(anchorIdx) && anchorIdx >= 0) {
+    return { text: `I2V ← Slot ${anchorIdx + 1}`, kind: 'i2v-chain' };
+  }
+  if (mode === 'prompt_anchor') {
+    return { text: 'Anchor', kind: 'prompt-anchor' };
+  }
+  return null;
+}
+// NARRATIVE_CONTINUITY_END
+
 async function send() {
   if (running) return;
   const text = ui.prompt.value.trim();
@@ -2159,6 +2245,25 @@ async function send() {
       ? parseVideoFrameSelection(ui.videoFramePolicy.value,
                                  ui.videoMotionThreshold.value,
                                  ui.videoSceneThreshold.value)
+      : undefined;
+  } catch (err) {
+    setStatus('Configuration error', false);
+    showError(err.message);
+    return;
+  }
+
+  const narrativeOn = ui.narrative.checked;
+  const visualMode = ui.visualMode.value || 'auto';
+  let narrativeConfig;
+  try {
+    narrativeConfig = narrativeOn
+      ? buildNarrativeConfig({
+          visual_mode: visualMode,
+          max_slots: ui.maxSlots.value,
+          allow_text_only: ui.allowTextOnly.checked,
+          continuity_mode: ui.narrativeContinuity.value,
+          style_anchor: ui.styleAnchor.value,
+        })
       : undefined;
   } catch (err) {
     setStatus('Configuration error', false);
@@ -2202,8 +2307,6 @@ async function send() {
   }
 
   const modalities = new Set(['text']);
-  const narrativeOn = ui.narrative.checked;
-  const visualMode = ui.visualMode.value || 'auto';
   if (narrativeOn) {
     if (visualMode !== 'video') {
       modalities.add('image');
@@ -2213,13 +2316,7 @@ async function send() {
       modalities.add('video');
       body.video = videoConfig();
     }
-    const slotsVal = Number.parseInt(ui.maxSlots.value.trim(), 10);
-    body.narrative = {
-      enabled: true,
-      visual_mode: visualMode,
-      max_slots: Number.isInteger(slotsVal) ? Math.min(6, Math.max(1, slotsVal)) : 3,
-      allow_text_only: ui.allowTextOnly.checked,
-    };
+    body.narrative = narrativeConfig;
   } else {
     if (ui.image.checked) {
       modalities.add('image');

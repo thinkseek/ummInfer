@@ -105,12 +105,18 @@ struct UnifiedEvent {
     let prompt: String
     /// Prose length at which the directive appeared.
     let textOffset: Int?
+    /// Optional cross-slot continuity mode on `visual_slot` events
+    /// (e.g. "i2v_chain" or "prompt_anchor").
+    let continuityMode: String?
+    /// Optional 0-based anchor slot index on `visual_slot` events when chained.
+    let anchorSlotIndex: Int?
 
     init(kind: UnifiedKind, seq: Int, sessionID: String, stage: String,
          isFinal: Bool, text: String, error: String,
          artifact: ArtifactChunk? = nil, slotID: String? = nil,
          slotIndex: Int? = nil, mediaType: String = "", prompt: String = "",
-         textOffset: Int? = nil) {
+         textOffset: Int? = nil, continuityMode: String? = nil,
+         anchorSlotIndex: Int? = nil) {
         self.kind = kind
         self.seq = seq
         self.sessionID = sessionID
@@ -124,6 +130,8 @@ struct UnifiedEvent {
         self.mediaType = mediaType
         self.prompt = prompt
         self.textOffset = textOffset
+        self.continuityMode = continuityMode
+        self.anchorSlotIndex = anchorSlotIndex
     }
 }
 
@@ -217,6 +225,18 @@ enum UnifiedDecode {
         let mediaType = try root["media_type"].map { try string($0, "media_type") } ?? ""
         let prompt = try root["prompt"].map { try string($0, "prompt") } ?? ""
         let textOffset = try root["text_offset"].map { try integer($0, "text_offset") }
+        let continuityMode: String?
+        if let rawMode = root["continuity_mode"], !(rawMode is NSNull) {
+            continuityMode = try string(rawMode, "continuity_mode")
+        } else {
+            continuityMode = nil
+        }
+        let anchorSlotIndex: Int?
+        if let rawAnchor = root["anchor_slot_index"], !(rawAnchor is NSNull) {
+            anchorSlotIndex = try integer(rawAnchor, "anchor_slot_index")
+        } else {
+            anchorSlotIndex = nil
+        }
         if kind == .visualSlot {
             guard slotID?.isEmpty == false, slotIndex != nil else {
                 throw ChatClientError.invalidResponse(
@@ -233,7 +253,8 @@ enum UnifiedDecode {
             kind: kind, seq: seq, sessionID: sessionID, stage: stage,
             isFinal: isFinal, text: text, error: errorText,
             artifact: artifact, slotID: slotID, slotIndex: slotIndex,
-            mediaType: mediaType, prompt: prompt, textOffset: textOffset
+            mediaType: mediaType, prompt: prompt, textOffset: textOffset,
+            continuityMode: continuityMode, anchorSlotIndex: anchorSlotIndex
         )
     }
 

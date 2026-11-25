@@ -53,9 +53,15 @@ def check_markup(html):
                 'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
                 'id="realtimeStatus"', 'id="narrative"',
                 'id="visualMode"', 'id="maxSlots"', 'id="allowTextOnly"',
+                'id="narrativeContinuity"', 'id="styleAnchor"',
                 'id="fastVideo"', 'id="videoFramePolicy"',
                 'id="videoMotionThreshold"', 'id="videoSceneThreshold"'):
         require(tag in html, f"missing element: {tag}")
+    require('<option value="off" selected>Off</option>' in html,
+            "narrativeContinuity must default to Off")
+    require('<option value="prompt_anchor">Prompt anchor</option>' in html
+            and '<option value="i2v_chain">I2V chain</option>' in html,
+            "narrativeContinuity must expose prompt_anchor and i2v_chain options")
     require('<input type="checkbox" id="fastVideo">' in html,
             "fastVideo checkbox must default to unchecked")
     require('<option value="uniform" selected>Uniform</option>' in html,
@@ -334,6 +340,158 @@ console.log('video frame-selection behavior passed');
             f"video frame-selection behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
     require("video frame-selection behavior passed" in result.stdout,
             "video frame-selection harness did not reach its success assertion")
+
+
+def check_narrative_continuity(html, script):
+    """Stage B cross-slot continuity controls, persistence, and attribution hooks."""
+    require('id="narrativeContinuity"' in html and 'id="styleAnchor"' in html,
+            "narrative continuity controls must exist in markup")
+    for key in ('narrativeContinuity', 'styleAnchor'):
+        require(f"'{key}'" in script,
+                f"{key} must persist in localStorage via SETTINGS")
+        require(f"ui.{key}" in script.split("function setBusy(busy)", 1)[1].split("])", 1)[0],
+                f"{key} must be disabled while streaming")
+        require(f"ui.{key}" in script.split("function syncNarrativeControls()", 1)[1].split("}", 1)[0],
+                f"{key} must be synchronized with narrative toggle and busy state")
+    require("buildNarrativeConfig(" in script,
+            "send() must build body.narrative through buildNarrativeConfig")
+    require("new TextEncoder().encode(trimmed).length" in script,
+            "style_anchor must enforce UTF-8 byte length via TextEncoder")
+    require("visualSlotContinuityBadge(" in script,
+            "visual_slot cards must render continuity attribution badges")
+
+    send_fn = script.split("async function send()", 1)[1]
+    require(send_fn.index("buildNarrativeConfig(") < send_fn.index("attachedImage = null;"),
+            "style_anchor validation must run before clearing attachments")
+    require(send_fn.index("buildNarrativeConfig(") < send_fn.index("ui.prompt.value = '';"),
+            "style_anchor validation must run before clearing the prompt input")
+    require(send_fn.index("buildNarrativeConfig(") < send_fn.index("await fetch("),
+            "style_anchor validation must abort before fetch")
+
+
+def check_narrative_continuity_behavior(script):
+    """Execute narrative continuity serialization, UTF-8 validation, and slot badge DOM in Node."""
+    node = shutil.which("node")
+    if not node:
+        print("skip narrative continuity behavior: node is not installed", flush=True)
+        return
+    require("// NARRATIVE_CONTINUITY_BEGIN" in script
+            and "// NARRATIVE_CONTINUITY_END" in script,
+            "missing narrative continuity behavior-test markers")
+    helpers = script.split("// NARRATIVE_CONTINUITY_BEGIN", 1)[1].split(
+        "// NARRATIVE_CONTINUITY_END", 1)[0]
+    create_slot = re.search(r"function createSlot\(.*?\n\}", script, re.S)
+    show_loading = re.search(r"function showSlotLoading\(slot\) \{.*?\n\}", script, re.S)
+    require(create_slot is not None and show_loading is not None,
+            "could not extract createSlot/showSlotLoading for badge behavior checks")
+    harness = helpers + "\n" + show_loading.group(0) + "\n" + create_slot.group(0) + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+
+// 1. Default 'off' + empty/whitespace omits continuity_mode and style_anchor completely.
+const defaultNav = buildNarrativeConfig({
+  visual_mode: 'auto', max_slots: '3', allow_text_only: true,
+  continuity_mode: 'off', style_anchor: '',
+});
+assert(JSON.stringify(defaultNav) ===
+  '{"enabled":true,"visual_mode":"auto","max_slots":3,"allow_text_only":true}',
+  'default off + empty must emit zero extra keys in narrative');
+const whitespaceNav = buildNarrativeConfig({
+  visual_mode: 'auto', max_slots: '3', allow_text_only: true,
+  continuity_mode: 'off', style_anchor: '   \t\n  ',
+});
+assert(JSON.stringify(whitespaceNav) === JSON.stringify(defaultNav),
+  'whitespace-only style_anchor must be omitted');
+
+// 2. i2v_chain + valid style_anchor serializes both accurately and trims whitespace.
+const chainedNav = buildNarrativeConfig({
+  visual_mode: 'auto', max_slots: '4', allow_text_only: false,
+  continuity_mode: 'i2v_chain', style_anchor: '  warm watercolor ink  ',
+});
+assert(JSON.stringify(chainedNav) ===
+  '{"enabled":true,"visual_mode":"auto","max_slots":4,"allow_text_only":false,"continuity_mode":"i2v_chain","style_anchor":"warm watercolor ink"}',
+  'i2v_chain + style_anchor wire shape mismatch');
+
+// 3. Exact 256 UTF-8 byte boundary with multi-byte Chinese characters succeeds.
+const cjk256 = '墨'.repeat(85) + 'a'; // 85 * 3 + 1 = 256 UTF-8 bytes
+assert(new TextEncoder().encode(cjk256).length === 256, 'expected 256 UTF-8 bytes');
+const exactNav = buildNarrativeConfig({
+  visual_mode: 'auto', max_slots: '3', allow_text_only: true,
+  continuity_mode: 'prompt_anchor', style_anchor: cjk256,
+});
+assert(exactNav.continuity_mode === 'prompt_anchor' && exactNav.style_anchor === cjk256,
+  'exact 256-byte multi-byte style_anchor must be accepted');
+
+// 4. Oversized UTF-8 style_anchor (> 256 bytes, ASCII and multi-byte Chinese) is rejected pre-fetch.
+for (const oversized of ['a'.repeat(257), '墨'.repeat(86)]) {
+  assert(new TextEncoder().encode(oversized).length > 256, 'test input must exceed 256 UTF-8 bytes');
+  let rejected = false;
+  try {
+    buildNarrativeConfig({
+      visual_mode: 'auto', max_slots: '3', allow_text_only: true,
+      continuity_mode: 'i2v_chain', style_anchor: oversized,
+    });
+  } catch (err) {
+    rejected = /256 UTF-8 bytes/.test(err.message);
+  }
+  assert(rejected, 'oversized style_anchor was not rejected');
+}
+
+// 5. Invalid continuity_mode is rejected.
+let badMode = false;
+try {
+  buildNarrativeConfig({ continuity_mode: 'magic_chain', style_anchor: '' });
+} catch { badMode = true; }
+assert(badMode, 'unknown continuity_mode was accepted');
+
+// 6. visual_slot continuity badges render cleanly in DOM.
+class FakeElement {
+  constructor(tag) {
+    this.tagName = tag.toUpperCase();
+    this.className = '';
+    this.textContent = '';
+    this.dataset = {};
+    this.children = [];
+    this.hidden = false;
+  }
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.children = [...nodes]; }
+  addEventListener() {}
+}
+globalThis.document = { createElement: (tag) => new FakeElement(tag) };
+
+const chainBadge = visualSlotContinuityBadge({
+  continuity_mode: 'i2v_chain', anchor_slot_index: 0,
+});
+assert(chainBadge && chainBadge.text === 'I2V ← Slot 1' && chainBadge.kind === 'i2v-chain',
+  'i2v_chain anchor_slot_index 0 must map to I2V ← Slot 1');
+const chainSlot = createSlot('slot-1', 'lantern drifting in rain', 'video', chainBadge);
+const headChildren = chainSlot.el.children[0].children;
+assert(headChildren.some((node) => node.textContent === 'I2V ← Slot 1' &&
+       node.dataset.continuity === 'i2v-chain'),
+  'createSlot did not render the I2V ← Slot 1 badge');
+
+const anchorBadge = visualSlotContinuityBadge({ continuity_mode: 'prompt_anchor' });
+assert(anchorBadge && anchorBadge.text === 'Anchor' && anchorBadge.kind === 'prompt-anchor',
+  'prompt_anchor must map to Anchor badge');
+const plainBadge = visualSlotContinuityBadge({ slot_id: 'slot-0', media_type: 'image' });
+assert(plainBadge === null, 'plain visual_slot must not emit a continuity badge');
+const plainSlot = createSlot('slot-0', 'still lake', 'image', plainBadge);
+assert(plainSlot.el.children[0].children.length === 2,
+  'plain slot header should have only kind badge and caption');
+
+console.log('narrative continuity behavior passed');
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "narrative-continuity.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"narrative continuity behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
+    require("narrative continuity behavior passed" in result.stdout,
+            "narrative continuity harness did not reach its success assertion")
 
 
 def check_realtime(html, script):
@@ -616,6 +774,12 @@ class WebUIContractTest(unittest.TestCase):
     def test_video_frame_selection_behavior(self):
         check_video_frame_selection_behavior(self.script)
 
+    def test_narrative_continuity(self):
+        check_narrative_continuity(self.html, self.script)
+
+    def test_narrative_continuity_behavior(self):
+        check_narrative_continuity_behavior(self.script)
+
     def test_realtime(self):
         check_realtime(self.html, self.script)
 
@@ -640,6 +804,8 @@ def main():
         ("markdown", lambda: check_markdown(html, script)),
         ("video_input", lambda: check_video_input(html, script)),
         ("video_frame_selection_behavior", lambda: check_video_frame_selection_behavior(script)),
+        ("narrative_continuity", lambda: check_narrative_continuity(html, script)),
+        ("narrative_continuity_behavior", lambda: check_narrative_continuity_behavior(script)),
         ("realtime", lambda: check_realtime(html, script)),
         ("realtime_behavior", lambda: check_realtime_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),
