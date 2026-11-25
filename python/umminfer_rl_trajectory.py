@@ -206,12 +206,13 @@ def _normalize_unified(unified, seq, artifact_groups):
 
 
 def parse_sse_stream(response, *, on_request_id=None, artifact_dir=None,
-                     details=None):
+                     details=None, event_observer=None):
     """Parse SSE into the legacy five-tuple plus optional v2 ``details``.
 
     ``details`` receives ``artifacts`` and ``clean_text`` when supplied. The
     tuple shape remains compatible with phase-1 callers. Artifact base64 is
-    consumed here and never returned in an event.
+    consumed here and never returned in an event. ``event_observer`` receives
+    normalized events out-of-band; observations never enter the export.
     """
     events = []
     output_parts = []
@@ -222,10 +223,15 @@ def parse_sse_stream(response, *, on_request_id=None, artifact_dir=None,
     request_id = None
     unified_terminal = None
 
+    def publish(event):
+        events.append(event)
+        if event_observer is not None:
+            event_observer(event)
+
     def add(event_type, **fields):
         event = {"seq": len(events), "type": event_type}
         event.update(fields)
-        events.append(event)
+        publish(event)
 
     for payload in iter_sse_payloads(response):
         if payload == "[DONE]":
@@ -253,8 +259,9 @@ def parse_sse_stream(response, *, on_request_id=None, artifact_dir=None,
         if unified is not None:
             kind = unified["kind"]
             text = unified.get("text", "")
-            events.append(_normalize_unified(
-                unified, len(events), artifact_groups))
+            normalized = _normalize_unified(
+                unified, len(events), artifact_groups)
+            publish(normalized)
             if kind == "cancelled":
                 unified_terminal = TERMINAL_CANCELLED
             elif kind == "error":
@@ -578,7 +585,8 @@ def abort_request(base_url, request_id, *, headers=None, timeout=30.0):
 
 
 def record_chat_completion(base_url, body, recorder, session_id, *,
-                           headers=None, timeout=30.0, on_request_id=None):
+                           headers=None, timeout=30.0, on_request_id=None,
+                           event_observer=None):
     """Drive and record one public chat request, including transport failure."""
     headers = dict(headers or {})
     headers["Content-Type"] = "application/json"
@@ -602,7 +610,8 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
             if body.get("stream") and is_sse:
                 request_id, events, output_text, state, error = parse_sse_stream(
                     response, on_request_id=on_request_id,
-                    artifact_dir=recorder.artifact_dir, details=details)
+                    artifact_dir=recorder.artifact_dir, details=details,
+                    event_observer=event_observer)
             else:
                 payload = json.loads(response.read().decode("utf-8"))
                 request_id = payload.get("id")

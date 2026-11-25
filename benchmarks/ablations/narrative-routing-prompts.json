@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "dataset_id": "narrative-routing-contract-prompts-v1",
+  "evidence_class": "contract-fixture",
+  "labels": "UNLABELLED",
+  "prompts": [
+    {
+      "id": "lantern",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tell a short documentary-style explanation of a red lantern drifting across a misty lake."
+        }
+      ]
+    },
+    {
+      "id": "conservation",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain conservation of momentum with one concise derivation."
+        }
+      ]
+    }
+  ]
+}

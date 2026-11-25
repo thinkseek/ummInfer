@@ -17,6 +17,12 @@ or transformers, and no second inference engine exists.
 The recorder captures only traffic driven through it. A passive sidecar that
 captures other clients is not implemented.
 
+The Stage C single-variable narrative-routing runner builds on this export
+boundary. Its four existing policy overlays, fixed-request fingerprints,
+label-gated metrics, deterministic contract replay, and explicit non-claims are
+specified in [narrative-routing-ablation.md](narrative-routing-ablation.md).
+Latency observations and ablation labels remain outside trajectory schema v2.
+
 ## Compatibility decision
 
 New recordings have `schema_version: 2`. The worker accepts both schema 1 and
@@ -195,6 +201,7 @@ functions remain unbuilt.
 ## Tests and current limits
 
 ```text
+python3 -I tests/ablation_runner_test.py
 python3 -I tests/rl_architecture_test.py
 python3 -I tests/rl_phase2_test.py
 python3 -I tests/narrative_live_e2e.py --self-check
