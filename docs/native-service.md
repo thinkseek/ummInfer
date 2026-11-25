@@ -410,6 +410,16 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 26 real SM90 16-VQA + 6-SpeechCOCO Joint Multimodal Benchmark Gate (`a2f9eec`):
+  - **Real SM90 Qwen3.8-27B + Qwen3-ASR-1.7B multimodal benchmark** (`a2f9eec`,
+    `docs/multimodal-benchmark-results.md`): executed 22/22 usable cases over
+    public HTTP/SSE with strict terminal-leg validation (isolated GPUs returned
+    to `3 MiB`, resident `43301` untouched):
+    - VQA (`16/16`): **95.83%** accuracy, TTFT p50/p95 `657.3 / 817.4 ms`,
+      terminal p50/p95 `684.4 / 836.7 ms`.
+    - SpeechCOCO Joint (`6/6`): **ASR WER 0.0%** (`0/58` words), macro keyword
+      hit **97.22%**, TTFT p50/p95 `666.5 / 719.5 ms`.
+
 - Wave 25 live Web/macOS Narrative Continuity UI & Real SM90 Uniform vs Temporal Video A/B Gate (`15eee86`, `34b3bae`):
   - **Web UI `/web/index.html` & macOS `ummmlx`** (`15eee86`): exposed
     `narrative.continuity_mode` (`off`/`prompt_anchor`/`i2v_chain`),
