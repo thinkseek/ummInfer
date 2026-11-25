@@ -1256,3 +1256,257 @@ Remaining limits:
 - no mock response or deterministic replay metric contributed to any value in
   this section. The separate 70-case deterministic contract replay is labelled
   `NOT_REAL_EVIDENCE` as before.
+
+## 19. Combined real 70-case coverage audit, 2026-11-26
+
+The newest main used here was `bad6fc3db38104ca76b4d5179f705373fabc218d`.
+Commit `e51f1d9098899ed9cb9a4dc9df1576e60b95e097` integrated the accepted real
+benchmark final designated as
+`4cafdafdc9f269d8ac4025cf66dd2c57e536200f`. The integrated runner and contract
+test have the exact SHA-256 values recorded by the accepted run in section 18.
+The accepted 16-VQA + 6-joint evidence was **not rerun or relabelled**. This task
+added one real attempt for each of the other 32 standalone ASR cases and 16
+GSM8K cases. The three disjoint real sets cover all 70 manifest case ids.
+
+### 19.1 All 70 cases have real responses and completed terminals
+
+| Task | Cases | Usable | Completed terminals | Metric | Value | TTFT p50 / p95 ms | Terminal p50 / p95 ms | Total p50 / p95 ms |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| English ASR | 16 | 16 | 16 | corpus WER / CER | **0.011765 (5/425) / 0.024905 (59/2369)** | 421.6 / 686.9 | 421.7 / 687.0 | 421.7 / 687.0 |
+| Mandarin ASR | 16 | 16 | 16 | corpus CER / WER | **0.088468 (56/633) / 0.044379 (15/338)** | 424.9 / 475.1 | 425.0 / 475.2 | 425.0 / 475.2 |
+| GSM8K | 16 | 16 | 16 | exact integer accuracy | **0.875000 (14/16)** | 327.1 / 440.7 | 1733.3 / 2232.1 | 1754.3 / 2272.2 |
+| VQAv2 (accepted section 18) | 16 | 16 | 16 | VQA accuracy | **0.958333** | 658.5 / 817.8 | 682.8 / 837.0 | 682.8 / 837.0 |
+| Joint image + real speech (accepted section 18) | 6 | 6 | 6 | corpus ASR WER / macro keyword hit | **0.000000 (0/58) / 0.972222** | 665.7 / 718.3 | 1535.8 / 1743.5 | 1535.8 / 1784.3 |
+| **All** | **70** | **70** | **70** | | | 431.2 / 714.8 | 644.5 / 2021.0 | 644.5 / 2061.2 |
+
+The Mandarin WER uses the pinned `jieba 0.42.1`, `jieba.cut(HMM=False)`, and the
+default dictionary. English CER is auxiliary to the declared WER. Mandarin WER
+is auxiliary to the declared CER. VQA keeps the manifest's documented
+normalization. Joint keyword hit is the mean of six per-case rates; joint ASR
+WER is corpus WER. The combined timing rows describe three separate bounded
+runs and are not a performance baseline.
+
+All 70 cases returned HTTP 200, `finish_reason=stop`, `[DONE]`, and exactly one
+unified `complete` terminal at stage `vlm`. The 38 audio-input streams contain
+one `asr_final` before the first VLM delta. `terminal_legs` remains `null`
+because no optional image, TTS, or video output legs were requested. It is not
+rewritten to `[]`. No metric is missing; numeric zeroes remain zeroes.
+
+Combined failure coverage is **0 infrastructure, 0 public-contract, 2 quality,
+and 0 performance failures**. The two quality failures are the GSM8K misses
+below. `successes=70` follows the harness definition: a quality miss is not an
+infrastructure or public-contract failure. Every source summary and the combined
+audit retain **`BASELINE_REQUIRED`**. This is not a three-round stability PASS.
+
+### 19.2 New standalone ASR responses, metrics, and timing
+
+These requests used public `POST /v1/chat/completions` with SSE, native ASR on
+GPU 1, `temperature=0`, no retry, and `--asr-route chat`. `max_tokens=1` bounds
+only the auxiliary downstream VLM response used to exercise the unified
+terminal; it does not bound ASR decoding (`asr_max_new_tokens=256`). The scored
+text is the real `asr_final`. `ASR final ms` measures that event. TTFT here is
+the first auxiliary VLM delta, not an ASR-partial latency claim. The auxiliary
+one-token answers are saved and marked for human review but receive no quality
+score.
+
+**English: WER is the case metric; CER is auxiliary.**
+
+| Case | Real ASR transcript | WER | CER | ASR final ms | TTFT ms | Terminal / total ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `asr-en-ls-1089-134686-0000` | He hoped there would be stew for dinner, turnips and carrots, and bruised potatoes, and fat mutton pieces to be ladled out in thick, peppered, flour-fattened sauce. | 0.000000 | 0.044304 | 196.4 | 499.3 | 499.4 / 499.4 |
+| `asr-en-ls-1089-134691-0000` | He could wait no longer. | 0.000000 | 0.043478 | 38.3 | 330.7 | 330.7 / 330.8 |
+| `asr-en-ls-1188-133604-0000` | You will find me continually speaking of four men—Titian, Holbein, Turner, and Tintoret—in almost the same terms. | 0.000000 | 0.055046 | 129.7 | 427.2 | 427.2 / 427.3 |
+| `asr-en-ls-121-121726-0000` | Also, a popular contrivance whereby love-making may be suspended, but not stopped, during the picnic season. | 0.000000 | 0.048077 | 102.8 | 399.3 | 399.3 / 399.3 |
+| `asr-en-ls-121-123852-0000` | Those pretty wrongs that liberty commits, when I am some time absent from thy heart, thy beauty and thy years full well befits, for still temptation follows where thou art. | 0.068966 | 0.029940 | 189.5 | 488.4 | 488.4 / 488.4 |
+| `asr-en-ls-121-123859-0000` | You are my all the world, and I must strive to know my shames and praises from your tongue. None else to me, nor I to none alive, that my steel'd sense or changes right or wrong. | 0.000000 | 0.028902 | 206.2 | 506.7 | 506.8 / 506.8 |
+| `asr-en-ls-121-127105-0000` | It was this observation that drew from Douglas, not immediately, but later in the evening, a reply that had the interesting consequence to which I call attention. | 0.000000 | 0.025316 | 128.1 | 426.0 | 426.1 / 426.1 |
+| `asr-en-ls-1221-135766-0000` | How strange it seemed to the sad woman as she watched the growth and the beauty that became every day more brilliant, and the intelligence that threw its quivering sunshine over the tiny features of this child. | 0.000000 | 0.009615 | 163.4 | 463.4 | 463.5 / 463.5 |
+| `asr-en-ls-1221-135767-0000` | Hester Prin went one day to the mansion of Governor Bellingham with a pair of gloves which she had fringed and embroidered to his order, and which were to be worn on some great occasion of state. For though the chances of a popular election had caused this former ruler to descend a step or two from the highest rank, he still held an honorable and influential place among the colonial magistracy. | 0.027778 | 0.020202 | 378.3 | 686.9 | 687.0 / 687.0 |
+| `asr-en-ls-1284-1180-0000` | He wore blue silk stockings, blue knee pants with gold buckles, a blue ruffled waist, and a jacket of bright blue braided with gold. | 0.000000 | 0.031250 | 116.9 | 414.9 | 414.9 / 414.9 |
+| `asr-en-ls-1284-1181-0000` | Ojo examined this curious contrivance with wonder. | 0.000000 | 0.020408 | 55.9 | 349.5 | 349.5 / 349.5 |
+| `asr-en-ls-1284-134647-0000` | The grateful applause of the clergy has consecrated the memory of a prince who indulged their passions and promoted their interest. | 0.000000 | 0.007692 | 104.8 | 401.4 | 401.5 / 401.5 |
+| `asr-en-ls-1320-122612-0000` | Since the period of our tale, the active spirit of the country has surrounded it with a belt of rich and thriving settlements. Though none but the hunter or the savage is ever known, even now, to penetrate its wild recesses. | 0.000000 | 0.022831 | 186.6 | 487.9 | 488.0 / 488.0 |
+| `asr-en-ls-1320-122617-0000` | Notwithstanding the high resolution of Hawkeye, he fully comprehended all the difficulties and danger he was about to incur. | 0.000000 | 0.016393 | 103.3 | 400.1 | 400.1 / 400.1 |
+| `asr-en-ls-1580-141083-0000` | I will endeavor in my statement to avoid such terms as would serve to limit the events to any particular place or give a clue as to the people concerned. | 0.033333 | 0.013072 | 123.8 | 421.6 | 421.7 / 421.7 |
+| `asr-en-ls-1580-141084-0000` | It was the Indian whose dark silhouette appeared suddenly upon his blind. | 0.000000 | 0.013889 | 64.0 | 358.0 | 358.0 / 358.0 |
+
+**Mandarin: CER is the case metric; jieba WER is auxiliary.**
+
+| Case | Real ASR transcript | CER | WER | ASR final ms | TTFT ms | Terminal / total ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `asr-zh-fleurs-10325559490685159122` | 特朗普与土耳其总统雷杰普·塔伊普·埃尔多安通话后，发表了声明。 | 0.400000 | 0.150000 | 136.2 | 432.2 | 432.2 / 432.2 |
+| `asr-zh-fleurs-14716260585206763911` | 邓迪大学的 Pamela Ferguson 教授指出，记者如果公布嫌疑人的照片等信息的话，似乎确实存在危害性。 | 0.268657 | 0.047619 | 112.0 | 408.6 | 408.6 / 408.6 |
+| `asr-zh-fleurs-10369927130798325266` | 在昆达里尼瑜伽中，昆达里尼能量、启迪能量通过瑜伽姿势、呼吸练习、念语和视觉形象被唤醒。 | 0.000000 | 0.000000 | 163.8 | 461.7 | 461.8 / 461.8 |
+| `asr-zh-fleurs-7669819575583671099` | 他受到了新加坡副总理黄根成的欢迎，并与新加坡总理李显龙讨探讨了贸易和恐怖主义问题。 | 0.026316 | 0.045455 | 127.4 | 424.9 | 425.0 / 425.0 |
+| `asr-zh-fleurs-17791005930196814474` | 当然，这个传统有其基督神学的解释，但它很可能是基督诞生以前就存在的一种庆祝春天、祈求丰收的仪式。 | 0.022222 | 0.037037 | 151.0 | 448.1 | 448.2 / 448.2 |
+| `asr-zh-fleurs-6567034835218108721` | 由于分离和重组，变异在每一代的两个库之间来回变动。 | 0.000000 | 0.000000 | 86.2 | 380.9 | 380.9 / 380.9 |
+| `asr-zh-fleurs-4048226328336996391` | 这些理论研究为什么某些人想要做他们所做的事，以及他们所处的环境中哪些事情会让他们做或不做某些事情。 | 0.020833 | 0.032258 | 164.8 | 461.8 | 461.8 / 461.8 |
+| `asr-zh-fleurs-16272218284004703131` | 虽然有一种试验性疫苗看似能够降低埃博拉病毒的死亡率，但迄今为止还没有明确证明任何药物都适合治疗现有的感染。 | 0.061224 | 0.115385 | 129.3 | 427.1 | 427.1 / 427.1 |
+| `asr-zh-fleurs-10104380129516909856` | 它的长下颚上布满了七十多颗剃刀般锋利的牙齿，上颚上还有一排，这意味着任何与它相遇的东西都无路可逃。 | 0.043478 | 0.071429 | 176.2 | 475.1 | 475.2 / 475.2 |
+| `asr-zh-fleurs-10852536777113131618` | 因此，一个组织在共同努力克服障碍的过程中，往往会带来新的创新流程，以满足客户的需求。 | 0.000000 | 0.000000 | 96.5 | 392.3 | 392.3 / 392.3 |
+| `asr-zh-fleurs-1868048601472473390` | 他没有设定削减数额，只是表示将根据中国的经济产出来决定数额。 | 0.000000 | 0.000000 | 113.7 | 408.4 | 408.5 / 408.5 |
+| `asr-zh-fleurs-8424295226444731846` | 场景在金字塔上展示，不同的金字塔被点亮。 | 0.000000 | 0.000000 | 87.8 | 381.5 | 381.5 / 381.5 |
+| `asr-zh-fleurs-15324743446256875074` | 早先于全球发布的华硕EPC个人笔记本，因成本节约及功能性因素，成为2007年台北IT资讯月备受瞩目的话题。 | 0.038462 | 0.041667 | 170.8 | 469.1 | 469.1 / 469.1 |
+| `asr-zh-fleurs-8702090716396029445` | 咖喱饭菜是一道以香草和香料为主的菜肴，并配肉类或蔬菜。 | 0.038462 | 0.058824 | 113.2 | 408.1 | 408.1 / 408.1 |
+| `asr-zh-fleurs-1177351021583652757` | 除了周三的比赛，卡帕内多还参加了锦标赛的两项个人竞赛。 | 0.264706 | 0.062500 | 87.1 | 382.1 | 382.1 / 382.1 |
+| `asr-zh-fleurs-16106752411261640702` | 同理，有了申根签证，你就不必分别向每个申根成员国申请签证，从而节省了时间、金钱和手续。 | 0.000000 | 0.000000 | 133.9 | 431.2 | 431.2 / 431.2 |
+
+All 32 cases have zero infrastructure, public-contract, quality-gate, and
+performance-gate failures. High per-case error rates remain visible above; the
+aggregate does not hide them.
+
+### 19.3 New GSM8K responses, exact answers, and timing
+
+These 16 requests used public SSE, native Qwen3.8 on GPU 7, `temperature=0`,
+`max_tokens=256`, and no retry. Exact accuracy is **14/16 = 0.875000**. The full
+real responses are reproduced here and retained in `answers/`.
+
+| Case | Full real response | Predicted / gold | Exact | TTFT ms | Terminal / total ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `gsm8k-test-0000` | Janet uses 3 eggs for breakfast and 4 for muffins, totaling 7 eggs consumed. She has 16 - 7 = 9 eggs left to sell. Selling 9 eggs at $2 each gives her 9 * 2 = $18.<br>#### 18 | 18 / 18 | 1 | 418.8 | 1588.4 / 1588.4 |
+| `gsm8k-test-0001` | The robe requires 2 bolts of blue fiber and 1 bolt of white fiber, which is half of the blue amount. Adding these together gives a total of 3 bolts.<br>#### 3 | 3 / 3 | 1 | 317.8 | 1048.3 / 1048.3 |
+| `gsm8k-test-0002` | Josh's total investment was $130,000, which is the sum of the purchase price and repairs. The house's new value is $200,000, calculated by increasing the original $80,000 by 150%. Subtracting the total cost from the new value gives a profit of $70,000.<br>#### 70000 | 70000 / 70000 | 1 | 326.2 | 1954.6 / 1995.6 |
+| `gsm8k-test-0003` | James runs 3 sprints per session, so 3 times 3 equals 9 sprints per week. Each sprint is 60 meters, so 9 times 60 equals 540 meters.<br>#### 540 | 540 / 540 | 1 | 316.9 | 1275.3 / 1275.3 |
+| `gsm8k-test-0004` | Wendi's 20 chickens require a total of 60 cups of feed per day, calculated by multiplying 20 chickens by 3 cups each. Since she has already given 15 cups in the morning and 25 cups in the afternoon, she has fed 40 cups so far. Therefore, she needs to give 20 cups in the final meal.<br>#### 20 | 20 / 20 | 1 | 440.7 | 2021.0 / 2061.2 |
+| `gsm8k-test-0005` | The first, third, and every odd-numbered glass costs $5, so 8 glasses cost $40. The second, fourth, and every even-numbered glass costs 60% of $5, which is $3, so 8 glasses cost $24. Adding these amounts together gives a total of $64.<br>#### 64 | 64 / 64 | 1 | 323.7 | 1733.3 / 1774.3 |
+| `gsm8k-test-0006` | Charleston has 80 sheep, which is 4 times the 20 sheep in Seattle. Toulouse has 160 sheep, which is twice the amount in Charleston. The total number of sheep is 260.<br>#### 260 | 260 / 260 | 1 | 319.1 | 1338.1 / 1338.1 |
+| `gsm8k-test-0007` | Carla downloads 80 GB before the restart, which takes 40 minutes. The 20-minute update delay is added to the total time. Since she must restart from the beginning, the total time is the initial 40 minutes plus the 20-minute delay plus the full 100 minutes to download the entire 200 GB file again, totaling 160 minutes.<br>#### 160 | 160 / 160 | 1 | 429.3 | 2117.3 / 2157.4 |
+| `gsm8k-test-0008` | John initially drives 180 miles away from home. On the return trip, he covers 15 miles in the first half-hour and 240 miles in the remaining 2.5 hours, for a total return distance of 255 miles. Since he traveled 255 miles back but only needed to cover 180 miles, he is 75 miles past his home.<br>#### 75 | 75 / 45 | 0 | 427.0 | 2120.6 / 2161.2 |
+| `gsm8k-test-0009` | Eliza earns $400 for her first 40 regular hours at $10 per hour. She earns $60 for the 5 overtime hours at a rate of $12 per hour. Her total earnings for the week are $460.<br>#### 460 | 460 / 460 | 1 | 327.1 | 1478.0 / 1478.0 |
+| `gsm8k-test-0010` | The second month had 180 downloads, which is three times the first month's 60. The third month had 126 downloads, calculated by reducing 180 by 30%. Adding the downloads from all three months gives a total of 366.<br>#### 366 | 366 / 366 | 1 | 328.7 | 1573.3 / 1573.3 |
+| `gsm8k-test-0011` | Toula spent 3 times 68 dollars on donuts, 2 times 80 dollars on cupcakes, and 6 times 55 dollars on cheesecakes. Adding these amounts together gives 204 plus 160 plus 330, which equals 694.<br>#### 694 | 694 / 694 | 1 | 419.1 | 1754.3 / 1754.3 |
+| `gsm8k-test-0012` | First, calculate the net annual profit by subtracting the yearly maintenance cost from the revenue, which is 7 lemons times $1.50 minus $3, resulting in $7.50 per year. Next, divide the initial planting cost of $90 by the annual net profit of $7.50 to find the break-even point, which equals 12 years.<br>#### 12 | 12 / 13 | 0 | 419.4 | 2015.3 / 2055.4 |
+| `gsm8k-test-0013` | Let the starting number be x. After selling a third at the green house, 2x/3 remain; after selling 2 more at the red house, 2x/3 - 2 remain; and after selling half of that at the orange house, (2x/3 - 2)/2 = 5, which simplifies to x/3 - 1 = 5, so x/3 = 6 and x = 18.<br>#### 18 | 18 / 18 | 1 | 324.3 | 2232.1 / 2272.2 |
+| `gsm8k-test-0014` | 20% of 20 students is 4, leaving 16 students. 25% of the remaining 16 is 4, so 12 students enrolled in hip-hop. 12 out of 20 is 60%.<br>#### 60 | 60 / 60 | 1 | 326.9 | 1461.6 / 1461.6 |
+| `gsm8k-test-0015` | The profit from the jewelry would be 5000 times 0.025, which equals 125 dollars. The profit from the electronic gadgets would be 8000 times 0.012, which equals 96 dollars. Since 125 is greater than 96, the maximum profit is 125 dollars.<br>#### 125 | 125 / 125 | 1 | 425.6 | 2005.4 / 2045.8 |
+
+`gsm8k-test-0008` reasons to `#### 75` instead of `45`. `gsm8k-test-0012`
+reasons to `#### 12` instead of `13`. Both are model-quality misses with valid
+completed responses. No case, marker, threshold, or response was changed to
+improve the score.
+
+### 19.4 Independent audit, input verification, and deterministic replay
+
+`tools/multimodal_coverage_audit.py` does not import the runner's scoring or
+aggregation functions. It rebuilt all 70 answers and 38 transcripts from raw
+SSE, checked event order and terminal identity, recomputed every per-case metric
+and source aggregate, and compared them with `report.json` and `summary.json`.
+It also resolved every pinned input again and checked all input hashes. The 38
+WAVs decode as non-empty PCM16 mono 16 kHz; the 22 images have valid JPEG/PNG
+signatures and matching hashes; all 16 GSM8K prompts match their pinned row
+hashes. The audit contains per-case response/transcript hashes and media details.
+
+```sh
+/tmp/umm-task27-client-venv/bin/python -I tools/multimodal_coverage_audit.py \
+  --source accepted_vqa_joint=/tmp/umm-task27-evidence-local/combined-70/accepted-vqa-joint \
+  --source standalone_asr=/tmp/umm-task27-evidence-local/combined-70/standalone-asr \
+  --source gsm8k=/tmp/umm-task27-evidence-local/combined-70/gsm8k \
+  --cache-dir ~/.cache/umminfer-multimodal-benchmark \
+  --output /tmp/umm-task27-coverage-audit-recheck.json
+```
+
+The second audit output was byte-identical to the first. The accepted source
+passed 85/85 internal checksums. The new ASR and GSM8K sources have 134 and 38
+checksummed files respectively. The combined evidence root is
+`/tmp/umm-task27-evidence-local/combined-70/`; all **287/287** files pass its
+`SHA256SUMS`, whose SHA-256 is:
+
+```text
+4aba09f25b9edf62ad89a0316a74c2c158cb9fe48d7de73ef87a6e4547b8e5b7
+```
+
+The separate deterministic 70-case contract replay also passes, including
+Mandarin WER with the pinned segmenter. It remains labelled
+`NOT_REAL_EVIDENCE`; no replay response or metric contributes to this real
+coverage result.
+
+### 19.5 New-run source, configuration, model, and binary provenance
+
+The accepted run retains the distinct source and binary identities in section
+18.5. The table below binds only the new 48 cases. The combined audit therefore
+does not claim that one binary served all 70 cases.
+
+| Object | SHA-256 or identity |
+| --- | --- |
+| Base main | `bad6fc3db38104ca76b4d5179f705373fabc218d` |
+| Accepted final integrated | `4cafdafdc9f269d8ac4025cf66dd2c57e536200f` |
+| Binary-build and new-run source | `e51f1d9098899ed9cb9a4dc9df1576e60b95e097` |
+| Source archive | `8e21c8bee5cbdcab54d3f33dc010c5314ebebc143defab030e9733d41e97e8d1` |
+| `tests/multimodal_benchmark.py` | `f511e7f63bf996f01e6bfcff9cda033e7dc3ae4300e1903c33f675a62f8eb848` |
+| `benchmarks/multimodal_manifest.json` | `599963a3851d5ce02d740b8b06c423726bae5c9c1e07d1931708074c83caa9a3` |
+| Combined `run-config.json` | `18287c2fa58ff890f1ae80987e54e08565e7f0837676f7e3d7e5900ee77fd95b` |
+| Combined `provenance.json` | `466c91f29e85721d672b88f4818a370919903e123a2c6e48b9afa7d70f458f3d` |
+| `coverage-audit.json` | `d4514acd07f280d9d7097dac45bd2b8caa85d9298f8caba22102ba28ead5f6a5` |
+| `tools/multimodal_coverage_audit.py` | `79b47f07036e25ba5d82a83ec7e23acd7583603558fa2d0728353d3a9a541a16` |
+| `umm-infer` | `d2bc15821190c043a734576c422e8dbed61134e79b219de0516b71a10777a5e4` |
+| `umm-native-stage-asr` | `cf8962464aa3c44ad0f3f812c9f756dc2939b4038c3da1376cece96e9f234a81` |
+| `umm-native-stage-qwen38` | `446661e9a99ebb00688a01f6e52f21dcfc20a995308f4f092664dae151fd3fc5` |
+| Qwen3.8 `config.json` | `191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab` |
+| Qwen3.8 + ASR available-weight manifest (18 + 2 shards) | `edadb8d2c36afae98dfff947a5749c9b042b7ea9fe123ba7c56ceaf5b8a2944f` |
+| Qwen3-ASR `config.json` | `2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f` |
+| Model config/tokenizer manifest | `8c3980a7498d8abe3e4b239702a347018d364e229809fb1922129b6d69123fe4` |
+
+`provenance.json` and `run-provenance/model-weights-SHA256SUMS` record every
+individual available Safetensors SHA-256. These are hashes of local bytes, not
+claims of an upstream revision id. The native server and both stages were built
+from the new-run source. The harness changes are Python-only.
+
+### 19.6 Cleanup and remaining limits
+
+The service used NVIDIA H20 SM90, driver 535.161.08, ASR on explicitly idle
+physical GPU 1, and Qwen3.8 on explicitly idle physical GPU 7. The server bound
+loopback with kernel-assigned port 49141. GPU 0 was reserved and unused. GPUs
+2–6 and the resident service were never contacted or restarted.
+
+| GPU | Before start | Before stop | After stop |
+| ---: | ---: | ---: | ---: |
+| 0 | 3 MiB | 3 MiB | 3 MiB |
+| 1 | 3 MiB | 5,117 MiB | **3 MiB** |
+| 7 | 3 MiB | 56,365 MiB | **3 MiB** |
+
+Only the three owned server/stage processes were signalled. `/health` reported
+`in_flight=0` before shutdown. The isolated endpoint refused connections after
+shutdown. The failed client SSH tunnel was also stopped by its owned pid; no
+tunnel or isolated benchmark listener remains.
+
+Remaining limits:
+
+- The accepted 22 and new 48 cases are disjoint real evidence from different
+  bounded runs. This establishes declared 70-case coverage, not a same-binary
+  full round, an accepted regression baseline, or three-round stability.
+- GSM8K accuracy is 87.5%, with the two visible quality misses above. Human
+  quality review remains necessary for joint free-form answers and the
+  auxiliary standalone-ASR VLM outputs.
+- Standalone-ASR TTFT is the auxiliary VLM first-delta time. ASR recognition
+  timing is reported separately as `asr_final_ms`.
+- The VQA normalization limitation in section 1 remains. Joint keyword hit is
+  only an objective sub-metric. No human-quality score is inferred.
+
+### 19.7 Final committed-tree validation
+
+The final tree leaves `src`, `native`, `include`, `build.zig`, the manifest, and
+the accepted runner/test bytes identical to the real-run source
+`e51f1d9098899ed9cb9a4dc9df1576e60b95e097`. The later commits add the
+independent auditor, tests, evidence documentation, and AOCI metadata only.
+
+| Check | Result |
+| --- | --- |
+| Real coverage gate and independent final-tree reaudit | **PASS**, 70 unique real cases, 70 completed terminals, 70 matching inputs; `BASELINE_REQUIRED` retained |
+| `umm-test-local` | **PASS**, exit 0; includes unified contracts and voice/client C++ tests |
+| Native ASR/Qwen3.8 Release host CTest | **PASS 3/3** (`asr_host_tests`, `qwen38_host_tests`, `qwen38_video_input_tests`) |
+| Client boundary with explicit local dependency prefixes | **PASS** chat parsing, serve parsing, URL policy; real MLX/TinyASR intentionally `--skip-real` because they are not this SM90 gate |
+| Client media CLI | **PASS 8/8** |
+| `tests/narrative_live_e2e.py --self-check` | **PASS**, sequence/terminal/clean-prose/interleaving/PCM/PNG/MP4/HTTP 400 checks; fixtures are not real generation |
+| `tests/blackbox_integration.py --self-check` | **PASS** log cap, timeout, and orphan process-group cleanup |
+| Deterministic 70-case replay | **PASS**, all metrics match the replay; `NOT_REAL_EVIDENCE` retained |
+| Coverage-auditor offline negative tests | **PASS** metric arithmetic, missing-vs-zero, raw SSE, terminal, and checksum rejection |
+| Feature-map validation | **PASS**, 189 implemented rows and 843 references at `aa4353458ef55134bf68bd0cfe4fa5a19a754508` |
+| Hand-maintained AOCI baseline | **PASS**, 453 files, zero digest mismatches |
+| Combined evidence `SHA256SUMS` | **PASS 287/287**, final-tree audit output byte-identical to the sealed audit |
+
+One preliminary native run used an unoptimized build concurrently with the full
+C++ suite. It failed the existing performance assertion with `lm_fast=5.992 ms`
+against the 2 ms limit. The quiet Release rerun passed all three tests. No source
+or threshold was changed. The failed client-prefix invocation was rerun with the
+actual local dependency prefixes; it had failed before executing any client case.
+Final validation logs are under `/tmp/umm-task27-final-validation/`.

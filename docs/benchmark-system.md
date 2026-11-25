@@ -177,8 +177,9 @@ the tar scan, the GSM8K line index, and the SSE loops all have explicit bounds.
   (`sum(errors) / sum(reference words)`).
 - **CER:** character edit distance divided by reference characters. Both
   sides are NFKC-normalized, lowercased, and stripped of whitespace,
-  punctuation, symbols, and control characters. Mandarin has no word
-  boundaries, so `asr_zh` uses CER and does not report WER.
+  punctuation, symbols, and control characters. Mandarin uses CER as its case
+  metric and also reports WER over `jieba 0.42.1` dictionary-only tokens
+  (`jieba.cut(HMM=False)`). Characters are never counted as Mandarin words.
 - **VQA accuracy:** per question `min(1, matches/3)` over the 10 provided
   answers, then averaged. Normalization is declared in section 1.
 - **GSM8K accuracy:** the last `#### <integer>` marker must equal the gold
@@ -204,8 +205,31 @@ the tar scan, the GSM8K line index, and the SSE loops all have explicit bounds.
     events/<id>.jsonl      # raw SSE data payloads
     answers/<id>.txt
     transcripts/<id>.txt
-    human_review/<id>.json # only when no objective answer exists
+    human_review/<id>.json # free-form outputs and ASR-chat auxiliary answers
 ```
+
+### Combined real coverage audit
+
+`tools/multimodal_coverage_audit.py` combines disjoint real evidence sets without
+rerunning or editing their case rows. Each source must have `summary.json`,
+`round-1/{report.json,cases.jsonl,events/}`, and a verified `SHA256SUMS`.
+
+```sh
+/path/to/bench-venv/bin/python -I tools/multimodal_coverage_audit.py \
+  --source accepted_vqa_joint=/tmp/accepted-vqa-joint \
+  --source standalone_asr=/tmp/standalone-asr \
+  --source gsm8k=/tmp/gsm8k \
+  --cache-dir ~/.cache/umminfer-multimodal-benchmark \
+  --output /tmp/combined-coverage-audit.json
+```
+
+The auditor requires the pinned `jieba 0.42.1`. It independently rebuilds raw
+SSE responses, validates unique completed terminals and optional legs,
+recomputes per-case and aggregate metrics, resolves all pinned inputs, and
+checks WAV/image contracts. The sources must be disjoint and their union must
+equal all 70 manifest ids. Missing metric values stay `null`; numeric zeroes
+remain measurements. Combining subsets establishes coverage only. The output
+keeps `stability_verdict=BASELINE_REQUIRED` and cannot produce a stability PASS.
 
 ## 4. Failure classes
 
@@ -228,9 +252,13 @@ Constants in `tests/multimodal_benchmark.py`:
 - `REQUIRED_CONSECUTIVE = 3`
 - `MAX_ROUNDS = 30`
 - `P95_TOLERANCE = 0.10`
+- `LATENCY_GATE = "median_v2"`; `MEDIAN_TOLERANCE = 0.10`. The nearest-rank
+  p95/max at n≤16 is dominated by host scheduling, so blocking comparison uses
+  per-task medians. The six-case joint task is observation-only; p50/p95 remain
+  recorded for every task.
 - `QUALITY_TOLERANCE = {asr_en_wer: 0.02, asr_en_cer: 0.02,
-  asr_zh_cer: 0.02, vqa_accuracy: 0.05, gsm8k_accuracy: 0.05,
-  joint_asr_wer: 0.05, joint_keyword_hit: 0.05}`
+  asr_zh_cer: 0.02, asr_zh_wer: 0.02, vqa_accuracy: 0.05,
+  gsm8k_accuracy: 0.05, joint_asr_wer: 0.05, joint_keyword_hit: 0.05}`
 - ASR is reported per language (`asr_en`, `asr_zh`) so a Mandarin CER and an
   English WER never share one number.
 
@@ -241,7 +269,8 @@ A round passes only when all of these hold:
 3. public-contract P0/P1 count is 0;
 4. every quality metric is within its tolerance of the accepted baseline
    (lower is better for WER and joint ASR WER);
-5. every task p95 latency is within ±10% of the baseline.
+5. every blocking task's median latency is within ±10% of the baseline under
+   `median_v2`; joint latency and all p95 values remain observations.
 
 A run returns `PASS` only when three consecutive rounds pass. Two passing rounds
 return `INSUFFICIENT_ROUNDS`. Any failed round returns `FAIL`. A subset with an
@@ -288,6 +317,7 @@ Rules:
 
 ```sh
 python3 -I tests/multimodal_benchmark_test.py
+python3 -I tests/multimodal_coverage_audit_test.py
 python3 -I tests/multimodal_benchmark.py --verify-data
 ```
 
@@ -302,4 +332,6 @@ three-round PASS, insufficient rounds, infrastructure and contract failures,
 p95 outside ±10%, quality drop beyond tolerance, subset ineligibility, baseline
 identity; explicit subset reporting; the 64 KiB log cap; and a local
 `contract-test` end-to-end run that produces the full evidence layout. The local
-server is a fixture and is never presented as model evidence.
+server is a fixture and is never presented as model evidence. The separate
+coverage-auditor test checks independent metric arithmetic, missing-versus-zero
+handling, raw SSE/terminal validation, and corrupt or unsafe checksum rejection.
