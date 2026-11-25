@@ -377,6 +377,7 @@ def compile_asr_probe(project, work, deps_prefix, curl_prefix):
     source.write_text(PROBE_SOURCE, encoding="utf-8")
     command = ["c++", "-std=c++20", "-O1", str(source),
                str(project / "src/audio/audio.cpp"),
+               str(project / "src/util/codec.cpp"),
                str(project / "src/client/http.cpp"),
                str(project / "src/client/asr.cpp"),
                "-I", str(project / "include"), "-I", str(project / "src/client"),

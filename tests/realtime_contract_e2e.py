@@ -401,7 +401,7 @@ def run_contract(port_http, port_ws, audio_path, wav_bytes, binary, env):
     done_then_reject({"type": "input_audio_buffer.append", "audio": "AAAA"},
                      "audio append is not accepted after transcription.done")
     done_then_reject({"type": "session.update", "session": {"language": "fr"}},
-                     "session.update is not accepted after transcription.done")
+                     "session.update is not accepted while a turn or response is active")
 
     live_metadata = {}
     live_text = None

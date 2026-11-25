@@ -445,6 +445,9 @@ class RealtimeApi::Impl {
   }
 
   void closed(lws* wsi, RealtimeSession* session) {
+    // Rejected handshakes can reach CLOSED without ESTABLISHED. Their protocol
+    // bytes do not contain a constructed RealtimeSession and must not be read.
+    if (sessions_.find(wsi) == sessions_.end()) return;
     if (!session->request_id.empty()) {
       active_request_sessions_.erase(session->request_id);
       coordinator_.abort(session->request_id);

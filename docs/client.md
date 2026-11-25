@@ -7,15 +7,17 @@ The public library API is in `include/umminfer/client/client.hpp`.
 
 The client uses libcurl for HTTP(S), multipart forms, SSE, and WebSocket
 transport. TLS certificate and hostname verification are enabled. The installed
-libcurl must support `ws`. The realtime client opens only `ws://` on loopback;
-remote `wss://` is not supported. Apple's system libcurl 8.7.1 does not support
-WebSocket; use Homebrew libcurl and pass its prefix explicitly. The realtime
-server also requires libwebsockets.
+libcurl must support `ws`; use **libcurl 8.13.0 or newer** for realtime. Earlier
+releases (including the locally tested 8.11.1) misreport continuation flags and
+fail the fragmented-message E2E. The realtime client opens only `ws://` on
+loopback; remote `wss://` is not supported. Apple's system libcurl 8.7.1 does
+not support WebSocket; use Homebrew libcurl and pass its prefix explicitly. The
+realtime server also requires libwebsockets.
 
 On Linux, check `curl-config --protocols` for `ws` and `wss`. Ubuntu 24.04
-ships libcurl 8.5.0 without them. Build curl 8.5.0 with `--enable-websockets`
-into a separate prefix and pass it with `-Dcurl-prefix`; do not replace the
-system libcurl. [Validation](validation.md) section 3a gives the commands.
+ships libcurl 8.5.0 without them. Build curl 8.13.0 or newer with
+`--enable-websockets` into a separate prefix and pass it with `-Dcurl-prefix`;
+do not replace the system libcurl. [Validation](validation.md) section 3a gives the commands.
 
 The build needs the same dependencies as the root README:
 
@@ -502,6 +504,104 @@ Incoming WebSocket messages are limited to 1 MiB. The client retains at most
 1 GiB of realtime audio. The bundled realtime server keeps at most 64 MiB per
 session and rejects an append past that limit. SIGINT and SIGTERM cancel active
 client operations.
+
+## Full-duplex voice (`voice`)
+
+The `voice` subcommand is the opt-in realtime microphone + spoken-response
+client. It is separate from the existing file-based `realtime` command, whose
+behavior is unchanged:
+
+```sh
+./zig-out/bin/umm-infer voice \
+  --url http://127.0.0.1:55272 --model qwen3-unified \
+  --voice vivian --silence-ms 400 --max-new-tokens 256
+```
+
+`--url` names the realtime listener's HTTP base, so use the separate
+`--realtime-port` address when HTTP and WebSocket are on different ports. The
+server must have unified ASR, VLM and TTS stages. Start it with
+`--session-history` when interrupted turns should retain exactly the
+acknowledged assistant prefix. Options are `--connect-timeout-ms` (10000),
+`--reconnect-attempts` (2), `--reconnect-delay-ms` (250), and Linux ALSA
+`--input-device` / `--output-device` names (default `default`).
+
+The client sends `session.update` with server VAD, `input_audio_format=pcm16`,
+and `audio_output.playback_ack=true`, and refuses to start capture until the
+server echoes that negotiation. Microphone frames are exact little-endian
+16 kHz mono PCM16 (20 ms per ALSA read), sent as `input_audio_buffer.append`;
+WAV headers are not added and audio is not retained for a Final HTTP request.
+Spoken replies use an isolated output queue. An
+`output_audio_buffer.playback_ack` is written only after the output device
+reports complete consumption of the corresponding PCM, with strictly
+non-decreasing cursors. `audio.done` stores the final cursor until all queued
+PCM drains; its final ACK may equal the last delta cursor and is sent once.
+`response.completed` alone is never a playback acknowledgement.
+
+`input_audio_buffer.speech_started` immediately invalidates and stops the old
+local response, before the server's `response.cancelled` arrives. Both that
+event and repeated cancellation drop old queued audio, text, final cursors and
+late device callbacks. A new response cannot overlap a cancelled one.
+
+Type `stop`, `stop voice`, `/stop`, `/stop-voice`, `quit`, or `exit` and press
+Enter to **Stop Voice**. Stdin EOF, SIGINT and SIGTERM take the same bounded
+cleanup path: stop capture, interrupt playback, close the socket and join the
+client threads. Other stdin text is not sent as a chat turn. A transport break
+closes all old audio resources, waits for the configured delay, and opens a
+fresh negotiated session. Captured audio and old ACKs are never replayed. A
+reconnect does not resume the old server-side realtime session history.
+
+Linux loads `libasound.so.2` at runtime; no ALSA development package or new
+build-time library is needed. ALSA capture requests 16 kHz mono PCM16 with
+software resampling disabled and fails explicitly if the selected device does
+not support it. Playback uses hardware-delay accounting to ACK consumed
+frames. macOS uses AudioQueue completion callbacks and the default input and
+output devices; named device selection is not supported there. The terminal
+application needs microphone permission. Use headphones: the CLI does not add
+a software acoustic echo canceller, so speaker output can trigger VAD.
+
+API keys still come only from `UMMINFER_API_KEY` or `OPENAI_API_KEY` and are
+sent in the WebSocket `Authorization` header. They are never placed in the URL
+or voice logs. Realtime remains loopback-only `ws://`; remote `wss://` is not
+implemented.
+
+Offline verification uses deterministic fake sockets, microphones and output
+completion callbacks:
+
+```sh
+umm-test-local voice-test
+# Equivalent direct build step with explicit prefixes:
+zig build voice-test -Ddeps-prefix=/path/to/deps -Dcurl-prefix=/path/to/curl-ws
+```
+
+The suite covers cursor monotonicity, delayed/final ACKs, partial consumption,
+cancellation races, repeated cancellation, stale callbacks, reconnect, and
+microphone/playback cleanup on Stop Voice, external cancellation and errors.
+These are not physical-device or live-model results.
+
+### Manual physical / live checklist
+
+On a machine with a microphone, speaker and a real unified ASR+VLM+TTS server,
+use an ephemeral loopback realtime listener (55272 above) and run the command
+interactively. Then:
+
+1. Speak a complete question and verify the transcript, answer text and audible
+   PCM reply. Confirm no append occurs before negotiation.
+2. Speak over a multi-sentence answer. Verify playback stops at the speech-start
+   edge, no old suffix resumes, and the next response retains only the prefix
+   whose ACK was actually sent.
+3. Let an answer finish naturally and verify the final ACK is delayed until the
+   speaker queue drains, including the equal-final-cursor case.
+4. Stop with the typed command; repeat with stdin EOF and Ctrl-C. Each path must
+   release microphone and speaker devices without a hang or a late ACK.
+5. With `--reconnect-attempts 1 --reconnect-delay-ms 100`, restart the local
+   listener. Verify a fresh negotiation, no replay of pre-disconnect audio, and
+   no old playback after the new session starts.
+
+Record server/stage commits, model revisions, device names, audible observations,
+ACK logs and interrupt latency as run evidence. In the current headless task
+environment this checklist, physical listening, a real local model server, and
+macOS AudioQueue execution are all **NOT_RUN**. Device nodes alone are not
+acceptance evidence.
 
 ## Library use
 

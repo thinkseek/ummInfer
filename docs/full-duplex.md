@@ -368,6 +368,40 @@ late audio/text, stale and repeated cancellation/acknowledgement, final
 playback commit, exact next-prompt roles/content, default cancel/error
 exclusion, and two-session isolation.
 
+### CLI physical-device client (offline contract verified)
+
+`umm-infer voice` is the opt-in native CLI counterpart to the web/macOS voice
+controllers. It captures exact 16 kHz mono PCM16, negotiates
+`audio_output.playback_ack=true`, streams `input_audio_buffer.append`, and plays
+`audio.delta` through an isolated native output queue. The legacy
+`umm-infer realtime --file ...` command and all chat/image/video commands keep
+their existing behavior.
+
+The CLI acknowledges a cursor only after the actual output-completion boundary,
+not when a frame arrives or is queued. Its ACK worker preserves consumption
+order, suppresses duplicate/decreasing cursors, and delays `audio.done`'s final
+cursor until every queued PCM chunk drains. A speech-start edge immediately
+invalidates local playback; `response.cancelled`, repeated cancellation and late
+device callbacks are idempotent. Stop Voice, stdin EOF, signals and reconnect
+stop both device paths and close the old socket. Reconnect creates a fresh
+session and never replays buffered microphone input or old ACKs.
+
+Linux uses runtime-loaded ALSA, with exact-format capture and hardware-delay
+playback accounting. macOS uses AudioQueue input and output-completion
+callbacks. No physical microphone, speaker, listening, macOS, or live-server
+validation was run for this CLI implementation; the exact manual checklist and
+platform limits are in [client.md](client.md#full-duplex-voice-voice). The
+deterministic fake-WebSocket/fake-audio suite is:
+
+```sh
+umm-test-local voice-test
+```
+
+It covers cursor monotonicity, delayed/final ACKs, partial consumption,
+cancellation races, repeated cancellation, stale callbacks, reconnect, cleanup,
+and error paths. It is contract evidence, not a listening test or a real-model
+claim.
+
 ### Incremental prefill
 
 The omni stage keeps one prefix cache per process: the session id, the prompt
@@ -515,17 +549,18 @@ previews stay O(1) on long monologues, while final commit still transcribes the
 full turn. A streaming encoder with cached state would avoid re-encoding the
 preview window altogether.
 
-**Physical client playback.** The server now has the explicit cancellation and
-playback-acknowledgement cursor contract, and the live harness exercises timed
-virtual PCM playback. The Web UI has an opt-in realtime mode that captures
-16 kHz PCM16 microphone frames, plays `audio.delta` through Web Audio, sends
-playback ACKs from `onended`/final queue drain, and stops scheduled sources on
-`response.cancelled`; its offline contract suite mocks the audio nodes and does
-not validate a physical microphone, speaker, or live server. The bundled CLI
-client still does not play PCM16 through an audio device or stop a physical
-output stream on `response.cancelled`. Character/acoustic alignment inside one
-TTS sentence also remains unsolved: retention is conservative at sentence
-boundaries rather than estimating an unverified substring from PCM duration.
+**Physical client playback validation.** The server has the explicit
+cancellation and playback-acknowledgement cursor contract, and the live harness
+exercises timed virtual PCM playback. The Web UI and the opt-in `umm-infer voice`
+CLI now implement microphone capture, consumption-driven playback ACKs and
+immediate `response.cancelled` stop. Their offline suites mock the audio
+boundary; neither suite validates a physical microphone, speaker, or live
+server. Physical-device execution and listening remain `NOT_RUN` for the CLI in
+this environment, so audible quality, device latency, echo behavior and
+ALSA/AudioQueue hardware compatibility are not established.
+Character/acoustic alignment inside one TTS sentence also remains unsolved:
+retention is conservative at sentence boundaries rather than estimating an
+unverified substring from PCM duration.
 
 **More than one cached session.** The omni stage caches one session's prefix.
 Concurrent sessions each need their own KV snapshot.

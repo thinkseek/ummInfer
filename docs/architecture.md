@@ -10,7 +10,7 @@
 ```mermaid
 flowchart TB
   subgraph Clients["公开入口 / 客户端"]
-    CLI["umm-infer CLI<br/>chat / speech / transcribe / realtime / image / video<br/>(src/main.cpp, src/client/cli.cpp)"]
+    CLI["umm-infer CLI<br/>chat / speech / transcribe / realtime / voice / image / video<br/>(src/main.cpp, src/client/cli.cpp, voice.cpp)"]
     CPP["C++ Client Library<br/>OpenAIClient / RealtimeSession<br/>(src/client/openai.cpp, realtime.cpp, http.cpp, websocket.cpp)"]
     SWIFT["macOS App (Swift)<br/>ummmlx (clients/ummmlx/)"]
     WEB["Web Client<br/>web/index.html (--web-root)"]

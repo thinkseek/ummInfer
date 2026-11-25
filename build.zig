@@ -28,6 +28,9 @@ fn configure(mod: *std.Build.Module, b: *std.Build, deps_prefix: ?[]const u8, cu
         if (resolved.result.os.tag == .linux) {
             mod.linkSystemLibrary("dl", .{ .use_pkg_config = .no });
         }
+        if (resolved.result.os.tag == .macos and link_deps) {
+            mod.linkFramework("AudioToolbox", .{});
+        }
     }
     if (link_deps) {
         mod.linkSystemLibrary("zmq", .{ .use_pkg_config = .no });
@@ -88,6 +91,8 @@ pub fn build(b: *std.Build) void {
             "src/client/asr.cpp",
             "src/client/websocket.cpp",
             "src/client/realtime.cpp",
+            "src/client/audio_device.cpp",
+            "src/client/voice.cpp",
             "src/client/cli.cpp",
         },
         .flags = &.{"-std=c++20"},
@@ -125,6 +130,22 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_test.step);
     const unified_test = b.step("unified-test", "Run unified orchestration contract tests");
     unified_test.dependOn(&run_test.step);
+
+    const voice_test_exe = b.addExecutable(.{
+        .name = "voice_client_test",
+        .root_module = module(b, target, optimize),
+    });
+    configure(voice_test_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, true);
+    voice_test_exe.root_module.sanitize_thread = tsan;
+    voice_test_exe.root_module.linkLibrary(core);
+    voice_test_exe.root_module.addCSourceFiles(.{
+        .files = &.{"tests/voice_client_test.cpp"},
+        .flags = &.{"-std=c++20"},
+    });
+    const run_voice_test = b.addRunArtifact(voice_test_exe);
+    test_step.dependOn(&run_voice_test.step);
+    const voice_test = b.step("voice-test", "Run fake-WebSocket and fake-audio voice client tests");
+    voice_test.dependOn(&run_voice_test.step);
 
     const bench_step = b.step("cuda-bench", "Measure SHM and CUDA IPC relay latency");
     if (cuda) {

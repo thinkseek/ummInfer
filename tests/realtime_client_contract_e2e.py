@@ -218,13 +218,14 @@ def run_observed_stage(argv):
                 print(f"OBSERVED_ABORT {request_id}", flush=True)
 
         def complete(self, request_id, success, text="", error=None,
-                     generated_tokens=None, finish_reason=None):
+                     generated_tokens=None, finish_reason=None, prompt_tokens=None):
             if request_id in (args.omit_metadata_request or []):
                 generated_tokens = None
                 finish_reason = None
+                prompt_tokens = None
                 print(f"OBSERVED_METADATA_OMIT {request_id}", flush=True)
             return super().complete(request_id, success, text, error,
-                                    generated_tokens, finish_reason)
+                                    generated_tokens, finish_reason, prompt_tokens)
 
     stage = ObservedTinyASRStage(args.name, args.recv, args.coordinator, args.abort,
                                  str(args.model.resolve()))
@@ -656,6 +657,7 @@ def compile_probe(project, work, deps_prefix, curl_prefix):
     source.write_text(PROBE_SOURCE + PROBE_MAIN, encoding="utf-8")
     command = ["c++", "-std=c++20", "-O1", str(source),
                str(project / "src/audio/audio.cpp"),
+               str(project / "src/util/codec.cpp"),
                str(project / "src/client/http.cpp"),
                str(project / "src/client/asr.cpp"),
                str(project / "src/client/websocket.cpp"),
@@ -936,7 +938,9 @@ def main():
             try:
                 live_output, live_error = finish_cli(live)
             except Exception:
-                print(f"DIAG normal_live_wire_events={live_proxy.close()}", flush=True)
+                print(f"DIAG normal_live_wire_events={live_proxy.close()} "
+                      f"errors={live_proxy.errors} frames={live_proxy.frame_events} "
+                      f"server_messages={live_proxy.server_text_messages}", flush=True)
                 raise
             require(live_output == b"b\n", "normal live result failed")
             # Incremental submission makes provisional segments expected: the

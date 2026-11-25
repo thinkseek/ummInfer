@@ -214,13 +214,14 @@ void print_usage(std::ostream& out) {
          "[--next name=EP ...] [--peer name=EP ...]\n"
          "      [--gpu-id N --peer-gpu name=N ...]  staged CUDA IPC\n"
       << "  umm-infer chat --prompt TEXT [--url URL --model M --stream] [--seed N]\n"
-      << "      [--image-url URL ...] [--video-url URL ...] [--audio PATH]\n"
+      << "      [--image-url URL ... | --video-input PATH] [--video-url URL ...] [--audio PATH]\n"
       << "      [--audio-out PATH --voice NAME [--ref-audio PATH]]  speech output\n"
       << "      [--image-out PATH [--image-prompt TEXT] [--image-steps N] [--image-ref PATH]]  image output\n"
       << "      [--video-out PATH [--video-prompt TEXT] [--video-frames N] [--video-steps N]]  video output\n"
       << "  umm-infer speech --url URL --model M --text TEXT --out PATH [--voice NAME] [--format wav|pcm] [--ref-audio PATH]\n"
       << "  umm-infer transcribe --url URL --model M --file audio.wav\n"
       << "  umm-infer realtime --url URL --model M --file audio.wav [--live-result]\n"
+      << "  umm-infer voice --url URL --model M [--voice NAME]  opt-in full-duplex microphone + playback\n"
       << "  umm-infer image generate --url URL --model M --prompt TEXT --out PATH\n"
       << "  umm-infer image edit --url URL --model M --prompt TEXT --image PATH ... --out PATH\n"
       << "  umm-infer video create|status|content|delete --url URL [--id ID --out PATH]\n"
@@ -590,7 +591,8 @@ int main(int argc, char** argv) {
       return run_stage(options.flags);
     }
     if (command == "chat" || command == "speech" || command == "transcribe" ||
-        command == "realtime" || command == "image" || command == "video") {
+        command == "realtime" || command == "voice" || command == "image" ||
+        command == "video") {
       return umminfer::client::run_cli(command, argc, argv, &g_cancelled);
     }
   } catch (const FlagError& exc) {

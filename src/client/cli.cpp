@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "cli.hpp"
 
+#include <poll.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cerrno>
 #include <charconv>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -19,6 +26,7 @@
 #include <nlohmann/json.hpp>
 
 #include "http.hpp"
+#include "voice.hpp"
 #include "umminfer/client/client.hpp"
 
 namespace umminfer::client {
@@ -118,6 +126,13 @@ void usage(const std::string& command, std::ostream& out) {
            "[--format wav|pcm] [--language L] [--prompt TEXT] [--live-result] "
            "[--chunk-ms N] [--final-timeout-ms N] [--final-url URL] [--stall-ms N] "
            "[--ping-interval-ms N]\n";
+  } else if (command == "voice") {
+    out << "usage: umm-infer voice --url http://127.0.0.1:8000 --model M "
+           "[--voice NAME] [--silence-ms N] [--max-new-tokens N]\n"
+           "       [--connect-timeout-ms N] [--reconnect-attempts N] "
+           "[--reconnect-delay-ms N]\n"
+           "       [--input-device ALSA_NAME] [--output-device ALSA_NAME]\n"
+           "       Type 'stop' and press Enter, or send EOF, to Stop Voice.\n";
   } else if (command == "image") {
     out << "usage: umm-infer image generate --url URL --model M --prompt TEXT --out PATH\n"
            "           [--n N] [--size WxH] [--field NAME=VALUE ...] [--timeout-ms N]\n"
@@ -773,6 +788,130 @@ int realtime(int argc, char** argv, std::atomic<bool>* cancel) {
   return 0;
 }
 
+bool voice_stop_command(std::string text) {
+  const auto first = text.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return false;
+  const auto last = text.find_last_not_of(" \t\r\n");
+  text = text.substr(first, last - first + 1);
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return text == "stop" || text == "stop voice" || text == "/stop" ||
+         text == "/stop-voice" || text == "quit" || text == "exit" || text == "/quit";
+}
+
+int voice(int argc, char** argv, std::atomic<bool>* cancel) {
+  Options options(argc, argv, 2,
+                  {"url", "model", "voice", "silence-ms", "max-new-tokens",
+                   "connect-timeout-ms", "reconnect-attempts", "reconnect-delay-ms",
+                   "input-device", "output-device"},
+                  {});
+  if (options.help) {
+    usage("voice", std::cout);
+    return 0;
+  }
+  detail::VoiceConfig config;
+  config.base_url = options.get("url", "http://127.0.0.1:8000");
+  config.model = options.get("model", environment("OPENAI_MODEL"));
+  config.api_key = api_key_from_environment();
+  config.voice = options.get("voice", "vivian");
+  config.input_device = options.get("input-device");
+  config.output_device = options.get("output-device");
+  config.silence_ms = static_cast<int>(integer(options, "silence-ms", 400, 100, 5000));
+  config.max_new_tokens =
+      static_cast<int>(integer(options, "max-new-tokens", 256, 1, 1000000));
+  config.connect_timeout = milliseconds(options, "connect-timeout-ms", 10000);
+  config.reconnect_attempts =
+      static_cast<int>(integer(options, "reconnect-attempts", 2, 0, 10));
+  config.reconnect_delay = milliseconds(options, "reconnect-delay-ms", 250);
+  config.cancel = cancel;
+  if (config.model.empty()) throw UsageError("--model is required");
+
+  std::mutex output_mu;
+  detail::VoiceHandlers handlers;
+  handlers.on_status = [&](const std::string& text) {
+    std::lock_guard lock(output_mu);
+    std::cerr << "[voice] " << text << '\n';
+  };
+  handlers.on_error = [&](const std::string& text) {
+    std::lock_guard lock(output_mu);
+    std::cerr << "[voice] error: " << text << '\n';
+  };
+  handlers.on_partial = [&](const std::string& text) {
+    std::lock_guard lock(output_mu);
+    std::cerr << "[voice] partial: " << text << '\n';
+  };
+  handlers.on_transcript = [&](const std::string& text) {
+    std::lock_guard lock(output_mu);
+    std::cout << "you: " << text << '\n' << std::flush;
+  };
+  handlers.on_response_text = [&](const std::string& text) {
+    std::lock_guard lock(output_mu);
+    std::cout << text << std::flush;
+  };
+  handlers.on_response_completed = [&](const std::string&) {
+    std::lock_guard lock(output_mu);
+    std::cout << '\n' << std::flush;
+  };
+
+  detail::VoiceClient client(config, std::move(handlers));
+  std::atomic<bool> control_stop{false};
+  std::thread control([&] {
+    std::string pending;
+    char buffer[1024];
+    while (!control_stop.load(std::memory_order_relaxed)) {
+      pollfd input{STDIN_FILENO, POLLIN | POLLHUP | POLLERR, 0};
+      const int ready = ::poll(&input, 1, 50);
+      if (ready < 0) {
+        if (errno == EINTR) continue;
+        break;
+      }
+      if (ready == 0) continue;
+      const ssize_t count = ::read(STDIN_FILENO, buffer, sizeof(buffer));
+      if (count < 0) {
+        if (errno == EINTR || errno == EAGAIN) continue;
+        break;
+      }
+      if (count == 0) {
+        client.request_stop();
+        return;
+      }
+      pending.append(buffer, static_cast<size_t>(count));
+      if (pending.size() > 4096) {
+        std::lock_guard lock(output_mu);
+        std::cerr << "[voice] control input is too long; enter 'stop' to end voice\n";
+        pending.clear();
+        continue;
+      }
+      size_t newline = std::string::npos;
+      while ((newline = pending.find('\n')) != std::string::npos) {
+        const std::string line = pending.substr(0, newline);
+        pending.erase(0, newline + 1);
+        if (voice_stop_command(line)) {
+          client.request_stop();
+          return;
+        }
+        if (!line.empty()) {
+          std::lock_guard lock(output_mu);
+          std::cerr << "[voice] enter 'stop' to Stop Voice; microphone input stays live\n";
+        }
+      }
+    }
+  });
+
+  std::exception_ptr failure;
+  try {
+    client.run();
+  } catch (...) {
+    failure = std::current_exception();
+  }
+  control_stop = true;
+  client.request_stop();
+  if (control.joinable()) control.join();
+  if (failure) std::rethrow_exception(failure);
+  std::cerr << "[voice] Voice stopped\n";
+  return 0;
+}
+
 int image(int argc, char** argv, std::atomic<bool>* cancel) {
   std::string subcommand = argc >= 3 ? argv[2] : "";
   if (subcommand == "--help" || subcommand == "-h") {
@@ -935,6 +1074,7 @@ int run_cli(const std::string& command, int argc, char** argv, std::atomic<bool>
     if (command == "speech") return speech(argc, argv, cancel);
     if (command == "transcribe") return transcribe(argc, argv, cancel);
     if (command == "realtime") return realtime(argc, argv, cancel);
+    if (command == "voice") return voice(argc, argv, cancel);
     if (command == "image") return image(argc, argv, cancel);
     if (command == "video") return video(argc, argv, cancel);
     throw UsageError("unknown client command: " + command);
