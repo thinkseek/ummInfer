@@ -410,6 +410,39 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 21 live Qwen3.8 CUDA Graph, Wan2.2 Batched-CFG, native `i2v_chain` continuity & Stage C controlled/GRPO gates (`2f331bd`, `bb4c471`, `f2fa842`, `eb30eba`, `39412ff`):
+  - **GPU 3 `umm-native-stage-qwen38`** (`bb4c471` lazy per-slot `m=1` 64-layer
+    decode CUDA Graph with device-side mRoPE and separate `kv_pos`/`rope_pos`,
+    preserving `.wave20` backup): hot-swapped live (`load_ms=9,608`, `61,325 MiB`
+    steady, `+44 MiB` graph overhead, `0` restarts on GPUs 2/4/5/6). Measured
+    live on `43301` (`--batch-size 8`, `temperature=0.0`): server
+    **`decode_tok_per_s = 53.6`** (`18.94 ms/tok`), client SSE **`51.74 ->
+    53.26 tok/s`** (`+37.7%` vs Wave 15 `38.95 tok/s`, bit-identical 165 chunks
+    / 749 chars / `sha=0a1bda565320e74b`, multimodal image VQA verified).
+  - **GPU 6 `umm-native-stage-video`** (`39412ff` Batched-CFG `B=2`
+    `WanDit::forward_cfg()`, `grid.z=2` FlashAttention-2, GPU patchify/unpatchify
+    + fused CFG combine, dedicated non-blocking stream + pinned host buffers,
+    preserving `.wave20` backup): measured on isolated SM90 GPU 1 (`704x480` 29f
+    15 steps `seed=42`, GPU 1 returned to `3 MiB`): lossless `dit_ms`
+    **`6,967 -> 6,655 ms`**, total **`11.16 -> 10.73 s`** (`2.24x` vs Wave 14
+    `24.07 s`), TeaCache `0.05` **`8.86 -> 8.59 s`** (`2.80x` vs Wave 14),
+    1-step Batched vs Sequential `PSNR=48.71 dB`. Hot-swapped live on GPU 6
+    (`20,859 MiB` steady).
+  - **Gateway `/bin/umm-infer`** (`eb30eba` opt-in `narrative.continuity_mode`
+    `off|prompt_anchor|i2v_chain` + `narrative.style_anchor`, preserving `.wave20`
+    backup): hot-swapped live; end-to-end 5-modality `POST /v1/chat/completions`
+    with `continuity_mode="i2v_chain"` and `video.teacache_thresh=0.05` completed
+    in **`12.53 s`** (`TTFT=0.91 s`), automatically feeding Slot 0 FLUX.2 PNG
+    into Slot 1 Wan2.2 I2V (`request_id=http-1:slot:1 i2v=1 teacache_hits=10/30
+    mp4_bytes=185,890 dit_ms=4,447 elapsed_ms=9,257`).
+  - **Stage C Controlled Routing & Real SM90 Joint-GRPO Gates** (`2f331bd`,
+    `f2fa842`): recorded the accepted **`CONTROLLED_LIVE / COMPLETED`** SM90
+    narrative-routing gate on isolated GPUs 0/1 (24 measured + 8 warmup requests,
+    25/25 `SHA256SUMS`, 36 Safetensors manifests) and the bounded real SM90 GPU 7
+    Joint-GRPO optimizer gate (`Qwen2.5-0.5B` BF16, `clip_eps=0.2`, Schulman KL
+    `0.04`, 290/290 nonzero grad tensors, exact fresh-process resume, completing
+    the SFT + DPO + GRPO triad; online rollout & quality claims remain `NOT_RUN`).
+
 - Wave 18 CPU-only native video temporal keyframe selection:
   - Added opt-in `video_url.frame_selection.policy=temporal` with bounded
     scene/motion selection (64 candidates -> at most 8 frames), chronological
