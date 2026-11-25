@@ -28,13 +28,21 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
   body {
-    background: linear-gradient(180deg, #fefaf2 0%, #fbf6ec 45%, #edf3fc 100%);
-    background-attachment: fixed;
+    background: #fbf6ec;
     color: var(--ink);
     font-family: "Helvetica Neue", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     font-weight: 300;
     line-height: 1.7;
     -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background: linear-gradient(180deg, #fefaf2 0%, #fbf6ec 45%, #edf3fc 100%);
+    transform: translateZ(0);
   }
   ::selection { background: rgba(255, 138, 61, 0.22); }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 0 32px; }
@@ -101,7 +109,9 @@
     aspect-ratio: 16 / 9;
     background: #ede6da;
     border-radius: 10px; overflow: hidden;
-    box-shadow: 0 24px 60px -28px rgba(26, 26, 26, 0.35), 0 0 0 1px var(--line);
+    box-shadow: 0 12px 32px -18px rgba(23, 32, 43, 0.24), 0 0 0 1px var(--line);
+    contain: layout paint;
+    transform: translateZ(0);
   }
   .film-frame video { width: 100%; height: 100%; object-fit: cover; display: block; }
   .film-note {
@@ -226,7 +236,7 @@
 
   <div class="film" id="film">
     <div class="film-frame">
-      <video src="assets/umminfer-launch-16x9.mp4" poster="assets/umminfer-launch-poster.jpg" width="1920" height="1080" autoplay muted loop playsinline controls preload="metadata"></video>
+      <video id="hero-video" src="assets/umminfer-launch-16x9.mp4" poster="assets/umminfer-launch-poster.jpg" width="1920" height="1080" muted loop playsinline controls preload="metadata"></video>
     </div>
     <div class="film-note">
       <span>一套引擎，四种模态 · C++20 / CUDA 架构与实测 · 16 秒</span>
@@ -259,7 +269,7 @@
       </button>
     </div>
     <div class="film-frame showcase-frame">
-      <video id="sc-video" src="assets/umminfer-showcase-documentary.mp4" poster="assets/umminfer-showcase-documentary-poster.jpg" width="1920" height="1080" muted loop playsinline controls preload="metadata"></video>
+      <video id="sc-video" data-src="assets/umminfer-showcase-documentary.mp4" poster="assets/umminfer-showcase-documentary-poster.jpg" width="1920" height="1080" muted loop playsinline controls preload="none"></video>
     </div>
     <div class="showcase-meta">
       <div>
@@ -377,11 +387,83 @@
       caption: 'Showcase 03 · 交互式分镜与产品推演 · 16 秒'
     }
   ];
+  var heroVideo = document.getElementById('hero-video');
   var scVideo = document.getElementById('sc-video');
   var scInput = document.getElementById('sc-input');
   var scDiff = document.getElementById('sc-diff');
   var scCaption = document.getElementById('sc-caption');
   var scDirect = document.getElementById('sc-direct');
+
+  // Strict viewport-only playback: never decode or play off-screen videos, and keep at most one playing.
+  var managedVideos = [heroVideo, scVideo].filter(Boolean);
+  var videoState = new Map();
+  managedVideos.forEach(function (v) {
+    videoState.set(v, { visible: false, userPaused: false, programPause: false });
+    v.addEventListener('play', function () {
+      var st = videoState.get(v);
+      st.userPaused = false;
+      managedVideos.forEach(function (other) {
+        if (other !== v && !other.paused) {
+          var ost = videoState.get(other);
+          ost.programPause = true;
+          other.pause();
+        }
+      });
+    });
+    v.addEventListener('pause', function () {
+      var st = videoState.get(v);
+      if (st.programPause) { st.programPause = false; return; }
+      if (st.visible && document.visibilityState === 'visible') st.userPaused = true;
+    });
+  });
+
+  function ensureSrc(v) {
+    if (!v.getAttribute('src') && v.dataset.src) {
+      v.src = v.dataset.src;
+      v.preload = 'metadata';
+    }
+  }
+
+  function safePause(v) {
+    if (!v.paused) {
+      videoState.get(v).programPause = true;
+      v.pause();
+    }
+  }
+
+  function syncPlayback() {
+    if (document.visibilityState !== 'visible') {
+      managedVideos.forEach(safePause);
+      return;
+    }
+    var winner = null;
+    managedVideos.forEach(function (v) {
+      var st = videoState.get(v);
+      if (st.visible && !st.userPaused && !winner) winner = v;
+    });
+    managedVideos.forEach(function (v) {
+      if (v === winner) {
+        ensureSrc(v);
+        if (v.paused) v.play().catch(function () {});
+      } else {
+        safePause(v);
+      }
+    });
+  }
+
+  var vio = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      var v = entry.target;
+      var st = videoState.get(v);
+      if (!st) return;
+      st.visible = entry.isIntersecting && entry.intersectionRatio >= 0.35;
+      if (!st.visible) safePause(v);
+    });
+    syncPlayback();
+  }, { threshold: [0, 0.35, 0.6] });
+  managedVideos.forEach(function (v) { vio.observe(v); });
+  document.addEventListener('visibilitychange', syncPlayback);
+
   document.querySelectorAll('.sc-tab').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var idx = parseInt(btn.getAttribute('data-sc'), 10);
@@ -392,11 +474,17 @@
         b.classList.toggle('active', on);
         b.setAttribute('aria-selected', on ? 'true' : 'false');
       });
-      scVideo.pause();
+      safePause(scVideo);
       scVideo.poster = item.poster;
+      scVideo.dataset.src = item.src;
       scVideo.src = item.src;
+      scVideo.preload = 'metadata';
       scVideo.load();
-      scVideo.play().catch(function () {});
+      videoState.get(scVideo).userPaused = false;
+      if (videoState.get(scVideo).visible) {
+        managedVideos.forEach(function (other) { if (other !== scVideo) safePause(other); });
+        scVideo.play().catch(function () {});
+      }
       scInput.textContent = item.input;
       scDiff.textContent = item.diff;
       scCaption.textContent = item.caption;
