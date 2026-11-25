@@ -16,7 +16,8 @@ private func sse(_ frames: [[String: Any]]) -> Data {
 
 private func frame(
     kind: String, seq: Int, text: String = "", session: String = "srv-123456789",
-    artifact: [String: Any]? = nil, finish: String? = nil, error: String? = nil
+    stage: String = "vlm", artifact: [String: Any]? = nil, finish: String? = nil,
+    error: String? = nil, extra: [String: Any] = [:]
 ) -> [String: Any] {
     var delta: [String: Any] = [:]
     if kind == "vlm_delta" { delta["content"] = text }
@@ -25,11 +26,12 @@ private func frame(
     else if kind == "complete" { reason = "stop" }
     else { reason = NSNull() }
     var unified: [String: Any] = [
-        "kind": kind, "seq": seq, "session_id": session, "stage": "vlm",
+        "kind": kind, "seq": seq, "session_id": session, "stage": stage,
         "is_final": kind == "complete", "text": text
     ]
     if let artifact { unified["artifact"] = artifact }
     if let error { unified["error"] = error }
+    unified.merge(extra) { _, new in new }
     return [
         "choices": [["delta": delta, "finish_reason": reason]],
         "unified": unified
@@ -63,6 +65,87 @@ private func artifactFrame(seq: Int) -> [String: Any] {
         "data": artifactBytes.base64EncodedString(),
         "sha256": artifactSHA, "bytes": artifactBytes.count
     ])
+}
+
+private let slotPrompt = "a glowing red lantern over a misty lake"
+
+private func visualSlotFrame(seq: Int, slotID: String = "slot-0",
+                             index: Int = 0, kind: String = "image",
+                             offset: Int = 0) -> [String: Any] {
+    frame(kind: "visual_slot", seq: seq, stage: kind, extra: [
+        "slot_id": slotID, "slot_index": index, "media_type": kind,
+        "prompt": slotPrompt, "text_offset": offset
+    ])
+}
+
+private func slotArtifactFrame(seq: Int, slotID: String = "slot-0",
+                               index: Int = 0) -> [String: Any] {
+    frame(kind: "artifact", seq: seq, stage: "image", artifact: [
+        "artifact_id": "art-slot-0", "media_type": "image",
+        "mime_type": "image/png", "slot_id": slotID, "slot_index": index,
+        "encoding": "base64", "index": 0, "total": 1,
+        "data": artifactBytes.base64EncodedString(),
+        "sha256": artifactSHA, "bytes": artifactBytes.count
+    ])
+}
+
+/// Serves image/video bytes for `POST /v1/visual/render` and records the body.
+private final class VisualRenderProtocol: URLProtocol {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var storage: [Data] = []
+
+    static func reset() {
+        lock.lock()
+        storage = []
+        lock.unlock()
+    }
+
+    static func bodies() -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    private func body(_ request: URLRequest) -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.path.hasSuffix("/visual/render") == true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let sent = body(request)
+        Self.lock.lock()
+        Self.storage.append(sent)
+        Self.lock.unlock()
+        let response = HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: nil,
+            headerFields: ["Content-Type": "image/png",
+                           "X-UmmInfer-Kind": "image"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: artifactBytes)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 /// Canned unified streams, keyed by host.
@@ -107,12 +190,30 @@ private final class UnifiedSSEProtocol: URLProtocol {
             pcmFrame(id: "art-0", seq: 1, data: pcmChunk0, sha: pcmChunk0SHA),
             pcmFrame(id: "art-1", seq: 2, data: pcmChunk1, sha: pcmChunk1SHA),
             frame(kind: "complete", seq: 3, text: "Hi.")
+        ]),
+        // Interleaved narrative: prose, a visual beat, then prose again.
+        "10.1.2.11": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "One "),
+            visualSlotFrame(seq: 1, offset: 4),
+            frame(kind: "vlm_delta", seq: 2, text: "Two."),
+            slotArtifactFrame(seq: 3),
+            frame(kind: "complete", seq: 4, text: "One Two.")
+        ]),
+        // A slot leg fails: the error belongs to the card only.
+        "10.1.2.13": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Story. "),
+            visualSlotFrame(seq: 1),
+            frame(kind: "leg_error", seq: 2, stage: "image", error: "boom",
+                  extra: ["slot_id": "slot-0", "slot_index": 0,
+                          "media_type": "image"]),
+            frame(kind: "complete", seq: 3, text: "Story. ")
         ])
     ]
 
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host?.hasPrefix("10.1.2.") == true
             && request.url?.host != "10.1.2.9"
+            && request.url?.path.hasSuffix("/visual/render") != true
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -229,7 +330,8 @@ final class ChatClientUnifiedTests: XCTestCase {
     @MainActor
     private func makeClient() -> ChatClient {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [UnifiedSSEProtocol.self]
+        configuration.protocolClasses = [UnifiedSSEProtocol.self,
+                                         VisualRenderProtocol.self]
         return ChatClient(session: URLSession(configuration: configuration))
     }
 
@@ -424,7 +526,8 @@ final class ChatClientUnifiedTests: XCTestCase {
             model: "m", messages: [ChatMessage(role: "user", content: "hi")],
             options: multimodal)
         let mmAudio = mmBody["audio"] as? [String: Any]
-        XCTAssertNil(mmAudio?["stream"])
+        XCTAssertEqual(mmAudio?["stream"] as? Bool, true,
+                       "global voice streams alongside image and video legs")
     }
 
     @MainActor
@@ -552,12 +655,186 @@ final class ChatClientUnifiedTests: XCTestCase {
 
         let aud = body["audio"] as? [String: Any]
         XCTAssertEqual(aud?["ref_audio"] as? String, "data:audio/wav;base64,UklGRg==")
-        XCTAssertNil(aud?["stream"], "audio.stream must stay off when video/image is active")
+        XCTAssertEqual(aud?["stream"] as? Bool, true,
+                       "global voice streams alongside image and video legs")
 
         let vid = body["video"] as? [String: Any]
         XCTAssertEqual(vid?["num_frames"] as? Int, 13)
         XCTAssertEqual(vid?["steps"] as? Int, 15)
         XCTAssertEqual(vid?["guidance_scale"] as? Double, 5.0)
         XCTAssertEqual(vid?["seed"] as? Int, 9)
+    }
+
+    @MainActor
+    func testRequestBodyEncodesNarrativeWithGlobalStreamingVoice() {
+        var options = ChatStreamOptions()
+        options.image = ImageOptions()
+        options.video = VideoOptions()
+        options.audio = AudioOptions(voice: "vivian", stream: true)
+        options.narrative = NarrativeOptions(enabled: true, visualMode: "auto",
+                                             maxSlots: 3)
+        let body = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "story")],
+            options: options)
+        XCTAssertEqual(body["modalities"] as? [String],
+                       ["text", "image", "audio", "video"])
+        let audio = body["audio"] as? [String: Any]
+        XCTAssertEqual(audio?["stream"] as? Bool, true)
+        let narrative = body["narrative"] as? [String: Any]
+        XCTAssertEqual(narrative?["enabled"] as? Bool, true)
+        XCTAssertEqual(narrative?["visual_mode"] as? String, "auto")
+        XCTAssertEqual(narrative?["max_slots"] as? Int, 3)
+
+        // Absent unless the caller opts in: backwards compatible.
+        options.narrative = nil
+        let plain = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "hi")],
+            options: options)
+        XCTAssertNil(plain["narrative"])
+    }
+
+    @MainActor
+    func testVisualRenderURLKeepsTheChatURLSecurityPolicyAndPath() throws {
+        XCTAssertEqual(
+            try ChatClient.visualRenderURL(
+                base: "http://127.0.0.1:43301/v1", allowedHTTPHosts: []
+            ).absoluteString,
+            "http://127.0.0.1:43301/v1/visual/render")
+        XCTAssertEqual(
+            try ChatClient.visualRenderURL(
+                base: "http://10.0.0.8", allowedHTTPHosts: []
+            ).absoluteString,
+            "http://10.0.0.8/v1/visual/render")
+        XCTAssertEqual(
+            try ChatClient.visualRenderURL(
+                base: "https://example.com/custom/", allowedHTTPHosts: []
+            ).absoluteString,
+            "https://example.com/custom/visual/render")
+        XCTAssertEqual(
+            try ChatClient.visualRenderURL(
+                base: "http://8.8.8.8/v1", allowedHTTPHosts: ["8.8.8.8"]
+            ).absoluteString,
+            "http://8.8.8.8/v1/visual/render")
+        XCTAssertThrowsError(try ChatClient.visualRenderURL(
+            base: "http://example.com/v1", allowedHTTPHosts: []))
+        XCTAssertThrowsError(try ChatClient.visualRenderURL(
+            base: "http://127.0.0.1/v1?x=1", allowedHTTPHosts: []))
+    }
+
+    @MainActor
+    func testChatModelInterleavesVisualSlotsAndAttributesArtifacts() async throws {
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        model.endpoint = "http://10.1.2.11/v1"
+        model.model = "m"
+        model.imageOutput = true
+        model.narrativeMode = true
+        model.prompt = "story"
+        model.send()
+
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(model.isRunning)
+        let turn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertEqual(turn.text, "One Two.")
+        XCTAssertEqual(turn.blocks.count, 3)
+        guard case .text(_, let first) = turn.blocks[0] else {
+            return XCTFail("the first block must be prose")
+        }
+        XCTAssertEqual(first, "One ")
+        guard case .visual(let slot) = turn.blocks[1] else {
+            return XCTFail("the visual beat must sit between the prose blocks")
+        }
+        XCTAssertEqual(slot.slotID, "slot-0")
+        XCTAssertEqual(slot.slotIndex, 0)
+        XCTAssertEqual(slot.prompt, slotPrompt)
+        XCTAssertEqual(slot.activeKind, "image")
+        XCTAssertEqual(slot.imageArtifact?.data, artifactBytes)
+        XCTAssertNil(slot.error)
+        XCTAssertFalse(slot.isLoading)
+        guard case .text(_, let last) = turn.blocks[2] else {
+            return XCTFail("prose after the beat must start a new block")
+        }
+        XCTAssertEqual(last, "Two.")
+        // Legacy fields stay populated for replay and recovery.
+        XCTAssertEqual(turn.artifacts.count, 1)
+        XCTAssertEqual(turn.artifacts.first?.slotID, "slot-0")
+        XCTAssertEqual(turn.artifacts.first?.slotIndex, 0)
+    }
+
+    @MainActor
+    func testSlotLegErrorLandsOnTheCardOnce() async throws {
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        model.endpoint = "http://10.1.2.13/v1"
+        model.model = "m"
+        model.imageOutput = true
+        model.prompt = "story"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let turn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertTrue(turn.legErrors.isEmpty,
+                      "a slot failure must not duplicate at turn level")
+        XCTAssertEqual(turn.blocks.count, 2)
+        guard case .visual(let slot) = turn.blocks[1] else {
+            return XCTFail("the visual beat must follow the prose block")
+        }
+        XCTAssertEqual(slot.error, "boom")
+        XCTAssertFalse(slot.isLoading)
+        XCTAssertNil(slot.imageArtifact)
+    }
+
+    @MainActor
+    func testChatModelSwapsVisualSlotInPlaceAndReusesTheCachedKind() async throws {
+        VisualRenderProtocol.reset()
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        model.endpoint = "http://10.1.2.11/v1"
+        model.model = "m"
+        model.imageOutput = true
+        model.narrativeMode = true
+        model.prompt = "story"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let turn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+
+        model.swapVisualSlot(turnID: turn.id, slotID: "slot-0", toKind: "video")
+        var swapped: VisualSlotState?
+        for _ in 0..<200 {
+            swapped = model.turns
+                .first(where: { $0.id == turn.id })?.blocks
+                .compactMap(\.visualSlot)
+                .first(where: { $0.slotID == "slot-0" })
+            if swapped?.videoArtifact != nil { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(swapped?.activeKind, "video")
+        XCTAssertEqual(swapped?.videoArtifact?.data, artifactBytes)
+        XCTAssertFalse(swapped?.isLoading ?? true)
+        XCTAssertNil(swapped?.error)
+        XCTAssertEqual(VisualRenderProtocol.bodies().count, 1)
+        let body = try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(VisualRenderProtocol.bodies().first))
+            as? [String: Any]
+        XCTAssertEqual(body?["kind"] as? String, "video")
+        XCTAssertEqual(body?["prompt"] as? String, slotPrompt)
+        XCTAssertEqual(body?["size"] as? String, "480x320")
+
+        // The image is still cached: swapping back makes no network call.
+        model.swapVisualSlot(turnID: turn.id, slotID: "slot-0", toKind: "image")
+        let back = model.turns
+            .first(where: { $0.id == turn.id })?.blocks
+            .compactMap(\.visualSlot)
+            .first(where: { $0.slotID == "slot-0" })
+        XCTAssertEqual(back?.activeKind, "image")
+        XCTAssertEqual(back?.imageArtifact?.data, artifactBytes)
+        XCTAssertFalse(back?.isLoading ?? true)
+        XCTAssertEqual(VisualRenderProtocol.bodies().count, 1,
+                       "a cached kind must not hit the network")
     }
 }

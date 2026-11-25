@@ -2,6 +2,45 @@
 
 import Foundation
 
+/// One interleaved visual beat of an assistant turn. It holds both rendered
+/// kinds so a swap can reuse the cached artifact without a network call.
+struct VisualSlotState: Identifiable, Equatable {
+    let id = UUID()
+    let slotID: String
+    let slotIndex: Int
+    var prompt: String
+    /// Kind currently shown: "image" or "video".
+    var activeKind: String
+    var isLoading: Bool
+    var error: String?
+    var imageArtifact: GeneratedArtifact?
+    var videoArtifact: GeneratedArtifact?
+    /// Identifies the in-flight swap request, so a stale result is dropped
+    /// after the user swapped again or a cached kind was shown instead.
+    var swapToken: UUID?
+}
+
+/// A run of assistant prose or an inline visual card. Prose after a visual
+/// slot starts a new text block, so the card stays at its narrative beat.
+enum TurnBlock: Identifiable {
+    case text(id: UUID, content: String)
+    case visual(VisualSlotState)
+
+    var id: UUID {
+        switch self {
+        case .text(let id, _): return id
+        case .visual(let slot): return slot.id
+        }
+    }
+
+    var visualSlot: VisualSlotState? {
+        switch self {
+        case .text: return nil
+        case .visual(let slot): return slot
+        }
+    }
+}
+
 struct ChatTurn: Identifiable {
     enum Role: String {
         case user
@@ -24,6 +63,9 @@ struct ChatTurn: Identifiable {
     var transcript = ""
     /// Non-terminal optional-leg failures reported by the server.
     var legErrors: [String] = []
+    /// Interleaved render order. `text` and `artifacts` stay populated for
+    /// history replay and code that predates blocks.
+    var blocks: [TurnBlock] = []
 }
 
 @MainActor
@@ -38,8 +80,13 @@ final class ChatModel: ObservableObject {
     /// Server-echoed session id. The UI shows its first eight characters.
     @Published private(set) var sessionID = ""
     @Published var imageOutput = false
+    /// Global voice: streams TTS concurrently with text and visual legs.
     @Published var audioOutput = false
     @Published var videoOutput = false
+    @Published var narrativeMode = true
+    /// "auto", "image" or "video".
+    @Published var narrativeVisualMode = "auto"
+    @Published var narrativeMaxSlots = 3
     @Published var maxTokensText = "256"
     @Published var temperatureText = "0"
     @Published var topPText = ""
@@ -231,9 +278,19 @@ final class ChatModel: ObservableObject {
             }
             options.video = vid
         }
+        // Narrative needs a visual modality on the wire, or the server rejects
+        // the request. Without one the toggle is ignored instead of failing.
+        if narrativeMode && (imageOutput || videoOutput) {
+            var mode = narrativeVisualMode
+            if mode == "image" && !imageOutput { mode = "auto" }
+            if mode == "video" && !videoOutput { mode = "auto" }
+            options.narrative = NarrativeOptions(
+                enabled: true, visualMode: mode,
+                maxSlots: min(max(narrativeMaxSlots, 1), 6))
+        }
 
         stopStreamingAudio()
-        if audioOutput && !imageOutput && !videoOutput {
+        if audioOutput {
             audioStream.beginStream()
         }
 
@@ -269,7 +326,7 @@ final class ChatModel: ObservableObject {
                           let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
                         return
                     }
-                    self.turns[index].text += delta
+                    self.appendTextDelta(delta, to: index)
                     if !self.receivedDelta {
                         self.receivedDelta = true
                         self.status = "Streaming…"
@@ -283,10 +340,32 @@ final class ChatModel: ObservableObject {
                     switch event.kind {
                     case .asrFinal:
                         if !event.text.isEmpty { self.turns[index].transcript = event.text }
+                    case .visualSlot:
+                        let slotIndex = event.slotIndex ?? 0
+                        let slotID = event.slotID ?? "slot-\(slotIndex)"
+                        let isVideo = event.mediaType == "video"
+                            || (event.mediaType.isEmpty && event.stage == "video")
+                        let known = self.turns[index].blocks.contains {
+                            $0.visualSlot?.slotID == slotID
+                        }
+                        if !known {
+                            self.turns[index].blocks.append(.visual(VisualSlotState(
+                                slotID: slotID, slotIndex: slotIndex,
+                                prompt: event.prompt,
+                                activeKind: isVideo ? "video" : "image",
+                                isLoading: true)))
+                        }
                     case .legError:
                         let detail = event.error.isEmpty
                             ? "\(event.stage) output failed" : event.error
-                        self.turns[index].legErrors.append(detail)
+                        // A slot failure belongs on its card, not also in the
+                        // turn-level list.
+                        let attributed = event.slotID.map {
+                            self.markSlotError(detail, slotID: $0, turnIndex: index)
+                        } ?? false
+                        if !attributed {
+                            self.turns[index].legErrors.append(detail)
+                        }
                         self.status = "Completed with leg error"
                     default:
                         break
@@ -297,6 +376,10 @@ final class ChatModel: ObservableObject {
                         return
                     }
                     self.turns[index].artifacts.append(artifact)
+                    if let slotID = artifact.slotID {
+                        self.attachVisualArtifact(artifact, slotID: slotID,
+                                                  turnIndex: index)
+                    }
                 } onAudioChunk: { chunk in
                     guard self.activeTurn == assistant.id else { return }
                     self.streamingAudioTurnID = assistant.id
@@ -308,6 +391,7 @@ final class ChatModel: ObservableObject {
                 }
                 self.audioStream.finishStream()
                 self.turns[index].text = result.text
+                self.settleVisualSlots(at: index)
                 self.turns[index].state = .complete
                 if !result.sessionID.isEmpty { self.sessionID = result.sessionID }
                 self.status = result.finishReason.isEmpty
@@ -319,7 +403,10 @@ final class ChatModel: ObservableObject {
                 let cancelled = self.stopping || Task.isCancelled ||
                     (error as? URLError)?.code == .cancelled || error is CancellationError
                 if let index = self.turns.firstIndex(where: { $0.id == assistant.id }) {
-                    if self.turns[index].text.isEmpty && self.turns[index].artifacts.isEmpty {
+                    self.settleVisualSlots(at: index, markMissingOutput: false)
+                    if self.turns[index].text.isEmpty
+                        && self.turns[index].artifacts.isEmpty
+                        && self.turns[index].blocks.isEmpty {
                         self.turns.remove(at: index)
                     } else {
                         self.turns[index].state = cancelled ? .stopped : .failed
@@ -334,6 +421,179 @@ final class ChatModel: ObservableObject {
                 self.finish(assistant.id)
             }
         }
+    }
+
+    // MARK: - Interleaved blocks and in-place visual swap
+
+    private func appendTextDelta(_ delta: String, to turnIndex: Int) {
+        turns[turnIndex].text += delta
+        if let last = turns[turnIndex].blocks.indices.last,
+           case .text(let id, let content) = turns[turnIndex].blocks[last] {
+            turns[turnIndex].blocks[last] = .text(id: id, content: content + delta)
+        } else {
+            turns[turnIndex].blocks.append(.text(id: UUID(), content: delta))
+        }
+    }
+
+    private func attachVisualArtifact(_ artifact: GeneratedArtifact, slotID: String,
+                                      turnIndex: Int) {
+        guard artifact.mediaType == "image" || artifact.mediaType == "video",
+              let blockIndex = turns[turnIndex].blocks.firstIndex(where: {
+                  $0.visualSlot?.slotID == slotID
+              }),
+              var slot = turns[turnIndex].blocks[blockIndex].visualSlot else { return }
+        if artifact.mediaType == "image" {
+            slot.imageArtifact = artifact
+        } else {
+            slot.videoArtifact = artifact
+        }
+        slot.activeKind = artifact.mediaType
+        slot.isLoading = false
+        slot.error = nil
+        turns[turnIndex].blocks[blockIndex] = .visual(slot)
+    }
+
+    @discardableResult
+    private func markSlotError(_ detail: String, slotID: String,
+                               turnIndex: Int) -> Bool {
+        guard let blockIndex = turns[turnIndex].blocks.firstIndex(where: {
+            $0.visualSlot?.slotID == slotID
+        }), var slot = turns[turnIndex].blocks[blockIndex].visualSlot else {
+            return false
+        }
+        slot.error = detail
+        slot.isLoading = false
+        turns[turnIndex].blocks[blockIndex] = .visual(slot)
+        return true
+    }
+
+    /// Stops the spinner of any initial slot generation that will never
+    /// finish. An active swap is left alone: its own task settles it.
+    private func settleVisualSlots(at turnIndex: Int,
+                                   markMissingOutput: Bool = true) {
+        for blockIndex in turns[turnIndex].blocks.indices {
+            guard var slot = turns[turnIndex].blocks[blockIndex].visualSlot,
+                  slot.isLoading, slot.swapToken == nil else { continue }
+            slot.isLoading = false
+            if markMissingOutput, slot.imageArtifact == nil,
+               slot.videoArtifact == nil, slot.error == nil {
+                slot.error = "No output for this visual slot."
+            }
+            turns[turnIndex].blocks[blockIndex] = .visual(slot)
+        }
+    }
+
+    /// Swaps one slot to the other visual kind in place. A cached artifact
+    /// switches instantly; otherwise only this slot shows a spinner while
+    /// `POST /v1/visual/render` runs.
+    func swapVisualSlot(turnID: UUID, slotID: String, toKind: String) {
+        guard toKind == "image" || toKind == "video",
+              let turnIndex = turns.firstIndex(where: { $0.id == turnID }),
+              let blockIndex = turns[turnIndex].blocks.firstIndex(where: {
+                  $0.visualSlot?.slotID == slotID
+              }),
+              var slot = turns[turnIndex].blocks[blockIndex].visualSlot else { return }
+
+        if (toKind == "image" && slot.imageArtifact != nil)
+            || (toKind == "video" && slot.videoArtifact != nil) {
+            slot.activeKind = toKind
+            slot.isLoading = false
+            slot.error = nil
+            // Drop any in-flight fetch for the kind just left.
+            slot.swapToken = nil
+            turns[turnIndex].blocks[blockIndex] = .visual(slot)
+            return
+        }
+        guard !slot.isLoading else { return }
+        let token = UUID()
+        slot.activeKind = toKind
+        slot.isLoading = true
+        slot.error = nil
+        slot.swapToken = token
+        turns[turnIndex].blocks[blockIndex] = .visual(slot)
+
+        var size: String?
+        var steps: Int?
+        var numFrames: Int?
+        var guidance: Double?
+        if toKind == "image" {
+            size = imageSize
+            if let value = Int(imageStepsText.trimmingCharacters(in: .whitespaces)),
+               value > 0 { steps = value }
+        } else {
+            size = videoSize
+            if let value = Int(videoStepsText.trimmingCharacters(in: .whitespaces)),
+               value > 0 { steps = value }
+            if let value = Int(videoFramesText.trimmingCharacters(in: .whitespaces)),
+               value > 0 { numFrames = value }
+            if let value = Double(videoGuidanceText.trimmingCharacters(in: .whitespaces)),
+               value >= 0 { guidance = value }
+        }
+        let seed = Int(seedText.trimmingCharacters(in: .whitespaces))
+        let prompt = slot.prompt
+        let base = endpoint
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let data = try await self.client.renderVisual(
+                    base: base, kind: toKind, prompt: prompt, size: size,
+                    steps: steps, numFrames: numFrames,
+                    guidanceScale: guidance, seed: seed)
+                self.completeSwap(turnID: turnID, slotID: slotID,
+                                  toKind: toKind, token: token, data: data)
+            } catch {
+                self.failSwap(turnID: turnID, slotID: slotID, toKind: toKind,
+                              token: token, message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func completeSwap(turnID: UUID, slotID: String, toKind: String,
+                              token: UUID, data: Data) {
+        guard let turnIndex = turns.firstIndex(where: { $0.id == turnID }),
+              let blockIndex = turns[turnIndex].blocks.firstIndex(where: {
+                  $0.visualSlot?.slotID == slotID
+              }),
+              var slot = turns[turnIndex].blocks[blockIndex].visualSlot,
+              slot.activeKind == toKind, slot.isLoading,
+              slot.swapToken == token else { return }
+        let artifact = GeneratedArtifact(
+            id: "swap-\(slotID)-\(toKind)", mediaType: toKind,
+            mimeType: toKind == "image" ? "image/png" : "video/mp4",
+            data: data, sha256: ArtifactCollector.sha256Hex(data),
+            slotID: slotID, slotIndex: slot.slotIndex)
+        if toKind == "image" {
+            slot.imageArtifact = artifact
+        } else {
+            slot.videoArtifact = artifact
+        }
+        slot.isLoading = false
+        slot.error = nil
+        slot.swapToken = nil
+        turns[turnIndex].blocks[blockIndex] = .visual(slot)
+        // Keep the legacy list complete; the row renderer skips slot artifacts.
+        turns[turnIndex].artifacts.append(artifact)
+    }
+
+    private func failSwap(turnID: UUID, slotID: String, toKind: String,
+                          token: UUID, message: String) {
+        guard let turnIndex = turns.firstIndex(where: { $0.id == turnID }),
+              let blockIndex = turns[turnIndex].blocks.firstIndex(where: {
+                  $0.visualSlot?.slotID == slotID
+              }),
+              var slot = turns[turnIndex].blocks[blockIndex].visualSlot,
+              slot.activeKind == toKind, slot.isLoading,
+              slot.swapToken == token else { return }
+        // Show the kind that still has an artifact, if any.
+        if slot.imageArtifact != nil {
+            slot.activeKind = "image"
+        } else if slot.videoArtifact != nil {
+            slot.activeKind = "video"
+        }
+        slot.isLoading = false
+        slot.error = message
+        slot.swapToken = nil
+        turns[turnIndex].blocks[blockIndex] = .visual(slot)
     }
 
     static func requestMessages(turns: [ChatTurn], prompt: String) -> [ChatMessage] {

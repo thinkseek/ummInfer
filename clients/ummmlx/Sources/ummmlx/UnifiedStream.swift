@@ -10,6 +10,9 @@ enum UnifiedKind: String, CaseIterable {
     case asrPartial = "asr_partial"
     case asrFinal = "asr_final"
     case vlmDelta = "vlm_delta"
+    /// A narrative visual beat. The server emits it as soon as the directive
+    /// closes, before the image or video leg finishes.
+    case visualSlot = "visual_slot"
     case artifact
     case legError = "leg_error"
     case complete
@@ -25,6 +28,7 @@ enum UnifiedKind: String, CaseIterable {
         case "asr_partial": self = .asrPartial
         case "asr_final": self = .asrFinal
         case "vlm_delta": self = .vlmDelta
+        case "visual_slot": self = .visualSlot
         case "artifact": self = .artifact
         case "leg_error": self = .legError
         case "complete": self = .complete
@@ -50,11 +54,15 @@ struct ArtifactChunk {
     let format: String?
     let sampleRate: Int?
     let channels: Int?
+    /// Narrative slot attribution. Present only for interleaved visual legs.
+    let slotID: String?
+    let slotIndex: Int?
 
     init(artifactID: String, mediaType: String, mimeType: String,
          encoding: String, index: Int, total: Int, data: Data,
          sha256: String?, bytes: Int?, format: String? = nil,
-         sampleRate: Int? = nil, channels: Int? = nil) {
+         sampleRate: Int? = nil, channels: Int? = nil,
+         slotID: String? = nil, slotIndex: Int? = nil) {
         self.artifactID = artifactID
         self.mediaType = mediaType
         self.mimeType = mimeType
@@ -67,6 +75,8 @@ struct ArtifactChunk {
         self.format = format
         self.sampleRate = sampleRate
         self.channels = channels
+        self.slotID = slotID
+        self.slotIndex = slotIndex
     }
 }
 
@@ -85,6 +95,36 @@ struct UnifiedEvent {
     let text: String
     let error: String
     let artifact: ArtifactChunk?
+    /// Narrative slot attribution, present on `visual_slot`, and on `leg_error`
+    /// and `artifact` events of a visual leg.
+    let slotID: String?
+    let slotIndex: Int?
+    /// "image" or "video" for a visual slot; empty otherwise.
+    let mediaType: String
+    /// ASCII visual scene description of a visual slot; empty otherwise.
+    let prompt: String
+    /// Prose length at which the directive appeared.
+    let textOffset: Int?
+
+    init(kind: UnifiedKind, seq: Int, sessionID: String, stage: String,
+         isFinal: Bool, text: String, error: String,
+         artifact: ArtifactChunk? = nil, slotID: String? = nil,
+         slotIndex: Int? = nil, mediaType: String = "", prompt: String = "",
+         textOffset: Int? = nil) {
+        self.kind = kind
+        self.seq = seq
+        self.sessionID = sessionID
+        self.stage = stage
+        self.isFinal = isFinal
+        self.text = text
+        self.error = error
+        self.artifact = artifact
+        self.slotID = slotID
+        self.slotIndex = slotIndex
+        self.mediaType = mediaType
+        self.prompt = prompt
+        self.textOffset = textOffset
+    }
 }
 
 /// One complete generated artifact after chunk reassembly and verification.
@@ -96,9 +136,13 @@ struct GeneratedArtifact: Identifiable, Equatable {
     let sha256: String
     let sampleRate: Int?
     let channels: Int?
+    /// Narrative slot attribution carried from the wire, when present.
+    let slotID: String?
+    let slotIndex: Int?
 
     init(id: String, mediaType: String, mimeType: String, data: Data,
-         sha256: String, sampleRate: Int? = nil, channels: Int? = nil) {
+         sha256: String, sampleRate: Int? = nil, channels: Int? = nil,
+         slotID: String? = nil, slotIndex: Int? = nil) {
         self.id = id
         self.mediaType = mediaType
         self.mimeType = mimeType
@@ -106,6 +150,8 @@ struct GeneratedArtifact: Identifiable, Equatable {
         self.sha256 = sha256
         self.sampleRate = sampleRate
         self.channels = channels
+        self.slotID = slotID
+        self.slotIndex = slotIndex
     }
 }
 
@@ -166,6 +212,17 @@ enum UnifiedDecode {
         }
         let text = try root["text"].map { try string($0, "text") } ?? ""
         let errorText = try root["error"].map { try string($0, "error") } ?? ""
+        let slotID = try root["slot_id"].map { try string($0, "slot_id") }
+        let slotIndex = try root["slot_index"].map { try integer($0, "slot_index") }
+        let mediaType = try root["media_type"].map { try string($0, "media_type") } ?? ""
+        let prompt = try root["prompt"].map { try string($0, "prompt") } ?? ""
+        let textOffset = try root["text_offset"].map { try integer($0, "text_offset") }
+        if kind == .visualSlot {
+            guard slotID?.isEmpty == false, slotIndex != nil else {
+                throw ChatClientError.invalidResponse(
+                    "a visual_slot event requires slot_id and slot_index")
+            }
+        }
 
         var artifact: ArtifactChunk?
         if kind == .artifact {
@@ -175,7 +232,8 @@ enum UnifiedDecode {
         return UnifiedEvent(
             kind: kind, seq: seq, sessionID: sessionID, stage: stage,
             isFinal: isFinal, text: text, error: errorText,
-            artifact: artifact
+            artifact: artifact, slotID: slotID, slotIndex: slotIndex,
+            mediaType: mediaType, prompt: prompt, textOffset: textOffset
         )
     }
 
@@ -205,11 +263,16 @@ enum UnifiedDecode {
         let channels = try raw["channels"].map {
             try integer($0, "artifact.channels")
         }
+        let slotID = try raw["slot_id"].map { try string($0, "artifact.slot_id") }
+        let slotIndex = try raw["slot_index"].map {
+            try integer($0, "artifact.slot_index")
+        }
         return ArtifactChunk(
             artifactID: artifactID, mediaType: mediaType, mimeType: mimeType,
             encoding: encoding, index: index, total: total, data: decoded,
             sha256: sha, bytes: bytes, format: format,
-            sampleRate: sampleRate, channels: channels
+            sampleRate: sampleRate, channels: channels,
+            slotID: slotID, slotIndex: slotIndex
         )
     }
 }
@@ -241,6 +304,8 @@ struct ArtifactCollector {
     private struct Slot {
         var mediaType: String
         var mimeType: String
+        var slotID: String?
+        var slotIndex: Int?
         var nextIndex: Int
         var total: Int
         var data: Data
@@ -298,11 +363,21 @@ struct ArtifactCollector {
 
         var slot = slots[chunk.artifactID] ?? Slot(
             mediaType: chunk.mediaType, mimeType: chunk.mimeType,
+            slotID: chunk.slotID, slotIndex: chunk.slotIndex,
             nextIndex: 0, total: chunk.total, data: Data()
         )
         guard slot.mediaType == chunk.mediaType, slot.mimeType == chunk.mimeType else {
             throw ChatClientError.invalidResponse(
                 "artifact descriptor changed between chunks")
+        }
+        if let slotID = chunk.slotID, slot.slotID != nil, slotID != slot.slotID {
+            throw ChatClientError.invalidResponse(
+                "artifact slot_id changed between chunks")
+        }
+        if let slotIndex = chunk.slotIndex, slot.slotIndex != nil,
+           slotIndex != slot.slotIndex {
+            throw ChatClientError.invalidResponse(
+                "artifact slot_index changed between chunks")
         }
         guard slot.total == chunk.total else {
             throw ChatClientError.invalidResponse(
@@ -351,7 +426,9 @@ struct ArtifactCollector {
         return GeneratedArtifact(
             id: chunk.artifactID, mediaType: chunk.mediaType,
             mimeType: chunk.mimeType, data: slot.data, sha256: digest,
-            sampleRate: pcmSampleRate, channels: pcmChannels
+            sampleRate: pcmSampleRate, channels: pcmChannels,
+            slotID: slot.slotID ?? chunk.slotID,
+            slotIndex: slot.slotIndex ?? chunk.slotIndex
         )
     }
 

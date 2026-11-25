@@ -104,6 +104,26 @@ struct RootView: View {
                     .accessibilityIdentifier("session")
                     .help("Full session id: \(model.sessionID)")
             }
+            Toggle(isOn: $model.audioOutput) {
+                Text("Voice").font(.system(size: theme.captionSize))
+            }
+            .toggleStyle(.checkbox)
+            .help("Stream spoken audio while text and visual legs render")
+            .accessibilityIdentifier("audio-output")
+            if model.isStreamingAudioPlaying {
+                HStack(spacing: 5) {
+                    Image(systemName: "waveform")
+                        .foregroundStyle(theme.accent)
+                        .accessibilityHidden(true)
+                    Text("Speaking")
+                        .font(.system(size: theme.captionSize))
+                        .foregroundStyle(theme.secondary)
+                }
+                .accessibilityIdentifier("voice-speaking")
+                Button("Stop Voice") { model.stopStreamingAudio() }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("voice-stop")
+            }
             Spacer()
             Picker("Theme", selection: appearanceBinding) {
                 Text("System").tag("system")
@@ -148,9 +168,6 @@ struct RootView: View {
                     Toggle("Image", isOn: $model.imageOutput)
                         .toggleStyle(.checkbox)
                         .accessibilityIdentifier("image-output")
-                    Toggle("Audio", isOn: $model.audioOutput)
-                        .toggleStyle(.checkbox)
-                        .accessibilityIdentifier("audio-output")
                     Toggle("Video", isOn: $model.videoOutput)
                         .toggleStyle(.checkbox)
                         .accessibilityIdentifier("video-output")
@@ -207,6 +224,23 @@ struct RootView: View {
                         labeledField("Frames", text: $model.videoFramesText, width: 46)
                         labeledField("Steps", text: $model.videoStepsText, width: 46)
                         labeledField("CFG", text: $model.videoGuidanceText, width: 46)
+                    }
+                    HStack(spacing: 10) {
+                        Toggle("Narrative", isOn: $model.narrativeMode)
+                            .toggleStyle(.checkbox)
+                            .accessibilityIdentifier("narrative")
+                        Picker("Visual", selection: $model.narrativeVisualMode) {
+                            Text("Auto").tag("auto")
+                            Text("Image").tag("image")
+                            Text("Video").tag("video")
+                        }
+                        .frame(width: 132)
+                        Stepper("Slots \(model.narrativeMaxSlots)",
+                                value: $model.narrativeMaxSlots, in: 1...6)
+                            .fixedSize()
+                        Text("Interleaved visual beats need Image or Video enabled.")
+                            .font(.system(size: theme.captionSize))
+                            .foregroundStyle(theme.tertiary)
                     }
                 }
                 .padding(.top, 4)
@@ -286,7 +320,8 @@ struct RootView: View {
                     Text(turn.role == .user ? "You" : "ummInfer")
                         .font(.system(size: theme.captionSize, weight: .medium))
                         .foregroundStyle(theme.secondary)
-                    if turn.state == .streaming && turn.text.isEmpty && turn.artifacts.isEmpty {
+                    if turn.state == .streaming && turn.text.isEmpty
+                        && turn.artifacts.isEmpty && turn.blocks.isEmpty {
                         ProgressView().controlSize(.small)
                     }
                     if turn.state == .stopped {
@@ -298,16 +333,21 @@ struct RootView: View {
                             .foregroundStyle(theme.danger)
                     }
                 }
-                if !turn.text.isEmpty {
-                    Text(turn.text)
-                        .font(.system(size: theme.bodySize))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 10)
-                        .background(turn.role == .user ? theme.ink : theme.surface)
-                        .foregroundStyle(turn.role == .user ? theme.onInk : theme.text)
-                        .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+                if turn.blocks.isEmpty {
+                    if !turn.text.isEmpty {
+                        textBubble(turn.text, role: turn.role)
+                    }
+                } else {
+                    ForEach(turn.blocks) { block in
+                        switch block {
+                        case .text(_, let content):
+                            if !content.isEmpty {
+                                textBubble(content, role: .assistant)
+                            }
+                        case .visual(let slot):
+                            visualSlotCard(slot, turnID: turn.id)
+                        }
+                    }
                 }
                 if !turn.transcript.isEmpty {
                     Text("Server transcript: \(turn.transcript)")
@@ -317,9 +357,12 @@ struct RootView: View {
                 }
                 let liveAudioActive = model.streamingAudioTurnID == turn.id && model.isStreamingAudioPlaying
                 let hasAudioArtifact = turn.artifacts.contains { $0.mediaType == "audio" }
-                if !turn.artifacts.isEmpty || liveAudioActive {
+                // Slot artifacts render inside their block card; audio and
+                // unattributed artifacts keep the plain row.
+                let rowArtifacts = turn.artifacts.filter { $0.slotID == nil }
+                if !rowArtifacts.isEmpty || liveAudioActive {
                     HStack(alignment: .top, spacing: 10) {
-                        ForEach(turn.artifacts) { artifact in
+                        ForEach(rowArtifacts) { artifact in
                             artifactView(artifact, liveStreaming: liveAudioActive && artifact.mediaType == "audio")
                                 .id(artifact.id)
                         }
@@ -337,9 +380,117 @@ struct RootView: View {
                 }
             }
             .frame(maxWidth: 620, alignment: .leading)
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier(turn.role == .user ? "user-message" : "assistant-message")
             if turn.role == .assistant { Spacer(minLength: 40) }
+        }
+    }
+
+    private func textBubble(_ text: String, role: ChatTurn.Role) -> some View {
+        Text(text)
+            .font(.system(size: theme.bodySize))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .background(role == .user ? theme.ink : theme.surface)
+            .foregroundStyle(role == .user ? theme.onInk : theme.text)
+            .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+    }
+
+    /// One inline narrative visual card: prompt caption, the active render, the
+    /// in-place swap button, and a save action.
+    private func visualSlotCard(_ slot: VisualSlotState, turnID: UUID) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: slot.activeKind == "video" ? "video" : "photo")
+                    .foregroundStyle(theme.accent)
+                    .accessibilityHidden(true)
+                Text(slot.prompt.isEmpty ? "Visual \(slot.slotIndex + 1)" : slot.prompt)
+                    .font(.system(size: theme.captionSize))
+                    .foregroundStyle(theme.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+            }
+            if slot.activeKind == "video" {
+                if let artifact = slot.videoArtifact {
+                    VideoArtifactView(artifact: artifact, theme: theme) {
+                        saveArtifact(artifact, defaultName: "video.mp4")
+                    }
+                } else {
+                    visualPlaceholder(loading: slot.isLoading, label: "No video")
+                }
+            } else if let artifact = slot.imageArtifact,
+                      let image = NSImage(data: artifact.data) {
+                Button {
+                    preview = artifact
+                } label: {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 220, height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+                        .overlay(RoundedRectangle(cornerRadius: theme.cardRadius)
+                            .stroke(theme.line))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Narrative image")
+                .accessibilityIdentifier("visual-slot-image")
+                .help("Open the full image")
+            } else {
+                visualPlaceholder(loading: slot.isLoading, label: "No image")
+            }
+            HStack(spacing: 10) {
+                Button(slot.activeKind == "image" ? "→ Video" : "→ Image") {
+                    model.swapVisualSlot(
+                        turnID: turnID, slotID: slot.slotID,
+                        toKind: slot.activeKind == "image" ? "video" : "image")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("visual-swap")
+                if slot.activeKind == "image", let artifact = slot.imageArtifact {
+                    Button("Save PNG") {
+                        saveArtifact(artifact, defaultName: "image.png")
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: theme.captionSize))
+                    .accessibilityIdentifier("visual-save")
+                }
+                Spacer(minLength: 0)
+            }
+            if let error = slot.error {
+                Text(error)
+                    .font(.system(size: theme.captionSize))
+                    .foregroundStyle(theme.danger)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("visual-slot-error")
+            }
+        }
+        .padding(11)
+        .background(theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+        .overlay(RoundedRectangle(cornerRadius: theme.cardRadius).stroke(theme.line))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("visual-slot")
+    }
+
+    @ViewBuilder
+    private func visualPlaceholder(loading: Bool, label: String) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: theme.cardRadius)
+                .fill(theme.background)
+                .frame(width: 220, height: 128)
+                .overlay(RoundedRectangle(cornerRadius: theme.cardRadius)
+                    .stroke(theme.line))
+            if loading {
+                ProgressView().controlSize(.small)
+            } else {
+                Text(label)
+                    .font(.system(size: theme.captionSize))
+                    .foregroundStyle(theme.tertiary)
+            }
         }
     }
 

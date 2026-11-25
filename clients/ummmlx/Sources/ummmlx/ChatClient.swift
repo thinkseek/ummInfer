@@ -53,6 +53,16 @@ struct VideoOptions: Equatable {
     var outputFormat = "mp4"
 }
 
+/// Interleaved narrative mode: the server's VLM director inserts visual beats
+/// into the prose and emits a `visual_slot` event for each one.
+struct NarrativeOptions: Equatable {
+    var enabled = true
+    /// "auto", "image" or "video".
+    var visualMode = "auto"
+    /// 1...6; the server rejects anything else.
+    var maxSlots = 3
+}
+
 struct ChatStreamOptions: Equatable {
     var sessionID: String?
     var maxTokens: Int?
@@ -62,6 +72,7 @@ struct ChatStreamOptions: Equatable {
     var image: ImageOptions?
     var audio: AudioOptions?
     var video: VideoOptions?
+    var narrative: NarrativeOptions?
     /// Unified servers hold multi-turn context themselves: the wire carries one
     /// user message plus session_history=true. Set by the capability fallback
     /// when a server rejects replayed history.
@@ -227,6 +238,20 @@ final class ChatClient {
 
     static func chatURL(base: String,
                         allowedHTTPHosts: Set<String> = plainHTTPHostAllowlist()) throws -> URL {
+        try endpointURL(base: base, endpoint: "/chat/completions",
+                        allowedHTTPHosts: allowedHTTPHosts)
+    }
+
+    /// Direct single-stage visual swap: `POST <base>/visual/render`. Same URL
+    /// security policy as the chat endpoint.
+    static func visualRenderURL(base: String,
+                                allowedHTTPHosts: Set<String> = plainHTTPHostAllowlist()) throws -> URL {
+        try endpointURL(base: base, endpoint: "/visual/render",
+                        allowedHTTPHosts: allowedHTTPHosts)
+    }
+
+    private static func endpointURL(base: String, endpoint: String,
+                                    allowedHTTPHosts: Set<String>) throws -> URL {
         let text = base.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: text),
               let scheme = components.scheme?.lowercased(),
@@ -246,7 +271,7 @@ final class ChatClient {
         var path = mutable.path
         while path.count > 1 && path.last == "/" { path.removeLast() }
         if path.isEmpty || path == "/" { path = "/v1" }
-        mutable.path = path + "/chat/completions"
+        mutable.path = path + endpoint
         guard let url = mutable.url else {
             throw ChatClientError.invalidEndpoint("The base URL is invalid.")
         }
@@ -336,9 +361,9 @@ final class ChatClient {
             if let refAudio = audio.refAudio, !refAudio.isEmpty {
                 object["ref_audio"] = refAudio
             }
-            // Mixed image/video + audio requests keep the server's ordered
-            // single-leg WAV path; audio-only turns stream PCM16 chunks.
-            if audio.stream && options.image == nil && options.video == nil {
+            // Wave 10 makes TTS a global streaming leg: it runs from the first
+            // clean sentence while image, video or narrative legs render.
+            if audio.stream {
                 object["stream"] = true
             }
             body["audio"] = object
@@ -356,6 +381,13 @@ final class ChatClient {
             if let guidance = video.guidanceScale { object["guidance_scale"] = guidance }
             if let seed = video.seed { object["seed"] = seed }
             body["video"] = object
+        }
+        if let narrative = options.narrative {
+            body["narrative"] = [
+                "enabled": narrative.enabled,
+                "visual_mode": narrative.visualMode,
+                "max_slots": narrative.maxSlots
+            ]
         }
         return body
     }
@@ -411,6 +443,44 @@ final class ChatClient {
         }
     }
 
+    /// Renders one image or video for an in-place narrative slot swap.
+    /// Returns the raw PNG or MP4 bytes.
+    func renderVisual(base: String, kind: String, prompt: String,
+                      size: String? = nil, steps: Int? = nil,
+                      numFrames: Int? = nil, guidanceScale: Double? = nil,
+                      seed: Int? = nil) async throws -> Data {
+        guard kind == "image" || kind == "video" else {
+            throw ChatClientError.invalidEndpoint(
+                "A visual render kind must be image or video.")
+        }
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ChatClientError.invalidEndpoint("A visual render prompt is required.")
+        }
+        var request = URLRequest(url: try Self.visualRenderURL(base: base))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["kind": kind, "prompt": trimmed]
+        if let size, !size.isEmpty { body["size"] = size }
+        if let steps, steps > 0 { body["steps"] = steps }
+        if let numFrames, numFrames > 0 { body["num_frames"] = numFrames }
+        if let guidanceScale { body["guidance_scale"] = guidanceScale }
+        if let seed { body["seed"] = seed }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ChatClientError.invalidResponse("missing HTTP response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ChatClientError.http(http.statusCode, Self.errorDetail(data))
+        }
+        guard !data.isEmpty else {
+            throw ChatClientError.invalidResponse("the visual render returned no bytes")
+        }
+        return data
+    }
+
     private func attempt(base: String, model: String, messages: [ChatMessage],
                          options: ChatStreamOptions,
                          onDelta: (String) -> Void,
@@ -443,7 +513,7 @@ final class ChatClient {
             throw ChatClientError.invalidResponse("expected text/event-stream")
         }
 
-        let mixed = options.image != nil || options.audio != nil
+        let mixed = options.image != nil || options.audio != nil || options.video != nil
         let wireLimit = mixed ? mixedResponseLimit : textResponseLimit
         var parser = SSEParser()
         var sequence = UnifiedSequenceGuard()

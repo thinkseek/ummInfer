@@ -12,7 +12,9 @@ private func eventData(_ fields: [String: Any]) throws -> Data {
 private func unifiedEvent(
     kind: String, seq: Int, text: String = "", session: String = "s-1",
     stage: String = "vlm", isFinal: Bool = false, error: String? = nil,
-    artifact: [String: Any]? = nil
+    artifact: [String: Any]? = nil, slotID: String? = nil,
+    slotIndex: Int? = nil, mediaType: String? = nil, prompt: String? = nil,
+    textOffset: Int? = nil
 ) -> [String: Any] {
     var object: [String: Any] = [
         "kind": kind, "seq": seq, "session_id": session, "stage": stage,
@@ -20,6 +22,11 @@ private func unifiedEvent(
     ]
     if let error { object["error"] = error }
     if let artifact { object["artifact"] = artifact }
+    if let slotID { object["slot_id"] = slotID }
+    if let slotIndex { object["slot_index"] = slotIndex }
+    if let mediaType { object["media_type"] = mediaType }
+    if let prompt { object["prompt"] = prompt }
+    if let textOffset { object["text_offset"] = textOffset }
     return object
 }
 
@@ -45,7 +52,8 @@ final class UnifiedDecodeTests: XCTestCase {
     func testDecodesEveryDocumentedKind() throws {
         let cases: [(String, UnifiedKind)] = [
             ("asr_partial", .asrPartial), ("asr_final", .asrFinal),
-            ("vlm_delta", .vlmDelta), ("artifact", .artifact),
+            ("vlm_delta", .vlmDelta), ("visual_slot", .visualSlot),
+            ("artifact", .artifact),
             ("leg_error", .legError), ("complete", .complete),
             ("error", .error), ("cancelled", .cancelled)
         ]
@@ -58,6 +66,11 @@ final class UnifiedDecodeTests: XCTestCase {
                 object["artifact"] = artifactChunk(
                     index: 0, total: 1, data: Data([1]),
                     sha: shaHex(Data([1])), bytes: 1)
+            }
+            if name == "visual_slot" {
+                object["slot_id"] = "slot-0"
+                object["slot_index"] = 0
+                object["media_type"] = "image"
             }
             let event = try UnifiedDecode.decode(eventData(object))
             XCTAssertEqual(event.kind, expected, name)
@@ -73,6 +86,54 @@ final class UnifiedDecodeTests: XCTestCase {
         XCTAssertEqual(event.kind, .legError)
         XCTAssertEqual(event.error, "boom")
         XCTAssertEqual(event.stage, "image")
+    }
+
+    func testDecodesVisualSlotAttribution() throws {
+        let data = try eventData(unifiedEvent(
+            kind: "visual_slot", seq: 4, stage: "image",
+            slotID: "slot-0", slotIndex: 0, mediaType: "image",
+            prompt: "a glowing red lantern over a misty lake", textOffset: 128))
+        let event = try UnifiedDecode.decode(data)
+        XCTAssertEqual(event.kind, .visualSlot)
+        XCTAssertEqual(event.stage, "image")
+        XCTAssertEqual(event.slotID, "slot-0")
+        XCTAssertEqual(event.slotIndex, 0)
+        XCTAssertEqual(event.mediaType, "image")
+        XCTAssertEqual(event.prompt, "a glowing red lantern over a misty lake")
+        XCTAssertEqual(event.textOffset, 128)
+        XCTAssertFalse(event.kind.isTerminal)
+    }
+
+    func testVisualSlotRequiresSlotIdentity() throws {
+        XCTAssertThrowsError(try UnifiedDecode.decode(
+            eventData(unifiedEvent(kind: "visual_slot", seq: 0,
+                                   mediaType: "image"))))
+        XCTAssertThrowsError(try UnifiedDecode.decode(
+            eventData(unifiedEvent(kind: "visual_slot", seq: 0,
+                                   slotID: "slot-0"))))
+    }
+
+    func testLegErrorCarriesSlotAttribution() throws {
+        let event = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "leg_error", seq: 5, stage: "video", error: "oom",
+            slotID: "slot-1", slotIndex: 1, mediaType: "video")))
+        XCTAssertEqual(event.kind, .legError)
+        XCTAssertEqual(event.error, "oom")
+        XCTAssertEqual(event.slotID, "slot-1")
+        XCTAssertEqual(event.slotIndex, 1)
+        XCTAssertEqual(event.mediaType, "video")
+    }
+
+    func testArtifactDecodesSlotAttribution() throws {
+        let bytes = Data([1, 2, 3])
+        var chunk = artifactChunk(index: 0, total: 1, data: bytes,
+                                  sha: shaHex(bytes), bytes: bytes.count)
+        chunk["slot_id"] = "slot-0"
+        chunk["slot_index"] = 0
+        let event = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "artifact", seq: 0, artifact: chunk)))
+        XCTAssertEqual(event.artifact?.slotID, "slot-0")
+        XCTAssertEqual(event.artifact?.slotIndex, 0)
     }
 
     func testUnknownKindIsTolerated() throws {
@@ -192,6 +253,18 @@ final class ArtifactCollectorTests: XCTestCase {
         XCTAssertEqual(artifact?.mimeType, "video/mp4")
         XCTAssertEqual(artifact?.data, all)
         XCTAssertFalse(collector.hasIncompleteArtifacts)
+    }
+
+    func testSlotAttributionSurvivesReassembly() throws {
+        let bytes = Data([0x89, 0x50, 0x4E, 0x47, 1, 2, 3, 4])
+        var collector = ArtifactCollector()
+        let artifact = try collector.ingest(ArtifactChunk(
+            artifactID: "art-slot-0", mediaType: "image", mimeType: "image/png",
+            encoding: "base64", index: 0, total: 1, data: bytes,
+            sha256: shaHex(bytes), bytes: bytes.count,
+            slotID: "slot-0", slotIndex: 0))
+        XCTAssertEqual(artifact?.slotID, "slot-0")
+        XCTAssertEqual(artifact?.slotIndex, 0)
     }
 
     func testShaMismatchFails() {
