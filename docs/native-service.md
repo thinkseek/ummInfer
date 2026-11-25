@@ -410,6 +410,17 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 30 Part A Explicit Anchor Badges & Digest Tooltips in Web UI & macOS `ummmlx` (`5493d85`):
+  - **Web UI `/web/index.html` & macOS `ummmlx` Explicit `source=slot-N` UI**
+    (`5493d85`): exposed Wave 29 `anchor_explicit` & `anchor_sha256` across
+    `visual_slot`, `artifact`, `leg_error`, and `complete.legs` with
+    `Explicit I2V ← Slot # · <short8>` badges, full SHA-256 tooltips, and
+    fail-closed slot error cards; zero-restart hot-deployed `web/index.html`
+    (`.wave29` backup) onto SM90 `43301` (`normalizeAnchorSha256` &
+    `updateSlotContinuity` verified live, `/health in_flight=0`), rebuilt
+    Release `ummmlx.app` (`8.93 s`, zero `_AVKit_SwiftUI`),
+    `web_ui_contract_test.py 15/15 PASS`, `swift test 126/126 PASS`.
+
 - Wave 29 Explicit `source=slot-N` Narrative Anchor Binding (`e56d11e`, `efabf39`):
   - **Gateway hot-swap & Live SM90 5-Modality Explicit `source=slot-0` I2V Verification**:
     harvested accepted Task #24 (`e56d11e`, 56/56 Python tests + full `zig build test`
