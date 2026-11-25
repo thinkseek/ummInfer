@@ -37,6 +37,26 @@ void gemv_bf16_f32(const Bf16* w, const Bf16* x, float* out, int n_out, int k,
 void gemv_bf16_bf16(const Bf16* w, const Bf16* x, Bf16* out, int n_out, int k,
                     cudaStream_t stream);
 
+// Descriptor for up to 4 BF16 GEMV projections sharing the same input x[m, k]
+// in one launch. Every active entry is bitwise equal to calling
+// gemv_bf16_bf16_batch independently.
+struct MultiGemvDesc {
+  const Bf16* w[4];
+  Bf16* out[4];
+  int n_out[4];
+  int count;
+};
+void gemv_bf16_bf16_multi_batch(const MultiGemvDesc& desc, const Bf16* x, int m,
+                                int k, cudaStream_t stream);
+
+// Fused SwiGLU decode GEMV: reads x[m, k] once, computes both gate_proj and
+// up_proj rows, and writes bf16(bf16(silu(bf16(gate))) * bf16(up)) directly.
+// Bitwise equal to gemv_bf16_bf16_batch(gate) + gemv_bf16_bf16_batch(up) +
+// silu_mul.
+void gemv_bf16_swiglu_batch(const Bf16* w_gate, const Bf16* w_up, const Bf16* x,
+                            Bf16* out, int m, int n_out, int k,
+                            cudaStream_t stream);
+
 // ---- Normalisation and elementwise ----------------------------------------
 // Plain RMSNorm (weight applied as-is), fp32 math, bf16 output.
 void rms_norm(const Bf16* x, const Bf16* weight, Bf16* out, int rows, int dim,
@@ -44,6 +64,13 @@ void rms_norm(const Bf16* x, const Bf16* weight, Bf16* out, int rows, int dim,
 // Qwen3.5 RMSNorm: weight is zero-centred, the scale is (1 + weight).
 void rms_norm_zero_centered(const Bf16* x, const Bf16* weight, Bf16* out,
                             int rows, int dim, float eps, cudaStream_t stream);
+// Fused residual add + zero-centred RMSNorm:
+//   hidden[i] = bf16(hidden[i] + residual[i]);
+//   norm_out[r, :] = rms_norm_zero_centered(hidden[r, :], weight, eps).
+void add_residual_rms_norm_zero_centered(Bf16* hidden, const Bf16* residual,
+                                         const Bf16* weight, Bf16* norm_out,
+                                         int rows, int dim, float eps,
+                                         cudaStream_t stream);
 void layer_norm(const Bf16* x, const Bf16* weight, const Bf16* bias, Bf16* out,
                 int rows, int dim, float eps, cudaStream_t stream);
 void add_bias(Bf16* y, const Bf16* bias, int rows, int dim, cudaStream_t stream);
@@ -113,6 +140,10 @@ void split_qkv_widths(const Bf16* qkv, Bf16* q, Bf16* k, Bf16* v, int m, int wq,
 // first).  The state is updated in place.
 void conv1d_causal_silu(const Bf16* x, const Bf16* w, Bf16* state, Bf16* out,
                         int m, int channels, cudaStream_t stream);
+// Fused conv1d + SiLU + split directly into contiguous q/k/v buffers.
+void conv1d_causal_silu_split(const Bf16* x, const Bf16* w, Bf16* state,
+                              Bf16* q, Bf16* k, Bf16* v, int m, int wq, int wk,
+                              int wv, cudaStream_t stream);
 // beta = bf16(sigmoid(float(b))); g = -exp(A_log) * softplus(a + dt_bias) in fp32.
 void beta_and_decay(float* beta, float* g, const Bf16* b, const Bf16* a,
                     const float* A_log, const float* dt_bias, int m, int heads,
@@ -120,6 +151,21 @@ void beta_and_decay(float* beta, float* g, const Bf16* b, const Bf16* a,
 // L2-normalise q/k, scale q by 1/sqrt(head_dim).  Inputs bf16 [m, k_heads, dim].
 void l2norm_qk(const Bf16* q, const Bf16* k, float* qn, float* kn, int m,
                int k_heads, int dim, cudaStream_t stream);
+// Fused l2norm_qk + beta_and_decay in a single kernel launch.
+void l2norm_qk_beta_decay(const Bf16* q, const Bf16* k, float* qn, float* kn,
+                          float* beta, float* g, const Bf16* b, const Bf16* a,
+                          const float* A_log, const float* dt_bias, int m,
+                          int k_heads, int v_heads, int dim,
+                          cudaStream_t stream);
+// Fuses split_q_gate + q_norm + k_norm + partial mRoPE(q, k) + KV cache append
+// for full-attention layers into a single kernel launch.
+void prep_qkv_rope_kvcache(const Bf16* qg, const Bf16* k_in, const Bf16* v_in,
+                           const Bf16* q_norm_w, const Bf16* k_norm_w,
+                           const Bf16* cos, const Bf16* sin, Bf16* q_out,
+                           Bf16* gate_out, Bf16* k_cache, Bf16* v_cache, int m,
+                           int history, int n_q_heads, int n_kv_heads,
+                           int head_dim, int rotary_dim, float eps,
+                           cudaStream_t stream);
 // Recurrent gated delta rule, one step per token.  qn/kn fp32 [m, k_heads, dim],
 // v bf16 [m, v_heads, dim], beta/g fp32 [m, v_heads], state fp32
 // [v_heads, dim, dim] (k-major), out bf16 [m, v_heads, dim].
@@ -170,6 +216,20 @@ void gather_rows(Bf16* dst, const Bf16* src, const int* rows, int m, int dim,
 void conv1d_causal_silu_seg(const Bf16* x, const Bf16* w, Bf16* state, Bf16* out,
                             const SeqSpans& spans, int nseq, int channels,
                             size_t seq_stride, cudaStream_t stream);
+void conv1d_causal_silu_split_seg(const Bf16* x, const Bf16* w, Bf16* state,
+                                  Bf16* q, Bf16* k, Bf16* v,
+                                  const SeqSpans& spans, int nseq, int wq,
+                                  int wk, int wv, size_t seq_stride,
+                                  cudaStream_t stream);
+void prep_qkv_rope_kvcache_seg(const Bf16* qg, const Bf16* k_in,
+                               const Bf16* v_in, const Bf16* q_norm_w,
+                               const Bf16* k_norm_w, const Bf16* cos,
+                               const Bf16* sin, Bf16* q_out, Bf16* gate_out,
+                               Bf16* k_cache, Bf16* v_cache,
+                               const SeqSpans& spans, int nseq, int rows,
+                               size_t seq_stride, int n_q_heads, int n_kv_heads,
+                               int head_dim, int rotary_dim, float eps,
+                               cudaStream_t stream);
 void gated_delta_rule_seg(float* state, const float* qn, const float* kn,
                           const Bf16* v, const float* beta, const float* g,
                           Bf16* out, const SeqSpans& spans, int nseq, int k_heads,

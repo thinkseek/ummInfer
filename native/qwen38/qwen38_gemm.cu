@@ -3,14 +3,17 @@
 //
 // Same design as native/omni/omni_gemm.cu: 128x128 CTA tiles, 64-deep K
 // stages, cp.async double buffering, mma.sync.m16n8k16 with fp32 accumulation;
-// batch-1 uses one warp per output row with 16-byte loads.  The MoE-specific
-// kernels of the Omni slice are not needed here and were dropped.
+// decode uses one warp per output row with 128-bit streaming weight loads,
+// read-only cached activation loads, K-unrolling, fused multi-projection GEMV,
+// and fused SwiGLU dual-output GEMV.
 #include "qwen38_ops.hpp"
 
 #include <cuda_bf16.h>
 
 #include <stdexcept>
 #include <string>
+
+#include "decode_helpers.hpp"
 
 namespace umminfer::qwen38 {
 namespace {
@@ -25,6 +28,13 @@ constexpr int kThreads = 256;
 constexpr int kStages = 2;
 constexpr int kTileElems = kBM * kBKP + kBN * kBKP;
 constexpr size_t kSmemBytes = kStages * kTileElems * sizeof(bf16);  // 72 KiB
+
+__device__ __forceinline__ uint4 ld_cs_u4(const void* p) {
+  return __ldcs(reinterpret_cast<const uint4*>(p));
+}
+__device__ __forceinline__ uint4 ld_ro_u4(const void* p) {
+  return __ldg(reinterpret_cast<const uint4*>(p));
+}
 
 __device__ __forceinline__ void cp_async16(void* dst, const void* src, bool pred) {
   const unsigned s = static_cast<unsigned>(__cvta_generic_to_shared(dst));
@@ -177,7 +187,10 @@ __global__ void __launch_bounds__(kThreads, 2) gemm_mma_kernel(
     bf16* __restrict__ c, const bf16* __restrict__ a, const bf16* __restrict__ b,
     const bf16* __restrict__ bias, int m, int k, int n) {
   extern __shared__ char smem[];
-  const int m0 = blockIdx.y * kBM, n0 = blockIdx.x * kBN;
+  const GemmTileCoord coord = swizzle_gemm_cta(
+      static_cast<int>(blockIdx.x), static_cast<int>(blockIdx.y),
+      static_cast<int>(gridDim.x), static_cast<int>(gridDim.y));
+  const int m0 = coord.tile_m * kBM, n0 = coord.tile_n * kBN;
   gemm_tile_body<false>(c, a, b, bias, m0, m, n0, n, k, smem);
 }
 
@@ -185,7 +198,10 @@ __global__ void __launch_bounds__(kThreads, 2) gemm_mma_f32_kernel(
     float* __restrict__ c, const bf16* __restrict__ a, const bf16* __restrict__ b,
     int m, int k, int n) {
   extern __shared__ char smem[];
-  const int m0 = blockIdx.y * kBM, n0 = blockIdx.x * kBN;
+  const GemmTileCoord coord = swizzle_gemm_cta(
+      static_cast<int>(blockIdx.x), static_cast<int>(blockIdx.y),
+      static_cast<int>(gridDim.x), static_cast<int>(gridDim.y));
+  const int m0 = coord.tile_m * kBM, n0 = coord.tile_n * kBN;
   gemm_tile_body<true>(c, a, b, nullptr, m0, m, n0, n, k, smem);
 }
 
@@ -210,64 +226,19 @@ void configure_smem() {
   g_smem_configured = true;
 }
 
-template <typename OutT>
-__global__ void __launch_bounds__(128) gemv_kernel(const bf16* __restrict__ w,
-                                                   const bf16* __restrict__ x,
-                                                   OutT* __restrict__ out,
-                                                   int n_out, int k) {
-  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-  const int row = blockIdx.x * 4 + warp;
-  if (row >= n_out) return;
-  const bf16* wr = w + static_cast<size_t>(row) * k;
-  float acc = 0.0f;
-  const int step = 32 * 8;
-  int i = lane * 8;
-  for (; i + 8 <= k; i += step) {
-    const uint4 v = *reinterpret_cast<const uint4*>(wr + i);
-    const uint4 u = *reinterpret_cast<const uint4*>(x + i);
-    const __nv_bfloat162* vb = reinterpret_cast<const __nv_bfloat162*>(&v);
-    const __nv_bfloat162* ub = reinterpret_cast<const __nv_bfloat162*>(&u);
-    #pragma unroll
-    for (int e = 0; e < 4; ++e) {
-      const float2 fv = __bfloat1622float2(vb[e]);
-      const float2 fu = __bfloat1622float2(ub[e]);
-      acc += fv.x * fu.x + fv.y * fu.y;
-    }
-  }
-  for (; i < k; ++i) acc += __bfloat162float(wr[i]) * __bfloat162float(x[i]);
-  #pragma unroll
-  for (int off = 16; off > 0; off >>= 1)
-    acc += __shfl_down_sync(0xffffffffu, acc, off);
-  if (lane == 0) {
-    if (sizeof(OutT) == 4) out[row] = acc;
-    else out[row] = static_cast<OutT>(__float2bfloat16(acc));
-  }
-}
-
-// Batched decode GEMV, small m. One warp owns one output row; the kM input
-// rows stay in registers, so a single 128-bit weight load is multiplied against
-// every input row before it leaves the register file. kUnroll weight chunks are
-// fetched ahead of the first use, because a load issued at its own use
-// serialises the whole chunk behind L1/L2 latency; at m = 1 to 2 the kernel is
-// latency-bound and four chunks in flight pay, at m = 3 to 8 it is issue-bound
-// and one is enough.
+// Warp-level K-dot helper shared by single-matrix and multi-projection GEMV.
+// Uses streaming cache hints (__ldcs) on weights so large weight matrices do
+// not evict the small shared activation rows x[0..kM-1] from L1/L2, and
+// read-only cache loads (__ldg) on x.
 //
-// Bitwise equality with gemv_kernel is a hard requirement, not an accident of
-// codegen: lane L accumulates the same chunks (L*8 + 256*t) in the same
-// increasing order with the same `acc += a*b + c*d` expression, and the warp
-// reduction is the same shuffle tree. kUnroll only moves loads earlier; the
-// arithmetic sequence per accumulator is unchanged.
-template <int kM, int kUnroll, typename OutT>
-__global__ void __launch_bounds__(128) gemv_small_m_kernel(
-    const bf16* __restrict__ w, const bf16* __restrict__ x,
-    OutT* __restrict__ out, int n_out, int k) {
+// Bitwise equality with the naive warp GEMV is preserved: lane L accumulates
+// chunks (L*8 + 256*t) in strictly increasing order with the exact same
+// `acc[b] += a*b + c*d` expression and warp shuffle reduction tree.
+template <int kM, int kUnroll>
+__device__ __forceinline__ void gemv_warp_dot(const bf16* __restrict__ wr,
+                                              const bf16* __restrict__ x, int k,
+                                              int lane, float (&acc)[kM]) {
   constexpr int kStr = 32 * 8;
-  const int row = blockIdx.x * 4 + (threadIdx.x >> 5);
-  if (row >= n_out) return;
-  const int lane = threadIdx.x & 31;
-  const bf16* wr = w + static_cast<size_t>(row) * k;
-
-  float acc[kM];
   #pragma unroll
   for (int b = 0; b < kM; ++b) acc[b] = 0.0f;
 
@@ -276,16 +247,13 @@ __global__ void __launch_bounds__(128) gemv_small_m_kernel(
   for (; i <= group_end; i += kUnroll * kStr) {
     uint4 wv[kUnroll];
     #pragma unroll
-    for (int u = 0; u < kUnroll; ++u)
-      wv[u] = *reinterpret_cast<const uint4*>(wr + i + u * kStr);
+    for (int u = 0; u < kUnroll; ++u) wv[u] = ld_cs_u4(wr + i + u * kStr);
     #pragma unroll
     for (int u = 0; u < kUnroll; ++u) {
-      // Every input row of this chunk is fetched before the first use.
       uint4 xv[kM];
       #pragma unroll
       for (int b = 0; b < kM; ++b)
-        xv[b] = *reinterpret_cast<const uint4*>(
-            x + static_cast<size_t>(b) * k + i + u * kStr);
+        xv[b] = ld_ro_u4(x + static_cast<size_t>(b) * k + i + u * kStr);
       const __nv_bfloat162* vb = reinterpret_cast<const __nv_bfloat162*>(&wv[u]);
       float fw[8];
       #pragma unroll
@@ -306,12 +274,11 @@ __global__ void __launch_bounds__(128) gemv_small_m_kernel(
     }
   }
   for (; i + 8 <= k; i += kStr) {
-    const uint4 v = *reinterpret_cast<const uint4*>(wr + i);
+    const uint4 v = ld_cs_u4(wr + i);
     const __nv_bfloat162* vb = reinterpret_cast<const __nv_bfloat162*>(&v);
     #pragma unroll
     for (int b = 0; b < kM; ++b) {
-      const uint4 xu =
-          *reinterpret_cast<const uint4*>(x + static_cast<size_t>(b) * k + i);
+      const uint4 xu = ld_ro_u4(x + static_cast<size_t>(b) * k + i);
       const __nv_bfloat162* ub = reinterpret_cast<const __nv_bfloat162*>(&xu);
       #pragma unroll
       for (int e = 0; e < 4; ++e) {
@@ -333,19 +300,169 @@ __global__ void __launch_bounds__(128) gemv_small_m_kernel(
     for (int off = 16; off > 0; off >>= 1)
       acc[b] += __shfl_down_sync(0xffffffffu, acc[b], off);
   }
+}
+
+template <int kM, int kUnroll, typename OutT>
+__global__ void __launch_bounds__(128) gemv_small_m_kernel(
+    const bf16* __restrict__ w, const bf16* __restrict__ x,
+    OutT* __restrict__ out, int n_out, int k) {
+  const int row = blockIdx.x * 4 + (threadIdx.x >> 5);
+  if (row >= n_out) return;
+  const int lane = threadIdx.x & 31;
+  const bf16* wr = w + static_cast<size_t>(row) * k;
+
+  float acc[kM];
+  gemv_warp_dot<kM, kUnroll>(wr, x, k, lane, acc);
+
   if (lane == 0) {
     #pragma unroll
     for (int b = 0; b < kM; ++b) {
       const size_t o = static_cast<size_t>(b) * n_out + row;
-      if (sizeof(OutT) == 4) out[o] = acc[b];
+      if constexpr (sizeof(OutT) == 4) out[o] = acc[b];
       else out[o] = static_cast<OutT>(__float2bfloat16(acc[b]));
     }
   }
 }
 
-// m = 1 and 2 are latency-bound, three or more rows are issue-bound; the split
-// is measured, not derived.
-constexpr int gemv_unroll_for(int m) { return m <= 2 ? 4 : 1; }
+// Multi-projection GEMV: fuses up to 4 projections sharing `x` into one grid so
+// tiny projections (e.g. in_proj_a/b with 48 rows, k/v with 1024 rows) ride
+// alongside large projections with zero tail-effect and zero extra weight VRAM.
+template <int kM, int kUnroll>
+__global__ void __launch_bounds__(128) gemv_multi_small_m_kernel(
+    MultiGemvDesc desc, const bf16* __restrict__ x, int k) {
+  const int global_row = blockIdx.x * 4 + (threadIdx.x >> 5);
+  const MultiGemvRowLoc loc =
+      multi_gemv_locate_row(global_row, desc.n_out, desc.count);
+  if (loc.proj < 0) return;
+
+  const int lane = threadIdx.x & 31;
+  const bf16* wr = reinterpret_cast<const bf16*>(desc.w[loc.proj]) +
+                   static_cast<size_t>(loc.local_row) * k;
+  bf16* out_base = reinterpret_cast<bf16*>(desc.out[loc.proj]);
+  const int out_stride = desc.n_out[loc.proj];
+
+  float acc[kM];
+  gemv_warp_dot<kM, kUnroll>(wr, x, k, lane, acc);
+
+  if (lane == 0) {
+    #pragma unroll
+    for (int b = 0; b < kM; ++b) {
+      out_base[static_cast<size_t>(b) * out_stride + loc.local_row] =
+          __float2bfloat16(acc[b]);
+    }
+  }
+}
+
+// Fused dual-output SwiGLU GEMV: computes both gate_proj and up_proj rows while
+// loading activation vector x[b] only once, then applies the exact reference
+// bf16 rounding for silu(gate) * up.
+template <int kM, int kUnroll>
+__global__ void __launch_bounds__(128) gemv_swiglu_small_m_kernel(
+    const bf16* __restrict__ w_gate, const bf16* __restrict__ w_up,
+    const bf16* __restrict__ x, bf16* __restrict__ out, int n_out, int k) {
+  constexpr int kStr = 32 * 8;
+  const int row = blockIdx.x * 4 + (threadIdx.x >> 5);
+  if (row >= n_out) return;
+  const int lane = threadIdx.x & 31;
+  const bf16* wgr = w_gate + static_cast<size_t>(row) * k;
+  const bf16* wur = w_up + static_cast<size_t>(row) * k;
+
+  float acc_g[kM];
+  float acc_u[kM];
+  #pragma unroll
+  for (int b = 0; b < kM; ++b) {
+    acc_g[b] = 0.0f;
+    acc_u[b] = 0.0f;
+  }
+
+  int i = lane * 8;
+  const int group_end = k - ((kUnroll - 1) * kStr + 8);
+  for (; i <= group_end; i += kUnroll * kStr) {
+    uint4 wgv[kUnroll];
+    uint4 wuv[kUnroll];
+    #pragma unroll
+    for (int u = 0; u < kUnroll; ++u) {
+      wgv[u] = ld_cs_u4(wgr + i + u * kStr);
+      wuv[u] = ld_cs_u4(wur + i + u * kStr);
+    }
+    #pragma unroll
+    for (int u = 0; u < kUnroll; ++u) {
+      uint4 xv[kM];
+      #pragma unroll
+      for (int b = 0; b < kM; ++b)
+        xv[b] = ld_ro_u4(x + static_cast<size_t>(b) * k + i + u * kStr);
+      const __nv_bfloat162* vgb = reinterpret_cast<const __nv_bfloat162*>(&wgv[u]);
+      const __nv_bfloat162* vub = reinterpret_cast<const __nv_bfloat162*>(&wuv[u]);
+      float fg[8], fu_w[8];
+      #pragma unroll
+      for (int e = 0; e < 4; ++e) {
+        const float2 f2g = __bfloat1622float2(vgb[e]);
+        const float2 f2u = __bfloat1622float2(vub[e]);
+        fg[2 * e] = f2g.x;
+        fg[2 * e + 1] = f2g.y;
+        fu_w[2 * e] = f2u.x;
+        fu_w[2 * e + 1] = f2u.y;
+      }
+      #pragma unroll
+      for (int b = 0; b < kM; ++b) {
+        const __nv_bfloat162* xb = reinterpret_cast<const __nv_bfloat162*>(&xv[b]);
+        #pragma unroll
+        for (int e = 0; e < 4; ++e) {
+          const float2 fx = __bfloat1622float2(xb[e]);
+          acc_g[b] += fg[2 * e] * fx.x + fg[2 * e + 1] * fx.y;
+          acc_u[b] += fu_w[2 * e] * fx.x + fu_w[2 * e + 1] * fx.y;
+        }
+      }
+    }
+  }
+  for (; i + 8 <= k; i += kStr) {
+    const uint4 wg = ld_cs_u4(wgr + i);
+    const uint4 wu = ld_cs_u4(wur + i);
+    const __nv_bfloat162* vgb = reinterpret_cast<const __nv_bfloat162*>(&wg);
+    const __nv_bfloat162* vub = reinterpret_cast<const __nv_bfloat162*>(&wu);
+    #pragma unroll
+    for (int b = 0; b < kM; ++b) {
+      const uint4 xu = ld_ro_u4(x + static_cast<size_t>(b) * k + i);
+      const __nv_bfloat162* xb = reinterpret_cast<const __nv_bfloat162*>(&xu);
+      #pragma unroll
+      for (int e = 0; e < 4; ++e) {
+        const float2 f2g = __bfloat1622float2(vgb[e]);
+        const float2 f2u = __bfloat1622float2(vub[e]);
+        const float2 fx = __bfloat1622float2(xb[e]);
+        acc_g[b] += f2g.x * fx.x + f2g.y * fx.y;
+        acc_u[b] += f2u.x * fx.x + f2u.y * fx.y;
+      }
+    }
+  }
+  for (; i < k; ++i) {
+    const float wgf = __bfloat162float(wgr[i]);
+    const float wuf = __bfloat162float(wur[i]);
+    #pragma unroll
+    for (int b = 0; b < kM; ++b) {
+      const float xf = __bfloat162float(x[static_cast<size_t>(b) * k + i]);
+      acc_g[b] += wgf * xf;
+      acc_u[b] += wuf * xf;
+    }
+  }
+  #pragma unroll
+  for (int b = 0; b < kM; ++b) {
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+      acc_g[b] += __shfl_down_sync(0xffffffffu, acc_g[b], off);
+      acc_u[b] += __shfl_down_sync(0xffffffffu, acc_u[b], off);
+    }
+  }
+  if (lane == 0) {
+    #pragma unroll
+    for (int b = 0; b < kM; ++b) {
+      const float g = __bfloat162float(__float2bfloat16(acc_g[b]));
+      const float u = __bfloat162float(__float2bfloat16(acc_u[b]));
+      const float sg = g / (1.0f + expf(-g));
+      out[static_cast<size_t>(b) * n_out + row] =
+          __float2bfloat16(__bfloat162float(__float2bfloat16(sg)) * u);
+    }
+  }
+}
 
 template <int kM, typename OutT>
 void launch_small_m(const bf16* w, const bf16* x, OutT* out, int n_out, int k,
@@ -374,6 +491,28 @@ void launch_small_m_dyn(const bf16* w, const bf16* x, OutT* out, int m,
   }
 }
 
+template <int kM>
+void launch_multi_m(const MultiGemvDesc& desc, const bf16* x, int total_n,
+                    int k, cudaStream_t stream) {
+  const int blocks = (total_n + 3) / 4;
+  if constexpr (gemv_unroll_for(kM) == 4)
+    gemv_multi_small_m_kernel<kM, 4><<<blocks, 128, 0, stream>>>(desc, x, k);
+  else
+    gemv_multi_small_m_kernel<kM, 1><<<blocks, 128, 0, stream>>>(desc, x, k);
+}
+
+template <int kM>
+void launch_swiglu_m(const bf16* w_gate, const bf16* w_up, const bf16* x,
+                     bf16* out, int n_out, int k, cudaStream_t stream) {
+  const int blocks = (n_out + 3) / 4;
+  if constexpr (swiglu_gemv_unroll_for(kM) == 2)
+    gemv_swiglu_small_m_kernel<kM, 2>
+        <<<blocks, 128, 0, stream>>>(w_gate, w_up, x, out, n_out, k);
+  else
+    gemv_swiglu_small_m_kernel<kM, 1>
+        <<<blocks, 128, 0, stream>>>(w_gate, w_up, x, out, n_out, k);
+}
+
 }  // namespace
 
 void gemm_bf16(Bf16* y, const Bf16* x, const Bf16* w, const Bf16* bias, int m,
@@ -398,16 +537,18 @@ void gemm_bf16_f32(float* y, const Bf16* x, const Bf16* w, int m, int k, int n,
 
 void gemv_bf16_f32(const Bf16* w, const Bf16* x, float* out, int n_out, int k,
                    cudaStream_t stream) {
-  gemv_kernel<float><<<(n_out + 3) / 4, 128, 0, stream>>>(
-      reinterpret_cast<const bf16*>(w), reinterpret_cast<const bf16*>(x), out,
-      n_out, k);
+  if (n_out <= 0 || k <= 0) return;
+  launch_small_m<1, float>(reinterpret_cast<const bf16*>(w),
+                           reinterpret_cast<const bf16*>(x), out, n_out, k,
+                           stream);
 }
 
 void gemv_bf16_bf16(const Bf16* w, const Bf16* x, Bf16* out, int n_out, int k,
                     cudaStream_t stream) {
-  gemv_kernel<bf16><<<(n_out + 3) / 4, 128, 0, stream>>>(
-      reinterpret_cast<const bf16*>(w), reinterpret_cast<const bf16*>(x),
-      reinterpret_cast<bf16*>(out), n_out, k);
+  if (n_out <= 0 || k <= 0) return;
+  launch_small_m<1, bf16>(reinterpret_cast<const bf16*>(w),
+                          reinterpret_cast<const bf16*>(x),
+                          reinterpret_cast<bf16*>(out), n_out, k, stream);
 }
 
 void gemv_bf16_f32_batch(const Bf16* w, const Bf16* x, float* out, int m,
@@ -424,6 +565,45 @@ void gemv_bf16_bf16_batch(const Bf16* w, const Bf16* x, Bf16* out, int m,
   launch_small_m_dyn(reinterpret_cast<const bf16*>(w),
                      reinterpret_cast<const bf16*>(x),
                      reinterpret_cast<bf16*>(out), m, n_out, k, stream);
+}
+
+void gemv_bf16_bf16_multi_batch(const MultiGemvDesc& desc, const Bf16* x, int m,
+                                int k, cudaStream_t stream) {
+  if (m <= 0 || k <= 0 || desc.count <= 0) return;
+  int total_n = 0;
+  for (int p = 0; p < desc.count; ++p) total_n += desc.n_out[p];
+  if (total_n <= 0) return;
+  const bf16* xb = reinterpret_cast<const bf16*>(x);
+  switch (m) {
+    case 1: launch_multi_m<1>(desc, xb, total_n, k, stream); break;
+    case 2: launch_multi_m<2>(desc, xb, total_n, k, stream); break;
+    case 3: launch_multi_m<3>(desc, xb, total_n, k, stream); break;
+    case 4: launch_multi_m<4>(desc, xb, total_n, k, stream); break;
+    case 5: launch_multi_m<5>(desc, xb, total_n, k, stream); break;
+    case 6: launch_multi_m<6>(desc, xb, total_n, k, stream); break;
+    case 7: launch_multi_m<7>(desc, xb, total_n, k, stream); break;
+    default: launch_multi_m<8>(desc, xb, total_n, k, stream); break;
+  }
+}
+
+void gemv_bf16_swiglu_batch(const Bf16* w_gate, const Bf16* w_up, const Bf16* x,
+                            Bf16* out, int m, int n_out, int k,
+                            cudaStream_t stream) {
+  if (m <= 0 || n_out <= 0 || k <= 0) return;
+  const bf16* wg = reinterpret_cast<const bf16*>(w_gate);
+  const bf16* wu = reinterpret_cast<const bf16*>(w_up);
+  const bf16* xb = reinterpret_cast<const bf16*>(x);
+  bf16* ob = reinterpret_cast<bf16*>(out);
+  switch (m) {
+    case 1: launch_swiglu_m<1>(wg, wu, xb, ob, n_out, k, stream); break;
+    case 2: launch_swiglu_m<2>(wg, wu, xb, ob, n_out, k, stream); break;
+    case 3: launch_swiglu_m<3>(wg, wu, xb, ob, n_out, k, stream); break;
+    case 4: launch_swiglu_m<4>(wg, wu, xb, ob, n_out, k, stream); break;
+    case 5: launch_swiglu_m<5>(wg, wu, xb, ob, n_out, k, stream); break;
+    case 6: launch_swiglu_m<6>(wg, wu, xb, ob, n_out, k, stream); break;
+    case 7: launch_swiglu_m<7>(wg, wu, xb, ob, n_out, k, stream); break;
+    default: launch_swiglu_m<8>(wg, wu, xb, ob, n_out, k, stream); break;
+  }
 }
 
 }  // namespace umminfer::qwen38

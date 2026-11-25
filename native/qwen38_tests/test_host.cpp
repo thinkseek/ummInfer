@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Assert-based host checks for the Qwen3.8-27B sampling and prefix-reuse
 // helpers. No GPU, no framework.
+#include "qwen38/decode_helpers.hpp"
 #include "qwen38/engine.hpp"
 #include "qwen38/prefix_cache.hpp"
 #include "qwen38/sampling.hpp"
@@ -1010,6 +1011,122 @@ void test_plan_vision_slice_chunks() {
                  "plan_vision_slice_chunks rejects slice_tokens > token_cap");
 }
 
+void test_decode_helpers() {
+  using umminfer::qwen38::Bf16;
+  using umminfer::qwen38::GemmTileCoord;
+  using umminfer::qwen38::MultiGemvRowLoc;
+  using umminfer::qwen38::fill_text_rope_row;
+  using umminfer::qwen38::gemv_unroll_for;
+  using umminfer::qwen38::init_text_rope_inv_freq;
+  using umminfer::qwen38::kTextRopeTheta;
+  using umminfer::qwen38::kTextRotaryDim;
+  using umminfer::qwen38::kTextRotaryHalf;
+  using umminfer::qwen38::multi_gemv_locate_row;
+  using umminfer::qwen38::swiglu_gemv_unroll_for;
+  using umminfer::qwen38::swizzle_gemm_cta;
+
+  // 1) Unroll schedules match the latency-bound vs issue-bound split.
+  check(gemv_unroll_for(1) == 4 && gemv_unroll_for(2) == 4 &&
+            gemv_unroll_for(3) == 1 && gemv_unroll_for(8) == 1,
+        "gemv_unroll_for uses 4x unroll for m<=2 and 1x for m>=3");
+  check(swiglu_gemv_unroll_for(1) == 2 && swiglu_gemv_unroll_for(2) == 2 &&
+            swiglu_gemv_unroll_for(3) == 1 && swiglu_gemv_unroll_for(8) == 1,
+        "swiglu_gemv_unroll_for uses 2x dual-weight unroll for m<=2 and 1x for m>=3");
+
+  // 2) swizzle_gemm_cta must be an exact bijection over [0, gx) x [0, gy) for
+  //    every combination of grid dimensions (including non-multiples of group_m).
+  const int dims[][2] = {
+      {1, 1}, {40, 1}, {1, 13}, {5, 7}, {40, 8}, {136, 17}, {17, 25}};
+  for (const auto& d : dims) {
+    const int gx = d[0], gy = d[1];
+    std::vector<int> seen(static_cast<size_t>(gx) * gy, 0);
+    bool ok = true;
+    for (int by = 0; by < gy; ++by) {
+      for (int bx = 0; bx < gx; ++bx) {
+        const GemmTileCoord c = swizzle_gemm_cta(bx, by, gx, gy, 8);
+        if (c.tile_n < 0 || c.tile_n >= gx || c.tile_m < 0 || c.tile_m >= gy) {
+          ok = false;
+          break;
+        }
+        ++seen[static_cast<size_t>(c.tile_m) * gx + c.tile_n];
+      }
+    }
+    for (int cnt : seen)
+      if (cnt != 1) ok = false;
+    check(ok, "swizzle_gemm_cta is an exact bijection over grid tiles");
+  }
+
+  // 3) multi_gemv_locate_row maps linear-attention (4-way) and full-attention
+  //    (3-way) fused projection grids to exact (proj, local_row) pairs.
+  {
+    const int lin_n[4] = {10240, 6144, 48, 48};
+    const int total = 10240 + 6144 + 48 + 48;
+    bool ok = true;
+    int expected_p = 0, expected_r = 0;
+    for (int g = 0; g < total; ++g) {
+      const MultiGemvRowLoc loc = multi_gemv_locate_row(g, lin_n, 4);
+      if (loc.proj != expected_p || loc.local_row != expected_r) {
+        ok = false;
+        break;
+      }
+      ++expected_r;
+      if (expected_r == lin_n[expected_p]) {
+        ++expected_p;
+        expected_r = 0;
+      }
+    }
+    const MultiGemvRowLoc oob_lo = multi_gemv_locate_row(-1, lin_n, 4);
+    const MultiGemvRowLoc oob_hi = multi_gemv_locate_row(total, lin_n, 4);
+    check(ok && oob_lo.proj == -1 && oob_hi.proj == -1,
+          "multi_gemv_locate_row covers all 4 linear projections with exact bounds");
+  }
+  {
+    const int qkv_n[3] = {12288, 1024, 1024};
+    const MultiGemvRowLoc r0 = multi_gemv_locate_row(0, qkv_n, 3);
+    const MultiGemvRowLoc r1 = multi_gemv_locate_row(12288, qkv_n, 3);
+    const MultiGemvRowLoc r2 = multi_gemv_locate_row(13312, qkv_n, 3);
+    const MultiGemvRowLoc r3 = multi_gemv_locate_row(14336, qkv_n, 3);
+    check(r0.proj == 0 && r0.local_row == 0 && r1.proj == 1 &&
+              r1.local_row == 0 && r2.proj == 2 && r2.local_row == 0 &&
+              r3.proj == -1,
+          "multi_gemv_locate_row maps 3-way QKV projections accurately");
+  }
+
+  // 4) Precomputed text RoPE inv_freq reproduces direct std::pow bit-for-bit
+  //    for both pure-text and 3D multimodal (t, h, w) coordinates.
+  double inv[kTextRotaryHalf];
+  init_text_rope_inv_freq(inv);
+  const int coords[][3] = {{0, 0, 0}, {17, 17, 17}, {5, 11, 23}, {4095, 4095, 4095}};
+  bool rope_exact = true;
+  for (const auto& c : coords) {
+    Bf16 cos_row[kTextRotaryDim];
+    Bf16 sin_row[kTextRotaryDim];
+    fill_text_rope_row(inv, c[0], c[1], c[2], cos_row, sin_row);
+    for (int i = 0; i < kTextRotaryHalf; ++i) {
+      int pos = c[0];
+      if ((i % 3) == 1 && i < 33)
+        pos = c[1];
+      else if ((i % 3) == 2 && i < 30)
+        pos = c[2];
+      const double ref_inv =
+          1.0 / std::pow(static_cast<double>(kTextRopeTheta),
+                         static_cast<double>(2 * i) / kTextRotaryDim);
+      const double angle = ref_inv * pos;
+      const Bf16 want_c(static_cast<float>(std::cos(angle)));
+      const Bf16 want_s(static_cast<float>(std::sin(angle)));
+      if (cos_row[i].bits != want_c.bits || sin_row[i].bits != want_s.bits) {
+        rope_exact = false;
+        break;
+      }
+    }
+    for (int i = kTextRotaryHalf; i < kTextRotaryDim; ++i) {
+      if (cos_row[i].bits != 0 || sin_row[i].bits != 0) rope_exact = false;
+    }
+  }
+  check(rope_exact,
+        "precomputed RoPE inv_freq matches reference std::pow bit for bit");
+}
+
 }  // namespace
 
 int main() {
@@ -1031,6 +1148,7 @@ int main() {
   test_match_multimodal_prefix();
   test_mrope_suffix_continuity();
   test_plan_vision_slice_chunks();
+  test_decode_helpers();
   if (g_failures != 0) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

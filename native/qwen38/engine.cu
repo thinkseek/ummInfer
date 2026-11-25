@@ -23,6 +23,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "decode_helpers.hpp"
 #include "prefix_cache.hpp"
 #include "qwen38_ops.hpp"
 #include "safetensors_mmap.hpp"
@@ -86,27 +87,16 @@ void write_file(const std::string& dir, const std::string& name, const void* hos
 
 // mRoPE channel rule for the 32 half-slots: H occupies i%3==1 up to 33,
 // W occupies i%3==2 up to 30, everything else takes the text position.
-void build_text_rope(const MRoPEPositions& p, int begin, int count,
+void build_text_rope(const double (&inv)[kTextRotaryHalf],
+                     const MRoPEPositions& p, int begin, int count,
                      std::vector<Bf16>* cos, std::vector<Bf16>* sin) {
-  const int half = kRotaryDim / 2;  // 32
-  double inv[32];
-  for (int i = 0; i < half; ++i)
-    inv[i] = 1.0 / std::pow(static_cast<double>(kRopeTheta),
-                            static_cast<double>(2 * i) / kRotaryDim);
   cos->resize(static_cast<size_t>(count) * kRotaryDim);
   sin->resize(cos->size());
   for (int r = 0; r < count; ++r) {
-    const int row = begin + r;
-    for (int i = 0; i < half; ++i) {
-      int pos = p.t[static_cast<size_t>(row)];
-      if ((i % 3) == 1 && i < 33)
-        pos = p.h[static_cast<size_t>(row)];
-      else if ((i % 3) == 2 && i < 30)
-        pos = p.w[static_cast<size_t>(row)];
-      const double angle = inv[i] * pos;
-      (*cos)[static_cast<size_t>(r) * kRotaryDim + i] = Bf16(std::cos(angle));
-      (*sin)[static_cast<size_t>(r) * kRotaryDim + i] = Bf16(std::sin(angle));
-    }
+    const size_t row = static_cast<size_t>(begin + r);
+    fill_text_rope_row(inv, p.t[row], p.h[row], p.w[row],
+                       cos->data() + static_cast<size_t>(r) * kRotaryDim,
+                       sin->data() + static_cast<size_t>(r) * kRotaryDim);
   }
 }
 
@@ -213,12 +203,72 @@ struct BatchJob {
   std::chrono::steady_clock::time_point decode_started;
 };
 
+struct LayerWeights {
+  const Bf16* input_norm = nullptr;
+  const Bf16* post_attn_norm = nullptr;
+  const Bf16* mlp_gate = nullptr;
+  const Bf16* mlp_up = nullptr;
+  const Bf16* mlp_down = nullptr;
+  // Linear-attention weights (populated when layer % 4 != 3).
+  const Bf16* in_proj_qkv = nullptr;
+  const Bf16* in_proj_z = nullptr;
+  const Bf16* in_proj_b = nullptr;
+  const Bf16* in_proj_a = nullptr;
+  const Bf16* conv1d = nullptr;
+  const float* A_log = nullptr;
+  const float* dt_bias = nullptr;
+  const Bf16* linear_norm = nullptr;
+  const Bf16* linear_out_proj = nullptr;
+  // Full-attention weights (populated when layer % 4 == 3).
+  const Bf16* q_proj = nullptr;
+  const Bf16* k_proj = nullptr;
+  const Bf16* v_proj = nullptr;
+  const Bf16* q_norm = nullptr;
+  const Bf16* k_norm = nullptr;
+  const Bf16* o_proj = nullptr;
+};
+
+struct VisionBlockWeights {
+  const Bf16* norm1_w = nullptr;
+  const Bf16* norm1_b = nullptr;
+  const Bf16* qkv_w = nullptr;
+  const Bf16* qkv_b = nullptr;
+  const Bf16* proj_w = nullptr;
+  const Bf16* proj_b = nullptr;
+  const Bf16* norm2_w = nullptr;
+  const Bf16* norm2_b = nullptr;
+  const Bf16* fc1_w = nullptr;
+  const Bf16* fc1_b = nullptr;
+  const Bf16* fc2_w = nullptr;
+  const Bf16* fc2_b = nullptr;
+};
+
+struct VisionWeights {
+  const Bf16* patch_w = nullptr;
+  const Bf16* patch_b = nullptr;
+  VisionBlockWeights blocks[kVisBlocks];
+  const Bf16* merger_norm_w = nullptr;
+  const Bf16* merger_norm_b = nullptr;
+  const Bf16* merger_fc1_w = nullptr;
+  const Bf16* merger_fc1_b = nullptr;
+  const Bf16* merger_fc2_w = nullptr;
+  const Bf16* merger_fc2_b = nullptr;
+};
+
 struct Engine::Impl {
   int gpu = 0;
   int max_seq = 8192;
   int batch_capacity = 1;
   std::unique_ptr<ShardedSafetensors> shards;
   std::unordered_map<std::string, Tensor> weights;
+  // Pre-resolved weight pointer tables (host RAM only, zero GPU VRAM) so the
+  // decode/prefill hot loops perform zero string allocations or hash lookups.
+  const Bf16* embed_w = nullptr;
+  const Bf16* final_norm_w = nullptr;
+  const Bf16* lm_head_w = nullptr;
+  LayerWeights layers[kLayers];
+  VisionWeights vision_w;
+  double rope_inv[kTextRotaryHalf]{};
   std::vector<Bf16> pos_table_host;  // [2304, 1152] learned vision position grid
   cudaStream_t stream = nullptr;
 
@@ -234,11 +284,19 @@ struct Engine::Impl {
   int* argmax_idx = nullptr;    // [kMaxBatch]
   int* d_logit_rows = nullptr;  // [kMaxBatch] gather rows for the LM head
 
+  // Pinned host staging buffers for decode-step H2D/D2H transfers (zero VRAM).
+  int* h_ids = nullptr;          // [kMaxBatch]
+  int* h_logit_rows = nullptr;   // [kMaxBatch]
+  int* h_argmax = nullptr;       // [kMaxBatch]
+  Bf16* h_mrope_cos = nullptr;   // [kMaxBatch * kRotaryDim]
+  Bf16* h_mrope_sin = nullptr;   // [kMaxBatch * kRotaryDim]
+  float* h_logits = nullptr;     // lazy [batch_capacity * kVocab] when sampling
+
   // Text workspaces.
   Bf16 *hidden = nullptr, *norm = nullptr, *qg = nullptr, *q = nullptr,
        *gate = nullptr, *k = nullptr, *v = nullptr, *o = nullptr;
   Bf16 *mlp_gate = nullptr, *mlp_up = nullptr, *mlp_act = nullptr;
-  Bf16 *mixed = nullptr, *mixed_conv = nullptr, *z = nullptr, *b = nullptr,
+  Bf16 *mixed = nullptr, *z = nullptr, *b = nullptr,
        *a = nullptr, *core = nullptr, *gated = nullptr;
   float *qn = nullptr, *kn = nullptr, *beta = nullptr, *decay = nullptr;
   Bf16 *mrope_cos = nullptr, *mrope_sin = nullptr;
@@ -323,10 +381,91 @@ struct Engine::Impl {
     }
     std::fprintf(stderr, "loaded %zu tensors, %.2f GiB\n", weights.size(),
                  bytes / 1073741824.0);
+    resolve_weights();
+  }
+
+  void resolve_weights() {
+    init_text_rope_inv_freq(rope_inv);
+    embed_w = bf("model.language_model.embed_tokens.weight");
+    final_norm_w = bf("model.language_model.norm.weight");
+    lm_head_w = bf("lm_head.weight");
+    for (int l = 0; l < kLayers; ++l) {
+      const std::string lp = "model.language_model.layers." + std::to_string(l);
+      LayerWeights& lw = layers[l];
+      lw.input_norm = bf(lp + ".input_layernorm.weight");
+      lw.post_attn_norm = bf(lp + ".post_attention_layernorm.weight");
+      lw.mlp_gate = bf(lp + ".mlp.gate_proj.weight");
+      lw.mlp_up = bf(lp + ".mlp.up_proj.weight");
+      lw.mlp_down = bf(lp + ".mlp.down_proj.weight");
+      if ((l % 4) == 3) {
+        lw.q_proj = bf(lp + ".self_attn.q_proj.weight");
+        lw.k_proj = bf(lp + ".self_attn.k_proj.weight");
+        lw.v_proj = bf(lp + ".self_attn.v_proj.weight");
+        lw.q_norm = bf(lp + ".self_attn.q_norm.weight");
+        lw.k_norm = bf(lp + ".self_attn.k_norm.weight");
+        lw.o_proj = bf(lp + ".self_attn.o_proj.weight");
+      } else {
+        lw.in_proj_qkv = bf(lp + ".linear_attn.in_proj_qkv.weight");
+        lw.in_proj_z = bf(lp + ".linear_attn.in_proj_z.weight");
+        lw.in_proj_b = bf(lp + ".linear_attn.in_proj_b.weight");
+        lw.in_proj_a = bf(lp + ".linear_attn.in_proj_a.weight");
+        lw.conv1d = bf(lp + ".linear_attn.conv1d.weight");
+        lw.A_log = fp32(lp + ".linear_attn.A_log");
+        lw.dt_bias = fp32(lp + ".linear_attn.dt_bias");
+        lw.linear_norm = bf(lp + ".linear_attn.norm.weight");
+        lw.linear_out_proj = bf(lp + ".linear_attn.out_proj.weight");
+      }
+    }
+    const std::string vp = "model.visual.";
+    vision_w.patch_w = bf(vp + "patch_embed.proj.weight");
+    vision_w.patch_b = bf(vp + "patch_embed.proj.bias");
+    for (int blk = 0; blk < kVisBlocks; ++blk) {
+      const std::string bp = vp + "blocks." + std::to_string(blk);
+      VisionBlockWeights& bw = vision_w.blocks[blk];
+      bw.norm1_w = bf(bp + ".norm1.weight");
+      bw.norm1_b = bf(bp + ".norm1.bias");
+      bw.qkv_w = bf(bp + ".attn.qkv.weight");
+      bw.qkv_b = bf(bp + ".attn.qkv.bias");
+      bw.proj_w = bf(bp + ".attn.proj.weight");
+      bw.proj_b = bf(bp + ".attn.proj.bias");
+      bw.norm2_w = bf(bp + ".norm2.weight");
+      bw.norm2_b = bf(bp + ".norm2.bias");
+      bw.fc1_w = bf(bp + ".mlp.linear_fc1.weight");
+      bw.fc1_b = bf(bp + ".mlp.linear_fc1.bias");
+      bw.fc2_w = bf(bp + ".mlp.linear_fc2.weight");
+      bw.fc2_b = bf(bp + ".mlp.linear_fc2.bias");
+    }
+    vision_w.merger_norm_w = bf(vp + "merger.norm.weight");
+    vision_w.merger_norm_b = bf(vp + "merger.norm.bias");
+    vision_w.merger_fc1_w = bf(vp + "merger.linear_fc1.weight");
+    vision_w.merger_fc1_b = bf(vp + "merger.linear_fc1.bias");
+    vision_w.merger_fc2_w = bf(vp + "merger.linear_fc2.weight");
+    vision_w.merger_fc2_b = bf(vp + "merger.linear_fc2.bias");
+  }
+
+  float* ensure_host_logits() {
+    if (!h_logits) {
+      UMM_QWEN38_CUDA_CHECK(cudaMallocHost(
+          reinterpret_cast<void**>(&h_logits),
+          static_cast<size_t>(batch_capacity) * kVocab * sizeof(float)));
+    }
+    return h_logits;
   }
 
   void alloc() {
     UMM_QWEN38_CUDA_CHECK(cudaStreamCreate(&stream));
+    UMM_QWEN38_CUDA_CHECK(
+        cudaMallocHost(reinterpret_cast<void**>(&h_ids), kMaxBatch * sizeof(int)));
+    UMM_QWEN38_CUDA_CHECK(cudaMallocHost(
+        reinterpret_cast<void**>(&h_logit_rows), kMaxBatch * sizeof(int)));
+    UMM_QWEN38_CUDA_CHECK(cudaMallocHost(
+        reinterpret_cast<void**>(&h_argmax), kMaxBatch * sizeof(int)));
+    UMM_QWEN38_CUDA_CHECK(cudaMallocHost(
+        reinterpret_cast<void**>(&h_mrope_cos),
+        static_cast<size_t>(kMaxBatch) * kRotaryDim * sizeof(Bf16)));
+    UMM_QWEN38_CUDA_CHECK(cudaMallocHost(
+        reinterpret_cast<void**>(&h_mrope_sin),
+        static_cast<size_t>(kMaxBatch) * kRotaryDim * sizeof(Bf16)));
     auto mb = [](Bf16** p, size_t n) {
       UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(p),
                                        n * sizeof(Bf16)));
@@ -351,7 +490,6 @@ struct Engine::Impl {
     mb(&mlp_up, S * kInter);
     mb(&mlp_act, S * kInter);
     mb(&mixed, S * kConvDim);
-    mb(&mixed_conv, S * kConvDim);
     mb(&z, S * kValueDim);
     mb(&b, S * kLVH);
     mb(&a, S * kLVH);
@@ -452,7 +590,7 @@ Engine::~Engine() {
   };
   fb(im.hidden); fb(im.norm); fb(im.qg); fb(im.q); fb(im.gate); fb(im.k);
   fb(im.v); fb(im.o); fb(im.mlp_gate); fb(im.mlp_up); fb(im.mlp_act);
-  fb(im.mixed); fb(im.mixed_conv); fb(im.z); fb(im.b); fb(im.a); fb(im.core);
+  fb(im.mixed); fb(im.z); fb(im.b); fb(im.a); fb(im.core);
   fb(im.gated); fb(im.mrope_cos); fb(im.mrope_sin); fb(im.kv); fb(im.conv_state);
   fb(im.kv_snap); fb(im.conv_snap); ff(im.rec_snap);
   fb(im.last_hidden);
@@ -464,6 +602,12 @@ Engine::~Engine() {
   if (im.argmax_scratch) cudaFree(im.argmax_scratch);
   if (im.argmax_idx) cudaFree(im.argmax_idx);
   if (im.d_logit_rows) cudaFree(im.d_logit_rows);
+  if (im.h_ids) cudaFreeHost(im.h_ids);
+  if (im.h_logit_rows) cudaFreeHost(im.h_logit_rows);
+  if (im.h_argmax) cudaFreeHost(im.h_argmax);
+  if (im.h_mrope_cos) cudaFreeHost(im.h_mrope_cos);
+  if (im.h_mrope_sin) cudaFreeHost(im.h_mrope_sin);
+  if (im.h_logits) cudaFreeHost(im.h_logits);
   if (im.stream) cudaStreamDestroy(im.stream);
 }
 
@@ -480,7 +624,6 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
   const int slice_tokens = img.grid_h * img.grid_w;
   if (slice_tokens > kVisTokenCap || total_tokens > kVisTokenCap)
     throw std::runtime_error("vision input exceeds the bounded vision workspace");
-  const std::string p = "model.visual.";
   cudaStream_t st = im.stream;
 
   // Position embeddings and 2D spatial RoPE are shared across every temporal
@@ -522,6 +665,7 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
   // patch merger runs once across all slices in the chunk, while self-attention
   // stays strictly per-slice (matching Qwen3_5VisionModel cu_seqlens). For
   // still images (grid_t == 1), this yields a single 1-slice chunk.
+  const VisionWeights& vw = im.vision_w;
   const std::vector<VisionSliceChunk> chunks =
       plan_vision_slice_chunks(img.grid_t, slice_tokens, kVisTokenCap);
   for (const VisionSliceChunk& chunk : chunks) {
@@ -531,8 +675,8 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
     const Bf16* chunk_d_pixels =
         im.d_pixels + static_cast<size_t>(chunk.start_slice) * slice_tokens * kPatchDim;
 
-    gemm_bf16(im.v_hidden, chunk_d_pixels, im.bf(p + "patch_embed.proj.weight"),
-              im.bf(p + "patch_embed.proj.bias"), chunk_tokens, kPatchDim, kVisH, st);
+    gemm_bf16(im.v_hidden, chunk_d_pixels, vw.patch_w, vw.patch_b, chunk_tokens,
+              kPatchDim, kVisH, st);
     add_residual_tiled(im.v_hidden, im.v_pos, chunk_tokens * kVisH,
                        slice_tokens * kVisH, st);
     if (!dump_dir.empty() && chunk.start_slice == 0)
@@ -540,11 +684,11 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
                static_cast<size_t>(slice_tokens) * kVisH * sizeof(Bf16));
 
     for (int blk = 0; blk < kVisBlocks; ++blk) {
-      const std::string bp = p + "blocks." + std::to_string(blk);
-      layer_norm(im.v_hidden, im.bf(bp + ".norm1.weight"),
-                 im.bf(bp + ".norm1.bias"), im.v_norm, chunk_tokens, kVisH, kEps, st);
-      gemm_bf16(im.v_qkv, im.v_norm, im.bf(bp + ".attn.qkv.weight"),
-                im.bf(bp + ".attn.qkv.bias"), chunk_tokens, kVisH, 3 * kVisH, st);
+      const VisionBlockWeights& bw = vw.blocks[blk];
+      layer_norm(im.v_hidden, bw.norm1_w, bw.norm1_b, im.v_norm, chunk_tokens,
+                 kVisH, kEps, st);
+      gemm_bf16(im.v_qkv, im.v_norm, bw.qkv_w, bw.qkv_b, chunk_tokens, kVisH,
+                3 * kVisH, st);
       split_qkv(im.v_qkv, im.v_q, im.v_k, im.v_v, chunk_tokens, kVisH, st);
       vision_rope_tiled(im.v_q, im.v_rope_cos, im.v_rope_sin, chunk_tokens,
                         slice_tokens, kVisHeads, kVisHeadDim, st);
@@ -552,32 +696,32 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
                         slice_tokens, kVisHeads, kVisHeadDim, st);
       vision_attention_batched(im.v_q, im.v_k, im.v_v, im.v_proj, slice_tokens,
                                chunk_slices, kVisHeads, kVisHeadDim, st);
-      gemm_bf16(im.v_qkv, im.v_proj, im.bf(bp + ".attn.proj.weight"),
-                im.bf(bp + ".attn.proj.bias"), chunk_tokens, kVisH, kVisH, st);
+      gemm_bf16(im.v_qkv, im.v_proj, bw.proj_w, bw.proj_b, chunk_tokens, kVisH,
+                kVisH, st);
       add_residual(im.v_hidden, im.v_qkv, chunk_tokens * kVisH, st);
 
-      layer_norm(im.v_hidden, im.bf(bp + ".norm2.weight"),
-                 im.bf(bp + ".norm2.bias"), im.v_norm, chunk_tokens, kVisH, kEps, st);
-      gemm_bf16(im.v_mlp, im.v_norm, im.bf(bp + ".mlp.linear_fc1.weight"),
-                im.bf(bp + ".mlp.linear_fc1.bias"), chunk_tokens, kVisH, kVisInter, st);
+      layer_norm(im.v_hidden, bw.norm2_w, bw.norm2_b, im.v_norm, chunk_tokens,
+                 kVisH, kEps, st);
+      gemm_bf16(im.v_mlp, im.v_norm, bw.fc1_w, bw.fc1_b, chunk_tokens, kVisH,
+                kVisInter, st);
       gelu_tanh_inplace(im.v_mlp, chunk_tokens * kVisInter, st);
-      gemm_bf16(im.v_proj, im.v_mlp, im.bf(bp + ".mlp.linear_fc2.weight"),
-                im.bf(bp + ".mlp.linear_fc2.bias"), chunk_tokens, kVisInter, kVisH, st);
+      gemm_bf16(im.v_proj, im.v_mlp, bw.fc2_w, bw.fc2_b, chunk_tokens, kVisInter,
+                kVisH, st);
       add_residual(im.v_hidden, im.v_proj, chunk_tokens * kVisH, st);
       if (!dump_dir.empty() && chunk.start_slice == 0)
         dump_dev(im, dump_dir, "vblock_" + std::to_string(blk) + ".bf16", im.v_hidden,
                  static_cast<size_t>(slice_tokens) * kVisH * sizeof(Bf16));
     }
 
-    layer_norm(im.v_hidden, im.bf(p + "merger.norm.weight"),
-               im.bf(p + "merger.norm.bias"), im.v_norm, chunk_tokens, kVisH, kEps, st);
-    gemm_bf16(im.v_mlp, im.v_norm, im.bf(p + "merger.linear_fc1.weight"),
-              im.bf(p + "merger.linear_fc1.bias"), chunk_merged, 4 * kVisH, 4 * kVisH, st);
+    layer_norm(im.v_hidden, vw.merger_norm_w, vw.merger_norm_b, im.v_norm,
+               chunk_tokens, kVisH, kEps, st);
+    gemm_bf16(im.v_mlp, im.v_norm, vw.merger_fc1_w, vw.merger_fc1_b, chunk_merged,
+              4 * kVisH, 4 * kVisH, st);
     gelu_erf_inplace(im.v_mlp, chunk_merged * 4 * kVisH, st);
     Bf16* dst_pooler =
         im.pooler + static_cast<size_t>(chunk.start_slice) * slice_merged * kVisOut;
-    gemm_bf16(dst_pooler, im.v_mlp, im.bf(p + "merger.linear_fc2.weight"),
-              im.bf(p + "merger.linear_fc2.bias"), chunk_merged, 4 * kVisH, kVisOut, st);
+    gemm_bf16(dst_pooler, im.v_mlp, vw.merger_fc2_w, vw.merger_fc2_b,
+              chunk_merged, 4 * kVisH, kVisOut, st);
   }
   UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
 
@@ -598,126 +742,132 @@ void dump_dev(Engine::Impl& im, const std::string& dir, const std::string& name,
   write_file(dir, name, host.data(), bytes);
 }
 
-void linear_layer(Engine::Impl& im, int layer, int m, int history,
+void linear_layer(Engine::Impl& im, int layer, int m, bool pre_normed,
                   const std::string& dump_dir) {
   cudaStream_t st = im.stream;
-  const std::string lp = "model.language_model.layers." + std::to_string(layer);
+  const LayerWeights& lw = im.layers[layer];
   const bool one = (m == 1);
-  auto lin = [&](Bf16* y, const Bf16* x, const Bf16* w, int k, int n) {
-    if (one)
-      gemv_bf16_bf16(w, x, y, n, k, st);
-    else
-      gemm_bf16(y, x, w, nullptr, m, k, n, st);
-  };
+  if (!pre_normed) {
+    rms_norm_zero_centered(im.hidden, lw.input_norm, im.norm, m, kHidden, kEps, st);
+  }
+  if (one) {
+    const MultiGemvDesc desc{
+        {lw.in_proj_qkv, lw.in_proj_z, lw.in_proj_b, lw.in_proj_a},
+        {im.mixed, im.z, im.b, im.a},
+        {kConvDim, kValueDim, kLVH, kLVH},
+        4};
+    gemv_bf16_bf16_multi_batch(desc, im.norm, 1, kHidden, st);
+  } else {
+    gemm_bf16(im.mixed, im.norm, lw.in_proj_qkv, nullptr, m, kHidden, kConvDim, st);
+    gemm_bf16(im.z, im.norm, lw.in_proj_z, nullptr, m, kHidden, kValueDim, st);
+    gemm_bf16(im.b, im.norm, lw.in_proj_b, nullptr, m, kHidden, kLVH, st);
+    gemm_bf16(im.a, im.norm, lw.in_proj_a, nullptr, m, kHidden, kLVH, st);
+  }
 
-  rms_norm_zero_centered(im.hidden, im.bf(lp + ".input_layernorm.weight"), im.norm,
-                         m, kHidden, kEps, st);
-  lin(im.mixed, im.norm, im.bf(lp + ".linear_attn.in_proj_qkv.weight"), kHidden,
-      kConvDim);
-  lin(im.z, im.norm, im.bf(lp + ".linear_attn.in_proj_z.weight"), kHidden,
-      kValueDim);
-  lin(im.b, im.norm, im.bf(lp + ".linear_attn.in_proj_b.weight"), kHidden, kLVH);
-  lin(im.a, im.norm, im.bf(lp + ".linear_attn.in_proj_a.weight"), kHidden, kLVH);
-
-  conv1d_causal_silu(im.mixed, im.bf(lp + ".linear_attn.conv1d.weight"),
-                     im.conv_state + static_cast<size_t>(layer) * kConvDim * (kConvK - 1),
-                     im.mixed_conv, m, kConvDim, st);
-  split_qkv_widths(im.mixed_conv, im.q, im.k, im.v, m, kKeyDim, kKeyDim, kValueDim,
-                   st);
-  l2norm_qk(im.q, im.k, im.qn, im.kn, m, kLKH, kLKD, st);
-  beta_and_decay(im.beta, im.decay, im.b, im.a,
-                 im.fp32(lp + ".linear_attn.A_log"),
-                 im.fp32(lp + ".linear_attn.dt_bias"), m, kLVH, st);
+  conv1d_causal_silu_split(
+      im.mixed, lw.conv1d,
+      im.conv_state + static_cast<size_t>(layer) * kConvDim * (kConvK - 1),
+      im.q, im.k, im.v, m, kKeyDim, kKeyDim, kValueDim, st);
+  l2norm_qk_beta_decay(im.q, im.k, im.qn, im.kn, im.beta, im.decay, im.b, im.a,
+                       lw.A_log, lw.dt_bias, m, kLKH, kLVH, kLKD, st);
   gated_delta_rule(im.rec_state + static_cast<size_t>(layer) * kLVH * kLVD * kLVD,
                    im.qn, im.kn, im.v, im.beta, im.decay, im.core, m, kLKH, kLVH,
                    kLVD, st);
-  gated_rms_norm(im.core, im.z, im.bf(lp + ".linear_attn.norm.weight"), im.gated,
-                 m * kLVH, kLVD, kEps, st);
-  lin(im.o, im.gated, im.bf(lp + ".linear_attn.out_proj.weight"), kValueDim,
-      kHidden);
+  gated_rms_norm(im.core, im.z, lw.linear_norm, im.gated, m * kLVH, kLVD, kEps, st);
+  if (one)
+    gemv_bf16_bf16(lw.linear_out_proj, im.gated, im.o, kHidden, kValueDim, st);
+  else
+    gemm_bf16(im.o, im.gated, lw.linear_out_proj, nullptr, m, kValueDim, kHidden, st);
   if (!dump_dir.empty())
     dump_dev(im, dump_dir, "mixer_" + std::to_string(layer) + ".bf16", im.o,
              static_cast<size_t>(m) * kHidden * sizeof(Bf16));
-  add_residual(im.hidden, im.o, m * kHidden, st);
+  add_residual_rms_norm_zero_centered(im.hidden, im.o, lw.post_attn_norm, im.norm,
+                                      m, kHidden, kEps, st);
 }
 
-void full_layer(Engine::Impl& im, int layer, int m, int history,
+void full_layer(Engine::Impl& im, int layer, int m, int history, bool pre_normed,
                 const std::string& dump_dir) {
   cudaStream_t st = im.stream;
-  const std::string lp = "model.language_model.layers." + std::to_string(layer);
+  const LayerWeights& lw = im.layers[layer];
   const bool one = (m == 1);
-  auto lin = [&](Bf16* y, const Bf16* x, const Bf16* w, int k, int n) {
-    if (one)
-      gemv_bf16_bf16(w, x, y, n, k, st);
-    else
-      gemm_bf16(y, x, w, nullptr, m, k, n, st);
-  };
-
-  rms_norm_zero_centered(im.hidden, im.bf(lp + ".input_layernorm.weight"), im.norm,
-                         m, kHidden, kEps, st);
-  lin(im.qg, im.norm, im.bf(lp + ".self_attn.q_proj.weight"), kHidden,
-      2 * kQHeads * kHeadDim);
-  lin(im.k, im.norm, im.bf(lp + ".self_attn.k_proj.weight"), kHidden,
-      kKvHeads * kHeadDim);
-  lin(im.v, im.norm, im.bf(lp + ".self_attn.v_proj.weight"), kHidden,
-      kKvHeads * kHeadDim);
-  split_q_gate(im.qg, im.q, im.gate, m, kQHeads, kHeadDim, st);
-  rms_norm_zero_centered(im.q, im.bf(lp + ".self_attn.q_norm.weight"), im.q,
-                         m * kQHeads, kHeadDim, kEps, st);
-  rms_norm_zero_centered(im.k, im.bf(lp + ".self_attn.k_norm.weight"), im.k,
-                         m * kKvHeads, kHeadDim, kEps, st);
-  mrope_partial(im.q, im.mrope_cos, im.mrope_sin, m, kQHeads, kHeadDim, kRotaryDim,
-                st);
-  mrope_partial(im.k, im.mrope_cos, im.mrope_sin, m, kKvHeads, kHeadDim, kRotaryDim,
-                st);
+  if (!pre_normed) {
+    rms_norm_zero_centered(im.hidden, lw.input_norm, im.norm, m, kHidden, kEps, st);
+  }
+  if (one) {
+    const MultiGemvDesc desc{
+        {lw.q_proj, lw.k_proj, lw.v_proj, nullptr},
+        {im.qg, im.k, im.v, nullptr},
+        {2 * kQHeads * kHeadDim, kKvHeads * kHeadDim, kKvHeads * kHeadDim, 0},
+        3};
+    gemv_bf16_bf16_multi_batch(desc, im.norm, 1, kHidden, st);
+  } else {
+    gemm_bf16(im.qg, im.norm, lw.q_proj, nullptr, m, kHidden,
+              2 * kQHeads * kHeadDim, st);
+    gemm_bf16(im.k, im.norm, lw.k_proj, nullptr, m, kHidden,
+              kKvHeads * kHeadDim, st);
+    gemm_bf16(im.v, im.norm, lw.v_proj, nullptr, m, kHidden,
+              kKvHeads * kHeadDim, st);
+  }
 
   const int slot = layer / 4;
   Bf16* kbase = im.kv + ((static_cast<size_t>(slot) * 2) * im.max_seq) * kKvHeads * kHeadDim;
   Bf16* vbase = kbase + static_cast<size_t>(im.max_seq) * kKvHeads * kHeadDim;
-  const size_t row = static_cast<size_t>(kKvHeads) * kHeadDim;
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(kbase + static_cast<size_t>(history) * row,
-                                        im.k, m * row * sizeof(Bf16),
-                                        cudaMemcpyDeviceToDevice, st));
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(vbase + static_cast<size_t>(history) * row,
-                                        im.v, m * row * sizeof(Bf16),
-                                        cudaMemcpyDeviceToDevice, st));
+  prep_qkv_rope_kvcache(im.qg, im.k, im.v, lw.q_norm, lw.k_norm, im.mrope_cos,
+                        im.mrope_sin, im.q, im.gate, kbase, vbase, m, history,
+                        kQHeads, kKvHeads, kHeadDim, kRotaryDim, kEps, st);
   gqa_attention(im.q, kbase, vbase, im.gate, im.o, m, history + m, kQHeads, kKvHeads,
                 kHeadDim, history, st);
-  lin(im.qg, im.o, im.bf(lp + ".self_attn.o_proj.weight"), kQHeads * kHeadDim,
-      kHidden);
+  if (one)
+    gemv_bf16_bf16(lw.o_proj, im.o, im.qg, kHidden, kQHeads * kHeadDim, st);
+  else
+    gemm_bf16(im.qg, im.o, lw.o_proj, nullptr, m, kQHeads * kHeadDim, kHidden, st);
   if (!dump_dir.empty())
     dump_dev(im, dump_dir, "mixer_" + std::to_string(layer) + ".bf16", im.qg,
              static_cast<size_t>(m) * kHidden * sizeof(Bf16));
-  add_residual(im.hidden, im.qg, m * kHidden, st);
+  add_residual_rms_norm_zero_centered(im.hidden, im.qg, lw.post_attn_norm, im.norm,
+                                      m, kHidden, kEps, st);
 }
 
-void mlp_block(Engine::Impl& im, int layer, int m) {
+void mlp_block(Engine::Impl& im, int layer, int m, const Bf16* next_norm_w,
+               Bf16* next_norm_out, bool last_row_only_norm) {
   cudaStream_t st = im.stream;
-  const std::string lp = "model.language_model.layers." + std::to_string(layer);
+  const LayerWeights& lw = im.layers[layer];
   const bool one = (m == 1);
-  auto lin = [&](Bf16* y, const Bf16* x, const Bf16* w, int k, int n) {
-    if (one)
-      gemv_bf16_bf16(w, x, y, n, k, st);
-    else
-      gemm_bf16(y, x, w, nullptr, m, k, n, st);
-  };
-  rms_norm_zero_centered(im.hidden, im.bf(lp + ".post_attention_layernorm.weight"),
-                         im.norm, m, kHidden, kEps, st);
-  lin(im.mlp_gate, im.norm, im.bf(lp + ".mlp.gate_proj.weight"), kHidden, kInter);
-  lin(im.mlp_up, im.norm, im.bf(lp + ".mlp.up_proj.weight"), kHidden, kInter);
-  silu_mul(im.mlp_act, im.mlp_gate, im.mlp_up, m * kInter, st);
-  lin(im.o, im.mlp_act, im.bf(lp + ".mlp.down_proj.weight"), kInter, kHidden);
-  add_residual(im.hidden, im.o, m * kHidden, st);
+  if (one) {
+    gemv_bf16_swiglu_batch(lw.mlp_gate, lw.mlp_up, im.norm, im.mlp_act, 1,
+                           kInter, kHidden, st);
+    gemv_bf16_bf16(lw.mlp_down, im.mlp_act, im.o, kHidden, kInter, st);
+  } else {
+    gemm_bf16(im.mlp_gate, im.norm, lw.mlp_gate, nullptr, m, kHidden, kInter, st);
+    gemm_bf16(im.mlp_up, im.norm, lw.mlp_up, nullptr, m, kHidden, kInter, st);
+    silu_mul(im.mlp_act, im.mlp_gate, im.mlp_up, m * kInter, st);
+    gemm_bf16(im.o, im.mlp_act, lw.mlp_down, nullptr, m, kInter, kHidden, st);
+  }
+  if (next_norm_w != nullptr) {
+    if (last_row_only_norm && m > 1) {
+      const size_t off = static_cast<size_t>(m - 1) * kHidden;
+      add_residual_rms_norm_zero_centered(im.hidden + off, im.o + off,
+                                          next_norm_w, next_norm_out, 1,
+                                          kHidden, kEps, st);
+    } else {
+      add_residual_rms_norm_zero_centered(im.hidden, im.o, next_norm_w,
+                                          next_norm_out, m, kHidden, kEps, st);
+    }
+  } else {
+    add_residual(im.hidden, im.o, m * kHidden, st);
+  }
 }
 
-void run_layer(Engine::Impl& im, int layer, int m, int history,
-               const std::string& dump_dir) {
+void run_layer(Engine::Impl& im, int layer, int m, int history, bool pre_normed,
+               const Bf16* next_norm_w, Bf16* next_norm_out,
+               bool last_row_only_norm, const std::string& dump_dir) {
   const bool full = (layer % 4) == 3;
   if (full)
-    full_layer(im, layer, m, history, dump_dir);
+    full_layer(im, layer, m, history, pre_normed, dump_dir);
   else
-    linear_layer(im, layer, m, history, dump_dir);
-  mlp_block(im, layer, m);
+    linear_layer(im, layer, m, pre_normed, dump_dir);
+  mlp_block(im, layer, m, dump_dir.empty() ? next_norm_w : nullptr,
+            next_norm_out, last_row_only_norm);
   if (!dump_dir.empty())
     dump_dev(im, dump_dir, "layer_" + std::to_string(layer) + ".bf16", im.hidden,
              static_cast<size_t>(m) * kHidden * sizeof(Bf16));
@@ -859,104 +1009,104 @@ void seg_linear(Bf16* y, const Bf16* x, const Bf16* w, int rows, int k, int n,
 void linear_layer_seg(Engine::Impl& im, int layer, int rows, const SeqSpans& sp,
                       int nseq, bool use_gemv) {
   cudaStream_t st = im.stream;
-  const std::string lp = "model.language_model.layers." + std::to_string(layer);
-  rms_norm_zero_centered(im.hidden, im.bf(lp + ".input_layernorm.weight"), im.norm,
-                         rows, kHidden, kEps, st);
-  seg_linear(im.mixed, im.norm, im.bf(lp + ".linear_attn.in_proj_qkv.weight"),
-             rows, kHidden, kConvDim, use_gemv, st);
-  seg_linear(im.z, im.norm, im.bf(lp + ".linear_attn.in_proj_z.weight"), rows,
-             kHidden, kValueDim, use_gemv, st);
-  seg_linear(im.b, im.norm, im.bf(lp + ".linear_attn.in_proj_b.weight"), rows,
-             kHidden, kLVH, use_gemv, st);
-  seg_linear(im.a, im.norm, im.bf(lp + ".linear_attn.in_proj_a.weight"), rows,
-             kHidden, kLVH, use_gemv, st);
-  conv1d_causal_silu_seg(
-      im.mixed, im.bf(lp + ".linear_attn.conv1d.weight"),
+  const LayerWeights& lw = im.layers[layer];
+  if (use_gemv) {
+    const MultiGemvDesc desc{
+        {lw.in_proj_qkv, lw.in_proj_z, lw.in_proj_b, lw.in_proj_a},
+        {im.mixed, im.z, im.b, im.a},
+        {kConvDim, kValueDim, kLVH, kLVH},
+        4};
+    gemv_bf16_bf16_multi_batch(desc, im.norm, rows, kHidden, st);
+  } else {
+    gemm_bf16(im.mixed, im.norm, lw.in_proj_qkv, nullptr, rows, kHidden, kConvDim, st);
+    gemm_bf16(im.z, im.norm, lw.in_proj_z, nullptr, rows, kHidden, kValueDim, st);
+    gemm_bf16(im.b, im.norm, lw.in_proj_b, nullptr, rows, kHidden, kLVH, st);
+    gemm_bf16(im.a, im.norm, lw.in_proj_a, nullptr, rows, kHidden, kLVH, st);
+  }
+  conv1d_causal_silu_split_seg(
+      im.mixed, lw.conv1d,
       im.conv_state + static_cast<size_t>(layer) * kConvDim * (kConvK - 1),
-      im.mixed_conv, sp, nseq, kConvDim,
+      im.q, im.k, im.v, sp, nseq, kKeyDim, kKeyDim, kValueDim,
       static_cast<size_t>(kLayers) * kConvDim * (kConvK - 1), st);
-  split_qkv_widths(im.mixed_conv, im.q, im.k, im.v, rows, kKeyDim, kKeyDim,
-                   kValueDim, st);
-  l2norm_qk(im.q, im.k, im.qn, im.kn, rows, kLKH, kLKD, st);
-  beta_and_decay(im.beta, im.decay, im.b, im.a, im.fp32(lp + ".linear_attn.A_log"),
-                 im.fp32(lp + ".linear_attn.dt_bias"), rows, kLVH, st);
+  l2norm_qk_beta_decay(im.q, im.k, im.qn, im.kn, im.beta, im.decay, im.b, im.a,
+                       lw.A_log, lw.dt_bias, rows, kLKH, kLVH, kLKD, st);
   gated_delta_rule_seg(
       im.rec_state + static_cast<size_t>(layer) * kLVH * kLVD * kLVD, im.qn,
       im.kn, im.v, im.beta, im.decay, im.core, sp, nseq, kLKH, kLVH, kLVD,
       static_cast<size_t>(kLayers) * kLVH * kLVD * kLVD, st);
-  gated_rms_norm(im.core, im.z, im.bf(lp + ".linear_attn.norm.weight"), im.gated,
-                 rows * kLVH, kLVD, kEps, st);
-  seg_linear(im.o, im.gated, im.bf(lp + ".linear_attn.out_proj.weight"), rows,
-             kValueDim, kHidden, use_gemv, st);
-  add_residual(im.hidden, im.o, rows * kHidden, st);
+  gated_rms_norm(im.core, im.z, lw.linear_norm, im.gated, rows * kLVH, kLVD,
+                 kEps, st);
+  seg_linear(im.o, im.gated, lw.linear_out_proj, rows, kValueDim, kHidden,
+             use_gemv, st);
+  add_residual_rms_norm_zero_centered(im.hidden, im.o, lw.post_attn_norm, im.norm,
+                                      rows, kHidden, kEps, st);
 }
 
 void full_layer_seg(Engine::Impl& im, int layer, int rows, const SeqSpans& sp,
                     int nseq, bool use_gemv) {
   cudaStream_t st = im.stream;
-  const std::string lp = "model.language_model.layers." + std::to_string(layer);
-  rms_norm_zero_centered(im.hidden, im.bf(lp + ".input_layernorm.weight"), im.norm,
-                         rows, kHidden, kEps, st);
-  seg_linear(im.qg, im.norm, im.bf(lp + ".self_attn.q_proj.weight"), rows, kHidden,
-             2 * kQHeads * kHeadDim, use_gemv, st);
-  seg_linear(im.k, im.norm, im.bf(lp + ".self_attn.k_proj.weight"), rows, kHidden,
-             kKvHeads * kHeadDim, use_gemv, st);
-  seg_linear(im.v, im.norm, im.bf(lp + ".self_attn.v_proj.weight"), rows, kHidden,
-             kKvHeads * kHeadDim, use_gemv, st);
-  split_q_gate(im.qg, im.q, im.gate, rows, kQHeads, kHeadDim, st);
-  rms_norm_zero_centered(im.q, im.bf(lp + ".self_attn.q_norm.weight"), im.q,
-                         rows * kQHeads, kHeadDim, kEps, st);
-  rms_norm_zero_centered(im.k, im.bf(lp + ".self_attn.k_norm.weight"), im.k,
-                         rows * kKvHeads, kHeadDim, kEps, st);
-  mrope_partial(im.q, im.mrope_cos, im.mrope_sin, rows, kQHeads, kHeadDim,
-                kRotaryDim, st);
-  mrope_partial(im.k, im.mrope_cos, im.mrope_sin, rows, kKvHeads, kHeadDim,
-                kRotaryDim, st);
+  const LayerWeights& lw = im.layers[layer];
+  if (use_gemv) {
+    const MultiGemvDesc desc{
+        {lw.q_proj, lw.k_proj, lw.v_proj, nullptr},
+        {im.qg, im.k, im.v, nullptr},
+        {2 * kQHeads * kHeadDim, kKvHeads * kHeadDim, kKvHeads * kHeadDim, 0},
+        3};
+    gemv_bf16_bf16_multi_batch(desc, im.norm, rows, kHidden, st);
+  } else {
+    gemm_bf16(im.qg, im.norm, lw.q_proj, nullptr, rows, kHidden,
+              2 * kQHeads * kHeadDim, st);
+    gemm_bf16(im.k, im.norm, lw.k_proj, nullptr, rows, kHidden,
+              kKvHeads * kHeadDim, st);
+    gemm_bf16(im.v, im.norm, lw.v_proj, nullptr, rows, kHidden,
+              kKvHeads * kHeadDim, st);
+  }
 
   const int slot = layer / 4;
   const size_t strand = static_cast<size_t>(16) * 2 * im.max_seq * kKvRow;
   Bf16* kbase = im.kv + static_cast<size_t>(slot) * 2 * im.max_seq * kKvRow;
   Bf16* vbase = kbase + static_cast<size_t>(im.max_seq) * kKvRow;
-  for (int s = 0; s < nseq; ++s) {
-    const size_t dst = static_cast<size_t>(sp.slot[s]) * strand +
-                       static_cast<size_t>(sp.hist[s]) * kKvRow;
-    const size_t src = static_cast<size_t>(sp.off[s]) * kKvRow;
-    const size_t bytes = static_cast<size_t>(sp.len[s]) * kKvRow * sizeof(Bf16);
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(kbase + dst, im.k + src, bytes,
-                                          cudaMemcpyDeviceToDevice, st));
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(vbase + dst, im.v + src, bytes,
-                                          cudaMemcpyDeviceToDevice, st));
-  }
+  prep_qkv_rope_kvcache_seg(im.qg, im.k, im.v, lw.q_norm, lw.k_norm,
+                            im.mrope_cos, im.mrope_sin, im.q, im.gate, kbase,
+                            vbase, sp, nseq, rows, strand, kQHeads, kKvHeads,
+                            kHeadDim, kRotaryDim, kEps, st);
   gqa_attention_seg(im.q, kbase, vbase, im.gate, im.o, sp, nseq, strand, kQHeads,
                     kKvHeads, kHeadDim, st);
-  seg_linear(im.qg, im.o, im.bf(lp + ".self_attn.o_proj.weight"), rows,
-             kQHeads * kHeadDim, kHidden, use_gemv, st);
-  add_residual(im.hidden, im.qg, rows * kHidden, st);
+  seg_linear(im.qg, im.o, lw.o_proj, rows, kQHeads * kHeadDim, kHidden,
+             use_gemv, st);
+  add_residual_rms_norm_zero_centered(im.hidden, im.qg, lw.post_attn_norm, im.norm,
+                                      rows, kHidden, kEps, st);
 }
 
-void mlp_block_seg(Engine::Impl& im, int layer, int rows, bool use_gemv) {
+void mlp_block_seg(Engine::Impl& im, int layer, int rows, bool use_gemv,
+                   const Bf16* next_norm_w, Bf16* next_norm_out) {
   cudaStream_t st = im.stream;
-  const std::string lp = "model.language_model.layers." + std::to_string(layer);
-  rms_norm_zero_centered(im.hidden,
-                         im.bf(lp + ".post_attention_layernorm.weight"), im.norm,
-                         rows, kHidden, kEps, st);
-  seg_linear(im.mlp_gate, im.norm, im.bf(lp + ".mlp.gate_proj.weight"), rows,
-             kHidden, kInter, use_gemv, st);
-  seg_linear(im.mlp_up, im.norm, im.bf(lp + ".mlp.up_proj.weight"), rows, kHidden,
-             kInter, use_gemv, st);
-  silu_mul(im.mlp_act, im.mlp_gate, im.mlp_up, rows * kInter, st);
-  seg_linear(im.o, im.mlp_act, im.bf(lp + ".mlp.down_proj.weight"), rows, kInter,
-             kHidden, use_gemv, st);
-  add_residual(im.hidden, im.o, rows * kHidden, st);
+  const LayerWeights& lw = im.layers[layer];
+  if (use_gemv) {
+    gemv_bf16_swiglu_batch(lw.mlp_gate, lw.mlp_up, im.norm, im.mlp_act, rows,
+                           kInter, kHidden, st);
+  } else {
+    gemm_bf16(im.mlp_gate, im.norm, lw.mlp_gate, nullptr, rows, kHidden, kInter, st);
+    gemm_bf16(im.mlp_up, im.norm, lw.mlp_up, nullptr, rows, kHidden, kInter, st);
+    silu_mul(im.mlp_act, im.mlp_gate, im.mlp_up, rows * kInter, st);
+  }
+  seg_linear(im.o, im.mlp_act, lw.mlp_down, rows, kInter, kHidden, use_gemv, st);
+  if (next_norm_w != nullptr) {
+    add_residual_rms_norm_zero_centered(im.hidden, im.o, next_norm_w,
+                                        next_norm_out, rows, kHidden, kEps, st);
+  } else {
+    add_residual(im.hidden, im.o, rows * kHidden, st);
+  }
 }
 
 void run_layer_seg(Engine::Impl& im, int layer, int rows, const SeqSpans& sp,
-                   int nseq, bool use_gemv) {
+                   int nseq, bool use_gemv, const Bf16* next_norm_w,
+                   Bf16* next_norm_out) {
   if ((layer % 4) == 3)
     full_layer_seg(im, layer, rows, sp, nseq, use_gemv);
   else
     linear_layer_seg(im, layer, rows, sp, nseq, use_gemv);
-  mlp_block_seg(im, layer, rows, use_gemv);
+  mlp_block_seg(im, layer, rows, use_gemv, next_norm_w, next_norm_out);
 }
 
 // Runs every layer over `rows` workspace rows and returns one sampled token per
@@ -965,18 +1115,39 @@ std::vector<int> batch_forward(
     Engine::Impl& im, const SeqSpans& sp, int nseq, int rows, bool use_gemv,
     const int* logit_rows, const std::vector<std::shared_ptr<BatchJob>>& jobs) {
   cudaStream_t st = im.stream;
-  for (int l = 0; l < kLayers; ++l) run_layer_seg(im, l, rows, sp, nseq, use_gemv);
+  bool identity_gather = (rows == nseq);
+  for (int i = 0; i < nseq && identity_gather; ++i)
+    if (logit_rows[i] != i) identity_gather = false;
+
+  rms_norm_zero_centered(im.hidden, im.layers[0].input_norm, im.norm, rows,
+                         kHidden, kEps, st);
+  for (int l = 0; l < kLayers; ++l) {
+    const Bf16* next_w = nullptr;
+    Bf16* next_out = nullptr;
+    if (l + 1 < kLayers) {
+      next_w = im.layers[l + 1].input_norm;
+      next_out = im.norm;
+    } else if (identity_gather) {
+      next_w = im.final_norm_w;
+      next_out = im.last_hidden;
+    }
+    run_layer_seg(im, l, rows, sp, nseq, use_gemv, next_w, next_out);
+  }
   // A launch configuration error is reported by the launch itself, not by the
   // following stream call, so check it before the first dependent copy.
   UMM_QWEN38_CUDA_CHECK(cudaGetLastError());
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_logit_rows, logit_rows,
-                                        static_cast<size_t>(nseq) * sizeof(int),
-                                        cudaMemcpyHostToDevice, st));
-  gather_rows(im.last_hidden, im.hidden, im.d_logit_rows, nseq, kHidden, st);
-  rms_norm_zero_centered(im.last_hidden, im.bf("model.language_model.norm.weight"),
-                         im.last_hidden, nseq, kHidden, kEps, st);
-  gemv_bf16_f32_batch(im.bf("lm_head.weight"), im.last_hidden, im.logits, nseq,
-                      kVocab, kHidden, st);
+  if (!identity_gather) {
+    std::memcpy(im.h_logit_rows, logit_rows,
+                static_cast<size_t>(nseq) * sizeof(int));
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_logit_rows, im.h_logit_rows,
+                                          static_cast<size_t>(nseq) * sizeof(int),
+                                          cudaMemcpyHostToDevice, st));
+    gather_rows(im.last_hidden, im.hidden, im.d_logit_rows, nseq, kHidden, st);
+    rms_norm_zero_centered(im.last_hidden, im.final_norm_w, im.last_hidden,
+                           nseq, kHidden, kEps, st);
+  }
+  gemv_bf16_f32_batch(im.lm_head_w, im.last_hidden, im.logits, nseq, kVocab,
+                      kHidden, st);
   bool sample_any = false;
   for (int i = 0; i < nseq; ++i)
     if (jobs[i]->req.sampling.temperature > 0.0f) sample_any = true;
@@ -984,23 +1155,24 @@ std::vector<int> batch_forward(
   if (!sample_any) {
     argmax_rows(im.logits, nseq, kVocab, im.argmax_idx, st);
     UMM_QWEN38_CUDA_CHECK(cudaGetLastError());
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(out.data(), im.argmax_idx,
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.h_argmax, im.argmax_idx,
                                           static_cast<size_t>(nseq) * sizeof(int),
                                           cudaMemcpyDeviceToHost, st));
     UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
+    for (int i = 0; i < nseq; ++i) out[static_cast<size_t>(i)] = im.h_argmax[i];
     return out;
   }
   // A sampled row needs its whole logit vector on the host. Greedy rows in the
   // same group take the same host path, so a row's result never depends on
   // which other requests share its forward.
-  std::vector<float> host(static_cast<size_t>(nseq) * kVocab);
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(host.data(), im.logits,
-                                        host.size() * sizeof(float),
-                                        cudaMemcpyDeviceToHost, st));
+  float* host = im.ensure_host_logits();
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+      host, im.logits, static_cast<size_t>(nseq) * kVocab * sizeof(float),
+      cudaMemcpyDeviceToHost, st));
   UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
   for (int i = 0; i < nseq; ++i)
     out[static_cast<size_t>(i)] =
-        sample_token(host.data() + static_cast<size_t>(i) * kVocab, kVocab,
+        sample_token(host + static_cast<size_t>(i) * kVocab, kVocab,
                      jobs[i]->req.sampling, jobs[i]->rng);
   return out;
 }
@@ -1160,8 +1332,7 @@ void prefill_group(Engine::Impl& im,
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, all_ids.data(),
                                           static_cast<size_t>(rows) * sizeof(int),
                                           cudaMemcpyHostToDevice, st));
-    index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
-                     im.hidden, rows, kHidden, st);
+    index_embeddings(im.embed_w, im.d_ids, im.hidden, rows, kHidden, st);
     for (int s = 0; s < n; ++s) {
       const int i = (*job_index)[s];
       if (n_img[i] <= 0) continue;
@@ -1188,7 +1359,7 @@ void prefill_group(Engine::Impl& im,
       // rope window rather than the positions inside it.
       const int i = (*job_index)[s];
       std::vector<Bf16> c, s2;
-      build_text_rope(pos[i], sp.hist[s], sp.len[s], &c, &s2);
+      build_text_rope(im.rope_inv, pos[i], sp.hist[s], sp.len[s], &c, &s2);
       cos.insert(cos.end(), c.begin(), c.end());
       sin.insert(sin.end(), s2.begin(), s2.end());
     }
@@ -1276,40 +1447,31 @@ void step_decode(Engine::Impl& im,
   cudaStream_t st = im.stream;
   const int m = static_cast<int>(jobs.size());
   SeqSpans sp{};
-  std::vector<int> ids(static_cast<size_t>(m));
-  std::vector<int> logit_rows(static_cast<size_t>(m));
-  std::vector<Bf16> cos, sin;
-  cos.reserve(static_cast<size_t>(m) * kRotaryDim);
-  sin.reserve(static_cast<size_t>(m) * kRotaryDim);
+  int logit_rows[kMaxBatch];
   for (int i = 0; i < m; ++i) {
     const BatchJob& job = *jobs[i];
     sp.off[i] = i;
     sp.len[i] = 1;
     sp.hist[i] = job.seq_len;
     sp.slot[i] = job.slot;
-    ids[i] = job.next_token;
+    im.h_ids[i] = job.next_token;
     logit_rows[i] = i;
-    const MRoPEPositions one{{job.next_pos}, {job.next_pos}, {job.next_pos},
-                             job.next_pos + 1};
-    std::vector<Bf16> c, s2;
-    build_text_rope(one, 0, 1, &c, &s2);
-    cos.insert(cos.end(), c.begin(), c.end());
-    sin.insert(sin.end(), s2.begin(), s2.end());
+    fill_text_rope_row(im.rope_inv, job.next_pos, job.next_pos, job.next_pos,
+                       im.h_mrope_cos + static_cast<size_t>(i) * kRotaryDim,
+                       im.h_mrope_sin + static_cast<size_t>(i) * kRotaryDim);
   }
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, ids.data(),
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, im.h_ids,
                                         static_cast<size_t>(m) * sizeof(int),
                                         cudaMemcpyHostToDevice, st));
-  index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
-                   im.hidden, m, kHidden, st);
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(),
-                                        cos.size() * sizeof(Bf16),
+  index_embeddings(im.embed_w, im.d_ids, im.hidden, m, kHidden, st);
+  const size_t rope_bytes = static_cast<size_t>(m) * kRotaryDim * sizeof(Bf16);
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, im.h_mrope_cos, rope_bytes,
                                         cudaMemcpyHostToDevice, st));
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, sin.data(),
-                                        sin.size() * sizeof(Bf16),
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, im.h_mrope_sin, rope_bytes,
                                         cudaMemcpyHostToDevice, st));
   const auto t0 = Clock::now();
   const std::vector<int> tokens =
-      batch_forward(im, sp, m, m, /*use_gemv=*/true, logit_rows.data(), jobs);
+      batch_forward(im, sp, m, m, /*use_gemv=*/true, logit_rows, jobs);
   // One line per decode step: the batch size and the wall time of the forward.
   std::fprintf(stderr, "qwen38 batch step m=%d rows=%d ms=%.2f\n", m, m,
                ms_since(t0));
@@ -1537,14 +1699,20 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
 
   std::mt19937_64 rng(sampling.has_seed ? sampling.seed : std::random_device{}());
   auto pick_token = [&]() -> int {
-    if (!(sampling.temperature > 0.0f))
-      return argmax_f32(im.logits, kVocab, im.argmax_scratch, st);
-    std::vector<float> host(static_cast<size_t>(kVocab));
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(host.data(), im.logits,
-                                          host.size() * sizeof(float),
+    if (!(sampling.temperature > 0.0f)) {
+      argmax_rows(im.logits, 1, kVocab, im.argmax_scratch, st);
+      UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.h_argmax, im.argmax_scratch,
+                                            sizeof(int), cudaMemcpyDeviceToHost,
+                                            st));
+      UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
+      return im.h_argmax[0];
+    }
+    float* host = im.ensure_host_logits();
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(host, im.logits,
+                                          static_cast<size_t>(kVocab) * sizeof(float),
                                           cudaMemcpyDeviceToHost, st));
     UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
-    return sample_token(host.data(), kVocab, sampling, rng);
+    return sample_token(host, kVocab, sampling, rng);
   };
 
   GenResult result;
@@ -1623,8 +1791,7 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, prompt_ids.data() + begin,
                                           m * sizeof(int), cudaMemcpyHostToDevice,
                                           st));
-    index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
-                     im.hidden, m, kHidden, st);
+    index_embeddings(im.embed_w, im.d_ids, im.hidden, m, kHidden, st);
     if (need_vision) {
       size_t pool_offset = 0;
       for (const VisionRun& run : vis_runs) {
@@ -1638,7 +1805,7 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
         pool_offset += static_cast<size_t>(run.length);
       }
     }
-    build_text_rope(pos, begin, m, &cos, &sin);
+    build_text_rope(im.rope_inv, pos, begin, m, &cos, &sin);
     const size_t rope_bytes = cos.size() * sizeof(Bf16);
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(), rope_bytes,
                                           cudaMemcpyHostToDevice, st));
@@ -1654,9 +1821,18 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
                          "\nnext_pos=" + std::to_string(pos.next) + "\n";
       write_file(dump_dir, "meta.txt", meta.data(), meta.size());
     }
+    const bool fuse_norms = dump_dir.empty();
+    if (fuse_norms) {
+      rms_norm_zero_centered(im.hidden, im.layers[0].input_norm, im.norm, m,
+                             kHidden, kEps, st);
+    }
     for (int l = 0; l < kLayers; ++l) {
       check_abort("prefill");
-      run_layer(im, l, m, begin, dump_dir);
+      const Bf16* next_w =
+          (l + 1 < kLayers) ? im.layers[l + 1].input_norm : im.final_norm_w;
+      const bool last_row_only = (l + 1 == kLayers);
+      run_layer(im, l, m, begin, fuse_norms, next_w, im.norm, last_row_only,
+                dump_dir);
     }
   };
 
@@ -1680,12 +1856,12 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   if (!split && can_snapshot)
     snapshot_prefix(im, /*slot=*/0, prompt_ids, media_hash, pos.next, st);
 
-  rms_norm_zero_centered(im.hidden + static_cast<size_t>(P - last_begin - 1) * kHidden,
-                         im.bf("model.language_model.norm.weight"), im.norm, 1,
-                         kHidden, kEps, st);
-  gemv_bf16_f32(im.bf("lm_head.weight"), im.norm, im.logits, kVocab, kHidden, st);
+  if (!dump_dir.empty()) {
+    rms_norm_zero_centered(im.hidden + static_cast<size_t>(P - last_begin - 1) * kHidden,
+                           im.final_norm_w, im.norm, 1, kHidden, kEps, st);
+  }
+  gemv_bf16_f32(im.lm_head_w, im.norm, im.logits, kVocab, kHidden, st);
   int next = pick_token();
-  UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
   result.prefill_ms = ms_since(t_prefill);
   if (!dump_dir.empty())
     dump_dev(im, dump_dir, "logits0.f32", im.logits,
@@ -1700,30 +1876,32 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     if (on_token) on_token(next);
     if (static_cast<int>(result.ids.size()) >= max_new_tokens) break;
     check_abort("decode");
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, &next, sizeof(int),
+    im.h_ids[0] = next;
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, im.h_ids, sizeof(int),
                                           cudaMemcpyHostToDevice, st));
-    index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
-                     im.hidden, 1, kHidden, st);
-    const MRoPEPositions one_pos{{next_pos}, {next_pos}, {next_pos},
-                                 next_pos + 1};
-    build_text_rope(one_pos, 0, 1, &cos, &sin);
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(),
-                                          cos.size() * sizeof(Bf16),
-                                          cudaMemcpyHostToDevice, st));
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, sin.data(),
-                                          sin.size() * sizeof(Bf16),
-                                          cudaMemcpyHostToDevice, st));
-    for (int l = 0; l < kLayers; ++l) run_layer(im, l, 1, seq_len, "");
-    rms_norm_zero_centered(im.hidden, im.bf("model.language_model.norm.weight"),
-                           im.norm, 1, kHidden, kEps, st);
-    gemv_bf16_f32(im.bf("lm_head.weight"), im.norm, im.logits, kVocab, kHidden, st);
+    index_embeddings(im.embed_w, im.d_ids, im.hidden, 1, kHidden, st);
+    fill_text_rope_row(im.rope_inv, next_pos, next_pos, next_pos,
+                       im.h_mrope_cos, im.h_mrope_sin);
+    const size_t rope_bytes = static_cast<size_t>(kRotaryDim) * sizeof(Bf16);
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, im.h_mrope_cos,
+                                          rope_bytes, cudaMemcpyHostToDevice, st));
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, im.h_mrope_sin,
+                                          rope_bytes, cudaMemcpyHostToDevice, st));
+    rms_norm_zero_centered(im.hidden, im.layers[0].input_norm, im.norm, 1,
+                           kHidden, kEps, st);
+    for (int l = 0; l < kLayers; ++l) {
+      const Bf16* next_w =
+          (l + 1 < kLayers) ? im.layers[l + 1].input_norm : im.final_norm_w;
+      run_layer(im, l, 1, seq_len, /*pre_normed=*/true, next_w, im.norm,
+                /*last_row_only_norm=*/false, "");
+    }
+    gemv_bf16_f32(im.lm_head_w, im.norm, im.logits, kVocab, kHidden, st);
     next = pick_token();
     ++seq_len;
     ++next_pos;
     ++decode_forwards;
   }
   result.stopped_by_eos = (max_new_tokens > 0) && is_eos(next);
-  UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
   result.decode_ms = ms_since(t_decode);
   result.decode_steps = static_cast<int>(decode_forwards);
 
