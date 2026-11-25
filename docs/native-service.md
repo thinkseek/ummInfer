@@ -410,7 +410,17 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
-- Wave 30 Part A Explicit Anchor Badges & Digest Tooltips in Web UI & macOS `ummmlx` (`5493d85`):
+- Wave 30 Explicit Anchor UI (`5493d85`) & Frozen 3-Round Multimodal Stability Gate Orchestrator (`a30e32a`):
+  - **Frozen 3-Round Multimodal Stability Orchestrator & SM90 Config**
+    (`a30e32a`, `tools/multimodal_stability.py`,
+    `benchmarks/multimodal-stability-sm90.json`,
+    `tests/multimodal_stability_test.py`): harvested accepted Task #29 adding
+    1-warmup + 3-fresh-process measured round orchestration, full source/binary/
+    weight/data/topology hash pinning, raw-SSE metric re-derivation, blocking
+    10% per-task median & p95 gates, and recursive `SHA256SUMS` sealing
+    (`18/18` offline contract tests + `multimodal_benchmark_test.py` +
+    `multimodal_coverage_audit_test.py` PASS; live 3-round same-binary run
+    remains `NOT_RUN` pending same-binary baseline).
   - **Web UI `/web/index.html` & macOS `ummmlx` Explicit `source=slot-N` UI**
     (`5493d85`): exposed Wave 29 `anchor_explicit` & `anchor_sha256` across
     `visual_slot`, `artifact`, `leg_error`, and `complete.legs` with

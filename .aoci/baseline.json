@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-25T23:26:56Z",
+  "updated_at": "2026-11-25T23:52:15Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "00df1f526f06d877fe945903adc83e1b6e1abdbafce4c7a50793c761b16a3c54",
-      "size": 222559,
-      "normalized_sha256": "00df1f526f06d877fe945903adc83e1b6e1abdbafce4c7a50793c761b16a3c54"
+      "sha256": "710a5dbff2b4f357a0190c986f3831ec5035b7f30c829e6e64eb3c8df855c02d",
+      "size": 223588,
+      "normalized_sha256": "710a5dbff2b4f357a0190c986f3831ec5035b7f30c829e6e64eb3c8df855c02d"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -152,6 +152,12 @@
       "sha256": "d9c71c00c7e09a1481d81c0df4f415b55add7176915d9f6837c5030478ba10b9",
       "size": 1065,
       "normalized_sha256": "d9c71c00c7e09a1481d81c0df4f415b55add7176915d9f6837c5030478ba10b9"
+    },
+    "benchmarks/multimodal-stability-sm90.json": {
+      "role": "index",
+      "sha256": "fcfa46a2812270457db33e199608829a6eec2f7c67b76cb909935acdd53daf97",
+      "size": 3573,
+      "normalized_sha256": "fcfa46a2812270457db33e199608829a6eec2f7c67b76cb909935acdd53daf97"
     },
     "benchmarks/multimodal_data.py": {
       "role": "index",
@@ -437,9 +443,9 @@
     },
     "docs/benchmark-system.md": {
       "role": "index",
-      "sha256": "4d703424b4724c827fe5f38484f1299febd9fd66a30eeaa3887fe318c135bc36",
-      "size": 17648,
-      "normalized_sha256": "4d703424b4724c827fe5f38484f1299febd9fd66a30eeaa3887fe318c135bc36"
+      "sha256": "7773d3556ccff5e77fd3cd23ed8b8aa0bbf263d8836e06e2c3c826a0abe550b8",
+      "size": 25793,
+      "normalized_sha256": "7773d3556ccff5e77fd3cd23ed8b8aa0bbf263d8836e06e2c3c826a0abe550b8"
     },
     "docs/cases/0001-end-to-end-native.md": {
       "role": "index",
@@ -485,9 +491,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "306b7ffd53db8cd8fb1df633678217d819f76ee257d74f6e7de58c7cb1a4774c",
-      "size": 127704,
-      "normalized_sha256": "306b7ffd53db8cd8fb1df633678217d819f76ee257d74f6e7de58c7cb1a4774c"
+      "sha256": "02aaccf9c04d921865956d843c9820de6a08583f65c480a1ed230e68dfb515a1",
+      "size": 128279,
+      "normalized_sha256": "02aaccf9c04d921865956d843c9820de6a08583f65c480a1ed230e68dfb515a1"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -545,9 +551,9 @@
     },
     "docs/multimodal-benchmark-results.md": {
       "role": "index",
-      "sha256": "713550e2af8610a095be709af829c3ca8adedd16e7e9d6008502d05ab1adefb0",
-      "size": 92820,
-      "normalized_sha256": "713550e2af8610a095be709af829c3ca8adedd16e7e9d6008502d05ab1adefb0"
+      "sha256": "18e50d0d1319ed84e0a9e9e0116afedd5f0983f1245a6948ebc4b0a60208fd44",
+      "size": 96415,
+      "normalized_sha256": "18e50d0d1319ed84e0a9e9e0116afedd5f0983f1245a6948ebc4b0a60208fd44"
     },
     "docs/narrative-routing-ablation.md": {
       "role": "index",
@@ -557,9 +563,9 @@
     },
     "docs/native-service.md": {
       "role": "index",
-      "sha256": "211dfceb1b2315486cbab0cbf6c40578203879b7c8a318da32b1891f9814b548",
-      "size": 44941,
-      "normalized_sha256": "211dfceb1b2315486cbab0cbf6c40578203879b7c8a318da32b1891f9814b548"
+      "sha256": "15d80738e947425d968e58cec198ff6e5eb8ee892f4d0af49cd12512a60afaf0",
+      "size": 45630,
+      "normalized_sha256": "15d80738e947425d968e58cec198ff6e5eb8ee892f4d0af49cd12512a60afaf0"
     },
     "docs/objective-mix-ablation.md": {
       "role": "index",
@@ -2539,21 +2545,27 @@
     },
     "tests/multimodal_benchmark.py": {
       "role": "observe",
-      "sha256": "f511e7f63bf996f01e6bfcff9cda033e7dc3ae4300e1903c33f675a62f8eb848",
-      "size": 67593,
-      "normalized_sha256": "f511e7f63bf996f01e6bfcff9cda033e7dc3ae4300e1903c33f675a62f8eb848"
+      "sha256": "934f3530f96c8f7736afb309c4e6a29ab0b66c98009c4496384e020664fa9c86",
+      "size": 68349,
+      "normalized_sha256": "934f3530f96c8f7736afb309c4e6a29ab0b66c98009c4496384e020664fa9c86"
     },
     "tests/multimodal_benchmark_test.py": {
       "role": "index",
-      "sha256": "f117190be4edf489c52aac99dc6fe0c8cdee13f893e6004933b25460ef10d876",
-      "size": 19685,
-      "normalized_sha256": "f117190be4edf489c52aac99dc6fe0c8cdee13f893e6004933b25460ef10d876"
+      "sha256": "422f688f886b34a679b0f1cd08aae3dba77ff11fa1bd530df8b193c5d831032a",
+      "size": 20615,
+      "normalized_sha256": "422f688f886b34a679b0f1cd08aae3dba77ff11fa1bd530df8b193c5d831032a"
     },
     "tests/multimodal_coverage_audit_test.py": {
       "role": "observe",
       "sha256": "6e782221f8abbdb2eeecf07ff618711ddf2d764de189a60c6564ece4c6280efd",
       "size": 5547,
       "normalized_sha256": "6e782221f8abbdb2eeecf07ff618711ddf2d764de189a60c6564ece4c6280efd"
+    },
+    "tests/multimodal_stability_test.py": {
+      "role": "observe",
+      "sha256": "9cba865c0740c412568159311223b7254bd11523cefeef8ccaca7005a58d3e6b",
+      "size": 25587,
+      "normalized_sha256": "9cba865c0740c412568159311223b7254bd11523cefeef8ccaca7005a58d3e6b"
     },
     "tests/narrative_live_e2e.py": {
       "role": "observe",
@@ -2710,6 +2722,12 @@
       "sha256": "79b47f07036e25ba5d82a83ec7e23acd7583603558fa2d0728353d3a9a541a16",
       "size": 27105,
       "normalized_sha256": "79b47f07036e25ba5d82a83ec7e23acd7583603558fa2d0728353d3a9a541a16"
+    },
+    "tools/multimodal_stability.py": {
+      "role": "index",
+      "sha256": "6126b76fa8e409d24c3cc5425b55845547ef5cbc9366931b7182d6e57227d676",
+      "size": 83807,
+      "normalized_sha256": "6126b76fa8e409d24c3cc5425b55845547ef5cbc9366931b7182d6e57227d676"
     },
     "tools/publish-release.sh": {
       "role": "index",
