@@ -101,6 +101,7 @@ final class ChatModel: ObservableObject {
     @Published var videoFramesText = "29"
     @Published var videoStepsText = "25"
     @Published var videoGuidanceText = "5.0"
+    @Published var fastVideoMode = false
     @Published var attachedImageURL: URL?
     @Published var attachedVideoURL: URL?
     @Published var partialTranscript = ""
@@ -320,6 +321,9 @@ final class ChatModel: ObservableObject {
                 vid.guidanceScale = cfg
             }
             options.video = vid
+            if fastVideoMode {
+                options.videoTeaCacheThresh = 0.05
+            }
         }
         // Narrative needs a visual modality on the wire, or the server rejects
         // the request. Without one the toggle is ignored instead of failing.
@@ -584,6 +588,7 @@ final class ChatModel: ObservableObject {
                value >= 0 { guidance = value }
         }
         let seed = Int(seedText.trimmingCharacters(in: .whitespaces))
+        let teaCacheThresh: Double? = (toKind == "video" && fastVideoMode) ? 0.05 : nil
         let prompt = slot.prompt
         let base = endpoint
         // A video swap animates the slot's existing image as the first frame.
@@ -599,7 +604,8 @@ final class ChatModel: ObservableObject {
                     base: base, kind: toKind, prompt: prompt, size: size,
                     steps: steps, numFrames: numFrames,
                     guidanceScale: guidance, seed: seed,
-                    imageDataURL: imageDataURL)
+                    imageDataURL: imageDataURL,
+                    teaCacheThresh: teaCacheThresh)
                 self.completeSwap(turnID: turnID, slotID: slotID,
                                   toKind: toKind, token: token, data: data)
             } catch {

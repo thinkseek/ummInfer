@@ -11,6 +11,7 @@
 #include <chrono>
 #include <functional>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -201,6 +202,9 @@ struct VideoWork {
   float guidance_scale = 5.0f;
   uint64_t seed = 0;
   bool has_seed = false;
+  // Optional per-request Wan2.2 TeaCache threshold in [0.0, 0.25]. When unset,
+  // the video stage falls back to its configured engine default (0.0 lossless).
+  std::optional<float> teacache_thresh;
   // Optional encoded image for Wan2.2-TI2V-5B first-frame conditioning.
   // A data: URL is base64-decoded; binary bytes are passed through.
   std::string init_image_bytes;

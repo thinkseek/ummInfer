@@ -621,6 +621,16 @@ VideoWork parse_video_work(const Value& work, int default_width,
     out.has_seed = true;
   }
 
+  if (const Value* teacache = inputs.find("teacache_thresh");
+      teacache != nullptr && !teacache->is_nil()) {
+    if ((!teacache->is_float() && !teacache->is_int()) ||
+        !std::isfinite(teacache->as_double()) ||
+        teacache->as_double() < 0.0 || teacache->as_double() > 0.25) {
+      bad("video.teacache_thresh must be a finite number in [0.0, 0.25]");
+    }
+    out.teacache_thresh = static_cast<float>(teacache->as_double());
+  }
+
   // Wan2.2-TI2V-5B first-frame image. A string must be a data: URL; binary
   // values are treated as raw PNG/JPEG bytes. The HTTP boundary already caps
   // decoded payloads at 16 MiB, so the stage rejects anything larger.

@@ -56,6 +56,8 @@ struct VideoOptions: Equatable {
     /// First-frame data URL for native image-to-video animation (Wan2.2-TI2V).
     var imageDataURL: String?
     var outputFormat = "mp4"
+    /// Optional per-request Wan2.2 TeaCache threshold in [0.0, 0.25].
+    var teaCacheThresh: Double? = nil
 }
 
 /// Interleaved narrative mode: the server's VLM director inserts visual beats
@@ -80,6 +82,8 @@ struct ChatStreamOptions: Equatable {
     var image: ImageOptions?
     var audio: AudioOptions?
     var video: VideoOptions?
+    /// Optional per-request Wan2.2 TeaCache threshold in [0.0, 0.25] (e.g. 0.05 for Fast Video).
+    var videoTeaCacheThresh: Double? = nil
     var narrative: NarrativeOptions?
     /// Unified servers hold multi-turn context themselves: the wire carries one
     /// user message plus session_history=true. Set by the capability fallback
@@ -401,6 +405,9 @@ final class ChatClient {
             if let imageDataURL = video.imageDataURL, !imageDataURL.isEmpty {
                 object["image"] = imageDataURL
             }
+            if let teaCacheThresh = options.videoTeaCacheThresh ?? video.teaCacheThresh {
+                object["teacache_thresh"] = teaCacheThresh
+            }
             body["video"] = object
         }
         if let narrative = options.narrative {
@@ -471,7 +478,8 @@ final class ChatClient {
                       size: String? = nil, steps: Int? = nil,
                       numFrames: Int? = nil, guidanceScale: Double? = nil,
                       seed: Int? = nil,
-                      imageDataURL: String? = nil) async throws -> Data {
+                      imageDataURL: String? = nil,
+                      teaCacheThresh: Double? = nil) async throws -> Data {
         guard kind == "image" || kind == "video" else {
             throw ChatClientError.invalidEndpoint(
                 "A visual render kind must be image or video.")
@@ -490,6 +498,7 @@ final class ChatClient {
         if let guidanceScale { body["guidance_scale"] = guidanceScale }
         if let seed { body["seed"] = seed }
         if let imageDataURL, !imageDataURL.isEmpty { body["image"] = imageDataURL }
+        if kind == "video", let teaCacheThresh { body["teacache_thresh"] = teaCacheThresh }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)

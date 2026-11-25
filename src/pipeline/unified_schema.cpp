@@ -2,6 +2,7 @@
 #include "pipeline/unified_schema.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <utility>
 
@@ -325,6 +326,15 @@ ValidatedSubmission validate_submission(const Value& inputs,
   if (const Value* options = out.original_inputs.find("video_options");
       options != nullptr) {
     if (!options->is_map()) throw ProtocolError("video_options must be a map");
+    if (const Value* tc = options->find("teacache_thresh");
+        tc != nullptr && !tc->is_nil()) {
+      if ((!tc->is_float() && !tc->is_int()) ||
+          !std::isfinite(tc->as_double()) ||
+          tc->as_double() < 0.0 || tc->as_double() > 0.25) {
+        throw ProtocolError(
+            "video_options.teacache_thresh must be a finite number in [0.0, 0.25]");
+      }
+    }
     out.video_options = options->as_map();
   }
   if (out.image_output && config.image_stage.empty()) {

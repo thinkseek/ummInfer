@@ -188,6 +188,10 @@ struct RootView: View {
                     Toggle("Video", isOn: $model.videoOutput)
                         .toggleStyle(.checkbox)
                         .accessibilityIdentifier("video-output")
+                    Toggle("Fast Video", isOn: $model.fastVideoMode)
+                        .toggleStyle(.checkbox)
+                        .help("Enable Wan2.2 TeaCache (0.05) for sub-10s video generation")
+                        .accessibilityIdentifier("fastVideo")
                 }
                 .padding(.bottom, 4)
                 Button(showOptions ? "Hide Options" : "Options") {

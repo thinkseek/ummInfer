@@ -10255,6 +10255,236 @@ void test_public_http_multiturn_multimodal() {
              "multi-turn HTTP requests stayed in flight");
 }
 
+// Per-request Wan2.2 TeaCache speed control (`video.teacache_thresh` in
+// [0.0, 0.25], opt-in and omitted by default):
+//   - chat completions (normal video leg + narrative visual_slot video)
+//   - /v1/visual/render (kind=video accepts [0.0, 0.25]; kind=image rejects)
+//   - HTTP 400 on out-of-range, string, and boolean values
+//   - direct UnifiedEngine schema validation rejects invalid values
+void test_public_http_video_teacache_thresh() {
+  Harness h("teacache");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "teacache server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string base =
+      "http://127.0.0.1:" + std::to_string(api.bound_port());
+
+  auto post_json = [&](const std::string& path, const nlohmann::json& body) {
+    test_http::HttpRequest req;
+    req.url = base + path;
+    req.body = body.dump();
+    req.headers.emplace("Content-Type", "application/json");
+    req.timeout = client::Milliseconds{8000};
+    try {
+      return test_http::perform(req);
+    } catch (const client::Error& err) {
+      test_http::HttpResponse out;
+      out.status = err.status();
+      out.body = err.what();
+      return out;
+    }
+  };
+
+  // 1. Omitted video.teacache_thresh must NOT send or override on chat.
+  {
+    nlohmann::json body = {
+        {"model", "qwen3-unified"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"}, {"content", "waves"}}})},
+        {"stream", false},
+        {"modalities", nlohmann::json::array({"text", "video"})},
+        {"video", {{"prompt", "ocean waves"}, {"size", "704x480"}}}};
+    auto fut = std::async(std::launch::async, [&] {
+      return post_json("/v1/chat/completions", body);
+    });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "teacache default chat did not reach VLM");
+    if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("ok"));
+    auto vid = h.next_submit(h.video_recv);
+    check(vid.has_value(), "teacache default chat did not reach video stage");
+    if (vid) {
+      StagePayload p = StagePayload::from_value(vid->data);
+      check(p.request.inputs.find("teacache_thresh") == nullptr,
+            "omitted video.teacache_thresh must not be injected");
+      h.complete(vid->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4DEFAULT"));
+    }
+    check(fut.get().status == 200, "teacache default chat must return 200");
+  }
+
+  // 2. Valid video.teacache_thresh values (0.0, 0.05, 0.25) forward intact.
+  for (double thresh : {0.0, 0.05, 0.25}) {
+    nlohmann::json body = {
+        {"model", "qwen3-unified"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"}, {"content", "fast"}}})},
+        {"stream", false},
+        {"modalities", nlohmann::json::array({"text", "video"})},
+        {"video",
+         {{"prompt", "fast ocean waves"},
+          {"size", "704x480"},
+          {"teacache_thresh", thresh}}}};
+    auto fut = std::async(std::launch::async, [&] {
+      return post_json("/v1/chat/completions", body);
+    });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "teacache chat did not reach VLM");
+    if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("ok"));
+    auto vid = h.next_submit(h.video_recv);
+    check(vid.has_value(), "teacache chat did not reach video stage");
+    if (vid) {
+      StagePayload p = StagePayload::from_value(vid->data);
+      const Value* tc = p.request.inputs.find("teacache_thresh");
+      check(tc != nullptr && (tc->is_float() || tc->is_int()) &&
+                std::fabs(tc->as_double() - thresh) < 1e-9,
+            "video.teacache_thresh did not forward exact value on chat");
+      h.complete(vid->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4FAST"));
+    }
+    check(fut.get().status == 200, "valid teacache chat must return 200");
+  }
+
+  // 3. Narrative visual_slot video dispatch forwards video.teacache_thresh.
+  {
+    nlohmann::json body = {
+        {"model", "qwen3-unified"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"}, {"content", "story"}}})},
+        {"stream", true},
+        {"modalities", nlohmann::json::array({"text", "video"})},
+        {"video", {{"size", "704x480"}, {"teacache_thresh", 0.05}}},
+        {"narrative",
+         {{"enabled", true}, {"visual_mode", "video"}, {"max_slots", 2}}}};
+    auto fut = std::async(std::launch::async, [&] {
+      return post_json("/v1/chat/completions", body);
+    });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "narrative teacache chat did not reach VLM");
+    if (vlm) {
+      const std::string reply = "Scene one.\n[[video: waves crashing on rocks]]\nDone.";
+      h.stream(vlm->request_id, "vlm", text_chunk(reply, false));
+      h.complete(vlm->request_id, "vlm", true, text_result(reply));
+    }
+    auto vid = h.next_submit(h.video_recv);
+    check(vid.has_value(), "narrative video slot did not reach video stage");
+    if (vid) {
+      StagePayload p = StagePayload::from_value(vid->data);
+      const Value* tc = p.request.inputs.find("teacache_thresh");
+      check(tc != nullptr && (tc->is_float() || tc->is_int()) &&
+                std::fabs(tc->as_double() - 0.05) < 1e-9,
+            "narrative video slot did not forward video.teacache_thresh");
+      h.complete(vid->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4SLOT"));
+    }
+    check(fut.get().status == 200, "narrative teacache SSE must return 200");
+  }
+
+  // 4. POST /v1/visual/render forwards omitted & valid teacache_thresh on video.
+  {
+    auto fut = std::async(std::launch::async, [&] {
+      return post_json("/v1/visual/render",
+                       {{"kind", "video"}, {"prompt", "calm lake"}});
+    });
+    auto vid = h.next_submit(h.video_recv);
+    check(vid.has_value(), "visual render default video did not reach stage");
+    if (vid) {
+      StagePayload p = StagePayload::from_value(vid->data);
+      check(p.request.inputs.find("teacache_thresh") == nullptr,
+            "visual render omitted teacache_thresh must not be injected");
+      h.complete(vid->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4VR0"));
+    }
+    check(fut.get().status == 200, "visual render default video must return 200");
+  }
+  for (double thresh : {0.0, 0.05, 0.25}) {
+    auto fut = std::async(std::launch::async, [&] {
+      return post_json("/v1/visual/render",
+                       {{"kind", "video"},
+                        {"prompt", "fast lake"},
+                        {"teacache_thresh", thresh}});
+    });
+    auto vid = h.next_submit(h.video_recv);
+    check(vid.has_value(), "visual render teacache video did not reach stage");
+    if (vid) {
+      StagePayload p = StagePayload::from_value(vid->data);
+      const Value* tc = p.request.inputs.find("teacache_thresh");
+      check(tc != nullptr && (tc->is_float() || tc->is_int()) &&
+                std::fabs(tc->as_double() - thresh) < 1e-9,
+            "visual render teacache_thresh did not forward exact value");
+      h.complete(vid->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4VR1"));
+    }
+    check(fut.get().status == 200, "visual render valid teacache must return 200");
+  }
+
+  // 5. Reject invalid video.teacache_thresh on both /v1/chat/completions and
+  //    /v1/visual/render with HTTP 400.
+  auto bad_chat = [&](nlohmann::json tc_val) {
+    nlohmann::json body = {
+        {"model", "qwen3-unified"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"}, {"content", "hi"}}})},
+        {"stream", false},
+        {"video", {{"prompt", "x"}, {"teacache_thresh", std::move(tc_val)}}}};
+    return post_json("/v1/chat/completions", body).status;
+  };
+  check(bad_chat(-0.01) == 400, "chat video.teacache_thresh=-0.01 must return 400");
+  check(bad_chat(0.30) == 400, "chat video.teacache_thresh=0.30 must return 400");
+  check(bad_chat("0.05") == 400, "chat video.teacache_thresh string must return 400");
+  check(bad_chat(true) == 400, "chat video.teacache_thresh bool must return 400");
+
+  auto bad_vr = [&](nlohmann::json tc_val) {
+    return post_json("/v1/visual/render",
+                     {{"kind", "video"},
+                      {"prompt", "x"},
+                      {"teacache_thresh", std::move(tc_val)}})
+        .status;
+  };
+  check(bad_vr(-0.01) == 400, "visual render teacache_thresh=-0.01 must return 400");
+  check(bad_vr(0.30) == 400, "visual render teacache_thresh=0.30 must return 400");
+  check(bad_vr("0.05") == 400, "visual render teacache_thresh string must return 400");
+  check(bad_vr(true) == 400, "visual render teacache_thresh bool must return 400");
+  check(post_json("/v1/visual/render",
+                  {{"kind", "image"}, {"prompt", "x"}, {"teacache_thresh", 0.05}})
+                .status == 400,
+        "visual render teacache_thresh on kind image must return 400");
+
+  // 6. Direct UnifiedEngine schema validation rejects invalid teacache_thresh.
+  for (Value bad_val : {Value(-0.01), Value(0.30), Value("0.05"), Value(true)}) {
+    StagePayload payload;
+    Value::Map inputs;
+    Value::Map msg;
+    msg["role"] = Value("user");
+    msg["content"] = Value("hi");
+    inputs["messages"] = Value(Value::Array{Value(std::move(msg))});
+    inputs["output_modalities"] = Value(Value::Array{Value("video")});
+    Value::Map vopts;
+    vopts["teacache_thresh"] = std::move(bad_val);
+    inputs["video_options"] = Value(std::move(vopts));
+    payload.request.inputs = Value(std::move(inputs));
+    bool rejected = false;
+    try {
+      (void)engine.submit(std::move(payload));
+    } catch (const ProtocolError&) {
+      rejected = true;
+    }
+    check(rejected, "UnifiedEngine must reject invalid video_options.teacache_thresh");
+  }
+
+  api.stop();
+  server_thread.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "teacache HTTP requests stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -10380,5 +10610,6 @@ int main() {
   RUN(test_upstream_media_proxy_routes());
   RUN(test_unified_metrics_cancel_race_and_release_gauge());
   RUN(test_public_http_wave7_media_passthrough_and_tts_chunk_meta());
+  RUN(test_public_http_video_teacache_thresh());
   return g_failures == 0 ? 0 : 1;
 }

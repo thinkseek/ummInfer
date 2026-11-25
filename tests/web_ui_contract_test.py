@@ -52,8 +52,11 @@ def check_markup(html):
                 'id="voiceToggle"', 'id="voiceWave"', 'id="voiceStatus"',
                 'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
                 'id="realtimeStatus"', 'id="narrative"',
-                'id="visualMode"', 'id="maxSlots"', 'id="allowTextOnly"'):
+                'id="visualMode"', 'id="maxSlots"', 'id="allowTextOnly"',
+                'id="fastVideo"'):
         require(tag in html, f"missing element: {tag}")
+    require('<input type="checkbox" id="fastVideo">' in html,
+            "fastVideo checkbox must default to unchecked")
     used = set(re.findall(r"\$\('([^']+)'\)", html))
     declared = set(re.findall(r'id="([^"]+)"', html))
     missing = sorted(used - declared)
@@ -110,6 +113,18 @@ def check_hooks(script):
     require("config.num_frames" in script and "config.steps" in script
             and "config.guidance_scale" in script,
             "video fine-grained controls must be wired")
+    # Opt-in Fast video (Wan2.2 TeaCache 0.05): default unchecked, persisted in
+    # localStorage, disabled while running, forwarded on chat & visual/render.
+    require("localStorage.getItem('ummweb.fastVideo') === '1'" in script,
+            "fastVideo must default to unchecked unless persisted as '1'")
+    require("localStorage.setItem('ummweb.fastVideo'" in script,
+            "fastVideo must persist in localStorage")
+    require("if (ui.fastVideo.checked) config.teacache_thresh = 0.05;" in script,
+            "fastVideo must include teacache_thresh: 0.05 in chat body.video")
+    require("if (ui.fastVideo.checked) body.teacache_thresh = 0.05;" in script,
+            "fastVideo must include teacache_thresh: 0.05 in /visual/render video requests")
+    require("ui.fastVideo" in script.split("function setBusy(busy)", 1)[1].split("}", 1)[0],
+            "fastVideo must be disabled while running")
 
 
 def check_wave10(script):

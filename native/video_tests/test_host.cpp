@@ -831,16 +831,33 @@ void test_engine_contract_stub_and_cuda_gate() {
   override_params.teacache_thresh = 0.0f;
   check(configured.generate(override_params).teacache_thresh == 0.0f,
         "per-request teacache_thresh override applies");
+  // Subsequent request with unset teacache_thresh must still inherit engine
+  // default (proving engine-wide default was not mutated).
+  check(std::fabs(configured.generate(params).teacache_thresh - 0.15f) < 1e-6f,
+        "subsequent request restores engine default teacache_thresh");
 
-  bool bad_tc_rejected = false;
-  try {
-    GenerateParams bad_params = params;
-    bad_params.teacache_thresh = 1.5f;
-    (void)configured.generate(bad_params);
-  } catch (const std::invalid_argument&) {
-    bad_tc_rejected = true;
+  // Default 0.0f engine: per-request Fast Video (0.05f) override then lossless fallback.
+  check(stub.generate(params).teacache_thresh == 0.0f,
+        "default engine uses 0.0 lossless teacache_thresh");
+  GenerateParams fast_params = params;
+  fast_params.teacache_thresh = 0.05f;
+  check(std::fabs(stub.generate(fast_params).teacache_thresh - 0.05f) < 1e-6f,
+        "per-request 0.05 teacache_thresh overrides default 0.0 engine");
+  check(stub.generate(params).teacache_thresh == 0.0f,
+        "default 0.0 engine stays lossless on next request after override");
+
+  for (float bad_val :
+       {-0.01f, 1.5f, std::numeric_limits<float>::quiet_NaN()}) {
+    bool bad_tc_rejected = false;
+    try {
+      GenerateParams bad_params = params;
+      bad_params.teacache_thresh = bad_val;
+      (void)configured.generate(bad_params);
+    } catch (const std::invalid_argument&) {
+      bad_tc_rejected = true;
+    }
+    check(bad_tc_rejected, "invalid per-request teacache_thresh rejected");
   }
-  check(bad_tc_rejected, "out-of-range per-request teacache_thresh rejected");
 }
 
 // Reference values produced by Diffusers 0.43 UniPCMultistepScheduler loaded

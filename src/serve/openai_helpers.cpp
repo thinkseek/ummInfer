@@ -578,6 +578,16 @@ bool parse_video_options(const json& body, bool& enabled, Value::Map& out,
     }
     out["guidance_scale"] = Value(video["guidance_scale"].get<double>());
   }
+  if (video.contains("teacache_thresh") && !video["teacache_thresh"].is_null()) {
+    if (!video["teacache_thresh"].is_number() ||
+        !std::isfinite(video["teacache_thresh"].get<double>()) ||
+        video["teacache_thresh"].get<double>() < 0.0 ||
+        video["teacache_thresh"].get<double>() > 0.25) {
+      error = "video.teacache_thresh must be a finite number between 0.0 and 0.25";
+      return false;
+    }
+    out["teacache_thresh"] = Value(video["teacache_thresh"].get<double>());
+  }
   if (video.contains("seed") && !video["seed"].is_null()) {
     if (!video["seed"].is_number_integer()) {
       error = "video.seed must be an integer";
@@ -891,7 +901,7 @@ void OpenAIApi::Impl::handle_visual_render(const httplib::Request& req,
   }
   static const std::set<std::string> kAllowedFields = {
       "kind", "prompt", "size", "steps", "num_frames", "fps", "seconds",
-      "guidance_scale", "seed", "image"};
+      "guidance_scale", "seed", "image", "teacache_thresh"};
   for (auto it = body.begin(); it != body.end(); ++it) {
     if (!kAllowedFields.count(it.key())) {
       reject(400, "unsupported field: " + it.key(), "invalid_request");
@@ -953,7 +963,8 @@ void OpenAIApi::Impl::handle_visual_render(const httplib::Request& req,
   }
   if (image) {
     if (body.contains("num_frames") || body.contains("fps") ||
-        body.contains("seconds") || body.contains("guidance_scale")) {
+        body.contains("seconds") || body.contains("guidance_scale") ||
+        body.contains("teacache_thresh")) {
       reject(400, "video-only fields are not valid for kind image",
              "invalid_request");
       return;
@@ -977,6 +988,17 @@ void OpenAIApi::Impl::handle_visual_render(const httplib::Request& req,
         return;
       }
       inputs["guidance_scale"] = Value(value.get<double>());
+    }
+    if (body.contains("teacache_thresh") && !body["teacache_thresh"].is_null()) {
+      const json& value = body["teacache_thresh"];
+      if (!value.is_number() || !std::isfinite(value.get<double>()) ||
+          value.get<double>() < 0.0 || value.get<double>() > 0.25) {
+        reject(400,
+               "teacache_thresh must be a finite number between 0.0 and 0.25",
+               "invalid_request");
+        return;
+      }
+      inputs["teacache_thresh"] = Value(value.get<double>());
     }
   }
   if (body.contains("image") && !body["image"].is_null()) {

@@ -124,6 +124,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     params.guidance_scale = input.guidance_scale;
     params.seed = input.seed;
     params.step_delay_ms = step_delay_ms;
+    params.teacache_thresh = input.teacache_thresh;
     params.init_image_bytes = input.init_image_bytes;
 
     video::GenerateResult generated;

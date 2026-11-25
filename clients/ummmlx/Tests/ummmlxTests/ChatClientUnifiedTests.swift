@@ -902,4 +902,91 @@ final class ChatClientUnifiedTests: XCTestCase {
         XCTAssertEqual(VisualRenderProtocol.bodies().count, 1,
                        "a cached kind must not hit the network")
     }
+
+    @MainActor
+    func testFastVideoTeaCacheOptionOmittedByDefaultAndSentWhenOptedIn() async throws {
+        // Default ChatModel.fastVideoMode must be false (lossless 0.0 stage default).
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        XCTAssertFalse(model.fastVideoMode)
+
+        // Chat requestBody omits teacache_thresh when videoTeaCacheThresh is nil.
+        var defaultOptions = ChatStreamOptions()
+        defaultOptions.video = VideoOptions(size: "704x480")
+        let defaultBody = ChatClient.requestBody(
+            model: "m",
+            messages: [ChatMessage(role: "user", content: "waves")],
+            options: defaultOptions)
+        let defaultVideo = try XCTUnwrap(defaultBody["video"] as? [String: Any])
+        XCTAssertNil(defaultVideo["teacache_thresh"],
+                     "teacache_thresh must be omitted unless opted in")
+
+        // Chat requestBody includes teacache_thresh: 0.05 when videoTeaCacheThresh is set.
+        var fastOptions = ChatStreamOptions()
+        fastOptions.video = VideoOptions(size: "704x480")
+        fastOptions.videoTeaCacheThresh = 0.05
+        let fastBody = ChatClient.requestBody(
+            model: "m",
+            messages: [ChatMessage(role: "user", content: "waves")],
+            options: fastOptions)
+        let fastVideo = try XCTUnwrap(fastBody["video"] as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(fastVideo["teacache_thresh"] as? Double),
+                       0.05, accuracy: 1e-9)
+
+        // /v1/visual/render omits teacache_thresh when fastVideoMode == false,
+        // sends 0.05 when fastVideoMode == true on video swap, and never on image.
+        VisualRenderProtocol.reset()
+        let client = makeClient()
+        _ = try await client.renderVisual(
+            base: "http://10.1.2.11/v1", kind: "video", prompt: "calm sea",
+            size: "704x480")
+        _ = try await client.renderVisual(
+            base: "http://10.1.2.11/v1", kind: "video", prompt: "fast sea",
+            size: "704x480", teaCacheThresh: 0.05)
+        _ = try await client.renderVisual(
+            base: "http://10.1.2.11/v1", kind: "image", prompt: "still sea",
+            size: "512x512", teaCacheThresh: 0.05)
+        let vrBodies = VisualRenderProtocol.bodies()
+        XCTAssertEqual(vrBodies.count, 3)
+        let vrDefault = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: vrBodies[0]) as? [String: Any])
+        XCTAssertNil(vrDefault["teacache_thresh"])
+        let vrFast = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: vrBodies[1]) as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(vrFast["teacache_thresh"] as? Double),
+                       0.05, accuracy: 1e-9)
+        let vrImage = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: vrBodies[2]) as? [String: Any])
+        XCTAssertNil(vrImage["teacache_thresh"],
+                     "image render must never carry video-only teacache_thresh")
+
+        // End-to-end ChatModel swapVisualSlot honours fastVideoMode.
+        VisualRenderProtocol.reset()
+        model.endpoint = "http://10.1.2.11/v1"
+        model.model = "m"
+        model.imageOutput = true
+        model.narrativeMode = true
+        model.fastVideoMode = true
+        model.prompt = "story"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let turn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        model.swapVisualSlot(turnID: turn.id, slotID: "slot-0", toKind: "video")
+        for _ in 0..<200 {
+            let slot = model.turns
+                .first(where: { $0.id == turn.id })?.blocks
+                .compactMap(\.visualSlot)
+                .first(where: { $0.slotID == "slot-0" })
+            if slot?.videoArtifact != nil { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let swapBody = try XCTUnwrap(
+            try JSONSerialization.jsonObject(
+                with: try XCTUnwrap(VisualRenderProtocol.bodies().first))
+                as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(swapBody["teacache_thresh"] as? Double),
+                       0.05, accuracy: 1e-9)
+    }
 }

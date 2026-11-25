@@ -320,6 +320,7 @@
   </select></label>
   <label>Max slots<input id="maxSlots" type="number" min="1" max="4" value="3" style="width:64px"></label>
   <label class="check" title="In Narrative mode, allow pure-text responses for math, code, or factual prompts without redundant visuals"><input type="checkbox" id="allowTextOnly" checked> Smart text-only</label>
+  <label class="check" title="Enable Wan2.2 TeaCache (0.05) for sub-10s video generation"><input type="checkbox" id="fastVideo"> Fast video</label>
   <details id="advanced">
     <summary>Options</summary>
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;align-items:center;">
@@ -380,7 +381,7 @@ const ui = {
   pickAudio: $('pickAudio'), mic: $('mic'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
   narrative: $('narrative'), visualMode: $('visualMode'), maxSlots: $('maxSlots'),
-  allowTextOnly: $('allowTextOnly'),
+  allowTextOnly: $('allowTextOnly'), fastVideo: $('fastVideo'),
   voiceToggle: $('voiceToggle'), voiceWave: $('voiceWave'),
   voiceStatus: $('voiceStatus'), voiceMute: $('voiceMute'), voiceStop: $('voiceStop'),
   realtimeToggle: $('realtimeToggle'), realtimeStatus: $('realtimeStatus'),
@@ -431,6 +432,7 @@ ui.audio.checked = localStorage.getItem('ummweb.audio') === '1';
 ui.video.checked = localStorage.getItem('ummweb.video') === '1';
 ui.narrative.checked = localStorage.getItem('ummweb.narrative') !== '0';
 ui.allowTextOnly.checked = localStorage.getItem('ummweb.allowTextOnly') !== '0';
+ui.fastVideo.checked = localStorage.getItem('ummweb.fastVideo') === '1';
 const saveSettings = () => {
   for (const key of SETTINGS) localStorage.setItem('ummweb.' + key, ui[key].value);
   localStorage.setItem('ummweb.image', ui.image.checked ? '1' : '0');
@@ -438,6 +440,7 @@ const saveSettings = () => {
   localStorage.setItem('ummweb.video', ui.video.checked ? '1' : '0');
   localStorage.setItem('ummweb.narrative', ui.narrative.checked ? '1' : '0');
   localStorage.setItem('ummweb.allowTextOnly', ui.allowTextOnly.checked ? '1' : '0');
+  localStorage.setItem('ummweb.fastVideo', ui.fastVideo.checked ? '1' : '0');
 };
 
 function apiURL(base, suffix) {
@@ -1155,6 +1158,7 @@ async function renderSlot(slot, kind) {
       if (ui.videoGuidance.value.trim() !== '' && Number.isFinite(guidance) && guidance >= 0) {
         body.guidance_scale = guidance;
       }
+      if (ui.fastVideo.checked) body.teacache_thresh = 0.05;
       if (slot.imageDataURL) body.image = slot.imageDataURL;
     }
     const res = await fetch(apiURL(ui.endpoint.value, '/visual/render'), {
@@ -2031,7 +2035,7 @@ function setBusy(busy) {
     ui.temperature, ui.topP, ui.seed, ui.apiKey, ui.imageSize, ui.imageSteps,
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
-    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly]) {
+    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly, ui.fastVideo]) {
     control.disabled = busy;
   }
   syncNarrativeControls();
@@ -2042,6 +2046,7 @@ ui.narrative.addEventListener('change', () => {
   syncNarrativeControls();
 });
 ui.allowTextOnly.addEventListener('change', saveSettings);
+ui.fastVideo.addEventListener('change', saveSettings);
 syncNarrativeControls();
 
 async function imageConfig() {
@@ -2071,6 +2076,7 @@ function videoConfig() {
     const cfgVal = Number(ui.videoGuidance.value);
     if (Number.isFinite(cfgVal) && cfgVal >= 0) config.guidance_scale = cfgVal;
   }
+  if (ui.fastVideo.checked) config.teacache_thresh = 0.05;
   return config;
 }
 

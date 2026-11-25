@@ -460,6 +460,14 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     UniPCFlowMatchSolver solver;
     solver.reset(schedule);
 
+    struct TeaCacheRestoreGuard {
+      WanDit& dit;
+      float default_thresh;
+      ~TeaCacheRestoreGuard() {
+        dit.set_teacache_thresh(default_thresh);
+        dit.reset_teacache();
+      }
+    } teacache_restore_guard{wan_cuda_->dit, teacache_thresh_};
     wan_cuda_->dit.set_teacache_thresh(effective_teacache);
     wan_cuda_->dit.reset_teacache();
 

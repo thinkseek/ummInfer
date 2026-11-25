@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Host contract test for stage_common video wire parsing and artifact shaping.
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -32,10 +34,22 @@ void test_parse_video_work_valid() {
   check(w.seconds == 2 && w.fps == 16, "seconds and fps parsed");
   check(w.num_frames == 29, "num_frames aligned to 4*7+1=29");
   check(w.has_seed && w.seed == 20261122, "seed parsed");
+  check(!w.teacache_thresh.has_value(), "omitted teacache_thresh stays unset");
   check(w.output_format == "mp4", "output_format == mp4");
   check(w.init_image_bytes.size() == 8 &&
             w.init_image_bytes.compare(0, 4, "\x89PNG") == 0,
         "data URL image decoded to raw bytes");
+
+  for (double valid_tc : {0.0, 0.05, 0.25}) {
+    Value::Map tc_map;
+    tc_map["prompt"] = Value("fast waves");
+    tc_map["teacache_thresh"] = Value(valid_tc);
+    const stage::VideoWork tc_work =
+        stage::parse_video_work(Value(std::move(tc_map)));
+    check(tc_work.teacache_thresh.has_value() &&
+              std::fabs(*tc_work.teacache_thresh - static_cast<float>(valid_tc)) < 1e-6f,
+          "valid teacache_thresh parsed");
+  }
 
   Value::Map raw;
   raw["prompt"] = Value("ok");
@@ -91,6 +105,36 @@ void test_parse_video_work_rejects_invalid() {
     m["prompt"] = Value("ok");
     m["image"] = Value(static_cast<int64_t>(7));
     expect_protocol_error(std::move(m), "non-string image rejected");
+  }
+  {
+    Value::Map m;
+    m["prompt"] = Value("ok");
+    m["teacache_thresh"] = Value(-0.01);
+    expect_protocol_error(std::move(m), "negative teacache_thresh rejected");
+  }
+  {
+    Value::Map m;
+    m["prompt"] = Value("ok");
+    m["teacache_thresh"] = Value(0.26);
+    expect_protocol_error(std::move(m), "teacache_thresh > 0.25 rejected");
+  }
+  {
+    Value::Map m;
+    m["prompt"] = Value("ok");
+    m["teacache_thresh"] = Value(std::numeric_limits<double>::quiet_NaN());
+    expect_protocol_error(std::move(m), "NaN teacache_thresh rejected");
+  }
+  {
+    Value::Map m;
+    m["prompt"] = Value("ok");
+    m["teacache_thresh"] = Value("0.05");
+    expect_protocol_error(std::move(m), "string teacache_thresh rejected");
+  }
+  {
+    Value::Map m;
+    m["prompt"] = Value("ok");
+    m["teacache_thresh"] = Value(true);
+    expect_protocol_error(std::move(m), "bool teacache_thresh rejected");
   }
 }
 
