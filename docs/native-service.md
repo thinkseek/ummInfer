@@ -410,6 +410,20 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 24 live Wan2.2 DiT Fused-QKV (`+0 B` VRAM) & 30-Layer CUDA Graph (`7588455`):
+  - **GPU 6 `umm-native-stage-video`** (`7588455` contiguous `attn1_qkv_w`
+    packing in `bf16_weights_`, `ws_.ff` output reuse, fused
+    `qkv_split_bias_norm_rope_kernel`, and 2-slot LRU 30-layer DiT CUDA Graph
+    capture with preallocated 32 MiB `cublasSetWorkspace` and
+    `UMM_DIT_NO_GRAPH=1` opt-out, preserving `.wave23` backup): hot-swapped live
+    via supervisor respawn (`load_ms=11,771`, `0` restarts on GPUs 2–5).
+    Measured live on SM90 GPU 6:
+    - Bit-exact parity vs Wave 23 (`PSNR=inf`, `sha=e09287236a2867c1`).
+    - `704x480` 29f 15 steps: `8.78 s` lossless / `6.66 s` TeaCache `0.05`
+      (confirming BF16 Tensor-Core compute saturation at `M=5,280`).
+    - `480x320` 13f 10 steps lossless: **`1.72 s`** (`dit_ms=1,081`,
+      `vae_ms=421`).
+
 - Wave 23 live Persistent GPU-Resident Wan2.2 3D-VAE + Fused GPU RGB8 Decode (`776d153`):
   - **GPU 6 `umm-native-stage-video`** (`776d153` persistent `WanVae` preloaded
     decoder + pre-converted BF16/FP16 weights + persistent `cublasHandle_t` /
