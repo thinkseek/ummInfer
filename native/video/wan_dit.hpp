@@ -2,6 +2,7 @@
 // Wan2.2-TI2V-5B transformer configuration, layout helpers, and CUDA forward.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -78,11 +79,86 @@ struct WanTextEmbedCacheKey {
 // plus shape dimensions, used to key the cross-attention K/V cache across steps.
 uint64_t wan_hash_text_embeds(const float* data, int text_len, int text_dim);
 
+// Opt-in TeaCache (Timestep-Embedding-Aware Residual Caching) for Wan2.2 DiT.
+// Tracks conditional (branch 0) and unconditional (branch 1) trajectories
+// independently so CFG branches never mix residuals.
+inline constexpr int kWanTeaCacheBranches = 2;
+
+void wan_validate_teacache_thresh(float thresh);
+float wan_teacache_relative_l1(const float* cur, const float* prev,
+                               size_t count);
+float wan_teacache_rescale(float rel_l1);
+
+struct TeaCacheDecision {
+  bool use_cached_residual = false;
+  bool save_residual = false;
+  float rel_l1 = 0.0f;
+  float accumulated_rel_l1 = 0.0f;
+};
+
+struct WanDitTeaCacheHint {
+  int step_index = -1;
+  int total_steps = 0;
+  int branch = 0;  // 0 = conditional (or unguided), 1 = unconditional (CFG)
+};
+
+class TeaCacheController {
+ public:
+  TeaCacheController() = default;
+  explicit TeaCacheController(float threshold);
+
+  void set_threshold(float threshold);
+  float threshold() const { return threshold_; }
+  bool enabled() const { return threshold_ > 0.0f; }
+
+  // Clears per-branch cached history and hit/call telemetry while preserving
+  // the configured threshold.
+  void reset();
+
+  // Invalidates a single branch's cached residual (e.g., if a GPU forward
+  // aborts or throws before updating the residual buffer).
+  void invalidate_branch(int branch);
+
+  // Records a forward call when TeaCache is disabled (threshold == 0.0f) so
+  // telemetry reports accurate 0/N totals with zero GPU synchronization.
+  void record_disabled_call();
+
+  // Decides whether to skip all 30 transformer blocks and reuse the branch's
+  // cached residual, or run full blocks and refresh the residual.
+  TeaCacheDecision evaluate(int branch, int step_index, int total_steps,
+                            int frames, int height, int width,
+                            bool first_frame_zero_timestep,
+                            const float* cur_e0, size_t e0_len);
+
+  int hits() const { return hits_; }
+  int total_calls() const { return total_calls_; }
+
+ private:
+  struct BranchState {
+    bool has_prev_e0 = false;
+    bool has_residual = false;
+    int frames = 0;
+    int height = 0;
+    int width = 0;
+    bool first_frame_zero_timestep = false;
+    float accumulated_rel_l1 = 0.0f;
+    std::vector<float> prev_e0;
+  };
+
+  float threshold_ = 0.0f;
+  std::array<BranchState, kWanTeaCacheBranches> branches_{};
+  int hits_ = 0;
+  int total_calls_ = 0;
+};
+
+using TeaCacheState = TeaCacheController;
+
 struct WanDitStats {
   double load_ms = 0.0;
   double forward_ms = 0.0;
   size_t peak_vram_bytes = 0;
   size_t tensor_count = 0;
+  bool teacache_hit = false;
 };
 
 struct WanDitOutput {
@@ -99,6 +175,14 @@ class WanDit {
   WanDit(const WanDit&) = delete;
   WanDit& operator=(const WanDit&) = delete;
 
+  // Opt-in TeaCache threshold in [0.0, 1.0]. Default 0.0 disables caching
+  // completely (zero extra VRAM, zero extra sync, bit-identical uncached path).
+  void set_teacache_thresh(float thresh);
+  float teacache_thresh() const;
+  void reset_teacache();
+  int teacache_hits() const;
+  int teacache_total_calls() const;
+
   // latent is [1,48,F,H,W], context is [text_len,4096]. The result is [1,48,F,H,W].
   // With first_frame_zero_timestep the Wan2.2-TI2V-5B per-token timestep
   // conditioning applies: tokens of latent frame 0 use t=0 and every other
@@ -106,7 +190,8 @@ class WanDit {
   WanDitOutput forward(const float* latent_ncfhw, int frames, int height,
                        int width, float timestep, const float* context,
                        int text_len,
-                       bool first_frame_zero_timestep = false);
+                       bool first_frame_zero_timestep = false,
+                       WanDitTeaCacheHint teacache_hint = {});
 
  private:
   struct Impl;

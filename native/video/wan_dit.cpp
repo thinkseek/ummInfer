@@ -261,4 +261,163 @@ uint64_t wan_hash_text_embeds(const float* data, int text_len, int text_dim) {
   return h;
 }
 
+void wan_validate_teacache_thresh(float thresh) {
+  if (!std::isfinite(thresh) || thresh < 0.0f || thresh > 1.0f) {
+    throw std::invalid_argument(
+        "Wan TeaCache threshold must be finite and in [0.0, 1.0]");
+  }
+}
+
+float wan_teacache_relative_l1(const float* cur, const float* prev,
+                               size_t count) {
+  if (cur == nullptr || prev == nullptr || count == 0) {
+    throw std::invalid_argument(
+        "Wan TeaCache relative L1 requires non-empty buffers");
+  }
+  double diff_sum = 0.0;
+  double prev_sum = 0.0;
+  for (size_t i = 0; i < count; ++i) {
+    diff_sum +=
+        std::fabs(static_cast<double>(cur[i]) - static_cast<double>(prev[i]));
+    prev_sum += std::fabs(static_cast<double>(prev[i]));
+  }
+  const double denom = std::max(prev_sum, 1e-6);
+  const double ratio = diff_sum / denom;
+  if (!std::isfinite(ratio)) {
+    return std::numeric_limits<float>::infinity();
+  }
+  return static_cast<float>(ratio);
+}
+
+float wan_teacache_rescale(float rel_l1) {
+  if (!std::isfinite(rel_l1)) {
+    return std::numeric_limits<float>::infinity();
+  }
+  return std::max(0.0f, rel_l1);
+}
+
+TeaCacheController::TeaCacheController(float threshold) {
+  set_threshold(threshold);
+}
+
+void TeaCacheController::set_threshold(float threshold) {
+  wan_validate_teacache_thresh(threshold);
+  threshold_ = threshold;
+  reset();
+}
+
+void TeaCacheController::reset() {
+  for (auto& branch : branches_) {
+    branch = BranchState{};
+  }
+  hits_ = 0;
+  total_calls_ = 0;
+}
+
+void TeaCacheController::invalidate_branch(int branch) {
+  if (branch < 0 || branch >= kWanTeaCacheBranches) {
+    throw std::invalid_argument("Wan TeaCache branch must be 0 or 1");
+  }
+  branches_[static_cast<size_t>(branch)] = BranchState{};
+}
+
+void TeaCacheController::record_disabled_call() { ++total_calls_; }
+
+TeaCacheDecision TeaCacheController::evaluate(
+    int branch, int step_index, int total_steps, int frames, int height,
+    int width, bool first_frame_zero_timestep, const float* cur_e0,
+    size_t e0_len) {
+  if (branch < 0 || branch >= kWanTeaCacheBranches) {
+    throw std::invalid_argument("Wan TeaCache branch must be 0 or 1");
+  }
+  ++total_calls_;
+  TeaCacheDecision decision;
+  if (threshold_ <= 0.0f) {
+    return decision;
+  }
+  if (cur_e0 == nullptr || e0_len == 0) {
+    throw std::invalid_argument(
+        "Wan TeaCache modulation signal must be non-empty");
+  }
+  if (frames <= 0 || height <= 0 || width <= 0) {
+    throw std::invalid_argument("Wan TeaCache geometry must be positive");
+  }
+
+  BranchState& state = branches_[static_cast<size_t>(branch)];
+
+  // Unscheduled / standalone forward or <= 2 steps: always compute full blocks.
+  if (step_index < 0 || total_steps <= 2 || step_index >= total_steps) {
+    state = BranchState{};
+    return decision;
+  }
+
+  // First step: always compute full blocks and populate the branch residual.
+  if (step_index == 0) {
+    state.frames = frames;
+    state.height = height;
+    state.width = width;
+    state.first_frame_zero_timestep = first_frame_zero_timestep;
+    state.accumulated_rel_l1 = 0.0f;
+    state.prev_e0.assign(cur_e0, cur_e0 + e0_len);
+    state.has_prev_e0 = true;
+    state.has_residual = true;
+    decision.use_cached_residual = false;
+    decision.save_residual = true;
+    return decision;
+  }
+
+  // Final step: always compute full blocks; no later step will reuse it.
+  if (step_index == total_steps - 1) {
+    state.accumulated_rel_l1 = 0.0f;
+    state.prev_e0.assign(cur_e0, cur_e0 + e0_len);
+    state.has_prev_e0 = true;
+    state.has_residual = false;
+    decision.use_cached_residual = false;
+    decision.save_residual = false;
+    return decision;
+  }
+
+  // Intermediate step: verify branch cache exists and matches shape/mode.
+  const bool cache_compatible =
+      state.has_residual && state.has_prev_e0 && state.frames == frames &&
+      state.height == height && state.width == width &&
+      state.first_frame_zero_timestep == first_frame_zero_timestep &&
+      state.prev_e0.size() == e0_len;
+  if (!cache_compatible) {
+    state.frames = frames;
+    state.height = height;
+    state.width = width;
+    state.first_frame_zero_timestep = first_frame_zero_timestep;
+    state.accumulated_rel_l1 = 0.0f;
+    state.prev_e0.assign(cur_e0, cur_e0 + e0_len);
+    state.has_prev_e0 = true;
+    state.has_residual = true;
+    decision.use_cached_residual = false;
+    decision.save_residual = true;
+    return decision;
+  }
+
+  const float rel_l1 =
+      wan_teacache_relative_l1(cur_e0, state.prev_e0.data(), e0_len);
+  const float delta = wan_teacache_rescale(rel_l1);
+  state.accumulated_rel_l1 += delta;
+  state.prev_e0.assign(cur_e0, cur_e0 + e0_len);
+  decision.rel_l1 = rel_l1;
+
+  if (state.accumulated_rel_l1 < threshold_) {
+    ++hits_;
+    decision.use_cached_residual = true;
+    decision.save_residual = false;
+    decision.accumulated_rel_l1 = state.accumulated_rel_l1;
+    return decision;
+  }
+
+  state.accumulated_rel_l1 = 0.0f;
+  state.has_residual = true;
+  decision.use_cached_residual = false;
+  decision.save_residual = true;
+  decision.accumulated_rel_l1 = 0.0f;
+  return decision;
+}
+
 }  // namespace umminfer::video

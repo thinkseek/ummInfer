@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,16 @@ enum class VideoBackendMode {
 VideoBackendMode parse_video_backend_mode(const std::string& value);
 const char* video_backend_mode_name(VideoBackendMode mode);
 
+struct VideoEngineConfig {
+  int gpu = 0;
+  std::string model_dir;
+  VideoBackendMode mode = VideoBackendMode::kCuda;
+  std::string ffmpeg_bin = "ffmpeg";
+  // Opt-in TeaCache L1 threshold in [0.0, 1.0]. 0.0 disables caching and keeps
+  // the uncached execution path 100% bit-exact.
+  float teacache_thresh = 0.0f;
+};
+
 struct GenerateParams {
   std::string prompt;
   std::string negative_prompt;
@@ -49,6 +60,9 @@ struct GenerateParams {
   float guidance_scale = 5.0f;
   uint64_t seed = 0;
   int step_delay_ms = 0;  // Optional per-step delay for deterministic abort tests.
+  // Optional per-request TeaCache threshold override in [0.0, 1.0]. When unset,
+  // inherits VideoEngineConfig::teacache_thresh (default 0.0 = off).
+  std::optional<float> teacache_thresh;
   // Optional PNG/JPEG/WebP bytes for Wan2.2-TI2V-5B image-to-video. When set,
   // the image is VAE-encoded and latent frame 0 is pinned to it for every
   // DiT evaluation.
@@ -70,12 +84,17 @@ struct GenerateResult {
   double denoise_ms = 0.0;
   double encode_ms = 0.0;
   size_t peak_gpu_bytes = 0;
+  float teacache_thresh = 0.0f;
+  int teacache_hits = 0;
+  int teacache_total_calls = 0;
 };
 
 class VideoEngine {
  public:
   VideoEngine(int gpu, const std::string& model_dir, VideoBackendMode mode,
-              std::string ffmpeg_bin = "ffmpeg");
+              std::string ffmpeg_bin = "ffmpeg",
+              float teacache_thresh = 0.0f);
+  explicit VideoEngine(const VideoEngineConfig& config);
   ~VideoEngine();
 
   VideoEngine(const VideoEngine&) = delete;
@@ -84,6 +103,7 @@ class VideoEngine {
   const WanModelConfig& config() const { return config_; }
   VideoBackendMode mode() const { return mode_; }
   int gpu() const { return gpu_; }
+  float teacache_thresh() const { return teacache_thresh_; }
 
   GenerateResult generate(const GenerateParams& params,
                           const AbortCheck& abort = {});
@@ -94,6 +114,7 @@ class VideoEngine {
   std::string model_dir_;
   VideoBackendMode mode_ = VideoBackendMode::kCuda;
   std::string ffmpeg_bin_;
+  float teacache_thresh_ = 0.0f;
   WanModelConfig config_;
   std::unique_ptr<WanCudaState> wan_cuda_;
   std::mutex mu_;

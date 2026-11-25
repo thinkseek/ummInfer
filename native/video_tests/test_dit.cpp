@@ -147,6 +147,9 @@ int run_e2e(const std::unordered_map<std::string, std::string>& args) {
   params.guidance_scale =
       args.contains("--guidance-scale") ? std::stof(args.at("--guidance-scale")) : 5.0f;
   params.seed = args.contains("--seed") ? std::stoull(args.at("--seed")) : 42ULL;
+  const float teacache_thresh = args.contains("--teacache-thresh")
+                                    ? std::stof(args.at("--teacache-thresh"))
+                                    : 0.0f;
   if (args.contains("--init-image")) {
     std::ifstream image(args.at("--init-image"), std::ios::binary);
     if (!image) throw std::runtime_error("failed to open init image");
@@ -154,8 +157,12 @@ int run_e2e(const std::unordered_map<std::string, std::string>& args) {
                                    std::istreambuf_iterator<char>());
   }
 
-  umminfer::video::VideoEngine engine(
-      gpu, args.at("--model-dir"), umminfer::video::VideoBackendMode::kCuda);
+  umminfer::video::VideoEngineConfig engine_cfg;
+  engine_cfg.gpu = gpu;
+  engine_cfg.model_dir = args.at("--model-dir");
+  engine_cfg.mode = umminfer::video::VideoBackendMode::kCuda;
+  engine_cfg.teacache_thresh = teacache_thresh;
+  umminfer::video::VideoEngine engine(engine_cfg);
   const auto result = engine.generate(params);
   {
     std::ofstream out(args.at("--output-mp4"), std::ios::binary);
@@ -173,6 +180,9 @@ int run_e2e(const std::unordered_map<std::string, std::string>& args) {
             << "steps=" << result.steps << '\n'
             << "i2v=" << (params.init_image_bytes.empty() ? 0 : 1) << '\n'
             << "seed=" << result.seed << '\n'
+            << "teacache_thresh=" << result.teacache_thresh << '\n'
+            << "teacache_hits=" << result.teacache_hits << '\n'
+            << "teacache_total_calls=" << result.teacache_total_calls << '\n'
             << "denoise_ms=" << result.denoise_ms << '\n'
             << "encode_ms=" << result.encode_ms << '\n'
             << "peak_vram_mib=" << result.peak_gpu_bytes / 1048576.0 << '\n'

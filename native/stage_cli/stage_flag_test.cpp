@@ -2,6 +2,7 @@
 // Host checks for the stage-specific CLI hooks: the shared integer parser and
 // the video stage's flag set. Links video_stage.cpp, so the checks run against
 // the same parse_stage_flag the executable uses.
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -65,6 +66,18 @@ void test_video_flags_accepted() {
   check(parse_stage_flag("ffmpeg-bin", "/usr/bin/ffmpeg", options),
         "--ffmpeg-bin accepted");
   check(options.ffmpeg_bin == "/usr/bin/ffmpeg", "--ffmpeg-bin stored");
+  check(options.video_teacache_thresh == 0.0f,
+        "--teacache-thresh defaults to 0.0 (off)");
+  check(parse_stage_flag("teacache-thresh", "0.15", options),
+        "--teacache-thresh 0.15 accepted");
+  check(std::fabs(options.video_teacache_thresh - 0.15f) < 1e-6f,
+        "--teacache-thresh 0.15 stored");
+  check(parse_stage_flag("teacache-thresh", "0", options) &&
+            options.video_teacache_thresh == 0.0f,
+        "--teacache-thresh 0 accepted");
+  check(parse_stage_flag("teacache-thresh", "1.0", options) &&
+            options.video_teacache_thresh == 1.0f,
+        "--teacache-thresh 1.0 accepted");
 }
 
 void test_video_flags_invalid_value() {
@@ -74,6 +87,30 @@ void test_video_flags_invalid_value() {
         "--fps rejects a negative value");
   check(throws_runtime([&] { (void)parse_stage_flag("steps", "many", options); }),
         "--steps rejects a non-numeric value");
+  check(throws_runtime([&] {
+          (void)parse_stage_flag("teacache-thresh", "-0.1", options);
+        }),
+        "--teacache-thresh rejects -0.1");
+  check(throws_runtime([&] {
+          (void)parse_stage_flag("teacache-thresh", "1.5", options);
+        }),
+        "--teacache-thresh rejects 1.5");
+  check(throws_runtime([&] {
+          (void)parse_stage_flag("teacache-thresh", "nan", options);
+        }),
+        "--teacache-thresh rejects nan");
+  check(throws_runtime([&] {
+          (void)parse_stage_flag("teacache-thresh", "inf", options);
+        }),
+        "--teacache-thresh rejects inf");
+  check(throws_runtime([&] {
+          (void)parse_stage_flag("teacache-thresh", "0.15x", options);
+        }),
+        "--teacache-thresh rejects trailing garbage");
+  check(throws_runtime([&] {
+          (void)parse_stage_flag("teacache-thresh", "", options);
+        }),
+        "--teacache-thresh rejects empty string");
 }
 
 void test_video_rejects_other_stage_flags() {
@@ -97,6 +134,8 @@ void test_usage_flags() {
         "usage lists --video-backend");
   check(usage.find("--ffmpeg-bin") != std::string::npos,
         "usage lists --ffmpeg-bin");
+  check(usage.find("--teacache-thresh") != std::string::npos,
+        "usage lists --teacache-thresh");
   check(usage.find("--image-backend") == std::string::npos,
         "usage omits --image-backend");
   check(usage.empty() || usage.back() == ' ', "usage fragment ends with a space");

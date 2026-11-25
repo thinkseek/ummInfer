@@ -90,6 +90,13 @@ void check_abort(const AbortCheck& abort, const std::string& boundary) {
   }
 }
 
+void validate_teacache_thresh_value(float thresh) {
+  if (!std::isfinite(thresh) || thresh < 0.0f || thresh > 1.0f) {
+    throw std::invalid_argument(
+        "video.teacache_thresh must be finite and in [0.0, 1.0]");
+  }
+}
+
 std::vector<float> synthesize_tchw_from_seed(int num_frames, int height,
                                              int width, uint64_t hash,
                                              float latent_energy) {
@@ -256,11 +263,14 @@ struct VideoEngine::WanCudaState {
 VideoEngine::~VideoEngine() = default;
 
 VideoEngine::VideoEngine(int gpu, const std::string& model_dir,
-                         VideoBackendMode mode, std::string ffmpeg_bin)
+                         VideoBackendMode mode, std::string ffmpeg_bin,
+                         float teacache_thresh)
     : gpu_(gpu),
       model_dir_(model_dir),
       mode_(mode),
-      ffmpeg_bin_(std::move(ffmpeg_bin)) {
+      ffmpeg_bin_(std::move(ffmpeg_bin)),
+      teacache_thresh_(teacache_thresh) {
+  validate_teacache_thresh_value(teacache_thresh_);
   config_ = load_wan_model_config(model_dir);
 
   if (mode_ == VideoBackendMode::kCuda) {
@@ -282,6 +292,7 @@ VideoEngine::VideoEngine(int gpu, const std::string& model_dir,
     cuda_check_video(cudaSetDevice(gpu_), "cudaSetDevice");
     wan_cuda_ = std::make_unique<WanCudaState>(
         std::filesystem::path(model_dir_), gpu_);
+    wan_cuda_->dit.set_teacache_thresh(teacache_thresh_);
 #endif
   }
 
@@ -296,6 +307,10 @@ VideoEngine::VideoEngine(int gpu, const std::string& model_dir,
 #endif
   }
 }
+
+VideoEngine::VideoEngine(const VideoEngineConfig& config)
+    : VideoEngine(config.gpu, config.model_dir, config.mode, config.ffmpeg_bin,
+                  config.teacache_thresh) {}
 
 GenerateResult VideoEngine::generate(const GenerateParams& params,
                                      const AbortCheck& abort) {
@@ -322,6 +337,11 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
         " == 0");
   }
 
+  const float effective_teacache =
+      params.teacache_thresh.has_value() ? *params.teacache_thresh
+                                         : teacache_thresh_;
+  validate_teacache_thresh_value(effective_teacache);
+
   FlowMatchConfig sched_cfg;
   sched_cfg.num_train_timesteps = config_.num_train_timesteps;
   sched_cfg.flow_shift = config_.flow_shift;
@@ -333,6 +353,8 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
 
   std::vector<std::vector<uint8_t>> rgb_frames;
   size_t peak_gpu_bytes = 0;
+  int teacache_hits = 0;
+  int teacache_total_calls = 0;
 
   if (mode_ == VideoBackendMode::kCuda) {
 #if !defined(UMM_VIDEO_CUDA) || !defined(UMM_VIDEO_WAN_FULL)
@@ -427,23 +449,28 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     UniPCFlowMatchSolver solver;
     solver.reset(schedule);
 
+    wan_cuda_->dit.set_teacache_thresh(effective_teacache);
+    wan_cuda_->dit.reset_teacache();
+
     for (int step = 0; step < params.steps; ++step) {
       check_abort(abort, "aborted before step " + std::to_string(step + 1) +
                              "/" + std::to_string(params.steps));
       const float t_val = schedule.timesteps[static_cast<size_t>(step)];
       if (has_init_image) pin_first_frame(latents);
+      const WanDitTeaCacheHint cond_hint{step, params.steps, 0};
       WanDitOutput cond = wan_cuda_->dit.forward(
           latents.data(), latent_t, latent_h, latent_w, t_val,
-          pos_ctx.hidden_states.data(), pos_len, has_init_image);
+          pos_ctx.hidden_states.data(), pos_len, has_init_image, cond_hint);
       update_peak_vram(cond.stats.peak_vram_bytes);
 
       std::vector<float> velocity = std::move(cond.velocity);
       if (use_cfg) {
         check_abort(abort, "aborted mid-step CFG " + std::to_string(step + 1) +
                                "/" + std::to_string(params.steps));
+        const WanDitTeaCacheHint uncond_hint{step, params.steps, 1};
         WanDitOutput uncond = wan_cuda_->dit.forward(
             latents.data(), latent_t, latent_h, latent_w, t_val,
-            neg_hidden.data(), neg_len, has_init_image);
+            neg_hidden.data(), neg_len, has_init_image, uncond_hint);
         update_peak_vram(uncond.stats.peak_vram_bytes);
         const float gs = params.guidance_scale;
         for (size_t i = 0; i < latent_count; ++i) {
@@ -460,6 +487,8 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       check_abort(abort, "aborted at step " + std::to_string(step + 1) + "/" +
                              std::to_string(params.steps));
     }
+    teacache_hits = wan_cuda_->dit.teacache_hits();
+    teacache_total_calls = wan_cuda_->dit.teacache_total_calls();
 
     if (has_init_image) pin_first_frame(latents);
     check_abort(abort, "aborted before VAE decode");
@@ -661,6 +690,9 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
   result.denoise_ms = denoise_ms;
   result.encode_ms = encode_ms;
   result.peak_gpu_bytes = peak_gpu_bytes;
+  result.teacache_thresh = effective_teacache;
+  result.teacache_hits = teacache_hits;
+  result.teacache_total_calls = teacache_total_calls;
   return result;
 }
 

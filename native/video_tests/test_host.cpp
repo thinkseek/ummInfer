@@ -496,6 +496,165 @@ void test_wan_dit_perf_helpers() {
   check(null_rejected, "null text embedding pointer rejected");
 }
 
+void test_wan_dit_teacache_controller() {
+  using namespace umminfer::video;
+
+  // 1. Threshold validation and basic relative L1 + rescale helpers.
+  wan_validate_teacache_thresh(0.0f);
+  wan_validate_teacache_thresh(0.15f);
+  wan_validate_teacache_thresh(1.0f);
+  for (float bad : {-0.01f, 1.01f, std::numeric_limits<float>::quiet_NaN(),
+                    std::numeric_limits<float>::infinity()}) {
+    bool threw = false;
+    try {
+      wan_validate_teacache_thresh(bad);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    check(threw, "invalid TeaCache threshold rejected");
+  }
+
+  const std::vector<float> e_base = {1.0f, -2.0f, 3.0f, -4.0f};  // L1 = 10.0
+  const std::vector<float> e_same = e_base;
+  const std::vector<float> e_step = {1.2f, -2.2f, 3.2f, -4.2f};  // diff L1 = 0.8 => rel = 0.08
+  check(std::fabs(wan_teacache_relative_l1(e_same.data(), e_base.data(), e_base.size())) < 1e-7f,
+        "identical modulation has 0 relative L1");
+  check(std::fabs(wan_teacache_relative_l1(e_step.data(), e_base.data(), e_base.size()) - 0.08f) < 1e-6f,
+        "relative L1 matches ||cur-prev||_1 / ||prev||_1");
+  check(wan_teacache_rescale(-0.5f) == 0.0f, "rescale clamps negative input to 0");
+  check(std::fabs(wan_teacache_rescale(0.12f) - 0.12f) < 1e-6f,
+        "rescale is monotonic and preserves non-negative delta");
+
+  // 2. Disabled controller (thresh == 0.0f) never skips and never requests saving.
+  {
+    TeaCacheController ctrl(0.0f);
+    check(!ctrl.enabled(), "thresh == 0 disables TeaCache");
+    for (int step = 0; step < 6; ++step) {
+      const TeaCacheDecision d =
+          ctrl.evaluate(0, step, 6, 8, 30, 44, false, e_base.data(), e_base.size());
+      check(!d.use_cached_residual && !d.save_residual,
+            "disabled TeaCache never skips or saves at step " + std::to_string(step));
+    }
+    check(ctrl.hits() == 0 && ctrl.total_calls() == 6,
+          "disabled TeaCache reports 0/6 hits");
+  }
+
+  // 3. First step, last step, and <= 2 total steps never skip.
+  {
+    TeaCacheController ctrl(0.99f);
+    const auto s0 = ctrl.evaluate(0, 0, 2, 8, 30, 44, false, e_base.data(), e_base.size());
+    const auto s1 = ctrl.evaluate(0, 1, 2, 8, 30, 44, false, e_base.data(), e_base.size());
+    check(!s0.use_cached_residual && !s1.use_cached_residual && ctrl.hits() == 0,
+          "total_steps <= 2 never skips");
+    const auto unsched = ctrl.evaluate(0, -1, 15, 8, 30, 44, false, e_base.data(), e_base.size());
+    check(!unsched.use_cached_residual && !unsched.save_residual,
+          "negative step_index never skips");
+  }
+
+  // 4. Accumulation, cache hit, threshold crossing recompute + reset, and final step.
+  {
+    TeaCacheController ctrl(0.15f);
+    // Construct a sequence where each step shifts every element by +0.15 (L1 = 0.6),
+    // starting from L1 = 10.0 so step-to-step rel_l1 is ~0.06 -> hits on steps 1 & 2,
+    // crosses 0.15 on step 3 (recomputes & resets), hits on step 4, full on final step 5.
+    std::vector<float> e = {2.5f, 2.5f, 2.5f, 2.5f};  // L1 = 10.0
+    const auto d0 = ctrl.evaluate(0, 0, 6, 8, 30, 44, false, e.data(), e.size());
+    check(!d0.use_cached_residual && d0.save_residual, "step 0 computes and saves");
+
+    // Step 1: identical e -> rel_l1 = 0 < 0.15 -> hit.
+    const auto d1 = ctrl.evaluate(0, 1, 6, 8, 30, 44, false, e.data(), e.size());
+    check(d1.use_cached_residual && !d1.save_residual, "step 1 identical e0 hits");
+
+    // Step 2: rel_l1 = 0.08 -> accum = 0.08 < 0.15 -> hit.
+    for (float& v : e) v += 0.2f;  // delta L1 = 0.8, prev L1 = 10.0 -> 0.08
+    const auto d2 = ctrl.evaluate(0, 2, 6, 8, 30, 44, false, e.data(), e.size());
+    check(d2.use_cached_residual && !d2.save_residual &&
+              std::fabs(d2.accumulated_rel_l1 - 0.08f) < 1e-5f,
+          "step 2 below threshold hits and accumulates");
+
+    // Step 3: rel_l1 = 0.864 / 10.8 = 0.08 -> accum = 0.16 >= 0.15 -> miss & reset!
+    for (float& v : e) v += 0.216f;
+    const auto d3 = ctrl.evaluate(0, 3, 6, 8, 30, 44, false, e.data(), e.size());
+    check(!d3.use_cached_residual && d3.save_residual &&
+              d3.accumulated_rel_l1 == 0.0f,
+          "step 3 crossing threshold recomputes and resets accumulator");
+
+    // Step 4: small delta (0.04 < 0.15) after reset -> hit again!
+    for (float& v : e) v += 0.1f;
+    const auto d4 = ctrl.evaluate(0, 4, 6, 8, 30, 44, false, e.data(), e.size());
+    check(d4.use_cached_residual && !d4.save_residual,
+          "step 4 hits after accumulator reset");
+
+    // Step 5 (final step): identical e0 must STILL compute full blocks and not save.
+    const auto d5 = ctrl.evaluate(0, 5, 6, 8, 30, 44, false, e.data(), e.size());
+    check(!d5.use_cached_residual && !d5.save_residual,
+          "final step always computes full blocks");
+    check(ctrl.hits() == 3 && ctrl.total_calls() == 6,
+          "hit/call telemetry matches 3/6");
+  }
+
+  // 5. Independent CFG branches (cond = 0, uncond = 1) never interfere.
+  {
+    TeaCacheController ctrl(0.15f);
+    std::vector<float> e_cond = {2.5f, 2.5f, 2.5f, 2.5f};
+    std::vector<float> e_uncond = {2.5f, 2.5f, 2.5f, 2.5f};
+    check(!ctrl.evaluate(0, 0, 5, 8, 30, 44, false, e_cond.data(), e_cond.size()).use_cached_residual,
+          "cond step 0 computes");
+    // Branch 1 has never run step 0; step 1 on branch 1 must miss (not reuse branch 0!).
+    const auto uncond_cold =
+        ctrl.evaluate(1, 1, 5, 8, 30, 44, false, e_uncond.data(), e_uncond.size());
+    check(!uncond_cold.use_cached_residual && uncond_cold.save_residual,
+          "uncond branch does not borrow cond branch residual");
+
+    // Mutate cond heavily so cond misses on step 1, while uncond has identical e0 on step 2 -> uncond hits!
+    std::vector<float> e_cond_big = {10.0f, 10.0f, 10.0f, 10.0f};
+    check(!ctrl.evaluate(0, 1, 5, 8, 30, 44, false, e_cond_big.data(), e_cond_big.size()).use_cached_residual,
+          "cond step 1 large jump misses");
+    check(ctrl.evaluate(1, 2, 5, 8, 30, 44, false, e_uncond.data(), e_uncond.size()).use_cached_residual,
+          "uncond step 2 still hits independently of cond miss");
+  }
+
+  // 6. Shape change, I2V mode change, invalidate_branch(), and reset() invalidate cache.
+  {
+    TeaCacheController ctrl(0.50f);
+    (void)ctrl.evaluate(0, 0, 6, 8, 30, 44, false, e_base.data(), e_base.size());
+    check(ctrl.evaluate(0, 1, 6, 8, 30, 44, false, e_base.data(), e_base.size()).use_cached_residual,
+          "matching shape hits before mutation");
+    // Geometry change -> miss!
+    const auto shape_miss =
+        ctrl.evaluate(0, 2, 6, 4, 30, 44, false, e_base.data(), e_base.size());
+    check(!shape_miss.use_cached_residual && shape_miss.save_residual,
+          "frame count change invalidates cached residual");
+    // First-frame I2V flag flip -> miss!
+    const auto mode_miss =
+        ctrl.evaluate(0, 3, 6, 4, 30, 44, true, e_base.data(), e_base.size());
+    check(!mode_miss.use_cached_residual && mode_miss.save_residual,
+          "first_frame_zero_timestep change invalidates cached residual");
+    // Explicit invalidate_branch -> miss!
+    ctrl.invalidate_branch(0);
+    check(!ctrl.evaluate(0, 4, 6, 4, 30, 44, true, e_base.data(), e_base.size()).use_cached_residual,
+          "invalidate_branch forces recompute");
+    // reset() preserves threshold, clears telemetry and cached state.
+    ctrl.reset();
+    check(ctrl.threshold() == 0.50f && ctrl.hits() == 0 && ctrl.total_calls() == 0,
+          "reset() clears counters and keeps threshold");
+    check(!ctrl.evaluate(0, 1, 6, 4, 30, 44, true, e_base.data(), e_base.size()).use_cached_residual,
+          "post-reset intermediate step cannot hit stale cache");
+  }
+
+  // 7. Invalid branch index rejected.
+  {
+    TeaCacheController ctrl(0.15f);
+    bool bad_branch = false;
+    try {
+      (void)ctrl.evaluate(2, 0, 6, 8, 30, 44, false, e_base.data(), e_base.size());
+    } catch (const std::invalid_argument&) {
+      bad_branch = true;
+    }
+    check(bad_branch, "out-of-range TeaCache branch rejected");
+  }
+}
+
 void test_flow_match_schedule_and_euler() {
   using namespace umminfer::video;
   FlowMatchConfig cfg;
@@ -593,6 +752,35 @@ void test_engine_contract_stub_and_cuda_gate() {
   const GenerateResult image_res = stub.generate(image_params);
   check(is_valid_mp4_header(image_res.mp4_bytes),
         "contract stub accepts init image bytes");
+
+  // VideoEngineConfig + teacache_thresh validation & plumbing.
+  VideoEngineConfig cfg;
+  cfg.gpu = 0;
+  cfg.model_dir = tmp.path.string();
+  cfg.mode = VideoBackendMode::kContractStub;
+  cfg.teacache_thresh = 0.15f;
+  VideoEngine configured(cfg);
+  check(std::fabs(configured.teacache_thresh() - 0.15f) < 1e-6f,
+        "VideoEngineConfig stores teacache_thresh");
+  const GenerateResult tc_res = configured.generate(params);
+  check(std::fabs(tc_res.teacache_thresh - 0.15f) < 1e-6f &&
+            tc_res.teacache_hits == 0 && tc_res.teacache_total_calls == 0,
+        "GenerateResult reports effective teacache_thresh and stub telemetry");
+
+  GenerateParams override_params = params;
+  override_params.teacache_thresh = 0.0f;
+  check(configured.generate(override_params).teacache_thresh == 0.0f,
+        "per-request teacache_thresh override applies");
+
+  bool bad_tc_rejected = false;
+  try {
+    GenerateParams bad_params = params;
+    bad_params.teacache_thresh = 1.5f;
+    (void)configured.generate(bad_params);
+  } catch (const std::invalid_argument&) {
+    bad_tc_rejected = true;
+  }
+  check(bad_tc_rejected, "out-of-range per-request teacache_thresh rejected");
 }
 
 // Reference values produced by Diffusers 0.43 UniPCMultistepScheduler loaded
@@ -780,6 +968,7 @@ int main() {
       {"umt5_relative_position_buckets", test_umt5_relative_position_buckets},
       {"wan_dit_host_helpers", test_wan_dit_host_helpers},
       {"wan_dit_perf_helpers", test_wan_dit_perf_helpers},
+      {"wan_dit_teacache_controller", test_wan_dit_teacache_controller},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"unipc_bh2_matches_diffusers", test_unipc_bh2_matches_diffusers},
       {"i2v_center_crop_preserves_aspect_ratio",

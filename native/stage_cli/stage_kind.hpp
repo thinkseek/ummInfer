@@ -7,6 +7,8 @@
 // against the compiled kind.
 #pragma once
 
+#include <cctype>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 
@@ -29,6 +31,7 @@ struct StageOptions {
   int video_max_seconds = 0;  // Video only: max seconds (0 -> 10)
   int video_step_delay_ms = 0;  // Video only: optional per-step delay for abort tests
   std::string ffmpeg_bin;     // Video only: ffmpeg binary path (empty -> "ffmpeg")
+  float video_teacache_thresh = 0.0f;  // Video only: opt-in TeaCache threshold in [0.0, 1.0] (0 = off)
   std::string default_ref_audio;  // TTS Base only: optional default 24 kHz WAV
   // Requests decoded together. 0 or 1 keeps the single-request executor.
   int batch_size = 0;
@@ -64,6 +67,27 @@ inline int parse_stage_int(const std::string& text, const std::string& option) {
     throw std::runtime_error("invalid " + option + ": " + text);
   }
   if (used != text.size() || value < 0) {
+    throw std::runtime_error("invalid " + option + ": " + text);
+  }
+  return value;
+}
+
+// Shared finite floating-point parsing for stage flags bounded to [min_value, max_value].
+inline float parse_stage_float_range(const std::string& text,
+                                     const std::string& option,
+                                     float min_value, float max_value) {
+  if (text.empty() || std::isspace(static_cast<unsigned char>(text.front()))) {
+    throw std::runtime_error("invalid " + option + ": " + text);
+  }
+  size_t used = 0;
+  float value = 0.0f;
+  try {
+    value = std::stof(text, &used);
+  } catch (const std::exception&) {
+    throw std::runtime_error("invalid " + option + ": " + text);
+  }
+  if (used != text.size() || !std::isfinite(value) || value < min_value ||
+      value > max_value) {
     throw std::runtime_error("invalid " + option + ": " + text);
   }
   return value;

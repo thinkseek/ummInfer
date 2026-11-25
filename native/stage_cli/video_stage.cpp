@@ -21,7 +21,7 @@ const char* compiled_kind() { return "video"; }
 const char* stage_usage_flags() {
   return "[--video-backend cuda|cuda-scaffold|contract-stub] [--size WxH] "
          "[--fps N] [--max-seconds N] [--max-frames N] [--steps N] "
-         "[--step-delay-ms N] [--ffmpeg-bin PATH] ";
+         "[--step-delay-ms N] [--ffmpeg-bin PATH] [--teacache-thresh F] ";
 }
 
 bool parse_stage_flag(const std::string& key, const std::string& value,
@@ -58,6 +58,11 @@ bool parse_stage_flag(const std::string& key, const std::string& value,
     options.ffmpeg_bin = value;
     return true;
   }
+  if (key == "teacache-thresh") {
+    options.video_teacache_thresh =
+        parse_stage_float_range(value, "--teacache-thresh", 0.0f, 1.0f);
+    return true;
+  }
   return false;
 }
 
@@ -66,8 +71,13 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       video::parse_video_backend_mode(options.video_backend);
   const std::string ffmpeg_bin =
       options.ffmpeg_bin.empty() ? "ffmpeg" : options.ffmpeg_bin;
-  auto engine = std::make_shared<video::VideoEngine>(
-      options.gpu, options.model_dir, mode, ffmpeg_bin);
+  video::VideoEngineConfig engine_cfg;
+  engine_cfg.gpu = options.gpu;
+  engine_cfg.model_dir = options.model_dir;
+  engine_cfg.mode = mode;
+  engine_cfg.ffmpeg_bin = ffmpeg_bin;
+  engine_cfg.teacache_thresh = options.video_teacache_thresh;
+  auto engine = std::make_shared<video::VideoEngine>(engine_cfg);
 
   const int spatial_align = engine->config().spatial_align;
   const int temporal_stride = engine->config().temporal_stride;
@@ -133,6 +143,9 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " fps=" << generated.fps << " steps=" << generated.steps
               << " seed=" << generated.seed
               << " i2v=" << (input.init_image_bytes.empty() ? 0 : 1)
+              << " teacache_thresh=" << generated.teacache_thresh
+              << " teacache_hits=" << generated.teacache_hits << "/"
+              << generated.teacache_total_calls
               << " mp4_bytes=" << generated.mp4_bytes.size()
               << " denoise_ms=" << generated.denoise_ms
               << " encode_ms=" << generated.encode_ms
