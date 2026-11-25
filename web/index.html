@@ -44,6 +44,19 @@
   }
   .spacer { flex: 1; }
 
+  /* Global streaming voice bar */
+  #voiceBar {
+    display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
+  }
+  #voiceToggle {
+    border: none; background: transparent; padding: 3px 9px; border-radius: 999px;
+    font-size: var(--f-caption); color: var(--secondary);
+  }
+  #voiceToggle.on { background: var(--accent); color: #fff; }
+  #voiceStatus { font-size: var(--f-caption); color: var(--secondary); min-width: 68px; }
+  #voiceMute, #voiceStop { padding: 3px 9px; font-size: var(--f-caption); }
+
   #settings {
     display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
     padding: 12px 16px; background: var(--surface);
@@ -86,13 +99,14 @@
   .turn.user { margin-left: auto; align-items: flex-end; }
   .turn .meta { font-size: var(--f-caption); font-weight: 500; color: var(--secondary); }
   .turn .body { display: flex; flex-direction: column; gap: 8px; width: 100%; }
-  .turn .text {
+  .flow { display: flex; flex-direction: column; gap: 10px; }
+  .block.text {
     white-space: pre-wrap; word-break: break-word; padding: 10px 13px;
     border-radius: var(--r-card); background: var(--surface);
     animation: rise .18s ease-out;
   }
-  .turn.user .text { background: var(--ink); color: var(--on-ink); }
-  .turn .text:empty:not(.caret) { display: none; }
+  .turn.user .block.text { background: var(--ink); color: var(--on-ink); }
+  .block.text:empty:not(.caret) { display: none; }
   @keyframes rise { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 
   .caret::after {
@@ -101,6 +115,58 @@
     animation: blink 1s steps(1) infinite;
   }
   @keyframes blink { 50% { opacity: 0; } }
+
+  /* Interleaved visual slot cards */
+  .slot {
+    display: flex; flex-direction: column; gap: 8px; padding: 10px;
+    border: 1px solid var(--line); border-radius: var(--r-card); background: var(--bg);
+    animation: rise .2s ease-out;
+  }
+  .slot-card-head { display: flex; align-items: center; gap: 8px; }
+  .slot-caption {
+    font-size: var(--f-caption); color: var(--secondary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+  }
+  .badge {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    padding: 2px 6px; border-radius: 4px; background: var(--hover); color: var(--secondary);
+  }
+  .badge.image { color: var(--accent); }
+  .slot-media {
+    position: relative; min-height: 168px; border-radius: var(--r-control);
+    overflow: hidden; background: var(--surface);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .slot-media img, .slot-media video {
+    display: block; width: 100%; max-height: 380px; object-fit: contain;
+    border-radius: var(--r-control);
+    animation: fade .35s ease-out;
+  }
+  .slot-media a { display: block; width: 100%; line-height: 0; }
+  .shimmer {
+    position: absolute; inset: 0;
+    background: linear-gradient(100deg, var(--surface) 30%, var(--hover) 50%, var(--surface) 70%);
+    background-size: 200% 100%; animation: shimmer 1.4s linear infinite;
+  }
+  @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .slot-overlay {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; background: color-mix(in srgb, var(--bg) 45%, transparent);
+  }
+  .spinner {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .slot-error { font-size: var(--f-caption); color: var(--danger); padding: 0 10px; text-align: center; }
+  .slot-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .slot-actions button, .slot-actions a.dl { padding: 3px 9px; font-size: var(--f-caption); }
+  .slot-actions a.dl {
+    color: var(--accent); text-decoration: none; border: 1px solid var(--line);
+    border-radius: var(--r-control); background: var(--bg);
+  }
+  .slot-actions a.dl:hover { background: var(--hover); }
 
   .artifacts { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
   .artifact-card { display: flex; flex-direction: column; gap: 6px; }
@@ -158,6 +224,13 @@
   <span id="status" role="status">Ready</span>
   <span class="chip" id="session" hidden></span>
   <span class="spacer"></span>
+  <div id="voiceBar">
+    <button id="voiceToggle" type="button" aria-pressed="true">Voice ON</button>
+    <div class="wave" id="voiceWave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+    <span id="voiceStatus" role="status">Voice ready</span>
+    <button id="voiceMute" type="button">Mute</button>
+    <button id="voiceStop" type="button">Stop Voice</button>
+  </div>
   <select id="theme" aria-label="Theme">
     <option value="system">System</option>
     <option value="light">Light</option>
@@ -173,6 +246,13 @@
   <label class="check"><input type="checkbox" id="audio"> Audio</label>
   <label class="check"><input type="checkbox" id="video"> Video</label>
   <label>Voice<input id="voice" value="vivian" spellcheck="false"></label>
+  <label class="check"><input type="checkbox" id="narrative" checked> Narrative</label>
+  <label>Visuals<select id="visualMode">
+    <option value="auto">Auto: Img+Vid</option>
+    <option value="image">Image only</option>
+    <option value="video">Video only</option>
+  </select></label>
+  <label>Max slots<input id="maxSlots" type="number" min="1" max="4" value="3" style="width:64px"></label>
   <details id="advanced">
     <summary>Options</summary>
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;align-items:center;">
@@ -227,6 +307,9 @@ const ui = {
   attachBar: $('attachBar'), askImage: $('askImage'), askAudio: $('askAudio'),
   pickImage: $('pickImage'), pickAudio: $('pickAudio'), mic: $('mic'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
+  narrative: $('narrative'), visualMode: $('visualMode'), maxSlots: $('maxSlots'),
+  voiceToggle: $('voiceToggle'), voiceWave: $('voiceWave'),
+  voiceStatus: $('voiceStatus'), voiceMute: $('voiceMute'), voiceStop: $('voiceStop'),
 };
 
 const log = (...args) => console.log('[umm]', ...args);
@@ -259,7 +342,7 @@ const SAME_ORIGIN_ENDPOINT =
 
 const SETTINGS = ['endpoint', 'model', 'voice', 'maxTokens', 'temperature', 'topP',
                   'seed', 'imageSize', 'imageSteps', 'videoSize', 'videoSeconds',
-                  'videoFrames', 'videoSteps', 'videoGuidance'];
+                  'videoFrames', 'videoSteps', 'videoGuidance', 'visualMode', 'maxSlots'];
 for (const key of SETTINGS) {
   const saved = localStorage.getItem('ummweb.' + key);
   if (saved !== null) ui[key].value = saved;
@@ -272,11 +355,13 @@ if (SAME_ORIGIN_ENDPOINT && (!ui.endpoint.value.trim() || ui.endpoint.value.trim
 ui.image.checked = localStorage.getItem('ummweb.image') === '1';
 ui.audio.checked = localStorage.getItem('ummweb.audio') === '1';
 ui.video.checked = localStorage.getItem('ummweb.video') === '1';
+ui.narrative.checked = localStorage.getItem('ummweb.narrative') !== '0';
 const saveSettings = () => {
   for (const key of SETTINGS) localStorage.setItem('ummweb.' + key, ui[key].value);
   localStorage.setItem('ummweb.image', ui.image.checked ? '1' : '0');
   localStorage.setItem('ummweb.audio', ui.audio.checked ? '1' : '0');
   localStorage.setItem('ummweb.video', ui.video.checked ? '1' : '0');
+  localStorage.setItem('ummweb.narrative', ui.narrative.checked ? '1' : '0');
 };
 
 function apiURL(base, suffix) {
@@ -498,6 +583,10 @@ let turn = null;          // current assistant turn
 let inflight = new Map(); // artifact_id -> partial chunks
 const history = [];       // completed {role, content} pairs
 
+const GLOBAL_VOICE_KEY = 'ummweb.voiceOn';
+let voiceOn = localStorage.getItem(GLOBAL_VOICE_KEY) !== '0';
+let voiceMuted = false;
+
 function newSessionID() {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
   return 'ummweb-' + [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -533,20 +622,25 @@ function addTurn(role, text) {
   meta.textContent = role === 'user' ? 'You' : 'ummInfer';
   const body = document.createElement('div');
   body.className = 'body';
-  const textEl = document.createElement('div');
-  textEl.className = 'text';
-  textEl.textContent = text;
   const asrEl = document.createElement('div');
   asrEl.className = 'asr-note';
+  const flow = document.createElement('div');
+  flow.className = 'flow';
   const artifacts = document.createElement('div');
   artifacts.className = 'artifacts';
   const legs = document.createElement('div');
   legs.className = 'legs';
-  body.append(asrEl, textEl, artifacts, legs);
+  body.append(asrEl, flow, artifacts, legs);
   el.append(meta, body);
   ui.transcript.append(el);
+  if (role === 'user' && text) {
+    const textEl = document.createElement('div');
+    textEl.className = 'block text';
+    textEl.textContent = text;
+    flow.append(textEl);
+  }
   scrollToEnd();
-  return { el, asrEl, textEl, artifacts, legs, text };
+  return { el, asrEl, flow, artifacts, legs, text, tailText: null, slots: new Map() };
 }
 
 function scrollToEnd() {
@@ -557,23 +651,191 @@ function appendText(delta) {
   if (!turn) return;
   if (!turn.text) setStatus('Streaming…');
   turn.text += delta;
-  turn.textEl.textContent = turn.text;
+  if (!turn.tailText) {
+    turn.tailText = document.createElement('div');
+    turn.tailText.className = 'block text caret';
+    turn.flow.append(turn.tailText);
+  }
+  turn.tailText.textContent += delta;
   scrollToEnd();
 }
 
+// ---------- visual slot cards (interleaved narrative) ----------
+
+function createSlot(id, prompt, kind) {
+  const el = document.createElement('div');
+  el.className = 'slot';
+  el.dataset.slot = id;
+
+  const head = document.createElement('div');
+  head.className = 'slot-card-head';
+  const badge = document.createElement('span');
+  badge.className = 'badge ' + kind;
+  badge.textContent = kind === 'video' ? 'Video' : 'Image';
+  const caption = document.createElement('span');
+  caption.className = 'slot-caption';
+  caption.textContent = prompt;
+  caption.title = prompt;
+  head.append(badge, caption);
+
+  const media = document.createElement('div');
+  media.className = 'slot-media';
+  showSlotLoading({ media });
+
+  const actions = document.createElement('div');
+  actions.className = 'slot-actions';
+  const swap = document.createElement('button');
+  swap.type = 'button';
+  swap.textContent = kind === 'video' ? '→ Image' : '→ Video';
+  const regen = document.createElement('button');
+  regen.type = 'button';
+  regen.textContent = 'Regenerate';
+  const dl = document.createElement('a');
+  dl.className = 'dl';
+  dl.textContent = 'Download';
+  dl.hidden = true;
+  actions.append(swap, regen, dl);
+
+  el.append(head, media, actions);
+
+  const slot = { id, prompt, kind, el, media, badge, swap, regen, dl,
+                 url: '', cache: {}, loading: false };
+  swap.addEventListener('click', () => {
+    renderSlot(slot, slot.kind === 'video' ? 'image' : 'video');
+  });
+  regen.addEventListener('click', () => {
+    delete slot.cache[slot.kind];
+    renderSlot(slot, slot.kind);
+  });
+  return slot;
+}
+
+function showSlotLoading(slot) {
+  const shimmer = document.createElement('div');
+  shimmer.className = 'shimmer';
+  const overlay = document.createElement('div');
+  overlay.className = 'slot-overlay';
+  overlay.append(Object.assign(document.createElement('div'), { className: 'spinner' }));
+  slot.media.replaceChildren(shimmer, overlay);
+}
+
+function showSlotError(slot, message) {
+  const overlay = document.createElement('div');
+  overlay.className = 'slot-overlay';
+  const note = document.createElement('div');
+  note.className = 'slot-error';
+  note.textContent = `${message || 'Generation failed'} · tap Regenerate`;
+  overlay.append(note);
+  slot.media.replaceChildren(overlay);
+}
+
+function setSlotMedia(slot, kind, url) {
+  slot.kind = kind;
+  slot.url = url;
+  slot.cache[kind] = url;
+  slot.media.replaceChildren();
+  if (kind === 'video') {
+    const video = document.createElement('video');
+    video.controls = true;
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.src = url;
+    slot.media.append(video);
+  } else {
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = slot.prompt || 'Generated visual';
+    link.append(img);
+    slot.media.append(link);
+  }
+  slot.badge.className = 'badge ' + kind;
+  slot.badge.textContent = kind === 'video' ? 'Video' : 'Image';
+  slot.swap.textContent = kind === 'video' ? '→ Image' : '→ Video';
+  slot.dl.href = url;
+  slot.dl.download = kind === 'video' ? 'slot.mp4' : 'slot.png';
+  slot.dl.hidden = false;
+}
+
+function onVisualSlot(unified) {
+  if (!turn) return;
+  if (turn.tailText) turn.tailText.classList.remove('caret');
+  turn.tailText = null;
+  const kind = (unified.media_type || unified.stage) === 'video' ? 'video' : 'image';
+  const slot = createSlot(unified.slot_id || `slot-${turn.slots.size}`,
+                          unified.prompt || '', kind);
+  turn.slots.set(unified.slot_id || `slot-${turn.slots.size}`, slot);
+  turn.flow.append(slot.el);
+  scrollToEnd();
+}
+
+async function renderSlot(slot, kind) {
+  if (slot.loading) return;
+  if (slot.cache[kind]) {
+    setSlotMedia(slot, kind, slot.cache[kind]);
+    return;
+  }
+  slot.loading = true;
+  showSlotLoading(slot);
+  try {
+    const body = { kind, prompt: slot.prompt };
+    if (kind === 'image') {
+      body.size = ui.imageSize.value || '512x512';
+      const steps = Number.parseInt(ui.imageSteps.value.trim(), 10);
+      if (Number.isInteger(steps) && steps > 0) body.steps = steps;
+    } else {
+      body.size = ui.videoSize.value || '480x320';
+      const frames = Number.parseInt(ui.videoFrames.value.trim(), 10);
+      if (Number.isInteger(frames) && frames > 0) body.num_frames = frames;
+      const guidance = Number(ui.videoGuidance.value);
+      if (ui.videoGuidance.value.trim() !== '' && Number.isFinite(guidance) && guidance >= 0) {
+        body.guidance_scale = guidance;
+      }
+    }
+    const res = await fetch(apiURL(ui.endpoint.value, '/visual/render'), {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${limit(detail)}`);
+    }
+    const type = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    const hinted = (res.headers.get('x-umminfer-kind') || kind).toLowerCase();
+    const actual = hinted === 'video' ? 'video' : 'image';
+    const blob = await res.blob();
+    setSlotMedia(slot, actual, URL.createObjectURL(new Blob([blob], { type: type || blob.type })));
+    scrollToEnd();
+  } catch (err) {
+    showSlotError(slot, err.message);
+  } finally {
+    slot.loading = false;
+  }
+}
+
 // ---------- streaming PCM16 playback ----------
-// One AudioContext per turn. Chunks are scheduled back to back on a running
+// One AudioContext per request. Chunks are scheduled back to back on a running
 // cursor instead of starting a fresh source per chunk, so the waveform stays
-// continuous. A short jitter buffer avoids an immediate starve.
+// continuous. A short jitter buffer avoids an immediate starve. A master gain
+// node carries the header Mute state.
 
 const player = {
-  ctx: null, next: 0, started: false, ended: false,
-  pending: [], buffered: 0, sources: 0,
+  ctx: null, gain: null, next: 0, started: false, ended: false,
+  pending: [], buffered: 0, sources: 0, muted: false,
 
   begin(wave) {
     this.stop();
     waveEl = wave;
     this.ctx = new AudioContext();
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = this.muted ? 0 : 1;
+    this.gain.connect(this.ctx.destination);
     this.next = 0; this.started = false; this.ended = false;
     this.pending = []; this.buffered = 0; this.sources = 0;
   },
@@ -595,10 +857,11 @@ const player = {
 
   drain() {
     const ctx = this.ctx;
+    const sink = this.gain || ctx.destination;
     for (const buffer of this.pending) {
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      source.connect(sink);
       const at = Math.max(this.next, ctx.currentTime + 0.02);
       source.start(at);
       this.next = at + buffer.duration;
@@ -628,6 +891,7 @@ const player = {
     setPlaying(false);
     this.ctx?.close().catch(() => {});
     this.ctx = null;
+    this.gain = null;
   },
 
   stop() {
@@ -638,17 +902,48 @@ const player = {
     this.sources = 0;
     this.ctx?.close().catch(() => {});
     this.ctx = null;
+    this.gain = null;
+  },
+
+  setMuted(muted) {
+    this.muted = muted;
+    if (this.gain) this.gain.gain.value = muted ? 0 : 1;
   },
 };
 
-// The wave belongs to the turn that owns this audio, not to the module-level
-// `turn`, which is cleared when the request ends while playback continues.
+// The wave belongs to the header voice bar, not to the module-level `turn`.
 let waveEl = null;
 
 function setPlaying(active) {
-  if (!waveEl) return;
-  waveEl.classList.toggle('playing', active);
+  if (waveEl) waveEl.classList.toggle('playing', active);
+  if (!voiceOn) { ui.voiceStatus.textContent = 'Voice off'; return; }
+  if (voiceMuted) { ui.voiceStatus.textContent = 'Muted'; return; }
+  ui.voiceStatus.textContent = active ? 'Speaking…' : 'Voice ready';
 }
+
+function applyVoice() {
+  ui.voiceToggle.classList.toggle('on', voiceOn);
+  ui.voiceToggle.setAttribute('aria-pressed', voiceOn ? 'true' : 'false');
+  ui.voiceToggle.textContent = voiceOn ? 'Voice ON' : 'Voice OFF';
+  ui.voiceMute.textContent = voiceMuted ? 'Unmute' : 'Mute';
+  ui.voiceStop.setAttribute('aria-label', 'Stop Voice');
+  player.setMuted(voiceMuted);
+  setPlaying(waveEl?.classList.contains('playing') || false);
+}
+applyVoice();
+ui.voiceToggle.addEventListener('click', () => {
+  voiceOn = !voiceOn;
+  localStorage.setItem(GLOBAL_VOICE_KEY, voiceOn ? '1' : '0');
+  applyVoice();
+});
+ui.voiceMute.addEventListener('click', () => {
+  voiceMuted = !voiceMuted;
+  applyVoice();
+});
+ui.voiceStop.addEventListener('click', () => {
+  player.stop();
+  setStatus(running ? 'Streaming…' : 'Voice stopped', running);
+});
 
 function pcmBuffer(ctx, bytes, rate, channels) {
   const frameBytes = channels * 2;
@@ -720,6 +1015,12 @@ function deliver(chunk, bytes) {
     return;
   }
   const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const kindHint = chunk.media_type === 'video' || mime === 'video/mp4' ? 'video' : 'image';
+  if (chunk.slot_id && turn?.slots?.has(chunk.slot_id)) {
+    setSlotMedia(turn.slots.get(chunk.slot_id), kindHint, url);
+    scrollToEnd();
+    return;
+  }
   const wrapCard = (node, filename) => {
     const card = document.createElement('div');
     card.className = 'artifact-card';
@@ -817,9 +1118,14 @@ async function consume(payload, st) {
       case 'asr_final':
         if (unified.text) turn.asrEl.textContent = `ASR: ${unified.text}`;
         break;
+      case 'visual_slot': onVisualSlot(unified); break;
       case 'artifact': await ingestArtifact(unified.artifact); break;
       case 'leg_error':
-        turn.legs.textContent = `${unified.stage} output: ${unified.error || 'failed'}`;
+        if (unified.slot_id && turn.slots.has(unified.slot_id)) {
+          showSlotError(turn.slots.get(unified.slot_id), unified.error);
+        } else {
+          turn.legs.textContent = `${unified.stage} output: ${unified.error || 'failed'}`;
+        }
         break;
       case 'complete': st.terminal = 1; break;
       case 'error': st.terminal = 1; throw new Error(unified.error || 'The request failed.');
@@ -852,10 +1158,40 @@ function setBusy(busy) {
     ui.temperature, ui.topP, ui.seed, ui.apiKey, ui.imageSize, ui.imageSteps,
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
-    ui.pickAudio, ui.mic, ui.newChat]) {
+    ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots]) {
     control.disabled = busy;
   }
   ui.dot.classList.toggle('busy', busy);
+}
+
+async function imageConfig() {
+  const config = { size: ui.imageSize.value || '512x512', output_format: 'png' };
+  if (ui.imageSteps.value.trim() !== '') {
+    const stepsVal = Number.parseInt(ui.imageSteps.value.trim(), 10);
+    if (Number.isInteger(stepsVal) && stepsVal > 0) config.steps = stepsVal;
+  }
+  const editImageUrl = await readFileAsDataURL(ui.imageFile);
+  if (editImageUrl) config.image = editImageUrl;
+  return config;
+}
+
+function videoConfig() {
+  const config = { size: ui.videoSize.value || '480x320', output_format: 'mp4' };
+  const secVal = Number.parseInt(ui.videoSeconds.value.trim(), 10);
+  if (Number.isInteger(secVal) && secVal > 0) config.seconds = secVal;
+  if (ui.videoFrames.value.trim() !== '') {
+    const frVal = Number.parseInt(ui.videoFrames.value.trim(), 10);
+    if (Number.isInteger(frVal) && frVal > 0) config.num_frames = frVal;
+  }
+  if (ui.videoSteps.value.trim() !== '') {
+    const vsVal = Number.parseInt(ui.videoSteps.value.trim(), 10);
+    if (Number.isInteger(vsVal) && vsVal > 0) config.steps = vsVal;
+  }
+  if (ui.videoGuidance.value.trim() !== '') {
+    const cfgVal = Number(ui.videoGuidance.value);
+    if (Number.isFinite(cfgVal) && cfgVal >= 0) config.guidance_scale = cfgVal;
+  }
+  return config;
 }
 
 async function send() {
@@ -906,44 +1242,48 @@ async function send() {
     const seedVal = Number.parseInt(ui.seed.value.trim(), 10);
     if (Number.isInteger(seedVal)) body.seed = seedVal;
   }
-  const modalities = ['text'];
-  if (ui.image.checked) {
-    modalities.push('image');
-    body.image = { size: ui.imageSize.value || '512x512', output_format: 'png' };
-    if (ui.imageSteps.value.trim() !== '') {
-      const stepsVal = Number.parseInt(ui.imageSteps.value.trim(), 10);
-      if (Number.isInteger(stepsVal) && stepsVal > 0) body.image.steps = stepsVal;
+
+  const modalities = new Set(['text']);
+  const narrativeOn = ui.narrative.checked;
+  const visualMode = ui.visualMode.value || 'auto';
+  if (narrativeOn) {
+    if (visualMode !== 'video') {
+      modalities.add('image');
+      body.image = await imageConfig();
     }
-    const editImageUrl = await readFileAsDataURL(ui.imageFile);
-    if (editImageUrl) body.image.image = editImageUrl;
+    if (visualMode !== 'image') {
+      modalities.add('video');
+      body.video = videoConfig();
+    }
+    const slotsVal = Number.parseInt(ui.maxSlots.value.trim(), 10);
+    body.narrative = {
+      enabled: true,
+      visual_mode: visualMode,
+      max_slots: Number.isInteger(slotsVal) ? Math.min(6, Math.max(1, slotsVal)) : 3,
+    };
+  } else {
+    if (ui.image.checked) {
+      modalities.add('image');
+      body.image = await imageConfig();
+    }
+    if (ui.video.checked) {
+      modalities.add('video');
+      body.video = videoConfig();
+    }
   }
-  if (ui.audio.checked) {
-    modalities.push('audio');
+  const wantAudio = voiceOn || ui.audio.checked;
+  if (wantAudio) {
+    modalities.add('audio');
     body.audio = { voice: ui.voice.value.trim() || 'vivian', format: 'wav' };
     const refAudioUrl = await readFileAsDataURL(ui.refAudio);
     if (refAudioUrl) body.audio.ref_audio = refAudioUrl;
-    // Only audio-only turns stream PCM; mixed image/video turns keep single WAV.
-    if (!ui.image.checked && !ui.video.checked) body.audio.stream = true;
-  }
-  if (ui.video.checked) {
-    modalities.push('video');
-    body.video = { size: ui.videoSize.value || '480x320', output_format: 'mp4' };
-    const secVal = Number.parseInt(ui.videoSeconds.value.trim(), 10);
-    if (Number.isInteger(secVal) && secVal > 0) body.video.seconds = secVal;
-    if (ui.videoFrames.value.trim() !== '') {
-      const frVal = Number.parseInt(ui.videoFrames.value.trim(), 10);
-      if (Number.isInteger(frVal) && frVal > 0) body.video.num_frames = frVal;
-    }
-    if (ui.videoSteps.value.trim() !== '') {
-      const vsVal = Number.parseInt(ui.videoSteps.value.trim(), 10);
-      if (Number.isInteger(vsVal) && vsVal > 0) body.video.steps = vsVal;
-    }
-    if (ui.videoGuidance.value.trim() !== '') {
-      const cfgVal = Number(ui.videoGuidance.value);
-      if (Number.isFinite(cfgVal) && cfgVal >= 0) body.video.guidance_scale = cfgVal;
+    // Global Voice always streams PCM, even with image/video/narrative.
+    // Legacy manual Audio keeps the single-WAV rule on mixed turns.
+    if (voiceOn || (!ui.image.checked && !ui.video.checked && !narrativeOn)) {
+      body.audio.stream = true;
     }
   }
-  if (modalities.length > 1) body.modalities = modalities;
+  if (modalities.size > 1) body.modalities = [...modalities];
 
   const userLabel = [
     text,
@@ -969,13 +1309,7 @@ async function send() {
     userTurn.artifacts.append(thumb);
   }
   turn = addTurn('assistant', '');
-  turn.textEl.classList.add('caret');
-  waveEl = document.createElement('div');
-  waveEl.className = 'wave';
-  waveEl.hidden = !ui.audio.checked;
-  waveEl.innerHTML = '<i></i><i></i><i></i><i></i><i></i>';
-  turn.el.querySelector('.body').append(waveEl);
-  if (ui.audio.checked) player.begin(waveEl);
+  if (body.audio?.stream) player.begin(ui.voiceWave);
 
   controller = new AbortController();
   const st = { seq: 0, terminal: 0, sawUnified: false, done: false, text: '', finish: '', sessionID };
@@ -1031,18 +1365,20 @@ async function send() {
     }
     history.push({ role: 'user', content: userLabel });
     history.push({ role: 'assistant', content: st.text });
-    turn.textEl.classList.remove('caret');
+    turn.tailText?.classList.remove('caret');
     player.end();
     setStatus(st.finish ? `Completed · ${st.finish}` : 'Completed');
     setBusy(false);
   } catch (err) {
     player.stop();
     const aborted = stopped || err.name === 'AbortError' || err.cancelled;
-    turn.textEl.classList.remove('caret');
+    turn.tailText?.classList.remove('caret');
     setBusy(false);
     if (aborted) {
       setStatus('Stopped');
-      if (!turn.text && !turn.artifacts.childElementCount) turn.el.remove();
+      if (!turn.text && !turn.flow.querySelector('.slot') && !turn.artifacts.childElementCount) {
+        turn.el.remove();
+      }
     } else {
       setStatus('Error');
       let msg = err.message || String(err);
@@ -1067,6 +1403,7 @@ ui.send.addEventListener('click', send);
 ui.stop.addEventListener('click', () => {
   if (!running) return;
   stopped = true;
+  player.stop();
   setStatus('Stopping…');
   controller?.abort();
 });
@@ -1078,6 +1415,7 @@ ui.prompt.addEventListener('keydown', (event) => {
 });
 ui.newChat.addEventListener('click', () => {
   if (running) return;
+  player.stop();
   history.length = 0;
   ui.transcript.replaceChildren();
   sessionID = '';

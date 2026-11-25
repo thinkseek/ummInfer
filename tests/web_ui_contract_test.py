@@ -10,7 +10,9 @@ installed, and checks the wire-contract hooks the page must keep:
   * `audio/pcm` playback that honours `sample_rate` and `channels`;
   * image, WAV and MP4 artifact rendering;
   * theme tokens that mirror Theme.swift;
-  * every DOM id the script looks up exists in the markup.
+  * every DOM id the script looks up exists in the markup;
+  * Wave 10 interleaved narrative hooks (`visual_slot`, `/visual/render`,
+    `narrative`, global streaming voice, in-place visual swap).
 
 Usage: python3 -I tests/web_ui_contract_test.py
 """
@@ -43,7 +45,10 @@ def module_scripts(html):
 
 
 def check_markup(html):
-    for tag in ('<main id="transcript">', 'id="prompt"', 'id="send"', 'id="stop"'):
+    for tag in ('<main id="transcript">', 'id="prompt"', 'id="send"', 'id="stop"',
+                'id="voiceToggle"', 'id="voiceWave"', 'id="voiceStatus"',
+                'id="voiceMute"', 'id="voiceStop"', 'id="narrative"',
+                'id="visualMode"', 'id="maxSlots"'):
         require(tag in html, f"missing element: {tag}")
     used = set(re.findall(r"\$\('([^']+)'\)", html))
     declared = set(re.findall(r'id="([^"]+)"', html))
@@ -94,13 +99,52 @@ def check_hooks(script):
     require("'video/mp4'" in script, "the MP4 artifact type must be handled")
     require("body.top_p" in script and "body.seed" in script,
             "sampling controls top_p and seed must be wired")
-    require("body.image.steps" in script and "body.image.image" in script,
+    require("config.steps" in script and "config.image" in script,
             "image steps and edit image data URL must be wired")
     require("body.audio.ref_audio" in script,
             "audio voice-clone ref_audio data URL must be wired")
-    require("body.video.num_frames" in script and "body.video.steps" in script
-            and "body.video.guidance_scale" in script,
+    require("config.num_frames" in script and "config.steps" in script
+            and "config.guidance_scale" in script,
             "video fine-grained controls must be wired")
+
+
+def check_wave10(script):
+    # Global streaming voice bar.
+    require("ummweb.voiceOn" in script,
+            "the global Voice toggle must persist in localStorage")
+    require("body.audio.stream = true" in script,
+            "global voice must request audio.stream")
+    require("player.setMuted" in script, "Mute must control a master gain")
+    require("Stop Voice" in script, "the header must expose Stop Voice")
+
+    # Narrative controls and request shape.
+    require("body.narrative" in script, "the request must carry narrative")
+    require("visual_mode" in script and "max_slots" in script,
+            "narrative must send visual_mode and max_slots")
+    require("ui.narrative.checked" in script, "the Narrative toggle must gate it")
+    require("modalities.add('image')" in script and "modalities.add('video')" in script,
+            "narrative must auto-select visual modalities")
+
+    # Interleaved rendering.
+    require("case 'visual_slot'" in script,
+            "the stream must handle visual_slot events")
+    require("unified.slot_id" in script, "slots must be attributed by slot_id")
+    require("slot_index" in script or "slot-" in script,
+            "visual slots need stable identities")
+    require("turn.tailText" in script,
+            "text must append to the trailing block, then resume below a slot")
+
+    # In-place swap endpoint.
+    require("'/visual/render'" in script or '"/visual/render"' in script,
+            "visual swap must call /visual/render")
+    require("'x-umminfer-kind'" in script or "'X-UmmInfer-Kind'" in script,
+            "visual swap must honour the X-UmmInfer-Kind header")
+    require("'→ Video'" in script and "'→ Image'" in script,
+            "each slot must offer the image/video swap labels")
+    require("'Regenerate'" in script and "'Download'" in script,
+            "each slot must offer Regenerate and Download")
+    require("slot.cache" in script,
+            "swapping back must reuse cached media")
 
 
 def check_theme_tokens(html):
@@ -145,6 +189,7 @@ def main():
         ("markup", lambda: check_markup(html)),
         ("syntax", lambda: check_node(script)),
         ("hooks", lambda: check_hooks(script)),
+        ("wave10", lambda: check_wave10(script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0
