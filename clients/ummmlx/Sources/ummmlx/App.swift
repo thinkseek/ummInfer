@@ -85,7 +85,7 @@ struct RootView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Text("ummmlx")
-                .font(.system(size: theme.titleSize, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
             Circle().fill(model.isRunning ? theme.accent : theme.tertiary)
                 .frame(width: 7, height: 7)
                 .accessibilityHidden(true)
@@ -379,23 +379,31 @@ struct RootView: View {
                         .foregroundStyle(theme.danger)
                 }
             }
-            .frame(maxWidth: 620, alignment: .leading)
+            .frame(maxWidth: 660, alignment: .leading)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(turn.role == .user ? "user-message" : "assistant-message")
             if turn.role == .assistant { Spacer(minLength: 40) }
         }
     }
 
+    @ViewBuilder
     private func textBubble(_ text: String, role: ChatTurn.Role) -> some View {
-        Text(text)
-            .font(.system(size: theme.bodySize))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 10)
-            .background(role == .user ? theme.ink : theme.surface)
-            .foregroundStyle(role == .user ? theme.onInk : theme.text)
-            .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+        Group {
+            if role == .assistant {
+                MarkdownTextView(text: text, theme: theme)
+            } else {
+                Text(text)
+                    .font(.system(size: theme.bodySize))
+                    .lineSpacing(3.5)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(role == .user ? theme.ink : theme.surface)
+        .foregroundStyle(role == .user ? theme.onInk : theme.text)
+        .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
     }
 
     /// One inline narrative visual card: prompt caption, the active render, the

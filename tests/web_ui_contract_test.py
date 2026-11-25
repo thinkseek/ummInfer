@@ -160,6 +160,22 @@ def check_wave11(script):
             "an image slot with a source frame must relabel the swap button")
 
 
+def check_markdown(html, script):
+    # Assistant bubbles render balanced Markdown via safe DOM nodes (no innerHTML).
+    require("renderMarkdownInto(" in script,
+            "assistant prose must render through renderMarkdownInto")
+    require("safeLinkURL(" in script,
+            "markdown links must be filtered through safeLinkURL")
+    require(".innerHTML" not in script,
+            "the web client must not assign innerHTML")
+    require(".md h1 { font-size: 15.5px;" in html,
+            "markdown h1 must stay compact and balanced (15.5px)")
+    require(".md h2 { font-size: 14.5px;" in html,
+            "markdown h2 must stay balanced (14.5px)")
+    require(".md h3 { font-size: 13.5px;" in html,
+            "markdown h3 must stay balanced (13.5px)")
+
+
 def check_theme_tokens(html):
     """The CSS palette mirrors Theme.swift; both files must agree."""
     theme = THEME.read_text(encoding="utf-8")
@@ -204,6 +220,7 @@ def main():
         ("hooks", lambda: check_hooks(script)),
         ("wave10", lambda: check_wave10(script)),
         ("wave11", lambda: check_wave11(script)),
+        ("markdown", lambda: check_markdown(html, script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0

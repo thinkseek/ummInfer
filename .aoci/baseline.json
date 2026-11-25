@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-25T08:17:58Z",
+  "updated_at": "2026-11-25T08:23:14Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "ad20daf951d5aa2cb43b6918170b57ab79b124d25a85f86160e990daedcc1df1",
-      "size": 204455,
-      "normalized_sha256": "ad20daf951d5aa2cb43b6918170b57ab79b124d25a85f86160e990daedcc1df1"
+      "sha256": "bfc8f876c2b9d66153a41883e4154cac6b5b049abd6d315febfe7c585b58bc64",
+      "size": 205717,
+      "normalized_sha256": "bfc8f876c2b9d66153a41883e4154cac6b5b049abd6d315febfe7c585b58bc64"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -107,9 +107,9 @@
     },
     "clients/ummmlx/Sources/ummmlx/App.swift": {
       "role": "index",
-      "sha256": "ff2a003b72d1964d9c4e48fd4ae66733ade0cb42521e81a2defd1d0214a8fa5d",
-      "size": 35749,
-      "normalized_sha256": "ff2a003b72d1964d9c4e48fd4ae66733ade0cb42521e81a2defd1d0214a8fa5d"
+      "sha256": "66b8511427decc75d85d697b2f6822271aa986b0b2ec008a3e9b99bfca066d81",
+      "size": 35959,
+      "normalized_sha256": "66b8511427decc75d85d697b2f6822271aa986b0b2ec008a3e9b99bfca066d81"
     },
     "clients/ummmlx/Sources/ummmlx/AudioPlayback.swift": {
       "role": "index",
@@ -140,6 +140,12 @@
       "sha256": "72ee104587985a1638ec8bb77a2238dd9525a19b650bf479fbfe2fe4d84000fc",
       "size": 15010,
       "normalized_sha256": "72ee104587985a1638ec8bb77a2238dd9525a19b650bf479fbfe2fe4d84000fc"
+    },
+    "clients/ummmlx/Sources/ummmlx/MarkdownView.swift": {
+      "role": "index",
+      "sha256": "c45c7e850da1ab9d3f00353fdf319da9661689a205047792fb32191ee936d56d",
+      "size": 19675,
+      "normalized_sha256": "c45c7e850da1ab9d3f00353fdf319da9661689a205047792fb32191ee936d56d"
     },
     "clients/ummmlx/Sources/ummmlx/Speech.swift": {
       "role": "index",
@@ -194,6 +200,12 @@
       "sha256": "59b4fdda5bfa0faef05588b55a1cec45971de875b4fe7859e8ffc7a2a50b1a32",
       "size": 1908,
       "normalized_sha256": "59b4fdda5bfa0faef05588b55a1cec45971de875b4fe7859e8ffc7a2a50b1a32"
+    },
+    "clients/ummmlx/Tests/ummmlxTests/MarkdownTests.swift": {
+      "role": "index",
+      "sha256": "4779ae252fc4f446375d3dde2ca07dab017570aed45c4abd2a5b78c0bebdaa52",
+      "size": 2852,
+      "normalized_sha256": "4779ae252fc4f446375d3dde2ca07dab017570aed45c4abd2a5b78c0bebdaa52"
     },
     "clients/ummmlx/Tests/ummmlxTests/SpeechControllerTests.swift": {
       "role": "index",
@@ -2229,9 +2241,9 @@
     },
     "tests/web_ui_contract_test.py": {
       "role": "observe",
-      "sha256": "c83f0c56bb1bb8a9abfda70fa9eb72c8c76b16e108e04bcb090e3d30c1674515",
-      "size": 10212,
-      "normalized_sha256": "c83f0c56bb1bb8a9abfda70fa9eb72c8c76b16e108e04bcb090e3d30c1674515"
+      "sha256": "97ab95b57bab81cd31d7544ecbbf9ec5bf069f2d6f433df4d167ba5b2222e3ed",
+      "size": 11038,
+      "normalized_sha256": "97ab95b57bab81cd31d7544ecbbf9ec5bf069f2d6f433df4d167ba5b2222e3ed"
     },
     "tools/audio_analyze.py": {
       "role": "index",
@@ -2259,9 +2271,9 @@
     },
     "web/index.html": {
       "role": "index",
-      "sha256": "a27b27a9d983d0503489f1ed167721ef18722670a39f032ca0bef2ac2c956ec7",
-      "size": 55665,
-      "normalized_sha256": "a27b27a9d983d0503489f1ed167721ef18722670a39f032ca0bef2ac2c956ec7"
+      "sha256": "53dde7bf6e951fdb9105db3ee9286f1a0440fa8eecc535badfeaebe257551ded",
+      "size": 66569,
+      "normalized_sha256": "53dde7bf6e951fdb9105db3ee9286f1a0440fa8eecc535badfeaebe257551ded"
     }
   },
   "managed_scope": {

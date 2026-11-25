@@ -33,7 +33,7 @@
     display: flex; align-items: center; gap: 10px; padding: 14px 16px;
     background: var(--surface);
   }
-  header h1 { margin: 0; font-size: var(--f-title); font-weight: 600; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tertiary); transition: background .2s; }
   .dot.busy { background: var(--accent); }
   #status { font-size: var(--f-caption); color: var(--secondary); }
@@ -95,25 +95,86 @@
     display: block; text-align: center; color: var(--tertiary);
     font-size: var(--f-section); padding-top: 18vh;
   }
-  .turn { display: flex; flex-direction: column; gap: 6px; max-width: 680px; margin: 0 0 18px; }
+  .turn { display: flex; flex-direction: column; gap: 6px; max-width: 720px; margin: 0 0 18px; }
   .turn.user { margin-left: auto; align-items: flex-end; }
   .turn .meta { font-size: var(--f-caption); font-weight: 500; color: var(--secondary); }
   .turn .body { display: flex; flex-direction: column; gap: 8px; width: 100%; }
   .flow { display: flex; flex-direction: column; gap: 10px; }
   .block.text {
-    white-space: pre-wrap; word-break: break-word; padding: 10px 13px;
+    white-space: pre-wrap; word-break: break-word; padding: 11px 14px;
     border-radius: var(--r-card); background: var(--surface);
-    animation: rise .18s ease-out;
+    line-height: 1.62; animation: rise .18s ease-out;
   }
   .turn.user .block.text { background: var(--ink); color: var(--on-ink); }
+  .block.text.md { white-space: normal; }
   .block.text:empty:not(.caret) { display: none; }
   @keyframes rise { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+  /* Balanced, compact Markdown typography (never oversized headings) */
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
+  .md p { margin: 0 0 8px; line-height: 1.62; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+    margin: 12px 0 6px; font-weight: 600; line-height: 1.4; color: var(--text);
+  }
+  .md h1 { font-size: 15.5px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .md h2 { font-size: 14.5px; }
+  .md h3 { font-size: 13.5px; }
+  .md h4 { font-size: var(--f-body); }
+  .md h5, .md h6 { font-size: var(--f-body); font-weight: 500; color: var(--secondary); }
+  .md ul, .md ol { margin: 4px 0 8px; padding-left: 1.35em; }
+  .md li { margin: 3px 0; line-height: 1.6; }
+  .md li > p { margin: 0; }
+  .md blockquote {
+    margin: 6px 0 8px; padding: 2px 0 2px 11px;
+    border-left: 2.5px solid color-mix(in srgb, var(--accent) 65%, transparent);
+    color: var(--secondary);
+  }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+  .md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  .md strong { font-weight: 600; }
+  .md code {
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--hover); padding: 1px 5px; border-radius: 4px;
+    border: 1px solid var(--line);
+  }
+  .md .md-code {
+    margin: 8px 0; border: 1px solid var(--line); border-radius: var(--r-control);
+    background: var(--bg); overflow: hidden;
+  }
+  .md .md-code-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 10px; background: var(--hover); border-bottom: 1px solid var(--line);
+    font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--secondary);
+  }
+  .md .md-code-copy {
+    border: none; background: transparent; padding: 1px 6px; font-size: 11px;
+    color: var(--secondary); border-radius: 4px;
+  }
+  .md .md-code-copy:hover { background: var(--line); color: var(--text); }
+  .md pre {
+    margin: 0; padding: 9px 11px; overflow-x: auto;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .md pre code {
+    background: transparent; border: none; padding: 0; font: inherit;
+  }
+  .md .md-table-wrap { margin: 8px 0; overflow-x: auto; }
+  .md table {
+    border-collapse: collapse; font-size: 12.5px; width: auto; min-width: 60%;
+    background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-control);
+  }
+  .md th, .md td {
+    padding: 5px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top;
+  }
+  .md th { background: var(--hover); font-weight: 600; }
 
   .caret::after {
     content: ""; display: inline-block; width: 2px; height: 1em;
     margin-left: 2px; vertical-align: -2px; background: var(--accent);
     animation: blink 1s steps(1) infinite;
   }
+  .block.text.md.caret::after { display: inline-block; margin-top: 2px; }
   @keyframes blink { 50% { opacity: 0; } }
 
   /* Interleaved visual slot cards */
@@ -647,16 +708,262 @@ function scrollToEnd() {
   ui.transcript.scrollTop = ui.transcript.scrollHeight;
 }
 
+// ---------- balanced Markdown renderer (zero-dependency, XSS-safe DOM) ----------
+
+function safeLinkURL(raw) {
+  const s = String(raw || '').trim();
+  if (/^(https?:|mailto:)/i.test(s)) return s;
+  return '';
+}
+
+function appendInlineMarkdown(parent, text) {
+  const tokenRe = /`([^`\n]+)`|\[([^\]\n]+)\]\(([^)\s]+)\)|\*\*([^*\n]+(?:\*(?!\*)[^*\n]*)*)\*\*|~~([^~\n]+)~~|\*([^*\n]+)\*/g;
+  let last = 0;
+  let match;
+  while ((match = tokenRe.exec(text)) !== null) {
+    if (match.index > last) {
+      parent.append(document.createTextNode(text.slice(last, match.index)));
+    }
+    if (match[1] !== undefined) {
+      const code = document.createElement('code');
+      code.textContent = match[1];
+      parent.append(code);
+    } else if (match[2] !== undefined) {
+      const href = safeLinkURL(match[3]);
+      if (href) {
+        const a = document.createElement('a');
+        a.href = href;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        appendInlineMarkdown(a, match[2]);
+        parent.append(a);
+      } else {
+        parent.append(document.createTextNode(match[0]));
+      }
+    } else if (match[4] !== undefined) {
+      const strong = document.createElement('strong');
+      appendInlineMarkdown(strong, match[4]);
+      parent.append(strong);
+    } else if (match[5] !== undefined) {
+      const del = document.createElement('del');
+      appendInlineMarkdown(del, match[5]);
+      parent.append(del);
+    } else if (match[6] !== undefined) {
+      const em = document.createElement('em');
+      appendInlineMarkdown(em, match[6]);
+      parent.append(em);
+    }
+    last = tokenRe.lastIndex;
+  }
+  if (last < text.length) {
+    parent.append(document.createTextNode(text.slice(last)));
+  }
+}
+
+function appendInlineLines(parent, lines) {
+  for (let i = 0; i < lines.length; i += 1) {
+    if (i > 0) parent.append(document.createElement('br'));
+    appendInlineMarkdown(parent, lines[i]);
+  }
+}
+
+function parseTableRow(line) {
+  if (!line.includes('|')) return null;
+  let inner = line.trim();
+  if (inner.startsWith('|')) inner = inner.slice(1);
+  if (inner.endsWith('|')) inner = inner.slice(0, -1);
+  const cells = inner.split('|').map((c) => c.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function isTableSeparator(line, cols) {
+  const cells = parseTableRow(line);
+  if (!cells || cells.length !== cols) return false;
+  return cells.every((c) => /^:?-{3,}:?$/.test(c));
+}
+
+function renderMarkdownInto(el, source) {
+  const frag = document.createDocumentFragment();
+  const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+
+  while (i < lines.length) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed) { i += 1; continue; }
+
+    // Fenced code block (``` or ~~~), resilient to unclosed fences while streaming.
+    const fenceMatch = /^(`{3,}|~{3,})\s*([^\s`]*)/.exec(trimmed);
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0];
+      const len = fenceMatch[1].length;
+      const lang = fenceMatch[2] || '';
+      i += 1;
+      const codeLines = [];
+      const closeRe = new RegExp(`^${marker}{${len},}$`);
+      while (i < lines.length) {
+        if (closeRe.test(lines[i].trim())) { i += 1; break; }
+        codeLines.push(lines[i]);
+        i += 1;
+      }
+      const box = document.createElement('div');
+      box.className = 'md-code';
+      const head = document.createElement('div');
+      head.className = 'md-code-head';
+      const badge = document.createElement('span');
+      badge.textContent = (lang || 'code').toLowerCase();
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'md-code-copy';
+      copy.textContent = 'Copy';
+      const codeText = codeLines.join('\n');
+      copy.addEventListener('click', () => {
+        navigator.clipboard?.writeText(codeText).then(() => {
+          copy.textContent = 'Copied';
+          setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
+        }).catch(() => {});
+      });
+      head.append(badge, copy);
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      code.textContent = codeText;
+      pre.append(code);
+      box.append(head, pre);
+      frag.append(box);
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^([-*_])(?:\s*\1){2,}$/.test(trimmed)) {
+      frag.append(document.createElement('hr'));
+      i += 1;
+      continue;
+    }
+
+    // ATX heading (#..######)
+    const headMatch = /^(#{1,6})\s+(.+?)\s*#*$/.exec(trimmed);
+    if (headMatch) {
+      const h = document.createElement('h' + headMatch[1].length);
+      appendInlineMarkdown(h, headMatch[2].trim());
+      frag.append(h);
+      i += 1;
+      continue;
+    }
+
+    // GFM pipe table
+    if (i + 1 < lines.length) {
+      const headers = parseTableRow(trimmed);
+      if (headers && isTableSeparator(lines[i + 1].trim(), headers.length)) {
+        i += 2;
+        const wrap = document.createElement('div');
+        wrap.className = 'md-table-wrap';
+        const table = document.createElement('table');
+        const thead = document.createElement('thead');
+        const htr = document.createElement('tr');
+        for (const hCell of headers) {
+          const th = document.createElement('th');
+          appendInlineMarkdown(th, hCell);
+          htr.append(th);
+        }
+        thead.append(htr);
+        table.append(thead);
+        const tbody = document.createElement('tbody');
+        while (i < lines.length) {
+          const rTrim = lines[i].trim();
+          if (!rTrim) break;
+          const cells = parseTableRow(rTrim);
+          if (!cells) break;
+          const tr = document.createElement('tr');
+          for (let c = 0; c < headers.length; c += 1) {
+            const td = document.createElement('td');
+            appendInlineMarkdown(td, cells[c] ?? '');
+            tr.append(td);
+          }
+          tbody.append(tr);
+          i += 1;
+        }
+        table.append(tbody);
+        wrap.append(table);
+        frag.append(wrap);
+        continue;
+      }
+    }
+
+    // Blockquote
+    if (trimmed.startsWith('>')) {
+      const qLines = [];
+      while (i < lines.length && lines[i].trim().startsWith('>')) {
+        qLines.push(lines[i].trim().replace(/^>\s?/, ''));
+        i += 1;
+      }
+      const bq = document.createElement('blockquote');
+      appendInlineLines(bq, qLines);
+      frag.append(bq);
+      continue;
+    }
+
+    // Unordered or ordered list
+    const listStart = /^(\s*)([-*+]|\d{1,4}[.)])\s+(.+)$/.exec(raw);
+    if (listStart) {
+      const ordered = /^\d/.test(listStart[2]);
+      const listEl = document.createElement(ordered ? 'ol' : 'ul');
+      while (i < lines.length) {
+        const cur = lines[i];
+        if (!cur.trim()) break;
+        const m = /^(\s*)([-*+]|\d{1,4}[.)])\s+(.+)$/.exec(cur);
+        if (m && (/^\d/.test(m[2]) === ordered)) {
+          const li = document.createElement('li');
+          appendInlineMarkdown(li, m[3]);
+          listEl.append(li);
+          i += 1;
+        } else if (/^(?:  |\t)/.test(cur) && listEl.lastElementChild) {
+          listEl.lastElementChild.append(document.createElement('br'));
+          appendInlineMarkdown(listEl.lastElementChild, cur.trim());
+          i += 1;
+        } else {
+          break;
+        }
+      }
+      frag.append(listEl);
+      continue;
+    }
+
+    // Paragraph
+    const para = [raw];
+    i += 1;
+    while (i < lines.length) {
+      const nxt = lines[i];
+      const nt = nxt.trim();
+      if (!nt || /^(`{3,}|~{3,})/.test(nt) || /^([-*_])(?:\s*\1){2,}$/.test(nt)
+          || /^#{1,6}\s+/.test(nt) || nt.startsWith('>')
+          || /^\s*(?:[-*+]|\d{1,4}[.)])\s+/.test(nxt)) break;
+      if (i + 1 < lines.length) {
+        const maybeHdr = parseTableRow(nt);
+        if (maybeHdr && isTableSeparator(lines[i + 1].trim(), maybeHdr.length)) break;
+      }
+      para.push(nxt);
+      i += 1;
+    }
+    const p = document.createElement('p');
+    appendInlineLines(p, para);
+    frag.append(p);
+  }
+
+  el.replaceChildren(frag);
+}
+
 function appendText(delta) {
   if (!turn) return;
   if (!turn.text) setStatus('Streaming…');
   turn.text += delta;
   if (!turn.tailText) {
     turn.tailText = document.createElement('div');
-    turn.tailText.className = 'block text caret';
+    turn.tailText.className = 'block text md caret';
+    turn.tailText._raw = '';
     turn.flow.append(turn.tailText);
   }
-  turn.tailText.textContent += delta;
+  turn.tailText._raw += delta;
+  renderMarkdownInto(turn.tailText, turn.tailText._raw);
   scrollToEnd();
 }
 
