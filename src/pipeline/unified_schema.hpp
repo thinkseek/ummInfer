@@ -35,6 +35,7 @@ struct ValidatedSubmission {
   bool narrative_enabled = false;
   std::string narrative_visual_mode = "auto";
   int narrative_max_slots = 3;
+  bool narrative_allow_text_only = false;
   std::string user_text;
 };
 

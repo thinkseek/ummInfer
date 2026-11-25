@@ -648,6 +648,7 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
   bool narrative_enabled = false;
   std::string narrative_mode = "auto";
   int64_t narrative_slots = 3;
+  bool narrative_allow_text_only = false;
   // The contract gates narrative on the explicit `modalities` array, not on a
   // top-level image/video object that also enables an output leg.
   bool modalities_image = false;
@@ -685,6 +686,14 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
         return false;
       }
       narrative_slots = narrative["max_slots"].get<int64_t>();
+    }
+    if (narrative.contains("allow_text_only") &&
+        !narrative["allow_text_only"].is_null()) {
+      if (!narrative["allow_text_only"].is_boolean()) {
+        error = "narrative.allow_text_only must be a boolean";
+        return false;
+      }
+      narrative_allow_text_only = narrative["allow_text_only"].get<bool>();
     }
   }
   if (body.contains("modalities") && !body["modalities"].is_null()) {
@@ -780,6 +789,9 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     narrative["enabled"] = Value(true);
     narrative["visual_mode"] = Value(narrative_mode);
     narrative["max_slots"] = Value(narrative_slots);
+    if (narrative_allow_text_only) {
+      narrative["allow_text_only"] = Value(true);
+    }
     engine_inputs["narrative"] = Value(std::move(narrative));
   }
   engine_inputs["output_modalities"] = Value(std::move(selected));

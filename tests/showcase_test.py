@@ -254,7 +254,12 @@ class ShowcaseSuiteTest(unittest.TestCase):
         j4 = journeys["journey_4_modality_routing_contrast"]
         self.assertEqual(
             j4["shared_options"]["narrative"],
-            {"enabled": True, "visual_mode": "auto", "max_slots": 2},
+            {
+                "enabled": True,
+                "visual_mode": "auto",
+                "max_slots": 2,
+                "allow_text_only": True,
+            },
         )
         self.assertEqual(j4["pure_text_case"]["expected_visual_slots"], 0)
         self.assertGreaterEqual(j4["visual_scene_case"]["expected_min_visual_slots"], 1)

@@ -75,7 +75,8 @@
         "narrative": {
           "enabled": true,
           "visual_mode": "auto",
-          "max_slots": 2
+          "max_slots": 2,
+          "allow_text_only": true
         },
         "image": {
           "size": "512x512",

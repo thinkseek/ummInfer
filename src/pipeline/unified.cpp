@@ -226,6 +226,7 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.narrative_enabled = parsed.narrative_enabled;
   record.narrative_visual_mode = parsed.narrative_visual_mode;
   record.narrative_max_slots = parsed.narrative_max_slots;
+  record.narrative_allow_text_only = parsed.narrative_allow_text_only;
   if (record.narrative_enabled) {
     record.narrative_parser = std::make_shared<NarrativeStreamParser>();
   }
@@ -1178,9 +1179,12 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
           }
           record.vlm_done = true;
           // Contract fallback: narrative enabled but the VLM produced no
-          // marker. Render one visual from the clean prose.
+          // marker. Render one visual from the clean prose unless the caller
+          // opted into autonomous text-only routing (`allow_text_only: true`).
           if (record.narrative_enabled && record.slot_legs.empty() &&
-              !record.vlm_text.empty()) {
+              !record.vlm_text.empty() &&
+              !(record.narrative_allow_text_only &&
+                record.narrative_visual_mode == "auto")) {
             const std::string kind =
                 record.narrative_visual_mode == "video"
                     ? kVideoStageId

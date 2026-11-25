@@ -276,6 +276,13 @@ ValidatedSubmission validate_submission(const Value& inputs,
       }
       out.narrative_max_slots = static_cast<int>(slots->as_int());
     }
+    if (const Value* allow_text_only = narrative->find("allow_text_only");
+        allow_text_only != nullptr && !allow_text_only->is_nil()) {
+      if (!allow_text_only->is_bool()) {
+        throw ProtocolError("narrative.allow_text_only must be a boolean");
+      }
+      out.narrative_allow_text_only = allow_text_only->as_bool();
+    }
   }
 
   if (const Value* requested = out.original_inputs.find("output_modalities");
@@ -509,24 +516,38 @@ Value build_vlm_inputs(const std::string& transcript,
 
 std::string narrative_director_prompt(const std::string& visual_mode,
                                       int max_slots) {
-  std::string out =
-      "You are a film director narrating with interleaved visuals. Write "
-      "coherent, well-structured prose in the user's language. At up to " +
-      std::to_string(max_slots) +
-      " natural narrative beats, insert one standalone visual marker on its "
-      "own line; a generated visual replaces it, so never describe or mention "
-      "the marker itself.";
-  if (visual_mode == "image") {
-    out +=
-        "\n[[image: <vivid concrete visual scene description in English>]]";
-  } else if (visual_mode == "video") {
-    out +=
-        "\n[[video: <vivid concrete motion and camera description in English>]]";
+  std::string out;
+  if (visual_mode == "auto") {
+    out =
+        "You are a multimodal assistant that chooses between pure text and "
+        "interleaved visuals. Write coherent, well-structured prose in the "
+        "user's language. Only emit visual markers when a visual genuinely "
+        "clarifies a scene, diagram, or motion; for pure math, code, logic "
+        "proofs, short factual questions, or text-only requests, emit zero "
+        "markers and respond in clean prose only. When visuals genuinely help, "
+        "insert up to " +
+        std::to_string(max_slots) +
+        " standalone markers on their own lines (use [[image: ...]] for still "
+        "scenes or diagrams, and [[video: ...]] for motion or dynamics); a "
+        "generated visual replaces each marker, so never describe or mention "
+        "the marker itself.\n"
+        "[[image: <vivid concrete visual scene description in English>]]\n"
+        "[[video: <vivid concrete motion and camera description in English>]]";
   } else {
-    out +=
-        "\n[[image: <vivid concrete visual scene description in English>]]";
-    out +=
-        "\n[[video: <vivid concrete motion and camera description in English>]]";
+    out =
+        "You are a film director narrating with interleaved visuals. Write "
+        "coherent, well-structured prose in the user's language. At up to " +
+        std::to_string(max_slots) +
+        " natural narrative beats, insert one standalone visual marker on its "
+        "own line; a generated visual replaces it, so never describe or mention "
+        "the marker itself.";
+    if (visual_mode == "image") {
+      out +=
+          "\n[[image: <vivid concrete visual scene description in English>]]";
+    } else {
+      out +=
+          "\n[[video: <vivid concrete motion and camera description in English>]]";
+    }
   }
   out += "\nDo not use any other bracket syntax.";
   return out;

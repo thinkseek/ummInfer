@@ -384,6 +384,7 @@ class UnifiedEngine {
     bool narrative_enabled = false;
     std::string narrative_visual_mode = "auto";
     int narrative_max_slots = 0;
+    bool narrative_allow_text_only = false;
     std::shared_ptr<NarrativeStreamParser> narrative_parser;
     std::vector<OutputLeg> slot_legs;
     int narrative_next_slot = 0;

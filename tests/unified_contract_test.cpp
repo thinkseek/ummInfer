@@ -8536,6 +8536,36 @@ void test_narrative_max_slots_and_zero_marker_fallback() {
     check(engine.wait(id, 5.0), "fallback request did not complete");
     engine.release(id);
   }
+  {
+    // Autonomous text-only routing: with allow_text_only=true in auto mode, a
+    // zero-marker VLM answer finishes cleanly without dispatching any visual.
+    Harness h("narrativeallowtextonly");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    StagePayload req = narrative_request(true, true, false, "auto", 2);
+    req.request.inputs["narrative"]["allow_text_only"] = Value(true);
+    const std::string id = engine.submit(std::move(req));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "allow_text_only request did not reach the VLM");
+    if (!vlm) return;
+    h.complete(vlm->request_id, "vlm", true,
+               text_result("sqrt(2) is irrational by integer parity."));
+    check(engine.wait(id, 5.0),
+          "allow_text_only zero-marker request did not complete immediately");
+    size_t visual_slots = 0;
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVisualSlot) ++visual_slots;
+    }
+    check(visual_slots == 0,
+          "allow_text_only=true must not dispatch a fallback visual slot");
+    const auto terminal = log.terminal_for(id);
+    check(terminal.has_value() && terminal->kind == UnifiedEvent::Kind::kComplete,
+          "allow_text_only zero-marker request did not terminate with complete");
+    engine.release(id);
+  }
 }
 
 // Cancel mid-narrative broadcasts to every slot child and to streaming TTS.
