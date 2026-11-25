@@ -123,6 +123,8 @@ struct VideoOutput {
   std::optional<double> guidance_scale;
   std::optional<int64_t> seed;
   std::string output_format = "mp4";
+  // Optional data:image/...;base64,... first frame for native I2V.
+  std::string image;
 };
 
 // One delivered generated artifact, fully decoded and checksum-verified.

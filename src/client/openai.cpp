@@ -501,6 +501,15 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     if (request.video->seed && *request.video->seed < 0) {
       throw Error(ErrorCode::kConfig, "video.seed must not be negative");
     }
+    if (!request.video->image.empty()) {
+      const size_t comma = request.video->image.find(',');
+      if (request.video->image.rfind("data:image/", 0) != 0 ||
+          comma == std::string::npos ||
+          request.video->image.substr(0, comma).find(";base64") == std::string::npos) {
+        throw Error(ErrorCode::kConfig,
+                    "video.image must be a data:image/...;base64,... URL");
+      }
+    }
   }
   const bool mixed_output = image_output || audio_output || video_output;
   const Milliseconds timeout = request.timeout.count() > 0 ? request.timeout : config_.timeout;
@@ -555,6 +564,7 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
         video["guidance_scale"] = *request.video->guidance_scale;
       }
       if (request.video->seed) video["seed"] = *request.video->seed;
+      if (!request.video->image.empty()) video["image"] = request.video->image;
       body["video"] = std::move(video);
     }
     if (request.temperature) body["temperature"] = *request.temperature;

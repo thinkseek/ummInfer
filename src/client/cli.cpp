@@ -103,7 +103,8 @@ void usage(const std::string& command, std::ostream& out) {
            "        [--image-format png|jpeg]]  generated/edited image\n"
            "       [--video-out PATH [--video-prompt TEXT] [--video-size WxH]\n"
            "        [--video-seconds N] [--video-fps N] [--video-frames N]\n"
-           "        [--video-steps N] [--video-guidance X] [--video-seed N]]  generated video\n";
+           "        [--video-steps N] [--video-guidance X] [--video-seed N]\n"
+           "        [--video-image PATH]]  generated video\n";
   } else if (command == "speech") {
     out << "usage: umm-infer speech --url URL --model M --text TEXT --out PATH "
            "[--voice NAME] [--format wav|pcm] [--ref-audio PATH] [--timeout-ms N]\n";
@@ -398,7 +399,8 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
                    "image-out", "image-prompt", "image-size", "image-steps",
                    "image-ref", "image-seed", "image-format", "video-out",
                    "video-prompt", "video-size", "video-seconds", "video-fps",
-                   "video-frames", "video-steps", "video-guidance", "video-seed"},
+                   "video-frames", "video-steps", "video-guidance", "video-seed",
+                   "video-image"},
                   {"stream"}, {"image-url", "video-url"});
   if (options.help) {
     usage("chat", std::cout);
@@ -560,13 +562,23 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
       output.seed = integer(options, "video-seed", 0, 0,
                             std::numeric_limits<int64_t>::max());
     }
+    if (options.has("video-image")) {
+      const std::string ref_path = options.get("video-image");
+      const std::string mime = image_content_type(ref_path);
+      if (mime.rfind("image/", 0) != 0) {
+        throw UsageError("--video-image must be a .png, .jpg, .jpeg, or .webp file");
+      }
+      const std::string bytes = read_limited(ref_path, 16u << 20, "video-image");
+      output.image = "data:" + mime + ";base64," + detail::base64_encode(bytes);
+    }
     check_output(video_out);
     add_modality("video");
     request.video = std::move(output);
   } else if (options.has("video-prompt") || options.has("video-size") ||
              options.has("video-seconds") || options.has("video-fps") ||
              options.has("video-frames") || options.has("video-steps") ||
-             options.has("video-guidance") || options.has("video-seed")) {
+             options.has("video-guidance") || options.has("video-seed") ||
+             options.has("video-image")) {
     throw UsageError("video options require --video-out");
   }
 

@@ -388,6 +388,8 @@ def test_speech_subcommand(binary, base, workdir):
 def test_chat_wave9_multimodal_flags(binary, base, workdir):
     img_ref = workdir / "src.png"
     img_ref.write_bytes(PNG_ONE)
+    vid_ref = workdir / "frame.png"
+    vid_ref.write_bytes(PNG_ONE)
     aud_ref = workdir / "voice.wav"
     aud_ref.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
     img_out = workdir / "chat-edit.png"
@@ -404,6 +406,7 @@ def test_chat_wave9_multimodal_flags(binary, base, workdir):
         "--video-out", str(vid_out), "--video-prompt", "waves",
         "--video-size", "480x320", "--video-fps", "16", "--video-frames", "13",
         "--video-steps", "15", "--video-guidance", "5.0", "--video-seed", "9",
+        "--video-image", str(vid_ref),
     ])
     require(res.returncode == 0, f"chat wave9 failed: {res.stderr}")
     [entry] = take()
@@ -417,6 +420,9 @@ def test_chat_wave9_multimodal_flags(binary, base, workdir):
     require(req["video"]["num_frames"] == 13 and req["video"]["steps"] == 15 and
             req["video"]["guidance_scale"] == 5.0 and req["video"]["seed"] == 9,
             f"video opts: {req['video']}")
+    require(req["video"]["image"].startswith("data:image/png;base64,"), "video.image data URL")
+    require(base64.b64decode(req["video"]["image"].split(",", 1)[1]) == PNG_ONE,
+            "video.image bytes")
     require(img_out.read_bytes() == EDITED, "chat --image-out mismatch")
     require(aud_out.read_bytes().startswith(b"RIFF"), "chat --audio-out mismatch")
     require(vid_out.read_bytes() == MP4, "chat --video-out mismatch")

@@ -7391,6 +7391,8 @@ void test_public_http_wave7_media_passthrough_and_tts_chunk_meta() {
   const std::string wav_data_url = "data:audio/wav;base64," + wav_b64;
   const std::string img_data_url =
       "data:image/png;base64," + util::base64_encode("PNGDATA");
+  const std::string vid_img_data_url =
+      "data:image/jpeg;base64," + util::base64_encode("VIDFRAME");
 
   // 1. Mixed chat with image.steps/image.image, video.num_frames/steps/guidance_scale,
   //    and audio.ref_audio forwards every field intact.
@@ -7422,6 +7424,7 @@ void test_public_http_wave7_media_passthrough_and_tts_chunk_meta() {
           {"steps", 15},
           {"guidance_scale", 4.5},
           {"seed", 7},
+          {"image", vid_img_data_url},
           {"output_format", "mp4"}}}};
     auto fut = std::async(std::launch::async, [&] {
       return post_json("/v1/chat/completions", body);
@@ -7467,6 +7470,8 @@ void test_public_http_wave7_media_passthrough_and_tts_chunk_meta() {
       check(in.find("guidance_scale") &&
                 in.find("guidance_scale")->as_double() == 4.5,
             "video.guidance_scale did not reach video stage");
+      check(in.find("image") && in.find("image")->as_str() == vid_img_data_url,
+            "video.image data URL did not reach video stage");
       h.complete(vid->request_id, "video", true,
                  artifact_result("video", "video/mp4", "MP4DATA"));
     }
@@ -7529,6 +7534,10 @@ void test_public_http_wave7_media_passthrough_and_tts_chunk_meta() {
           "video.steps=101 must return 400");
     check(bad_chat({{"video", {{"guidance_scale", -1.0}}}}) == 400,
           "negative video.guidance_scale must return 400");
+    check(bad_chat({{"video", {{"image", "http://example.com/f.png"}}}}) == 400,
+          "video.image http URL must return 400");
+    check(bad_chat({{"video", {{"image", 42}}}}) == 400,
+          "video.image non-string must return 400");
   }
 
   // 4. Streamed TTS chunk dynamically propagates sample_rate and channels.
@@ -8338,9 +8347,37 @@ void test_public_http_visual_render() {
   check(status_of({{"kind", "image"}, {"prompt", "x"}, {"num_frames", 13}}) ==
             400,
         "visual render with a video field on kind image must return 400");
+  // Native I2V: a valid image data URL on kind video reaches the video stage
+  // with inputs["image"] forwarded.
+  {
+    const std::string i2v_image =
+        "data:image/png;base64," + util::base64_encode("first-frame-png");
+    auto future = std::async(std::launch::async, [&] {
+      return post({{"kind", "video"},
+                   {"prompt", "animate the fox"},
+                   {"image", i2v_image}});
+    });
+    auto submit = h.next_submit(h.video_recv);
+    check(submit.has_value(), "I2V video render did not reach the video stage");
+    if (submit) {
+      StagePayload p = StagePayload::from_value(submit->data);
+      check(p.request.inputs.find("image") != nullptr &&
+                p.request.inputs.find("image")->as_str() == i2v_image,
+            "I2V video render did not forward inputs[\"image\"]");
+      h.complete(submit->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "I2VMP4"));
+    }
+    const auto response = future.get();
+    check(response.status == 200 && response.body == "I2VMP4" &&
+              lower_header(response.headers, "content-type") == "video/mp4",
+          "I2V video render did not return video/mp4");
+  }
   check(status_of({{"kind", "video"}, {"prompt", "x"},
                    {"image", "data:image/png;base64,AA"}}) == 400,
-        "visual render with an image field on kind video must return 400");
+        "visual render with an invalid image on kind video must return 400");
+  check(status_of({{"kind", "video"}, {"prompt", "x"},
+                   {"image", "not-a-data-url"}}) == 400,
+        "visual render with a non-data-URL image on kind video must return 400");
   check(status_of({{"kind", "image"}, {"prompt", "x"}, {"steps", 0}}) == 400,
         "visual render with steps=0 must return 400");
   check(status_of({{"kind", "video"}, {"prompt", "x"},

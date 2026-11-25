@@ -284,6 +284,36 @@ namespace {
 
 constexpr size_t kMaxMediaInputBytes = 16u << 20;  // 16 MiB decoded image/WAV
 
+// One validation rule for every image data URL on the wire: image.image,
+// video.image, and /v1/visual/render image (image i2i and video i2v).
+bool validate_image_data_url(const json& value, const char* field,
+                             std::string& out_url, std::string& error) {
+  if (!value.is_string()) {
+    error = std::string(field) + " must be a data:image/...;base64,... string";
+    return false;
+  }
+  const std::string& url = value.get_ref<const std::string&>();
+  const size_t comma = url.find(',');
+  if (url.rfind("data:image/", 0) != 0 || comma == std::string::npos ||
+      url.substr(0, comma).find(";base64") == std::string::npos) {
+    error = std::string(field) + " must be a data:image/...;base64,... URL";
+    return false;
+  }
+  try {
+    const std::string decoded =
+        util::base64_decode(url.substr(comma + 1), kMaxMediaInputBytes);
+    if (decoded.empty()) {
+      error = std::string(field) + " payload must be non-empty";
+      return false;
+    }
+  } catch (const std::exception& exc) {
+    error = std::string("invalid ") + field + " base64: " + exc.what();
+    return false;
+  }
+  out_url = url;
+  return true;
+}
+
 bool parse_image_options(const json& body, bool& enabled, Value::Map& out,
                          std::string& error) {
   if (!body.contains("image") || body["image"].is_null()) {
@@ -331,29 +361,11 @@ bool parse_image_options(const json& body, bool& enabled, Value::Map& out,
     out["steps"] = Value(image["steps"].get<int64_t>());
   }
   if (image.contains("image") && !image["image"].is_null()) {
-    if (!image["image"].is_string()) {
-      error = "image.image must be a non-empty data:image/...;base64,... string";
+    std::string url;
+    if (!validate_image_data_url(image["image"], "image.image", url, error)) {
       return false;
     }
-    const std::string& url = image["image"].get_ref<const std::string&>();
-    const size_t comma = url.find(',');
-    if (url.rfind("data:image/", 0) != 0 || comma == std::string::npos ||
-        url.substr(0, comma).find(";base64") == std::string::npos) {
-      error = "image.image must be a data:image/...;base64,... URL";
-      return false;
-    }
-    try {
-      const std::string decoded =
-          util::base64_decode(url.substr(comma + 1), kMaxMediaInputBytes);
-      if (decoded.empty()) {
-        error = "image.image payload must be non-empty";
-        return false;
-      }
-    } catch (const std::exception& exc) {
-      error = std::string("invalid image.image base64: ") + exc.what();
-      return false;
-    }
-    out["image"] = Value(url);
+    out["image"] = Value(std::move(url));
   }
   if (image.contains("output_format") && !image["output_format"].is_null()) {
     // The unified image leg emits PNG only.
@@ -497,6 +509,13 @@ bool parse_video_options(const json& body, bool& enabled, Value::Map& out,
       return false;
     }
     out["seed"] = Value(video["seed"].get<int64_t>());
+  }
+  if (video.contains("image") && !video["image"].is_null()) {
+    std::string url;
+    if (!validate_image_data_url(video["image"], "video.image", url, error)) {
+      return false;
+    }
+    out["image"] = Value(std::move(url));
   }
   if (video.contains("output_format") && !video["output_format"].is_null()) {
     if (!video["output_format"].is_string() ||
@@ -852,40 +871,7 @@ void OpenAIApi::Impl::handle_visual_render(const httplib::Request& req,
              "invalid_request");
       return;
     }
-    if (body.contains("image") && !body["image"].is_null()) {
-      if (!body["image"].is_string()) {
-        reject(400, "image must be a data:image/...;base64,... string",
-               "invalid_request");
-        return;
-      }
-      const std::string& url = body["image"].get_ref<const std::string&>();
-      const size_t comma = url.find(',');
-      if (url.rfind("data:image/", 0) != 0 || comma == std::string::npos ||
-          url.substr(0, comma).find(";base64") == std::string::npos) {
-        reject(400, "image must be a data:image/...;base64,... URL",
-               "invalid_request");
-        return;
-      }
-      try {
-        const std::string decoded =
-            util::base64_decode(url.substr(comma + 1), kMaxMediaInputBytes);
-        if (decoded.empty()) {
-          reject(400, "image payload must be non-empty", "invalid_request");
-          return;
-        }
-      } catch (const std::exception& exc) {
-        reject(400, std::string("invalid image base64: ") + exc.what(),
-               "invalid_request");
-        return;
-      }
-      inputs["image"] = Value(url);
-    }
-    inputs["output_format"] = Value("png");
   } else {
-    if (body.contains("image") && !body["image"].is_null()) {
-      reject(400, "image is only valid for kind image", "invalid_request");
-      return;
-    }
     for (const char* key : {"num_frames", "fps", "seconds"}) {
       if (!body.contains(key) || body[key].is_null()) continue;
       if (!body[key].is_number_integer() || body[key].get<int64_t>() < 1) {
@@ -905,8 +891,17 @@ void OpenAIApi::Impl::handle_visual_render(const httplib::Request& req,
       }
       inputs["guidance_scale"] = Value(value.get<double>());
     }
-    inputs["output_format"] = Value("mp4");
   }
+  if (body.contains("image") && !body["image"].is_null()) {
+    std::string url;
+    std::string error;
+    if (!validate_image_data_url(body["image"], "image", url, error)) {
+      reject(400, error, "invalid_request");
+      return;
+    }
+    inputs["image"] = Value(std::move(url));
+  }
+  inputs["output_format"] = Value(image ? "png" : "mp4");
 
   AdmissionGuard guard(active_http_requests_, config_.max_in_flight);
   if (!guard.admitted()) {
