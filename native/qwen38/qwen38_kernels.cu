@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "decode_helpers.hpp"
+
 namespace umminfer::qwen38 {
 namespace {
 
@@ -452,12 +454,12 @@ __global__ void replace_rows_kernel(Bf16* dst, const Bf16* src, int start, int d
 // holds 8 contiguous head elements in registers and loads K/V with coalesced
 // 128-bit uint4 transactions. Only ONE __syncthreads() per block (at the final
 // warp merge) instead of 7 per KV token.
-template <bool kGated>
+template <bool kGated, bool kDevPos>
 __global__ void __launch_bounds__(256) gqa_attention_256_kernel(
     const Bf16* __restrict__ q, const Bf16* __restrict__ k,
     const Bf16* __restrict__ v, const Bf16* __restrict__ gate,
     Bf16* __restrict__ out, int nkv, int n_q_heads, int n_kv_heads,
-    int q_offset) {
+    int q_offset, const int* __restrict__ d_kv_pos) {
   constexpr int kHeadDim = 256;
   constexpr int kWarps = 8;
   const int qi = blockIdx.y;
@@ -466,7 +468,12 @@ __global__ void __launch_bounds__(256) gqa_attention_256_kernel(
   const int wid = tid >> 5;
   const int lane = tid & 31;
   const int kvh = qh * n_kv_heads / n_q_heads;
-  const int hi = min(nkv, q_offset + qi + 1);
+  int hi;
+  if constexpr (kDevPos) {
+    hi = *d_kv_pos + qi + 1;
+  } else {
+    hi = min(nkv, q_offset + qi + 1);
+  }
   const float scale = rsqrtf(static_cast<float>(kHeadDim));
 
   const Bf16* qrow = q + (static_cast<size_t>(qi) * n_q_heads + qh) * kHeadDim;
@@ -910,19 +917,34 @@ __global__ void mrope_partial_kernel(Bf16* x, const Bf16* cos, const Bf16* sin,
   }
 }
 
+// Single-block kernel generating one decode row [kTextRotaryDim] of partial
+// mRoPE cos/sin tables on device from precomputed fp64 inverse frequencies and
+// *d_rope_pos (shared across T/H/W during autoregressive text decode).
+__global__ void compute_text_mrope_devpos_kernel(
+    const double* __restrict__ inv_freq, const int* __restrict__ d_rope_pos,
+    Bf16* __restrict__ cos_out, Bf16* __restrict__ sin_out) {
+  const int i = threadIdx.x;
+  if (i < kTextRotaryHalf) {
+    text_rope_cos_sin_elem(inv_freq[i], *d_rope_pos, &cos_out[i], &sin_out[i]);
+  } else if (i < kTextRotaryDim) {
+    cos_out[i] = to_bf(0.0f);
+    sin_out[i] = to_bf(0.0f);
+  }
+}
+
 // Fuses split_q_gate + q_norm + k_norm + mrope_partial(q, k) + KV-cache write
 // for head_dim == 256 into a single kernel launch.
 // Grid: dim3(n_q_heads + 2 * n_kv_heads, rows), Block: 256 threads.
-template <bool kSeg>
+template <bool kSeg, bool kDevPos>
 __global__ void __launch_bounds__(256) prep_qkv_rope_kvcache_256_kernel(
     const Bf16* __restrict__ qg, const Bf16* __restrict__ k_in,
     const Bf16* __restrict__ v_in, const Bf16* __restrict__ q_norm_w,
     const Bf16* __restrict__ k_norm_w, const Bf16* __restrict__ cos,
     const Bf16* __restrict__ sin, Bf16* __restrict__ q_out,
     Bf16* __restrict__ gate_out, Bf16* __restrict__ k_cache,
-    Bf16* __restrict__ v_cache, int history, SeqSpans spans, int nseq,
-    size_t seq_stride, int n_q_heads, int n_kv_heads, int rotary_dim,
-    float eps) {
+    Bf16* __restrict__ v_cache, int history, const int* __restrict__ d_kv_pos,
+    SeqSpans spans, int nseq, size_t seq_stride, int n_q_heads, int n_kv_heads,
+    int rotary_dim, float eps) {
   constexpr int kHeadDim = 256;
   const int b = blockIdx.x;
   const int t = blockIdx.y;
@@ -930,7 +952,9 @@ __global__ void __launch_bounds__(256) prep_qkv_rope_kvcache_256_kernel(
 
   int cache_pos = history + t;
   size_t slot_off = 0;
-  if constexpr (kSeg) {
+  if constexpr (kDevPos) {
+    cache_pos = *d_kv_pos + t;
+  } else if constexpr (kSeg) {
     int s = 0;
     while (s + 1 < nseq && t >= spans.off[s] + spans.len[s]) ++s;
     cache_pos = spans.hist[s] + (t - spans.off[s]);
@@ -1926,6 +1950,13 @@ void mrope_partial(Bf16* x, const Bf16* cos, const Bf16* sin, int n, int heads,
                                                    rotary_dim);
 }
 
+void compute_text_mrope_devpos(const double* inv_freq, const int* d_rope_pos,
+                               Bf16* cos_out, Bf16* sin_out,
+                               cudaStream_t stream) {
+  compute_text_mrope_devpos_kernel<<<1, kTextRotaryDim, 0, stream>>>(
+      inv_freq, d_rope_pos, cos_out, sin_out);
+}
+
 void prep_qkv_rope_kvcache(const Bf16* qg, const Bf16* k_in, const Bf16* v_in,
                            const Bf16* q_norm_w, const Bf16* k_norm_w,
                            const Bf16* cos, const Bf16* sin, Bf16* q_out,
@@ -1937,9 +1968,10 @@ void prep_qkv_rope_kvcache(const Bf16* qg, const Bf16* k_in, const Bf16* v_in,
   if (head_dim == 256 && rotary_dim <= 256) {
     dim3 grid(n_q_heads + 2 * n_kv_heads, m);
     SeqSpans empty{};
-    prep_qkv_rope_kvcache_256_kernel<false><<<grid, 256, 0, stream>>>(
+    prep_qkv_rope_kvcache_256_kernel<false, false><<<grid, 256, 0, stream>>>(
         qg, k_in, v_in, q_norm_w, k_norm_w, cos, sin, q_out, gate_out, k_cache,
-        v_cache, history, empty, 1, 0, n_q_heads, n_kv_heads, rotary_dim, eps);
+        v_cache, history, nullptr, empty, 1, 0, n_q_heads, n_kv_heads,
+        rotary_dim, eps);
     return;
   }
   split_q_gate(qg, q_out, gate_out, m, n_q_heads, head_dim, stream);
@@ -1954,6 +1986,25 @@ void prep_qkv_rope_kvcache(const Bf16* qg, const Bf16* k_in, const Bf16* v_in,
       cudaMemcpyDeviceToDevice, stream));
 }
 
+void prep_qkv_rope_kvcache_devpos(const Bf16* qg, const Bf16* k_in,
+                                  const Bf16* v_in, const Bf16* q_norm_w,
+                                  const Bf16* k_norm_w, const Bf16* cos,
+                                  const Bf16* sin, Bf16* q_out, Bf16* gate_out,
+                                  Bf16* k_cache, Bf16* v_cache,
+                                  const int* d_kv_pos, int n_q_heads,
+                                  int n_kv_heads, int head_dim, int rotary_dim,
+                                  float eps, cudaStream_t stream) {
+  if (head_dim != 256 || rotary_dim > 256)
+    throw std::runtime_error(
+        "prep_qkv_rope_kvcache_devpos requires head_dim == 256");
+  dim3 grid(n_q_heads + 2 * n_kv_heads, 1);
+  SeqSpans empty{};
+  prep_qkv_rope_kvcache_256_kernel<false, true><<<grid, 256, 0, stream>>>(
+      qg, k_in, v_in, q_norm_w, k_norm_w, cos, sin, q_out, gate_out, k_cache,
+      v_cache, 0, d_kv_pos, empty, 1, 0, n_q_heads, n_kv_heads, rotary_dim,
+      eps);
+}
+
 void prep_qkv_rope_kvcache_seg(const Bf16* qg, const Bf16* k_in,
                                const Bf16* v_in, const Bf16* q_norm_w,
                                const Bf16* k_norm_w, const Bf16* cos,
@@ -1966,10 +2017,10 @@ void prep_qkv_rope_kvcache_seg(const Bf16* qg, const Bf16* k_in,
   if (rows <= 0 || nseq <= 0) return;
   if (head_dim == 256 && rotary_dim <= 256) {
     dim3 grid(n_q_heads + 2 * n_kv_heads, rows);
-    prep_qkv_rope_kvcache_256_kernel<true><<<grid, 256, 0, stream>>>(
+    prep_qkv_rope_kvcache_256_kernel<true, false><<<grid, 256, 0, stream>>>(
         qg, k_in, v_in, q_norm_w, k_norm_w, cos, sin, q_out, gate_out, k_cache,
-        v_cache, 0, spans, nseq, seq_stride, n_q_heads, n_kv_heads, rotary_dim,
-        eps);
+        v_cache, 0, nullptr, spans, nseq, seq_stride, n_q_heads, n_kv_heads,
+        rotary_dim, eps);
     return;
   }
   throw std::runtime_error("prep_qkv_rope_kvcache_seg requires head_dim == 256");
@@ -2011,17 +2062,36 @@ void gqa_attention(const Bf16* q, const Bf16* k, const Bf16* v, const Bf16* gate
   if (head_dim == 256 && aligned16(q) && aligned16(k) && aligned16(v) &&
       aligned16(out) && (gate == nullptr || aligned16(gate))) {
     if (gate != nullptr) {
-      gqa_attention_256_kernel<true><<<grid, 256, 0, stream>>>(
-          q, k, v, gate, out, nkv, n_q_heads, n_kv_heads, q_offset);
+      gqa_attention_256_kernel<true, false><<<grid, 256, 0, stream>>>(
+          q, k, v, gate, out, nkv, n_q_heads, n_kv_heads, q_offset, nullptr);
     } else {
-      gqa_attention_256_kernel<false><<<grid, 256, 0, stream>>>(
-          q, k, v, nullptr, out, nkv, n_q_heads, n_kv_heads, q_offset);
+      gqa_attention_256_kernel<false, false><<<grid, 256, 0, stream>>>(
+          q, k, v, nullptr, out, nkv, n_q_heads, n_kv_heads, q_offset, nullptr);
     }
     return;
   }
   const size_t smem = (2 * head_dim + 32) * sizeof(float);
   attention_kernel<true, true><<<grid, 128, smem, stream>>>(
       q, k, v, gate, out, m, nkv, n_q_heads, n_kv_heads, head_dim, q_offset);
+}
+
+void gqa_attention_devpos(const Bf16* q, const Bf16* k, const Bf16* v,
+                          const Bf16* gate, Bf16* out, const int* d_kv_pos,
+                          int n_q_heads, int n_kv_heads, int head_dim,
+                          cudaStream_t stream) {
+  if (head_dim != 256 || !aligned16(q) || !aligned16(k) || !aligned16(v) ||
+      !aligned16(out) || (gate != nullptr && !aligned16(gate))) {
+    throw std::runtime_error(
+        "gqa_attention_devpos requires 16B-aligned buffers and head_dim == 256");
+  }
+  dim3 grid(n_q_heads, 1);
+  if (gate != nullptr) {
+    gqa_attention_256_kernel<true, true><<<grid, 256, 0, stream>>>(
+        q, k, v, gate, out, 0, n_q_heads, n_kv_heads, 0, d_kv_pos);
+  } else {
+    gqa_attention_256_kernel<false, true><<<grid, 256, 0, stream>>>(
+        q, k, v, nullptr, out, 0, n_q_heads, n_kv_heads, 0, d_kv_pos);
+  }
 }
 
 void vision_attention(const Bf16* q, const Bf16* k, const Bf16* v, Bf16* out, int n,

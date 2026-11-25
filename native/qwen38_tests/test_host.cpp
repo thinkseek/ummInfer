@@ -1125,6 +1125,49 @@ void test_decode_helpers() {
   }
   check(rope_exact,
         "precomputed RoPE inv_freq matches reference std::pow bit for bit");
+
+  // 5) CUDA Graph decode policy helper (UMM_QWEN38_NO_GRAPH + dump_dir guard).
+  using umminfer::qwen38::fill_text_rope_row_scalar_pos;
+  using umminfer::qwen38::qwen38_use_cuda_graph;
+  check(qwen38_use_cuda_graph(nullptr, false),
+        "CUDA Graph enabled by default when env unset and dump disabled");
+  check(qwen38_use_cuda_graph("", false),
+        "CUDA Graph enabled when UMM_QWEN38_NO_GRAPH is empty");
+  check(qwen38_use_cuda_graph("0", false),
+        "CUDA Graph enabled when UMM_QWEN38_NO_GRAPH=0");
+  check(!qwen38_use_cuda_graph("1", false),
+        "CUDA Graph disabled when UMM_QWEN38_NO_GRAPH=1");
+  check(!qwen38_use_cuda_graph("true", false),
+        "CUDA Graph disabled when UMM_QWEN38_NO_GRAPH=true");
+  check(!qwen38_use_cuda_graph("00", false),
+        "CUDA Graph disabled for non-'0' truthy env strings");
+  check(!qwen38_use_cuda_graph(nullptr, true),
+        "CUDA Graph disabled when parity dump_dir is enabled");
+  check(!qwen38_use_cuda_graph("0", true),
+        "dump_enabled overrides UMM_QWEN38_NO_GRAPH=0");
+  check(!qwen38_use_cuda_graph("1", true),
+        "CUDA Graph stays disabled when both env opt-out and dump are set");
+
+  // 6) Scalar-position decode mRoPE helper (matching compute_text_mrope_devpos)
+  //    must match fill_text_rope_row(inv, pos, pos, pos) bit-for-bit across
+  //    text and multimodal-compressed decode positions.
+  const int decode_positions[] = {0, 1, 7, 11, 17, 63, 128, 1024, 4095, 8191};
+  bool devpos_rope_exact = true;
+  for (int pos : decode_positions) {
+    Bf16 ref_cos[kTextRotaryDim], ref_sin[kTextRotaryDim];
+    Bf16 dev_cos[kTextRotaryDim], dev_sin[kTextRotaryDim];
+    fill_text_rope_row(inv, pos, pos, pos, ref_cos, ref_sin);
+    fill_text_rope_row_scalar_pos(inv, pos, dev_cos, dev_sin);
+    for (int i = 0; i < kTextRotaryDim; ++i) {
+      if (ref_cos[i].bits != dev_cos[i].bits ||
+          ref_sin[i].bits != dev_sin[i].bits) {
+        devpos_rope_exact = false;
+        break;
+      }
+    }
+  }
+  check(devpos_rope_exact,
+        "scalar-position decode mRoPE matches fill_text_rope_row bit for bit");
 }
 
 }  // namespace

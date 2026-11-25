@@ -291,6 +291,16 @@ struct Engine::Impl {
   Bf16* h_mrope_cos = nullptr;   // [kMaxBatch * kRotaryDim]
   Bf16* h_mrope_sin = nullptr;   // [kMaxBatch * kRotaryDim]
   float* h_logits = nullptr;     // lazy [batch_capacity * kVocab] when sampling
+  int* h_step_meta = nullptr;    // [3]: {token_id, kv_pos, rope_pos}
+
+  // Fixed-shape m == 1 decode CUDA Graphs (one lazily captured handle per
+  // cache slot, 0 extra weight/KV VRAM). Null when UMM_QWEN38_NO_GRAPH is set
+  // or capture is unavailable.
+  bool use_cuda_graph = true;
+  cudaGraphExec_t decode_graphs[kMaxBatch]{};
+  bool decode_graph_tried[kMaxBatch]{};
+  double* d_rope_inv = nullptr;  // [kTextRotaryHalf] fp64 inv_freq (256 B)
+  int* d_step_meta = nullptr;    // [3]: {token_id, kv_pos, rope_pos} (12 B)
 
   // Text workspaces.
   Bf16 *hidden = nullptr, *norm = nullptr, *qg = nullptr, *q = nullptr,
@@ -466,6 +476,8 @@ struct Engine::Impl {
     UMM_QWEN38_CUDA_CHECK(cudaMallocHost(
         reinterpret_cast<void**>(&h_mrope_sin),
         static_cast<size_t>(kMaxBatch) * kRotaryDim * sizeof(Bf16)));
+    UMM_QWEN38_CUDA_CHECK(cudaMallocHost(
+        reinterpret_cast<void**>(&h_step_meta), 3 * sizeof(int)));
     auto mb = [](Bf16** p, size_t n) {
       UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(p),
                                        n * sizeof(Bf16)));
@@ -517,6 +529,14 @@ struct Engine::Impl {
                                      B * sizeof(int)));
     UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_logit_rows),
                                      kMaxBatch * sizeof(int)));
+    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_step_meta),
+                                     3 * sizeof(int)));
+    UMM_QWEN38_CUDA_CHECK(cudaMemset(d_step_meta, 0, 3 * sizeof(int)));
+    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_rope_inv),
+                                     kTextRotaryHalf * sizeof(double)));
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpy(d_rope_inv, rope_inv,
+                                     kTextRotaryHalf * sizeof(double),
+                                     cudaMemcpyHostToDevice));
     mb(&last_hidden, static_cast<size_t>(kMaxBatch) * kHidden);
     UMM_QWEN38_CUDA_CHECK(
         cudaMalloc(reinterpret_cast<void**>(&kv), B * kv_bytes));
@@ -555,6 +575,8 @@ Engine::Engine(const std::string& model_dir, int gpu, int max_seq,
   if (const char* env = std::getenv("UMM_QWEN38_PREFIX_CACHE")) {
     impl_->prefix_cache = std::atoi(env) != 0;
   }
+  impl_->use_cuda_graph = qwen38_use_cuda_graph(
+      std::getenv("UMM_QWEN38_NO_GRAPH"), /*dump_enabled=*/false);
   UMM_QWEN38_CUDA_CHECK(cudaSetDevice(gpu));
   impl_->load_weights(model_dir);
   impl_->alloc();
@@ -579,9 +601,15 @@ Engine::~Engine() {
     impl_->queue_cv.notify_all();
     impl_->batch_thread.join();
   }
+  Impl& im = *impl_;
+  for (int i = 0; i < kMaxBatch; ++i) {
+    if (im.decode_graphs[i]) {
+      cudaGraphExecDestroy(im.decode_graphs[i]);
+      im.decode_graphs[i] = nullptr;
+    }
+  }
   for (const auto& [name, t] : impl_->weights)
     cudaFree(const_cast<void*>(t.ptr));
-  Impl& im = *impl_;
   auto fb = [](Bf16*& p) {
     if (p) cudaFree(p);
   };
@@ -602,12 +630,15 @@ Engine::~Engine() {
   if (im.argmax_scratch) cudaFree(im.argmax_scratch);
   if (im.argmax_idx) cudaFree(im.argmax_idx);
   if (im.d_logit_rows) cudaFree(im.d_logit_rows);
+  if (im.d_step_meta) cudaFree(im.d_step_meta);
+  if (im.d_rope_inv) cudaFree(im.d_rope_inv);
   if (im.h_ids) cudaFreeHost(im.h_ids);
   if (im.h_logit_rows) cudaFreeHost(im.h_logit_rows);
   if (im.h_argmax) cudaFreeHost(im.h_argmax);
   if (im.h_mrope_cos) cudaFreeHost(im.h_mrope_cos);
   if (im.h_mrope_sin) cudaFreeHost(im.h_mrope_sin);
   if (im.h_logits) cudaFreeHost(im.h_logits);
+  if (im.h_step_meta) cudaFreeHost(im.h_step_meta);
   if (im.stream) cudaStreamDestroy(im.stream);
 }
 
@@ -1442,10 +1473,180 @@ void prefill_group(Engine::Impl& im,
   }
 }
 
+// Fixed-shape, fixed-address 64-layer single-token (m == 1) decode step for
+// cache slot `slot`, suitable for CUDA Graph capture.
+// Reads {token_id, kv_pos, rope_pos} from im.d_step_meta[0..2], updates slot's
+// KV/conv/SSM caches in place, writes fp32 logits into im.logits[0..kVocab-1],
+// and writes greedy argmax into im.argmax_idx[0] (without modifying logits).
+void run_decode_step_m1_body(Engine::Impl& im, int slot) {
+  cudaStream_t st = im.stream;
+  const int* d_token_id = im.d_step_meta;
+  const int* d_kv_pos = im.d_step_meta + 1;
+  const int* d_rope_pos = im.d_step_meta + 2;
+
+  Bf16* kv_slot = im.kv + static_cast<size_t>(slot) * kv_slot_stride(im);
+  float* rec_slot = im.rec_state + static_cast<size_t>(slot) * rec_slot_stride();
+  Bf16* conv_slot =
+      im.conv_state + static_cast<size_t>(slot) * conv_slot_stride();
+
+  compute_text_mrope_devpos(im.d_rope_inv, d_rope_pos, im.mrope_cos,
+                            im.mrope_sin, st);
+  index_embeddings(im.embed_w, d_token_id, im.hidden, 1, kHidden, st);
+  rms_norm_zero_centered(im.hidden, im.layers[0].input_norm, im.norm, 1,
+                         kHidden, kEps, st);
+
+  for (int l = 0; l < kLayers; ++l) {
+    const LayerWeights& lw = im.layers[l];
+    if ((l % 4) == 3) {
+      const MultiGemvDesc desc{
+          {lw.q_proj, lw.k_proj, lw.v_proj, nullptr},
+          {im.qg, im.k, im.v, nullptr},
+          {2 * kQHeads * kHeadDim, kKvHeads * kHeadDim, kKvHeads * kHeadDim, 0},
+          3};
+      gemv_bf16_bf16_multi_batch(desc, im.norm, 1, kHidden, st);
+      const int kv_layer = l / 4;
+      Bf16* kbase =
+          kv_slot + static_cast<size_t>(kv_layer) * 2 * im.max_seq * kKvRow;
+      Bf16* vbase = kbase + static_cast<size_t>(im.max_seq) * kKvRow;
+      prep_qkv_rope_kvcache_devpos(im.qg, im.k, im.v, lw.q_norm, lw.k_norm,
+                                   im.mrope_cos, im.mrope_sin, im.q, im.gate,
+                                   kbase, vbase, d_kv_pos, kQHeads, kKvHeads,
+                                   kHeadDim, kRotaryDim, kEps, st);
+      gqa_attention_devpos(im.q, kbase, vbase, im.gate, im.o, d_kv_pos, kQHeads,
+                           kKvHeads, kHeadDim, st);
+      gemv_bf16_bf16(lw.o_proj, im.o, im.qg, kHidden, kQHeads * kHeadDim, st);
+      add_residual_rms_norm_zero_centered(im.hidden, im.qg, lw.post_attn_norm,
+                                          im.norm, 1, kHidden, kEps, st);
+    } else {
+      const MultiGemvDesc desc{
+          {lw.in_proj_qkv, lw.in_proj_z, lw.in_proj_b, lw.in_proj_a},
+          {im.mixed, im.z, im.b, im.a},
+          {kConvDim, kValueDim, kLVH, kLVH},
+          4};
+      gemv_bf16_bf16_multi_batch(desc, im.norm, 1, kHidden, st);
+      conv1d_causal_silu_split(
+          im.mixed, lw.conv1d,
+          conv_slot + static_cast<size_t>(l) * kConvDim * (kConvK - 1), im.q,
+          im.k, im.v, 1, kKeyDim, kKeyDim, kValueDim, st);
+      l2norm_qk_beta_decay(im.q, im.k, im.qn, im.kn, im.beta, im.decay, im.b,
+                           im.a, lw.A_log, lw.dt_bias, 1, kLKH, kLVH, kLKD, st);
+      gated_delta_rule(rec_slot + static_cast<size_t>(l) * kLVH * kLVD * kLVD,
+                       im.qn, im.kn, im.v, im.beta, im.decay, im.core, 1, kLKH,
+                       kLVH, kLVD, st);
+      gated_rms_norm(im.core, im.z, lw.linear_norm, im.gated, kLVH, kLVD, kEps,
+                     st);
+      gemv_bf16_bf16(lw.linear_out_proj, im.gated, im.o, kHidden, kValueDim,
+                     st);
+      add_residual_rms_norm_zero_centered(im.hidden, im.o, lw.post_attn_norm,
+                                          im.norm, 1, kHidden, kEps, st);
+    }
+    const Bf16* next_w =
+        (l + 1 < kLayers) ? im.layers[l + 1].input_norm : im.final_norm_w;
+    gemv_bf16_swiglu_batch(lw.mlp_gate, lw.mlp_up, im.norm, im.mlp_act, 1,
+                           kInter, kHidden, st);
+    gemv_bf16_bf16(lw.mlp_down, im.mlp_act, im.o, kHidden, kInter, st);
+    add_residual_rms_norm_zero_centered(im.hidden, im.o, next_w, im.norm, 1,
+                                        kHidden, kEps, st);
+  }
+
+  gemv_bf16_f32(im.lm_head_w, im.norm, im.logits, kVocab, kHidden, st);
+  argmax_rows(im.logits, 1, kVocab, im.argmax_idx, st);
+}
+
+cudaGraphExec_t try_capture_decode_graph(Engine::Impl& im, int slot) {
+  // Drain any pending async work (e.g. prefix-snapshot copies) before capture.
+  if (cudaStreamSynchronize(im.stream) != cudaSuccess) {
+    (void)cudaGetLastError();
+    return nullptr;
+  }
+  cudaGraph_t graph = nullptr;
+  if (cudaStreamBeginCapture(im.stream, cudaStreamCaptureModeThreadLocal) !=
+      cudaSuccess) {
+    (void)cudaGetLastError();
+    return nullptr;
+  }
+  bool body_ok = true;
+  try {
+    run_decode_step_m1_body(im, slot);
+  } catch (...) {
+    body_ok = false;
+  }
+  const cudaError_t end_err = cudaStreamEndCapture(im.stream, &graph);
+  if (!body_ok || end_err != cudaSuccess || graph == nullptr) {
+    if (graph != nullptr) cudaGraphDestroy(graph);
+    (void)cudaGetLastError();
+    return nullptr;
+  }
+  cudaGraphExec_t exec = nullptr;
+#if CUDART_VERSION >= 12000
+  const cudaError_t inst_err = cudaGraphInstantiate(&exec, graph, 0);
+#else
+  const cudaError_t inst_err =
+      cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+#endif
+  cudaGraphDestroy(graph);
+  if (inst_err != cudaSuccess) {
+    (void)cudaGetLastError();
+    return nullptr;
+  }
+  return exec;
+}
+
+cudaGraphExec_t ensure_decode_graph(Engine::Impl& im, int slot) {
+  if (!im.decode_graph_tried[slot]) {
+    im.decode_graph_tried[slot] = true;
+    im.decode_graphs[slot] = try_capture_decode_graph(im, slot);
+  }
+  return im.decode_graphs[slot];
+}
+
+int launch_decode_step_m1_graph(Engine::Impl& im, int slot, int token_id,
+                                int seq_len, int next_pos,
+                                const SamplingParams& sampling,
+                                std::mt19937_64& rng) {
+  cudaStream_t st = im.stream;
+  im.h_step_meta[0] = token_id;
+  im.h_step_meta[1] = seq_len;
+  im.h_step_meta[2] = next_pos;
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_step_meta, im.h_step_meta,
+                                        3 * sizeof(int), cudaMemcpyHostToDevice,
+                                        st));
+  UMM_QWEN38_CUDA_CHECK(cudaGraphLaunch(im.decode_graphs[slot], st));
+  if (!(sampling.temperature > 0.0f)) {
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.h_argmax, im.argmax_idx,
+                                          sizeof(int), cudaMemcpyDeviceToHost,
+                                          st));
+    UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
+    return im.h_argmax[0];
+  }
+  float* host = im.ensure_host_logits();
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+      host, im.logits, static_cast<size_t>(kVocab) * sizeof(float),
+      cudaMemcpyDeviceToHost, st));
+  UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
+  return sample_token(host, kVocab, sampling, rng);
+}
+
 void step_decode(Engine::Impl& im,
                  const std::vector<std::shared_ptr<BatchJob>>& jobs) {
   cudaStream_t st = im.stream;
   const int m = static_cast<int>(jobs.size());
+  if (m == 1 && im.use_cuda_graph) {
+    BatchJob& job = *jobs[0];
+    if (ensure_decode_graph(im, job.slot) != nullptr) {
+      const auto t0 = Clock::now();
+      const int next_tok = launch_decode_step_m1_graph(
+          im, job.slot, job.next_token, job.seq_len, job.next_pos,
+          job.req.sampling, job.rng);
+      std::fprintf(stderr, "qwen38 batch step m=1 rows=1 ms=%.2f\n",
+                   ms_since(t0));
+      job.next_token = next_tok;
+      job.seq_len += 1;
+      job.next_pos += 1;
+      job.result.decode_steps += 1;
+      return;
+    }
+  }
   SeqSpans sp{};
   int logit_rows[kMaxBatch];
   for (int i = 0; i < m; ++i) {
@@ -1870,33 +2071,42 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   int seq_len = P;
   int next_pos = pos.next;
   size_t decode_forwards = 0;
+  const bool use_graph = im.use_cuda_graph && dump_dir.empty();
+  if (use_graph && max_new_tokens > 1 && !is_eos(next)) {
+    (void)ensure_decode_graph(im, /*slot=*/0);
+  }
   const auto t_decode = Clock::now();
   while (static_cast<int>(result.ids.size()) < max_new_tokens && !is_eos(next)) {
     result.ids.push_back(next);
     if (on_token) on_token(next);
     if (static_cast<int>(result.ids.size()) >= max_new_tokens) break;
     check_abort("decode");
-    im.h_ids[0] = next;
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, im.h_ids, sizeof(int),
-                                          cudaMemcpyHostToDevice, st));
-    index_embeddings(im.embed_w, im.d_ids, im.hidden, 1, kHidden, st);
-    fill_text_rope_row(im.rope_inv, next_pos, next_pos, next_pos,
-                       im.h_mrope_cos, im.h_mrope_sin);
-    const size_t rope_bytes = static_cast<size_t>(kRotaryDim) * sizeof(Bf16);
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, im.h_mrope_cos,
-                                          rope_bytes, cudaMemcpyHostToDevice, st));
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, im.h_mrope_sin,
-                                          rope_bytes, cudaMemcpyHostToDevice, st));
-    rms_norm_zero_centered(im.hidden, im.layers[0].input_norm, im.norm, 1,
-                           kHidden, kEps, st);
-    for (int l = 0; l < kLayers; ++l) {
-      const Bf16* next_w =
-          (l + 1 < kLayers) ? im.layers[l + 1].input_norm : im.final_norm_w;
-      run_layer(im, l, 1, seq_len, /*pre_normed=*/true, next_w, im.norm,
-                /*last_row_only_norm=*/false, "");
+    if (use_graph && im.decode_graphs[0] != nullptr) {
+      next = launch_decode_step_m1_graph(im, /*slot=*/0, next, seq_len,
+                                         next_pos, sampling, rng);
+    } else {
+      im.h_ids[0] = next;
+      UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, im.h_ids, sizeof(int),
+                                            cudaMemcpyHostToDevice, st));
+      index_embeddings(im.embed_w, im.d_ids, im.hidden, 1, kHidden, st);
+      fill_text_rope_row(im.rope_inv, next_pos, next_pos, next_pos,
+                         im.h_mrope_cos, im.h_mrope_sin);
+      const size_t rope_bytes = static_cast<size_t>(kRotaryDim) * sizeof(Bf16);
+      UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, im.h_mrope_cos,
+                                            rope_bytes, cudaMemcpyHostToDevice, st));
+      UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, im.h_mrope_sin,
+                                            rope_bytes, cudaMemcpyHostToDevice, st));
+      rms_norm_zero_centered(im.hidden, im.layers[0].input_norm, im.norm, 1,
+                             kHidden, kEps, st);
+      for (int l = 0; l < kLayers; ++l) {
+        const Bf16* next_w =
+            (l + 1 < kLayers) ? im.layers[l + 1].input_norm : im.final_norm_w;
+        run_layer(im, l, 1, seq_len, /*pre_normed=*/true, next_w, im.norm,
+                  /*last_row_only_norm=*/false, "");
+      }
+      gemv_bf16_f32(im.lm_head_w, im.norm, im.logits, kVocab, kHidden, st);
+      next = pick_token();
     }
-    gemv_bf16_f32(im.lm_head_w, im.norm, im.logits, kVocab, kHidden, st);
-    next = pick_token();
     ++seq_len;
     ++next_pos;
     ++decode_forwards;

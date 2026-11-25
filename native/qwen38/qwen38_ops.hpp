@@ -99,6 +99,12 @@ void replace_rows(Bf16* dst, const Bf16* src, int start, int n, int dim,
 // (i, i + rotary_dim/2).  cos/sin are bf16-rounded reference tables [n, rotary_dim].
 void mrope_partial(Bf16* x, const Bf16* cos, const Bf16* sin, int n, int heads,
                    int head_dim, int rotary_dim, cudaStream_t stream);
+// Computes one decode row [kTextRotaryDim] of partial mRoPE cos/sin tables on
+// device from precomputed fp64 inverse frequencies and *d_rope_pos (shared
+// across T/H/W for autoregressive text decode) for CUDA Graph capture.
+void compute_text_mrope_devpos(const double* inv_freq, const int* d_rope_pos,
+                               Bf16* cos_out, Bf16* sin_out,
+                               cudaStream_t stream);
 // Causal GQA over a KV buffer that already holds history + m new rows.
 // q [m, n_q_heads, head_dim], k/v [nkv, n_kv_heads, head_dim], out [m, n_q_heads,
 // head_dim].  When `gate` is non-null the output is multiplied by
@@ -106,6 +112,12 @@ void mrope_partial(Bf16* x, const Bf16* cos, const Bf16* sin, int n, int heads,
 void gqa_attention(const Bf16* q, const Bf16* k, const Bf16* v, const Bf16* gate,
                    Bf16* out, int m, int nkv, int n_q_heads, int n_kv_heads,
                    int head_dim, int q_offset, cudaStream_t stream);
+// Single-token (m == 1) device-position variant of gqa_attention for CUDA Graph
+// capture: attends over KV positions [0, *d_kv_pos] inclusive (hi = *d_kv_pos + 1).
+void gqa_attention_devpos(const Bf16* q, const Bf16* k, const Bf16* v,
+                          const Bf16* gate, Bf16* out, const int* d_kv_pos,
+                          int n_q_heads, int n_kv_heads, int head_dim,
+                          cudaStream_t stream);
 // Bidirectional MHA for the vision tower (one packed image per call).
 void vision_attention(const Bf16* q, const Bf16* k, const Bf16* v, Bf16* out,
                       int n, int heads, int head_dim, cudaStream_t stream);
@@ -166,6 +178,16 @@ void prep_qkv_rope_kvcache(const Bf16* qg, const Bf16* k_in, const Bf16* v_in,
                            int history, int n_q_heads, int n_kv_heads,
                            int head_dim, int rotary_dim, float eps,
                            cudaStream_t stream);
+// Single-token (m == 1) device-position variant of prep_qkv_rope_kvcache for
+// CUDA Graph capture: reads the KV cache write slot from *d_kv_pos on device.
+void prep_qkv_rope_kvcache_devpos(const Bf16* qg, const Bf16* k_in,
+                                  const Bf16* v_in, const Bf16* q_norm_w,
+                                  const Bf16* k_norm_w, const Bf16* cos,
+                                  const Bf16* sin, Bf16* q_out, Bf16* gate_out,
+                                  Bf16* k_cache, Bf16* v_cache,
+                                  const int* d_kv_pos, int n_q_heads,
+                                  int n_kv_heads, int head_dim, int rotary_dim,
+                                  float eps, cudaStream_t stream);
 // Recurrent gated delta rule, one step per token.  qn/kn fp32 [m, k_heads, dim],
 // v bf16 [m, v_heads, dim], beta/g fp32 [m, v_heads], state fp32
 // [v_heads, dim, dim] (k-major), out bf16 [m, v_heads, dim].

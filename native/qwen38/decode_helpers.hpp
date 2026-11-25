@@ -81,6 +81,22 @@ inline void init_text_rope_inv_freq(double (&inv)[kTextRotaryHalf]) {
   }
 }
 
+// Computes one BF16 (cos, sin) pair for Qwen3.8 partial mRoPE from a
+// precomputed fp64 inverse frequency and integer position. Shared by both host
+// prefill/fallback tables and the on-device CUDA Graph decode mRoPE kernel so
+// both paths match bit for bit.
+UMM_QWEN38_HD void text_rope_cos_sin_elem(double inv_i, int pos, Bf16* cos_out,
+                                          Bf16* sin_out) {
+  const double angle = inv_i * static_cast<double>(pos);
+#ifdef __CUDA_ARCH__
+  *cos_out = __float2bfloat16(static_cast<float>(cos(angle)));
+  *sin_out = __float2bfloat16(static_cast<float>(sin(angle)));
+#else
+  *cos_out = Bf16(static_cast<float>(std::cos(angle)));
+  *sin_out = Bf16(static_cast<float>(std::sin(angle)));
+#endif
+}
+
 // Fills one [kTextRotaryDim] row of cos/sin tables using precomputed inv_freq.
 // Channel rule matches build_text_rope: H occupies i%3==1 (i<33), W occupies
 // i%3==2 (i<30), everything else uses T; upper half [32..64) is zeroed.
@@ -93,19 +109,38 @@ inline void fill_text_rope_row(const double (&inv)[kTextRotaryHalf], int pos_t,
       pos = pos_h;
     else if ((i % 3) == 2 && i < 30)
       pos = pos_w;
-    const double angle = inv[i] * pos;
-#ifdef __CUDACC__
-    cos_row[i] = Bf16(std::cos(angle));
-    sin_row[i] = Bf16(std::sin(angle));
-#else
-    cos_row[i] = Bf16(static_cast<float>(std::cos(angle)));
-    sin_row[i] = Bf16(static_cast<float>(std::sin(angle)));
-#endif
+    text_rope_cos_sin_elem(inv[i], pos, &cos_row[i], &sin_row[i]);
   }
   for (int i = kTextRotaryHalf; i < kTextRotaryDim; ++i) {
     cos_row[i] = Bf16(0.0f);
     sin_row[i] = Bf16(0.0f);
   }
+}
+
+// Scalar-position decode helper (pos_t == pos_h == pos_w == pos) mirroring
+// compute_text_mrope_devpos_kernel for host-side parity tests.
+inline void fill_text_rope_row_scalar_pos(const double (&inv)[kTextRotaryHalf],
+                                          int pos, Bf16* cos_row,
+                                          Bf16* sin_row) {
+  for (int i = 0; i < kTextRotaryHalf; ++i) {
+    text_rope_cos_sin_elem(inv[i], pos, &cos_row[i], &sin_row[i]);
+  }
+  for (int i = kTextRotaryHalf; i < kTextRotaryDim; ++i) {
+    cos_row[i] = Bf16(0.0f);
+    sin_row[i] = Bf16(0.0f);
+  }
+}
+
+// Policy helper deciding whether m == 1 CUDA Graph decode capture should be
+// enabled. Opt-out via UMM_QWEN38_NO_GRAPH (any non-empty value other than
+// "0") or whenever parity dumping is active.
+inline bool qwen38_use_cuda_graph(const char* no_graph_env, bool dump_enabled) {
+  if (dump_enabled) return false;
+  if (no_graph_env != nullptr && no_graph_env[0] != '\0' &&
+      !(no_graph_env[0] == '0' && no_graph_env[1] == '\0')) {
+    return false;
+  }
+  return true;
 }
 
 }  // namespace umminfer::qwen38
