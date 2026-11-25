@@ -410,6 +410,27 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 28 Part A Controlled SM90 Visual-Form Gate (`5890a4c`) & 70/70 Real SM90 Multimodal Coverage (`13d9274`):
+  - **Controlled Single-GPU SM90 Visual-Form Ablation (`CONTROLLED_LIVE / COMPLETED`)**
+    (`5890a4c`, `benchmarks/ablations/visual-form-controlled-sm90.json`,
+    `docs/narrative-routing-ablation.md`): isolated GPU 0 (`1` warmup + `3`
+    interleaved repetitions = `18` measured chat + `6` measured I2V renders,
+    `0` failures, `26/26 SHA256SUMS OK`, `78/78` independent assertions PASS,
+    true 50 ms polled VRAM peaks, GPU 0 returned to `3 MiB`, resident GPUs 2–6
+    untouched): `image_only` TTFT `313.6 ms` (`IQR 2.4`), `video_only` TTFT
+    `314.3 ms` (`IQR 2.1`), `image_then_i2v_animate` TTFT `313.5 ms` + I2V
+    render `3,426.6 ms` (`IQR 60.6`), first-frame PSNR **`46.08 / 44.44 dB`**
+    (center-crop MAE `1.02 / 1.25` vs stretch `11.36 / 3.88`).
+  - **70/70 Real SM90 Multimodal Coverage & Independent Auditor**
+    (`13d9274`, `tools/multimodal_coverage_audit.py`,
+    `docs/multimodal-benchmark-results.md`): added remaining 48 real SM90 cases
+    on isolated GPU 1 (`Qwen3-ASR-1.7B`) + GPU 7 (`Qwen3.8-27B`, GPUs returned
+    to `3 MiB`): English ASR `16/16` (**WER `1.18%`**, `5/425`), Mandarin ASR
+    `16/16`, GSM8K `14/16` (**`87.5%`**), combining with Wave 26 16-VQA
+    (`95.83%`) + 6-SpeechCOCO Joint (`0.0%` WER / `97.22%` macro hit) for
+    **70/70** verified real coverage (`287/287 SHA256SUMS OK`, byte-identical
+    independent re-audit, `BASELINE_REQUIRED` retained).
+
 - Wave 27 Stage C Controlled Voice-Strategy (`f31e2ed`), Row-5 Objective-Mix Pareto SM90 Gate (`281f3b4`), and Upgraded 3-Way CUDA-Graph Full-Duplex Barge-in Verification:
   - **Stage C Ablation #5 Post-Training Objective-Mix & Quality-vs-Latency Pareto SM90 Gate**
     (`281f3b4`, `python/umminfer_objective_mix_ablation.py`,
