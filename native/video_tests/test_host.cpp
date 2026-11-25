@@ -496,6 +496,64 @@ void test_wan_dit_perf_helpers() {
   check(null_rejected, "null text embedding pointer rejected");
 }
 
+void test_wan_dit_flash_attn_policy() {
+  using namespace umminfer::video;
+
+  // 1. Static tile geometry fits cleanly in 48 KiB static shared memory and
+  // maintains 16-byte row alignment for cp.async / ldmatrix.
+  check(kWanDitFlashBr == 64 && kWanDitFlashBc == 64 &&
+            kWanDitFlashHeadDim == 128 && kWanDitFlashStride == 136 &&
+            kWanDitFlashThreads == 128,
+        "FlashAttention-2 tile constants match SM90 MMA layout");
+  check(kWanDitFlashSmemBytes == 34816 && kWanDitFlashSmemBytes <= 49152,
+        "FlashAttention-2 static shared memory stays <= 48 KiB");
+  check((kWanDitFlashStride * sizeof(uint16_t)) % 16 == 0,
+        "FlashAttention-2 shared memory row stride is 16-byte aligned");
+
+  // 2. Support predicate and grid/tile ceiling math across arbitrary sizes.
+  check(wan_dit_flash_attn_supported(128, 2640, 2640),
+        "704x480 29f self-attention supported");
+  check(wan_dit_flash_attn_supported(128, 2640, 512),
+        "704x480 29f cross-attention supported");
+  check(wan_dit_flash_attn_supported(128, 1, 1),
+        "single-token degenerate shape supported");
+  check(!wan_dit_flash_attn_supported(64, 2640, 2640),
+        "non-128 head_dim rejected");
+  check(!wan_dit_flash_attn_supported(128, 0, 512),
+        "zero query tokens rejected");
+  check(!wan_dit_flash_attn_supported(128, 2640, 0),
+        "zero key tokens rejected");
+
+  check(wan_dit_flash_grid_q(0) == 0 && wan_dit_flash_kv_tiles(0) == 0,
+        "zero tokens produce zero grid/kv tiles");
+  check(wan_dit_flash_grid_q(1) == 1 && wan_dit_flash_kv_tiles(1) == 1,
+        "1 token produces 1 tile");
+  check(wan_dit_flash_grid_q(64) == 1 && wan_dit_flash_grid_q(65) == 2,
+        "query tile ceiling boundary at 64/65");
+  check(wan_dit_flash_grid_q(2640) == 42,
+        "2640 tokens -> 42 query tiles (41 full + 16-row tail)");
+  check(wan_dit_flash_kv_tiles(512) == 8,
+        "512 text tokens -> 8 exact K/V tiles");
+  check(wan_dit_flash_kv_tiles(2640) == 42,
+        "2640 self-attention keys -> 42 K/V tiles");
+
+  // 3. UMM_DIT_ATTN_REF env parser: default FlashAttention ON, truthy -> ref.
+  check(wan_dit_use_flash_attn(nullptr), "null UMM_DIT_ATTN_REF uses FlashAttention");
+  check(wan_dit_use_flash_attn(""), "empty UMM_DIT_ATTN_REF uses FlashAttention");
+  check(wan_dit_use_flash_attn("   "), "whitespace UMM_DIT_ATTN_REF uses FlashAttention");
+  check(wan_dit_use_flash_attn("0"), "0 uses FlashAttention");
+  check(wan_dit_use_flash_attn("false"), "false uses FlashAttention");
+  check(wan_dit_use_flash_attn("off"), "off uses FlashAttention");
+  check(wan_dit_use_flash_attn("no"), "no uses FlashAttention");
+  check(wan_dit_use_flash_attn("unknown"), "unknown value falls back to FlashAttention");
+
+  for (const char* ref_val :
+       {"1", " 1 ", "true", "TRUE", "True", "yes", "YES", "\tyes\n", "on", "ON"}) {
+    check(!wan_dit_use_flash_attn(ref_val),
+          std::string("UMM_DIT_ATTN_REF='") + ref_val + "' selects cuBLAS reference");
+  }
+}
+
 void test_wan_dit_teacache_controller() {
   using namespace umminfer::video;
 
@@ -1123,6 +1181,7 @@ int main() {
       {"umt5_relative_position_buckets", test_umt5_relative_position_buckets},
       {"wan_dit_host_helpers", test_wan_dit_host_helpers},
       {"wan_dit_perf_helpers", test_wan_dit_perf_helpers},
+      {"wan_dit_flash_attn_policy", test_wan_dit_flash_attn_policy},
       {"wan_dit_teacache_controller", test_wan_dit_teacache_controller},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"unipc_bh2_matches_diffusers", test_unipc_bh2_matches_diffusers},

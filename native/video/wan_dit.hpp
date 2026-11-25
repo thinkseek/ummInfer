@@ -58,12 +58,75 @@ std::vector<float> wan_patchify_host(const float* latent_ncfhw, int channels,
 std::vector<float> wan_unpatchify_host(const float* tokens, int channels,
                                        int frames, int height, int width);
 
-// Attention query tile size used by the CUDA Wan DiT attention loop.
+// Attention query tile size used by the CUDA Wan DiT reference attention loop.
 inline constexpr int kWanDitQueryTile = 512;
 
 // Returns min(tile_size, tokens - q_start) for attention query tiling.
 int wan_attention_tile_len(int tokens, int q_start,
                            int tile_size = kWanDitQueryTile);
+
+// BF16 Tensor-Core FlashAttention-2 tile geometry for Wan2.2-TI2V-5B (D=128).
+// Two [kWanDitFlashBc, kWanDitFlashStride] BF16 shared-memory tiles occupy
+// 34,816 B (< 48 KiB static smem limit), with 16-byte aligned rows and
+// conflict-free ldmatrix.x2 / ldmatrix.x2.trans access.
+inline constexpr int kWanDitFlashBr = 64;
+inline constexpr int kWanDitFlashBc = 64;
+inline constexpr int kWanDitFlashHeadDim = 128;
+inline constexpr int kWanDitFlashStride = kWanDitFlashHeadDim + 8;
+inline constexpr int kWanDitFlashThreads = 128;
+inline constexpr size_t kWanDitFlashSmemBytes =
+    static_cast<size_t>(2) * kWanDitFlashBc * kWanDitFlashStride * sizeof(uint16_t);
+
+inline constexpr bool wan_dit_flash_attn_supported(
+    int head_dim, int query_tokens, int key_tokens) noexcept {
+  return head_dim == kWanDitFlashHeadDim && query_tokens > 0 && key_tokens > 0;
+}
+
+inline constexpr int wan_dit_flash_grid_q(int query_tokens) noexcept {
+  return query_tokens > 0
+             ? (query_tokens + kWanDitFlashBr - 1) / kWanDitFlashBr
+             : 0;
+}
+
+inline constexpr int wan_dit_flash_kv_tiles(int key_tokens) noexcept {
+  return key_tokens > 0
+             ? (key_tokens + kWanDitFlashBc - 1) / kWanDitFlashBc
+             : 0;
+}
+
+// Selects the fused BF16 Tensor-Core FlashAttention-2 kernel (default: true)
+// vs the cuBLAS tiled attention reference path (false when UMM_DIT_ATTN_REF is
+// set to a truthy value: "1", "true", "yes", or "on", case-insensitive).
+inline bool wan_dit_use_flash_attn(const char* ref_env) noexcept {
+  if (ref_env == nullptr) return true;
+  const char* begin = ref_env;
+  while (*begin == ' ' || *begin == '\t' || *begin == '\r' || *begin == '\n') {
+    ++begin;
+  }
+  const char* end = begin;
+  while (*end != '\0') ++end;
+  while (end > begin &&
+         (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
+          end[-1] == '\n')) {
+    --end;
+  }
+  const size_t len = static_cast<size_t>(end - begin);
+  if (len == 0) return true;
+  const auto lower = [](char c) noexcept -> char {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+  };
+  if (len == 1 && begin[0] == '1') return false;
+  if (len == 2 && lower(begin[0]) == 'o' && lower(begin[1]) == 'n') return false;
+  if (len == 3 && lower(begin[0]) == 'y' && lower(begin[1]) == 'e' &&
+      lower(begin[2]) == 's') {
+    return false;
+  }
+  if (len == 4 && lower(begin[0]) == 't' && lower(begin[1]) == 'r' &&
+      lower(begin[2]) == 'u' && lower(begin[3]) == 'e') {
+    return false;
+  }
+  return true;
+}
 
 struct WanTextEmbedCacheKey {
   uint64_t hash = 0;
