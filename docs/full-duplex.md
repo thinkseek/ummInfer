@@ -432,11 +432,15 @@ preview window altogether.
 
 **Physical client playback.** The server now has the explicit cancellation and
 playback-acknowledgement cursor contract, and the live harness exercises timed
-virtual PCM playback. The bundled CLI client still does not play PCM16 through
-an audio device or stop a physical output stream on `response.cancelled`.
-Character/acoustic alignment inside one TTS sentence also remains unsolved:
-retention is conservative at sentence boundaries rather than estimating an
-unverified substring from PCM duration.
+virtual PCM playback. The Web UI has an opt-in realtime mode that captures
+16 kHz PCM16 microphone frames, plays `audio.delta` through Web Audio, sends
+playback ACKs from `onended`/final queue drain, and stops scheduled sources on
+`response.cancelled`; its offline contract suite mocks the audio nodes and does
+not validate a physical microphone, speaker, or live server. The bundled CLI
+client still does not play PCM16 through an audio device or stop a physical
+output stream on `response.cancelled`. Character/acoustic alignment inside one
+TTS sentence also remains unsolved: retention is conservative at sentence
+boundaries rather than estimating an unverified substring from PCM duration.
 
 **More than one cached session.** The omni stage caches one session's prefix.
 Concurrent sessions each need their own KV snapshot.

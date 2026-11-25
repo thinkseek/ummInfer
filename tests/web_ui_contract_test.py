@@ -12,7 +12,9 @@ installed, and checks the wire-contract hooks the page must keep:
   * theme tokens that mirror Theme.swift;
   * every DOM id the script looks up exists in the markup;
   * Wave 10 interleaved narrative hooks (`visual_slot`, `/visual/render`,
-    `narrative`, global streaming voice, in-place visual swap).
+    `narrative`, global streaming voice, in-place visual swap);
+  * opt-in realtime WS microphone/audio output, playback-consumption ACKs, and
+    response.cancelled barge-in (including a mocked Web Audio behavior run).
 
 Usage: python3 -I tests/web_ui_contract_test.py
 """
@@ -47,7 +49,8 @@ def module_scripts(html):
 def check_markup(html):
     for tag in ('<main id="transcript">', 'id="prompt"', 'id="send"', 'id="stop"',
                 'id="voiceToggle"', 'id="voiceWave"', 'id="voiceStatus"',
-                'id="voiceMute"', 'id="voiceStop"', 'id="narrative"',
+                'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
+                'id="realtimeStatus"', 'id="narrative"',
                 'id="visualMode"', 'id="maxSlots"'):
         require(tag in html, f"missing element: {tag}")
     used = set(re.findall(r"\$\('([^']+)'\)", html))
@@ -186,6 +189,221 @@ def check_video_input(html, script):
             "composer must track attachedVideo state")
 
 
+def check_realtime(html, script):
+    """Stage B realtime wire hooks stay opt-in and independent of HTTP/SSE."""
+    require(re.search(
+        r'id="realtimeToggle"[^>]*aria-pressed="false"', html),
+        "realtime microphone/WS mode must be default-off and opt-in")
+    require("ui.realtimeToggle.addEventListener('click'" in script,
+            "the realtime toggle must be wired")
+    require("else startRealtime()" in script,
+            "the opt-in toggle must start the realtime session")
+    require("'/realtime'" in script and "new WebSocket(url)" in script,
+            "realtime must connect a WebSocket to the configured /realtime route")
+    require("url.protocol === 'https:' ? 'wss:' : 'ws:'" in script,
+            "realtime WS security must follow the configured HTTP endpoint")
+    require("ui.realtimeEndpoint.value.trim() || ui.endpoint.value" in script,
+            "an independent --realtime-port listener must be configurable")
+    require("Browser Realtime WS cannot send the configured API key" in script,
+            "unsupported browser API-key handshakes must fail fast without URL credentials")
+    require("intent: 'transcription'" in script and "model }).toString()" in script,
+            "the realtime handshake must carry intent=transcription and model")
+
+    # Session negotiation and full-duplex microphone input.
+    require("type: 'session.update'" in script,
+            "realtime must negotiate session.update")
+    require("input_audio_format: 'pcm16'" in script and
+            "type: 'server_vad'" in script,
+            "realtime must select PCM16 input and server VAD")
+    require(re.search(r"audio_output:\s*\{.*?playback_ack: true", script, re.S),
+            "audio_output.playback_ack=true must be negotiated")
+    require("event.session?.audio_output?.playback_ack !== true" in script,
+            "the accepted session must be checked for playback_ack")
+    require("getUserMedia" in script and "createMediaStreamSource" in script,
+            "realtime must capture microphone input")
+    require("resampleMono(input, ctx.sampleRate, 16000)" in script and
+            "encodePcm16Mono(pcm16k)" in script,
+            "microphone frames must be converted to 16 kHz PCM16")
+    require("type: 'input_audio_buffer.append'" in script and
+            "audio: encodeBase64(pcmBytes)" in script,
+            "16 kHz PCM16 mic frames must use input_audio_buffer.append")
+    require("if (!handedOff)" in script and
+            "stream?.getTracks().forEach((track) => track.stop())" in script,
+            "microphone tracks must be released if graph setup fails after permission")
+
+    # PCM playback and consumption-based monotonic acknowledgement.
+    require("case 'audio.delta'" in script and "realtimePlayback.push(" in script,
+            "audio.delta must feed the realtime PCM player")
+    require("source.onended = () =>" in script,
+            "playback ACK must be driven by actual buffer completion")
+    require("this.acknowledge(responseId, textCursor, false)" in script and
+            "textCursor <= this.lastAckCursor" in script,
+            "delta ACK cursors must be monotonic and acknowledged after consumption")
+    require("this.acknowledgeFinalIfDrained()" in script and
+            "this.sources.size !== 0" in script,
+            "the final ACK must wait until every scheduled source is consumed")
+    require("type: 'output_audio_buffer.playback_ack'" in script and
+            "response_id: responseId" in script and "text_cursor: textCursor" in script,
+            "playback ACK must carry response_id and text_cursor")
+    require("case 'audio.done'" in script and "realtimePlayback.done(" in script,
+            "audio.done must arm the final playback ACK")
+
+    # Barge-in: invalidate first, stop scheduled sources, then drop late frames.
+    cancellation = script.split("function cancelRealtimeResponse(", 1)[1].split("\n}", 1)[0]
+    require(cancellation.index("markRealtimeStale(id)") <
+            cancellation.index("realtimePlayback.cancel(id)"),
+            "response cancellation must mark stale before stopping playback")
+    require("responseId || realtime.activeResponseId || realtimePlayback.responseId" in
+            cancellation,
+            "Stop Voice and id-less failures must fall back to the active response")
+    cancelled = script.split("case 'response.cancelled':", 1)[1].split("break;", 1)[0]
+    require("cancelRealtimeResponse(responseId)" in cancelled,
+            "response.cancelled must use the common immediate cancellation path")
+    failed = script.split("case 'response.failed':", 1)[1].split("break;", 1)[0]
+    require("cancelRealtimeResponse(responseId)" in failed,
+            "an id-less response.failed must cancel active playback and ACKs")
+    voice_stop = script.split("ui.voiceStop.addEventListener", 1)[1].split("});", 1)[0]
+    require("cancelRealtimeResponse();" in voice_stop,
+            "Stop Voice must suppress even a text-only response before its first audio")
+    require("record.source.stop(0)" in script,
+            "barge-in must immediately stop scheduled audio sources")
+    require("realtime.cancelledResponses.has(responseId)" in script and
+            "this.cancelled.has(responseId)" in script,
+            "late events and onended callbacks must drop cancelled response ids")
+    require("if (!realtime.enabled || !realtime.ready" in script,
+            "microphone frames must be gated by negotiated realtime readiness")
+
+    # The existing HTTP/SSE implementation is still separate and present.
+    require("const player = {" in script and "async function send()" in script and
+            "for await (const line of readLines(res))" in script,
+            "the existing HTTP/SSE chat and narrative path must remain intact")
+
+
+def check_realtime_behavior(script):
+    """Execute the player with controllable Web Audio nodes, without a server."""
+    node = shutil.which("node")
+    if not node:
+        print("skip realtime behavior: node is not installed", flush=True)
+        return
+    pcm = re.search(
+        r"function pcmBuffer\(ctx, bytes, rate, channels\) \{.*?\n\}", script, re.S)
+    require(pcm is not None, "could not extract pcmBuffer for the behavior test")
+    require("// REALTIME_PLAYER_CLASS_BEGIN" in script and
+            "// REALTIME_PLAYER_CLASS_END" in script,
+            "missing realtime player behavior-test markers")
+    player = script.split("// REALTIME_PLAYER_CLASS_BEGIN", 1)[1].split(
+        "// REALTIME_PLAYER_CLASS_END", 1)[0]
+    harness = pcm.group(0) + player + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+class FakeAudioContext {
+  constructor() {
+    this.currentTime = 10;
+    this.state = 'running';
+    this.destination = {};
+    this.sampleRate = 24000;
+  }
+  createGain() {
+    return { gain: { value: 1 }, connect() {}, disconnect() {} };
+  }
+  createBuffer(channels, frames, rate) {
+    return {
+      duration: frames / rate,
+      getChannelData() { return new Float32Array(frames); },
+    };
+  }
+  createBufferSource() {
+    return {
+      buffer: null,
+      onended: null,
+      stopped: false,
+      started: false,
+      connect() {},
+      disconnect() {},
+      start() { this.started = true; },
+      stop() { this.stopped = true; },
+    };
+  }
+  resume() { this.state = 'running'; return Promise.resolve(); }
+  close() { this.state = 'closed'; return Promise.resolve(); }
+}
+globalThis.AudioContext = FakeAudioContext;
+const acks = [];
+const player = new RealtimePCMPlayer(
+  (responseId, textCursor) => acks.push({ responseId, textCursor }),
+  () => {},
+);
+await player.unlock();
+const pcmBytes = new Uint8Array(480 * 2);
+const cursors = () => acks.map((ack) => ack.textCursor);
+
+// Receipt, scheduling, and audio.done do not acknowledge unplayed audio.
+player.push('r1', pcmBytes, 24000, 1, 0);
+player.push('r1', pcmBytes, 24000, 1, 12);
+player.done('r1', 24);
+assert(acks.length === 0, 'audio was acknowledged before playback consumption');
+const firstSources = [...player.sources].map((record) => record.source);
+firstSources[0].onended();
+assert(JSON.stringify(cursors()) === '[0]',
+       'only the consumed first chunk cursor should be acknowledged');
+firstSources[1].onended();
+assert(JSON.stringify(cursors()) === '[0,12,24]',
+       'last delta and final cursor must follow playback drain in order');
+
+// Repeated intermediate cursors are suppressed. The equal final cursor is
+// allowed exactly once after audio.done so the server can commit the turn.
+player.push('r2', pcmBytes, 24000, 1, 5);
+player.push('r2', pcmBytes, 24000, 1, 5);
+const repeatedSources = [...player.sources].map((record) => record.source);
+const beforeRepeated = acks.length;
+repeatedSources[0].onended();
+repeatedSources[1].onended();
+assert(acks.length === beforeRepeated + 1 && acks.at(-1).textCursor === 5,
+       'repeated intermediate cursor must not be acknowledged twice');
+player.done('r2', 5);
+assert(acks.length === beforeRepeated + 2 && acks.at(-1).textCursor === 5,
+       'equal final cursor must be acknowledged once after audio.done');
+player.done('r2', 5);
+assert(acks.length === beforeRepeated + 2,
+       'repeated audio.done must not repeat the final ACK');
+
+// Cancellation stops every scheduled source immediately. Even a captured
+// stale onended callback, a late delta, or audio.done cannot emit another ACK.
+player.push('r3', pcmBytes, 24000, 1, 7);
+player.push('r3', pcmBytes, 24000, 1, 9);
+const cancelledRecords = [...player.sources];
+const staleEnded = cancelledRecords.map((record) => record.source.onended);
+const beforeCancel = acks.length;
+player.cancel('r3');
+assert(cancelledRecords.every((record) => record.source.stopped),
+       'response cancellation did not stop every scheduled source');
+staleEnded.forEach((callback) => callback());
+player.push('r3', pcmBytes, 24000, 1, 11);
+player.done('r3', 13);
+assert(acks.length === beforeCancel,
+       'stale response frames or callbacks acknowledged cancelled playback');
+
+// A new response has its own cursor domain and cannot release old callbacks.
+player.push('r4', pcmBytes, 24000, 1, 2);
+const currentSource = [...player.sources][0].source;
+currentSource.onended();
+assert(acks.at(-1).responseId === 'r4' && acks.at(-1).textCursor === 2,
+       'new response playback did not acknowledge its own cursor');
+player.stop();
+console.log('realtime playback behavior passed');
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "realtime-player.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"realtime behavior failed: {(result.stderr or result.stdout).strip()[:1000]}")
+    require("realtime playback behavior passed" in result.stdout,
+            "realtime behavior harness did not reach its success assertion")
+
+
 def check_theme_tokens(html):
     """The CSS palette mirrors Theme.swift; both files must agree."""
     theme = THEME.read_text(encoding="utf-8")
@@ -232,6 +450,8 @@ def main():
         ("wave11", lambda: check_wave11(script)),
         ("markdown", lambda: check_markdown(html, script)),
         ("video_input", lambda: check_video_input(html, script)),
+        ("realtime", lambda: check_realtime(html, script)),
+        ("realtime_behavior", lambda: check_realtime_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0

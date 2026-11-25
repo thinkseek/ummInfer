@@ -8,7 +8,10 @@ the chat request itself.
 ## Run
 
 Open `web/index.html` in a browser, set **Base URL** and **Model**, press
-**Send**. Settings persist in `localStorage`.
+**Send**. Settings persist in `localStorage`. For full-duplex voice, enable
+**Realtime**; when the server uses a separate `--realtime-port`, set **Realtime
+URL** under Options to that listener's HTTP base (for example `/v1` on its own
+origin).
 
 The browser sends one `POST <base>/chat/completions` with `stream: true`,
 reads the SSE body with `fetch` + `ReadableStream`, and renders text, images
@@ -27,6 +30,8 @@ server, serve the page from the same origin instead of opening the file.
 | Text | `choices[0].delta.content` appended per event, blinking caret while streaming |
 | Image | `artifact` chunks reassembled by `artifact_id`, then `Blob` + `objectURL`, click opens full size |
 | Audio | `audio/pcm` chunks decoded to `AudioBuffer` and chained on one `AudioContext` cursor |
+| Realtime voice | Default-off **Realtime** toggle opens `/realtime`, streams 16 kHz PCM16 microphone frames, plays spoken replies, and acknowledges only consumed playback |
+| Barge-in | `response.cancelled` stops scheduled sources immediately and drops every later frame for that `response_id` |
 | Errors | HTTP status, `unified.kind == error`, `leg_error`, `[DONE]`-missing, seq gap |
 | Stop | aborts the fetch and closes the AudioContext |
 
@@ -52,6 +57,7 @@ Every field sent or read has a source in this repository:
 | Jitter buffer and back-to-back scheduling | `clients/ummmlx/Sources/ummmlx/AudioPlayback.swift:116-235` |
 | Colours, radii, font sizes | `clients/ummmlx/Sources/ummmlx/Theme.swift:13-32` |
 | Contract for the event sequence | `docs/mixed-output-contract.md` |
+| Realtime session, PCM16 events, playback ACK cursors, barge-in | `docs/full-duplex.md` (Realtime spoken response, Stage B) |
 
 ## Verification (mock, not a live model)
 
@@ -73,10 +79,25 @@ The mock is not committed; it lives outside the repository.
 Not verified: a real ummInfer server, a real TTS voice, real image generation,
 and audible output (headless Chrome schedules the buffers but has no speaker).
 
+The offline contract suite also checks JavaScript syntax and executes the
+realtime player against controllable Web Audio nodes:
+
+```sh
+python3 -I tests/web_ui_contract_test.py
+python3 -I tests/narrative_live_e2e.py --self-check
+```
+
+It verifies that ACKs wait for `onended` and final queue drain, cursors never
+decrease, and cancelled sources or stale callbacks cannot acknowledge audio.
+This is not a physical microphone, speaker, or live-server validation.
+
 ## Known limits
 
 - No sha256 replay or saved copy of streamed PCM; live playback only.
-- No microphone input, so `asr_partial` / `asr_final` are logged, not rendered.
+- Realtime has no automatic reconnect after a broken WebSocket.
+- Browser WebSocket cannot send the server's `Authorization` header directly;
+  API-key-protected realtime requires an authenticating same-origin proxy. The
+  page rejects this unsupported configuration rather than exposing a key in the URL.
 - No reconnect or retry after a broken stream.
 - One assistant turn per request; server-side session history is preferred over
   replaying history, matching `ChatClient.swift:341-346`.

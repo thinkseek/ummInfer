@@ -49,12 +49,12 @@
     display: flex; align-items: center; gap: 8px; padding: 4px 8px;
     border: 1px solid var(--line); border-radius: 999px; background: var(--bg);
   }
-  #voiceToggle {
+  #voiceToggle, #realtimeToggle {
     border: none; background: transparent; padding: 3px 9px; border-radius: 999px;
     font-size: var(--f-caption); color: var(--secondary);
   }
-  #voiceToggle.on { background: var(--accent); color: #fff; }
-  #voiceStatus { font-size: var(--f-caption); color: var(--secondary); min-width: 68px; }
+  #voiceToggle.on, #realtimeToggle.on { background: var(--accent); color: #fff; }
+  #voiceStatus, #realtimeStatus { font-size: var(--f-caption); color: var(--secondary); min-width: 68px; }
   #voiceMute, #voiceStop { padding: 3px 9px; font-size: var(--f-caption); }
 
   #settings {
@@ -287,6 +287,9 @@
   <span class="spacer"></span>
   <div id="voiceBar">
     <button id="voiceToggle" type="button" aria-pressed="true">Voice ON</button>
+    <button id="realtimeToggle" type="button" aria-pressed="false"
+            title="Opt in to full-duplex microphone audio over WebSocket">Realtime OFF</button>
+    <span id="realtimeStatus" role="status">Realtime off</span>
     <div class="wave" id="voiceWave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
     <span id="voiceStatus" role="status">Voice ready</span>
     <button id="voiceMute" type="button">Mute</button>
@@ -322,6 +325,7 @@
       <label>top_p<input id="topP" type="number" step="0.05" min="0.05" max="1" placeholder="1.0" style="width:68px"></label>
       <label>Seed<input id="seed" type="number" step="1" placeholder="auto" style="width:84px"></label>
       <label>API key<input id="apiKey" type="password" placeholder="optional" style="width:120px"></label>
+      <label>Realtime URL<input id="realtimeEndpoint" placeholder="default: Base URL" spellcheck="false" style="width:170px"></label>
       <label>Img size<select id="imageSize"><option value="512x512">512x512</option><option value="1024x1024">1024x1024</option></select></label>
       <label>Img steps<input id="imageSteps" type="number" min="1" max="100" placeholder="default" style="width:72px"></label>
       <label>Edit img<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" style="max-width:170px"></label>
@@ -363,6 +367,7 @@ const ui = {
   endpoint: $('endpoint'), model: $('model'), image: $('image'), audio: $('audio'),
   video: $('video'), voice: $('voice'), maxTokens: $('maxTokens'),
   temperature: $('temperature'), topP: $('topP'), seed: $('seed'), apiKey: $('apiKey'),
+  realtimeEndpoint: $('realtimeEndpoint'),
   imageSize: $('imageSize'), imageSteps: $('imageSteps'), imageFile: $('imageFile'),
   refAudio: $('refAudio'), videoSize: $('videoSize'), videoSeconds: $('videoSeconds'),
   videoFrames: $('videoFrames'), videoSteps: $('videoSteps'),
@@ -374,6 +379,7 @@ const ui = {
   narrative: $('narrative'), visualMode: $('visualMode'), maxSlots: $('maxSlots'),
   voiceToggle: $('voiceToggle'), voiceWave: $('voiceWave'),
   voiceStatus: $('voiceStatus'), voiceMute: $('voiceMute'), voiceStop: $('voiceStop'),
+  realtimeToggle: $('realtimeToggle'), realtimeStatus: $('realtimeStatus'),
 };
 
 const log = (...args) => console.log('[umm]', ...args);
@@ -404,7 +410,7 @@ const SAME_ORIGIN_ENDPOINT =
   (location.protocol === 'http:' || location.protocol === 'https:')
     ? (location.origin + '/v1') : '';
 
-const SETTINGS = ['endpoint', 'model', 'voice', 'maxTokens', 'temperature', 'topP',
+const SETTINGS = ['endpoint', 'realtimeEndpoint', 'model', 'voice', 'maxTokens', 'temperature', 'topP',
                   'seed', 'imageSize', 'imageSteps', 'videoSize', 'videoSeconds',
                   'videoFrames', 'videoSteps', 'videoGuidance', 'visualMode', 'maxSlots'];
 for (const key of SETTINGS) {
@@ -500,6 +506,16 @@ function encodeWavPcm16Mono(samples, sampleRate) {
     view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
   }
   return new Uint8Array(buf);
+}
+
+function encodePcm16Mono(samples) {
+  const bytes = new Uint8Array(samples.length * 2);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < samples.length; i += 1) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return bytes;
 }
 
 function resampleMono(samples, fromRate, toRate) {
@@ -1253,6 +1269,489 @@ const player = {
   },
 };
 
+// ---------- opt-in full-duplex realtime voice (Stage B playback_ack) ----------
+// This controller and player are deliberately independent of the HTTP/SSE
+// player above. Realtime is never connected until the user presses its toggle.
+
+const realtime = {
+  ws: null,
+  enabled: false,
+  ready: false,
+  generation: 0,
+  mic: null,
+  micStarting: false,
+  activeResponseId: '',
+  cancelledResponses: new Set(),
+  turns: new Map(),
+};
+
+function setRealtimeStatus(text) {
+  ui.realtimeToggle.classList.toggle('on', realtime.enabled);
+  ui.realtimeToggle.setAttribute('aria-pressed', realtime.enabled ? 'true' : 'false');
+  ui.realtimeToggle.textContent = realtime.enabled ? 'Realtime ON' : 'Realtime OFF';
+  ui.realtimeStatus.textContent = text;
+}
+
+function markRealtimeStale(responseId) {
+  if (!responseId) return;
+  realtime.cancelledResponses.add(responseId);
+  // A session normally has only a handful of responses; bound defense-in-depth
+  // state anyway so a long-lived microphone session cannot grow without limit.
+  if (realtime.cancelledResponses.size > 64) {
+    realtime.cancelledResponses.delete(realtime.cancelledResponses.values().next().value);
+  }
+}
+
+// REALTIME_PLAYER_CLASS_BEGIN
+class RealtimePCMPlayer {
+  constructor(sendAck, onState) {
+    this.sendAck = sendAck;
+    this.onState = onState;
+    this.ctx = null;
+    this.gain = null;
+    this.muted = false;
+    this.responseId = '';
+    this.sources = new Set();
+    this.nextTime = 0;
+    this.lastAckCursor = -1;
+    this.finalCursor = null;
+    this.finalAckSent = false;
+    this.cancelled = new Set();
+    this.epoch = 0;
+  }
+
+  ensureContext() {
+    if (this.ctx && this.ctx.state !== 'closed') return;
+    this.ctx = new AudioContext();
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = this.muted ? 0 : 1;
+    this.gain.connect(this.ctx.destination);
+  }
+
+  async unlock() {
+    // Called synchronously from the toggle's user gesture, before any await in
+    // the audio path, so later audio.delta frames are allowed to start sound.
+    this.ensureContext();
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+  }
+
+  setMuted(muted) {
+    this.muted = muted;
+    if (this.gain) this.gain.gain.value = muted ? 0 : 1;
+  }
+
+  begin(responseId) {
+    if (!responseId) throw new Error('Realtime response is missing response_id.');
+    if (this.responseId === responseId) return;
+    this.clearSources();
+    if (this.responseId) this.cancelled.add(this.responseId);
+    this.responseId = responseId;
+    this.lastAckCursor = -1;
+    this.finalCursor = null;
+    this.finalAckSent = false;
+  }
+
+  clearSources() {
+    this.epoch += 1;
+    for (const record of this.sources) {
+      record.active = false;
+      record.source.onended = null;
+      try { record.source.stop(0); } catch { /* already ended */ }
+      try { record.source.disconnect(); } catch { /* already disconnected */ }
+    }
+    this.sources.clear();
+    this.nextTime = 0;
+    this.onState(false);
+  }
+
+  push(responseId, bytes, sampleRate, channels, textCursor) {
+    if (this.cancelled.has(responseId)) return;
+    this.begin(responseId);
+    if (this.finalAckSent) return;
+    if (!Number.isSafeInteger(textCursor) || textCursor < 0) {
+      throw new Error('audio.delta has an invalid text_cursor.');
+    }
+    this.ensureContext();
+    if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    const buffer = pcmBuffer(this.ctx, bytes, sampleRate, channels);
+    if (!buffer) throw new Error('audio.delta has invalid PCM16 metadata or sample alignment.');
+
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.gain);
+    const record = {
+      source,
+      responseId,
+      textCursor,
+      epoch: this.epoch,
+      active: true,
+    };
+    this.sources.add(record);
+    source.onended = () => {
+      if (!record.active || record.epoch !== this.epoch ||
+          this.responseId !== responseId || this.cancelled.has(responseId)) return;
+      record.active = false;
+      this.sources.delete(record);
+      source.disconnect();
+      // onended is the playback-consumption boundary. Neither receipt nor
+      // AudioBufferSourceNode.start() is sufficient to acknowledge a cursor.
+      this.acknowledge(responseId, textCursor, false);
+      this.acknowledgeFinalIfDrained();
+      if (this.sources.size === 0) this.onState(false);
+    };
+    const at = Math.max(this.nextTime, this.ctx.currentTime + 0.02);
+    source.start(at);
+    this.nextTime = at + buffer.duration;
+    this.onState(true);
+  }
+
+  done(responseId, textCursor) {
+    if (this.cancelled.has(responseId)) return;
+    this.begin(responseId);
+    if (this.finalCursor !== null) return;
+    if (!Number.isSafeInteger(textCursor) || textCursor < 0) {
+      throw new Error('audio.done has an invalid text_cursor.');
+    }
+    this.finalCursor = textCursor;
+    this.acknowledgeFinalIfDrained();
+  }
+
+  acknowledge(responseId, textCursor, final) {
+    if (this.responseId !== responseId || this.cancelled.has(responseId)) return;
+    if (final) {
+      // A final cursor may equal the last delta cursor. Repeating that one
+      // cursor after audio.done is required to commit an already-consumed
+      // final sentence; it is still non-decreasing and is sent only once.
+      if (this.finalAckSent || textCursor < this.lastAckCursor) return;
+      this.finalAckSent = true;
+    } else {
+      if (this.finalAckSent || textCursor <= this.lastAckCursor) return;
+    }
+    this.lastAckCursor = Math.max(this.lastAckCursor, textCursor);
+    this.sendAck(responseId, textCursor);
+  }
+
+  acknowledgeFinalIfDrained() {
+    if (this.finalCursor === null || this.sources.size !== 0) return;
+    this.acknowledge(this.responseId, this.finalCursor, true);
+    this.onState(false);
+  }
+
+  cancel(responseId) {
+    if (!responseId) return;
+    this.cancelled.add(responseId);
+    if (this.cancelled.size > 64) {
+      this.cancelled.delete(this.cancelled.values().next().value);
+    }
+    if (this.responseId !== responseId) return;
+    this.finalCursor = null;
+    this.finalAckSent = true;
+    this.clearSources();
+  }
+
+  stop() {
+    this.clearSources();
+    this.responseId = '';
+    this.finalCursor = null;
+    this.finalAckSent = false;
+    this.lastAckCursor = -1;
+    this.cancelled.clear();
+    const ctx = this.ctx;
+    this.ctx = null;
+    this.gain = null;
+    if (ctx && ctx.state !== 'closed') ctx.close().catch(() => {});
+  }
+}
+// REALTIME_PLAYER_CLASS_END
+
+function sendRealtimePlaybackAck(responseId, textCursor) {
+  const socket = realtime.ws;
+  if (!realtime.enabled || realtime.cancelledResponses.has(responseId) ||
+      !socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: 'output_audio_buffer.playback_ack',
+    response_id: responseId,
+    text_cursor: textCursor,
+  }));
+}
+
+const realtimePlayback = new RealtimePCMPlayer(
+  sendRealtimePlaybackAck,
+  (playing) => {
+    if (!realtime.enabled) return;
+    setRealtimeStatus(playing ? 'Speaking…' : (realtime.ready ? 'Listening' : 'Connecting…'));
+  },
+);
+
+function realtimeURL() {
+  const base = ui.realtimeEndpoint.value.trim() || ui.endpoint.value;
+  const url = apiURL(base, '/realtime');
+  const model = ui.model.value.trim();
+  if (!model) throw new Error('Model is required.');
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.search = new URLSearchParams({ intent: 'transcription', model }).toString();
+  return url;
+}
+
+function closeRealtimeMic() {
+  const mic = realtime.mic;
+  realtime.mic = null;
+  realtime.ready = false;
+  if (!mic) return;
+  mic.proc.onaudioprocess = null;
+  try { mic.proc.disconnect(); } catch { /* already disconnected */ }
+  try { mic.src.disconnect(); } catch { /* already disconnected */ }
+  try { mic.sink.disconnect(); } catch { /* already disconnected */ }
+  mic.stream.getTracks().forEach((track) => track.stop());
+  mic.ctx.close().catch(() => {});
+}
+
+async function startRealtimeMic(generation) {
+  if (realtime.mic || realtime.micStarting) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('Microphone requires localhost/127.0.0.1 or HTTPS.');
+  }
+  realtime.micStarting = true;
+  let stream = null;
+  let ctx = null;
+  let handedOff = false;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+    if (!realtime.enabled || realtime.generation !== generation) return;
+    ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(1024, 1, 1);
+    const sink = ctx.createGain();
+    sink.gain.value = 0; // Run the capture graph without microphone feedback.
+    src.connect(proc);
+    proc.connect(sink);
+    sink.connect(ctx.destination);
+    realtime.mic = { stream, ctx, src, proc, sink };
+    handedOff = true;
+    proc.onaudioprocess = (event) => {
+      const socket = realtime.ws;
+      if (!realtime.enabled || !realtime.ready || realtime.generation !== generation ||
+          !socket || socket.readyState !== WebSocket.OPEN) return;
+      const input = new Float32Array(event.inputBuffer.getChannelData(0));
+      const pcm16k = resampleMono(input, ctx.sampleRate, 16000);
+      const pcmBytes = encodePcm16Mono(pcm16k);
+      if (!pcmBytes.length) return;
+      socket.send(JSON.stringify({
+        type: 'input_audio_buffer.append',
+        audio: encodeBase64(pcmBytes),
+      }));
+    };
+    realtime.ready = true;
+    setRealtimeStatus('Listening');
+  } finally {
+    if (!handedOff) {
+      // Permission may already have produced live tracks before AudioContext or
+      // graph construction fails; stop them even when no mic object was stored.
+      stream?.getTracks().forEach((track) => track.stop());
+      if (ctx && ctx.state !== 'closed') ctx.close().catch(() => {});
+    }
+    if (realtime.generation === generation) realtime.micStarting = false;
+  }
+}
+
+function appendRealtimeResponseText(responseId, delta) {
+  let responseTurn = realtime.turns.get(responseId);
+  if (!responseTurn) {
+    responseTurn = addTurn('assistant', '');
+    realtime.turns.set(responseId, responseTurn);
+  }
+  responseTurn.text += delta;
+  if (!responseTurn.tailText) {
+    responseTurn.tailText = document.createElement('div');
+    responseTurn.tailText.className = 'block text md caret';
+    responseTurn.tailText._raw = '';
+    responseTurn.flow.append(responseTurn.tailText);
+  }
+  responseTurn.tailText._raw += delta;
+  renderMarkdownInto(responseTurn.tailText, responseTurn.tailText._raw);
+  scrollToEnd();
+}
+
+function cancelRealtimeResponse(responseId = '') {
+  const id = responseId || realtime.activeResponseId || realtimePlayback.responseId;
+  if (!id) return;
+  // Invalidate first so even an already queued onended callback is harmless.
+  markRealtimeStale(id);
+  realtimePlayback.cancel(id);
+  const responseTurn = realtime.turns.get(id);
+  responseTurn?.tailText?.classList.remove('caret');
+  if (realtime.activeResponseId === id) realtime.activeResponseId = '';
+}
+
+async function handleRealtimeEvent(event, generation) {
+  if (!realtime.enabled || realtime.generation !== generation || !event?.type) return;
+  const responseId = typeof event.response_id === 'string' ? event.response_id : '';
+  if (event.type !== 'response.cancelled' && responseId &&
+      realtime.cancelledResponses.has(responseId)) return;
+
+  switch (event.type) {
+    case 'transcription_session.updated':
+      if (event.session?.audio_output?.playback_ack !== true) {
+        throw new Error('Server did not negotiate audio_output.playback_ack=true.');
+      }
+      await startRealtimeMic(generation);
+      break;
+    case 'input_audio_buffer.speech_started':
+      setRealtimeStatus('Listening');
+      break;
+    case 'transcription.segment':
+      setRealtimeStatus('Hearing…');
+      break;
+    case 'transcription.completed':
+      if (typeof event.text === 'string' && event.text.trim()) {
+        addTurn('user', event.text.trim());
+      }
+      setRealtimeStatus('Thinking…');
+      break;
+    case 'response.text.delta':
+      if (!responseId || typeof event.text !== 'string') break;
+      realtime.activeResponseId = responseId;
+      appendRealtimeResponseText(responseId, event.text);
+      break;
+    case 'audio.delta': {
+      if (!responseId || event.format !== 'pcm16') {
+        throw new Error('Realtime audio.delta must carry response_id and PCM16 format.');
+      }
+      const bytes = decodeBase64(event.audio);
+      realtime.activeResponseId = responseId;
+      realtimePlayback.push(responseId, bytes, Number(event.sample_rate),
+                            Number(event.channels), Number(event.text_cursor));
+      break;
+    }
+    case 'audio.done':
+      if (!responseId) break;
+      realtimePlayback.done(responseId, Number(event.text_cursor));
+      break;
+    case 'response.playback_ack':
+      if (event.final === true) {
+        if (realtime.activeResponseId === responseId) realtime.activeResponseId = '';
+        setRealtimeStatus('Listening');
+      }
+      break;
+    case 'response.completed': {
+      const responseTurn = realtime.turns.get(responseId);
+      responseTurn?.tailText?.classList.remove('caret');
+      if (realtimePlayback.sources.size === 0) setRealtimeStatus('Listening');
+      break;
+    }
+    case 'response.cancelled': {
+      // Mark stale before touching Web Audio so any already queued onended or
+      // late audio/text/completion frame for this response becomes inert.
+      cancelRealtimeResponse(responseId);
+      setRealtimeStatus('Interrupted · Listening');
+      break;
+    }
+    case 'response.failed': {
+      // Timeout failures may omit response_id; fall back to the active response.
+      cancelRealtimeResponse(responseId);
+      showError(`Realtime response failed: ${limit(event.error || 'unknown error')}`);
+      setRealtimeStatus('Listening');
+      break;
+    }
+    case 'error':
+      throw new Error(limit(event.error?.message || event.error || 'Realtime protocol error.'));
+    default:
+      break;
+  }
+}
+
+function stopRealtime(status = 'Realtime off') {
+  realtime.generation += 1;
+  realtime.enabled = false;
+  realtime.ready = false;
+  realtime.micStarting = false;
+  realtime.activeResponseId = '';
+  realtime.cancelledResponses.clear();
+  realtime.turns.clear();
+  const socket = realtime.ws;
+  realtime.ws = null;
+  if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+  closeRealtimeMic();
+  realtimePlayback.stop();
+  setRealtimeStatus(status);
+}
+
+function failRealtime(error, generation) {
+  if (realtime.generation !== generation) return;
+  const message = error?.message || String(error);
+  stopRealtime('Realtime error');
+  showError(message);
+}
+
+async function startRealtime() {
+  let url;
+  try {
+    if (ui.apiKey.value.trim()) {
+      throw new Error('Browser Realtime WS cannot send the configured API key. Use an authenticating same-origin proxy or a trusted local listener without an API key.');
+    }
+    url = realtimeURL();
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Microphone requires localhost/127.0.0.1 or HTTPS.');
+    }
+  } catch (error) {
+    showError(error.message);
+    return;
+  }
+
+  saveSettings();
+  realtime.generation += 1;
+  const generation = realtime.generation;
+  realtime.enabled = true;
+  realtime.ready = false;
+  realtime.cancelledResponses.clear();
+  clearError();
+  setRealtimeStatus('Connecting…');
+  try {
+    await realtimePlayback.unlock();
+    if (!realtime.enabled || realtime.generation !== generation) return;
+    const socket = new WebSocket(url);
+    realtime.ws = socket;
+    socket.onopen = () => {
+      if (!realtime.enabled || realtime.generation !== generation || realtime.ws !== socket) return;
+      const maxTokens = Number.parseInt(ui.maxTokens.value.trim(), 10);
+      socket.send(JSON.stringify({
+        type: 'session.update',
+        session: {
+          input_audio_format: 'pcm16',
+          turn_detection: { type: 'server_vad', silence_ms: 400 },
+          max_new_tokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 256,
+          audio_output: {
+            voice: ui.voice.value.trim() || 'vivian',
+            playback_ack: true,
+          },
+        },
+      }));
+      setRealtimeStatus('Negotiating…');
+    };
+    socket.onmessage = (message) => {
+      if (!realtime.enabled || realtime.generation !== generation || realtime.ws !== socket) return;
+      let event;
+      try { event = JSON.parse(message.data); }
+      catch { failRealtime(new Error('Realtime server sent invalid JSON.'), generation); return; }
+      handleRealtimeEvent(event, generation).catch((error) => failRealtime(error, generation));
+    };
+    socket.onerror = () => {
+      if (realtime.generation === generation && realtime.ws === socket) {
+        showError('Realtime WebSocket connection failed.');
+      }
+    };
+    socket.onclose = () => {
+      if (realtime.generation !== generation || realtime.ws !== socket) return;
+      stopRealtime('Realtime disconnected');
+      showError('Realtime WebSocket disconnected.');
+    };
+  } catch (error) {
+    failRealtime(error, generation);
+  }
+}
+
 // The wave belongs to the header voice bar, not to the module-level `turn`.
 let waveEl = null;
 
@@ -1270,6 +1769,7 @@ function applyVoice() {
   ui.voiceMute.textContent = voiceMuted ? 'Unmute' : 'Mute';
   ui.voiceStop.setAttribute('aria-label', 'Stop Voice');
   player.setMuted(voiceMuted);
+  realtimePlayback.setMuted(voiceMuted || !voiceOn);
   setPlaying(waveEl?.classList.contains('playing') || false);
 }
 applyVoice();
@@ -1284,7 +1784,12 @@ ui.voiceMute.addEventListener('click', () => {
 });
 ui.voiceStop.addEventListener('click', () => {
   player.stop();
+  cancelRealtimeResponse();
   setStatus(running ? 'Streaming…' : 'Voice stopped', running);
+});
+ui.realtimeToggle.addEventListener('click', () => {
+  if (realtime.enabled) stopRealtime();
+  else startRealtime();
 });
 
 function pcmBuffer(ctx, bytes, rate, channels) {
@@ -1508,7 +2013,7 @@ function setBusy(busy) {
   ui.send.hidden = busy;
   ui.stop.hidden = !busy;
   for (const control of [
-    ui.endpoint, ui.model, ui.image, ui.audio, ui.video, ui.voice, ui.maxTokens,
+    ui.endpoint, ui.realtimeEndpoint, ui.model, ui.image, ui.audio, ui.video, ui.voice, ui.maxTokens,
     ui.temperature, ui.topP, ui.seed, ui.apiKey, ui.imageSize, ui.imageSteps,
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
@@ -1783,6 +2288,7 @@ ui.prompt.addEventListener('keydown', (event) => {
 });
 ui.newChat.addEventListener('click', () => {
   if (running) return;
+  stopRealtime();
   player.stop();
   history.length = 0;
   ui.transcript.replaceChildren();
