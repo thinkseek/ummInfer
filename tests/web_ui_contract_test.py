@@ -92,6 +92,15 @@ def check_hooks(script):
     require("createElement('audio')" in script, "WAV artifacts must render")
     require("createElement('video')" in script, "MP4 artifacts must render")
     require("'video/mp4'" in script, "the MP4 artifact type must be handled")
+    require("body.top_p" in script and "body.seed" in script,
+            "sampling controls top_p and seed must be wired")
+    require("body.image.steps" in script and "body.image.image" in script,
+            "image steps and edit image data URL must be wired")
+    require("body.audio.ref_audio" in script,
+            "audio voice-clone ref_audio data URL must be wired")
+    require("body.video.num_frames" in script and "body.video.steps" in script
+            and "body.video.guidance_scale" in script,
+            "video fine-grained controls must be wired")
 
 
 def check_theme_tokens(html):

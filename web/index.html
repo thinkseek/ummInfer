@@ -154,7 +154,25 @@
   <label>Model<input id="model" value="Qwen2.5-0.5B-Instruct-4bit" spellcheck="false"></label>
   <label class="check"><input type="checkbox" id="image"> Image</label>
   <label class="check"><input type="checkbox" id="audio"> Audio</label>
+  <label class="check"><input type="checkbox" id="video"> Video</label>
   <label>Voice<input id="voice" value="vivian" spellcheck="false"></label>
+  <details id="advanced">
+    <summary>Options</summary>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;align-items:center;">
+      <label>Temp<input id="temperature" type="number" step="0.1" min="0" max="2" value="0" style="width:64px"></label>
+      <label>top_p<input id="topP" type="number" step="0.05" min="0.05" max="1" placeholder="1.0" style="width:68px"></label>
+      <label>Seed<input id="seed" type="number" step="1" placeholder="auto" style="width:84px"></label>
+      <label>Img size<select id="imageSize"><option value="512x512">512x512</option><option value="1024x1024">1024x1024</option></select></label>
+      <label>Img steps<input id="imageSteps" type="number" min="1" max="100" placeholder="default" style="width:72px"></label>
+      <label>Edit img<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" style="max-width:170px"></label>
+      <label>Ref WAV<input id="refAudio" type="file" accept="audio/wav,.wav" style="max-width:170px"></label>
+      <label>Vid size<select id="videoSize"><option value="480x320">480x320</option><option value="704x480">704x480</option><option value="1280x704">1280x704</option></select></label>
+      <label>Vid sec<input id="videoSeconds" type="number" min="1" max="10" value="1" style="width:56px"></label>
+      <label>Vid frames<input id="videoFrames" type="number" min="1" max="81" placeholder="auto" style="width:68px"></label>
+      <label>Vid steps<input id="videoSteps" type="number" min="1" max="100" placeholder="default" style="width:72px"></label>
+      <label>Vid CFG<input id="videoGuidance" type="number" step="0.5" min="0" placeholder="5.0" style="width:64px"></label>
+    </div>
+  </details>
 </section>
 
 <main id="transcript"></main>
@@ -175,7 +193,12 @@ const $ = (id) => document.getElementById(id);
 const ui = {
   dot: $('dot'), status: $('status'), session: $('session'), theme: $('theme'),
   endpoint: $('endpoint'), model: $('model'), image: $('image'), audio: $('audio'),
-  voice: $('voice'), transcript: $('transcript'), error: $('error'),
+  video: $('video'), voice: $('voice'), temperature: $('temperature'),
+  topP: $('topP'), seed: $('seed'), imageSize: $('imageSize'),
+  imageSteps: $('imageSteps'), imageFile: $('imageFile'), refAudio: $('refAudio'),
+  videoSize: $('videoSize'), videoSeconds: $('videoSeconds'),
+  videoFrames: $('videoFrames'), videoSteps: $('videoSteps'),
+  videoGuidance: $('videoGuidance'), transcript: $('transcript'), error: $('error'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
 };
 
@@ -201,18 +224,33 @@ applyTheme();
 
 // ---------- settings ----------
 
-const SETTINGS = ['endpoint', 'model', 'voice'];
+const SETTINGS = ['endpoint', 'model', 'voice', 'temperature', 'topP', 'seed',
+                  'imageSize', 'imageSteps', 'videoSize', 'videoSeconds',
+                  'videoFrames', 'videoSteps', 'videoGuidance'];
 for (const key of SETTINGS) {
   const saved = localStorage.getItem('ummweb.' + key);
   if (saved !== null) ui[key].value = saved;
 }
 ui.image.checked = localStorage.getItem('ummweb.image') === '1';
 ui.audio.checked = localStorage.getItem('ummweb.audio') === '1';
+ui.video.checked = localStorage.getItem('ummweb.video') === '1';
 const saveSettings = () => {
   for (const key of SETTINGS) localStorage.setItem('ummweb.' + key, ui[key].value);
   localStorage.setItem('ummweb.image', ui.image.checked ? '1' : '0');
   localStorage.setItem('ummweb.audio', ui.audio.checked ? '1' : '0');
+  localStorage.setItem('ummweb.video', ui.video.checked ? '1' : '0');
 };
+
+function readFileAsDataURL(input) {
+  const file = input.files && input.files[0];
+  if (!file) return Promise.resolve('');
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('Failed to read selected file.'));
+    reader.readAsDataURL(file);
+  });
+}
 
 // ---------- state ----------
 
@@ -567,7 +605,10 @@ function setBusy(busy) {
   ui.send.hidden = busy;
   ui.stop.hidden = !busy;
   for (const control of [
-    ui.endpoint, ui.model, ui.image, ui.audio, ui.voice, ui.newChat]) {
+    ui.endpoint, ui.model, ui.image, ui.audio, ui.video, ui.voice,
+    ui.temperature, ui.topP, ui.seed, ui.imageSize, ui.imageSteps,
+    ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
+    ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.newChat]) {
     control.disabled = busy;
   }
   ui.dot.classList.toggle('busy', busy);
@@ -589,25 +630,59 @@ async function send() {
   saveSettings();
   if (!sessionID) sessionID = newSessionID();
 
+  const tempVal = Number(ui.temperature.value);
   const body = {
     model,
     messages: [...history, { role: 'user', content: text }],
     max_tokens: 64,
-    temperature: 0,
+    temperature: Number.isFinite(tempVal) && tempVal >= 0 ? tempVal : 0,
     stream: true,
     session_id: sessionID,
   };
+  if (ui.topP.value.trim() !== '') {
+    const topPVal = Number(ui.topP.value);
+    if (Number.isFinite(topPVal) && topPVal > 0 && topPVal <= 1) body.top_p = topPVal;
+  }
+  if (ui.seed.value.trim() !== '') {
+    const seedVal = Number.parseInt(ui.seed.value.trim(), 10);
+    if (Number.isInteger(seedVal)) body.seed = seedVal;
+  }
   const modalities = ['text'];
   if (ui.image.checked) {
     modalities.push('image');
-    body.image = { size: '512x512', output_format: 'png' };
+    body.image = { size: ui.imageSize.value || '512x512', output_format: 'png' };
+    if (ui.imageSteps.value.trim() !== '') {
+      const stepsVal = Number.parseInt(ui.imageSteps.value.trim(), 10);
+      if (Number.isInteger(stepsVal) && stepsVal > 0) body.image.steps = stepsVal;
+    }
+    const editImageUrl = await readFileAsDataURL(ui.imageFile);
+    if (editImageUrl) body.image.image = editImageUrl;
   }
   if (ui.audio.checked) {
     modalities.push('audio');
     body.audio = { voice: ui.voice.value.trim() || 'vivian', format: 'wav' };
-    // ChatClient.requestBody: only audio-only turns stream PCM; with an image
-    // the server keeps its ordered single-leg WAV path.
-    if (!ui.image.checked) body.audio.stream = true;
+    const refAudioUrl = await readFileAsDataURL(ui.refAudio);
+    if (refAudioUrl) body.audio.ref_audio = refAudioUrl;
+    // Only audio-only turns stream PCM; mixed image/video turns keep single WAV.
+    if (!ui.image.checked && !ui.video.checked) body.audio.stream = true;
+  }
+  if (ui.video.checked) {
+    modalities.push('video');
+    body.video = { size: ui.videoSize.value || '480x320', output_format: 'mp4' };
+    const secVal = Number.parseInt(ui.videoSeconds.value.trim(), 10);
+    if (Number.isInteger(secVal) && secVal > 0) body.video.seconds = secVal;
+    if (ui.videoFrames.value.trim() !== '') {
+      const frVal = Number.parseInt(ui.videoFrames.value.trim(), 10);
+      if (Number.isInteger(frVal) && frVal > 0) body.video.num_frames = frVal;
+    }
+    if (ui.videoSteps.value.trim() !== '') {
+      const vsVal = Number.parseInt(ui.videoSteps.value.trim(), 10);
+      if (Number.isInteger(vsVal) && vsVal > 0) body.video.steps = vsVal;
+    }
+    if (ui.videoGuidance.value.trim() !== '') {
+      const cfgVal = Number(ui.videoGuidance.value);
+      if (Number.isFinite(cfgVal) && cfgVal >= 0) body.video.guidance_scale = cfgVal;
+    }
   }
   if (modalities.length > 1) body.modalities = modalities;
 
