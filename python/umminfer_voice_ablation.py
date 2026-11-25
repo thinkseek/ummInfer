@@ -21,11 +21,21 @@ Usage:
     --config benchmarks/ablations/voice-strategy.json \\
     --base-url http://127.0.0.1:43301 --out /tmp/umm-voice-ablation-live
 
+  python3 -I python/umminfer_voice_ablation.py \\
+    --config benchmarks/ablations/voice-strategy-controlled-sm90.json \\
+    --base-url http://127.0.0.1:43301 \\
+    --controlled-live --provenance-json /path/to/provenance.json \\
+    --out /tmp/umm-voice-ablation-controlled
+
 Evidence honesty:
   - --replay-only produces CONTRACT_REPLAY (REAL_MODEL_EVIDENCE: NOT_RUN).
     Replay fixtures verify protocol, hashing, and metric calculation only; they
     are NEVER real latency or hardware performance evidence.
-  - --base-url produces UNCONTROLLED_LIVE observations against the target server.
+  - --base-url (without --controlled-live) produces UNCONTROLLED_LIVE observations
+    against the target server.
+  - --base-url --controlled-live (with a controlled_measurement config block and
+    verified --provenance-json when require_exclusive_gpu=true) produces
+    CONTROLLED_LIVE / COMPLETED only when every measured case succeeds with 0 failures.
 """
 
 from __future__ import annotations
@@ -54,12 +64,17 @@ ABLATION_SCHEMA_VERSION = 1
 DATASET_SCHEMA_VERSION = 1
 REPLAY_SCHEMA_VERSION = 1
 REPORT_SCHEMA_VERSION = 1
+CONTROLLED_MEASUREMENT_SCHEMA_VERSION = 1
 
 VARIABLE_NAME = "voice_strategy"
 VOICE_STRATEGIES = ("full_response_tts", "sentence_streaming_tts")
+ALLOWED_SCHEDULE_MODES = ("interleaved_alternating",)
+REQUIRED_PROVENANCE_BINARIES = ("gateway", "vlm", "tts")
+REQUIRED_PROVENANCE_MODEL_MANIFESTS = ("vlm", "tts")
 DEFAULT_STALL_THRESHOLD_MS = 500.0
 TERMINAL_KINDS = {"complete", "error", "cancelled"}
 HEX_256_RE = re.compile(r"[0-9a-f]{64}\Z")
+COMMIT_SHA_RE = re.compile(r"[0-9a-f]{7,40}\Z")
 PROMPT_ID_RE = re.compile(r"[a-z0-9_-]+\Z")
 
 
@@ -90,6 +105,11 @@ class VoiceExperiment:
         if self.replay_bytes is None:
             return None
         return hashlib.sha256(self.replay_bytes).hexdigest()
+
+    @property
+    def controlled_measurement(self) -> dict | None:
+        cm = self.config.get("controlled_measurement")
+        return copy.deepcopy(cm) if isinstance(cm, dict) else None
 
 
 def canonical_json(value: object) -> bytes:
@@ -169,6 +189,185 @@ def validate_base_url(url: str, *, allow_remote_http: bool = False) -> str:
             "refusing non-loopback plain HTTP URL; use https:// or pass --allow-remote-http"
         )
     return f"{scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+
+
+def validate_controlled_measurement(block: object) -> dict:
+    """Validate optional controlled_measurement schema v1 block (fail closed)."""
+    if not isinstance(block, dict):
+        raise ValueError("config.controlled_measurement must be an object")
+    schema_version = block.get("schema_version")
+    if not _is_int(schema_version) or schema_version != CONTROLLED_MEASUREMENT_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported controlled_measurement.schema_version: {schema_version!r} "
+            f"(expected {CONTROLLED_MEASUREMENT_SCHEMA_VERSION})"
+        )
+    warmup_runs = block.get("warmup_runs")
+    if not _is_int(warmup_runs) or warmup_runs < 0:
+        raise ValueError("controlled_measurement.warmup_runs must be an integer >= 0")
+    repetitions = block.get("repetitions")
+    if not _is_int(repetitions) or repetitions < 1:
+        raise ValueError("controlled_measurement.repetitions must be an integer >= 1")
+    schedule_mode = block.get("schedule_mode")
+    if not isinstance(schedule_mode, str) or schedule_mode not in ALLOWED_SCHEDULE_MODES:
+        raise ValueError(
+            f"unsupported controlled_measurement.schedule_mode: {schedule_mode!r}; "
+            f"expected one of {list(ALLOWED_SCHEDULE_MODES)}"
+        )
+    require_exclusive_gpu = block.get("require_exclusive_gpu")
+    if not isinstance(require_exclusive_gpu, bool):
+        raise ValueError("controlled_measurement.require_exclusive_gpu must be a boolean")
+    max_failed_cases = block.get("max_failed_cases")
+    if not _is_int(max_failed_cases) or max_failed_cases != 0:
+        raise ValueError("controlled_measurement.max_failed_cases must be 0")
+
+    return {
+        "schema_version": schema_version,
+        "warmup_runs": warmup_runs,
+        "repetitions": repetitions,
+        "schedule_mode": schedule_mode,
+        "require_exclusive_gpu": require_exclusive_gpu,
+        "max_failed_cases": max_failed_cases,
+    }
+
+
+def build_arm_schedule(
+    repetitions: int,
+    schedule_mode: str = "interleaved_alternating",
+) -> list[list[str]]:
+    """Return deterministic per-repetition arm orderings to counter thermal/cache drift."""
+    if not _is_int(repetitions) or repetitions < 0:
+        raise ValueError("repetitions must be an integer >= 0")
+    if schedule_mode not in ALLOWED_SCHEDULE_MODES:
+        raise ValueError(
+            f"unsupported schedule_mode {schedule_mode!r}; expected one of {list(ALLOWED_SCHEDULE_MODES)}"
+        )
+    schedule: list[list[str]] = []
+    forward = list(VOICE_STRATEGIES)
+    reverse = list(reversed(VOICE_STRATEGIES))
+    for rep in range(repetitions):
+        schedule.append(list(forward if rep % 2 == 0 else reverse))
+    return schedule
+
+
+def load_and_validate_provenance(
+    provenance_path: Path | str,
+    *,
+    require_exclusive_gpu: bool,
+    strict: bool = True,
+    expected_vlm_weights_sha256: str | None = None,
+) -> tuple[str, dict]:
+    """Load and fail-closed validate an external controlled-measurement provenance JSON."""
+    resolved = Path(provenance_path).resolve()
+    raw, data = _read_json_object(resolved)
+    digest = sha256_bytes(raw)
+    if not strict:
+        return digest, data
+
+    commit_sha = data.get("commit_sha")
+    if not isinstance(commit_sha, str) or not COMMIT_SHA_RE.fullmatch(commit_sha.strip()):
+        raise ValueError("provenance.commit_sha must be 7-40 lowercase hex characters")
+
+    host_profile = data.get("host_profile")
+    if not isinstance(host_profile, dict) or not host_profile:
+        raise ValueError("provenance.host_profile must be a non-empty object")
+    for k, v in host_profile.items():
+        if not isinstance(k, str) or not k.strip():
+            raise ValueError("provenance.host_profile keys must be non-empty strings")
+        if v is None or (isinstance(v, str) and not v.strip()):
+            raise ValueError(f"provenance.host_profile.{k} must not be null or empty")
+
+    binary_sha256 = data.get("binary_sha256")
+    if not isinstance(binary_sha256, dict) or not binary_sha256:
+        raise ValueError("provenance.binary_sha256 must be a non-empty object")
+    for req_bin in REQUIRED_PROVENANCE_BINARIES:
+        if req_bin not in binary_sha256:
+            raise ValueError(f"provenance.binary_sha256 missing required binary: {req_bin!r}")
+    for bin_name, bin_hash in binary_sha256.items():
+        if not isinstance(bin_name, str) or not bin_name.strip():
+            raise ValueError("provenance.binary_sha256 keys must be non-empty strings")
+        if not isinstance(bin_hash, str) or not HEX_256_RE.fullmatch(bin_hash):
+            raise ValueError(f"provenance.binary_sha256[{bin_name!r}] must be 64 lowercase hex characters")
+
+    model_manifests = data.get("model_manifests")
+    if not isinstance(model_manifests, dict) or not model_manifests:
+        raise ValueError("provenance.model_manifests must be a non-empty object")
+    for req_model in REQUIRED_PROVENANCE_MODEL_MANIFESTS:
+        if req_model not in model_manifests:
+            raise ValueError(f"provenance.model_manifests missing required entry: {req_model!r}")
+    for model_key, manifest in model_manifests.items():
+        if not isinstance(model_key, str) or not model_key.strip():
+            raise ValueError("provenance.model_manifests keys must be non-empty strings")
+        if not isinstance(manifest, dict):
+            raise ValueError(f"provenance.model_manifests[{model_key!r}] must be an object")
+        w_sha = manifest.get("weights_sha256")
+        if not isinstance(w_sha, str) or not HEX_256_RE.fullmatch(w_sha):
+            raise ValueError(
+                f"provenance.model_manifests[{model_key!r}].weights_sha256 must be 64 lowercase hex characters"
+            )
+        count = manifest.get("file_count")
+        if count is None:
+            count = manifest.get("shard_count")
+        if count is None:
+            count = manifest.get("weight_file_count")
+        if not _is_int(count) or count < 1:
+            raise ValueError(
+                f"provenance.model_manifests[{model_key!r}] must include positive integer file_count/shard_count"
+            )
+    if expected_vlm_weights_sha256 is not None:
+        actual_vlm_sha = model_manifests["vlm"]["weights_sha256"]
+        if actual_vlm_sha != expected_vlm_weights_sha256:
+            raise ValueError(
+                f"provenance.model_manifests.vlm.weights_sha256 mismatch: "
+                f"config expects {expected_vlm_weights_sha256}, provenance has {actual_vlm_sha}"
+            )
+
+    gpus = data.get("gpus")
+    if not isinstance(gpus, list) or not gpus:
+        raise ValueError("provenance.gpus must be a non-empty list")
+    seen_gpu_indices: set[int] = set()
+    for idx, gpu in enumerate(gpus):
+        if not isinstance(gpu, dict):
+            raise ValueError(f"provenance.gpus[{idx}] must be an object")
+        gpu_index = gpu.get("index")
+        if not _is_int(gpu_index) or gpu_index < 0:
+            raise ValueError(f"provenance.gpus[{idx}].index must be a non-negative integer")
+        if gpu_index in seen_gpu_indices:
+            raise ValueError(f"duplicate GPU index in provenance.gpus: {gpu_index}")
+        seen_gpu_indices.add(gpu_index)
+        gpu_name = gpu.get("name")
+        if not isinstance(gpu_name, str) or not gpu_name.strip():
+            raise ValueError(f"provenance.gpus[{idx}].name must be a non-empty string")
+
+        if "exclusive" in gpu:
+            if not isinstance(gpu["exclusive"], bool):
+                raise ValueError(f"provenance.gpus[{idx}].exclusive must be a boolean")
+            if require_exclusive_gpu and gpu["exclusive"] is not True:
+                raise ValueError(f"provenance.gpus[{idx}] (GPU {gpu_index}) is not exclusive (exclusive=false)")
+
+        for check_key in ("pre_check", "post_check"):
+            check = gpu.get(check_key)
+            if not isinstance(check, dict):
+                raise ValueError(f"provenance.gpus[{idx}].{check_key} must be an object")
+            excl = check.get("exclusive")
+            if not isinstance(excl, bool):
+                raise ValueError(f"provenance.gpus[{idx}].{check_key}.exclusive must be a boolean")
+            if require_exclusive_gpu and excl is not True:
+                raise ValueError(
+                    f"provenance.gpus[{idx}] (GPU {gpu_index}) failed {check_key} exclusive isolation check"
+                )
+            if "other_compute_processes" in check:
+                other_procs = check["other_compute_processes"]
+                if not _is_int(other_procs) or other_procs < 0:
+                    raise ValueError(
+                        f"provenance.gpus[{idx}].{check_key}.other_compute_processes must be an integer >= 0"
+                    )
+                if require_exclusive_gpu and other_procs != 0:
+                    raise ValueError(
+                        f"provenance.gpus[{idx}] (GPU {gpu_index}) reported {other_procs} "
+                        f"other compute processes during {check_key}"
+                    )
+
+    return digest, data
 
 
 def load_experiment(config_path: Path | str) -> VoiceExperiment:
@@ -269,6 +468,9 @@ def load_experiment(config_path: Path | str) -> VoiceExperiment:
             raise ValueError(f"unsupported replay schema_version: {replay.get('schema_version')}")
         if not isinstance(replay.get("cases"), list):
             raise ValueError("replay.cases must be a list")
+
+    if "controlled_measurement" in config and config["controlled_measurement"] is not None:
+        validate_controlled_measurement(config["controlled_measurement"])
 
     return VoiceExperiment(
         config_path=resolved,
@@ -421,12 +623,33 @@ def percentile(values: list[float], pct: float) -> float | None:
     return round(ordered[lo] + (ordered[hi] - ordered[lo]) * frac, 6)
 
 
+def compute_iqr(values: list[float]) -> float | None:
+    """Compute interquartile range (Q3 - Q1) using linear-interpolated percentiles."""
+    if not values:
+        return None
+    q1 = percentile(values, 25.0)
+    q3 = percentile(values, 75.0)
+    assert q1 is not None and q3 is not None
+    return round(q3 - q1, 6)
+
+
+def compute_mad(values: list[float]) -> float | None:
+    """Compute median absolute deviation: median(|x_i - median(x)|)."""
+    if not values:
+        return None
+    ordered = [float(v) for v in values]
+    med = float(statistics.median(ordered))
+    deviations = [abs(v - med) for v in ordered]
+    return round(float(statistics.median(deviations)), 6)
+
+
 def summarize_metric(
     values: list[float | int | None],
     *,
     not_applicable_when_empty: bool = False,
+    include_dispersion: bool = False,
 ) -> dict:
-    """Aggregate median, p95, min, max, and explicit coverage over per-case metric samples."""
+    """Aggregate median, p95, min, max, optional iqr/mad, and explicit coverage over metric samples."""
     total = len(values)
     present = [float(v) for v in values if v is not None]
     sample_count = len(present)
@@ -440,7 +663,7 @@ def summarize_metric(
         coverage = "PARTIAL"
 
     if not present:
-        return {
+        result: dict = {
             "coverage": coverage,
             "sample_count": 0,
             "total_count": total,
@@ -449,7 +672,11 @@ def summarize_metric(
             "min": None,
             "max": None,
         }
-    return {
+        if include_dispersion:
+            result["iqr"] = None
+            result["mad"] = None
+        return result
+    result = {
         "coverage": coverage,
         "sample_count": sample_count,
         "total_count": total,
@@ -458,6 +685,10 @@ def summarize_metric(
         "min": round(min(present), 6),
         "max": round(max(present), 6),
     }
+    if include_dispersion:
+        result["iqr"] = compute_iqr(present)
+        result["mad"] = compute_mad(present)
+    return result
 
 
 def evaluate_sse_case(
@@ -761,15 +992,19 @@ def aggregate_arm(strategy: str, cases: list[dict], stall_threshold_ms: float) -
         "overall_stall_rate": round(total_stalls / total_gaps, 6) if total_gaps > 0 else None,
         "pooled_inter_chunk_gap_p95_ms": percentile(pooled_gaps, 95.0) if pooled_gaps else None,
         "metrics": {
-            "ttft_ms": summarize_metric([c["ttft_ms"] for c in cases]),
-            "ttfa_ms": summarize_metric([c["ttfa_ms"] for c in cases]),
-            "ttfa_after_ttft_ms": summarize_metric([c["ttfa_after_ttft_ms"] for c in cases]),
-            "terminal_ms": summarize_metric([c["terminal_ms"] for c in cases]),
+            "ttft_ms": summarize_metric([c["ttft_ms"] for c in cases], include_dispersion=True),
+            "ttfa_ms": summarize_metric([c["ttfa_ms"] for c in cases], include_dispersion=True),
+            "ttfa_after_ttft_ms": summarize_metric(
+                [c["ttfa_after_ttft_ms"] for c in cases],
+                include_dispersion=True,
+            ),
+            "terminal_ms": summarize_metric([c["terminal_ms"] for c in cases], include_dispersion=True),
             "audio_chunk_count": summarize_metric([c["audio_chunk_count"] for c in cases]),
             "audio_bytes_total": summarize_metric([c["audio_bytes_total"] for c in cases]),
             "inter_chunk_gap_p95_ms": summarize_metric(
                 [c["inter_chunk_gap_p95_ms"] for c in cases],
                 not_applicable_when_empty=True,
+                include_dispersion=True,
             ),
             "stall_count": summarize_metric([c["stall_count"] for c in cases]),
         },
@@ -818,6 +1053,11 @@ def build_comparison(
         warning = (
             "CONTRACT_REPLAY (REAL_MODEL_EVIDENCE: NOT_RUN): metrics are derived from canned "
             "contract replay fixtures and MUST NOT be cited as real model or hardware speedup."
+        )
+    elif evidence_class == "CONTROLLED_LIVE":
+        warning = (
+            "CONTROLLED_LIVE: interleaved multi-repetition live measurement with verified "
+            "provenance and zero failed cases; perceptual audio quality remains NOT_COVERED."
         )
     else:
         warning = (
@@ -875,10 +1115,18 @@ def run_ablation(
     out_dir: Path,
     replay_only: bool,
     base_url: str | None = None,
+    controlled_live: bool = False,
+    provenance_json: Path | str | None = None,
     stall_threshold_ms: float | None = None,
     timeout_s: float = 300.0,
 ) -> dict:
-    """Execute the voice collaboration ablation in replay or live mode and write verified outputs."""
+    """Execute the voice collaboration ablation in replay, uncontrolled live, or controlled live mode."""
+    if replay_only and controlled_live:
+        raise ValueError("--controlled-live is mutually exclusive with --replay-only")
+    if replay_only and provenance_json is not None:
+        raise ValueError("--provenance-json cannot be used with --replay-only")
+    if controlled_live and base_url is None:
+        raise ValueError("--controlled-live requires --base-url")
     if replay_only == (base_url is not None):
         raise ValueError("specify exactly one of replay_only=True or base_url")
 
@@ -891,6 +1139,35 @@ def run_ablation(
         raise ValueError("stall_threshold_ms must be a finite positive number")
 
     matrix = verify_single_variable_matrix(experiment)
+
+    cm_config: dict | None = None
+    prov_sha256: str | None = None
+    prov_data: dict | None = None
+    provenance_verified = False
+
+    if controlled_live:
+        raw_cm = experiment.controlled_measurement
+        if raw_cm is None:
+            raise ValueError("--controlled-live requires a config with a controlled_measurement block")
+        cm_config = validate_controlled_measurement(raw_cm)
+        if cm_config["require_exclusive_gpu"] and provenance_json is None:
+            raise ValueError(
+                "--controlled-live with require_exclusive_gpu=true requires --provenance-json"
+            )
+        if provenance_json is not None:
+            prov_sha256, prov_data = load_and_validate_provenance(
+                provenance_json,
+                require_exclusive_gpu=cm_config["require_exclusive_gpu"],
+                strict=True,
+                expected_vlm_weights_sha256=experiment.config["model"].get("weights_sha256"),
+            )
+            provenance_verified = True
+    elif provenance_json is not None:
+        prov_sha256, prov_data = load_and_validate_provenance(
+            provenance_json,
+            require_exclusive_gpu=False,
+            strict=False,
+        )
 
     replay_index: dict[tuple[str, str], dict] = {}
     if replay_only:
@@ -913,6 +1190,18 @@ def run_ablation(
             "hardware_throughput_or_stall_rate_benchmark",
             "perceptual_audio_quality",
         ]
+    elif controlled_live:
+        evidence_class = "CONTROLLED_LIVE"
+        real_model_evidence = "CONTROLLED_LIVE"
+        claims_allowed = [
+            "controlled_live_latency_and_stall_comparison",
+            "single_variable_invariance_verified",
+            "interleaved_multi_repetition_measurement",
+        ]
+        claims_forbidden = [
+            "perceptual_audio_quality",
+            "full_duplex_barge_in_latency",
+        ]
     else:
         evidence_class = "UNCONTROLLED_LIVE"
         real_model_evidence = "UNCONTROLLED_LIVE"
@@ -924,63 +1213,186 @@ def run_ablation(
 
     arm_cases: dict[str, list[dict]] = {}
     arm_summaries: dict[str, dict] = {}
+    warmup_summary: dict | None = None
+    repetitions_report: list[dict] | None = None
+    schedule_execution: list[dict] | None = None
 
-    for strategy in VOICE_STRATEGIES:
-        cases_out: list[dict] = []
-        for item in matrix["by_arm"][strategy]:
-            pid = item["prompt_id"]
-            req = item["request"]
-            req_sha = item["request_sha256"]
-            fixed_sha = item["fixed_request_sha256"]
+    if controlled_live:
+        assert base_url is not None and cm_config is not None
+        schedule_execution = []
 
-            if replay_only:
-                key = (strategy, pid)
-                if key not in replay_index:
-                    raise ValueError(f"replay bundle missing case for {strategy}/{pid}")
-                rcase = replay_index[key]
-                if rcase.get("fixed_request_sha256") != fixed_sha:
-                    raise ValueError(
-                        f"replay case {strategy}/{pid} fixed_request_sha256 mismatch: "
-                        f"expected {fixed_sha}, got {rcase.get('fixed_request_sha256')}"
+        # 1. Warmup phase: execute full live requests and exclude from measured aggregates.
+        warmup_runs = cm_config["warmup_runs"]
+        warmup_schedule = build_arm_schedule(warmup_runs, cm_config["schedule_mode"])
+        warmup_by_arm: dict[str, list[dict]] = {s: [] for s in VOICE_STRATEGIES}
+        warmup_requests: list[dict] = []
+
+        for w_idx, w_arm_order in enumerate(warmup_schedule):
+            for order_idx, strategy in enumerate(w_arm_order):
+                for item in matrix["by_arm"][strategy]:
+                    pid = item["prompt_id"]
+                    raw_sse, frame_times_ms = stream_live_chat(base_url, item["request"], timeout_s=timeout_s)
+                    evaluated = evaluate_sse_case(
+                        raw_sse=raw_sse,
+                        strategy=strategy,
+                        prompt_id=pid,
+                        request_sha256=item["request_sha256"],
+                        fixed_req_sha256=item["fixed_request_sha256"],
+                        stall_threshold_ms=threshold_ms,
+                        live_frame_times_ms=frame_times_ms,
                     )
-                if rcase.get("request_sha256") != req_sha:
-                    raise ValueError(
-                        f"replay case {strategy}/{pid} request_sha256 mismatch: "
-                        f"expected {req_sha}, got {rcase.get('request_sha256')}"
+                    warmup_by_arm[strategy].append(evaluated)
+                    warmup_requests.append({
+                        "warmup_run": w_idx,
+                        "arm_order_index": order_idx,
+                        "voice_strategy": strategy,
+                        "prompt_id": pid,
+                        "terminal_state": evaluated["terminal_state"],
+                        "ttft_ms": evaluated["ttft_ms"],
+                        "ttfa_ms": evaluated["ttfa_ms"],
+                        "terminal_ms": evaluated["terminal_ms"],
+                        "request_sha256": evaluated["request_sha256"],
+                        "response_sha256": evaluated["response_sha256"],
+                    })
+                    schedule_execution.append({
+                        "phase": "warmup",
+                        "warmup_run": w_idx,
+                        "arm_order_index": order_idx,
+                        "voice_strategy": strategy,
+                        "prompt_id": pid,
+                        "status": "completed",
+                    })
+
+        warmup_summary = {
+            "warmup_runs": warmup_runs,
+            "completed_request_count": len(warmup_requests),
+            "excluded_from_measured_aggregates": True,
+            "by_arm": {
+                strategy: {
+                    "runs": warmup_runs,
+                    "completed_count": len(warmup_by_arm[strategy]),
+                    "ttft_ms_median": summarize_metric([c["ttft_ms"] for c in warmup_by_arm[strategy]])["median"],
+                    "ttfa_ms_median": summarize_metric([c["ttfa_ms"] for c in warmup_by_arm[strategy]])["median"],
+                    "terminal_ms_median": summarize_metric(
+                        [c["terminal_ms"] for c in warmup_by_arm[strategy]]
+                    )["median"],
+                }
+                for strategy in VOICE_STRATEGIES
+            },
+            "requests": warmup_requests,
+        }
+
+        # 2. Measured interleaved repetitions (fail closed on any error; max_failed_cases == 0).
+        measured_schedule = build_arm_schedule(cm_config["repetitions"], cm_config["schedule_mode"])
+        arm_cases = {s: [] for s in VOICE_STRATEGIES}
+        repetitions_report = []
+
+        for rep_idx, arm_order in enumerate(measured_schedule):
+            rep_cases: dict[str, list[dict]] = {s: [] for s in VOICE_STRATEGIES}
+            for order_idx, strategy in enumerate(arm_order):
+                for item in matrix["by_arm"][strategy]:
+                    pid = item["prompt_id"]
+                    raw_sse, frame_times_ms = stream_live_chat(base_url, item["request"], timeout_s=timeout_s)
+                    evaluated = evaluate_sse_case(
+                        raw_sse=raw_sse,
+                        strategy=strategy,
+                        prompt_id=pid,
+                        request_sha256=item["request_sha256"],
+                        fixed_req_sha256=item["fixed_request_sha256"],
+                        stall_threshold_ms=threshold_ms,
+                        live_frame_times_ms=frame_times_ms,
                     )
-                raw_sse = base64.b64decode(rcase["response_sse_base64"], validate=True)
-                _check_sha256(raw_sse, rcase.get("response_sha256"), f"replay response {strategy}/{pid}")
-                evaluated = evaluate_sse_case(
-                    raw_sse=raw_sse,
-                    strategy=strategy,
-                    prompt_id=pid,
-                    request_sha256=req_sha,
-                    fixed_req_sha256=fixed_sha,
-                    stall_threshold_ms=threshold_ms,
-                    recorded_latency_us=rcase.get("latency_us"),
+                    evaluated["repetition"] = rep_idx
+                    evaluated["arm_order_index"] = order_idx
+                    rep_cases[strategy].append(evaluated)
+                    arm_cases[strategy].append(evaluated)
+                    schedule_execution.append({
+                        "phase": "measured",
+                        "repetition": rep_idx,
+                        "arm_order_index": order_idx,
+                        "voice_strategy": strategy,
+                        "prompt_id": pid,
+                        "status": "completed",
+                    })
+            rep_arm_metrics = {
+                strategy: aggregate_arm(strategy, rep_cases[strategy], threshold_ms)
+                for strategy in VOICE_STRATEGIES
+            }
+            repetitions_report.append({
+                "repetition": rep_idx,
+                "arm_order": list(arm_order),
+                "arm_metrics": rep_arm_metrics,
+            })
+
+        expected_per_arm = cm_config["repetitions"] * len(experiment.prompts)
+        for strategy in VOICE_STRATEGIES:
+            summary = aggregate_arm(strategy, arm_cases[strategy], threshold_ms)
+            if (
+                summary["completed_case_count"] != expected_per_arm
+                or summary["total_case_count"] != expected_per_arm
+            ):
+                raise RuntimeError(
+                    f"controlled measurement failed completeness check for {strategy}: "
+                    f"completed={summary['completed_case_count']}, expected={expected_per_arm}"
                 )
-            else:
-                assert base_url is not None
-                raw_sse, frame_times_ms = stream_live_chat(base_url, req, timeout_s=timeout_s)
-                evaluated = evaluate_sse_case(
-                    raw_sse=raw_sse,
-                    strategy=strategy,
-                    prompt_id=pid,
-                    request_sha256=req_sha,
-                    fixed_req_sha256=fixed_sha,
-                    stall_threshold_ms=threshold_ms,
-                    live_frame_times_ms=frame_times_ms,
-                )
-            cases_out.append(evaluated)
-        arm_cases[strategy] = cases_out
-        arm_summaries[strategy] = aggregate_arm(strategy, cases_out, threshold_ms)
+            arm_summaries[strategy] = summary
+    else:
+        for strategy in VOICE_STRATEGIES:
+            cases_out: list[dict] = []
+            for item in matrix["by_arm"][strategy]:
+                pid = item["prompt_id"]
+                req = item["request"]
+                req_sha = item["request_sha256"]
+                fixed_sha = item["fixed_request_sha256"]
+
+                if replay_only:
+                    key = (strategy, pid)
+                    if key not in replay_index:
+                        raise ValueError(f"replay bundle missing case for {strategy}/{pid}")
+                    rcase = replay_index[key]
+                    if rcase.get("fixed_request_sha256") != fixed_sha:
+                        raise ValueError(
+                            f"replay case {strategy}/{pid} fixed_request_sha256 mismatch: "
+                            f"expected {fixed_sha}, got {rcase.get('fixed_request_sha256')}"
+                        )
+                    if rcase.get("request_sha256") != req_sha:
+                        raise ValueError(
+                            f"replay case {strategy}/{pid} request_sha256 mismatch: "
+                            f"expected {req_sha}, got {rcase.get('request_sha256')}"
+                        )
+                    raw_sse = base64.b64decode(rcase["response_sse_base64"], validate=True)
+                    _check_sha256(raw_sse, rcase.get("response_sha256"), f"replay response {strategy}/{pid}")
+                    evaluated = evaluate_sse_case(
+                        raw_sse=raw_sse,
+                        strategy=strategy,
+                        prompt_id=pid,
+                        request_sha256=req_sha,
+                        fixed_req_sha256=fixed_sha,
+                        stall_threshold_ms=threshold_ms,
+                        recorded_latency_us=rcase.get("latency_us"),
+                    )
+                else:
+                    assert base_url is not None
+                    raw_sse, frame_times_ms = stream_live_chat(base_url, req, timeout_s=timeout_s)
+                    evaluated = evaluate_sse_case(
+                        raw_sse=raw_sse,
+                        strategy=strategy,
+                        prompt_id=pid,
+                        request_sha256=req_sha,
+                        fixed_req_sha256=fixed_sha,
+                        stall_threshold_ms=threshold_ms,
+                        live_frame_times_ms=frame_times_ms,
+                    )
+                cases_out.append(evaluated)
+            arm_cases[strategy] = cases_out
+            arm_summaries[strategy] = aggregate_arm(strategy, cases_out, threshold_ms)
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written_files: list[str] = []
 
     for strategy in VOICE_STRATEGIES:
-        arm_report = {
+        arm_report: dict = {
             "report_schema_version": REPORT_SCHEMA_VERSION,
             "ablation_id": experiment.config["ablation_id"],
             "variable": VARIABLE_NAME,
@@ -991,13 +1403,27 @@ def run_ablation(
             "summary": arm_summaries[strategy],
             "cases": arm_cases[strategy],
         }
+        if controlled_live:
+            arm_report["controlled_measurement_status"] = "COMPLETED"
         rel_path = f"arms/{strategy}/report.json"
         target = out_dir / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(canonical_json(arm_report) + b"\n")
         written_files.append(rel_path)
 
-    top_report = {
+    provenance_section: dict = {
+        "config_sha256": experiment.config_sha256,
+        "dataset_id": experiment.dataset.get("dataset_id"),
+        "dataset_sha256": experiment.dataset_sha256,
+        "replay_sha256": experiment.replay_sha256 if replay_only else None,
+        "model": copy.deepcopy(experiment.config["model"]),
+        "mode": "replay" if replay_only else ("controlled_live" if controlled_live else "live"),
+    }
+    if prov_data is not None:
+        provenance_section["provenance_json_sha256"] = prov_sha256
+        provenance_section["external_provenance"] = prov_data
+
+    top_report: dict = {
         "report_schema_version": REPORT_SCHEMA_VERSION,
         "ablation_id": experiment.config["ablation_id"],
         "variable": VARIABLE_NAME,
@@ -1006,14 +1432,7 @@ def run_ablation(
         "real_model_evidence": real_model_evidence,
         "claims_allowed": claims_allowed,
         "claims_forbidden": claims_forbidden,
-        "provenance": {
-            "config_sha256": experiment.config_sha256,
-            "dataset_id": experiment.dataset.get("dataset_id"),
-            "dataset_sha256": experiment.dataset_sha256,
-            "replay_sha256": experiment.replay_sha256 if replay_only else None,
-            "model": copy.deepcopy(experiment.config["model"]),
-            "mode": "replay" if replay_only else "live",
-        },
+        "provenance": provenance_section,
         "single_variable": {
             "ablated_field": "audio.stream",
             "arms": {
@@ -1031,6 +1450,19 @@ def run_ablation(
             strategy: f"arms/{strategy}/report.json" for strategy in VOICE_STRATEGIES
         },
     }
+    if controlled_live:
+        assert cm_config is not None and warmup_summary is not None
+        assert repetitions_report is not None and schedule_execution is not None
+        top_report["controlled_measurement_status"] = "COMPLETED"
+        top_report["controlled_measurement"] = {
+            **cm_config,
+            "failed_case_count": 0,
+            "provenance_verified": provenance_verified,
+        }
+        top_report["warmup_summary"] = warmup_summary
+        top_report["repetitions"] = repetitions_report
+        top_report["schedule_execution"] = schedule_execution
+
     top_path = out_dir / "report.json"
     top_path.write_bytes(canonical_json(top_report) + b"\n")
     written_files.append("report.json")
@@ -1059,7 +1491,24 @@ def main(argv: list[str] | None = None) -> int:
     mode_group.add_argument(
         "--base-url",
         default=None,
-        help="Live ummInfer server base URL (e.g. http://127.0.0.1:43301; produces UNCONTROLLED_LIVE)",
+        help="Live ummInfer server base URL (e.g. http://127.0.0.1:43301; produces UNCONTROLLED_LIVE unless --controlled-live)",
+    )
+    parser.add_argument(
+        "--controlled-live",
+        action="store_true",
+        help=(
+            "Execute controlled multi-repetition interleaved live measurement (requires --base-url, "
+            "a config with controlled_measurement, and --provenance-json when require_exclusive_gpu=true)"
+        ),
+    )
+    parser.add_argument(
+        "--provenance-json",
+        type=Path,
+        default=None,
+        help=(
+            "Path to provenance manifest JSON (optional for ad-hoc --base-url; required for "
+            "--controlled-live when require_exclusive_gpu=true)"
+        ),
     )
     parser.add_argument(
         "--out",
@@ -1087,6 +1536,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.controlled_live and args.replay_only:
+            raise ValueError("--controlled-live is mutually exclusive with --replay-only")
+        if args.controlled_live and args.base_url is None:
+            raise ValueError("--controlled-live requires --base-url")
+        if args.replay_only and args.provenance_json is not None:
+            raise ValueError("--provenance-json cannot be used with --replay-only")
+
         experiment = load_experiment(args.config)
         normalized_url = (
             validate_base_url(args.base_url, allow_remote_http=args.allow_remote_http)
@@ -1098,6 +1554,8 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
             replay_only=args.replay_only,
             base_url=normalized_url,
+            controlled_live=args.controlled_live,
+            provenance_json=args.provenance_json,
             stall_threshold_ms=args.stall_threshold_ms,
             timeout_s=args.timeout_s,
         )
@@ -1106,8 +1564,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     cmp = report["comparison"]
+    status_part = (
+        f" | STATUS: {report['controlled_measurement_status']}"
+        if "controlled_measurement_status" in report
+        else ""
+    )
     print(
-        f"VOICE ABLATION OK [{report['evidence_class']} | REAL_MODEL_EVIDENCE: {report['real_model_evidence']}]: "
+        f"VOICE ABLATION OK [{report['evidence_class']} | REAL_MODEL_EVIDENCE: {report['real_model_evidence']}"
+        f"{status_part}]: "
         f"fixed_matrix_sha256={report['single_variable']['fixed_matrix_sha256'][:16]}... "
         f"ttfa_speedup_x={cmp['ttfa_speedup_x']} out={args.out}"
     )
