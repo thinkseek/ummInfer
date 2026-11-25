@@ -4,6 +4,7 @@
 // as argv[1] (or UMM_TTS_TEST_DATA); it only needs vocab.json, merges.txt and
 // tokenizer_config.json.
 #include "bpe_tokenizer.hpp"
+#include "decode_helpers.hpp"
 #include "engine.hpp"
 #include "prompt.hpp"
 #include "safetensors.hpp"
@@ -372,6 +373,168 @@ static void test_safetensors() {
   CHECK(threw);
 }
 
+static void test_decode_helpers() {
+  // Unroll schedules for decode GEMV and dual-weight SwiGLU GEMV.
+  CHECK(tts_gemv_unroll_for(1) == 4);
+  CHECK(tts_gemv_unroll_for(2) == 4);
+  CHECK(tts_gemv_unroll_for(3) == 1);
+  CHECK(tts_gemv_unroll_for(8) == 1);
+  CHECK(tts_swiglu_unroll_for(1) == 2);
+  CHECK(tts_swiglu_unroll_for(2) == 2);
+  CHECK(tts_swiglu_unroll_for(4) == 1);
+
+  // Bijective 3-way QKV row mapping (2048 + 1024 + 1024 = 4096).
+  const int qkv_n[3] = {2048, 1024, 1024};
+  CHECK(multi_gemv_locate_row(-1, qkv_n, 3).proj == -1);
+  CHECK(multi_gemv_locate_row(4096, qkv_n, 3).proj == -1);
+  for (int g = 0; g < 4096; ++g) {
+    const MultiGemvRowLoc loc = multi_gemv_locate_row(g, qkv_n, 3);
+    if (g < 2048) {
+      CHECK(loc.proj == 0 && loc.local_row == g);
+    } else if (g < 3072) {
+      CHECK(loc.proj == 1 && loc.local_row == g - 2048);
+    } else {
+      CHECK(loc.proj == 2 && loc.local_row == g - 3072);
+    }
+  }
+
+  // Exact peak scratch size for codec chunks.
+  CHECK(codec_peak_scratch_elems(1) == 1920u * 96u);
+  CHECK(codec_peak_scratch_elems(32) == 32u * 1920u * 96u);
+
+  // Bit-for-bit equivalence: stateful causal Conv1d (including chunk_len < pad
+  // for dilation=9, pad=54) vs one-shot causal Conv1d.
+  auto verify_stateful_conv1d = [](int K, int dilation,
+                                   const std::vector<int>& chunks) {
+    int total = 0;
+    for (int c : chunks) total += c;
+    const int pad = (K - 1) * dilation;
+    std::vector<float> x(total), w(K);
+    for (int t = 0; t < total; ++t) x[t] = std::sin(0.17f * t + 0.3f);
+    for (int kk = 0; kk < K; ++kk) w[kk] = 0.25f * (kk + 1) - 0.5f;
+
+    // One-shot reference.
+    std::vector<float> ref(total, 0.0f);
+    for (int t = 0; t < total; ++t) {
+      float acc = 0.0f;
+      for (int kk = 0; kk < K; ++kk) {
+        const int src = t - pad + kk * dilation;
+        if (src >= 0 && src < total) acc += x[src] * w[kk];
+      }
+      ref[t] = acc;
+    }
+
+    // Stateful chunked execution using decode_helpers index rules.
+    std::vector<float> hist(pad, 0.0f);
+    std::vector<float> got;
+    int off = 0;
+    for (int L : chunks) {
+      for (int t = 0; t < L; ++t) {
+        float acc = 0.0f;
+        for (int kk = 0; kk < K; ++kk) {
+          const CausalSrcLoc loc = causal_conv_src_lookup(t, kk, dilation, pad);
+          const float xv = loc.from_hist ? hist[loc.idx] : x[off + loc.idx];
+          acc += xv * w[kk];
+        }
+        got.push_back(acc);
+      }
+      std::vector<float> next_hist(pad, 0.0f);
+      for (int j = 0; j < pad; ++j) {
+        const CausalSrcLoc src = causal_conv_hist_update_src(j, pad, L);
+        next_hist[j] = src.from_hist ? hist[src.idx] : x[off + src.idx];
+      }
+      hist.swap(next_hist);
+      off += L;
+    }
+    CHECK(got.size() == ref.size());
+    for (size_t i = 0; i < ref.size(); ++i) CHECK(got[i] == ref[i]);
+  };
+
+  verify_stateful_conv1d(3, 1, {2, 8, 8, 1, 5, 32, 3});
+  verify_stateful_conv1d(7, 1, {2, 3, 1, 8, 16, 7});
+  verify_stateful_conv1d(7, 3, {2, 8, 8, 8, 12, 5});   // pad=18 > chunk 2, 8
+  verify_stateful_conv1d(7, 9, {2, 8, 8, 8, 8, 8, 8, 32, 4});  // pad=54 > chunk 2, 8, 32
+
+  // Bit-for-bit equivalence: stateful ConvTranspose1d (K = 2*stride) vs one-shot.
+  for (int stride : {2, 3, 4, 5, 8}) {
+    const int K = (stride == 2) ? 2 : (2 * stride);
+    const std::vector<int> chunks = {2, 8, 8, 1, 5};
+    int total = 0;
+    for (int c : chunks) total += c;
+    std::vector<float> x(total), w(K);
+    for (int t = 0; t < total; ++t) x[t] = std::cos(0.23f * t - 0.4f);
+    for (int kk = 0; kk < K; ++kk) w[kk] = 0.1f * (kk + 1) - 0.3f;
+
+    std::vector<float> ref(total * stride, 0.0f);
+    for (int o = 0; o < total * stride; ++o) {
+      float acc = 0.0f;
+      for (int kk = 0; kk < K; ++kk) {
+        const int rem = o - kk;
+        if (rem < 0 || rem % stride != 0) continue;
+        const int t = rem / stride;
+        if (t < total) acc += x[t] * w[kk];
+      }
+      ref[o] = acc;
+    }
+
+    float hist = 0.0f;
+    std::vector<float> got;
+    int off = 0;
+    for (int L : chunks) {
+      for (int o = 0; o < L * stride; ++o) {
+        const int t_local = o / stride;
+        const int p = o - t_local * stride;
+        float acc = 0.0f;
+        for (int step = 0, kk = p; kk < K; ++step, kk += stride) {
+          const CausalSrcLoc loc = transconv_step_src(t_local, step);
+          const float xv = loc.from_hist ? hist : x[off + loc.idx];
+          acc += xv * w[kk];
+        }
+        got.push_back(acc);
+      }
+      hist = x[off + L - 1];
+      off += L;
+    }
+    CHECK(got.size() == ref.size());
+    for (size_t i = 0; i < ref.size(); ++i) CHECK(got[i] == ref[i]);
+  }
+
+  // Rolling KV cache equivalence across 600 frames (window=72, cap=192):
+  // verify non-overlapping compaction and exact global key coverage [max(0,t-71), t].
+  {
+    constexpr int kWin = 72;
+    constexpr int kCap = 192;
+    std::vector<int> kv(kCap, -1);
+    int cached = 0;
+    int global_t = 0;
+    std::vector<int> schedule = {2};
+    while (static_cast<int>(schedule.size()) < 80) schedule.push_back(8);
+    schedule.push_back(32);
+    for (int chunk : schedule) {
+      const RollingKvPlan plan = rolling_kv_plan(cached, chunk, kWin, kCap);
+      if (plan.need_shift) {
+        // Non-overlapping compaction guarantee.
+        CHECK(plan.shift_src >= plan.keep_len);
+        for (int i = 0; i < plan.keep_len; ++i) kv[i] = kv[plan.shift_src + i];
+        cached = plan.keep_len;
+      }
+      CHECK(cached + chunk <= kCap);
+      for (int qi = 0; qi < chunk; ++qi) kv[cached + qi] = global_t + qi;
+      for (int qi = 0; qi < chunk; ++qi) {
+        const int t = global_t + qi;
+        const int lo = std::max(0, cached + qi - kWin + 1);
+        const int hi = cached + qi + 1;
+        const int want_lo = std::max(0, t - kWin + 1);
+        const int want_hi = t + 1;
+        CHECK(hi - lo == want_hi - want_lo);
+        for (int k = 0; k < hi - lo; ++k) CHECK(kv[lo + k] == want_lo + k);
+      }
+      cached += chunk;
+      global_t += chunk;
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   const char* env = std::getenv("UMM_TTS_TEST_DATA");
   std::string data_dir = argc > 1 ? argv[1] : (env ? env : "");
@@ -385,6 +548,7 @@ int main(int argc, char** argv) {
   test_prompt();
   test_wav();
   test_safetensors();
+  test_decode_helpers();
   std::cout << "all tts host tests passed\n";
   return 0;
 }
