@@ -27,6 +27,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -442,26 +443,34 @@ class PinnedHostBuffer {
   PinnedHostBuffer(const PinnedHostBuffer&) = delete;
   PinnedHostBuffer& operator=(const PinnedHostBuffer&) = delete;
 
-  float* acquire(size_t elements) {
-    if (elements == 0) return nullptr;
-    if (elements <= capacity_elements_) {
+  void* acquire_bytes(size_t bytes) {
+    if (bytes == 0) return nullptr;
+    if (bytes <= capacity_bytes_) {
       return pinned_ptr_;
     }
     if (pinned_failed_) {
       return nullptr;
     }
     reset();
-    const size_t bytes = checked_bytes(elements, sizeof(float));
     void* ptr = nullptr;
     const cudaError_t status = cudaHostAlloc(&ptr, bytes, cudaHostAllocDefault);
     if (status == cudaSuccess && ptr != nullptr) {
-      pinned_ptr_ = static_cast<float*>(ptr);
-      capacity_elements_ = elements;
+      pinned_ptr_ = ptr;
+      capacity_bytes_ = bytes;
       return pinned_ptr_;
     }
     (void)cudaGetLastError();
     pinned_failed_ = true;
     return nullptr;
+  }
+
+  float* acquire(size_t elements) {
+    return static_cast<float*>(
+        acquire_bytes(checked_bytes(elements, sizeof(float))));
+  }
+
+  uint8_t* acquire_u8(size_t bytes) {
+    return static_cast<uint8_t*>(acquire_bytes(bytes));
   }
 
   bool is_pinned() const noexcept { return pinned_ptr_ != nullptr; }
@@ -471,12 +480,12 @@ class PinnedHostBuffer {
       (void)cudaFreeHost(pinned_ptr_);
       pinned_ptr_ = nullptr;
     }
-    capacity_elements_ = 0;
+    capacity_bytes_ = 0;
   }
 
  private:
-  float* pinned_ptr_ = nullptr;
-  size_t capacity_elements_ = 0;
+  void* pinned_ptr_ = nullptr;
+  size_t capacity_bytes_ = 0;
   bool pinned_failed_ = false;
 };
 
@@ -571,8 +580,23 @@ class CudaContext {
     return lowp_ptr;
   }
 
+  void evict_weight(const float* weight_fp32) noexcept {
+    if (weight_fp32 == nullptr) return;
+    const auto it = lowp_weight_cache_.find(weight_fp32);
+    if (it != lowp_weight_cache_.end()) {
+      if (it->second.ptr != nullptr) {
+        (void)cudaFree(it->second.ptr);
+        g_device_bytes -= it->second.bytes;
+      }
+      lowp_weight_cache_.erase(it);
+    }
+  }
+
   float* acquire_pinned_staging(size_t elements) {
     return pinned_staging_.acquire(elements);
+  }
+  uint8_t* acquire_pinned_staging_u8(size_t bytes) {
+    return pinned_staging_.acquire_u8(bytes);
   }
   bool has_pinned_staging() const noexcept {
     return pinned_staging_.is_pinned();
@@ -1958,6 +1982,111 @@ Tensor unpatchify_clamp(CudaContext& context, const Tensor& input,
   return output;
 }
 
+// Fused unpatchify + [-1, 1] clamp + NHWC RGB8 uint8 packing on GPU.
+// Eliminates the FP32 [3, chunk_t, out_h, out_w] allocation, cuts D2H transfer
+// size by 4x, and removes the CPU float->uint8 + planar->interleaved loop.
+__global__ void unpatchify_clamp_rgb8_kernel(const float* __restrict__ input,
+                                             uint8_t* __restrict__ output,
+                                             int64_t time, int64_t height,
+                                             int64_t width, int64_t patch) {
+  const int64_t output_height = height * patch;
+  const int64_t output_width = width * patch;
+  const size_t pixels =
+      static_cast<size_t>(time * output_height * output_width);
+  const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (idx >= pixels) return;
+
+  const int64_t x =
+      static_cast<int64_t>(idx % static_cast<size_t>(output_width));
+  const int64_t rem =
+      static_cast<int64_t>(idx / static_cast<size_t>(output_width));
+  const int64_t y = rem % output_height;
+  const int64_t t = rem / output_height;
+
+  const int64_t iy = y / patch;
+  const int64_t ix = x / patch;
+  const size_t plane = static_cast<size_t>(time * height * width);
+  const size_t in_off = static_cast<size_t>((t * height + iy) * width + ix);
+
+  const int64_t ch_r = wan_vae_unpatchify_channel_index(0, y, x, patch);
+  const int64_t ch_g = wan_vae_unpatchify_channel_index(1, y, x, patch);
+  const int64_t ch_b = wan_vae_unpatchify_channel_index(2, y, x, patch);
+
+  const float vr = input[static_cast<size_t>(ch_r) * plane + in_off];
+  const float vg = input[static_cast<size_t>(ch_g) * plane + in_off];
+  const float vb = input[static_cast<size_t>(ch_b) * plane + in_off];
+
+  const size_t out_off =
+      wan_vae_rgb8_pixel_offset(t, y, x, output_height, output_width);
+  output[out_off + 0] = wan_vae_float_to_u8(vr);
+  output[out_off + 1] = wan_vae_float_to_u8(vg);
+  output[out_off + 2] = wan_vae_float_to_u8(vb);
+}
+
+PooledRawBuffer unpatchify_clamp_rgb8(CudaContext& context, const Tensor& input,
+                                      int64_t patch) {
+  if (patch <= 0 || input.channels != 3 * patch * patch) {
+    throw std::invalid_argument("unpatchify RGB8 channel mismatch");
+  }
+  const size_t pixels =
+      checked_product({input.time, input.height, patch, input.width, patch});
+  const size_t out_bytes = checked_bytes(pixels, 3u);
+  PooledRawBuffer output(context.pool(), out_bytes);
+  unpatchify_clamp_rgb8_kernel<<<grid_for(pixels), 256>>>(
+      input.data(), static_cast<uint8_t*>(output.data()), input.time,
+      input.height, input.width, patch);
+  UMM_CUDA(cudaGetLastError());
+  return output;
+}
+
+void preconvert_conv(CudaContext& context, const Conv& conv) {
+  if (!context.is_lowp_gemm() || conv.weight.size() == 0) return;
+  (void)context.get_or_convert_weight(conv.weight.data(), conv.weight.size());
+}
+
+void evict_conv(CudaContext& context, const Conv& conv) noexcept {
+  context.evict_weight(conv.weight.data());
+}
+
+void preconvert_res_block(CudaContext& context, const ResBlock& block) {
+  preconvert_conv(context, block.conv1);
+  preconvert_conv(context, block.conv2);
+  if (block.has_shortcut) {
+    preconvert_conv(context, block.shortcut);
+  }
+}
+
+void evict_res_block(CudaContext& context, const ResBlock& block) noexcept {
+  evict_conv(context, block.conv1);
+  evict_conv(context, block.conv2);
+  if (block.has_shortcut) {
+    evict_conv(context, block.shortcut);
+  }
+}
+
+void preconvert_decoder(CudaContext& context, const Decoder& decoder,
+                        const Conv& post_quant) {
+  if (!context.is_lowp_gemm()) return;
+  preconvert_conv(context, post_quant);
+  preconvert_conv(context, decoder.conv_in);
+  preconvert_res_block(context, decoder.mid_res0);
+  preconvert_conv(context, decoder.mid_qkv);
+  preconvert_conv(context, decoder.mid_proj);
+  preconvert_res_block(context, decoder.mid_res1);
+  for (const UpBlock& block : decoder.up_blocks) {
+    for (const ResBlock& resnet : block.resnets) {
+      preconvert_res_block(context, resnet);
+    }
+    if (block.has_upsample) {
+      preconvert_conv(context, block.resample_conv);
+      if (block.temporal) {
+        preconvert_conv(context, block.time_conv);
+      }
+    }
+  }
+  preconvert_conv(context, decoder.conv_out);
+}
+
 Tensor upsample_block(CudaContext& context, const Tensor& input,
                       const UpBlock& block, UpBlockCache& cache,
                       bool first_chunk) {
@@ -1989,16 +2118,46 @@ Tensor upsample_block(CudaContext& context, const Tensor& input,
   return current;
 }
 
-}  // namespace
+Tensor decode_latent_chunk_raw(CudaContext& context, const Decoder& decoder,
+                               const Conv& post_quant, const DeviceBuffer& mean,
+                               const DeviceBuffer& stddev, DecoderCache& cache,
+                               const std::vector<float>& frame_host,
+                               int64_t latent_c, int64_t latent_h,
+                               int64_t latent_w, bool first_chunk) {
+  Tensor input(context, latent_c, 1, latent_h, latent_w);
+  UMM_CUDA(cudaMemcpy(input.data(), frame_host.data(),
+                      frame_host.size() * sizeof(float),
+                      cudaMemcpyHostToDevice));
+  denormalize_kernel<<<grid_for(input.numel()), 256>>>(
+      input.data(), static_cast<size_t>(input.positions()), input.channels,
+      mean.data(), stddev.data());
+  UMM_CUDA(cudaGetLastError());
 
-WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
-                                 const std::vector<float>& latent,
-                                 const std::vector<int64_t>& latent_shape,
-                                 int gpu) {
+  Tensor current = conv3d(context, input, post_quant);
+  input = Tensor{};
+  current = conv3d(context, current, decoder.conv_in, &cache.conv_in);
+  current = res_block(context, current, decoder.mid_res0, cache.mid_res0);
+  current = attention(context, current, decoder.mid_norm, decoder.mid_qkv,
+                      decoder.mid_proj);
+  current = res_block(context, current, decoder.mid_res1, cache.mid_res1);
+  for (size_t i = 0; i < decoder.up_blocks.size(); ++i) {
+    current = upsample_block(context, current, decoder.up_blocks[i],
+                             cache.up_blocks[i], first_chunk);
+  }
+  current = rms_norm(context, current, decoder.norm_out, /*apply_silu=*/true);
+  current = conv3d(context, current, decoder.conv_out, &cache.conv_out);
+  return current;
+}
+
+WanVaeOutput decode_fp32_impl(CudaContext& context, const WanVaeConfig& config,
+                              const Decoder& decoder, const Conv& post_quant,
+                              const DeviceBuffer& mean,
+                              const DeviceBuffer& stddev,
+                              const std::vector<float>& latent,
+                              const std::vector<int64_t>& latent_shape) {
   if (latent_shape.size() != 5 || latent_shape[0] != 1) {
     throw std::invalid_argument("latent shape must be [1,C,T,H,W]");
   }
-  const WanVaeConfig config = load_wan_vae_config(vae_dir);
   if (!config.is_residual) {
     throw std::invalid_argument("only the Wan2.2 residual decoder is supported");
   }
@@ -2012,29 +2171,18 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
     throw std::invalid_argument("latent buffer size does not match its shape");
   }
 
-  g_peak_device_bytes = 0;
-  CudaContext context(gpu);
-  const auto safetensors = vae_dir / "diffusion_pytorch_model.safetensors";
-  SafetensorsMmap file(safetensors);
-  Decoder decoder = load_decoder(file, config);
-  if (file.tensor("post_quant_conv.weight").numel() !=
-      static_cast<size_t>(config.z_dim * config.z_dim)) {
-    throw std::invalid_argument("post_quant_conv weight does not match z_dim");
-  }
-  Conv post_quant = load_conv(file, "post_quant_conv");
-  DeviceBuffer mean = upload(config.latents_mean);
-  DeviceBuffer stddev = upload(config.latents_std);
-
   const int64_t latent_c = latent_shape[1];
   const int64_t latent_t = latent_shape[2];
   const int64_t latent_h = latent_shape[3];
   const int64_t latent_w = latent_shape[4];
   const int64_t latent_spatial = latent_h * latent_w;
 
-  const int64_t patch_area = static_cast<int64_t>(config.patch_size) * config.patch_size;
+  const int64_t patch_area =
+      static_cast<int64_t>(config.patch_size) * config.patch_size;
   const int64_t output_channels = config.out_channels / patch_area;
   const int64_t temporal_factor = wan_vae_temporal_factor(config);
-  const int64_t total_out_t = wan_vae_decoded_frame_count(latent_t, temporal_factor);
+  const int64_t total_out_t =
+      wan_vae_decoded_frame_count(latent_t, temporal_factor);
   int64_t spatial_factor = config.patch_size;
   for (const UpBlock& block : decoder.up_blocks) {
     if (block.has_upsample) spatial_factor *= 2;
@@ -2045,7 +2193,8 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
 
   WanVaeOutput output;
   output.shape = {1, output_channels, total_out_t, out_h, out_w};
-  output.data.resize(checked_product({output_channels, total_out_t, out_h, out_w}));
+  output.data.resize(
+      checked_product({output_channels, total_out_t, out_h, out_w}));
 
   DecoderCache cache(decoder);
   std::vector<float> frame_host(checked_product({latent_c, latent_h, latent_w}));
@@ -2053,9 +2202,9 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
   (void)context.acquire_pinned_staging(
       checked_product({output_channels, max_chunk_t, out_h, out_w}));
 
-  // Exact causal streaming decode: one latent frame per step with persistent
-  // 2-frame causal caches, matching Diffusers AutoencoderKLWan._decode while
-  // bounding peak VRAM independently of clip length.
+  // Exact causal streaming decode: one latent frame per step with fresh
+  // 2-frame causal caches per call, matching Diffusers AutoencoderKLWan._decode
+  // while bounding peak VRAM independently of clip length.
   const auto begin = std::chrono::steady_clock::now();
   for (int64_t t = 0; t < latent_t; ++t) {
     for (int64_t c = 0; c < latent_c; ++c) {
@@ -2065,35 +2214,20 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
       std::copy(src, src + latent_spatial, dst);
     }
 
-    Tensor input(context, latent_c, 1, latent_h, latent_w);
-    UMM_CUDA(cudaMemcpy(input.data(), frame_host.data(),
-                        frame_host.size() * sizeof(float), cudaMemcpyHostToDevice));
-    denormalize_kernel<<<grid_for(input.numel()), 256>>>(
-        input.data(), static_cast<size_t>(input.positions()), input.channels,
-        mean.data(), stddev.data());
-    UMM_CUDA(cudaGetLastError());
-
     const bool first_chunk = (t == 0);
-    Tensor current = conv3d(context, input, post_quant);
-    input = Tensor{};
-    current = conv3d(context, current, decoder.conv_in, &cache.conv_in);
-    current = res_block(context, current, decoder.mid_res0, cache.mid_res0);
-    current = attention(context, current, decoder.mid_norm, decoder.mid_qkv,
-                        decoder.mid_proj);
-    current = res_block(context, current, decoder.mid_res1, cache.mid_res1);
-    for (size_t i = 0; i < decoder.up_blocks.size(); ++i) {
-      current = upsample_block(context, current, decoder.up_blocks[i],
-                               cache.up_blocks[i], first_chunk);
-    }
-    current = rms_norm(context, current, decoder.norm_out, /*apply_silu=*/true);
-    current = conv3d(context, current, decoder.conv_out, &cache.conv_out);
+    Tensor current =
+        decode_latent_chunk_raw(context, decoder, post_quant, mean, stddev,
+                                cache, frame_host, latent_c, latent_h, latent_w,
+                                first_chunk);
     current = unpatchify_clamp(context, current, output_channels,
                                config.patch_size);
 
-    const int64_t expected_chunk_t = wan_vae_chunk_frame_count(t, temporal_factor);
+    const int64_t expected_chunk_t =
+        wan_vae_chunk_frame_count(t, temporal_factor);
     const int64_t out_t_offset = wan_vae_chunk_frame_offset(t, temporal_factor);
-    if (current.channels != output_channels || current.time != expected_chunk_t ||
-        current.height != out_h || current.width != out_w) {
+    if (current.channels != output_channels ||
+        current.time != expected_chunk_t || current.height != out_h ||
+        current.width != out_w) {
       throw std::runtime_error("unexpected streamed Wan2.2 VAE chunk shape");
     }
     const size_t chunk_plane = static_cast<size_t>(current.time * out_spatial);
@@ -2131,6 +2265,165 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
       std::chrono::duration<double, std::milli>(end - begin).count();
   output.peak_native_device_bytes = g_peak_device_bytes;
   return output;
+}
+
+WanVaeRgbOutput decode_rgb8_impl(CudaContext& context,
+                                 const WanVaeConfig& config,
+                                 const Decoder& decoder, const Conv& post_quant,
+                                 const DeviceBuffer& mean,
+                                 const DeviceBuffer& stddev,
+                                 const std::vector<float>& latent,
+                                 const std::vector<int64_t>& latent_shape) {
+  if (latent_shape.size() != 5 || latent_shape[0] != 1) {
+    throw std::invalid_argument("latent shape must be [1,C,T,H,W]");
+  }
+  if (!config.is_residual) {
+    throw std::invalid_argument("only the Wan2.2 residual decoder is supported");
+  }
+  if (latent_shape[1] != config.z_dim) {
+    throw std::invalid_argument("latent channel count does not match z_dim");
+  }
+  const size_t expected = checked_product({latent_shape[0], latent_shape[1],
+                                           latent_shape[2], latent_shape[3],
+                                           latent_shape[4]});
+  if (latent.size() != expected) {
+    throw std::invalid_argument("latent buffer size does not match its shape");
+  }
+
+  const int64_t latent_c = latent_shape[1];
+  const int64_t latent_t = latent_shape[2];
+  const int64_t latent_h = latent_shape[3];
+  const int64_t latent_w = latent_shape[4];
+  const int64_t latent_spatial = latent_h * latent_w;
+
+  const int64_t patch_area =
+      static_cast<int64_t>(config.patch_size) * config.patch_size;
+  const int64_t output_channels = config.out_channels / patch_area;
+  if (output_channels != 3) {
+    throw std::invalid_argument("decode_rgb8 requires 3 output channels");
+  }
+  const int64_t temporal_factor = wan_vae_temporal_factor(config);
+  const int64_t total_out_t =
+      wan_vae_decoded_frame_count(latent_t, temporal_factor);
+  int64_t spatial_factor = config.patch_size;
+  for (const UpBlock& block : decoder.up_blocks) {
+    if (block.has_upsample) spatial_factor *= 2;
+  }
+  const int64_t out_h = latent_h * spatial_factor;
+  const int64_t out_w = latent_w * spatial_factor;
+  const size_t frame_bytes = checked_product({out_h, out_w, 3});
+
+  WanVaeRgbOutput output;
+  output.shape = {1, 3, total_out_t, out_h, out_w};
+  output.rgb_frames.resize(static_cast<size_t>(total_out_t));
+  for (auto& frame : output.rgb_frames) {
+    frame.resize(frame_bytes);
+  }
+
+  DecoderCache cache(decoder);
+  std::vector<float> frame_host(checked_product({latent_c, latent_h, latent_w}));
+  const int64_t max_chunk_t = latent_t > 1 ? temporal_factor : 1;
+  (void)context.acquire_pinned_staging_u8(
+      checked_bytes(static_cast<size_t>(max_chunk_t), frame_bytes));
+
+  const auto begin = std::chrono::steady_clock::now();
+  for (int64_t t = 0; t < latent_t; ++t) {
+    for (int64_t c = 0; c < latent_c; ++c) {
+      const float* src =
+          latent.data() + static_cast<size_t>((c * latent_t + t) * latent_spatial);
+      float* dst = frame_host.data() + static_cast<size_t>(c * latent_spatial);
+      std::copy(src, src + latent_spatial, dst);
+    }
+
+    const bool first_chunk = (t == 0);
+    Tensor current =
+        decode_latent_chunk_raw(context, decoder, post_quant, mean, stddev,
+                                cache, frame_host, latent_c, latent_h, latent_w,
+                                first_chunk);
+
+    const int64_t expected_chunk_t =
+        wan_vae_chunk_frame_count(t, temporal_factor);
+    const int64_t out_t_offset = wan_vae_chunk_frame_offset(t, temporal_factor);
+    if (current.channels != config.out_channels ||
+        current.time != expected_chunk_t ||
+        current.height * config.patch_size != out_h ||
+        current.width * config.patch_size != out_w) {
+      throw std::runtime_error("unexpected streamed Wan2.2 VAE chunk shape");
+    }
+
+    PooledRawBuffer rgb_dev =
+        unpatchify_clamp_rgb8(context, current, config.patch_size);
+    current = Tensor{};
+
+    const size_t chunk_bytes =
+        checked_bytes(static_cast<size_t>(expected_chunk_t), frame_bytes);
+    uint8_t* staging = context.acquire_pinned_staging_u8(chunk_bytes);
+    if (context.has_pinned_staging() && staging != nullptr) {
+      UMM_CUDA(cudaMemcpy(staging, rgb_dev.data(), chunk_bytes,
+                          cudaMemcpyDeviceToHost));
+      for (int64_t lt = 0; lt < expected_chunk_t; ++lt) {
+        std::memcpy(
+            output.rgb_frames[static_cast<size_t>(out_t_offset + lt)].data(),
+            staging + static_cast<size_t>(lt) * frame_bytes, frame_bytes);
+      }
+    } else {
+      const auto* dev_u8 = static_cast<const uint8_t*>(rgb_dev.data());
+      for (int64_t lt = 0; lt < expected_chunk_t; ++lt) {
+        UMM_CUDA(cudaMemcpy(
+            output.rgb_frames[static_cast<size_t>(out_t_offset + lt)].data(),
+            dev_u8 + static_cast<size_t>(lt) * frame_bytes, frame_bytes,
+            cudaMemcpyDeviceToHost));
+      }
+    }
+  }
+
+  UMM_CUDA(cudaDeviceSynchronize());
+  const auto end = std::chrono::steady_clock::now();
+
+  output.decode_ms =
+      std::chrono::duration<double, std::milli>(end - begin).count();
+  output.peak_native_device_bytes = g_peak_device_bytes;
+  return output;
+}
+
+}  // namespace
+
+WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
+                                 const std::vector<float>& latent,
+                                 const std::vector<int64_t>& latent_shape,
+                                 int gpu) {
+  if (latent_shape.size() != 5 || latent_shape[0] != 1) {
+    throw std::invalid_argument("latent shape must be [1,C,T,H,W]");
+  }
+  const WanVaeConfig config = load_wan_vae_config(vae_dir);
+  if (!config.is_residual) {
+    throw std::invalid_argument("only the Wan2.2 residual decoder is supported");
+  }
+  if (latent_shape[1] != config.z_dim) {
+    throw std::invalid_argument("latent channel count does not match z_dim");
+  }
+  const size_t expected = checked_product({latent_shape[0], latent_shape[1],
+                                           latent_shape[2], latent_shape[3],
+                                           latent_shape[4]});
+  if (latent.size() != expected) {
+    throw std::invalid_argument("latent buffer size does not match its shape");
+  }
+
+  g_peak_device_bytes = g_device_bytes;
+  CudaContext context(gpu);
+  const auto safetensors = vae_dir / "diffusion_pytorch_model.safetensors";
+  SafetensorsMmap file(safetensors);
+  Decoder decoder = load_decoder(file, config);
+  if (file.tensor("post_quant_conv.weight").numel() !=
+      static_cast<size_t>(config.z_dim * config.z_dim)) {
+    throw std::invalid_argument("post_quant_conv weight does not match z_dim");
+  }
+  Conv post_quant = load_conv(file, "post_quant_conv");
+  DeviceBuffer mean = upload(config.latents_mean);
+  DeviceBuffer stddev = upload(config.latents_std);
+
+  return decode_fp32_impl(context, config, decoder, post_quant, mean, stddev,
+                          latent, latent_shape);
 }
 
 // ---------------------------------------------------------------------------
@@ -2407,35 +2700,66 @@ std::vector<float> patchify_image(const std::vector<float>& rgb, int channels,
   return output;
 }
 
-}  // namespace
+void preconvert_encoder(CudaContext& context, const Encoder& encoder,
+                        const Conv& quant_conv) {
+  if (!context.is_lowp_gemm()) return;
+  preconvert_conv(context, encoder.conv_in);
+  for (const EncoderDownBlock& block : encoder.down_blocks) {
+    for (const ResBlock& resnet : block.resnets) {
+      preconvert_res_block(context, resnet);
+    }
+    if (block.has_downsample) {
+      preconvert_conv(context, block.resample_conv);
+    }
+  }
+  preconvert_res_block(context, encoder.mid_res0);
+  preconvert_conv(context, encoder.mid_qkv);
+  preconvert_conv(context, encoder.mid_proj);
+  preconvert_res_block(context, encoder.mid_res1);
+  preconvert_conv(context, encoder.conv_out);
+  preconvert_conv(context, quant_conv);
+}
 
-WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
-                                        const std::vector<float>& rgb_nchw,
-                                        int height, int width, int gpu) {
+void evict_encoder_weights(CudaContext& context, const Encoder& encoder,
+                           const Conv& quant_conv) noexcept {
+  evict_conv(context, encoder.conv_in);
+  for (const EncoderDownBlock& block : encoder.down_blocks) {
+    for (const ResBlock& resnet : block.resnets) {
+      evict_res_block(context, resnet);
+    }
+    if (block.has_downsample) {
+      evict_conv(context, block.resample_conv);
+    }
+  }
+  evict_res_block(context, encoder.mid_res0);
+  evict_conv(context, encoder.mid_qkv);
+  evict_conv(context, encoder.mid_proj);
+  evict_res_block(context, encoder.mid_res1);
+  evict_conv(context, encoder.conv_out);
+  evict_conv(context, quant_conv);
+}
+
+WanVaeEncoded encode_image_impl(CudaContext& context,
+                                const WanVaeConfig& config,
+                                const Encoder& encoder, const Conv& quant_conv,
+                                const std::vector<float>& rgb_nchw, int height,
+                                int width) {
   if (height <= 0 || width <= 0 || height % 16 != 0 || width % 16 != 0) {
     throw std::invalid_argument("encoder input size must be divisible by 16");
   }
-  const WanVaeConfig config = load_wan_vae_config(vae_dir);
   if (!config.is_residual || config.patch_size <= 0) {
     throw std::invalid_argument("only the Wan2.2 residual encoder is supported");
   }
   const int64_t patch = config.patch_size;
   if (height % patch != 0 || width % patch != 0) {
-    throw std::invalid_argument("encoder input size must be divisible by patch_size");
+    throw std::invalid_argument(
+        "encoder input size must be divisible by patch_size");
   }
   const size_t expected = checked_product({3, 1, height, width});
   if (rgb_nchw.size() != expected) {
-    throw std::invalid_argument("encoder RGB buffer size does not match its size");
+    throw std::invalid_argument(
+        "encoder RGB buffer size does not match its size");
   }
-
-  g_peak_device_bytes = 0;
-  CudaContext context(gpu);
-  SafetensorsMmap file(vae_dir / "diffusion_pytorch_model.safetensors");
-  Encoder encoder = load_encoder(file, config);
-  if (file.tensor("quant_conv.weight").shape[0] != encoder.latent_channels) {
-    throw std::invalid_argument("quant_conv does not match the encoder output");
-  }
-  Conv quant_conv = load_conv(file, "quant_conv");
 
   const auto begin = std::chrono::steady_clock::now();
 
@@ -2506,6 +2830,141 @@ WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
                          .count();
   output.peak_native_device_bytes = g_peak_device_bytes;
   return output;
+}
+
+}  // namespace
+
+struct WanVae::Impl {
+  std::filesystem::path vae_dir;
+  int gpu = 0;
+  WanVaeConfig config;
+  std::mutex mu;
+  CudaContext context;
+  Decoder decoder;
+  Conv post_quant;
+  DeviceBuffer mean;
+  DeviceBuffer stddev;
+  bool encoder_loaded = false;
+  Encoder encoder;
+  Conv quant_conv;
+
+  Impl(const std::filesystem::path& dir, int gpu_id)
+      : vae_dir(dir),
+        gpu(gpu_id),
+        config(load_wan_vae_config(dir)),
+        context(gpu_id) {
+    if (!config.is_residual) {
+      throw std::invalid_argument(
+          "only the Wan2.2 residual decoder is supported");
+    }
+    const auto safetensors = vae_dir / "diffusion_pytorch_model.safetensors";
+    SafetensorsMmap file(safetensors);
+    decoder = load_decoder(file, config);
+    if (file.tensor("post_quant_conv.weight").numel() !=
+        static_cast<size_t>(config.z_dim * config.z_dim)) {
+      throw std::invalid_argument("post_quant_conv weight does not match z_dim");
+    }
+    post_quant = load_conv(file, "post_quant_conv");
+    mean = upload(config.latents_mean);
+    stddev = upload(config.latents_std);
+    preconvert_decoder(context, decoder, post_quant);
+    UMM_CUDA(cudaDeviceSynchronize());
+  }
+
+  ~Impl() { (void)cudaSetDevice(gpu); }
+
+  void ensure_encoder_loaded() {
+    if (encoder_loaded) return;
+    if (config.patch_size <= 0) {
+      throw std::invalid_argument(
+          "only the Wan2.2 residual encoder is supported");
+    }
+    SafetensorsMmap file(vae_dir / "diffusion_pytorch_model.safetensors");
+    Encoder loaded_encoder = load_encoder(file, config);
+    if (file.tensor("quant_conv.weight").shape[0] !=
+        loaded_encoder.latent_channels) {
+      throw std::invalid_argument(
+          "quant_conv does not match the encoder output");
+    }
+    Conv loaded_quant = load_conv(file, "quant_conv");
+    try {
+      preconvert_encoder(context, loaded_encoder, loaded_quant);
+      UMM_CUDA(cudaDeviceSynchronize());
+    } catch (...) {
+      evict_encoder_weights(context, loaded_encoder, loaded_quant);
+      throw;
+    }
+    encoder = std::move(loaded_encoder);
+    quant_conv = std::move(loaded_quant);
+    encoder_loaded = true;
+  }
+};
+
+WanVae::WanVae(const std::filesystem::path& vae_dir, int gpu)
+    : impl_(std::make_unique<Impl>(vae_dir, gpu)) {}
+
+WanVae::~WanVae() = default;
+
+WanVaeOutput WanVae::decode(const std::vector<float>& latent,
+                            const std::vector<int64_t>& latent_shape) {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  UMM_CUDA(cudaSetDevice(impl_->gpu));
+  g_peak_device_bytes = g_device_bytes;
+  return decode_fp32_impl(impl_->context, impl_->config, impl_->decoder,
+                          impl_->post_quant, impl_->mean, impl_->stddev, latent,
+                          latent_shape);
+}
+
+WanVaeRgbOutput WanVae::decode_rgb8(const std::vector<float>& latent,
+                                    const std::vector<int64_t>& latent_shape) {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  UMM_CUDA(cudaSetDevice(impl_->gpu));
+  g_peak_device_bytes = g_device_bytes;
+  return decode_rgb8_impl(impl_->context, impl_->config, impl_->decoder,
+                          impl_->post_quant, impl_->mean, impl_->stddev, latent,
+                          latent_shape);
+}
+
+WanVaeEncoded WanVae::encode_image(const std::vector<float>& rgb_nchw,
+                                   int height, int width) {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  UMM_CUDA(cudaSetDevice(impl_->gpu));
+  g_peak_device_bytes = g_device_bytes;
+  impl_->ensure_encoder_loaded();
+  return encode_image_impl(impl_->context, impl_->config, impl_->encoder,
+                           impl_->quant_conv, rgb_nchw, height, width);
+}
+
+WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
+                                        const std::vector<float>& rgb_nchw,
+                                        int height, int width, int gpu) {
+  if (height <= 0 || width <= 0 || height % 16 != 0 || width % 16 != 0) {
+    throw std::invalid_argument("encoder input size must be divisible by 16");
+  }
+  const WanVaeConfig config = load_wan_vae_config(vae_dir);
+  if (!config.is_residual || config.patch_size <= 0) {
+    throw std::invalid_argument("only the Wan2.2 residual encoder is supported");
+  }
+  const int64_t patch = config.patch_size;
+  if (height % patch != 0 || width % patch != 0) {
+    throw std::invalid_argument("encoder input size must be divisible by patch_size");
+  }
+  const size_t expected = checked_product({3, 1, height, width});
+  if (rgb_nchw.size() != expected) {
+    throw std::invalid_argument("encoder RGB buffer size does not match its size");
+  }
+
+  g_peak_device_bytes = g_device_bytes;
+  CudaContext context(gpu);
+  SafetensorsMmap file(vae_dir / "diffusion_pytorch_model.safetensors");
+  Encoder encoder = load_encoder(file, config);
+  if (file.tensor("quant_conv.weight").shape[0] != encoder.latent_channels) {
+    throw std::invalid_argument("quant_conv does not match the encoder output");
+  }
+  Conv quant_conv = load_conv(file, "quant_conv");
+
+  return encode_image_impl(context, config, encoder, quant_conv, rgb_nchw,
+                           height, width);
 }
 
 }  // namespace umminfer::video

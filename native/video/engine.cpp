@@ -253,11 +253,16 @@ struct VideoEngine::WanCudaState {
   Umt5Tokenizer tokenizer;
   Umt5Encoder text_encoder;
   WanDit dit;
+  std::unique_ptr<WanVae> vae;
 
   WanCudaState(const std::filesystem::path& root, int gpu)
       : tokenizer(root / "tokenizer" / "tokenizer.json"),
         text_encoder(root / "text_encoder", gpu),
-        dit(root, gpu) {}
+        dit(root, gpu) {
+    if (wan_vae_use_persistent(std::getenv("UMM_VAE_NO_PERSIST"))) {
+      vae = std::make_unique<WanVae>(root / "vae", gpu);
+    }
+  }
 #endif
 };
 
@@ -422,9 +427,12 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       const RgbImage image = decode_init_image(params.init_image_bytes);
       const std::vector<float> rgb =
           resize_image_to_nchw(image, params.width, params.height);
-      const WanVaeEncoded encoded = encode_wan_vae_image_fp32(
-          std::filesystem::path(model_dir_) / "vae", rgb, params.height,
-          params.width, gpu_);
+      const WanVaeEncoded encoded =
+          wan_cuda_->vae
+              ? wan_cuda_->vae->encode_image(rgb, params.height, params.width)
+              : encode_wan_vae_image_fp32(
+                    std::filesystem::path(model_dir_) / "vae", rgb,
+                    params.height, params.width, gpu_);
       vae_ms += std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - vae_enc_started)
                     .count();
@@ -534,42 +542,55 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     const std::vector<int64_t> latent_shape = {
         1, channels, latent_t, latent_h, latent_w};
     const auto vae_dec_started = std::chrono::steady_clock::now();
-    const WanVaeOutput decoded = decode_wan_vae_fp32(
-        std::filesystem::path(model_dir_) / "vae", latents, latent_shape, gpu_);
-    vae_ms += std::chrono::duration<double, std::milli>(
-                  std::chrono::steady_clock::now() - vae_dec_started)
-                  .count();
-    update_peak_vram(decoded.peak_native_device_bytes);
-    if (decoded.shape.size() != 5 || decoded.shape[0] != 1 ||
-        decoded.shape[1] != 3 || decoded.shape[2] != params.num_frames ||
-        decoded.shape[3] != params.height || decoded.shape[4] != params.width) {
-      throw std::runtime_error("unexpected Wan2.2 VAE decoded output shape");
-    }
+    if (wan_cuda_->vae) {
+      WanVaeRgbOutput decoded =
+          wan_cuda_->vae->decode_rgb8(latents, latent_shape);
+      vae_ms += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - vae_dec_started)
+                    .count();
+      update_peak_vram(decoded.peak_native_device_bytes);
+      if (decoded.shape.size() != 5 || decoded.shape[0] != 1 ||
+          decoded.shape[1] != 3 || decoded.shape[2] != params.num_frames ||
+          decoded.shape[3] != params.height || decoded.shape[4] != params.width ||
+          decoded.rgb_frames.size() != static_cast<size_t>(params.num_frames)) {
+        throw std::runtime_error("unexpected Wan2.2 VAE decoded output shape");
+      }
+      rgb_frames = std::move(decoded.rgb_frames);
+    } else {
+      const WanVaeOutput decoded = decode_wan_vae_fp32(
+          std::filesystem::path(model_dir_) / "vae", latents, latent_shape,
+          gpu_);
+      vae_ms += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - vae_dec_started)
+                    .count();
+      update_peak_vram(decoded.peak_native_device_bytes);
+      if (decoded.shape.size() != 5 || decoded.shape[0] != 1 ||
+          decoded.shape[1] != 3 || decoded.shape[2] != params.num_frames ||
+          decoded.shape[3] != params.height || decoded.shape[4] != params.width) {
+        throw std::runtime_error("unexpected Wan2.2 VAE decoded output shape");
+      }
 
-    const size_t out_t = static_cast<size_t>(decoded.shape[2]);
-    const size_t out_h = static_cast<size_t>(decoded.shape[3]);
-    const size_t out_w = static_cast<size_t>(decoded.shape[4]);
-    const size_t plane = out_h * out_w;
-    const size_t channel_stride = out_t * plane;
-    const float* r_base = decoded.data.data();
-    const float* g_base = r_base + channel_stride;
-    const float* b_base = g_base + channel_stride;
-    const auto float_to_u8 = [](float v) noexcept -> uint8_t {
-      const float clamped = !(v > -1.0f) ? -1.0f : (v < 1.0f ? v : 1.0f);
-      return static_cast<uint8_t>(clamped * 127.5f + 128.0f);
-    };
-    rgb_frames.resize(out_t);
-    for (size_t t = 0; t < out_t; ++t) {
-      auto& frame = rgb_frames[t];
-      frame.resize(plane * 3u);
-      uint8_t* dst = frame.data();
-      const float* r = r_base + t * plane;
-      const float* g = g_base + t * plane;
-      const float* b = b_base + t * plane;
-      for (size_t p = 0; p < plane; ++p) {
-        dst[p * 3u + 0u] = float_to_u8(r[p]);
-        dst[p * 3u + 1u] = float_to_u8(g[p]);
-        dst[p * 3u + 2u] = float_to_u8(b[p]);
+      const size_t out_t = static_cast<size_t>(decoded.shape[2]);
+      const size_t out_h = static_cast<size_t>(decoded.shape[3]);
+      const size_t out_w = static_cast<size_t>(decoded.shape[4]);
+      const size_t plane = out_h * out_w;
+      const size_t channel_stride = out_t * plane;
+      const float* r_base = decoded.data.data();
+      const float* g_base = r_base + channel_stride;
+      const float* b_base = g_base + channel_stride;
+      rgb_frames.resize(out_t);
+      for (size_t t = 0; t < out_t; ++t) {
+        auto& frame = rgb_frames[t];
+        frame.resize(plane * 3u);
+        uint8_t* dst = frame.data();
+        const float* r = r_base + t * plane;
+        const float* g = g_base + t * plane;
+        const float* b = b_base + t * plane;
+        for (size_t p = 0; p < plane; ++p) {
+          dst[p * 3u + 0u] = wan_vae_float_to_u8(r[p]);
+          dst[p * 3u + 1u] = wan_vae_float_to_u8(g[p]);
+          dst[p * 3u + 2u] = wan_vae_float_to_u8(b[p]);
+        }
       }
     }
 #endif

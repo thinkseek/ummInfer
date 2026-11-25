@@ -1306,6 +1306,150 @@ void test_wan_vae_gemm_prec_policy() {
   check(!wan_conv3d_is_causal_3x3x3(3, 1, 1), "3x1x1 is not causal 3x3x3");
 }
 
+void test_wan_vae_persistent_policy_and_rgb8() {
+  using namespace umminfer::video;
+
+  // 1. UMM_VAE_NO_PERSIST env parser: default persistent ON, truthy disables.
+  check(wan_vae_use_persistent(nullptr),
+        "null UMM_VAE_NO_PERSIST enables persistent WanVae");
+  check(wan_vae_use_persistent(""),
+        "empty UMM_VAE_NO_PERSIST enables persistent WanVae");
+  check(wan_vae_use_persistent("   "),
+        "whitespace UMM_VAE_NO_PERSIST enables persistent WanVae");
+  check(wan_vae_use_persistent("0"), "0 enables persistent WanVae");
+  check(wan_vae_use_persistent("false"), "false enables persistent WanVae");
+  check(wan_vae_use_persistent("FALSE"), "FALSE enables persistent WanVae");
+  check(wan_vae_use_persistent("off"), "off enables persistent WanVae");
+  check(wan_vae_use_persistent("no"), "no enables persistent WanVae");
+  check(wan_vae_use_persistent("unknown"),
+        "unknown value falls back to persistent WanVae");
+  for (const char* off_val :
+       {"1", " 1 ", "true", "TRUE", "True", "yes", "YES", "\tyes\n", "on", "ON"}) {
+    check(!wan_vae_use_persistent(off_val),
+          std::string("UMM_VAE_NO_PERSIST='") + off_val +
+              "' disables persistent WanVae");
+  }
+
+  // 2. Shared host/device wan_vae_float_to_u8: clamping, NaN/inf safety,
+  // exact 0..255 level round-trip, and parity with engine.cpp / std::lround.
+  check(wan_vae_float_to_u8(-1.0f) == 0, "-1.0 -> 0");
+  check(wan_vae_float_to_u8(0.0f) == 128, "0.0 -> 128");
+  check(wan_vae_float_to_u8(-0.0f) == 128, "-0.0 -> 128");
+  check(wan_vae_float_to_u8(1.0f) == 255, "+1.0 -> 255");
+  check(wan_vae_float_to_u8(-2.5f) == 0, "below -1.0 clamps to 0");
+  check(wan_vae_float_to_u8(3.75f) == 255, "above +1.0 clamps to 255");
+  check(wan_vae_float_to_u8(-std::numeric_limits<float>::infinity()) == 0,
+        "-inf clamps to 0");
+  check(wan_vae_float_to_u8(std::numeric_limits<float>::infinity()) == 255,
+        "+inf clamps to 255");
+  check(wan_vae_float_to_u8(std::numeric_limits<float>::quiet_NaN()) == 0,
+        "+NaN safely maps to 0");
+  check(wan_vae_float_to_u8(-std::numeric_limits<float>::quiet_NaN()) == 0,
+        "-NaN safely maps to 0");
+
+  for (int level = 0; level <= 255; ++level) {
+    const float v = -1.0f + (2.0f * static_cast<float>(level)) / 255.0f;
+    check(wan_vae_float_to_u8(v) == static_cast<uint8_t>(level),
+          "exact uint8 round-trip for level " + std::to_string(level));
+  }
+
+  for (int i = -1200; i <= 1200; ++i) {
+    const float v = static_cast<float>(i) / 1000.0f;
+    const float clamped = std::clamp(v, -1.0f, 1.0f);
+    const uint8_t ref_lround =
+        static_cast<uint8_t>(std::lround((clamped + 1.0f) * 127.5f));
+    check(wan_vae_float_to_u8(v) == ref_lround,
+          "wan_vae_float_to_u8 matches std::lround((clamped+1)*127.5)");
+  }
+
+  // 3. Packed RGB8 chunk layout offset math across multi-chunk streaming
+  // (t = 0 emits 1 frame, t > 0 emits 4 frames).
+  constexpr int64_t kTf = 4;
+  constexpr int64_t kLatentT = 8;  // 1 + 7 * 4 = 29 frames (704x480 29f)
+  constexpr int64_t kOutH = 480;
+  constexpr int64_t kOutW = 704;
+  const size_t frame_bytes = wan_vae_rgb8_frame_bytes(kOutH, kOutW);
+  check(frame_bytes == 480u * 704u * 3u, "704x480 RGB8 frame byte size");
+  check(wan_vae_rgb8_frame_bytes(0, kOutW) == 0 &&
+            wan_vae_rgb8_chunk_bytes(0, kOutH, kOutW) == 0,
+        "non-positive RGB8 dimensions produce 0 bytes");
+
+  int64_t total_frames = 0;
+  size_t total_bytes = 0;
+  for (int64_t lt = 0; lt < kLatentT; ++lt) {
+    const int64_t chunk_t = wan_vae_chunk_frame_count(lt, kTf);
+    const int64_t frame_off = wan_vae_chunk_frame_offset(lt, kTf);
+    check(chunk_t == (lt == 0 ? 1 : 4),
+          "chunk frame count at latent step " + std::to_string(lt));
+    check(frame_off == total_frames,
+          "chunk frame offset contiguous at latent step " + std::to_string(lt));
+    const size_t chunk_bytes = wan_vae_rgb8_chunk_bytes(chunk_t, kOutH, kOutW);
+    check(chunk_bytes == static_cast<size_t>(chunk_t) * frame_bytes,
+          "chunk RGB8 byte size matches chunk_t * frame_bytes");
+    check(wan_vae_rgb8_pixel_offset(0, 0, 0, kOutH, kOutW) == 0,
+          "first pixel in chunk starts at byte 0");
+    check(wan_vae_rgb8_pixel_offset(chunk_t - 1, kOutH - 1, kOutW - 1, kOutH,
+                                    kOutW) +
+                  3u ==
+              chunk_bytes,
+          "last pixel in chunk ends exactly at chunk_bytes");
+    total_frames += chunk_t;
+    total_bytes += chunk_bytes;
+  }
+  check(total_frames == 29 && total_bytes == 29u * frame_bytes,
+        "8 streamed RGB8 chunks cover all 29 frames contiguously");
+
+  // 4. Verify unpatchify channel mapping + RGB8 pixel packing across patch=1,2.
+  for (int64_t patch : {int64_t{1}, int64_t{2}}) {
+    const int64_t in_h = 2;
+    const int64_t in_w = 3;
+    const int64_t out_h = in_h * patch;
+    const int64_t out_w = in_w * patch;
+    const int64_t chunk_t = 4;
+    const int64_t in_c = 3 * patch * patch;
+    const size_t plane = static_cast<size_t>(chunk_t * in_h * in_w);
+    std::vector<float> conv_out(static_cast<size_t>(in_c) * plane);
+    for (size_t i = 0; i < conv_out.size(); ++i) {
+      conv_out[i] = -1.1f + 2.2f * static_cast<float>(i % 53) / 52.0f;
+    }
+
+    // Reference: separate FP32 unpatchify+clamp -> planar-to-RGB8 conversion.
+    std::vector<uint8_t> ref_rgb(
+        wan_vae_rgb8_chunk_bytes(chunk_t, out_h, out_w), 0);
+    std::vector<uint8_t> fused_rgb(
+        wan_vae_rgb8_chunk_bytes(chunk_t, out_h, out_w), 0);
+    for (int64_t t = 0; t < chunk_t; ++t) {
+      for (int64_t y = 0; y < out_h; ++y) {
+        for (int64_t x = 0; x < out_w; ++x) {
+          const size_t in_off = static_cast<size_t>(
+              (t * in_h + y / patch) * in_w + x / patch);
+          const size_t out_off =
+              wan_vae_rgb8_pixel_offset(t, y, x, out_h, out_w);
+          for (int64_t c = 0; c < 3; ++c) {
+            const int64_t r = y % patch;
+            const int64_t s = x % patch;
+            const int64_t expected_ch = (c * patch + s) * patch + r;
+            const int64_t helper_ch =
+                wan_vae_unpatchify_channel_index(c, y, x, patch);
+            check(helper_ch == expected_ch,
+                  "unpatchify channel index matches Diffusers order");
+            const float raw =
+                conv_out[static_cast<size_t>(helper_ch) * plane + in_off];
+            const float clamped = std::clamp(raw, -1.0f, 1.0f);
+            ref_rgb[out_off + static_cast<size_t>(c)] = static_cast<uint8_t>(
+                std::lround((clamped + 1.0f) * 127.5f));
+            fused_rgb[out_off + static_cast<size_t>(c)] =
+                wan_vae_float_to_u8(raw);
+          }
+        }
+      }
+    }
+    check(fused_rgb == ref_rgb,
+          "fused RGB8 unpatchify matches reference bit-for-bit for patch=" +
+              std::to_string(patch));
+  }
+}
+
 void test_i2v_center_crop_preserves_aspect_ratio() {
   using namespace umminfer::video;
   // 1. Square 64x64 image with red top/bottom 16-px bands and pure green middle
@@ -1365,6 +1509,8 @@ int main() {
       {"wan_vae_causal_chunk_schedule", test_wan_vae_causal_chunk_schedule},
       {"wan_vae_pool_policy_and_pointwise", test_wan_vae_pool_policy_and_pointwise},
       {"wan_vae_gemm_prec_policy", test_wan_vae_gemm_prec_policy},
+      {"wan_vae_persistent_policy_and_rgb8",
+       test_wan_vae_persistent_policy_and_rgb8},
       {"safetensors_mmap", test_safetensors_mmap},
       {"sharded_safetensors_mmap", test_sharded_safetensors_mmap},
       {"umt5_tokenizer", test_umt5_tokenizer},

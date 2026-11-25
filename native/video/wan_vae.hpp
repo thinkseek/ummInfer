@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -152,6 +153,105 @@ inline WanVaeGemmPrec parse_wan_vae_gemm_prec(
   return WanVaeGemmPrec::kBf16;
 }
 
+// Selects persistent GPU-resident WanVae (default: true). Disabled when
+// UMM_VAE_NO_PERSIST is set to a truthy value ("1", "true", "yes", or "on",
+// case-insensitive, surrounding ASCII whitespace trimmed).
+inline bool wan_vae_use_persistent(const char* disable_env) noexcept {
+  if (disable_env == nullptr) return true;
+  const char* begin = disable_env;
+  while (*begin == ' ' || *begin == '\t' || *begin == '\r' || *begin == '\n') {
+    ++begin;
+  }
+  const char* end = begin;
+  while (*end != '\0') ++end;
+  while (end > begin &&
+         (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
+          end[-1] == '\n')) {
+    --end;
+  }
+  const size_t len = static_cast<size_t>(end - begin);
+  if (len == 0) return true;
+  const auto lower = [](char c) noexcept -> char {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+  };
+  if (len == 1 && begin[0] == '1') return false;
+  if (len == 2 && lower(begin[0]) == 'o' && lower(begin[1]) == 'n') {
+    return false;
+  }
+  if (len == 3 && lower(begin[0]) == 'y' && lower(begin[1]) == 'e' &&
+      lower(begin[2]) == 's') {
+    return false;
+  }
+  if (len == 4 && lower(begin[0]) == 't' && lower(begin[1]) == 'r' &&
+      lower(begin[2]) == 'u' && lower(begin[3]) == 'e') {
+    return false;
+  }
+  return true;
+}
+
+#ifdef __CUDACC__
+#define UMM_VAE_HD __host__ __device__
+#else
+#define UMM_VAE_HD
+#endif
+
+// Converts a decoded VAE float in [-1, 1] to uint8_t [0, 255] with NaN-safe
+// clamping and exact IEEE-754 round-half-up shared identically between host
+// fallback code and GPU unpatchify_clamp_rgb8_kernel.
+UMM_VAE_HD inline uint8_t wan_vae_float_to_u8(float v) noexcept {
+  const float clamped = !(v > -1.0f) ? -1.0f : (v < 1.0f ? v : 1.0f);
+#ifdef __CUDA_ARCH__
+  const float scaled =
+      __fadd_rn(__fmul_rn(__fadd_rn(clamped, 1.0f), 127.5f), 0.5f);
+  int rounded = static_cast<int>(scaled);
+#else
+  const float scaled = (clamped + 1.0f) * 127.5f + 0.5f;
+  int rounded = static_cast<int>(scaled);
+#endif
+  if (rounded < 0) rounded = 0;
+  if (rounded > 255) rounded = 255;
+  return static_cast<uint8_t>(rounded);
+}
+
+// Diffusers Wan2.2 unpatchify channel order: patches split channels as
+// (channel, x-patch, y-patch), so x-patch is the outer sub-index.
+UMM_VAE_HD inline constexpr int64_t wan_vae_unpatchify_channel_index(
+    int64_t channel, int64_t out_y, int64_t out_x, int64_t patch) noexcept {
+  const int64_t r = out_y % patch;
+  const int64_t s = out_x % patch;
+  return (channel * patch + s) * patch + r;
+}
+
+// Byte count for a single packed RGB24 frame [height, width, 3].
+UMM_VAE_HD inline constexpr size_t wan_vae_rgb8_frame_bytes(
+    int64_t height, int64_t width) noexcept {
+  return (height > 0 && width > 0)
+             ? (static_cast<size_t>(height) * static_cast<size_t>(width) * 3u)
+             : 0u;
+}
+
+// Byte count for a streamed RGB24 chunk [chunk_frames, height, width, 3].
+UMM_VAE_HD inline constexpr size_t wan_vae_rgb8_chunk_bytes(
+    int64_t chunk_frames, int64_t height, int64_t width) noexcept {
+  return chunk_frames > 0 ? (static_cast<size_t>(chunk_frames) *
+                             wan_vae_rgb8_frame_bytes(height, width))
+                          : 0u;
+}
+
+// Byte offset of pixel (frame, y, x) within a packed RGB24 chunk
+// [chunk_frames, height, width, 3].
+UMM_VAE_HD inline constexpr size_t wan_vae_rgb8_pixel_offset(
+    int64_t frame, int64_t y, int64_t x, int64_t height,
+    int64_t width) noexcept {
+  return ((static_cast<size_t>(frame) * static_cast<size_t>(height) +
+           static_cast<size_t>(y)) *
+              static_cast<size_t>(width) +
+          static_cast<size_t>(x)) *
+         3u;
+}
+
+#undef UMM_VAE_HD
+
 // Default cap on idle cached blocks in the Wan2.2 3D-VAE GPU scratch pool.
 inline constexpr size_t kWanVaePoolDefaultMaxCachedBytes = 1536ULL << 20;
 
@@ -236,6 +336,15 @@ struct WanVaeOutput {
   size_t peak_native_device_bytes = 0;
 };
 
+struct WanVaeRgbOutput {
+  // Decoded video shape [1, 3, frames, height, width].
+  std::vector<int64_t> shape;
+  // Packed RGB24 frames: rgb_frames[t] has height * width * 3 bytes (HWC RGB).
+  std::vector<std::vector<uint8_t>> rgb_frames;
+  double decode_ms = 0.0;
+  size_t peak_native_device_bytes = 0;
+};
+
 struct WanVaeEncoded {
   // Normalized FP32 NCHW latent, always [1, z_dim, 1, height/16, width/16].
   std::vector<int64_t> shape;
@@ -245,6 +354,39 @@ struct WanVaeEncoded {
 };
 
 #ifdef UMM_VIDEO_CUDA
+// Persistent GPU-resident Wan2.2 AutoencoderKLWan.
+// Keeps the CUDA context, cuBLAS handle, bounded scratch BufferPool, pinned
+// host staging, decoder weights, and pre-converted low-precision conv weights
+// resident on GPU across requests. Encoder weights are loaded lazily on the
+// first encode_image() call and cached on GPU for subsequent I2V requests.
+class WanVae {
+ public:
+  explicit WanVae(const std::filesystem::path& vae_dir, int gpu = 0);
+  ~WanVae();
+
+  WanVae(const WanVae&) = delete;
+  WanVae& operator=(const WanVae&) = delete;
+
+  // Causal streaming decode returning FP32 [1, C, T, H, W] video in [-1, 1].
+  // Uses a fresh DecoderCache per call so there is zero cross-request state.
+  WanVaeOutput decode(const std::vector<float>& latent,
+                      const std::vector<int64_t>& latent_shape);
+
+  // Causal streaming decode with fused GPU unpatchify + clamp + RGB8 packing
+  // and 4x smaller pinned uint8 D2H directly into rgb_frames[t].
+  WanVaeRgbOutput decode_rgb8(const std::vector<float>& latent,
+                              const std::vector<int64_t>& latent_shape);
+
+  // Single-frame I2V encoder returning normalized [1, z_dim, 1, H/16, W/16].
+  // Lazily loads and caches encoder + quant_conv weights on first call.
+  WanVaeEncoded encode_image(const std::vector<float>& rgb_nchw, int height,
+                             int width);
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
 // Loads decoder.* and post_quant_conv.* from diffusion_pytorch_model.safetensors.
 // latent_shape must be [1, z_dim, time, height, width]. No TF32 is used.
 WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
