@@ -264,6 +264,33 @@ and `--web-root`:
       `prefill_ms=367.1 ms` (**4.11× faster TTFT**; `8.95×` `169.1 ms` on exact-prefix repeat).
     - Turn 3 (chained hit): `prompt=659`, **`prefix_reused=567`**, **`vision_ms=0.0 ms`**,
       `prefill_ms=412.7 ms`, accurate visual detail recall across all 3 turns.
+- Wave 16 live multi-stage performance & North-Star showcase upgrades (`46fc52c`, `b88c58e`, `96f5964`, `ecea4a0`, `3acadce`, `7b87980`):
+  - **GPU 6 `umm-native-stage-video`** (`96f5964` SM90 TF32 Tensor Cores in 3D-VAE +
+    `ecea4a0` bounded GPU scratch `BufferPool`, `1x1x1` pointwise fast path,
+    2D-grid `im2col`, fused `rms_norm+silu`, in-place causal cache, and
+    `umt5_ms/dit_ms/vae_ms` telemetry, preserving `.wave15` backup): hot-swapped
+    in `3 s` with `0` restarts on GPUs 2–5. Measured live on SM90 (`704x480` 29f
+    15 steps `seed=42`):
+    - Default (`teacache_thresh=0.0`): **`24.07 s -> 15.60 s`** (`1.54x`,
+      `umt5=220 ms`, `dit=8,537 ms`, `vae=6,667 ms`, `peak_vram=21,609 MiB` zero
+      extra VRAM, `PSNR=47.09 dB` vs pedantic FP32, `PSNR=inf dB` bit-identical
+      to prior TF32).
+    - Opt-in `--teacache-thresh 0.05` (`10/30` hits, `+32 MiB`): **`12.88 s`**
+      (`1.87x` faster than Wave 14, `PSNR=30.30 dB`).
+  - **GPU 3 `umm-native-stage-qwen38`** (`b88c58e` batched multi-slice video ViT
+    Linear/MLP/Merger + 3D-grid per-slice attention, `0` extra VRAM): hot-swapped
+    in `13 s` with `0` restarts on GPUs 2/4/5/6 (`vision_ms: 542.2 -> 512.4 ms`,
+    Turn 2 `prefix_reused=515`, `vision_ms=0.0 ms`).
+  - **Gateway `/bin/umm-infer`** (`7b87980` opt-in `narrative.allow_text_only` +
+    sharpened `auto` director prompt): hot-swapped in `3 s` with `0` restarts;
+    live 4-journey North-Star Showcase (`tools/umminfer_showcase.py --url http://127.0.0.1:43301`)
+    passed **4/4 journeys** (`TTFT=0.91 s`, `TTFA=1.12 s`, FLUX.2 `0.66 s`,
+    704x480 I2V `17.12 s`, 3-turn video QA `4.89 -> 3.00 -> 2.94 s`, and
+    `pure_text_slots=0` / `visual_scene_slots=1` / `zero_redundant=True`).
+  - **Stage C SM90 3-GPU routing ablation** (`46fc52c`, isolated GPUs 0/1/7
+    returned cleanly to `3 MiB`): `8/8` cases completed (`SHA256SUMS` verified),
+    `auto_tag` achieved `F1=1.000` / `redundant=0.000` vs `forced_image`
+    (`0.800`) and `forced_video` (`0.400`, `0.500` redundant).
 
 ## Validation, 2026-11-19 (historical)
 
