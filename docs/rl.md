@@ -250,8 +250,10 @@ Checkpoint files remain `checkpoints/ckpt-<sequence:08d>.json` plus `.sha256`.
 Sequence and filename must agree, every sidecar is recomputed on open, and
 `base_checkpoint_sha256` links each manifest to its parent. The phase-2
 REINFORCE verb, residency rule, and real historical evidence are documented in
-[rl-phase2.md](rl-phase2.md). PPO, DPO, value-head/KL GRPO, and business reward
-functions remain unbuilt.
+[rl-phase2.md](rl-phase2.md). PPO, value-head/KL GRPO, and business reward
+functions remain unbuilt.  Bounded Stage C DPO is implemented by a separate
+adapter, not a new worker verb; its measured scope and checkpoint interface are
+in [joint-training.md](joint-training.md#bounded-real-joint-dpo-optimizer-gate).
 
 ## Tests and current limits
 
@@ -261,6 +263,7 @@ python3 -I tests/rl_architecture_test.py
 python3 -I tests/rl_phase2_test.py
 python3 -I tests/joint_trainer_test.py
 python3 -I tests/joint_sft_live_test.py
+python3 -I tests/joint_dpo_live_test.py
 python3 -I tests/narrative_live_e2e.py --self-check
 python3 -I tests/multimodal_benchmark_test.py
 ```
@@ -271,7 +274,8 @@ reassembly and verification, no-media JSONL, leg errors, terminal legs,
 cancellation, tamper rejection, v1 reads, export-only rewards, NDJSON,
 checkpoint reopen/tamper checks, and the no-optimizer gate. The phase-2 suite
 prints `REAL OPTIMIZER: NOT_RUN`; no new real optimizer or model-quality result
-is claimed by this schema work.  The separately bounded Stage C joint-SFT
-optimizer gate and its resume/invalid-input contracts are specified in
-[joint-training.md](joint-training.md#bounded-real-joint-sft-optimizer-gate); it
-does not claim another schema-v2 REINFORCE run or any DPO/GRPO outcome.
+is claimed by this schema work.  The separately bounded Stage C joint-SFT and
+joint-DPO optimizer gates and their resume/invalid-input contracts are specified
+in [joint-training.md](joint-training.md).  They do not claim another schema-v2
+REINFORCE run, GRPO, model quality, generalized improvement, or production-model
+training.

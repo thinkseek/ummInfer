@@ -217,8 +217,11 @@ mechanics end to end; it does not show the model improved.
 
 ## What remains NOT_COVERED
 
-- PPO/GRPO with a value head or KL regularization, DPO, and any multimodal
-  reward. Only group-relative REINFORCE is exercised.
+- PPO/GRPO with a value head or KL regularization and any live multimodal
+  reward. Only group-relative REINFORCE is exercised through this worker.
+  The separate Stage C DPO adapter has a measured structured-target gate in
+  [joint-training.md](joint-training.md#bounded-real-joint-dpo-optimizer-gate);
+  it is not a phase-2 worker DPO result.
 - Training the shared 30B model or any production serving model.
 - Bit-exact deterministic replay across hosts.
 - A token-id field in the trajectory export (the boundary-token limit above).

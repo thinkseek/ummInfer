@@ -305,12 +305,14 @@ training architecture, not a business model-training result. The measured
 evidence, scope, limits, and replay precision boundary are in
 [rl-phase2](rl-phase2.md).
 
-The Stage C joint-SFT optimizer gate is separately bounded to deterministic
-schema-v2 text/visual-slot fixtures and one small local Qwen2 model. Its command,
-fail-closed input/mask contracts, checkpoint equivalence procedure, and measured
-status are in [joint-training](joint-training.md#bounded-real-joint-sft-optimizer-gate).
-It does not satisfy or substitute for DPO/GRPO, model-quality, or production-model
-training gates.
+The Stage C joint-SFT and joint-DPO optimizer gates are separately bounded to
+deterministic schema-v2 text/visual-slot fixtures and one small local Qwen2
+model. Their commands, fail-closed input/mask contracts, checkpoint equivalence
+procedures, and measured SM90 status are in
+[joint-training](joint-training.md).  The DPO gate records real sigmoid-DPO
+policy/reference log-probabilities and two finite AdamW updates on GPU 7.  These
+architecture gates do not satisfy or substitute for GRPO, model-quality,
+generalized-improvement, or production-model training gates.
 
 ## Model support plan
 
