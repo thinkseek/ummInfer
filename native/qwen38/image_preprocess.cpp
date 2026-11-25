@@ -217,13 +217,17 @@ PreprocessedImage preprocess_video_frames(
 
   const int grid_h = dh / kPatch, grid_w = dw / kPatch;
   const int gh2 = grid_h / kMerge, gw2 = grid_w / kMerge;
+  const bool exact_size = (src_h == dh && src_w == dw);
   std::vector<std::vector<float>> resized_frames;
-  resized_frames.reserve(static_cast<size_t>(n_even));
-  std::vector<float> src(expected_bytes);
-  for (int i = 0; i < n_even; ++i) {
-    const auto& raw = frames[std::min<size_t>(static_cast<size_t>(i), frames.size() - 1)];
-    for (size_t k = 0; k < expected_bytes; ++k) src[k] = raw[k];
-    resized_frames.push_back(bicubic_resize(src, src_h, src_w, dh, dw));
+  if (!exact_size) {
+    resized_frames.reserve(static_cast<size_t>(n_even));
+    std::vector<float> src(expected_bytes);
+    for (int i = 0; i < n_even; ++i) {
+      const auto& raw =
+          frames[std::min<size_t>(static_cast<size_t>(i), frames.size() - 1)];
+      for (size_t k = 0; k < expected_bytes; ++k) src[k] = raw[k];
+      resized_frames.push_back(bicubic_resize(src, src_h, src_w, dh, dw));
+    }
   }
 
   PreprocessedImage out;
@@ -235,23 +239,23 @@ PreprocessedImage preprocess_video_frames(
   out.pixel_values.resize(static_cast<size_t>(grid_t) * grid_h * grid_w *
                           PreprocessedImage::kPatchDim);
 
-  for (int t = 0; t < grid_t; ++t) {
-    const std::vector<float>& f0 = resized_frames[static_cast<size_t>(t * 2)];
-    const std::vector<float>& f1 = resized_frames[static_cast<size_t>(t * 2 + 1)];
+  auto pack_slice = [&](int t, auto read_pixel) {
     for (int gh = 0; gh < gh2; ++gh) {
       for (int gw = 0; gw < gw2; ++gw) {
         for (int msh = 0; msh < kMerge; ++msh) {
           for (int msw = 0; msw < kMerge; ++msw) {
-            const int row = (((t * gh2 + gh) * gw2 + gw) * kMerge + msh) * kMerge + msw;
+            const int row =
+                (((t * gh2 + gh) * gw2 + gw) * kMerge + msh) * kMerge + msw;
             for (int c = 0; c < 3; ++c) {
               for (int ts = 0; ts < kTemporal; ++ts) {
-                const std::vector<float>& rf = (ts == 0) ? f0 : f1;
                 for (int py = 0; py < kPatch; ++py) {
                   for (int px = 0; px < kPatch; ++px) {
                     const int y = gh * kMerge * kPatch + msh * kPatch + py;
                     const int x = gw * kMerge * kPatch + msw * kPatch + px;
-                    const int fidx = (((c * kTemporal + ts) * kPatch + py) * kPatch + px);
-                    const float v = rf[(static_cast<size_t>(y) * dw + x) * 3 + c];
+                    const int fidx =
+                        (((c * kTemporal + ts) * kPatch + py) * kPatch + px);
+                    const float v =
+                        read_pixel(ts, (static_cast<size_t>(y) * dw + x) * 3 + c);
                     out.pixel_values[static_cast<size_t>(row) *
                                          PreprocessedImage::kPatchDim +
                                      fidx] = v / 127.5f - 1.0f;
@@ -262,6 +266,24 @@ PreprocessedImage preprocess_video_frames(
           }
         }
       }
+    }
+  };
+
+  for (int t = 0; t < grid_t; ++t) {
+    if (exact_size) {
+      const auto& f0 =
+          frames[std::min<size_t>(static_cast<size_t>(t * 2), frames.size() - 1)];
+      const auto& f1 = frames[std::min<size_t>(static_cast<size_t>(t * 2 + 1),
+                                               frames.size() - 1)];
+      pack_slice(t, [&](int ts, size_t idx) -> float {
+        return static_cast<float>((ts == 0 ? f0 : f1)[idx]);
+      });
+    } else {
+      const std::vector<float>& f0 = resized_frames[static_cast<size_t>(t * 2)];
+      const std::vector<float>& f1 = resized_frames[static_cast<size_t>(t * 2 + 1)];
+      pack_slice(t, [&](int ts, size_t idx) -> float {
+        return (ts == 0 ? f0 : f1)[idx];
+      });
     }
   }
   return out;

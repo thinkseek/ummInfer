@@ -500,6 +500,88 @@ void test_video_preprocess_and_prompt() {
   for (int id : expanded)
     if (id == 248057) ++count;
   check(count == 12, "expand_video_pads emits exact total video_pad count");
+
+  // Exact-size frames (src_h == dh && src_w == dw) skip bicubic_resize and
+  // produce identical normalized patch values to the resized path.
+  constexpr int kExactH = 64;
+  constexpr int kExactW = 96;
+  int dh = 0, dw = 0;
+  umminfer::qwen38::smart_resize(kExactH, kExactW, 32, 4096, 16384, &dh, &dw);
+  check(dh == kExactH && dw == kExactW,
+        "smart_resize preserves exact-size multiple-of-32 frame dimensions");
+  std::vector<std::vector<uint8_t>> exact_frames(
+      3, std::vector<uint8_t>(static_cast<size_t>(kExactH) * kExactW * 3, 0));
+  for (size_t f = 0; f < exact_frames.size(); ++f) {
+    for (int y = 0; y < kExactH; ++y) {
+      for (int x = 0; x < kExactW; ++x) {
+        const size_t idx = (static_cast<size_t>(y) * kExactW + x) * 3;
+        exact_frames[f][idx + 0] = static_cast<uint8_t>((y * 3 + x + f * 37) % 256);
+        exact_frames[f][idx + 1] = static_cast<uint8_t>((y + x * 5 + f * 19) % 256);
+        exact_frames[f][idx + 2] = static_cast<uint8_t>((y * 7 + x * 2 + f * 11) % 256);
+      }
+    }
+  }
+  const PreprocessedImage exact =
+      preprocess_video_frames(exact_frames, kExactH, kExactW, 4096, 16384, 3584);
+  check(exact.resized_h == kExactH && exact.resized_w == kExactW,
+        "exact-size video frames keep target dimensions");
+  check(exact.grid_t == 2 && exact.grid_h == 4 && exact.grid_w == 6,
+        "exact-size video grid matches (2, 4, 6)");
+  std::vector<std::vector<float>> ref_resized;
+  ref_resized.reserve(4);
+  for (int i = 0; i < 4; ++i) {
+    const auto& raw = exact_frames[std::min<size_t>(static_cast<size_t>(i),
+                                                    exact_frames.size() - 1)];
+    ref_resized.push_back(
+        umminfer::qwen38::resize_image_rgb(raw.data(), kExactH, kExactW, dh, dw));
+  }
+  bool exact_matches_bicubic = true;
+  bool exact_matches_direct = true;
+  const int gh2 = exact.grid_h / 2;
+  const int gw2 = exact.grid_w / 2;
+  for (int t = 0; t < exact.grid_t && exact_matches_bicubic && exact_matches_direct; ++t) {
+    const auto& raw0 = exact_frames[std::min<size_t>(static_cast<size_t>(t * 2),
+                                                     exact_frames.size() - 1)];
+    const auto& raw1 = exact_frames[std::min<size_t>(static_cast<size_t>(t * 2 + 1),
+                                                     exact_frames.size() - 1)];
+    const auto& bic0 = ref_resized[static_cast<size_t>(t * 2)];
+    const auto& bic1 = ref_resized[static_cast<size_t>(t * 2 + 1)];
+    for (int gh = 0; gh < gh2; ++gh) {
+      for (int gw = 0; gw < gw2; ++gw) {
+        for (int msh = 0; msh < 2; ++msh) {
+          for (int msw = 0; msw < 2; ++msw) {
+            const int row = (((t * gh2 + gh) * gw2 + gw) * 2 + msh) * 2 + msw;
+            for (int c = 0; c < 3; ++c) {
+              for (int ts = 0; ts < 2; ++ts) {
+                const auto& raw = (ts == 0) ? raw0 : raw1;
+                const auto& bic = (ts == 0) ? bic0 : bic1;
+                for (int py = 0; py < 16; ++py) {
+                  for (int px = 0; px < 16; ++px) {
+                    const int y = gh * 32 + msh * 16 + py;
+                    const int x = gw * 32 + msw * 16 + px;
+                    const size_t pidx = (static_cast<size_t>(y) * kExactW + x) * 3 + c;
+                    const int fidx = (((c * 2 + ts) * 16 + py) * 16 + px);
+                    const float got =
+                        exact.pixel_values[static_cast<size_t>(row) *
+                                               PreprocessedImage::kPatchDim +
+                                           fidx];
+                    const float want_direct = static_cast<float>(raw[pidx]) / 127.5f - 1.0f;
+                    const float want_bicubic = bic[pidx] / 127.5f - 1.0f;
+                    if (got != want_direct) exact_matches_direct = false;
+                    if (got != want_bicubic) exact_matches_bicubic = false;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  check(exact_matches_direct,
+        "exact-size video path converts RGB24 directly to [-1, 1] patches");
+  check(exact_matches_bicubic,
+        "exact-size video path matches bicubic_resize output bit for bit");
 }
 
 }  // namespace

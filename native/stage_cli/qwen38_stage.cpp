@@ -183,24 +183,26 @@ DecodedVideo decode_video(const std::string& url) {
   }
   if (!(duration > 0.0) || !std::isfinite(duration)) duration = 2.0;
 
-  // Target <= 384px on the long edge (divisible by 2) for fast decode;
-  // preprocess_video_frames then applies exact Qwen smart_resize (divisible by 32).
-  constexpr int kMaxSide = 384;
-  int dst_w = src_w, dst_h = src_h;
-  if (std::max(dst_w, dst_h) > kMaxSide) {
-    const double s = static_cast<double>(kMaxSide) / std::max(dst_w, dst_h);
-    dst_w = std::max(32, static_cast<int>(std::round(dst_w * s / 2.0)) * 2);
-    dst_h = std::max(32, static_cast<int>(std::round(dst_h * s / 2.0)) * 2);
-  }
+  // Compute the exact Qwen smart_resize target (divisible by 32) once before
+  // ffmpeg so ffmpeg performs the single bicubic scale and
+  // preprocess_video_frames skips a second resize pass.
   constexpr int kTargetFrames = 8;  // 4 temporal patches (temporal_patch_size=2)
+  constexpr int kVideoMinPixels = 32768;
+  constexpr int kVideoMaxFramePixels = 131072;
+  constexpr int kVideoMaxTotalPatches = 3584;
+  int dst_h = 0, dst_w = 0;
+  qwen38::smart_resize(
+      src_h, src_w, 32, kVideoMinPixels,
+      std::min(kVideoMaxFramePixels, (kVideoMaxTotalPatches / 4) * 256),
+      &dst_h, &dst_w);
   const double sample_fps =
       std::max(0.25, static_cast<double>(kTargetFrames) / std::max(0.5, duration));
   char vf[160];
   std::snprintf(vf, sizeof(vf), "fps=%.4f,scale=%d:%d:flags=bicubic",
                 sample_fps, dst_w, dst_h);
   const std::string raw = run_capture(
-      {"ffmpeg", "-v", "error", "-i", guard.path.string(), "-vf", vf,
-       "-frames:v", std::to_string(kTargetFrames), "-f", "rawvideo",
+      {"ffmpeg", "-v", "error", "-i", guard.path.string(), "-an", "-sn", "-dn",
+       "-vf", vf, "-frames:v", std::to_string(kTargetFrames), "-f", "rawvideo",
        "-pix_fmt", "rgb24", "pipe:1"},
       static_cast<size_t>(kTargetFrames + 2) * static_cast<size_t>(dst_w) *
           static_cast<size_t>(dst_h) * 3u);
@@ -219,8 +221,9 @@ DecodedVideo decode_video(const std::string& url) {
   }
 
   DecodedVideo out;
-  out.preprocessed =
-      qwen38::preprocess_video_frames(frames, dst_h, dst_w, 32768, 131072, 3584);
+  out.preprocessed = qwen38::preprocess_video_frames(
+      frames, dst_h, dst_w, kVideoMinPixels, kVideoMaxFramePixels,
+      kVideoMaxTotalPatches);
   const int slices = out.preprocessed.grid_t;
   out.timestamps.reserve(static_cast<size_t>(slices));
   for (int s = 0; s < slices; ++s) {
@@ -306,14 +309,23 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     }
     std::vector<qwen38::ChatTurn> turns;
     turns.reserve(input.messages.size() + 1);
+    bool any_marked = false;
+    for (const auto& m : input.messages) {
+      if (is_video ? m.has_video : m.has_image) {
+        any_marked = true;
+        break;
+      }
+    }
     for (size_t i = 0; i < input.messages.size(); ++i) {
       qwen38::ChatTurn turn;
       turn.role = input.messages[i].role;
       turn.text = input.messages[i].text;
       const bool attach_here =
           is_video
-              ? (input.messages[i].has_video || i + 1 == input.messages.size())
-              : (input.messages[i].has_image || i + 1 == input.messages.size());
+              ? (input.messages[i].has_video ||
+                 (!any_marked && i + 1 == input.messages.size()))
+              : (input.messages[i].has_image ||
+                 (!any_marked && i + 1 == input.messages.size()));
       if (image != nullptr && attach_here) {
         if (is_video) {
           turn.video_slices = image->grid_t;

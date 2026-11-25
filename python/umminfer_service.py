@@ -164,13 +164,15 @@ class Child:
 
 
 class Supervisor:
-    def __init__(self, config):
+    def __init__(self, config, config_path=None):
         self.config = config
+        self.config_path = Path(config_path).resolve() if config_path is not None else None
         self.run_dir = Path(config["run_dir"])
         self.log_dir = Path(config["log_dir"])
         self.state_path = self.run_dir / "state.json"
         self.pid_path = self.run_dir / "supervisor.pid"
         self.stop_requested = False
+        self.reload_requested = False
         self.log_cap = int(config.get("log_cap_bytes", LOG_CAP))
         self.health_ok = None
         self.ready_ok = None
@@ -182,8 +184,8 @@ class Supervisor:
         self.children = self._build_children()
         self.by_name = {child.name: child for child in self.children}
 
-    def _build_children(self):
-        cfg = self.config
+    def _build_server_argv(self, cfg=None):
+        cfg = self.config if cfg is None else cfg
         ipc = cfg["ipc_dir"]
         # The VLM leg is whichever started stage the config names, so the
         # deployment can run omni or qwen38 on the same server binary.
@@ -210,13 +212,20 @@ class Supervisor:
             "--completion", f"ipc://{ipc}/done",
             "--abort", f"ipc://{ipc}/abort",
         ]
+        if cfg.get("ws_port") is not None:
+            server_argv += ["--realtime-port", str(cfg["ws_port"])]
         if "video" in started_by_kind:
             video_entry = started_by_kind["video"]
             server_argv += [
                 "--video-entry", video_entry,
                 "--video-entry-endpoint", f"ipc://{ipc}/{video_entry}",
             ]
-        children = [Child("server", server_argv + list(cfg.get("server_args", [])))]
+        return server_argv + list(cfg.get("server_args", []))
+
+    def _build_children(self):
+        cfg = self.config
+        ipc = cfg["ipc_dir"]
+        children = [Child("server", self._build_server_argv(cfg))]
         binary_dir = cfg["stage_binary_dir"]
         for stage in cfg["native_stages"]:
             name = stage["name"]
@@ -419,7 +428,7 @@ class Supervisor:
                 "log_bytes": (self.log_dir / f"{child.name}.log").stat().st_size
                 if (self.log_dir / f"{child.name}.log").exists() else 0,
             })
-        return {
+        payload = {
             "service": self.config.get("name", "umminfer"),
             "stopped": stopped,
             "supervisor": {
@@ -437,9 +446,37 @@ class Supervisor:
             },
             "children": children,
         }
+        if self.config.get("ws_port") is not None:
+            payload["ws_address"] = f"{self.config['host']}:{self.config['ws_port']}"
+        return payload
 
     def save_state(self, stopped=False):
         write_json(self.state_path, self.state(stopped))
+
+    def _handle_reload(self, server):
+        if self.config_path is None:
+            self.log("SIGHUP reload requested without config_path; ignoring")
+            return
+        try:
+            new_config = load_config(self.config_path)
+            new_server_argv = self._build_server_argv(new_config)
+        except (SystemExit, OSError, ValueError, KeyError, TypeError) as error:
+            self.log(f"SIGHUP reload ignored due to invalid config "
+                     f"{self.config_path}: {error}")
+            return
+        self.config = new_config
+        self.log_cap = int(new_config.get("log_cap_bytes", LOG_CAP))
+        server.argv = new_server_argv
+        self.log(f"SIGHUP reload applied from {self.config_path}; "
+                 "restarting server only while preserving stages")
+        self.terminate(server)
+        server.restarts += 1
+        server.failures = 0
+        server.next_start = 0.0
+        self.health_ok = None
+        self.health_failures = 0
+        self.ready_ok = None
+        self.ready_failures = 0
 
     def run(self):
         os.makedirs(self.run_dir, exist_ok=True)
@@ -460,12 +497,20 @@ class Supervisor:
         def request_stop(signum, frame):
             self.stop_requested = True
 
+        def request_reload(signum, frame):
+            self.reload_requested = True
+
         signal.signal(signal.SIGTERM, request_stop)
         signal.signal(signal.SIGINT, request_stop)
+        if hasattr(signal, "SIGHUP"):
+            signal.signal(signal.SIGHUP, request_reload)
 
         server = self.by_name["server"]
         try:
             while not self.stop_requested:
+                if self.reload_requested:
+                    self.reload_requested = False
+                    self._handle_reload(server)
                 now = time.monotonic()
                 for child in self.children:
                     if child.process is not None and child.process.poll() is not None:
@@ -545,10 +590,23 @@ def load_config(path):
     if config is None:
         raise SystemExit(f"cannot read config: {path}")
     host = config.get("host", "")
+    if not isinstance(host, str) or not host.strip():
+        raise SystemExit(
+            "refusing to bind empty host: use the container private address "
+            "or loopback")
+    host = host.strip()
     if host in FORBIDDEN_HOSTS:
         raise SystemExit(
             f"refusing to bind {host}: use the container private address "
             "or loopback")
+    ws_port = config.get("ws_port")
+    if ws_port is not None:
+        if (not isinstance(ws_port, int) or isinstance(ws_port, bool)
+                or not (1 <= ws_port <= 65535)):
+            raise SystemExit("ws_port must be an integer in 1..65535")
+        if ws_port == config.get("port"):
+            raise SystemExit(
+                f"ws_port ({ws_port}) must not equal port ({config.get('port')})")
     for key in ("run_dir", "log_dir", "ipc_dir", "binary", "model"):
         if key not in config:
             raise SystemExit(f"config is missing {key}")
@@ -600,7 +658,7 @@ def supervisor_identity(config):
     return None
 
 
-def cmd_start(config):
+def cmd_start(config, config_path=None):
     if supervisor_identity(config):
         print(json.dumps({"error": "already running",
                           "pidfile": str(Path(config["run_dir"])
@@ -631,7 +689,7 @@ def cmd_start(config):
     devnull = os.open(os.devnull, os.O_RDWR)
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
-    supervisor = Supervisor(config)
+    supervisor = Supervisor(config, config_path=config_path)
     try:
         supervisor.run()
     finally:
@@ -716,7 +774,7 @@ def main():
     args = parser.parse_args()
     config = load_config(args.config)
     if args.command == "start":
-        return cmd_start(config)
+        return cmd_start(config, config_path=args.config)
     if args.command == "stop":
         return cmd_stop(config)
     if args.command == "status":

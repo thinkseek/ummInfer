@@ -246,13 +246,79 @@ def cleanup(root):
 def test_config_rejects_wildcard_hosts():
     root = make_root()
     try:
-        for host in ("0.0.0.0", "::", "[::]"):
+        for host in ("0.0.0.0", "::", "[::]", " 0.0.0.0 "):
             config_path = write_config(
-                root, config_for(root, free_port(), host=host), f"bad-{host.strip(':[]')}.json")
+                root, config_for(root, free_port(), host=host), f"bad-{abs(hash(host))}.json")
             result = run_service(config_path, "status")
-            require(result.returncode != 0, f"{host} must be refused")
+            require(result.returncode != 0, f"{host!r} must be refused")
             require("refusing to bind" in (result.stderr + result.stdout),
-                    f"{host} must be refused with a reason: {result.stderr}")
+                    f"{host!r} must be refused with a reason: {result.stderr}")
+    finally:
+        cleanup(root)
+
+
+def test_config_rejects_empty_and_whitespace_hosts():
+    root = make_root()
+    try:
+        for idx, host in enumerate(("", " ", "   \t\n ", None)):
+            config_path = write_config(
+                root, config_for(root, free_port(), host=host), f"empty-host-{idx}.json")
+            result = run_service(config_path, "status")
+            require(result.returncode != 0, f"host={host!r} must be refused")
+            require("refusing to bind" in (result.stderr + result.stdout),
+                    f"host={host!r} must explain refusal: {result.stderr}")
+        missing = config_for(root, free_port())
+        del missing["host"]
+        config_path = write_config(root, missing, "missing-host.json")
+        result = run_service(config_path, "status")
+        require(result.returncode != 0, "missing host must be refused")
+        require("refusing to bind" in (result.stderr + result.stdout),
+                f"missing host must explain refusal: {result.stderr}")
+    finally:
+        cleanup(root)
+
+
+def test_config_ws_port_validation_and_forwarding():
+    root = make_root()
+    try:
+        port = free_port()
+        for idx, bad_ws in enumerate((True, False, 0, -1, 65536, "9000", port)):
+            config_path = write_config(
+                root, config_for(root, port, ws_port=bad_ws), f"bad-ws-{idx}.json")
+            result = run_service(config_path, "status")
+            require(result.returncode != 0 and "ws_port" in (result.stderr + result.stdout),
+                    f"ws_port={bad_ws!r} must be rejected: {result.stderr}")
+
+        # ws_port=None behaves like omitted: no --realtime-port and no ws_address.
+        cfg_none = config_for(root, port, ws_port=None)
+        cfg_none_path = write_config(root, cfg_none, "ws-none.json")
+        loaded_none = SERVICE_MODULE.load_config(cfg_none_path)
+        sup_none = SERVICE_MODULE.Supervisor(loaded_none)
+        require("--realtime-port" not in sup_none.by_name["server"].argv,
+                f"ws_port=None must not pass --realtime-port: {sup_none.by_name['server'].argv}")
+        require("ws_address" not in sup_none.state(),
+                "ws_port=None must not include ws_address in state")
+
+        # Valid ws_port forwards --realtime-port and exposes ws_address in state.
+        ws_port = free_port()
+        while ws_port == port:
+            ws_port = free_port()
+        cfg_ok = config_for(root, port, ws_port=ws_port)
+        cfg_ok_path = write_config(root, cfg_ok, "ws-ok.json")
+        loaded_ok = SERVICE_MODULE.load_config(cfg_ok_path)
+        sup_ok = SERVICE_MODULE.Supervisor(loaded_ok)
+        argv = sup_ok.by_name["server"].argv
+        require("--realtime-port" in argv,
+                f"valid ws_port must pass --realtime-port: {argv}")
+        idx = argv.index("--realtime-port")
+        require(argv[idx + 1] == str(ws_port),
+                f"--realtime-port value mismatch: {argv[idx:idx + 2]}")
+        state = sup_ok.state()
+        require(state.get("ws_address") == f"127.0.0.1:{ws_port}",
+                f"unexpected ws_address in state: {state.get('ws_address')!r}")
+        for key in ("service", "stopped", "supervisor", "address", "ipc_dir",
+                    "health", "children"):
+            require(key in state, f"state lost existing key {key!r}")
     finally:
         cleanup(root)
 
@@ -459,6 +525,95 @@ def test_server_restart_preserves_running_workers():
         cleanup(root)
 
 
+def test_sighup_reloads_server_only_and_preserves_workers():
+    root = make_root()
+    port = free_port()
+    ws_port = free_port()
+    while ws_port == port:
+        ws_port = free_port()
+    config = config_for(root, port, health_grace_s=0.1,
+                        server_args=["--reload-tag", "v1"])
+    config_path = write_config(root, config)
+    try:
+        result = run_service(config_path, "start")
+        require(result.returncode == 0, f"start failed: {result.stderr}")
+        supervisor_pid = json.loads(result.stdout)["supervisor"]["pid"]
+
+        def healthy():
+            record = child_record(root, "server")
+            stage = child_record(root, "omni")
+            state = state_payload(root) or {}
+            if not (record and record["alive"] and state.get("health", {}).get("ok") is True):
+                return None
+            if not (stage and stage["alive"] and stage["pid"]):
+                return None
+            return record["pid"], stage["pid"]
+
+        server_pid, stage_pid = wait_for(healthy, START_TIMEOUT_S,
+                                         "the service never became healthy")
+        require("ws_address" not in (state_payload(root) or {}),
+                "initial state without ws_port must not expose ws_address")
+
+        # An invalid reloaded config must be logged and ignored without crashing
+        # the supervisor or restarting the server/stage.
+        write_config(root, config_for(root, port, host="   "))
+        os.kill(supervisor_pid, signal.SIGHUP)
+        supervisor_log = root / "log" / "supervisor.log"
+        wait_for(
+            lambda: supervisor_log.exists()
+            and "SIGHUP reload ignored" in supervisor_log.read_text(errors="replace"),
+            START_TIMEOUT_S,
+            "supervisor did not log ignored invalid SIGHUP reload",
+        )
+        require(alive(supervisor_pid), "supervisor must survive invalid SIGHUP config")
+        require((child_record(root, "server") or {}).get("pid") == server_pid,
+                "invalid SIGHUP reload must not restart server")
+        require((child_record(root, "omni") or {}).get("pid") == stage_pid,
+                "invalid SIGHUP reload must not restart stage")
+
+        # A valid reloaded config updates only server.argv and restarts only
+        # the gateway while keeping GPU stages hot.
+        updated = config_for(root, port, ws_port=ws_port, health_grace_s=0.1,
+                             server_args=["--reload-tag", "v2"])
+        write_config(root, updated)
+        os.kill(supervisor_pid, signal.SIGHUP)
+
+        def reloaded():
+            record = child_record(root, "server")
+            stage = child_record(root, "omni")
+            state = state_payload(root) or {}
+            if not (record and record["alive"] and record["pid"] != server_pid):
+                return None
+            if not (stage and stage["alive"] and stage["pid"] == stage_pid):
+                return None
+            if state.get("health", {}).get("ok") is not True:
+                return None
+            if state.get("ws_address") != f"127.0.0.1:{ws_port}":
+                return None
+            return record["pid"]
+
+        new_server_pid = wait_for(reloaded, START_TIMEOUT_S,
+                                  "SIGHUP did not restart server with new config")
+        require(new_server_pid != server_pid, "server PID must change after SIGHUP reload")
+        stage_after = child_record(root, "omni") or {}
+        require(stage_after.get("pid") == stage_pid,
+                "stage PID must be preserved across SIGHUP reload")
+        require(stage_after.get("restarts") == 0,
+                f"stage restarts must remain 0: {stage_after.get('restarts')}")
+
+        server_log = (root / "log" / "server.log").read_text(errors="replace")
+        require(f"--realtime-port {ws_port}" in server_log,
+                f"reloaded server did not receive --realtime-port: {server_log!r}")
+        require("--reload-tag v2" in server_log,
+                f"reloaded server did not receive updated server_args: {server_log!r}")
+        require("SIGHUP reload applied" in supervisor_log.read_text(errors="replace"),
+                "supervisor log must record applied SIGHUP reload")
+
+        stop(root, config_path)
+    finally:
+        cleanup(root)
+
+
 def test_foreign_pid_is_not_signalled():
     root = make_root()
     victim = subprocess.Popen(["sleep", "30"])
@@ -553,6 +708,8 @@ def test_config_loads_shipped_native_service_and_launcher_stages():
 def main():
     tests = [
         test_config_rejects_wildcard_hosts,
+        test_config_rejects_empty_and_whitespace_hosts,
+        test_config_ws_port_validation_and_forwarding,
         test_config_accepts_loopback,
         test_config_rejects_unknown_vlm_stage,
         test_config_rejects_duplicate_stage_names,
@@ -560,6 +717,7 @@ def main():
         test_full_lifecycle,
         test_health_failure_restarts_server_with_backoff_counter,
         test_server_restart_preserves_running_workers,
+        test_sighup_reloads_server_only_and_preserves_workers,
         test_foreign_pid_is_not_signalled,
         test_rolling_log_cap,
     ]
