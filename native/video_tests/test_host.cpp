@@ -985,6 +985,79 @@ void test_wan_vae_pool_policy_and_pointwise() {
   }
 }
 
+void test_wan_vae_gemm_prec_policy() {
+  using namespace umminfer::video;
+
+  // 1. Default and empty/null values resolve to kTf32.
+  check(parse_wan_vae_gemm_prec(nullptr, nullptr) == WanVaeGemmPrec::kTf32,
+        "null envs default to kTf32");
+  check(parse_wan_vae_gemm_prec("", nullptr) == WanVaeGemmPrec::kTf32,
+        "empty gemm_prec defaults to kTf32");
+  check(parse_wan_vae_gemm_prec("", "") == WanVaeGemmPrec::kTf32,
+        "empty envs default to kTf32");
+  check(parse_wan_vae_gemm_prec("", "0") == WanVaeGemmPrec::kTf32,
+        "pedantic=0 with empty gemm_prec defaults to kTf32");
+
+  // 2. Explicit precision names (lowercase, uppercase, mixed case, whitespace).
+  check(parse_wan_vae_gemm_prec("tf32", nullptr) == WanVaeGemmPrec::kTf32,
+        "tf32 parses to kTf32");
+  check(parse_wan_vae_gemm_prec("bf16", nullptr) == WanVaeGemmPrec::kBf16,
+        "bf16 parses to kBf16");
+  check(parse_wan_vae_gemm_prec("fp16", nullptr) == WanVaeGemmPrec::kFp16,
+        "fp16 parses to kFp16");
+  check(parse_wan_vae_gemm_prec("fp32", nullptr) == WanVaeGemmPrec::kFp32,
+        "fp32 parses to kFp32");
+
+  check(parse_wan_vae_gemm_prec("BF16", nullptr) == WanVaeGemmPrec::kBf16,
+        "BF16 is case-insensitive");
+  check(parse_wan_vae_gemm_prec("Bf16", "0") == WanVaeGemmPrec::kBf16,
+        "Bf16 with pedantic=0 parses to kBf16");
+  check(parse_wan_vae_gemm_prec("  fp16\t\n", "") == WanVaeGemmPrec::kFp16,
+        "trimmed fp16 parses to kFp16");
+  check(parse_wan_vae_gemm_prec("FP32", nullptr) == WanVaeGemmPrec::kFp32,
+        "FP32 parses to kFp32");
+  check(parse_wan_vae_gemm_prec("TF32", nullptr) == WanVaeGemmPrec::kTf32,
+        "TF32 parses to kTf32");
+
+  // 3. Unknown/invalid strings fall back safely to kTf32.
+  for (const char* bad :
+       {"fp8", "int8", "bf32", "float16", "bfloat16", "garbage", "   "}) {
+    check(parse_wan_vae_gemm_prec(bad, nullptr) == WanVaeGemmPrec::kTf32,
+          std::string("unknown gemm_prec '") + bad + "' falls back to kTf32");
+  }
+
+  // 4. Legacy UMM_VAE_PEDANTIC_FP32=1 takes precedence over UMM_VAE_GEMM_PREC.
+  check(parse_wan_vae_gemm_prec(nullptr, "1") == WanVaeGemmPrec::kFp32,
+        "pedantic=1 with null gemm_prec forces kFp32");
+  check(parse_wan_vae_gemm_prec("tf32", "1") == WanVaeGemmPrec::kFp32,
+        "pedantic=1 overrides tf32");
+  check(parse_wan_vae_gemm_prec("bf16", "1") == WanVaeGemmPrec::kFp32,
+        "pedantic=1 overrides bf16");
+  check(parse_wan_vae_gemm_prec("fp16", "1") == WanVaeGemmPrec::kFp32,
+        "pedantic=1 overrides fp16");
+  check(parse_wan_vae_gemm_prec("bf16", "true") == WanVaeGemmPrec::kFp32,
+        "pedantic=true overrides bf16");
+  check(parse_wan_vae_gemm_prec("fp16", "0") == WanVaeGemmPrec::kFp16,
+        "pedantic=0 does not override fp16");
+
+  // 5. Canonical precision names and conv kernel specialization predicates.
+  check(std::strcmp(wan_vae_gemm_prec_name(WanVaeGemmPrec::kTf32), "tf32") == 0,
+        "kTf32 name is tf32");
+  check(std::strcmp(wan_vae_gemm_prec_name(WanVaeGemmPrec::kBf16), "bf16") == 0,
+        "kBf16 name is bf16");
+  check(std::strcmp(wan_vae_gemm_prec_name(WanVaeGemmPrec::kFp16), "fp16") == 0,
+        "kFp16 name is fp16");
+  check(std::strcmp(wan_vae_gemm_prec_name(WanVaeGemmPrec::kFp32), "fp32") == 0,
+        "kFp32 name is fp32");
+
+  check(wan_conv3d_is_spatial_3x3(1, 3, 3), "1x3x3 is spatial 3x3");
+  check(!wan_conv3d_is_spatial_3x3(3, 3, 3), "3x3x3 is not spatial 3x3");
+  check(!wan_conv3d_is_spatial_3x3(1, 1, 1), "1x1x1 is not spatial 3x3");
+  check(wan_conv3d_is_causal_3x3x3(3, 3, 3), "3x3x3 is causal 3x3x3");
+  check(!wan_conv3d_is_causal_3x3x3(1, 3, 3), "1x3x3 is not causal 3x3x3");
+  check(!wan_conv3d_is_causal_3x3x3(3, 1, 1), "3x1x1 is not causal 3x3x3");
+}
+
 void test_i2v_center_crop_preserves_aspect_ratio() {
   using namespace umminfer::video;
   // 1. Square 64x64 image with red top/bottom 16-px bands and pure green middle
@@ -1043,6 +1116,7 @@ int main() {
       {"wan_vae_config_loading", test_wan_vae_config_loading},
       {"wan_vae_causal_chunk_schedule", test_wan_vae_causal_chunk_schedule},
       {"wan_vae_pool_policy_and_pointwise", test_wan_vae_pool_policy_and_pointwise},
+      {"wan_vae_gemm_prec_policy", test_wan_vae_gemm_prec_policy},
       {"safetensors_mmap", test_safetensors_mmap},
       {"sharded_safetensors_mmap", test_sharded_safetensors_mmap},
       {"umt5_tokenizer", test_umt5_tokenizer},

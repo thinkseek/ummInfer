@@ -61,10 +61,94 @@ inline int64_t wan_vae_chunk_frame_offset(int64_t latent_index,
 
 // Returns true when a 3D convolution is strictly 1x1x1 pointwise, in which
 // case its [C, T*H*W] input is already identical to the im2col column matrix
-// and can be passed directly to cuBLAS SGEMM without allocating `columns`.
+// and can be passed directly to cuBLAS GEMM without allocating `columns`.
 inline constexpr bool wan_conv3d_is_pointwise(int64_t kd, int64_t kh,
                                               int64_t kw) {
   return kd == 1 && kh == 1 && kw == 1;
+}
+
+// Returns true when a 3D convolution is spatial-only 1x3x3 (kd == 1, kh == 3,
+// kw == 3), eligible for the specialized branch-free spatial im2col kernel.
+inline constexpr bool wan_conv3d_is_spatial_3x3(int64_t kd, int64_t kh,
+                                                int64_t kw) {
+  return kd == 1 && kh == 3 && kw == 3;
+}
+
+// Returns true when a 3D convolution is causal 3x3x3 (kd == 3, kh == 3,
+// kw == 3), eligible for the specialized unrolled causal 3x3x3 im2col kernel.
+inline constexpr bool wan_conv3d_is_causal_3x3x3(int64_t kd, int64_t kh,
+                                                 int64_t kw) {
+  return kd == 3 && kh == 3 && kw == 3;
+}
+
+// Selectable Tensor Core GEMM precision for the Wan2.2 3D-VAE CUDA path.
+// Default is kTf32 to preserve exact Wave-16 default parity with zero extra
+// weight-cache VRAM.
+enum class WanVaeGemmPrec { kTf32, kBf16, kFp16, kFp32 };
+
+inline const char* wan_vae_gemm_prec_name(WanVaeGemmPrec prec) noexcept {
+  switch (prec) {
+    case WanVaeGemmPrec::kTf32:
+      return "tf32";
+    case WanVaeGemmPrec::kBf16:
+      return "bf16";
+    case WanVaeGemmPrec::kFp16:
+      return "fp16";
+    case WanVaeGemmPrec::kFp32:
+      return "fp32";
+  }
+  return "tf32";
+}
+
+// Resolves Wan2.2 3D-VAE GEMM precision from environment variables:
+//   1. Legacy UMM_VAE_PEDANTIC_FP32 (non-empty and not starting with '0')
+//      always forces kFp32 for 100% backward compatibility.
+//   2. Otherwise parses UMM_VAE_GEMM_PREC ("tf32", "bf16", "fp16", "fp32";
+//      case-insensitive, surrounding ASCII whitespace trimmed).
+//   3. Null, empty, or unknown values fall back to kTf32.
+inline WanVaeGemmPrec parse_wan_vae_gemm_prec(
+    const char* gemm_prec_env, const char* pedantic_fp32_env) noexcept {
+  if (pedantic_fp32_env != nullptr && pedantic_fp32_env[0] != '\0' &&
+      pedantic_fp32_env[0] != '0') {
+    return WanVaeGemmPrec::kFp32;
+  }
+  if (gemm_prec_env == nullptr) {
+    return WanVaeGemmPrec::kTf32;
+  }
+  const char* begin = gemm_prec_env;
+  while (*begin == ' ' || *begin == '\t' || *begin == '\r' || *begin == '\n') {
+    ++begin;
+  }
+  const char* end = begin;
+  while (*end != '\0') ++end;
+  while (end > begin &&
+         (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' ||
+          end[-1] == '\n')) {
+    --end;
+  }
+  const size_t len = static_cast<size_t>(end - begin);
+  if (len != 4) {
+    return WanVaeGemmPrec::kTf32;
+  }
+  char lower[4];
+  for (size_t i = 0; i < 4; ++i) {
+    const char ch = begin[i];
+    lower[i] =
+        (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch;
+  }
+  if (lower[0] == 'b' && lower[1] == 'f' && lower[2] == '1' &&
+      lower[3] == '6') {
+    return WanVaeGemmPrec::kBf16;
+  }
+  if (lower[0] == 'f' && lower[1] == 'p' && lower[2] == '1' &&
+      lower[3] == '6') {
+    return WanVaeGemmPrec::kFp16;
+  }
+  if (lower[0] == 'f' && lower[1] == 'p' && lower[2] == '3' &&
+      lower[3] == '2') {
+    return WanVaeGemmPrec::kFp32;
+  }
+  return WanVaeGemmPrec::kTf32;
 }
 
 // Default cap on idle cached blocks in the Wan2.2 3D-VAE GPU scratch pool.
