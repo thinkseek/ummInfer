@@ -97,16 +97,58 @@
 
   .film { padding: 36px 0 8px; }
   .film-frame {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: #ede6da;
     border-radius: 10px; overflow: hidden;
     box-shadow: 0 24px 60px -28px rgba(26, 26, 26, 0.35), 0 0 0 1px var(--line);
   }
-  video { width: 100%; display: block; }
+  .film-frame video { width: 100%; height: 100%; object-fit: cover; display: block; }
   .film-note {
     display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
     font-size: 13px; color: var(--grey); padding: 16px 4px 0; letter-spacing: 0.04em;
   }
   .film-note a { color: var(--grey); }
   .film-note a:hover { color: var(--blue); }
+
+  .showcase-sub {
+    text-align: center; font-size: 14px; color: var(--grey);
+    margin: -24px auto 34px; max-width: 680px; letter-spacing: 0.03em;
+  }
+  .showcase-sub a { color: var(--blue); text-decoration: none; }
+  .showcase-sub a:hover { text-decoration: underline; }
+  .showcase-tabs {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+    margin-bottom: 20px;
+  }
+  .sc-tab {
+    appearance: none; font: inherit; text-align: left; cursor: pointer;
+    background: rgba(255, 255, 255, 0.52); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; transition: all 0.18s ease;
+  }
+  .sc-tab:hover { border-color: rgba(23, 32, 43, 0.32); background: rgba(255, 255, 255, 0.8); }
+  .sc-tab.active {
+    border-color: var(--blue);
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 10px 26px -18px rgba(46, 124, 246, 0.55);
+  }
+  .sc-tab .sc-idx {
+    display: block; font-size: 11px; letter-spacing: 0.16em;
+    color: var(--grey); margin-bottom: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .sc-tab.active .sc-idx { color: var(--blue); }
+  .sc-tab .sc-title { display: block; font-size: 15px; font-weight: 500; letter-spacing: 0.03em; }
+  .sc-tab .sc-tag { display: block; font-size: 12.5px; color: var(--grey); margin-top: 3px; }
+  .showcase-frame { background: #0c111b; }
+  .showcase-meta {
+    display: grid; grid-template-columns: 1fr 1.6fr; gap: 20px 36px;
+    margin-top: 18px; padding: 18px 20px;
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    font-size: 13.5px; color: var(--grey);
+  }
+  .showcase-meta strong { display: block; font-weight: 500; color: var(--ink); margin-bottom: 4px; letter-spacing: 0.04em; }
 
   section { padding: 72px 0; }
   h2 {
@@ -145,6 +187,8 @@
 
   @media (max-width: 720px) {
     .grid { grid-template-columns: 1fr; gap: 28px; }
+    .showcase-tabs { grid-template-columns: 1fr; }
+    .showcase-meta { grid-template-columns: 1fr; gap: 14px; }
     .metrics { grid-template-columns: repeat(2, 1fr); gap: 32px 0; }
     .metric:nth-child(3) { border-left: none; }
     header { padding: 56px 0 32px; }
@@ -180,9 +224,9 @@
     </div>
   </header>
 
-  <div class="film reveal" id="film">
+  <div class="film" id="film">
     <div class="film-frame">
-      <video src="assets/umminfer-launch-16x9.mp4" autoplay muted loop playsinline controls preload="metadata"></video>
+      <video src="assets/umminfer-launch-16x9.mp4" poster="assets/umminfer-launch-poster.jpg" width="1920" height="1080" autoplay muted loop playsinline controls preload="metadata"></video>
     </div>
     <div class="film-note">
       <span>一套引擎，四种模态 · C++20 / CUDA 架构与实测 · 16 秒</span>
@@ -191,6 +235,49 @@
       </span>
     </div>
   </div>
+
+  <section class="reveal" id="showcases">
+    <h2>理想态 SHOWCASE · 概念片</h2>
+    <p class="showcase-sub">
+      源于 <a href="https://github.com/thinkseek/ummInfer/blob/main/docs/vision.md" target="_blank" rel="noopener">终局愿景蓝图（vision.md）↗</a>：以原生统一多模态引擎，呈现“看、听、想、说、画、动”一体的交互范式。
+    </p>
+    <div class="showcase-tabs" role="tablist" aria-label="理想态 Showcase 场景">
+      <button class="sc-tab active" type="button" role="tab" aria-selected="true" data-sc="0">
+        <span class="sc-idx">SHOWCASE 01</span>
+        <span class="sc-title">活教材 · 纪录片式实时讲解</span>
+        <span class="sc-tag">黑洞吸积盘与引力透镜 · 原位静图动画化</span>
+      </button>
+      <button class="sc-tab" type="button" role="tab" aria-selected="false" data-sc="1">
+        <span class="sc-idx">SHOWCASE 02</span>
+        <span class="sc-title">看视频 + 全双工语音实时共创</span>
+        <span class="sc-tag">19 ms 插话打断 · 雨夜一键转清晨暖光</span>
+      </button>
+      <button class="sc-tab" type="button" role="tab" aria-selected="false" data-sc="2">
+        <span class="sc-idx">SHOWCASE 03</span>
+        <span class="sc-title">交互式分镜 · 产品推演</span>
+        <span class="sc-tag">草图到 3D 动态运镜 · 首帧锚定与旁白</span>
+      </button>
+    </div>
+    <div class="film-frame showcase-frame">
+      <video id="sc-video" src="assets/umminfer-showcase-documentary.mp4" poster="assets/umminfer-showcase-documentary-poster.jpg" width="1920" height="1080" muted loop playsinline controls preload="metadata"></video>
+    </div>
+    <div class="showcase-meta">
+      <div>
+        <strong>用户输入</strong>
+        <span id="sc-input">语音或文字提问：“讲清黑洞吸积盘与引力透镜”</span>
+      </div>
+      <div>
+        <strong>原生统一体验（对比传统多轮 Agent）</strong>
+        <span id="sc-diff">亚秒级开启流式语音与结构化 Markdown 正文，讲到关键节点由模型自主路由原位插入视觉与 Wan2.2 I2V 动态模拟，单流并行无多轮工具调用停顿。</span>
+      </div>
+    </div>
+    <div class="film-note">
+      <span id="sc-caption">理想态概念演示 · 16 秒 · 1920×1080</span>
+      <span>
+        <a id="sc-direct" href="assets/umminfer-showcase-documentary.mp4" target="_blank" rel="noopener">新窗口观看 ↗</a>
+      </span>
+    </div>
+  </section>
 
   <section class="reveal">
     <h2>引擎</h2>
@@ -265,6 +352,57 @@
     });
   }, { threshold: 0.12 });
   document.querySelectorAll('.reveal').forEach(function (el) { io.observe(el); });
+
+  // ideal-state vision showcases switcher
+  var SHOWCASES = [
+    {
+      src: 'assets/umminfer-showcase-documentary.mp4',
+      poster: 'assets/umminfer-showcase-documentary-poster.jpg',
+      input: '语音或文字提问：“讲清黑洞吸积盘与引力透镜”',
+      diff: '亚秒级开启流式语音与结构化 Markdown 正文，讲到关键节点由模型自主路由原位插入视觉与 Wan2.2 I2V 动态模拟，单流并行无多轮工具调用停顿。',
+      caption: 'Showcase 01 · 活教材纪录片式实时讲解 · 16 秒'
+    },
+    {
+      src: 'assets/umminfer-showcase-duplex.mp4',
+      poster: 'assets/umminfer-showcase-duplex-poster.jpg',
+      input: '上传/实时输入视频 + 语音随时插话：“等等——把镜头拉近，换成清晨暖光。”',
+      diff: '边理解视频时空内容边实时语音反馈；插话瞬间 19 ms 中止旧播报并保留已消费上下文，直接原位生成修改后的清晨暖光推镜，无需等整轮跑完。',
+      caption: 'Showcase 02 · 看视频 + 全双工语音实时共创 · 16 秒'
+    },
+    {
+      src: 'assets/umminfer-showcase-storyboard.mp4',
+      poster: 'assets/umminfer-showcase-storyboard-poster.jpg',
+      input: '工业设计草图 + 语音描述分镜节奏：“从手绘草图推演暖白晨光三镜动态预告”',
+      diff: '单流连续产出分镜脚本、FLUX.2 关键帧画面、Wan2.2 原生 I2V 首帧锚定运镜与 24 kHz 同步旁白，保持跨槽位材质与光影风格一致。',
+      caption: 'Showcase 03 · 交互式分镜与产品推演 · 16 秒'
+    }
+  ];
+  var scVideo = document.getElementById('sc-video');
+  var scInput = document.getElementById('sc-input');
+  var scDiff = document.getElementById('sc-diff');
+  var scCaption = document.getElementById('sc-caption');
+  var scDirect = document.getElementById('sc-direct');
+  document.querySelectorAll('.sc-tab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var idx = parseInt(btn.getAttribute('data-sc'), 10);
+      var item = SHOWCASES[idx];
+      if (!item) return;
+      document.querySelectorAll('.sc-tab').forEach(function (b) {
+        var on = b === btn;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      scVideo.pause();
+      scVideo.poster = item.poster;
+      scVideo.src = item.src;
+      scVideo.load();
+      scVideo.play().catch(function () {});
+      scInput.textContent = item.input;
+      scDiff.textContent = item.diff;
+      scCaption.textContent = item.caption;
+      scDirect.href = item.src;
+    });
+  });
 </script>
 </body>
 </html>
