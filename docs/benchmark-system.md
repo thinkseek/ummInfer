@@ -155,7 +155,12 @@ Per case the runner saves:
 
 - the exact SSE data payloads in `events/<id>.jsonl`;
 - the final answer and the ASR transcript;
-- HTTP status, `finish_reason`, `usage`, event count, and timings;
+- HTTP status, `finish_reason`, `usage`, event count, and timings, including
+  first-delta TTFT (`first_delta_ms`) and unified-terminal time
+  (`terminal_ms`);
+- the unified terminal kind/stage and `terminal_legs`. Exactly one `complete`
+  terminal is required. The array remains `null` when no optional output legs
+  were requested; when present, every reported leg must be `completed`;
 - the input SHA-256 and a request summary with payload bytes replaced by length
   and SHA-256;
 - the metric value and every failure assigned to the case.
@@ -209,7 +214,7 @@ Infrastructure problems and semantic quality never share a class.
 | Category | Examples | Severity | Automatic action |
 | --- | --- | --- | --- |
 | `infrastructure` | connection refused, timeout, HTTP 5xx, missing input bytes, server never healthy | P1 | restart or redeploy gate, only when the failure is verifiably infrastructural |
-| `public_contract` | valid request rejected with 4xx, malformed SSE JSON, missing `[DONE]`, missing `finish_reason`, missing `asr_final`, `asr_final` after a VLM delta | P0 or P1 | none; the owning agent fixes `serve`/worker code |
+| `public_contract` | valid request rejected with 4xx, malformed SSE JSON, missing `[DONE]`, missing `finish_reason`, missing/duplicate unified terminal, malformed or non-completed terminal legs, missing `asr_final`, `asr_final` after a VLM delta | P0 or P1 | none; the owning agent fixes `serve`/worker code |
 | `quality` | empty answer, empty transcript, WER above 0.50, wrong VQA answer, wrong GSM8K answer, joint sub-metric below its floor | P2 | none; the owning model or prompt owner decides |
 | `performance` | a case above `--case-latency-cap-ms`, or a p95 regression in the gate | P2 | none; performance work is a code or capacity change |
 
@@ -239,9 +244,9 @@ A round passes only when all of these hold:
 5. every task p95 latency is within ±10% of the baseline.
 
 A run returns `PASS` only when three consecutive rounds pass. Two passing rounds
-return `INSUFFICIENT_ROUNDS`. Any failed round returns `FAIL`. A subset returns
-`INELIGIBLE_SUBSET`. A run without an accepted baseline returns
-`BASELINE_REQUIRED`.
+return `INSUFFICIENT_ROUNDS`. Any failed round returns `FAIL`. A subset with an
+accepted baseline returns `INELIGIBLE_SUBSET`. A run without an accepted
+baseline returns `BASELINE_REQUIRED` (including a bounded subset without one).
 
 The first full run cannot claim stability. Use `--accept-baseline` to write
 `baseline.json`. Baseline creation is refused when the round is a subset, has an

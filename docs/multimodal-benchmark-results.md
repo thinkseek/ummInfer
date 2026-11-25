@@ -1083,3 +1083,176 @@ CER 0.0916 (58/633).
 | 7669819575583671099 | 0.0789 | 0.1364 | 3/38 | 3/22 |
 | 8424295226444731846 | 0.0000 | 0.0000 | 0/18 | 0/10 |
 | 8702090716396029445 | 0.0385 | 0.0588 | 1/26 | 1/17 |
+
+## 18. Bounded Qwen3.8 VQA + SpeechCOCO gate, 2026-11-26
+
+This is a **real 22-case evaluation**, not the deterministic 70-case replay and
+not a controlled-routing measurement. It ran the existing 16 VQAv2 cases and
+six SpeechCOCO joint cases once each through public HTTP/SSE, native
+`Qwen3.8-27B`, and native `Qwen3-ASR-1.7B`. The other 32 standalone ASR cases
+and 16 GSM8K cases are **NOT_RUN** in this bounded gate.
+
+### 18.1 Result and timing
+
+| Task | Cases | Usable | Completed terminals | Metric | Value | TTFT p50 / p95 ms | Terminal p50 / p95 ms | Total p50 / p95 ms |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| VQAv2 | 16 | 16 | 16 | official-style VQA accuracy | **0.958333** | 658.5 / 817.8 | 682.8 / 837.0 | 682.8 / 837.0 |
+| Joint image + real speech | 6 | 6 | 6 | corpus ASR WER | **0.000000 (0/58 words)** | 665.7 / 718.3 | 1535.8 / 1743.5 | 1535.8 / 1784.3 |
+| Joint image + real speech | 6 | 6 | 6 | macro caption-keyword hit | **0.972222** | same rows | same rows | same rows |
+| **All** | **22** | **22** | **22** | | | 662.1 / 726.9 | 711.4 / 1657.6 | 711.4 / 1657.6 |
+
+VQA accuracy is the manifest rule: `min(1, matches/3)` per question, averaged
+over 16 questions. The points total is 15.333333/16. Joint WER is corpus WER;
+keyword hit is the mean of the six per-case rates, not a micro-average.
+
+Failure counts in the accepted run are **0 infrastructure, 0 public-contract,
+0 quality-gate, and 0 performance-gate failures**. All cases returned HTTP 200,
+`finish_reason=stop`, `[DONE]`, and exactly one unified `complete` terminal at
+stage `vlm`. All six joint streams contain exactly one `asr_final`, before the
+first VLM delta. `terminal_legs` is `null` in these text-only-output requests:
+no image, TTS, or video output legs were requested, so the server omits the
+optional array. The harness preserves that `null`; it does not turn it into an
+empty array or a fabricated successful leg measurement. Any reported leg must
+be `completed`.
+
+The summary verdict is **`BASELINE_REQUIRED`**. This is an explicit 22-of-70
+subset without an accepted matching baseline, not a stability PASS and not a
+replacement for the full 70-case gate. Output token counts come from public
+`usage.completion_tokens`.
+
+### 18.2 Per-case VQA responses
+
+TTFT is `first_delta_ms`; terminal is the unified `complete` observation. Full
+raw SSE, responses, requests, input hashes, and scores are in the evidence.
+
+| Case | Real answer | VQA accuracy | TTFT ms | Terminal ms | Total ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `vqa2-val-262148000` | `down` | 1.0000 | 726.9 | 745.8 | 745.8 |
+| `vqa2-val-393225000` | `foodiebaker.com` | 1.0000 | 624.5 | 698.4 | 698.4 |
+| `vqa2-val-393226000` | `walking` | 1.0000 | 663.0 | 682.8 | 682.8 |
+| `vqa2-val-240301000` | `ventilation` | 0.3333 | 689.6 | 728.0 | 728.0 |
+| `vqa2-val-131089000` | `green` | 1.0000 | 626.1 | 644.5 | 644.5 |
+| `vqa2-val-262162000` | `no` | 1.0000 | 658.5 | 678.3 | 678.3 |
+| `vqa2-val-393243000` | `no` | 1.0000 | 662.1 | 682.4 | 682.4 |
+| `vqa2-val-262175000` | `no` | 1.0000 | 691.5 | 711.4 | 711.4 |
+| `vqa2-val-131108000` | `no` | 1.0000 | 624.4 | 642.9 | 642.9 |
+| `vqa2-val-393254000` | `This is camping` | 1.0000 | 664.8 | 721.5 | 721.5 |
+| `vqa2-val-42000` | `white` | 1.0000 | 668.8 | 688.4 | 688.4 |
+| `vqa2-val-131115000` | `yes` | 1.0000 | 627.8 | 646.2 | 646.2 |
+| `vqa2-val-262189000` | `4` | 1.0000 | 817.8 | 837.0 | 837.0 |
+| `vqa2-val-393266000` | `red and yellow` | 1.0000 | 657.4 | 714.1 | 714.2 |
+| `vqa2-val-393267000` | `black` | 1.0000 | 625.4 | 643.8 | 643.9 |
+| `vqa2-val-262197000` | `2` | 1.0000 | 618.8 | 637.3 | 637.3 |
+
+### 18.3 Per-case joint responses and objective sub-metrics
+
+The transcript below is the actual `asr_final`, not the manifest reference.
+Each full VLM answer is saved in `answers/` and `human_review/`; the objective
+metrics do not grade its complete semantic quality.
+
+| Case | Real ASR transcript | ASR WER | Keyword hit | ASR final ms | TTFT ms | Terminal ms | Total ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `joint-speechcoco-val-0000` | `Well-dressed man and woman pose for picture.` | 0.0000 | 1.0000 | 53.1 | 638.9 | 1287.6 | 1287.6 |
+| `joint-speechcoco-val-0001` | `A bicycle replica with a clock as the front wheel.` | 0.0000 | 1.0000 | 52.3 | 529.9 | 1743.5 | 1784.3 |
+| `joint-speechcoco-val-0002` | `A black Honda motorcycle parked in front of a garage.` | 0.0000 | 1.0000 | 57.5 | 714.8 | 1256.1 | 1256.2 |
+| `joint-speechcoco-val-0003` | `A view of train tracks and a train.` | 0.0000 | 1.0000 | 45.3 | 707.8 | 1537.6 | 1537.6 |
+| `joint-speechcoco-val-0004` | `Two zebras standing together while one zebra swishes his tail.` | 0.0000 | 1.0000 | 60.2 | 665.7 | 1535.8 | 1535.8 |
+| `joint-speechcoco-val-0005` | `A room with blue walls and a white sink and door. Um.` | 0.0000 | 0.8333 | 59.5 | 718.3 | 1657.6 | 1657.6 |
+
+Human-review observations, not additional automatic scores: case 0001 repeats
+part of the instruction before the spoken sentence; case 0005 describes the
+bathroom but omits the declared `room` keyword. The latter explains the only
+sub-1.0 joint keyword row. These answers remain available for human quality
+review and are not hidden by the WER or keyword aggregates.
+
+### 18.4 Harness canary and independent audit
+
+An initial real 22-case canary used a new over-strict terminal check and marked
+all 22 cases `missing_terminal_legs`. The actual native terminal contract omits
+`legs[]` when no optional output legs exist. That canary is **rejected harness
+evidence**, is not included in the accepted metrics, and was not repaired by
+editing any response. The harness now requires one unified `complete`, records
+`terminal_ms` and terminal identity, accepts `null` only for the valid
+no-output-leg shape, and rejects a malformed array or any non-completed
+reported leg. The deterministic mock was changed to the real no-output-leg
+shape, with negative tests for missing, duplicate, malformed, and failed
+terminals/legs.
+
+After the fresh final run, an independent stdlib audit (`gate-audit.json`)
+rechecked every row against the raw SSE and cached input bytes:
+
+- 22 unique real cases, 22 HTTP 200 responses, 22 completed terminals;
+- 22 saved answers and 22 hash-/format-checked image inputs;
+- six saved transcripts, six non-empty PCM16 mono 16 kHz SpeechCOCO WAVs with
+  manifest matching hashes and durations, and six raw ASR-before-VLM orderings;
+- six human-review records; all four failure categories at zero; and
+- recomputed VQA accuracy, joint corpus WER, and macro keyword hit equal to the
+  runner aggregates.
+
+### 18.5 Source, configuration, data, model, and binary provenance
+
+The requested base was `622183c5edf6a825bf8b2232fe3b85a592ea5add`.
+The accepted run source was `45d51a7850f60e57ba9b3cfe83f3f65211073e1d`
+(tree `e31259b8d2d16bfa8d441902fb02e9c49695ca46`). Binaries were built at
+`0ff873fdb7c99fef219b3b11a1971e8a675595c0`; the accepted run changed only the
+Python harness after that build, and `src`, `native`, `include`, and `build.zig`
+are identical between the binary-build and run commits.
+
+| Object | SHA-256 or identity |
+| --- | --- |
+| Accepted-run source archive | `d9ed03f84794eb818133f2c74dd72712ec7e9d0e7821cae2f05dd4c84cf0fb61` |
+| `tests/multimodal_benchmark.py` | `f511e7f63bf996f01e6bfcff9cda033e7dc3ae4300e1903c33f675a62f8eb848` |
+| `benchmarks/multimodal_manifest.json` | `599963a3851d5ce02d740b8b06c423726bae5c9c1e07d1931708074c83caa9a3` |
+| `run-config.json` | `a1b37376a07952e342a0b92471eded64911a5151ed769da5ea78bab156d1d8c3` |
+| `data-SHA256SUMS` (28 input files) | `a2cb454479721bcf8a820b7d042d819c385f630814da3acbe90638815bf59c10` |
+| `umm-infer` | `8ba9a24c105a6f3a249c45d0719e4f64b49315abf8e3e277a1b197943a590e65` |
+| `umm-native-stage-asr` | `c6ed1faf071be49444af3cf054f50ff3bf5cd4e7500d2d108276fac22fdd7d4c` |
+| `umm-native-stage-qwen38` | `ec5ac57cbf1b49f5a0fc5df101afa0e3d0acadb613ab379b3d51b61b69cef010` |
+| Qwen3.8 `config.json` | `191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab` |
+| Qwen3.8 available-weight manifest (18 shards) | `b7a23bc59e1bbdba42ad309d484b319060d0c2623fbfb086778738fa6e461743` |
+| Qwen3-ASR `config.json` | `2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f` |
+| Qwen3-ASR available-weight manifest (2 shards) | `3b50bdd28d2c87395edfcc7bf111161bb6e9addae8f4f7afdc4aa168538c634b` |
+
+Every individual Safetensors SHA-256, tokenizer/config checksum, binary
+checksum, and per-input checksum is recorded in `provenance.json`,
+`model-SHA256SUMS`, `binary-SHA256SUMS`, and `data-SHA256SUMS`. These are hashes
+of the **available local bytes**, not claims of an upstream revision ID.
+
+The run used NVIDIA H20 SM90, driver 535.161.08, ASR on explicitly idle
+physical GPU 1 and Qwen3.8 on explicitly idle physical GPU 7. The server bound
+`127.0.0.1` with `--port 0` and observed ephemeral port 44015. IPC paths,
+binaries, logs, cache, and evidence were isolated under `/tmp/umm-task25-real`.
+GPU 0 was reserved and unused; GPUs 2–6 and the resident service were never
+used, contacted, or restarted.
+
+### 18.6 Evidence checksums, cleanup, and remaining limits
+
+The retained local evidence directory is
+`/tmp/umm-task25-evidence-local/real-vqa-joint/`. It contains the complete
+`cases.jsonl`, raw SSE, answers, transcripts, human-review records, report,
+failures, audit, run configuration, provenance, native logs, build logs, GPU
+and cleanup records, and `SHA256SUMS`. Both remote and copied-local verification
+passed **85/85 files**. `SHA256SUMS` SHA-256 is:
+
+```text
+08b0897b50ea37fb4c3e4d6352318a5670cd6481f70d3d1892e3f3f23fd897e4
+```
+
+Before stopping, `/health` reported `in_flight=0`; GPU 1/7 used 5117/56365 MiB.
+Only the three owned processes were signalled. Afterwards the loopback endpoint
+refused connections, no owned process remained active, and both GPUs returned
+to **3 MiB**. The resident service was not touched.
+
+Remaining limits:
+
+- standalone English/Mandarin ASR and GSM8K were not part of this task and are
+  **NOT_RUN** here; six short English joint captions do not replace the 32-case
+  standalone ASR evaluation;
+- this is one bounded round, not a latency-stability or regression baseline;
+- joint free-form answer quality still needs human review; keyword hit is only
+  an objective sub-metric;
+- the manifest's documented VQA normalization is used, not the complete
+  official toolkit normalization; and
+- no mock response or deterministic replay metric contributed to any value in
+  this section. The separate 70-case deterministic contract replay is labelled
+  `NOT_REAL_EVIDENCE` as before.

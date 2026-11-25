@@ -179,6 +179,7 @@ class MockHandler(BaseHTTPRequestHandler):
                 "content": word + " "}, "finish_reason": None}]}))
         self.wfile.write(_sse({"choices": [{"delta": {},
                                             "finish_reason": "stop"}],
+                               "unified": {"kind": "complete", "stage": "vlm"},
                                "usage": {"completion_tokens": len(words)}}))
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
@@ -269,6 +270,35 @@ def unit_checks():
                           joint_row(joint_metric(1)), skipped])["tasks"]["joint"]
     if mixed["joint_keyword_hit"] != 0.5:
         failures.append("integer joint keyword hits were not aggregated")
+
+    # Real joint runs must preserve the unified terminal and its legs. Missing
+    # terminal evidence is a contract failure, never a zero-quality score.
+    joint_case = next(case for case in manifest["cases"]
+                      if case["task"] == "joint")
+    probe = {
+        "status": 200, "error": None,
+        "endpoint": "/v1/chat/completions", "done": True,
+        "finish_reason": "stop", "stream_error": None,
+        "transcript": joint_case["reference"]["caption"],
+        "answer": " ".join(joint_case["reference"]["expected_keywords"]),
+        "asr_final_before_delta": True, "total_ms": 1.0,
+        "terminal_count": 1, "terminal_kind": "complete",
+        "terminal_stage": "vlm", "terminal_legs": None,
+    }
+    probe["metric"] = mb.score_case(joint_case, probe)
+    if mb.classify(joint_case, probe):
+        failures.append("valid joint terminal/legs produced a failure")
+    for field, value, expected_code in (
+            ("terminal_count", 0, "missing_unified_terminal"),
+            ("terminal_count", 2, "multiple_unified_terminals"),
+            ("terminal_legs", "not-an-array", "invalid_terminal_legs"),
+            ("terminal_legs", [{"stage": "image", "state": "failed"}],
+             "terminal_leg_not_completed")):
+        invalid = dict(probe)
+        invalid[field] = value
+        codes = {item["code"] for item in mb.classify(joint_case, invalid)}
+        if expected_code not in codes:
+            failures.append(f"terminal validation missed {expected_code}: {codes}")
 
     # Mandarin WER counts jieba words, never characters. Skipped, not failed,
     # on a host without jieba: the CER metric above needs no segmenter.

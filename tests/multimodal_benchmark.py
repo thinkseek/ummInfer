@@ -413,10 +413,12 @@ class PublicClient:
             "answer": "", "transcript": "", "regions": [],
             "usage": None, "finish_reason": None,
             "total_ms": None, "first_delta_ms": None, "asr_final_ms": None,
-            "stream_ms": None, "done": False,
+            "stream_ms": None, "terminal_ms": None, "done": False,
             "asr_final_before_delta": None, "stream_error": None,
+            "terminal_count": 0, "terminal_kind": None,
+            "terminal_stage": None, "terminal_legs": None,
         }
-        first_delta = asr_final = last_delta = None
+        first_delta = asr_final = last_delta = terminal_at = None
         answer, transcript, usage, finish = [], "", None, None
         event_bytes = 0
         malformed = None
@@ -474,10 +476,18 @@ class PublicClient:
                         if event.get("usage"):
                             usage = event["usage"]
                         unified = event.get("unified") or {}
-                        if unified.get("kind") == "asr_final":
+                        kind = unified.get("kind")
+                        if kind == "asr_final":
                             asr_final = time.perf_counter()
                             transcript = unified.get("text") or ""
                             record["asr_final_before_delta"] = first_delta is None
+                        if kind in ("complete", "error", "cancelled"):
+                            record["terminal_count"] += 1
+                            if record["terminal_count"] == 1:
+                                terminal_at = time.perf_counter()
+                                record["terminal_kind"] = kind
+                                record["terminal_stage"] = unified.get("stage")
+                                record["terminal_legs"] = unified.get("legs")
                         for choice in event.get("choices", []):
                             delta = choice.get("delta") or {}
                             content = delta.get("content")
@@ -512,9 +522,18 @@ class PublicClient:
                             if choice.get("finish_reason") is not None:
                                 finish = choice["finish_reason"]
                         unified = event.get("unified") or {}
-                        if unified.get("kind") == "asr_final":
+                        kind = unified.get("kind")
+                        if kind == "asr_final":
                             asr_final = time.perf_counter()
                             transcript = unified.get("text") or ""
+                            record["asr_final_before_delta"] = first_delta is None
+                        if kind in ("complete", "error", "cancelled"):
+                            record["terminal_count"] += 1
+                            if record["terminal_count"] == 1:
+                                terminal_at = time.perf_counter()
+                                record["terminal_kind"] = kind
+                                record["terminal_stage"] = unified.get("stage")
+                                record["terminal_legs"] = unified.get("legs")
                     except json.JSONDecodeError as exc:
                         malformed = f"event is not JSON: {exc}"
             finished = time.perf_counter()
@@ -528,6 +547,8 @@ class PublicClient:
             record["first_delta_ms"] = (first_delta - started) * 1000.0
         if asr_final is not None:
             record["asr_final_ms"] = (asr_final - started) * 1000.0
+        if terminal_at is not None:
+            record["terminal_ms"] = (terminal_at - started) * 1000.0
         if first_delta is not None and last_delta is not None:
             record["stream_ms"] = (last_delta - first_delta) * 1000.0
         record.update({"answer": "".join(answer), "transcript": transcript,
@@ -708,6 +729,35 @@ def classify(case, record, latency_cap_ms=CASE_LATENCY_CAP_MS):
             if record.get("finish_reason") is None and record.get("done"):
                 add("public_contract", "missing_finish_reason", "P1",
                     "stream completed without finish_reason")
+            terminal_count = record.get("terminal_count") or 0
+            if terminal_count == 0:
+                add("public_contract", "missing_unified_terminal", "P1",
+                    "stream completed without a unified terminal event")
+            elif terminal_count != 1:
+                add("public_contract", "multiple_unified_terminals", "P1",
+                    f"stream carried {terminal_count} unified terminal events")
+            elif record.get("terminal_kind") != "complete":
+                add("infrastructure", "unified_terminal_not_complete", "P1",
+                    f"unified terminal was {record.get('terminal_kind')}")
+            else:
+                if record.get("terminal_stage") != "vlm":
+                    add("public_contract", "unexpected_terminal_stage", "P1",
+                        f"terminal stage was {record.get('terminal_stage')!r}, not 'vlm'")
+                legs = record.get("terminal_legs")
+                # Text-only benchmark requests have no optional image/TTS/video
+                # output legs, and the server omits legs[] for that valid shape.
+                # Keep None distinct from an explicitly empty array; validate
+                # every leg whenever the terminal does report the array.
+                if legs is not None and not isinstance(legs, list):
+                    add("public_contract", "invalid_terminal_legs", "P1",
+                        "complete event terminal legs is not an array")
+                elif isinstance(legs, list):
+                    for leg in legs:
+                        if not isinstance(leg, dict) or \
+                                not isinstance(leg.get("stage"), str) or \
+                                leg.get("state") != "completed":
+                            add("public_contract", "terminal_leg_not_completed", "P1",
+                                f"terminal leg did not complete: {leg}")
         if "audio" in case["modalities"] and not record.get("transcript"):
             add("public_contract", "missing_asr_final", "P0",
                 "unified audio request produced no asr_final transcript")
@@ -758,6 +808,10 @@ def _task_aggregate(task, rows):
     metrics = [row["metric"] for row in rows if row.get("metric")]
     latencies = [row["latency"]["total_ms"] for row in rows
                  if row["latency"].get("total_ms") is not None]
+    first_deltas = [row["latency"]["first_delta_ms"] for row in rows
+                    if row["latency"].get("first_delta_ms") is not None]
+    terminals = [row["latency"]["terminal_ms"] for row in rows
+                 if row["latency"].get("terminal_ms") is not None]
     tokens = [row["tokens_per_s"] for row in rows
               if row.get("tokens_per_s") is not None]
     usable = [row for row in rows
@@ -769,6 +823,12 @@ def _task_aggregate(task, rows):
         "success_rate": len(usable) / len(rows) if rows else None,
         "p50_ms": ub.percentile(latencies, 50),
         "p95_ms": ub.percentile(latencies, 95),
+        "first_delta_p50_ms": ub.percentile(first_deltas, 50),
+        "first_delta_p95_ms": ub.percentile(first_deltas, 95),
+        "terminal_p50_ms": ub.percentile(terminals, 50),
+        "terminal_p95_ms": ub.percentile(terminals, 95),
+        "completed_terminals": sum(row.get("terminal_kind") == "complete"
+                                   for row in rows),
         "tokens_per_s_p50": ub.percentile(tokens, 50),
         "tokens_per_s_p95": ub.percentile(tokens, 95),
     }
@@ -819,6 +879,10 @@ def aggregate(rows):
                   for task, group in sorted(groups.items())}
     latencies = [row["latency"]["total_ms"] for row in rows
                  if row["latency"].get("total_ms") is not None]
+    first_deltas = [row["latency"]["first_delta_ms"] for row in rows
+                    if row["latency"].get("first_delta_ms") is not None]
+    terminals = [row["latency"]["terminal_ms"] for row in rows
+                 if row["latency"].get("terminal_ms") is not None]
     usable = [row for row in rows
               if not any(f["category"] in ("infrastructure", "public_contract")
                          for f in row["failures"])]
@@ -832,6 +896,12 @@ def aggregate(rows):
         "success_rate": len(usable) / len(rows) if rows else None,
         "p50_ms": ub.percentile(latencies, 50),
         "p95_ms": ub.percentile(latencies, 95),
+        "first_delta_p50_ms": ub.percentile(first_deltas, 50),
+        "first_delta_p95_ms": ub.percentile(first_deltas, 95),
+        "terminal_p50_ms": ub.percentile(terminals, 50),
+        "terminal_p95_ms": ub.percentile(terminals, 95),
+        "completed_terminals": sum(row.get("terminal_kind") == "complete"
+                                   for row in rows),
         "tasks": aggregates,
         "failure_counts": counts,
     }
@@ -1023,8 +1093,10 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
                   "finish_reason": None, "status": None, "error": None,
                   "endpoint": None, "events": 0, "error_body": "",
                   "total_ms": None, "first_delta_ms": None,
-                  "asr_final_ms": None, "stream_ms": None, "done": False,
-                  "asr_final_before_delta": None}
+                  "asr_final_ms": None, "stream_ms": None, "terminal_ms": None,
+                  "done": False, "asr_final_before_delta": None,
+                  "terminal_count": 0, "terminal_kind": None,
+                  "terminal_stage": None, "terminal_legs": None}
         metric = {"name": case["metric"], "value": None, "detail": {}}
         request = None
         if preflight:
@@ -1105,6 +1177,10 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
             "finish_reason": record.get("finish_reason"),
             "events": record.get("events"),
             "done": record.get("done"),
+            "terminal_count": record.get("terminal_count"),
+            "terminal_kind": record.get("terminal_kind"),
+            "terminal_stage": record.get("terminal_stage"),
+            "terminal_legs": record.get("terminal_legs"),
             "input_sha256": resolved.get(case_id, {}).get("input_sha256"),
             "request": request,
             "latency": {
@@ -1112,6 +1188,7 @@ def run_round(manifest, cases, resolved, args, round_dir, log, tokenizer,
                 "first_delta_ms": record.get("first_delta_ms"),
                 "asr_final_ms": record.get("asr_final_ms"),
                 "stream_ms": record.get("stream_ms"),
+                "terminal_ms": record.get("terminal_ms"),
             },
             "output_tokens": record.get("output_tokens"),
             "tokens_source": record.get("tokens_source"),
