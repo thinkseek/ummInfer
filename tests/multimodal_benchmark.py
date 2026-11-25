@@ -799,8 +799,10 @@ def _task_aggregate(task, rows):
                 for m in joint_metrics]
         errors = sum(e or 0 for _, e, _ in wers)
         words = sum(w or 0 for _, _, w in wers)
+        # JSON metrics may use integers for whole-valued rates. Keep numeric
+        # zeroes, but never turn a missing or Boolean value into a measurement.
         hits = [m["value"].get("keyword_hit") for m in joint_metrics
-                if isinstance(m["value"].get("keyword_hit"), float)]
+                if type(m["value"].get("keyword_hit")) in (int, float)]
         out["joint_asr_wer"] = errors / words if words else None
         out["joint_keyword_hit"] = statistics.fmean(hits) if hits else None
     return out

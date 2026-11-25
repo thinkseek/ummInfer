@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 """Offline contract test for tests/multimodal_benchmark.py.
 
-Starts a local mock server, runs the real harness against it with
-``--evidence-class contract-test`` on the real manifest and the real cached
-inputs, then checks the evidence layout and the scores. The mock replays the
-reference answer of each case, so a correct harness reports near-perfect
+Starts a local mock server and runs the real harness entry point against it
+with ``--evidence-class contract-test`` on the real manifest. Deterministic
+resolved inputs replace network caches and external audio decoders; the mock
+replays each reference answer, so a correct harness reports near-perfect
 metrics. The mock is a fixture: a contract-test run can never be a baseline.
 
 Usage: python3 -I tests/multimodal_benchmark_test.py
 """
 
 import collections
+import contextlib
 import hashlib
+import io
 import json
-import subprocess
 import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNNER = ROOT / "tests" / "multimodal_benchmark.py"
 MANIFEST = ROOT / "benchmarks" / "multimodal_manifest.json"
 sys.path.insert(0, str(ROOT / "benchmarks"))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -33,16 +34,58 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def build_index(manifest):
+def build_resolved_fixtures(manifest):
+    """Build the resolved-input contract without external data or decoders."""
+    resolved = {}
+    for case in manifest["cases"]:
+        case_id = case["id"]
+        marker = case_id.encode()
+        kind = case["input"]["type"]
+        if kind in ("librispeech_utterance", "fleurs_utterance"):
+            audio = b"MOCK-RESOLVED-WAV:" + marker
+            resolved[case_id] = {
+                "type": "audio", "audio": audio,
+                "input_sha256": _sha(audio), "source": "mock"}
+        elif kind == "dataset_row":
+            prompt = manifest["prompt_templates"]["gsm8k"].format(
+                question=case["question"])
+            resolved[case_id] = {
+                "type": "text", "prompt": prompt,
+                "input_sha256": _sha(prompt.encode()), "source": "mock"}
+        elif kind == "image_url":
+            image = b"\xff\xd8MOCK-RESOLVED-IMAGE:" + marker
+            prompt = manifest["prompt_templates"]["vqa"].format(
+                question=case["question"])
+            resolved[case_id] = {
+                "type": "image", "image": image, "prompt": prompt,
+                "input_sha256": {"image": _sha(image),
+                                 "prompt": _sha(prompt.encode())},
+                "source": "mock"}
+        elif kind == "speechcoco_row":
+            audio = b"MOCK-RESOLVED-WAV:" + marker
+            image = b"\xff\xd8MOCK-RESOLVED-IMAGE:" + marker
+            prompt = manifest["prompt_templates"]["joint"]
+            resolved[case_id] = {
+                "type": "audio_image", "audio": audio, "image": image,
+                "prompt": prompt,
+                "input_sha256": {"audio": _sha(audio), "image": _sha(image),
+                                 "sent_audio": _sha(audio),
+                                 "prompt": _sha(prompt.encode())},
+                "source": "mock"}
+    return resolved
+
+
+def build_index(manifest, resolved):
     by_wav, by_image, by_audio, by_question = {}, {}, {}, {}
     for case in manifest["cases"]:
         kind = case["input"]["type"]
+        item = resolved[case["id"]]
         if kind in ("librispeech_utterance", "fleurs_utterance"):
-            by_wav[case["input"]["wav_sha256"]] = case
+            by_wav[_sha(item["audio"])] = case
         elif kind == "image_url":
-            by_image[case["input"]["sha256"]] = case
+            by_image[_sha(item["image"])] = case
         elif kind == "speechcoco_row":
-            by_audio[case["input"]["audio_sha256"]] = case
+            by_audio[_sha(item["audio"])] = case
         elif kind == "dataset_row":
             by_question[case["question"]] = case
     return by_wav, by_image, by_audio, by_question
@@ -203,6 +246,30 @@ def unit_checks():
     if value is not None:
         failures.append("CER with an empty reference must be None")
 
+    def joint_row(metric):
+        return {"task": "joint", "language": "en", "metric": metric,
+                "latency": {"total_ms": None}, "tokens_per_s": None,
+                "failures": []}
+
+    def joint_metric(hit):
+        return {"name": "joint_asr_wer_keyword_hit",
+                "value": {"asr_wer": 0.0, "keyword_hit": hit},
+                "detail": {"errors": 0, "reference_words": 2}}
+
+    skipped = joint_row({"name": "joint_asr_wer_keyword_hit",
+                         "value": None, "detail": {}})
+    missing = mb.aggregate([skipped])["tasks"]["joint"]
+    for key in ("joint_asr_wer", "joint_keyword_hit"):
+        if missing[key] is not None:
+            failures.append(f"missing joint metric became {missing[key]!r}")
+    zero = mb.aggregate([joint_row(joint_metric(0))])["tasks"]["joint"]
+    if zero["joint_keyword_hit"] != 0.0:
+        failures.append("numeric zero joint keyword hit was not preserved")
+    mixed = mb.aggregate([joint_row(joint_metric(0)),
+                          joint_row(joint_metric(1)), skipped])["tasks"]["joint"]
+    if mixed["joint_keyword_hit"] != 0.5:
+        failures.append("integer joint keyword hits were not aggregated")
+
     # Mandarin WER counts jieba words, never characters. Skipped, not failed,
     # on a host without jieba: the CER metric above needs no segmenter.
     try:
@@ -232,22 +299,35 @@ def unit_checks():
 def main():
     manifest = json.loads(MANIFEST.read_text())
     failures = unit_checks()
-    MockHandler.index = build_index(manifest)
+    resolved = build_resolved_fixtures(manifest)
+
+    def resolve_fixture(_manifest, case, _cache_dir, archives=None):
+        return resolved[case["id"]]
+
+    MockHandler.index = build_index(manifest, resolved)
     server = ThreadingHTTPServer(("127.0.0.1", 0), MockHandler)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with tempfile.TemporaryDirectory(prefix="umm-mm-contract-") as tmp:
-        cmd = [sys.executable, "-I", str(RUNNER),
-               "--base-url", f"http://127.0.0.1:{port}",
-               "--model", "mock-unified", "--evidence-dir", tmp,
-               "--evidence-class", "contract-test"]
-        completed = subprocess.run(cmd, capture_output=True, text=True)
+        argv = ["--base-url", f"http://127.0.0.1:{port}",
+                "--cache-dir", str(Path(tmp) / "cache"),
+                "--model", "mock-unified", "--evidence-dir", tmp,
+                "--evidence-class", "contract-test"]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(mb.md, "resolve_case", resolve_fixture), \
+                mock.patch.object(mb.md, "ensure_librispeech",
+                                  return_value=Path("mock-librispeech")), \
+                mock.patch.object(mb.md, "ensure_fleurs_zh",
+                                  return_value=Path("mock-fleurs")), \
+                contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            returncode = mb.main(argv)
         # A contract-test run is deliberately not real evidence: the runner
         # reports NOT_REAL_EVIDENCE and exits 1 by design.
-        if completed.returncode not in (0, 1):
-            print(completed.stdout[-4000:])
-            print(completed.stderr[-4000:])
-            failures.append(f"runner exited {completed.returncode}")
+        if returncode not in (0, 1):
+            print(stdout.getvalue()[-4000:])
+            print(stderr.getvalue()[-4000:])
+            failures.append(f"runner exited {returncode}")
         round_dir = Path(tmp) / "round-1"
         summary = json.loads((Path(tmp) / "summary.json").read_text()) \
             if (Path(tmp) / "summary.json").exists() else {}
@@ -289,7 +369,12 @@ def main():
                     failures.append(f"{task}: {key}={value}, expected {want}")
             if tasks.get("vqa", {}).get("vqa_accuracy", 0) < 0.9:
                 failures.append("vqa: replay of the modal answer scored < 0.9")
-            if tasks.get("joint", {}).get("joint_keyword_hit", 0) < 1.0:
+            joint_hit = tasks.get("joint", {}).get("joint_keyword_hit")
+            if joint_hit is None:
+                failures.append("joint: no numeric keyword_hit")
+            elif type(joint_hit) not in (int, float):
+                failures.append(f"joint: non-numeric keyword_hit={joint_hit!r}")
+            elif joint_hit < 1.0:
                 failures.append("joint: keyword_hit < 1.0")
             print(json.dumps({task: {k: v for k, v in values.items()
                                      if k in ("cases", "successes", "wer",
