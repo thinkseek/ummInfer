@@ -71,11 +71,18 @@ without them is byte-identical to the current text path.
   - `enabled`: optional boolean, default `false`.
   - `visual_mode`: optional `"auto"` (default), `"image"`, or `"video"`.
   - `max_slots`: optional integer in `[1, 6]`, default `3`.
+  - `continuity_mode`: optional `"off"` (default), `"prompt_anchor"`, or
+    `"i2v_chain"`. `"prompt_anchor"` carries opening-visual/style text into
+    later prompts. `"i2v_chain"` additionally binds an earlier image slot to a
+    later video slot for native I2V.
+  - `style_anchor`: optional string, trimmed and limited to 256 UTF-8 bytes. If
+    present without `continuity_mode`, it selects `"prompt_anchor"`.
   - When enabled, HTTP `stream` must be `true`, and `modalities` must contain
     `image` or `video`. `visual_mode="image"` requires `image` in `modalities`;
     `visual_mode="video"` requires `video` in `modalities`.
   - A non-object `narrative`, an incorrectly typed field, an unknown
-    `visual_mode`, or an out-of-range `max_slots` returns HTTP 400.
+    `visual_mode`/`continuity_mode`, an oversized `style_anchor`, or an
+    out-of-range `max_slots` returns HTTP 400.
   - An absent `narrative` or `enabled=false` preserves the non-narrative request
     and event behavior.
 - Non-narrative requests with `image`, `audio` or `video` output work with
@@ -123,6 +130,21 @@ The VLM writes coherent prose in the user's language and may insert up to
 [[video: vivid concrete motion/camera scene description in English]]
 ```
 
+With `continuity_mode="i2v_chain"`, a video directive may explicitly select an
+ earlier image slot by its existing public slot id:
+
+```text
+[[video: the lantern sways as the camera slowly orbits | source=slot-0]]
+```
+
+The suffix is reserved only after `| source`; other `|` text remains prompt
+text. The parser removes the suffix from the render prompt and from clean
+prose/TTS. Duplicate, malformed, missing, self/forward, cross-session,
+wrong-modality, and wrong-target references do not silently become T2V. An
+explicit reference also rejects a conflicting request-level `video.image` and
+requires `continuity_mode="i2v_chain"`; there is no implicit "previous image"
+interpretation of `source=`.
+
 The streaming parser recognizes `image`, `video`, and `visual` tags
 case-insensitively across arbitrary split UTF-8 chunks. It strips every
 directive from `vlm_delta`, aggregated VLM text, session history, and streaming
@@ -140,6 +162,22 @@ Each accepted directive dispatches its visual stage immediately when the
 closing `]]` arrives. Visual generation does not wait for VLM completion. A
 narrative visual leg uses its directive prompt rather than the full aggregated
 answer.
+
+Without an explicit suffix, `i2v_chain` preserves its original latest-image
+selection and graceful T2V fallback when the anchor fails. With `source=slot-N`,
+the named slot must be an earlier image in the same unified request. The video
+leg stays `pending` and contributes to the terminal join until that exact image
+reaches `completed`; a failed/aborted source fails/aborts the dependent instead
+of dispatching T2V. Before dispatch, the engine recomputes SHA-256 over the
+immutable settled image bytes and verifies the request-local content-addressed
+binding. The worker receives those exact bytes (binary `inputs.image`), the
+existing prompt/size/seed/frame/step/guidance settings, and out-of-band
+`anchor_slot_index`, `anchor_sha256`, `anchor_explicit=true`, and
+`anchor_crop="center_cover"`. The Python Diffusers video stage independently
+recomputes the digest and decodes those bytes as the I2V `image`; the external
+`/v1/videos` backend rejects I2V explicitly rather than returning unconditioned
+T2V with anchor metadata. No media bytes appear in directive text,
+`visual_slot`, terminal legs, or trajectory JSONL.
 
 ## Child ids, stages and unified leg lifecycle
 
@@ -203,6 +241,16 @@ may continue:
 use `slot_id` and `slot_index` to associate later results; they never need to
 parse visual directives from prose.
 
+Continuity is additive and omitted by default. A chained `visual_slot` carries
+`continuity_mode: "i2v_chain"` and the zero-based `anchor_slot_index`. An
+explicit `source=slot-N` directive additionally carries `anchor_explicit: true`.
+It never carries `anchor_sha256`: the source may still be rendering, so including
+a digest here would make immediate and delayed completion produce different
+metadata. The resolved video artifact and matching terminal leg carry
+`anchor_slot_index`, `anchor_explicit`, and the verified `anchor_sha256`. Failed
+explicit legs may carry the index without a digest. Mainline implicit fallback
+artifacts may have an anchor index without a digest.
+
 `artifact` event (unified envelope plus `artifact` object):
 
 ```json
@@ -235,6 +283,17 @@ parse visual directives from prose.
   "state":"completed"|"failed"|"aborted", "error"?: "..."}`. The `tts` leg is
   included when enabled. Slot leg identity is `slot_id`; `slot_index` is carried
   by `visual_slot`, `artifact`, and `leg_error`.
+
+Trajectory schema v2 projects `continuity_mode`, `anchor_slot_index`, and
+`anchor_explicit` only when present, keeps the resolved `anchor_sha256` on
+artifact/terminal metadata, and stores media only in the existing CAS. Validation
+accepts unresolved failed/cancelled references and the mainline implicit T2V
+fallback, but every resolved link must select an earlier image whose completed
+CAS artifact has exactly the recorded digest. Validators also accept the exact
+legacy v2 slot/leg-error projections when raw events already carry continuity
+fields. Re-recording the same stream is byte-deterministic; SFT reconstruction
+restores `| source=slot-N` only for a resolved explicit I2V slot and skips a
+failed empty malformed marker without triggering fallback.
 
 ### Partial failure
 

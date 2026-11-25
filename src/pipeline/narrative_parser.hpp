@@ -25,8 +25,16 @@ struct NarrativeDirective {
   // Lowercased tag as written: "image", "video" or "visual". The caller
   // resolves "visual" against its visual mode; the parser stays pure.
   std::string kind;
-  // Trimmed directive body. Never empty: an empty body is dropped.
+  // Trimmed directive body with an optional reference suffix removed. Never
+  // empty for an ordinary directive; an empty body without a reference is
+  // dropped. The explicit suffix is `| source=slot-N` on a video directive.
   std::string prompt;
+  // Same-request image slot named by the explicit reference suffix. Empty when
+  // the directive has no valid reference.
+  std::string source_slot;
+  // Non-empty when a source-like suffix is malformed or duplicated. The engine
+  // reports a failed slot instead of silently rendering unconditioned video.
+  std::string reference_error;
   // Byte offset of the marker in the clean prose stream emitted so far.
   size_t prose_offset = 0;
 };

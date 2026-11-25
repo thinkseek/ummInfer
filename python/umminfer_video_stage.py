@@ -10,9 +10,12 @@ C++ control plane.
 """
 
 import argparse
+import base64
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import hashlib
+import io
 import json
 import math
 import os
@@ -69,7 +72,7 @@ class VideoRequest:
     seed: int | None
     negative_prompt: str
     output_format: str
-
+    init_image_bytes: bytes | None = None
 
 @dataclass(frozen=True)
 class VideoGenerationResult:
@@ -329,6 +332,10 @@ class DiffusersVideoBackend:
             "callback_on_step_end": on_step_end,
             "output_type": "np",
         }
+        if req.init_image_bytes is not None:
+            from PIL import Image
+            with Image.open(io.BytesIO(req.init_image_bytes)) as source_image:
+                kwargs["image"] = source_image.convert("RGB")
         if req.negative_prompt:
             kwargs["negative_prompt"] = req.negative_prompt
         if generator is not None:
@@ -408,6 +415,8 @@ class UpstreamVideoBackend:
             pass
 
     def generate(self, req: VideoRequest, abort_flag: threading.Event) -> VideoGenerationResult:
+        if req.init_image_bytes is not None:
+            raise ValueError("upstream video backend does not support I2V init images")
         if abort_flag.is_set():
             raise RequestAborted("aborted before upstream submission")
         started = time.perf_counter()
@@ -693,6 +702,33 @@ class VideoStage:
         if not isinstance(negative_prompt, str):
             raise ValueError("video.negative_prompt must be a string")
 
+        image_input = inputs.get("image")
+        init_image_bytes = None
+        if image_input is not None:
+            if isinstance(image_input, bytes):
+                init_image_bytes = image_input
+            elif isinstance(image_input, str):
+                if not image_input.startswith("data:image/") or "," not in image_input:
+                    raise ValueError("video.image must be binary bytes or an image data URL")
+                header, encoded = image_input.split(",", 1)
+                if ";base64" not in header:
+                    raise ValueError("video.image data URL must use base64")
+                try:
+                    init_image_bytes = base64.b64decode(encoded, validate=True)
+                except (ValueError, base64.binascii.Error) as exc:
+                    raise ValueError("video.image has invalid base64") from exc
+            else:
+                raise ValueError("video.image must be binary bytes or an image data URL")
+            if not init_image_bytes or len(init_image_bytes) > 16 * 1024 * 1024:
+                raise ValueError("video.image must be non-empty and at most 16 MiB")
+        if inputs.get("anchor_explicit", False) and init_image_bytes is None:
+            raise ValueError("explicit I2V anchor requires video.image bytes")
+        anchor_sha256 = inputs.get("anchor_sha256")
+        if anchor_sha256 is not None:
+            if init_image_bytes is None or not isinstance(anchor_sha256, str) \
+                    or hashlib.sha256(init_image_bytes).hexdigest() != anchor_sha256:
+                raise ValueError("video.image does not match anchor_sha256")
+
         return VideoRequest(
             prompt=prompt.strip(),
             width=width,
@@ -705,6 +741,7 @@ class VideoStage:
             seed=seed,
             negative_prompt=negative_prompt,
             output_format=output_format,
+            init_image_bytes=init_image_bytes,
         )
 
     def complete_artifact(self, request_id, res: VideoGenerationResult):

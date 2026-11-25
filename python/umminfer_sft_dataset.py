@@ -94,15 +94,19 @@ def _fields(event, names):
     return {name: event[name] for name in names if name in event}
 
 
-def _slot_records(events):
-    names = ("seq", "server_seq", "stage", "slot_id", "slot_index",
-             "media_type", "prompt", "text_offset")
+def _slot_records(events, *, legacy=False):
+    names = ["seq", "server_seq", "stage", "slot_id", "slot_index",
+             "media_type", "prompt", "text_offset"]
+    if not legacy:
+        names.extend(("continuity_mode", "anchor_slot_index", "anchor_explicit"))
     return [_fields(event, names) for event in events
             if event.get("type") == "visual_slot"]
 
 
-def _leg_error_records(events):
-    names = ("seq", "server_seq", "stage", "error", "slot_id", "slot_index")
+def _leg_error_records(events, *, legacy=False):
+    names = ["seq", "server_seq", "stage", "error", "slot_id", "slot_index"]
+    if not legacy:
+        names.extend(("anchor_slot_index", "anchor_explicit", "anchor_sha256"))
     return [_fields(event, names) for event in events
             if event.get("type") == "leg_error"]
 
@@ -264,7 +268,8 @@ def _validate_terminal(record):
 def _validate_slots(record):
     events = record["events"]
     slots = record.get("visual_slots")
-    if slots != _slot_records(events):
+    if slots != _slot_records(events) \
+            and slots != _slot_records(events, legacy=True):
         raise _IntegrityError(
             "integrity_error", "visual_slots differs from visual_slot events")
     by_id = {}
@@ -280,9 +285,9 @@ def _validate_slots(record):
             raise _IntegrityError(
                 "integrity_error",
                 f"visual slot stage/media mismatch for {slot_id}")
-        if not isinstance(slot.get("prompt"), str) or not slot["prompt"].strip():
+        if not isinstance(slot.get("prompt"), str):
             raise _IntegrityError(
-                "integrity_error", f"visual slot prompt is empty for {slot_id}")
+                "integrity_error", f"visual slot prompt is not text for {slot_id}")
         if not _integer(slot.get("text_offset")) or slot["text_offset"] < 0:
             raise _IntegrityError(
                 "integrity_error",
@@ -294,7 +299,13 @@ def _validate_slots(record):
             raise _IntegrityError(
                 "integrity_error",
                 f"visual slot lacks one matching terminal leg: {slot_id}")
-    if record.get("leg_errors") != _leg_error_records(events):
+        if not slot["prompt"].strip() and not (
+                slot.get("anchor_explicit", False)
+                and matches[0]["state"] in ("failed", "aborted")):
+            raise _IntegrityError(
+                "integrity_error", f"visual slot prompt is empty for {slot_id}")
+    if record.get("leg_errors") != _leg_error_records(events) \
+            and record.get("leg_errors") != _leg_error_records(events, legacy=True):
         raise _IntegrityError(
             "integrity_error", "leg_errors differs from leg_error events")
     return by_id
@@ -442,6 +453,100 @@ def _validate_artifacts(record, artifact_root, slots, *, check_disk):
     return checked_outputs
 
 
+def _validate_linkages(record, slots):
+    outputs_by_slot = {}
+    for output in record["artifacts"]:
+        slot_id = output.get("slot_id")
+        if slot_id is not None:
+            outputs_by_slot.setdefault(slot_id, []).append(output)
+    legs = {leg.get("slot_id"): leg for leg in record["terminal_legs"]
+            if leg.get("slot_id") is not None}
+    by_index = {slot["slot_index"]: slot for slot in slots.values()}
+    for slot_id, slot in slots.items():
+        leg = legs[slot_id]
+        outputs = outputs_by_slot.get(slot_id, [])
+        anchor = slot.get("anchor_slot_index")
+        explicit = slot.get("anchor_explicit", False)
+        if not isinstance(explicit, bool):
+            raise _IntegrityError(
+                "integrity_error", f"anchor_explicit is not boolean: {slot_id}")
+        if slot.get("continuity_mode") not in (None, "prompt_anchor", "i2v_chain"):
+            raise _IntegrityError(
+                "integrity_error", f"invalid continuity_mode: {slot_id}")
+        if anchor is None:
+            if explicit:
+                if leg["state"] == "completed" or outputs \
+                        or "anchor_slot_index" in leg or "anchor_sha256" in leg:
+                    raise _IntegrityError(
+                        "integrity_error", f"unresolved explicit has output: {slot_id}")
+                continue
+            if "anchor_slot_index" in leg or "anchor_sha256" in leg \
+                    or any("anchor_slot_index" in output
+                           or "anchor_sha256" in output for output in outputs):
+                raise _IntegrityError(
+                    "integrity_error", f"unanchored slot has metadata: {slot_id}")
+            continue
+        if not _integer(anchor) or anchor < 0 \
+                or slot.get("continuity_mode") != "i2v_chain":
+            raise _IntegrityError(
+                "integrity_error", f"invalid visual anchor: {slot_id}")
+        if explicit or "anchor_slot_index" in leg or "anchor_sha256" in leg:
+            if leg.get("anchor_slot_index") != anchor \
+                    or leg.get("anchor_explicit", False) != explicit:
+                raise _IntegrityError(
+                    "integrity_error", f"visual/terminal anchor mismatch: {slot_id}")
+        digest = leg.get("anchor_sha256")
+        if digest is not None and not _sha256(digest):
+            raise _IntegrityError(
+                "integrity_error", f"invalid anchor SHA-256: {slot_id}")
+        if explicit and leg["state"] == "completed" and not digest:
+            raise _IntegrityError(
+                "integrity_error", f"completed explicit I2V lacks digest: {slot_id}")
+        if explicit and leg["state"] == "completed" and not outputs:
+            raise _IntegrityError(
+                "integrity_error", f"completed explicit I2V has no artifact: {slot_id}")
+        for output in outputs:
+            if output.get("media_type") != "video":
+                raise _IntegrityError(
+                    "integrity_error", f"invalid anchored modality: {slot_id}")
+            if explicit or "anchor_slot_index" in output \
+                    or "anchor_sha256" in output:
+                if output.get("anchor_slot_index") != anchor \
+                        or output.get("anchor_explicit", False) != explicit:
+                    raise _IntegrityError(
+                        "integrity_error", f"invalid anchored artifact: {slot_id}")
+            output_digest = output.get("anchor_sha256")
+            if output_digest is not None and not _sha256(output_digest):
+                raise _IntegrityError(
+                    "integrity_error", f"invalid artifact anchor digest: {slot_id}")
+            if explicit and output_digest is None:
+                raise _IntegrityError(
+                    "integrity_error", f"explicit I2V artifact lacks digest: {slot_id}")
+            if digest is not None and output_digest != digest:
+                raise _IntegrityError(
+                    "integrity_error", f"artifact/terminal anchor mismatch: {slot_id}")
+        if digest is None and not any("anchor_sha256" in output
+                                      for output in outputs):
+            if explicit and leg["state"] == "completed":
+                raise _IntegrityError(
+                    "integrity_error", f"completed explicit I2V has no artifact: {slot_id}")
+            continue
+        resolved = digest if digest is not None else outputs[0]["anchor_sha256"]
+        source = by_index.get(anchor)
+        if source is None or anchor >= slot["slot_index"] \
+                or source["media_type"] != "image" \
+                or slot["media_type"] != "video":
+            raise _IntegrityError(
+                "integrity_error", f"anchor is not an earlier image: {slot_id}")
+        source_outputs = [item for item in outputs_by_slot.get(
+                              source["slot_id"], [])
+                          if item.get("media_type") == "image"]
+        if len(source_outputs) != 1 \
+                or source_outputs[0].get("sha256") != resolved:
+            raise _IntegrityError(
+                "integrity_error", f"anchor CAS artifact mismatch: {slot_id}")
+
+
 def verify_record_integrity(record, *, artifact_dir=None,
                             require_artifact_dir=False):
     """Verify one schema-v1 or schema-v2 trajectory record read-only.
@@ -523,6 +628,7 @@ def verify_record_integrity(record, *, artifact_dir=None,
         slots = _validate_slots(record)
         stats["checked_output_media_refs"] = _validate_artifacts(
             record, artifact_root, slots, check_disk=check_disk)
+        _validate_linkages(record, slots)
         return True, None, None, stats
     except _IntegrityError as exc:
         return False, exc.category, str(exc), stats
@@ -591,6 +697,9 @@ def reconstruct_director_target(record, *, verified_on_disk=False):
         if item.get("slot_id") is not None:
             ref_entry["slot_id"] = item["slot_id"]
             ref_entry["slot_index"] = item.get("slot_index")
+            for key in ("anchor_slot_index", "anchor_explicit", "anchor_sha256"):
+                if key in item:
+                    ref_entry[key] = item[key]
             artifact_by_slot[item["slot_id"]] = ref_entry
         output_media_refs.append(ref_entry)
 
@@ -613,9 +722,19 @@ def reconstruct_director_target(record, *, verified_on_disk=False):
             pieces.append(clean_bytes[cursor:offset].decode("utf-8"))
             cursor = offset
         prompt = _canonical_slot_prompt(slot["prompt"])
-        marker = format_beat_marker(slot["media_type"], prompt)
-        pieces.append(marker)
+        leg_state = leg_state_by_slot.get(slot["slot_id"])
+        marker = ""
+        if prompt or leg_state == "completed":
+            marker = format_beat_marker(slot["media_type"], prompt)
         bound = artifact_by_slot.get(slot["slot_id"])
+        if bound is not None and bound.get("anchor_explicit", False):
+            if slot["media_type"] != "video" \
+                    or bound.get("anchor_slot_index") != slot.get("anchor_slot_index") \
+                    or not _sha256(bound.get("anchor_sha256")):
+                raise ValueError(f"invalid explicit anchor marker for {slot['slot_id']}")
+            marker = marker[:-2] + (
+                f" | source=slot-{bound['anchor_slot_index']}]]")
+        pieces.append(marker)
         annotated_slots.append({
             "slot_id": slot["slot_id"],
             "slot_index": slot["slot_index"],
@@ -628,6 +747,11 @@ def reconstruct_director_target(record, *, verified_on_disk=False):
             "artifact_ref": bound["ref"] if bound else None,
             "artifact_sha256": bound["sha256"] if bound else None,
         })
+        for key in ("continuity_mode", "anchor_slot_index", "anchor_explicit"):
+            if key in slot:
+                annotated_slots[-1][key] = slot[key]
+        if bound is not None and "anchor_sha256" in bound:
+            annotated_slots[-1]["anchor_sha256"] = bound["anchor_sha256"]
     if cursor < len(clean_bytes):
         pieces.append(clean_bytes[cursor:].decode("utf-8"))
 

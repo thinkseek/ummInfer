@@ -115,6 +115,45 @@ temporal-2 patch packing、按历史公式生成 4 个时间片时间戳，随�
 
 ---
 
+### 2.2 显式叙事图像槽位 → I2V 引用与内容寻址绑定
+
+Wave 21 的 `narrative.continuity_mode="i2v_chain"` 仍负责统一跨槽位调度，默认
+`off` 的请求、自动标签路由、SSE 与隐式 latest-image/T2V fallback 均保持原行为。
+本扩展只增加模型可选的显式指令后缀：
+
+```text
+[[video: <motion/camera prompt> | source=slot-N]]
+```
+
+`NarrativeStreamParser` 仅保留 `| source` 后缀语法；普通 `|` 提示词不变。解析器从
+render prompt、clean prose、会话历史与流式 TTS 中移除整个指令及引用后缀。
+`UnifiedEngine::dispatch_narrative_slot_locked` 将显式 `slot-N` 映射到同一请求的
+`anchor_slot_index`，并设置 `anchor_explicit=true`；不会创建第二套 continuity
+mode、跨请求图片注册表或隐式“上一张图”引用。
+
+显式引用只允许 `i2v_chain` 中指向当前请求更早的 image slot。视频 leg 在源图
+pending/running 时保持 pending 并计入 `legs_remaining`，源图 completed 后才沿既有
+`release_chained_slots_locked` 派发。完成处理在源 `OutputLeg` 中保存不可变字节、
+MIME、data URL 与 SHA-256；真正提交前 `bind_chained_anchor_locked` 重算 SHA-256
+并核对内容寻址绑定，再以二进制 `inputs.image` 绑定同一份字节。请求原有
+size/seed/num_frames/steps/guidance 等设置原样保留，`anchor_crop="center_cover"`
+记录 Wan2.2 的保比例中心裁切策略。
+
+缺失、重复、 malformed、forward/self、cross-session、wrong-modality、冲突
+`video.image`、失败或取消的显式引用均不产生 T2V fallback 或陈旧字节；依赖 leg
+以 slot-attributed `leg_error` 失败/中止，取消仍沿既有 Coordinator abort 传播。
+隐式 mainline 链的 latest-image 选择与失败回退 T2V 行为有意不变。
+
+`visual_slot` 只携带 `continuity_mode`、`anchor_slot_index` 与可选
+`anchor_explicit`，不携带时序相关的哈希；解析后的视频 artifact 和 terminal leg
+才携带 `anchor_sha256`。轨迹 v2 仅在字段存在时投影这些元数据，媒体仍只落 CAS；
+已解析链接强制核对更早图像槽位的 CAS SHA-256，失败/取消的未解析引用可作为负例
+回放。`tests/narrative_slot_reference_live.py` 是后续 SM90
+text→image→I2V 首帧连续性/运动门禁；本任务 CPU-only，真实生成与感知质量均
+`NOT_RUN`。
+
+---
+
 ## 3. 本机轻量构建与测试验证矩阵
 
 > 环境：macOS 25.3.0 (ARM64), Zig 0.16.0, AppleClang 21.0.0, CMake, Swift, Python 3.13.7（系统 Python 无 `msgpack`/`pyzmq`/`mlx`/`websockets` 第三方包），无 NVIDIA CUDA GPU。

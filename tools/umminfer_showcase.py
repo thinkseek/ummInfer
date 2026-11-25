@@ -455,6 +455,16 @@ def validate_narrative_stream(
                 is_int(event["anchor_slot_index"]) and event["anchor_slot_index"] >= 0,
                 f"visual_slot anchor_slot_index must be a non-negative integer: {event}",
             )
+        explicit = event.get("anchor_explicit", False)
+        require(isinstance(explicit, bool), f"anchor_explicit must be boolean: {event}")
+        if explicit:
+            require(
+                event.get("continuity_mode") == "i2v_chain"
+                and event.get("media_type") == "video"
+                and is_int(event.get("anchor_slot_index"))
+                and 0 <= event["anchor_slot_index"] < expected_index,
+                f"explicit anchor must select an earlier image in i2v_chain: {event}",
+            )
 
     vlm_finish_s = deltas[-1]["time"]
     mid_stream_slots = sum(1 for item in slots if item["time"] < vlm_finish_s)
@@ -536,6 +546,29 @@ def validate_narrative_stream(
         by_slot[slot_id] = item
     require(len(by_slot) == len(slots), "not every visual_slot produced an artifact")
 
+    for slot in slots:
+        slot_ev = slot["event"]
+        desc = by_slot[slot_ev["slot_id"]]["descriptor"]
+        anchor = slot_ev.get("anchor_slot_index")
+        explicit = slot_ev.get("anchor_explicit", False)
+        if anchor is None:
+            require("anchor_slot_index" not in desc and "anchor_sha256" not in desc,
+                    f"unanchored artifact carries anchor metadata: {slot_ev}")
+            continue
+        if explicit or "anchor_slot_index" in desc or "anchor_sha256" in desc:
+            require(desc.get("anchor_slot_index") == anchor
+                    and desc.get("anchor_explicit", False) == explicit,
+                    f"visual/artifact anchor mismatch: {slot_ev}")
+        digest = desc.get("anchor_sha256")
+        if explicit or digest is not None:
+            source_id = f"slot-{anchor}"
+            require(source_id in by_slot
+                    and by_slot[source_id]["descriptor"]["media_type"] == "image",
+                    f"resolved anchor is not an earlier image: {slot_ev}")
+            require(isinstance(digest, str) and len(digest) == 64
+                    and digest == by_slot[source_id]["descriptor"]["sha256"],
+                    f"anchor SHA-256 does not match source CAS artifact: {slot_ev}")
+
     legs = terminals[0]["event"].get("legs")
     require(isinstance(legs, list), "complete event lacks legs[]")
     for slot in slots:
@@ -547,6 +580,16 @@ def validate_narrative_stream(
             and matching[0].get("state") == "completed",
             f"terminal leg incomplete for {slot_ev['slot_id']}: {legs}",
         )
+        if "anchor_slot_index" in slot_ev:
+            desc = by_slot[slot_ev["slot_id"]]["descriptor"]
+            leg = matching[0]
+            if slot_ev.get("anchor_explicit", False) \
+                    or "anchor_slot_index" in leg or "anchor_sha256" in leg:
+                require(leg.get("anchor_slot_index") == slot_ev["anchor_slot_index"]
+                        and leg.get("anchor_explicit", False)
+                            == slot_ev.get("anchor_explicit", False)
+                        and leg.get("anchor_sha256") == desc.get("anchor_sha256"),
+                        f"terminal anchor metadata mismatch for {slot_ev['slot_id']}")
     if require_audio:
         require(
             any(leg.get("stage") == "tts" and leg.get("state") == "completed" for leg in legs),
@@ -578,6 +621,10 @@ def validate_narrative_stream(
             "bytes": len(item["bytes"]),
             "sha256": item["descriptor"]["sha256"],
         })
+        if slot_ev.get("anchor_explicit", False):
+            slot_reports[-1]["anchor_explicit"] = True
+        if "anchor_sha256" in item["descriptor"]:
+            slot_reports[-1]["anchor_sha256"] = item["descriptor"]["anchor_sha256"]
 
     metrics = {
         "event_count": len(observations),

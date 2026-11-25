@@ -153,6 +153,151 @@ class TrajectoryV2Tests(unittest.TestCase):
             self.assertIsInstance(first["request_params"]["audio"]["ref_audio"], dict)
             worker.validate_trajectory(first_recorder.jsonl_path)
 
+    def test_linked_slots_replay_byte_deterministically(self):
+        for delayed in (False, True):
+            with self.subTest(delayed=delayed), tempfile.TemporaryDirectory(
+                    prefix="umm-rl-v2-linked-") as tmp:
+                first_recorder, first = record_response(
+                    Path(tmp) / "first", fixture.linked_events(delayed=delayed))
+                second_recorder, second = record_response(
+                    Path(tmp) / "second", fixture.linked_events(delayed=delayed))
+                self.assertEqual(first_recorder.jsonl_path.read_bytes(),
+                                 second_recorder.jsonl_path.read_bytes())
+                linked = first["visual_slots"][1]
+                self.assertEqual(linked["continuity_mode"], "i2v_chain")
+                self.assertEqual(linked["anchor_slot_index"], 0)
+                self.assertTrue(linked["anchor_explicit"])
+                self.assertNotIn("anchor_sha256", linked)
+                anchor_sha = hashlib.sha256(fixture.PNG).hexdigest()
+                self.assertEqual(first["terminal_legs"][1]["anchor_sha256"], anchor_sha)
+                video = next(item for item in first["artifacts"]
+                             if item["media_type"] == "video")
+                image = next(item for item in first["artifacts"]
+                             if item["media_type"] == "image")
+                self.assertEqual(video["anchor_sha256"], image["sha256"])
+                self.assertEqual(video["anchor_slot_index"], 0)
+                self.assertNotIn("source=", first["clean_text"])
+                self.assertNotIn('"data":', first_recorder.jsonl_path.read_text())
+                self.assertEqual(
+                    sorted(path.name for path in first_recorder.artifact_dir.iterdir()),
+                    sorted(path.name for path in second_recorder.artifact_dir.iterdir()))
+                worker.validate_trajectory(first_recorder.jsonl_path)
+
+    def test_worker_rejects_resolved_linkage_tampering(self):
+        with tempfile.TemporaryDirectory(prefix="umm-rl-v2-link-tamper-") as tmp:
+            recorder, valid = record_response(tmp, fixture.linked_events())
+
+            def mutate(record, *, anchor=None, digest=None):
+                for event in record["events"]:
+                    if event.get("type") == "visual_slot" \
+                            and event.get("slot_id") == "slot-1" \
+                            and anchor is not None:
+                        event["anchor_slot_index"] = anchor
+                    if event.get("type") == "artifact" \
+                            and event.get("stage") == "video":
+                        if anchor is not None:
+                            event["artifact"]["anchor_slot_index"] = anchor
+                        if digest is not None:
+                            event["artifact"]["anchor_sha256"] = digest
+                    if event.get("type") == "complete":
+                        for leg in event["legs"]:
+                            if leg.get("slot_id") == "slot-1":
+                                if anchor is not None:
+                                    leg["anchor_slot_index"] = anchor
+                                if digest is not None:
+                                    leg["anchor_sha256"] = digest
+                if anchor is not None:
+                    record["visual_slots"][1]["anchor_slot_index"] = anchor
+                for leg in record["terminal_legs"]:
+                    if leg.get("slot_id") == "slot-1":
+                        if anchor is not None:
+                            leg["anchor_slot_index"] = anchor
+                        if digest is not None:
+                            leg["anchor_sha256"] = digest
+                for output in record["artifacts"]:
+                    if output["media_type"] == "video":
+                        if anchor is not None:
+                            output["anchor_slot_index"] = anchor
+                        if digest is not None:
+                            output["anchor_sha256"] = digest
+
+            for name, kwargs in (
+                    ("missing", {"anchor": 9}),
+                    ("self/forward", {"anchor": 1}),
+                    ("digest", {"digest": "0" * 64})):
+                with self.subTest(name=name):
+                    bad = copy.deepcopy(valid)
+                    mutate(bad, **kwargs)
+                    recorder.jsonl_path.write_text(
+                        json.dumps(bad, sort_keys=True) + "\n")
+                    with self.assertRaisesRegex(ValueError, "anchor|CAS"):
+                        worker.validate_trajectory(recorder.jsonl_path)
+
+    def test_linkage_validation_requires_artifact_and_allows_unresolved_history(self):
+        with tempfile.TemporaryDirectory(prefix="umm-rl-v2-link-compat-") as tmp:
+            recorder, valid = record_response(tmp, fixture.linked_events())
+
+            def remove_video(record):
+                record["events"] = [event for event in record["events"]
+                                    if not (event.get("type") == "artifact"
+                                            and event.get("stage") == "video")]
+                for seq, event in enumerate(record["events"]):
+                    event["seq"] = seq
+                    if event.get("server_seq") is not None:
+                        event["server_seq"] = seq
+                record["terminal_event_seq"] = len(record["events"]) - 1
+                record["artifacts"] = [item for item in record["artifacts"]
+                                       if item["media_type"] != "video"]
+
+            missing = copy.deepcopy(valid)
+            remove_video(missing)
+            recorder.jsonl_path.write_text(json.dumps(missing) + "\n")
+            with self.assertRaisesRegex(ValueError, "no artifact"):
+                worker.validate_trajectory(recorder.jsonl_path)
+
+            unresolved = copy.deepcopy(valid)
+            remove_video(unresolved)
+            unresolved["visual_slots"][1].pop("anchor_slot_index")
+            unresolved["visual_slots"][1]["prompt"] = ""
+            for event in unresolved["events"]:
+                if event.get("type") == "visual_slot" \
+                        and event.get("slot_id") == "slot-1":
+                    event.pop("anchor_slot_index")
+                    event["prompt"] = ""
+            for leg in unresolved["terminal_legs"]:
+                if leg.get("slot_id") == "slot-1":
+                    leg["state"] = "failed"
+                    leg.pop("anchor_slot_index")
+                    leg.pop("anchor_sha256")
+            unresolved["events"][-1]["legs"] = copy.deepcopy(
+                unresolved["terminal_legs"])
+            recorder.jsonl_path.write_text(json.dumps(unresolved) + "\n")
+            worker.validate_trajectory(recorder.jsonl_path)
+
+            legacy = copy.deepcopy(valid)
+            for slot in legacy["visual_slots"]:
+                for key in ("continuity_mode", "anchor_slot_index", "anchor_explicit"):
+                    slot.pop(key, None)
+            for event in legacy["events"]:
+                if event.get("type") == "visual_slot" \
+                        and event.get("slot_id") == "slot-1":
+                    event.pop("anchor_explicit")
+                if event.get("type") == "artifact" \
+                        and event.get("stage") == "video":
+                    for key in ("anchor_slot_index", "anchor_explicit", "anchor_sha256"):
+                        event["artifact"].pop(key, None)
+            for leg in legacy["terminal_legs"]:
+                if leg.get("slot_id") == "slot-1":
+                    for key in ("anchor_slot_index", "anchor_explicit", "anchor_sha256"):
+                        leg.pop(key, None)
+            legacy["events"][-1]["legs"] = copy.deepcopy(legacy["terminal_legs"])
+            for output in legacy["artifacts"]:
+                if output["media_type"] == "video":
+                    for key in ("anchor_slot_index", "anchor_explicit", "anchor_sha256"):
+                        output.pop(key, None)
+            recorder.jsonl_path.write_text(json.dumps(legacy) + "\n")
+            worker.validate_trajectory(recorder.jsonl_path)
+
     def test_bad_final_hash_is_failed_and_never_published(self):
         events = copy.deepcopy(fixture.narrative_events())
         events[7]["artifact"]["sha256"] = "0" * 64

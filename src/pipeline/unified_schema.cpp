@@ -561,7 +561,8 @@ Value build_vlm_inputs(const std::string& transcript,
 }
 
 std::string narrative_director_prompt(const std::string& visual_mode,
-                                      int max_slots) {
+                                      int max_slots,
+                                      const std::string& continuity_mode) {
   std::string out;
   if (visual_mode == "auto") {
     out =
@@ -595,6 +596,14 @@ std::string narrative_director_prompt(const std::string& visual_mode,
           "\n[[video: <vivid concrete motion and camera description in English>]]";
     }
   }
+  if (continuity_mode == "i2v_chain" && visual_mode != "image") {
+    out +=
+        "\nTo animate a specific earlier generated image, use "
+        "[[video: <motion and camera description> | source=slot-N]] where N is "
+        "that earlier image slot's number. Use source only for I2V continuity; "
+        "never invent, duplicate, or forward-reference a slot. Without this "
+        "explicit suffix the engine's ordinary i2v_chain anchor selection applies.";
+  }
   out += "\nDo not use any other bracket syntax.";
   return out;
 }
@@ -619,13 +628,15 @@ Value replace_result_text(const Value& result, const std::string& text) {
 
 void prepend_narrative_instructions(Value& vlm_inputs,
                                     const std::string& visual_mode,
-                                    int max_slots) {
+                                    int max_slots,
+                                    const std::string& continuity_mode) {
   if (!vlm_inputs.is_map()) return;
   const Value* messages = vlm_inputs.find("messages");
   if (messages == nullptr || !messages->is_array()) return;
   Value::Map system;
   system["role"] = Value("system");
-  system["content"] = Value(narrative_director_prompt(visual_mode, max_slots));
+  system["content"] = Value(
+      narrative_director_prompt(visual_mode, max_slots, continuity_mode));
   Value::Array out;
   out.reserve(messages->as_array().size() + 1);
   out.push_back(Value(std::move(system)));

@@ -96,6 +96,13 @@ in invented chat SSE events. Latency is omitted from the exported animation
 metadata, preserving live-versus-replay trajectory byte identity. Every source
 and derived artifact remains in CAS and is covered by `SHA256SUMS`.
 
+This manual second-request arm is intentionally unchanged. It is distinct from
+serving-time `narrative.continuity_mode="i2v_chain"` with a model-emitted
+`[[video: ... | source=slot-N]]`: that path schedules a real later video slot in
+the same response and records `anchor_slot_index` / `anchor_sha256` on schema-v2
+slot/artifact/terminal metadata. It does not synthesize `ablation.animations`,
+alter the fixed visual-form matrix, or count as another manual ablation.
+
 Visual-form completion and animation success measure protocol/artifact
 completion only. Image-text relevance, perceptual quality, and user blind
 preference remain `NOT_COVERED`; no numerical visual-quality claim is made by the

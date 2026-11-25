@@ -174,11 +174,21 @@ json unified_event_json(const UnifiedEvent& event) {
     if (event.anchor_slot_index >= 0) {
       out["anchor_slot_index"] = event.anchor_slot_index;
     }
+    if (event.anchor_explicit) out["anchor_explicit"] = true;
   } else if (event.slot_index >= 0 && !event.slot_id.empty()) {
     // Slot-attributed leg_error events carry the same identity as the
     // artifact they describe.
     out["slot_id"] = event.slot_id;
     out["slot_index"] = event.slot_index;
+    if (event.kind == UnifiedEvent::Kind::kLegError) {
+      if (event.anchor_slot_index >= 0) {
+        out["anchor_slot_index"] = event.anchor_slot_index;
+      }
+      if (event.anchor_explicit) out["anchor_explicit"] = true;
+      if (!event.anchor_sha256.empty()) {
+        out["anchor_sha256"] = event.anchor_sha256;
+      }
+    }
   }
   if (event.legs.type() == Value::Type::Array) {
     out["legs"] = value_to_json(event.legs);

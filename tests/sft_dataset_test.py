@@ -849,6 +849,118 @@ class SftDatasetBuilderTests(unittest.TestCase):
             self.assertEqual(audit_payload["status"], "PASSED")
             self.assertEqual(audit_payload["REAL_TRAINING"], "NOT_RUN")
 
+    def test_explicit_anchor_reconstruction_and_integrity(self):
+        with tempfile.TemporaryDirectory(prefix="umm-sft-linked-") as tmp:
+            recorder = traj.TrajectoryRecorder(Path(tmp) / "linked.jsonl")
+            body = {"model": "m", "stream": True,
+                    "messages": [{"role": "user", "content": "animate the lantern"}]}
+            with _canned_server(fixture.sse_bytes(fixture.linked_events())) as url:
+                record = traj.record_chat_completion(url, body, recorder, "linked")
+            ok, category, message, _ = ds.verify_record_integrity(
+                record, artifact_dir=recorder.artifact_dir,
+                require_artifact_dir=True)
+            self.assertTrue(ok, (category, message))
+            target, clean, slots, media_refs = ds.reconstruct_director_target(
+                record, verified_on_disk=True)
+            self.assertEqual(clean, fixture.CLEAN_TEXT)
+            self.assertEqual(
+                target,
+                fixture.FIRST_TEXT
+                + "[[image: a glowing red lantern]]"
+                + "[[video: the lantern sways in the wind | source=slot-0]]"
+                + fixture.SECOND_TEXT)
+            self.assertEqual(slots[1]["anchor_slot_index"], 0)
+            self.assertTrue(slots[1]["anchor_explicit"])
+            self.assertEqual(slots[1]["anchor_sha256"],
+                             hashlib.sha256(fixture.PNG).hexdigest())
+            self.assertTrue(all(ref["verified_on_disk"] for ref in media_refs))
+            self.assertNotIn("data:image/", json.dumps(media_refs))
+
+            bad = copy.deepcopy(record)
+            for leg in bad["terminal_legs"]:
+                if leg.get("slot_id") == "slot-1":
+                    leg["anchor_sha256"] = "0" * 64
+            bad["events"][-1]["legs"] = copy.deepcopy(bad["terminal_legs"])
+            ok, _, message, _ = ds.verify_record_integrity(
+                bad, artifact_dir=recorder.artifact_dir,
+                require_artifact_dir=True)
+            self.assertFalse(ok)
+            self.assertIn("anchor", message)
+
+            def remove_video(candidate):
+                candidate["events"] = [event for event in candidate["events"]
+                                       if not (event.get("type") == "artifact"
+                                               and event.get("stage") == "video")]
+                for seq, event in enumerate(candidate["events"]):
+                    event["seq"] = seq
+                    if event.get("server_seq") is not None:
+                        event["server_seq"] = seq
+                candidate["terminal_event_seq"] = len(candidate["events"]) - 1
+                candidate["artifacts"] = [item for item in candidate["artifacts"]
+                                          if item["media_type"] != "video"]
+
+            missing = copy.deepcopy(record)
+            remove_video(missing)
+            ok, _, message, _ = ds.verify_record_integrity(
+                missing, artifact_dir=recorder.artifact_dir,
+                require_artifact_dir=True)
+            self.assertFalse(ok)
+            self.assertIn("no artifact", message)
+
+            unresolved = copy.deepcopy(record)
+            remove_video(unresolved)
+            unresolved["visual_slots"][1].pop("anchor_slot_index")
+            unresolved["visual_slots"][1]["prompt"] = ""
+            for event in unresolved["events"]:
+                if event.get("type") == "visual_slot" \
+                        and event.get("slot_id") == "slot-1":
+                    event.pop("anchor_slot_index")
+                    event["prompt"] = ""
+            for leg in unresolved["terminal_legs"]:
+                if leg.get("slot_id") == "slot-1":
+                    leg["state"] = "failed"
+                    leg.pop("anchor_slot_index")
+                    leg.pop("anchor_sha256")
+            unresolved["events"][-1]["legs"] = copy.deepcopy(
+                unresolved["terminal_legs"])
+            ok, category, message, _ = ds.verify_record_integrity(
+                unresolved, artifact_dir=recorder.artifact_dir,
+                require_artifact_dir=True)
+            self.assertTrue(ok, (category, message))
+            target, _, _, _ = ds.reconstruct_director_target(
+                unresolved, verified_on_disk=True)
+            self.assertEqual(
+                target,
+                fixture.FIRST_TEXT
+                + "[[image: a glowing red lantern]]"
+                + fixture.SECOND_TEXT)
+
+            legacy = copy.deepcopy(record)
+            for slot in legacy["visual_slots"]:
+                for key in ("continuity_mode", "anchor_slot_index", "anchor_explicit"):
+                    slot.pop(key, None)
+            for event in legacy["events"]:
+                if event.get("type") == "visual_slot" \
+                        and event.get("slot_id") == "slot-1":
+                    event.pop("anchor_explicit")
+                if event.get("type") == "artifact" \
+                        and event.get("stage") == "video":
+                    for key in ("anchor_slot_index", "anchor_explicit", "anchor_sha256"):
+                        event["artifact"].pop(key, None)
+            for leg in legacy["terminal_legs"]:
+                if leg.get("slot_id") == "slot-1":
+                    for key in ("anchor_slot_index", "anchor_explicit", "anchor_sha256"):
+                        leg.pop(key, None)
+            legacy["events"][-1]["legs"] = copy.deepcopy(legacy["terminal_legs"])
+            for output in legacy["artifacts"]:
+                if output["media_type"] == "video":
+                    for key in ("anchor_slot_index", "anchor_explicit", "anchor_sha256"):
+                        output.pop(key, None)
+            ok, category, message, _ = ds.verify_record_integrity(
+                legacy, artifact_dir=recorder.artifact_dir,
+                require_artifact_dir=True)
+            self.assertTrue(ok, (category, message))
+
     def test_serving_path_isolation_and_zero_ml_framework_dependencies(self):
         for directory in (ROOT / "src", ROOT / "include"):
             if not directory.is_dir():

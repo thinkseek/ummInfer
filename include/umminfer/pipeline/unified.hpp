@@ -130,6 +130,10 @@ struct UnifiedEvent {
   // kVisualSlot continuity metadata (opt-in; empty / -1 when continuity is off).
   std::string continuity_mode;
   int anchor_slot_index = -1;
+  // Explicit directives never expose a timing-dependent digest on visual_slot.
+  // Settled I2V artifacts and terminal legs carry the verified anchor digest.
+  bool anchor_explicit = false;
+  std::string anchor_sha256;
   // Present on kComplete: the aggregated VLM result value.
   Value result;
   // Present on kError.
@@ -322,6 +326,16 @@ class UnifiedEngine {
     // Stage B i2v_chain continuity state. Captured on completed image slots
     // while the request is active and cleared on request completion/cancel.
     std::string rendered_image_data_url;
+    // Immutable request-local bytes and their content address. The data URL is
+    // retained for the mainline implicit-chain contract; explicit references
+    // dispatch these exact bytes after recomputing their SHA-256.
+    std::shared_ptr<const std::string> rendered_image_bytes;
+    std::string rendered_image_sha256;
+    std::string rendered_image_mime_type;
+    // Persistent anchor attribution for artifact and terminal metadata.
+    int anchor_slot_index = -1;
+    std::string anchor_sha256;
+    bool anchor_explicit = false;
     // Deferred video slot waiting on an earlier running image slot in
     // i2v_chain mode.
     int deferred_chain_anchor_slot = -1;
@@ -462,7 +476,13 @@ class UnifiedEngine {
                                       Record& record,
                                       std::string kind,
                                       const std::string& prompt,
-                                      size_t prose_offset);
+                                      size_t prose_offset,
+                                      const std::string& source_slot = {},
+                                      const std::string& reference_error = {});
+  // Binds a previously selected image anchor to a render request. Explicit
+  // references use binary bytes; implicit mainline links keep their data URL.
+  bool bind_chained_anchor_locked(Record& record, OutputLeg& leg,
+                                  Value::Map& inputs, std::string& error) const;
   // Releases any deferred i2v_chain video slots waiting on `anchor_slot_index`.
   // Attaches `anchor_image_data_url` when non-empty, falls back to T2V when
   // empty, or aborts them cleanly if the request was cancelled.

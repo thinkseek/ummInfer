@@ -680,6 +680,35 @@ class StageCPipelineTest(unittest.TestCase):
             self.assertEqual(len(rec_multi["visual_slots"]), 3)
             self.assertEqual(len(rec_multi["artifacts"]), 3)
 
+            # Case 3: explicit same-request image -> I2V linkage. The source
+            # digest stays out of visual_slot and resolves on artifact/terminal.
+            linked_req = dict(multi_req)
+            linked_req["narrative"] = {
+                "enabled": True,
+                "visual_mode": "auto",
+                "max_slots": 2,
+                "continuity_mode": "i2v_chain",
+            }
+            rec_linked = pipeline.sse_bytes_to_v2_record(
+                fixture.sse_bytes(fixture.linked_events(delayed=True)),
+                request_body=linked_req,
+                recorder=recorder,
+                session_id="live-linked-0",
+                ablation_metadata={
+                    "prompt_id": "linked_lantern",
+                    "expected_visual_modalities": ["image", "video"],
+                    "latency": {"ttft_ms": 100.0, "terminal_ms": 2400.0},
+                },
+            )
+            self.assertEqual(rec_linked["visual_slots"][1]["anchor_slot_index"], 0)
+            self.assertTrue(rec_linked["visual_slots"][1]["anchor_explicit"])
+            self.assertNotIn("anchor_sha256", rec_linked["visual_slots"][1])
+            linked_video = next(item for item in rec_linked["artifacts"]
+                                if item["media_type"] == "video")
+            linked_image = next(item for item in rec_linked["artifacts"]
+                                if item["media_type"] == "image")
+            self.assertEqual(linked_video["anchor_sha256"], linked_image["sha256"])
+
             # Verify zero embedded base64 data and exact CAS SHA-256 on disk
             for event in rec_multi["events"]:
                 if event["type"] == "artifact":
@@ -706,9 +735,9 @@ class StageCPipelineTest(unittest.TestCase):
             _, summary = pipeline.validate_trajectory_inputs(
                 [jsonl_path], artifact_dir=cas_dir, strict_artifacts=True
             )
-            self.assertEqual(summary["total_records"], 2)
-            self.assertEqual(summary["schema_versions"], {"1": 0, "2": 2})
-            self.assertEqual(summary["verified_output_media_refs"], 3)
+            self.assertEqual(summary["total_records"], 3)
+            self.assertEqual(summary["schema_versions"], {"1": 0, "2": 3})
+            self.assertEqual(summary["verified_output_media_refs"], 5)
 
             # Feed converted live-SSE JSONL straight into the Stage C pipeline!
             out_dir = root / "converted_pipeline_out"
@@ -721,7 +750,7 @@ class StageCPipelineTest(unittest.TestCase):
                 execution_mode="dry_run_micro_step",
                 dry_run_steps=1,
             )
-            self.assertEqual(report["sft_pack"]["record_count"], 2)
+            self.assertEqual(report["sft_pack"]["record_count"], 3)
             self.assertEqual(report["leakage_audit"]["total_leakage_count"], 0)
             self.assertEqual(report["REAL_TRAINING"], "NOT_RUN")
 

@@ -8647,6 +8647,34 @@ void test_narrative_parser_unit() {
     check(parser.flush(out).empty() && out.size() == 3,
           "flush after a complete stream produced extra output");
   }
+  {
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    const std::string prose = parser.feed(
+        "Before [[image: still]] middle "
+        "[[video: camera rises | source=slot-0]] after",
+        out);
+    check(prose == "Before  middle  after" && out.size() == 2 &&
+              out[1].prompt == "camera rises" &&
+              out[1].source_slot == "slot-0" &&
+              out[1].reference_error.empty(),
+          "explicit image-slot reference was not parsed");
+  }
+  {
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    parser.feed("[[video: one | source=slot-0 | source=slot-0]]"
+                "[[video: two | source=bogus]]"
+                "[[video: three | source slot-0]]"
+                "[[video: a literal | pipe remains]]",
+                out);
+    check(out.size() == 4 && out[0].reference_error == "duplicate source reference" &&
+              out[1].reference_error == "source reference must name slot-N" &&
+              out[2].reference_error == "source reference must use source=slot-N" &&
+              out[3].source_slot.empty() && out[3].reference_error.empty() &&
+              out[3].prompt == "a literal | pipe remains",
+          "malformed or duplicate source references did not fail closed");
+  }
 }
 
 // Interleaved narrative with one image and one video slot, plus global
@@ -11081,6 +11109,462 @@ void test_narrative_continuity_http_and_engine() {
   }
 }
 
+// Explicit directive-level anchors extend, rather than replace, i2v_chain.
+StagePayload explicit_anchor_request(int max_slots = 6) {
+  StagePayload request = narrative_request(true, true, false, "auto", max_slots);
+  request.request.inputs["narrative"]["continuity_mode"] = Value("i2v_chain");
+  Value::Map inputs = request.request.inputs.as_map();
+  Value::Map video = inputs.at("video_options").as_map();
+  video["size"] = Value("704x480");
+  video["seed"] = Value(int64_t{42});
+  video["steps"] = Value(int64_t{7});
+  video["num_frames"] = Value(int64_t{13});
+  video["guidance_scale"] = Value(4.5);
+  inputs["video_options"] = Value(std::move(video));
+  request.request.inputs = Value(std::move(inputs));
+  return request;
+}
+
+void check_explicit_anchor_submit(const std::optional<SubmitMessage>& submit,
+                                  const std::string& child_id,
+                                  const std::string& source_bytes,
+                                  int source_index) {
+  check(submit.has_value() && submit->request_id == child_id,
+        "explicitly anchored I2V slot was not submitted");
+  if (!submit) return;
+  const StagePayload payload = StagePayload::from_value(submit->data);
+  const std::string digest = util::sha256_hex(source_bytes);
+  const Value* image = payload.request.inputs.find("image");
+  const Value* anchor = payload.request.inputs.find("anchor_slot_index");
+  const Value* sha = payload.request.inputs.find("anchor_sha256");
+  const Value* crop = payload.request.inputs.find("anchor_crop");
+  const Value* explicit_flag = payload.request.inputs.find("anchor_explicit");
+  check(image != nullptr && image->is_bin() && image->as_bin() == source_bytes &&
+            util::sha256_hex(image->as_bin()) == digest,
+        "explicit I2V input does not bind exact settled source bytes");
+  check(anchor != nullptr && anchor->as_int() == source_index &&
+            sha != nullptr && sha->as_str() == digest &&
+            crop != nullptr && crop->as_str() == "center_cover" &&
+            explicit_flag != nullptr && explicit_flag->as_bool(),
+        "explicit I2V input lacks anchor/SHA-256/crop metadata");
+  const Value* prompt = payload.request.inputs.find("prompt");
+  const Value* size = payload.request.inputs.find("size");
+  const Value* seed = payload.request.inputs.find("seed");
+  const Value* steps = payload.request.inputs.find("steps");
+  const Value* frames = payload.request.inputs.find("num_frames");
+  const Value* guidance = payload.request.inputs.find("guidance_scale");
+  check(prompt != nullptr && prompt->as_str().find("camera orbits") == 0 &&
+            size != nullptr && size->as_str() == "704x480" &&
+            seed != nullptr && seed->as_int() == 42 &&
+            steps != nullptr && steps->as_int() == 7 &&
+            frames != nullptr && frames->as_int() == 13 &&
+            guidance != nullptr && guidance->as_double() == 4.5,
+        "explicit I2V dispatch dropped prompt/crop-size/seed/settings");
+}
+
+void run_explicit_anchor_completion(bool immediate) {
+  Harness h(immediate ? "explicitanchorimmediate" : "explicitanchordelayed");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+  const std::string id = engine.submit(explicit_anchor_request());
+  auto vlm = h.next_submit(h.vlm_recv);
+  if (!vlm) return;
+  const std::string first_bytes = "EXPLICIT-SLOT-0";
+  const std::string latest_bytes = "EXPLICIT-SLOT-1-NOT-THE-ANCHOR";
+  h.stream(vlm->request_id, "vlm", text_chunk("[[image: opening]]", false));
+  auto first = h.next_submit(h.image_recv);
+  if (immediate && first) {
+    h.complete(first->request_id, "image", true,
+               artifact_result("image", "image/png", first_bytes));
+  }
+  h.stream(vlm->request_id, "vlm", text_chunk("[[image: alternate]]", false));
+  auto latest = h.next_submit(h.image_recv);
+  if (latest) {
+    h.complete(latest->request_id, "image", true,
+               artifact_result("image", "image/png", latest_bytes));
+  }
+  h.stream(vlm->request_id, "vlm",
+           text_chunk("[[video: camera orbits | source=slot-0]]", false));
+  wait_until([&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 3; },
+             "explicit source visual_slot was not emitted");
+  if (!immediate) {
+    check(h.no_submit(h.video_recv),
+          "explicit I2V dispatched before its named source completed");
+    bool pending = false;
+    for (const LegSnapshot& leg : engine.legs_snapshot(id)) {
+      if (leg.slot_id == "slot-2") pending = leg.state == LegState::kPending;
+    }
+    check(pending, "explicit dependent slot is not pending on slot-0");
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    check(log.terminal_for(id) == std::nullopt,
+          "request terminated with an explicit dependent still pending");
+    if (first) {
+      h.complete(first->request_id, "image", true,
+                 artifact_result("image", "image/png", first_bytes));
+    }
+  }
+  auto video = h.next_submit(h.video_recv);
+  check_explicit_anchor_submit(video, id + ":slot:2", first_bytes, 0);
+  if (immediate) h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+  if (video) {
+    h.complete(video->request_id, "video", true,
+               artifact_result("video", "video/mp4", "EXPLICIT-I2V"));
+  }
+  check(engine.wait(id, 5.0), "explicitly linked narrative did not complete");
+  const auto terminal = log.terminal_for(id);
+  bool linked_artifact = false;
+  bool linked_leg = false;
+  int64_t expected_seq = 0;
+  for (const UnifiedEvent& event : log.snapshot()) {
+    check(event.seq == expected_seq++, "explicit linkage broke event monotonicity");
+    if (event.kind == UnifiedEvent::Kind::kVlmDelta) {
+      check(event.text.find("source=") == std::string::npos,
+            "explicit directive leaked into clean prose");
+    }
+    if (event.kind == UnifiedEvent::Kind::kVisualSlot &&
+        event.slot_id == "slot-2") {
+      check(event.continuity_mode == "i2v_chain" &&
+                event.anchor_slot_index == 0 && event.anchor_explicit &&
+                event.anchor_sha256.empty(),
+            "explicit visual_slot metadata is wrong or timing-dependent");
+    }
+    if (event.kind == UnifiedEvent::Kind::kArtifact &&
+        event.artifact.find("slot_id") != nullptr &&
+        event.artifact.find("slot_id")->as_str() == "slot-2") {
+      linked_artifact = event.artifact.find("anchor_slot_index")->as_int() == 0 &&
+                        event.artifact.find("anchor_explicit")->as_bool() &&
+                        event.artifact.find("anchor_sha256")->as_str() ==
+                            util::sha256_hex(first_bytes);
+    }
+  }
+  if (terminal && terminal->legs.is_array()) {
+    check(terminal->legs.as_array().size() == 3,
+          "multiple explicit-continuity slots lost terminal identity");
+    for (const Value& leg : terminal->legs.as_array()) {
+      if (leg.find("slot_id")->as_str() == "slot-2") {
+        linked_leg = leg.find("state")->as_str() == "completed" &&
+                     leg.find("anchor_slot_index")->as_int() == 0 &&
+                     leg.find("anchor_explicit")->as_bool() &&
+                     leg.find("anchor_sha256")->as_str() ==
+                         util::sha256_hex(first_bytes);
+      }
+    }
+  }
+  check(linked_artifact && linked_leg,
+        "explicit I2V artifact/terminal leg lacks verified anchor linkage");
+  engine.release(id);
+}
+
+void test_explicit_anchor_completion() {
+  run_explicit_anchor_completion(true);
+  run_explicit_anchor_completion(false);
+}
+
+void test_explicit_anchor_failure_cancel_and_validation() {
+  {
+    Harness h("explicitanchorfailure");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request(2));
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[image: source]][[video: move | source=slot-0]]", false));
+    auto image = h.next_submit(h.image_recv);
+    check(h.no_submit(h.video_recv), "failed explicit source dispatched early");
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    if (image) {
+      h.complete(image->request_id, "image", false, Value(),
+                 std::string("image exploded"));
+    }
+    check(engine.wait(id, 5.0), "explicit dependency failure did not settle");
+    check(h.no_submit(h.video_recv),
+          "explicit source failure silently fell back to T2V");
+    const auto terminal = log.terminal_for(id);
+    bool dependent_failed = false;
+    if (terminal && terminal->legs.is_array()) {
+      for (const Value& leg : terminal->legs.as_array()) {
+        if (leg.find("slot_id")->as_str() == "slot-1") {
+          dependent_failed = leg.find("state")->as_str() == "failed" &&
+                             leg.find("anchor_explicit")->as_bool();
+        }
+      }
+    }
+    check(dependent_failed &&
+              count_kind(log, UnifiedEvent::Kind::kLegError) == 2,
+          "explicit dependency failure did not fail the dependent slot");
+    engine.release(id);
+  }
+  {
+    Harness h("explicitanchorlatefailure");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request(2));
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    h.stream(vlm->request_id, "vlm", text_chunk("[[image: source]]", false));
+    auto image = h.next_submit(h.image_recv);
+    if (image) {
+      h.complete(image->request_id, "image", false, Value(),
+                 std::string("source already failed"));
+    }
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[video: late | source=slot-0]]", false));
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    check(engine.wait(id, 5.0), "late explicit reference did not settle");
+    check(h.no_submit(h.video_recv),
+          "late explicit reference reused a failed source or fell back to T2V");
+    const auto terminal = log.terminal_for(id);
+    bool dependent_failed = false;
+    if (terminal && terminal->legs.is_array()) {
+      for (const Value& leg : terminal->legs.as_array()) {
+        if (leg.find("slot_id")->as_str() == "slot-1") {
+          dependent_failed = leg.find("state")->as_str() == "failed";
+        }
+      }
+    }
+    check(dependent_failed, "late reference did not retain a failed dependent leg");
+    engine.release(id);
+  }
+  {
+    Harness h("explicitanchorcancel");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request(2));
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[image: source]][[video: move | source=slot-0]]", false));
+    auto image = h.next_submit(h.image_recv);
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    check(engine.cancel(id), "could not cancel pending explicit dependency");
+    if (image) {
+      check(h.wait_abort_on(h.image_recv, image->request_id),
+            "cancel did not abort explicit source image");
+      h.complete(image->request_id, "image", false, Value(),
+                 std::string("request aborted"));
+    }
+    check(engine.wait(id, 5.0), "cancelled explicit dependency did not settle");
+    check(h.no_submit(h.video_recv), "cancelled explicit dependency dispatched");
+    bool dependent_aborted = false;
+    for (const LegSnapshot& leg : engine.legs_snapshot(id)) {
+      if (leg.slot_id == "slot-1") {
+        dependent_aborted = leg.state == LegState::kAborted;
+      }
+    }
+    check(dependent_aborted, "cancellation did not abort explicit dependent slot");
+    engine.release(id);
+  }
+  {
+    Harness h("explicitanchorinvalid");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request());
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    h.stream(
+        vlm->request_id, "vlm",
+        text_chunk(
+            "[[video: independent]]"
+            "[[video: wrong modality | source=slot-0]]"
+            "[[video: missing | source=slot-9]]"
+            "[[video: forward | source=slot-4]]"
+            "[[video: duplicate | source=slot-0 | source=slot-0]]"
+            "[[image: wrong target | source=slot-0]]",
+            false));
+    auto independent = h.next_submit(h.video_recv);
+    check(independent.has_value() && independent->request_id == id + ":slot:0",
+          "ordinary i2v_chain auto-tag behavior changed");
+    check(h.no_submit(h.video_recv),
+          "invalid/wrong/duplicate/forward explicit reference dispatched");
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    if (independent) {
+      h.complete(independent->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "T2V"));
+    }
+    check(engine.wait(id, 5.0), "invalid explicit references did not settle");
+    const auto terminal = log.terminal_for(id);
+    size_t failed = 0;
+    if (terminal && terminal->legs.is_array()) {
+      check(terminal->legs.as_array().size() == 6,
+            "invalid explicit references lost monotonic slot ids");
+      for (const Value& leg : terminal->legs.as_array()) {
+        if (leg.find("state")->as_str() == "failed") ++failed;
+      }
+    }
+    check(failed == 5 && count_kind(log, UnifiedEvent::Kind::kLegError) == 5,
+          "invalid explicit references did not fail all dependent slots");
+    engine.release(id);
+  }
+  {
+    Harness h("explicitanchoremptyprompt");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request(1));
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("Clean prose. [[video: | source=slot-0]]", false));
+    h.complete(vlm->request_id, "vlm", true, text_result("Clean prose."));
+    check(engine.wait(id, 5.0), "empty explicit reference did not settle");
+    check(h.no_submit(h.image_recv) && h.no_submit(h.video_recv),
+          "empty explicit reference triggered an unrelated fallback visual");
+    const auto terminal = log.terminal_for(id);
+    check(count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 1 &&
+              count_kind(log, UnifiedEvent::Kind::kLegError) == 1 && terminal &&
+              terminal->legs.is_array() && terminal->legs.as_array().size() == 1 &&
+              terminal->legs.as_array().front().find("state")->as_str() == "failed",
+          "empty explicit reference did not produce one failed slot");
+    engine.release(id);
+  }
+  {
+    // Session A's completed slot-0 is not a source for session B.
+    Harness h("explicitanchorsession");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    StagePayload first = narrative_request(true, false, false, "auto", 1);
+    first.request.inputs["session_id"] = Value("session-A");
+    const std::string first_id = engine.submit(std::move(first));
+    auto first_vlm = h.next_submit(h.vlm_recv);
+    if (!first_vlm) return;
+    h.stream(first_vlm->request_id, "vlm", text_chunk("[[image: A]]", false));
+    auto image = h.next_submit(h.image_recv);
+    if (image) {
+      h.complete(image->request_id, "image", true,
+                 artifact_result("image", "image/png", "SESSION-A"));
+    }
+    h.complete(first_vlm->request_id, "vlm", true, text_result("A"));
+    check(engine.wait(first_id, 5.0), "session A did not complete");
+    engine.release(first_id);
+
+    StagePayload second = explicit_anchor_request(1);
+    second.request.inputs["session_id"] = Value("session-B");
+    const std::string second_id = engine.submit(std::move(second));
+    auto second_vlm = h.next_submit(h.vlm_recv);
+    if (!second_vlm) return;
+    h.stream(second_vlm->request_id, "vlm",
+             text_chunk("[[video: cross session | source=slot-0]]", false));
+    h.complete(second_vlm->request_id, "vlm", true, text_result("B"));
+    check(engine.wait(second_id, 5.0), "cross-session reference did not settle");
+    check(h.no_submit(h.video_recv),
+          "cross-session explicit reference reused stale bytes");
+    engine.release(second_id);
+  }
+}
+
+void test_explicit_anchor_http_wire() {
+  Harness h("explicitanchorhttp");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "explicit-anchor HTTP server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const json body = {
+      {"model", "qwen3-unified"},
+      {"messages", json::array({json{{"role", "user"}, {"content", "go"}}})},
+      {"stream", true},
+      {"modalities", json::array({"text", "image", "video"})},
+      {"video", {{"size", "704x480"}, {"seed", 42}, {"steps", 7},
+                  {"num_frames", 13}, {"guidance_scale", 4.5}}},
+      {"narrative", {{"enabled", true}, {"max_slots", 2},
+                      {"continuity_mode", "i2v_chain"}}}};
+  auto future = std::async(std::launch::async, [&] {
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    return test_http::perform(request);
+  });
+  auto vlm = h.next_submit(h.vlm_recv);
+  if (vlm) {
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("A. [[image: red boat]]", false));
+    auto image = h.next_submit(h.image_recv);
+    if (image) {
+      h.complete(image->request_id, "image", true,
+                 artifact_result("image", "image/png", "BOATPNG"));
+    }
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[video: camera orbits | source=slot-0]]", false));
+    auto video = h.next_submit(h.video_recv);
+    check_explicit_anchor_submit(video, vlm->request_id + ":slot:1", "BOATPNG", 0);
+    if (video) {
+      h.complete(video->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "BOATMP4"));
+    }
+    h.complete(vlm->request_id, "vlm", true, text_result("A."));
+  }
+  const auto response = future.get();
+  api.stop();
+  server_thread.join();
+  check(response.status == 200, "explicit-anchor HTTP SSE failed");
+  bool visual_ok = false;
+  bool artifact_ok = false;
+  bool terminal_ok = false;
+  for (const std::string& payload : sse_data_payloads(response.body)) {
+    const json frame = json::parse(payload);
+    if (!frame.contains("unified")) continue;
+    const json& unified = frame["unified"];
+    if (unified["kind"] == "visual_slot" &&
+        unified.value("slot_id", "") == "slot-1") {
+      visual_ok = unified.value("continuity_mode", "") == "i2v_chain" &&
+                  unified.value("anchor_slot_index", -1) == 0 &&
+                  unified.value("anchor_explicit", false) &&
+                  !unified.contains("anchor_sha256") &&
+                  unified["prompt"].get<std::string>().find("source=") ==
+                      std::string::npos;
+    }
+    if (unified["kind"] == "artifact" &&
+        unified["artifact"].value("media_type", "") == "video") {
+      const json& artifact = unified["artifact"];
+      artifact_ok = artifact.value("anchor_slot_index", -1) == 0 &&
+                    artifact.value("anchor_explicit", false) &&
+                    artifact.value("anchor_sha256", "") ==
+                        util::sha256_hex("BOATPNG");
+    }
+    if (unified["kind"] == "complete" && unified.contains("legs")) {
+      for (const json& leg : unified["legs"]) {
+        if (leg.value("slot_id", "") == "slot-1") {
+          terminal_ok = leg.value("anchor_slot_index", -1) == 0 &&
+                        leg.value("anchor_explicit", false) &&
+                        leg.value("anchor_sha256", "") ==
+                            util::sha256_hex("BOATPNG");
+        }
+      }
+    }
+  }
+  check(visual_ok && artifact_ok && terminal_ok,
+        "explicit-anchor HTTP visual/artifact/terminal wire metadata is incomplete");
+}
+
 }  // namespace
 
 int main() {
@@ -11208,5 +11692,8 @@ int main() {
   RUN(test_public_http_wave7_media_passthrough_and_tts_chunk_meta());
   RUN(test_public_http_video_teacache_thresh());
   RUN(test_narrative_continuity_http_and_engine());
+  RUN(test_explicit_anchor_completion());
+  RUN(test_explicit_anchor_failure_cancel_and_validation());
+  RUN(test_explicit_anchor_http_wire());
   return g_failures == 0 ? 0 : 1;
 }

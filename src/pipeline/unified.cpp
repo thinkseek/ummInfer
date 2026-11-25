@@ -353,7 +353,7 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     if (record.narrative_enabled) {
       unified_detail::prepend_narrative_instructions(
           vlm_payload.request.inputs, record.narrative_visual_mode,
-          record.narrative_max_slots);
+          record.narrative_max_slots, record.narrative_continuity_mode);
     }
     vlm_payload.request.params = record.vlm_params;
     vlm_payload.request.metadata = record.vlm_metadata;
@@ -674,7 +674,9 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
             if (kind.empty()) continue;
             dispatch_narrative_slot_locked(unified_id, record, kind,
                                            directive.prompt,
-                                           directive.prose_offset);
+                                           directive.prose_offset,
+                                           directive.source_slot,
+                                           directive.reference_error);
           }
         }
       } else if (msg.from_stage == config_.tts_stage && record.tts_enabled) {
@@ -804,7 +806,7 @@ void UnifiedEngine::start_vlm_locked(const std::string& request_id,
   if (record.narrative_enabled) {
     unified_detail::prepend_narrative_instructions(
         vlm_payload.request.inputs, record.narrative_visual_mode,
-        record.narrative_max_slots);
+        record.narrative_max_slots, record.narrative_continuity_mode);
   }
   vlm_payload.request.params = record.vlm_params;
   vlm_payload.request.metadata = record.vlm_metadata;
@@ -836,14 +838,68 @@ std::string UnifiedEngine::slot_kind_locked(
   return {};
 }
 
+bool UnifiedEngine::bind_chained_anchor_locked(
+    Record& record, OutputLeg& leg, Value::Map& inputs,
+    std::string& error) const {
+  const OutputLeg* source = nullptr;
+  for (const OutputLeg& candidate : record.slot_legs) {
+    if (candidate.slot_index == leg.anchor_slot_index) {
+      source = &candidate;
+      break;
+    }
+  }
+  if (source == nullptr || source->modality != UnifiedModality::kImage ||
+      source->state != LegState::kCompleted ||
+      !source->rendered_image_bytes ||
+      source->rendered_image_sha256.empty()) {
+    error = "referenced anchor image is not completed with settled bytes";
+    return false;
+  }
+  const std::string& bytes = *source->rendered_image_bytes;
+  const std::string digest = util::sha256_hex(bytes);
+  if (digest != source->rendered_image_sha256) {
+    error = "referenced anchor image failed SHA-256 verification";
+    return false;
+  }
+  const std::string expected_url =
+      "data:" + source->rendered_image_mime_type + ";base64," +
+      util::base64_encode(bytes);
+  if (expected_url != source->rendered_image_data_url) {
+    error = "referenced anchor image failed content-address binding";
+    return false;
+  }
+  if (leg.anchor_explicit) {
+    if (bytes.size() > kMaxI2vAnchorImageBytes) {
+      error = "referenced anchor image exceeds the I2V byte limit";
+      return false;
+    }
+    if (source->rendered_image_mime_type != "image/png" &&
+        source->rendered_image_mime_type != "image/jpeg") {
+      error = "referenced anchor artifact is not PNG or JPEG";
+      return false;
+    }
+    inputs["image"] = Value::bin(bytes);
+    inputs["anchor_explicit"] = Value(true);
+  } else {
+    // Preserve the Wave 21 implicit-chain worker contract byte-for-byte.
+    inputs["image"] = Value(source->rendered_image_data_url);
+  }
+  inputs["anchor_slot_index"] = Value(static_cast<int64_t>(leg.anchor_slot_index));
+  inputs["anchor_sha256"] = Value(digest);
+  inputs["anchor_crop"] = Value("center_cover");
+  leg.anchor_sha256 = digest;
+  return true;
+}
+
 void UnifiedEngine::dispatch_narrative_slot_locked(
     const std::string& request_id, Record& record, std::string kind,
-    const std::string& prompt, size_t prose_offset) {
+    const std::string& prompt, size_t prose_offset,
+    const std::string& source_slot, const std::string& reference_error) {
   // A cancel broadcast has already gone out; a slot created now would never
   // be aborted and would outlive the request.
   if (record.cancel_requested) return;
   if (record.narrative_next_slot >= record.narrative_max_slots) return;
-  if (prompt.empty()) return;
+  if (prompt.empty() && source_slot.empty() && reference_error.empty()) return;
   const bool image = kind == kImageStageId;
   if (!image && kind != kVideoStageId) return;
   const int index = record.narrative_next_slot;
@@ -858,26 +914,90 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
   leg.slot_id = "slot-" + std::to_string(index);
   leg.slot_index = index;
   leg.child_id = request_id + ":slot:" + std::to_string(index);
+  leg.anchor_explicit = !source_slot.empty() || !reference_error.empty();
+  leg.started = std::chrono::steady_clock::now();
   Value::Map options = image ? record.image_options : record.video_options;
   options["prompt"] = Value(compose_continuity_prompt(
       prompt, record.narrative_continuity_mode, record.narrative_style_anchor,
       record.narrative_anchor_prompt, index));
 
-  int anchor_slot_index = -1;
   bool defer_on_anchor = false;
-  if (!image && index > 0 && record.narrative_continuity_mode == "i2v_chain") {
+  std::string dependency_error = reference_error;
+  if (dependency_error.empty() && !source_slot.empty()) {
+    if (record.narrative_continuity_mode != "i2v_chain") {
+      dependency_error =
+          "an explicit source reference requires narrative.continuity_mode=i2v_chain";
+    } else if (image) {
+      dependency_error = "an explicit source reference requires a video slot";
+    } else if (const auto existing = record.video_options.find("image");
+               existing != record.video_options.end() &&
+               !existing->second.is_nil()) {
+      dependency_error = "video.image conflicts with an explicit source reference";
+    } else {
+      const OutputLeg* source = nullptr;
+      for (const OutputLeg& candidate : record.slot_legs) {
+        if (candidate.slot_id == source_slot) {
+          source = &candidate;
+          break;
+        }
+      }
+      if (source == nullptr) {
+        dependency_error = "source slot " + source_slot +
+                           " is not an earlier slot in this request";
+      } else {
+        leg.anchor_slot_index = source->slot_index;
+        if (source->modality != UnifiedModality::kImage) {
+          dependency_error = "source slot " + source_slot + " is not an image";
+        } else if (source->state == LegState::kFailed ||
+                   source->state == LegState::kAborted) {
+          dependency_error = "source slot " + source_slot +
+                             (source->state == LegState::kAborted
+                                  ? " was aborted"
+                                  : " failed: " + source->error);
+        } else if (source->state == LegState::kCompleted) {
+          if (!source->rendered_image_bytes ||
+              source->rendered_image_data_url.empty()) {
+            dependency_error = "source slot " + source_slot +
+                               " has no settled image artifact";
+          }
+        } else {
+          defer_on_anchor = true;
+        }
+      }
+    }
+  } else if (!image && index > 0 &&
+             record.narrative_continuity_mode == "i2v_chain") {
+    // Wave 21 implicit latest-image chaining remains unchanged when no explicit
+    // directive suffix is present, including its graceful T2V fallback.
     for (int i = static_cast<int>(record.slot_legs.size()) - 1; i >= 0; --i) {
       const OutputLeg& candidate = record.slot_legs[static_cast<size_t>(i)];
       if (candidate.modality != UnifiedModality::kImage) continue;
       if (candidate.state == LegState::kCompleted &&
           !candidate.rendered_image_data_url.empty()) {
-        options["image"] = Value(candidate.rendered_image_data_url);
-        anchor_slot_index = candidate.slot_index;
+        leg.anchor_slot_index = candidate.slot_index;
       } else if (candidate.state == LegState::kRunning) {
-        anchor_slot_index = candidate.slot_index;
+        leg.anchor_slot_index = candidate.slot_index;
         defer_on_anchor = true;
       }
       break;
+    }
+  }
+
+  if (dependency_error.empty() && leg.anchor_slot_index >= 0 &&
+      !defer_on_anchor) {
+    std::string binding_error;
+    if (!bind_chained_anchor_locked(record, leg, options, binding_error)) {
+      if (leg.anchor_explicit) {
+        dependency_error = std::move(binding_error);
+      } else {
+        // An implicit chain retains the mainline T2V fallback on a bad anchor.
+        leg.anchor_slot_index = -1;
+        leg.anchor_sha256.clear();
+        options.erase("image");
+        options.erase("anchor_slot_index");
+        options.erase("anchor_sha256");
+        options.erase("anchor_crop");
+      }
     }
   }
 
@@ -888,7 +1008,8 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
   payload.request.metadata = record.vlm_metadata;
 
   // The slot event goes out first, at the exact point the directive closed in
-  // the prose stream, before the child is even submitted.
+  // the prose stream, before the child is even submitted. Its anchor digest is
+  // deliberately absent so immediate and delayed sources have identical metadata.
   UnifiedEvent slot_event;
   slot_event.request_id = request_id;
   slot_event.session_id = record.session_id;
@@ -902,30 +1023,15 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
   if (record.narrative_continuity_mode != "off") {
     slot_event.continuity_mode = record.narrative_continuity_mode;
   }
-  slot_event.anchor_slot_index = anchor_slot_index;
+  slot_event.anchor_slot_index = leg.anchor_slot_index;
+  slot_event.anchor_explicit = leg.anchor_explicit;
   dispatch_queue_.push_back(std::move(slot_event));
 
   ++record.narrative_next_slot;
-  if (defer_on_anchor) {
-    leg.submitted = false;
-    leg.state = LegState::kPending;
-    leg.deferred_chain_anchor_slot = anchor_slot_index;
-    leg.deferred_payload = std::move(payload);
-    record.slot_legs.push_back(std::move(leg));
-    ++record.legs_remaining;
-    return;
-  }
-  leg.submitted = true;
-  leg.state = LegState::kRunning;
-  leg.started = std::chrono::steady_clock::now();
-  child_to_unified_[leg.child_id] = request_id;
-  try {
-    coordinator_.submit(payload, leg.stage_name);
-  } catch (const std::exception& error) {
-    child_to_unified_.erase(leg.child_id);
+  const auto fail_before_submit = [&](const std::string& error) {
     leg.submitted = false;
     leg.state = LegState::kFailed;
-    leg.error = error.what();
+    leg.error = error;
     const std::string slot_id = leg.slot_id;
     record.slot_legs.push_back(std::move(leg));
     UnifiedEvent leg_error;
@@ -934,10 +1040,34 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
     leg_error.stage_id = image ? kImageStageId : kVideoStageId;
     leg_error.kind = UnifiedEvent::Kind::kLegError;
     leg_error.seq = record.next_seq++;
-    leg_error.error = error.what();
+    leg_error.error = error;
     leg_error.slot_id = slot_id;
     leg_error.slot_index = index;
+    leg_error.anchor_slot_index = record.slot_legs.back().anchor_slot_index;
+    leg_error.anchor_explicit = record.slot_legs.back().anchor_explicit;
     dispatch_queue_.push_back(std::move(leg_error));
+  };
+  if (!dependency_error.empty()) {
+    fail_before_submit(dependency_error);
+    return;
+  }
+  if (defer_on_anchor) {
+    leg.submitted = false;
+    leg.state = LegState::kPending;
+    leg.deferred_chain_anchor_slot = leg.anchor_slot_index;
+    leg.deferred_payload = std::move(payload);
+    record.slot_legs.push_back(std::move(leg));
+    ++record.legs_remaining;
+    return;
+  }
+  leg.submitted = true;
+  leg.state = LegState::kRunning;
+  child_to_unified_[leg.child_id] = request_id;
+  try {
+    coordinator_.submit(payload, leg.stage_name);
+  } catch (const std::exception& error) {
+    child_to_unified_.erase(leg.child_id);
+    fail_before_submit(error.what());
     return;
   }
   record.slot_legs.push_back(std::move(leg));
@@ -963,10 +1093,43 @@ void UnifiedEngine::release_chained_slots_locked(
       continue;
     }
     StagePayload payload = std::move(*maybe_payload);
-    if (!anchor_image_data_url.empty() && payload.request.inputs.is_map()) {
+    std::string binding_error;
+    if (leg.anchor_explicit && anchor_image_data_url.empty()) {
+      binding_error = "explicit source slot " +
+                      std::to_string(anchor_slot_index) +
+                      " failed or was aborted";
+    } else if (!anchor_image_data_url.empty() && payload.request.inputs.is_map()) {
       Value::Map inputs = payload.request.inputs.as_map();
-      inputs["image"] = Value(anchor_image_data_url);
+      if (!bind_chained_anchor_locked(record, leg, inputs, binding_error) &&
+          !leg.anchor_explicit) {
+        // Mainline implicit behavior: a bad anchor degrades to ordinary T2V.
+        binding_error.clear();
+        leg.anchor_sha256.clear();
+        inputs.erase("image");
+        inputs.erase("anchor_slot_index");
+        inputs.erase("anchor_sha256");
+        inputs.erase("anchor_crop");
+      }
       payload.request.inputs = Value(std::move(inputs));
+    }
+    if (!binding_error.empty()) {
+      leg.submitted = false;
+      leg.state = LegState::kFailed;
+      leg.error = binding_error;
+      --record.legs_remaining;
+      UnifiedEvent leg_error;
+      leg_error.request_id = request_id;
+      leg_error.session_id = record.session_id;
+      leg_error.stage_id = leg.stage_id;
+      leg_error.kind = UnifiedEvent::Kind::kLegError;
+      leg_error.seq = record.next_seq++;
+      leg_error.error = binding_error;
+      leg_error.slot_id = leg.slot_id;
+      leg_error.slot_index = leg.slot_index;
+      leg_error.anchor_slot_index = leg.anchor_slot_index;
+      leg_error.anchor_explicit = leg.anchor_explicit;
+      dispatch_queue_.push_back(std::move(leg_error));
+      continue;
     }
     leg.submitted = true;
     leg.state = LegState::kRunning;
@@ -989,6 +1152,8 @@ void UnifiedEngine::release_chained_slots_locked(
       leg_error.error = error.what();
       leg_error.slot_id = leg.slot_id;
       leg_error.slot_index = leg.slot_index;
+      leg_error.anchor_slot_index = leg.anchor_slot_index;
+      leg_error.anchor_explicit = leg.anchor_explicit;
       dispatch_queue_.push_back(std::move(leg_error));
     }
   }
@@ -1232,6 +1397,11 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
                     !mime_val->as_str().empty()) {
                   mime = mime_val->as_str();
                 }
+                output_leg->rendered_image_bytes =
+                    std::make_shared<const std::string>(data->as_bin());
+                output_leg->rendered_image_sha256 =
+                    util::sha256_hex(data->as_bin());
+                output_leg->rendered_image_mime_type = mime;
                 output_leg->rendered_image_data_url =
                     "data:" + mime + ";base64," +
                     util::base64_encode(data->as_bin());
@@ -1361,7 +1531,9 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
               if (kind.empty()) continue;
               dispatch_narrative_slot_locked(unified_id, record, kind,
                                              directive.prompt,
-                                             directive.prose_offset);
+                                             directive.prose_offset,
+                                             directive.source_slot,
+                                             directive.reference_error);
             }
             record.vlm_result = unified_detail::replace_result_text(
                 info.result, record.vlm_text);
@@ -1670,6 +1842,17 @@ void UnifiedEngine::emit_artifact_locked(const std::string& request_id,
       Value::Map descriptor = event.artifact.as_map();
       descriptor["slot_id"] = Value(leg.slot_id);
       descriptor["slot_index"] = Value(static_cast<int64_t>(leg.slot_index));
+      if (leg.anchor_slot_index >= 0) {
+        descriptor["anchor_slot_index"] =
+            Value(static_cast<int64_t>(leg.anchor_slot_index));
+        descriptor["anchor_explicit"] = Value(leg.anchor_explicit);
+        if (!leg.anchor_sha256.empty()) {
+          descriptor["anchor_sha256"] = Value(leg.anchor_sha256);
+        }
+      }
+      event.anchor_slot_index = leg.anchor_slot_index;
+      event.anchor_explicit = leg.anchor_explicit;
+      event.anchor_sha256 = leg.anchor_sha256;
       event.artifact = Value(std::move(descriptor));
     }
     dispatch_queue_.push_back(std::move(event));
@@ -1720,6 +1903,9 @@ void UnifiedEngine::settle_output_leg_locked(
     event.error = std::move(error);
     event.slot_id = leg.slot_id;
     event.slot_index = leg.slot_index;
+    event.anchor_slot_index = leg.anchor_slot_index;
+    event.anchor_explicit = leg.anchor_explicit;
+    event.anchor_sha256 = leg.anchor_sha256;
     dispatch_queue_.push_back(std::move(event));
   }
   const bool is_image_slot =
@@ -1751,6 +1937,14 @@ Value UnifiedEngine::legs_value_locked(const Record& record) const {
     if (leg.slot_index >= 0) {
       item["slot_id"] = Value(leg.slot_id);
       item["slot_index"] = Value(static_cast<int64_t>(leg.slot_index));
+      if (leg.anchor_slot_index >= 0) {
+        item["anchor_slot_index"] =
+            Value(static_cast<int64_t>(leg.anchor_slot_index));
+        item["anchor_explicit"] = Value(leg.anchor_explicit);
+        if (!leg.anchor_sha256.empty()) {
+          item["anchor_sha256"] = Value(leg.anchor_sha256);
+        }
+      }
     }
     legs.push_back(Value(std::move(item)));
   };

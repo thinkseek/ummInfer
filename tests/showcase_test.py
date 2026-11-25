@@ -245,6 +245,35 @@ class ShowcaseSuiteTest(unittest.TestCase):
             ):
                 self.assertIn(heading, md_text)
 
+    def test_explicit_anchor_contract_and_hash_tamper(self) -> None:
+        linked = self._sample_journey_5_stream()
+        source_sha = showcase.sha256_bytes(showcase.MOCK_PNG_J5)
+        linked["observations"][4]["event"]["anchor_explicit"] = True
+        video = linked["observations"][6]["event"]["artifact"]
+        video.update({
+            "anchor_slot_index": 0,
+            "anchor_explicit": True,
+            "anchor_sha256": source_sha,
+        })
+        for leg in linked["observations"][7]["event"]["legs"]:
+            if leg.get("slot_id") == "slot-1":
+                leg.update({
+                    "anchor_slot_index": 0,
+                    "anchor_explicit": True,
+                    "anchor_sha256": source_sha,
+                })
+        metrics, _, _ = showcase.validate_narrative_stream(
+            linked, max_slots=2, require_audio=True)
+        self.assertEqual(metrics["slots"][1]["anchor_sha256"], source_sha)
+        self.assertTrue(metrics["slots"][1]["anchor_explicit"])
+        showcase.validate_journey_5_stream(linked, max_slots=2)
+
+        bad = copy.deepcopy(linked)
+        bad["observations"][6]["event"]["artifact"]["anchor_sha256"] = "0" * 64
+        bad["observations"][7]["event"]["legs"][1]["anchor_sha256"] = "0" * 64
+        with self.assertRaisesRegex(AssertionError, "anchor SHA-256"):
+            showcase.validate_narrative_stream(bad, max_slots=2, require_audio=True)
+
     def test_journey_selection_flag_supports_5_and_all(self) -> None:
         self.assertEqual(showcase.parse_journeys("all"), [1, 2, 3, 4, 5])
         self.assertEqual(showcase.parse_journeys("5"), [5])

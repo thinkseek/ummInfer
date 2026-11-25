@@ -55,15 +55,19 @@ def _fields(event, names):
     return {name: event[name] for name in names if name in event}
 
 
-def _slot_records(events):
-    names = ("seq", "server_seq", "stage", "slot_id", "slot_index",
-             "media_type", "prompt", "text_offset")
+def _slot_records(events, *, legacy=False):
+    names = ["seq", "server_seq", "stage", "slot_id", "slot_index",
+             "media_type", "prompt", "text_offset"]
+    if not legacy:
+        names.extend(("continuity_mode", "anchor_slot_index", "anchor_explicit"))
     return [_fields(event, names) for event in events
             if event.get("type") == "visual_slot"]
 
 
-def _leg_error_records(events):
-    names = ("seq", "server_seq", "stage", "error", "slot_id", "slot_index")
+def _leg_error_records(events, *, legacy=False):
+    names = ["seq", "server_seq", "stage", "error", "slot_id", "slot_index"]
+    if not legacy:
+        names.extend(("anchor_slot_index", "anchor_explicit", "anchor_sha256"))
     return [_fields(event, names) for event in events
             if event.get("type") == "leg_error"]
 
@@ -184,7 +188,7 @@ def _validate_slots(record):
     events = record["events"]
     slots = record.get("visual_slots")
     expected = _slot_records(events)
-    if slots != expected:
+    if slots != expected and slots != _slot_records(events, legacy=True):
         raise ValueError("visual_slots differs from visual_slot events")
     by_id = {}
     for expected_index, slot in enumerate(slots):
@@ -195,8 +199,8 @@ def _validate_slots(record):
         if slot.get("media_type") not in ("image", "video") \
                 or slot.get("stage") != slot["media_type"]:
             raise ValueError(f"visual slot stage/media mismatch for {slot_id}")
-        if not isinstance(slot.get("prompt"), str) or not slot["prompt"].strip():
-            raise ValueError(f"visual slot prompt is empty for {slot_id}")
+        if not isinstance(slot.get("prompt"), str):
+            raise ValueError(f"visual slot prompt is not text for {slot_id}")
         if not _integer(slot.get("text_offset")) or slot["text_offset"] < 0:
             raise ValueError(f"visual slot text_offset is invalid for {slot_id}")
         by_id[slot_id] = slot
@@ -204,7 +208,12 @@ def _validate_slots(record):
                    if leg.get("slot_id") == slot_id]
         if len(matches) != 1 or matches[0]["stage"] != slot["stage"]:
             raise ValueError(f"visual slot lacks one matching terminal leg: {slot_id}")
-    if record.get("leg_errors") != _leg_error_records(events):
+        if not slot["prompt"].strip() and not (
+                slot.get("anchor_explicit", False)
+                and matches[0]["state"] in ("failed", "aborted")):
+            raise ValueError(f"visual slot prompt is empty for {slot_id}")
+    if record.get("leg_errors") != _leg_error_records(events) \
+            and record.get("leg_errors") != _leg_error_records(events, legacy=True):
         raise ValueError("leg_errors differs from leg_error events")
     return by_id
 
@@ -310,6 +319,92 @@ def _validate_artifacts(record, artifact_root, slots):
         raise ValueError("artifacts list does not match complete event groups")
 
 
+def _validate_linkages(record, slots):
+    """Validate mainline i2v_chain links and their content addresses.
+
+    Explicit references may be unresolved only on a failed/aborted leg. The
+    mainline implicit T2V fallback is also unresolved by design. Any resolved
+    digest must bind an earlier image slot's completed CAS artifact.
+    """
+    outputs_by_slot = {}
+    for output in record["artifacts"]:
+        slot_id = output.get("slot_id")
+        if slot_id is not None:
+            outputs_by_slot.setdefault(slot_id, []).append(output)
+    legs = {leg.get("slot_id"): leg for leg in record["terminal_legs"]
+            if leg.get("slot_id") is not None}
+    by_index = {slot["slot_index"]: slot for slot in slots.values()}
+
+    for slot_id, slot in slots.items():
+        leg = legs[slot_id]
+        outputs = outputs_by_slot.get(slot_id, [])
+        anchor = slot.get("anchor_slot_index")
+        explicit = slot.get("anchor_explicit", False)
+        if not isinstance(explicit, bool):
+            raise ValueError(f"anchor_explicit is not boolean for {slot_id}")
+        if slot.get("continuity_mode") not in (None, "prompt_anchor", "i2v_chain"):
+            raise ValueError(f"invalid continuity_mode for {slot_id}")
+        if anchor is None:
+            if explicit:
+                if leg["state"] == "completed" or outputs \
+                        or "anchor_slot_index" in leg or "anchor_sha256" in leg:
+                    raise ValueError(f"unresolved explicit slot has output: {slot_id}")
+                continue
+            if "anchor_slot_index" in leg or "anchor_sha256" in leg \
+                    or any("anchor_slot_index" in output
+                           or "anchor_sha256" in output for output in outputs):
+                raise ValueError(f"unanchored slot carries anchor metadata: {slot_id}")
+            continue
+        if not _integer(anchor) or anchor < 0 \
+                or slot.get("continuity_mode") != "i2v_chain":
+            raise ValueError(f"invalid visual anchor for {slot_id}")
+        if explicit or "anchor_slot_index" in leg or "anchor_sha256" in leg:
+            if leg.get("anchor_slot_index") != anchor \
+                    or leg.get("anchor_explicit", False) != explicit:
+                raise ValueError(f"visual/terminal anchor mismatch for {slot_id}")
+        digest = leg.get("anchor_sha256")
+        if digest is not None and not _sha256(digest):
+            raise ValueError(f"invalid anchor SHA-256 for {slot_id}")
+        if explicit and leg["state"] == "completed" and not digest:
+            raise ValueError(f"completed explicit I2V slot lacks digest: {slot_id}")
+        if explicit and leg["state"] == "completed" and not outputs:
+            raise ValueError(f"completed explicit I2V has no artifact: {slot_id}")
+
+        for output in outputs:
+            if output.get("media_type") != "video":
+                raise ValueError(f"anchored artifact modality is invalid: {slot_id}")
+            if explicit or "anchor_slot_index" in output \
+                    or "anchor_sha256" in output:
+                if output.get("anchor_slot_index") != anchor \
+                        or output.get("anchor_explicit", False) != explicit:
+                    raise ValueError(f"anchored artifact metadata is invalid: {slot_id}")
+            output_digest = output.get("anchor_sha256")
+            if output_digest is not None and not _sha256(output_digest):
+                raise ValueError(f"invalid artifact anchor digest: {slot_id}")
+            if explicit and output_digest is None:
+                raise ValueError(f"explicit I2V artifact lacks digest: {slot_id}")
+            if digest is not None and output_digest != digest:
+                raise ValueError(f"artifact/terminal anchor mismatch: {slot_id}")
+        if digest is None and not any("anchor_sha256" in output
+                                      for output in outputs):
+            if explicit and leg["state"] == "completed":
+                raise ValueError(f"completed explicit I2V has no artifact: {slot_id}")
+            continue
+
+        resolved = digest if digest is not None else outputs[0]["anchor_sha256"]
+        source = by_index.get(anchor)
+        if source is None or anchor >= slot["slot_index"] \
+                or source["media_type"] != "image" \
+                or slot["media_type"] != "video":
+            raise ValueError(f"resolved anchor is not an earlier image: {slot_id}")
+        source_outputs = [item for item in outputs_by_slot.get(
+                              source["slot_id"], [])
+                          if item.get("media_type") == "image"]
+        if len(source_outputs) != 1 \
+                or source_outputs[0].get("sha256") != resolved:
+            raise ValueError(f"anchor CAS artifact does not match {slot_id}")
+
+
 def _validate_v2(record, artifact_root):
     events = record["events"]
     server_seqs = [event.get("server_seq") for event in events
@@ -335,6 +430,7 @@ def _validate_v2(record, artifact_root):
     _validate_request_params(record, artifact_root)
     slots = _validate_slots(record)
     _validate_artifacts(record, artifact_root, slots)
+    _validate_linkages(record, slots)
 
 
 def validate_trajectory(path, *, artifact_dir=None):

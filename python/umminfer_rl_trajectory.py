@@ -465,15 +465,19 @@ def _fields(event, names):
     return {name: event[name] for name in names if name in event}
 
 
-def _slot_records(events):
-    names = ("seq", "server_seq", "stage", "slot_id", "slot_index",
-             "media_type", "prompt", "text_offset")
+def _slot_records(events, *, legacy=False):
+    names = ["seq", "server_seq", "stage", "slot_id", "slot_index",
+             "media_type", "prompt", "text_offset"]
+    if not legacy:
+        names.extend(("continuity_mode", "anchor_slot_index", "anchor_explicit"))
     return [_fields(event, names) for event in events
             if event.get("type") == "visual_slot"]
 
 
-def _leg_error_records(events):
-    names = ("seq", "server_seq", "stage", "error", "slot_id", "slot_index")
+def _leg_error_records(events, *, legacy=False):
+    names = ["seq", "server_seq", "stage", "error", "slot_id", "slot_index"]
+    if not legacy:
+        names.extend(("anchor_slot_index", "anchor_explicit", "anchor_sha256"))
     return [_fields(event, names) for event in events
             if event.get("type") == "leg_error"]
 

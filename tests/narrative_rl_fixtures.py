@@ -25,15 +25,25 @@ def envelope(seq, kind, text="", **fields):
     return unified
 
 
-def visual_slot(seq, index, media_type, prompt, text_offset):
+def visual_slot(seq, index, media_type, prompt, text_offset, *,
+                continuity_mode=None, anchor_slot_index=None,
+                anchor_explicit=None):
+    fields = {}
+    if continuity_mode is not None:
+        fields["continuity_mode"] = continuity_mode
+    if anchor_slot_index is not None:
+        fields["anchor_slot_index"] = anchor_slot_index
+    if anchor_explicit is not None:
+        fields["anchor_explicit"] = anchor_explicit
     return envelope(
         seq, "visual_slot", stage=media_type, slot_id=f"slot-{index}",
         slot_index=index, media_type=media_type, prompt=prompt,
-        text_offset=text_offset)
+        text_offset=text_offset, **fields)
 
 
 def artifact(seq, artifact_id, media_type, mime_type, raw, stage, *,
-             index=0, total=1, slot_id=None, slot_index=None, full_raw=None):
+             index=0, total=1, slot_id=None, slot_index=None, full_raw=None,
+             anchor_slot_index=None, anchor_explicit=None, anchor_sha256=None):
     descriptor = {
         "artifact_id": artifact_id, "media_type": media_type,
         "mime_type": mime_type, "encoding": "base64",
@@ -44,6 +54,12 @@ def artifact(seq, artifact_id, media_type, mime_type, raw, stage, *,
         complete_raw = raw if full_raw is None else full_raw
         descriptor["bytes"] = len(complete_raw)
         descriptor["sha256"] = hashlib.sha256(complete_raw).hexdigest()
+    if anchor_slot_index is not None:
+        descriptor["anchor_slot_index"] = anchor_slot_index
+    if anchor_explicit is not None:
+        descriptor["anchor_explicit"] = anchor_explicit
+    if anchor_sha256 is not None:
+        descriptor["anchor_sha256"] = anchor_sha256
     if media_type == "audio":
         descriptor.update({"format": "pcm16", "sample_rate": 24000,
                            "channels": 1, "stream_index": 0})
@@ -90,6 +106,37 @@ def narrative_events():
             {"stage": "tts", "state": "completed"},
         ]),
     ]
+
+
+def linked_events(*, delayed=False):
+    anchor_sha = hashlib.sha256(PNG).hexdigest()
+    image_slot = visual_slot(1, 0, "image", "a glowing red lantern",
+                             len(FIRST_TEXT), continuity_mode="i2v_chain")
+    video_slot = visual_slot(2 if delayed else 3, 1, "video",
+                             "the lantern sways in the wind", len(FIRST_TEXT),
+                             continuity_mode="i2v_chain", anchor_slot_index=0,
+                             anchor_explicit=True)
+    image_artifact = artifact(
+        3 if delayed else 2, "art-image-linked", "image", "image/png", PNG,
+        "image", slot_id="slot-0", slot_index=0)
+    events = [
+        envelope(0, "vlm_delta", FIRST_TEXT),
+        image_slot,
+        video_slot if delayed else image_artifact,
+        image_artifact if delayed else video_slot,
+        artifact(4, "art-video-linked", "video", "video/mp4", MP4, "video",
+                 slot_id="slot-1", slot_index=1, anchor_slot_index=0,
+                 anchor_explicit=True, anchor_sha256=anchor_sha),
+        envelope(5, "vlm_delta", SECOND_TEXT),
+        envelope(6, "complete", CLEAN_TEXT, legs=[
+            {"stage": "image", "slot_id": "slot-0", "slot_index": 0,
+             "state": "completed"},
+            {"stage": "video", "slot_id": "slot-1", "slot_index": 1,
+             "state": "completed", "anchor_slot_index": 0,
+             "anchor_explicit": True, "anchor_sha256": anchor_sha},
+        ]),
+    ]
+    return events
 
 
 def cancelled_events():

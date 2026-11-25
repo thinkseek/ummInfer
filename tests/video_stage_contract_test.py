@@ -7,6 +7,8 @@ replaceable OpenAI `/v1/videos` upstream adapter without requiring a GPU.
 """
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import base64
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -158,6 +160,31 @@ class VideoStageUnitTests(unittest.TestCase):
         bad_fmt["data"]["request"]["inputs"]["output_format"] = "webm"
         with self.assertRaises(ValueError):
             stage.parse_request(bad_fmt)
+
+    def test_parse_explicit_i2v_image_and_anchor_hash(self):
+        stage = STAGE.VideoStage(
+            "video", "ipc:///tmp/unused1", "ipc:///tmp/unused2",
+            "ipc:///tmp/unused3", FakeVideoBackend())
+        source = b"settled-source-image"
+        digest = hashlib.sha256(source).hexdigest()
+        message = {"data": {"request": {"inputs": {
+            "prompt": "animate the source", "size": "512x320",
+            "num_frames": 13, "image": source,
+            "anchor_explicit": True, "anchor_sha256": digest,
+        }}}}
+        parsed = stage.parse_request(message)
+        self.assertEqual(parsed.init_image_bytes, source)
+
+        message["data"]["request"]["inputs"]["image"] = (
+            "data:image/png;base64," + base64.b64encode(source).decode("ascii"))
+        self.assertEqual(stage.parse_request(message).init_image_bytes, source)
+        message["data"]["request"]["inputs"]["anchor_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "anchor_sha256"):
+            stage.parse_request(message)
+        del message["data"]["request"]["inputs"]["image"]
+        message["data"]["request"]["inputs"]["anchor_sha256"] = digest
+        with self.assertRaisesRegex(ValueError, "requires video.image"):
+            stage.parse_request(message)
 
 
 @unittest.skipUnless(HAS_ZMQ, "pyzmq and msgpack required for VideoStage ZMQ tests")

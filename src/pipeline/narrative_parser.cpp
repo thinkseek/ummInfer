@@ -26,6 +26,76 @@ std::string trim(std::string_view text) {
 constexpr std::array<std::string_view, 3> kTags = {"image", "video",
                                                    "visual"};
 
+bool ascii_iequals(std::string_view text, size_t at, std::string_view expected) {
+  if (at + expected.size() > text.size()) return false;
+  for (size_t i = 0; i < expected.size(); ++i) {
+    if (ascii_lower(text[at + i]) != expected[i]) return false;
+  }
+  return true;
+}
+
+// Returns the pipe introducing a source-like suffix, or npos. Only a suffix is
+// reserved; prose such as "the source=slot-0 metaphor" remains an ordinary
+// prompt. Once `| source` appears, malformed syntax is fail-closed rather than
+// silently becoming an unconditioned video prompt.
+size_t source_suffix_pipe(std::string_view body, size_t from = 0) {
+  for (size_t pipe = body.find('|', from); pipe != std::string_view::npos;
+       pipe = body.find('|', pipe + 1)) {
+    size_t cursor = pipe + 1;
+    while (cursor < body.size() && is_space(body[cursor])) ++cursor;
+    if (!ascii_iequals(body, cursor, "source")) continue;
+    cursor += 6;
+    if (cursor == body.size() || body[cursor] == '=' || is_space(body[cursor])) {
+      return pipe;
+    }
+  }
+  return std::string_view::npos;
+}
+
+bool canonical_slot_id(std::string_view slot) {
+  if (slot.size() < 6 || slot.substr(0, 5) != "slot-") return false;
+  const std::string_view digits = slot.substr(5);
+  if (digits.empty() || (digits.size() > 1 && digits.front() == '0')) return false;
+  for (char c : digits) {
+    if (c < '0' || c > '9') return false;
+  }
+  return true;
+}
+
+// Parses the single source suffix in `body` and updates `directive`.
+void parse_reference(NarrativeDirective& directive, std::string body) {
+  directive.prompt = body;
+  const size_t first = source_suffix_pipe(body);
+  if (first == std::string::npos) return;
+  directive.prompt = trim(std::string_view(body).substr(0, first));
+  if (source_suffix_pipe(body, first + 1) != std::string::npos) {
+    directive.reference_error = "duplicate source reference";
+    return;
+  }
+  size_t cursor = first + 1;
+  while (cursor < body.size() && is_space(body[cursor])) ++cursor;
+  cursor += 6;  // source_suffix_pipe already matched "source".
+  while (cursor < body.size() && is_space(body[cursor])) ++cursor;
+  if (cursor >= body.size() || body[cursor] != '=') {
+    directive.reference_error = "source reference must use source=slot-N";
+    return;
+  }
+  ++cursor;
+  while (cursor < body.size() && is_space(body[cursor])) ++cursor;
+  size_t end = body.size();
+  while (end > cursor && is_space(body[end - 1])) --end;
+  const std::string slot = body.substr(cursor, end - cursor);
+  if (!canonical_slot_id(slot)) {
+    directive.reference_error = "source reference must name slot-N";
+    return;
+  }
+  if (directive.prompt.empty()) {
+    directive.reference_error = "referenced video requires a non-empty prompt";
+    return;
+  }
+  directive.source_slot = slot;
+}
+
 // Match one tag at `cursor`. Returns 1 when a tag matched (cursor advances),
 // 0 when no tag can match, -1 when the buffer ends inside a possible tag.
 int match_tag(const std::string& buf, size_t& cursor, std::string& kind,
@@ -121,12 +191,12 @@ std::string NarrativeStreamParser::scan(bool eof,
       pos = open + 1;
       continue;
     }
-    std::string prompt =
-        trim(std::string_view(buf_).substr(cursor, close - cursor));
-    if (!prompt.empty()) {
-      NarrativeDirective directive;
-      directive.kind = std::move(kind);
-      directive.prompt = std::move(prompt);
+    NarrativeDirective directive;
+    directive.kind = std::move(kind);
+    parse_reference(directive,
+                    trim(std::string_view(buf_).substr(cursor, close - cursor)));
+    if (!directive.prompt.empty() || !directive.source_slot.empty() ||
+        !directive.reference_error.empty()) {
       directive.prose_offset = prose_emitted_ + ret.size();
       out.push_back(std::move(directive));
     }
