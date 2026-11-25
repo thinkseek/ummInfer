@@ -162,10 +162,12 @@ protocol behavior, and checkpoint-chain tamper detection. They do not issue a
 valid `train_step`, do not simulate an optimizer success, and print
 `REAL OPTIMIZER: NOT_RUN` plus `REAL MODEL QUALITY RESULT: NOT_RUN`.
 
-The measured run below remains the only real optimizer evidence in this
-document. It used the historical schema-v1 export, which the current worker
-still accepts. The current recorder emits schema v2; no SM90 optimizer rerun
-was performed for the schema-v2 change.
+The measured run below remains the only real **REINFORCE** optimizer evidence in
+this document. It used the historical schema-v1 export, which the current worker
+still accepts. The current recorder emits schema v2; no SM90 REINFORCE rerun was
+performed for the schema-v2 change. The bounded Stage C causal-SFT gate uses
+schema-v2 interleaved targets but is a different algorithm and acceptance scope;
+see [joint-training.md](joint-training.md#bounded-real-joint-sft-optimizer-gate).
 
 ## Measured SM90 run (2026-11-14)
 
