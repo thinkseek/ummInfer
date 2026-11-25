@@ -39,7 +39,9 @@ L1 is complete when all five statements hold:
 - **Server VAD.** `turn_detection` accepts `null` (disabled, the previous
   behavior) or `{"type": "server_vad", "silence_ms": N}` with N in
   `[100, 5000]`, default 500. `src/serve/energy_vad.hpp` is a 10 ms-frame
-  energy detector with an adaptive noise floor; it has no new dependency.
+  energy detector with an adaptive noise floor. `echo_robust_vad.hpp` wraps it
+  with the bounded playback-reference residual gate described below; neither
+  component adds a dependency.
 - **Endpointing.** `input_audio_buffer.speech_started` and
   `input_audio_buffer.speech_stopped` are emitted on VAD transitions. The stop
   event submits the turn's final request without `transcription.done`. Under
@@ -116,8 +118,13 @@ Residuals observed in the same run:
 - One request per session at a time. Previews re-encode the whole turn prefix,
   so cost grows with the square of turn length. The 200 ms window is a floor on
   latency, not a throughput claim.
-- No echo cancellation. A speaker playing through the client's own output can
-  start a turn.
+- Echo suppression is a bounded correlation/residual slice, not a full acoustic
+  echo canceller. An acoustic path outside the 500 ms search window, an
+  unobserved or poorly aligned playback path, and loud non-echo noise fall back
+  to energy VAD and can still start a turn. Physical-device behavior is
+  `NOT_RUN`; see the required live gate below.
+- The residual is used only for VAD. ASR still receives the original microphone
+  PCM, so no double-talk transcription-quality claim is made.
 - The preview window is not configurable on the wire.
 
 ## L2: streaming output, sentence pipeline, prefix reuse
@@ -212,6 +219,84 @@ The turn buffer now drops exactly the committed turn on reset. Before this
 fix, `reset_turn` erased `turn_audio_start` bytes, which is 0 on a normal turn,
 so the audio of every turn accumulated. Multi-turn ASR then saw the whole
 session and could return empty text.
+
+### Echo-robust VAD and double-talk (bounded DSP slice)
+
+With `server_vad` and `audio_output` enabled, every accepted `audio.delta` also
+feeds that realtime session's far-end reference ring. This is PCM **accepted for
+WebSocket emission**, not a measurement of the client's DAC, speaker, jitter
+buffer, or acoustic path. No `playback_ack` or client change is required.
+Reference-less sessions keep the previous energy-VAD behavior.
+
+`src/serve/echo_robust_vad.hpp` processes each 10 ms near-end frame as follows:
+
+1. Downmix far-end PCM16 to mono and linearly resample 8–96 kHz input to the
+   16 kHz microphone contract. Invalid metadata or a mid-response format change
+   clears the reference and falls back to energy VAD. Non-16 kHz resampling
+   holds one input sample for interpolation.
+2. Search integer delays from 0 through 500 ms. Acquisition screens every lag
+   with 16 taps, then evaluates the best 16 candidates over all 160 samples. A
+   sparse onset whose screen contains no energy uses the full frame for that
+   same bounded lag scan. A trusted track (normalized correlation at least
+   0.98) searches only its ±16-sample neighborhood; uncertain tracks reacquire.
+3. At the best lag, require correlation at least 0.55 and reference energy above
+   -60 dBFS, fit one signed gain (magnitude capped at 8), and subtract the
+   aligned reference. A result that would amplify energy is discarded. Highly
+   correlated echo with residual/input energy at most 0.20 is gated as echo,
+   including moderate nonlinear clipping. Otherwise the residual goes to the
+   existing adaptive `EnergyVad`. Independent near-end energy therefore remains
+   available for double-talk interruption.
+4. If there is no reference, too little history, inadequate correlation, or no
+   in-window alignment, pass the original frame unchanged. There is no guessed
+   alignment and no learned-model claim.
+
+The bounds are explicit. Defaults retain 16,000 float reference samples (one
+second, 64,000 bytes) plus two 160-sample work vectors and one PCM frame, about
+64 KiB of sample/frame storage per session. The default worst case is 8,050
+candidate evaluations per 10 ms frame: 33 local + 8,001 acquisition + 16
+full-frame finalists. Steady trusted tracks use 33. There is no per-frame heap
+allocation in the alignment/residual path and no history growth with response
+length. The existing 64-session server cap bounds aggregate session state.
+
+Reference state is per WebSocket session. It is cleared at a new response,
+barge-in, timeout/shutdown, and configuration replacement, so purged or old
+PCM cannot suppress speech against a later response. A normally completed
+response keeps only its bounded tail until the next response boundary. The
+original microphone PCM, not the VAD residual, is submitted to ASR.
+
+Deterministic CPU coverage in `tests/unified_contract_test.cpp` reports:
+
+| Synthetic check | Result |
+| --- | --- |
+| Echo-only, 73 ms delay | 0 speech starts in 100 frames |
+| WebSocket echo-only path | 0 false barge-ins in 50 frames; no response cancellation |
+| Near-end-only and simultaneous double-talk | first 10 ms frame in both cases |
+| Echo after near-end speech stops | configured 100 ms endpoint still fires |
+| Delay jumps, 13–499 ms | 0 speech starts in 1,000 frames (10 s) |
+| Attenuation 0.08/0.35, gain 1.4, moderate clipping | 4/4 echo-only cases produce no turn |
+| 550 ms delay, outside the search bound | energy fallback detects in 10 ms; no false echo claim |
+| Silence, repeated barge-in, response reset, two sessions | no silence event; 3/3 interruptions; no cross-response/session reference |
+| 24 kHz far-end to 16 kHz near-end | resampled echo suppressed; final alignment valid |
+
+These are deterministic digital fixtures, not acoustic quality measurements.
+In particular, quiet double-talk below the residual gate, reverberation that a
+single gain cannot represent, severe nonlinear distortion, client playout lead
+or lag beyond the bounded history/search, and unrelated loud noise can still
+cause a missed or false interruption.
+
+**Required physical live gate — `NOT_RUN` in this CPU-only change.** Before
+claiming physical AEC or deploying this as acoustic protection, run real TTS
+through the actual speaker and microphone on each supported client topology.
+Cover device-buffer delay and jitter, speaker/mic gain, clipping, silence,
+echo-only, near-end-only, simultaneous speech, repeated barge-in, two sessions,
+and response replacement. Record false barge-ins, missed double-talk, onset and
+stop latency, endpoint latency, CPU, and resident memory against an A/B baseline
+with the wrapper disabled. The gate requires zero echo-only cut-ins in the
+agreed fixed corpus, no near-end-only regression, genuine double-talk stop
+latency within the existing one-second L1 bound, and bounded resource use. A
+human listening check is also required for playback artifacts and speech
+intelligibility. The synthetic suite and timed virtual PCM harnesses do not
+substitute for this gate.
 
 ### Playback acknowledgement and barge-in history (Stage B)
 

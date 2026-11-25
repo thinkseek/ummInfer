@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "asr_common.hpp"
+#include "echo_robust_vad.hpp"
 #include "energy_vad.hpp"
 #include "umminfer/audio/audio.hpp"
 #include "umminfer/pipeline/unified.hpp"
@@ -73,7 +74,7 @@ struct RealtimeSession {
   int64_t segment_id = 0;      // increments per turn under server VAD
   int64_t partial_count = 0;
   bool speech_open = false;
-  std::unique_ptr<serve_detail::EnergyVad> vad;
+  std::unique_ptr<serve_detail::EchoRobustVad> vad;
   Clock::time_point first_audio_at;
   bool have_first_audio = false;
   bool first_partial_logged = false;
@@ -378,6 +379,7 @@ class RealtimeApi::Impl {
 
   void cancel_and_release_response(RealtimeSession* session,
                                    const char* reason) {
+    if (session->vad) session->vad->reset_reference();
     if (session->response_request_id.empty()) {
       reset_response_tracking(session);
       return;
@@ -415,6 +417,10 @@ class RealtimeApi::Impl {
       unified_->release(id);
     }
     drop_queued_response_events(session, id);
+    // Queued PCM that did not reach playback must not become reference audio
+    // for the new turn. Acoustic tail handling is bounded by the client's
+    // response.cancelled playback stop, not by leaking this response's ring.
+    if (session->vad) session->vad->reset_reference();
     session->response_request_id.clear();
     disown_unified_response(id);
     json cancelled = {{"type", "response.cancelled"},
@@ -450,13 +456,14 @@ class RealtimeApi::Impl {
     session->~RealtimeSession();
   }
 
-  void send(lws* wsi, RealtimeSession* session, const json& event) {
+  bool send(lws* wsi, RealtimeSession* session, const json& event) {
     if (session->outbound.size() >= kMaxOutboundFrames) {
       session->close_after_write = true;
-      return;
+      return false;
     }
     session->outbound.push_back(event.dump());
     lws_callback_on_writable(wsi);
+    return true;
   }
 
   void fail(lws* wsi, RealtimeSession* session, const std::string& message) {
@@ -615,6 +622,7 @@ class RealtimeApi::Impl {
     // response cancellation must not be gated on an ASR request being present.
     const std::string interrupted_response_id = session->response_request_id;
     barge_in_response(wsi, session);
+    if (session->vad) session->vad->reset_reference();
     // Barge-in: a new utterance while the previous turn still computes.
     if (!session->request_id.empty()) {
       interrupt_request(session, "barge_in");
@@ -812,12 +820,13 @@ class RealtimeApi::Impl {
     session->voice = voice;
     if (apply_turn_detection) {
       if (vad_enabled) {
-        session->vad = std::make_unique<serve_detail::EnergyVad>(vad_config);
+        session->vad = std::make_unique<serve_detail::EchoRobustVad>(vad_config);
       } else {
         session->vad.reset();
         session->speech_open = false;
       }
     }
+    if (session->vad) session->vad->reset_reference();
     session->ready = true;
     send(wsi, session,
          {{"type", "transcription_session.updated"},
@@ -1013,6 +1022,7 @@ class RealtimeApi::Impl {
                       const std::string& text) {
     if (unified_ == nullptr || !session->audio_output || text.empty()) return;
     barge_in_response(wsi, session);
+    if (session->vad) session->vad->reset_reference();
     reset_response_tracking(session);
     Value::Map inputs;
     Value::Array messages;
@@ -1076,7 +1086,11 @@ class RealtimeApi::Impl {
         delta["text_end_cursor"] = text_end_cursor;
         session->response_issued_cursors.insert(text_cursor);
       }
-      send(wsi, session, delta);
+      if (send(wsi, session, delta) && session->vad) {
+        session->vad->push_reference(pcm.data() + offset, step,
+                                     static_cast<int>(sample_rate),
+                                     static_cast<int>(channels));
+      }
     }
   }
 

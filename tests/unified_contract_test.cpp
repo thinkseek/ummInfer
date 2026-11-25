@@ -40,6 +40,7 @@
 #include "umminfer/util/codec.hpp"
 #include "umminfer/obs/metrics.hpp"
 #include "pipeline/narrative_parser.hpp"
+#include "serve/echo_robust_vad.hpp"
 #include "serve/energy_vad.hpp"
 #include <curl/curl.h>
 #include <httplib.h>
@@ -5359,6 +5360,110 @@ void run_realtime_spoken_audio_format_and_leg_error_subtest(
     check(false, "turn 2 did not submit to TTS");
   }
 
+  // Turn 3: actual audio.delta emission seeds this session's far-end ring.
+  // Echoed assistant audio alone must not cancel the response; adding an
+  // independent near-end signal during playback must cancel it immediately.
+  if (auto tts_req = send_utterance()) {
+    constexpr size_t kFrames = 50;
+    constexpr size_t kSamples = kFrames * 160;
+    auto bytes_of = [](const std::vector<int16_t>& samples) {
+      std::string bytes(samples.size() * 2, '\0');
+      for (size_t i = 0; i < samples.size(); ++i) {
+        const auto value = static_cast<uint16_t>(samples[i]);
+        bytes[i * 2] = static_cast<char>(value & 0xff);
+        bytes[i * 2 + 1] = static_cast<char>((value >> 8) & 0xff);
+      }
+      return bytes;
+    };
+    auto append_pcm = [&](const std::string& pcm) {
+      ws.send_text(json{{"type", "input_audio_buffer.append"},
+                        {"audio", util::base64_encode(pcm)}}
+                       .dump());
+    };
+    auto send_reference = [&](const std::vector<int16_t>& pcm, int64_t index) {
+      Value::Map chunk;
+      chunk["audio"] = Value::bin(bytes_of(pcm));
+      chunk["index"] = Value(index);
+      chunk["sample_rate"] = Value(int64_t{16000});
+      chunk["channels"] = Value(int64_t{1});
+      chunk["format"] = Value("pcm16");
+      h.stream(tts_req->request_id, "tts", Value(std::move(chunk)));
+      bool delivered = false;
+      while (auto event = next_ws_event()) {
+        if (event->value("type", "") == "audio.delta") {
+          delivered = true;
+          break;
+        }
+      }
+      check(delivered, "synthetic far-end PCM was not emitted as audio.delta");
+    };
+
+    std::vector<int16_t> reference(kSamples);
+    std::vector<int16_t> echo(kSamples, 0);
+    constexpr size_t kDelay = 800;  // 50 ms, deliberately not frame aligned.
+    for (size_t i = 0; i < kSamples; ++i) {
+      reference[i] = static_cast<int16_t>(
+          7000.0 * std::sin(2.0 * 3.14159265358979323846 * 397.0 * i / 16000.0) +
+          4000.0 * std::sin(2.0 * 3.14159265358979323846 * 1153.0 * i / 16000.0));
+      if (i >= kDelay) echo[i] = static_cast<int16_t>(0.6 * reference[i - kDelay]);
+    }
+    send_reference(reference, 0);
+    const std::string echo_bytes = bytes_of(echo);
+    for (size_t frame = 0; frame < kFrames; ++frame) {
+      append_pcm(echo_bytes.substr(frame * 320, 320));
+    }
+    bool false_barge_in = false;
+    while (auto event = next_ws_event(0.25)) {
+      const std::string type = event->value("type", "");
+      if (type == "input_audio_buffer.speech_started" ||
+          type == "response.cancelled") {
+        false_barge_in = true;
+      }
+    }
+    check(!false_barge_in,
+          "wire-level assistant echo falsely interrupted the active response");
+
+    std::vector<int16_t> double_talk(kSamples);
+    for (size_t i = 0; i < kSamples; ++i) {
+      const int16_t near = static_cast<int16_t>(
+          6500.0 * std::sin(2.0 * 3.14159265358979323846 * 733.0 * i / 16000.0) +
+          3500.0 * std::sin(2.0 * 3.14159265358979323846 * 1297.0 * i / 16000.0));
+      double_talk[i] = static_cast<int16_t>(std::clamp(
+          static_cast<int>(0.6 * reference[i] + near), -32768, 32767));
+    }
+    send_reference(reference, 1);
+    const std::string double_bytes = bytes_of(double_talk);
+    append_pcm(double_bytes.substr(0, 320));
+    bool saw_speech_start = false;
+    bool saw_response_cancel = false;
+    for (int i = 0; i < 16 && !(saw_speech_start && saw_response_cancel); ++i) {
+      auto event = next_ws_event();
+      if (!event) break;
+      saw_speech_start |=
+          event->value("type", "") == "input_audio_buffer.speech_started";
+      saw_response_cancel |= event->value("type", "") == "response.cancelled";
+    }
+    check(saw_speech_start && saw_response_cancel,
+          "wire-level double-talk did not promptly cancel the response");
+    append_pcm(quiet);
+    bool drained_final = false;
+    while (auto req = h.next_submit(h.asr_recv)) {
+      if (req->request_id.rfind("realtime-preview-", 0) == 0) {
+        h.complete(req->request_id, "asr", true, text_result(""));
+        continue;
+      }
+      h.complete(req->request_id, "asr", true, text_result(""));
+      drained_final = true;
+      break;
+    }
+    check(drained_final,
+          "double-talk cleanup did not drain its preview and final ASR requests");
+    std::cout << "REALTIME_ECHO_WIRE echo_only_false_barge_ins=0/50 "
+                 "double_talk_cancel=PASS\n";
+  } else {
+    check(false, "turn 3 echo-robustness turn did not submit to TTS");
+  }
+
   wait_until([&] { return engine.in_flight() == 0; },
              "realtime spoken requests stayed in flight");
   cancel.store(true, std::memory_order_relaxed);
@@ -7436,6 +7541,294 @@ void test_energy_vad_speech_transitions() {
   check(!stopped.empty() && stopped[0].bytes_consumed == kFrameBytes,
         "speech stop was not reported at the window boundary");
   check(!vad.speech(), "the VAD stayed in speech after the stop");
+}
+
+// Echo-robust VAD fixtures use deterministic broadband far-end audio and an
+// independent two-tone near-end signal. No acoustic or learned-quality claim
+// is made: these tests exercise alignment, residual energy and event timing.
+std::vector<int16_t> make_echo_reference(size_t samples, uint32_t seed) {
+  std::vector<int16_t> out(samples);
+  uint32_t state = seed;
+  int32_t filtered = 0;
+  for (size_t i = 0; i < samples; ++i) {
+    state = state * 1664525u + 1013904223u;
+    const int32_t noise = static_cast<int32_t>((state >> 16) & 0xffffu) - 32768;
+    filtered = (filtered * 3 + noise) / 4;
+    const double tone = 2500.0 * std::sin(2.0 * 3.14159265358979323846 *
+                                         431.0 * i / 16000.0);
+    out[i] = static_cast<int16_t>(std::clamp(
+        static_cast<int>(filtered / 3 + static_cast<int>(tone)), -14000, 14000));
+  }
+  return out;
+}
+
+std::vector<int16_t> make_near_end_user(size_t samples) {
+  std::vector<int16_t> out(samples);
+  for (size_t i = 0; i < samples; ++i) {
+    out[i] = static_cast<int16_t>(
+        6500.0 * std::sin(2.0 * 3.14159265358979323846 * 733.0 * i / 16000.0) +
+        3500.0 * std::sin(2.0 * 3.14159265358979323846 * 1297.0 * i / 16000.0));
+  }
+  return out;
+}
+
+std::string echo_pcm_slice(const std::vector<int16_t>& samples, size_t begin,
+                           size_t count) {
+  std::string bytes(count * 2, '\0');
+  for (size_t i = 0; i < count; ++i) {
+    const auto value = static_cast<uint16_t>(samples[begin + i]);
+    bytes[i * 2] = static_cast<char>(value & 0xff);
+    bytes[i * 2 + 1] = static_cast<char>((value >> 8) & 0xff);
+  }
+  return bytes;
+}
+
+std::vector<int16_t> make_synthetic_near(
+    const std::vector<int16_t>& reference,
+    const std::vector<int16_t>& user,
+    const std::function<size_t(size_t)>& delay_for_frame, double echo_gain,
+    int clip_limit = 0, size_t user_first_frame = std::numeric_limits<size_t>::max(),
+    size_t user_last_frame = 0) {
+  std::vector<int16_t> near(reference.size(), 0);
+  for (size_t i = 0; i < reference.size(); ++i) {
+    const size_t frame = i / 160;
+    const size_t delay = delay_for_frame(frame);
+    double value = 0.0;
+    if (i >= delay) value += echo_gain * reference[i - delay];
+    if (frame >= user_first_frame && frame < user_last_frame) value += user[i];
+    if (clip_limit > 0) {
+      value = std::clamp(value, static_cast<double>(-clip_limit),
+                         static_cast<double>(clip_limit));
+    }
+    near[i] = static_cast<int16_t>(std::clamp(
+        static_cast<int>(std::lround(value)), -32768, 32767));
+  }
+  return near;
+}
+
+struct SyntheticVadResult {
+  std::vector<size_t> starts;
+  std::vector<size_t> stops;
+  size_t max_candidates = 0;
+  size_t max_reference_samples = 0;
+};
+
+SyntheticVadResult run_synthetic_vad(serve_detail::EchoRobustVad& vad,
+                                     const std::vector<int16_t>& reference,
+                                     const std::vector<int16_t>& near,
+                                     int reference_rate = 16000) {
+  check(reference.empty() || reference.size() == near.size() ||
+            (reference_rate == 24000 && reference.size() == near.size() * 3 / 2),
+        "synthetic VAD input lengths do not match");
+  constexpr size_t kNearFrame = 160;
+  const size_t reference_frame = static_cast<size_t>(reference_rate / 100);
+  SyntheticVadResult result;
+  for (size_t frame = 0; frame < near.size() / kNearFrame; ++frame) {
+    if (!reference.empty()) {
+      const std::string bytes =
+          echo_pcm_slice(reference, frame * reference_frame, reference_frame);
+      check(vad.push_reference(bytes.data(), bytes.size(), reference_rate),
+            "valid synthetic playback reference was rejected");
+    }
+    const std::string bytes = echo_pcm_slice(near, frame * kNearFrame, kNearFrame);
+    for (const auto& event : vad.push(bytes.data(), bytes.size())) {
+      if (event.event == serve_detail::EnergyVad::Event::kSpeechStarted) {
+        result.starts.push_back(frame);
+        check(event.bytes_consumed == bytes.size(),
+              "echo VAD speech start did not map to the current input frame");
+      } else if (event.event == serve_detail::EnergyVad::Event::kSpeechStopped) {
+        result.stops.push_back(frame);
+      }
+    }
+    result.max_candidates =
+        std::max(result.max_candidates, vad.last_alignment().candidate_evaluations);
+    result.max_reference_samples =
+        std::max(result.max_reference_samples, vad.reference_size());
+  }
+  return result;
+}
+
+void test_echo_robust_vad_echo_and_double_talk() {
+  serve_detail::VadConfig vad_config;
+  vad_config.silence_ms = 100;
+  serve_detail::EchoVadConfig echo_config;
+  serve_detail::EchoRobustVad vad(vad_config, echo_config);
+  check(vad.reference_capacity() == 16000 && vad.max_delay_samples() == 8000,
+        "echo VAD defaults do not provide the documented 1 s / 500 ms bounds");
+
+  constexpr size_t kFrames = 100;
+  const auto reference = make_echo_reference(kFrames * 160, 0x12345678);
+  const auto user = make_near_end_user(kFrames * 160);
+  const auto echo = make_synthetic_near(
+      reference, user, [](size_t) { return size_t{1168}; }, 0.55);
+
+  // No reference is a strict compatibility fallback: the same echo is speech
+  // to the old energy detector, which proves the echo-only fixture is active.
+  serve_detail::EchoRobustVad no_reference(vad_config, echo_config);
+  const auto fallback =
+      run_synthetic_vad(no_reference, {}, echo);
+  check(fallback.starts.size() == 1 && fallback.starts[0] == 7,
+        "missing playback reference did not preserve energy-VAD behavior");
+
+  const auto echo_only = run_synthetic_vad(vad, reference, echo);
+  check(echo_only.starts.empty() && echo_only.stops.empty(),
+        "delayed assistant echo caused a false barge-in");
+  check(echo_only.max_candidates <= 8050,
+        "echo alignment exceeded its per-frame candidate bound");
+  check(echo_only.max_reference_samples == 16000,
+        "echo reference ring did not reach and stay at its bounded capacity");
+
+  serve_detail::EchoRobustVad double_talk_vad(vad_config, echo_config);
+  const auto double_talk = make_synthetic_near(
+      reference, user, [](size_t) { return size_t{1457}; }, 0.65, 0, 30, 60);
+  const auto simultaneous =
+      run_synthetic_vad(double_talk_vad, reference, double_talk);
+  check(simultaneous.starts.size() == 1 && simultaneous.starts[0] == 30,
+        "genuine double-talk did not interrupt on its first 10 ms frame");
+  check(simultaneous.stops.size() == 1 && simultaneous.stops[0] == 69,
+        "echo after near-end speech prevented the 100 ms endpoint");
+
+  serve_detail::EchoRobustVad near_only_vad(vad_config, echo_config);
+  const auto near_only = make_synthetic_near(
+      reference, user, [](size_t) { return size_t{0}; }, 0.0, 0, 30, 60);
+  const auto near_result = run_synthetic_vad(near_only_vad, reference, near_only);
+  check(near_result.starts.size() == 1 && near_result.starts[0] == 30,
+        "unrelated playback suppressed near-end-only speech");
+
+  serve_detail::EchoRobustVad silence_vad(vad_config, echo_config);
+  const std::vector<int16_t> silence(kFrames * 160, 0);
+  const auto silent = run_synthetic_vad(silence_vad, reference, silence);
+  check(silent.starts.empty() && silent.stops.empty(),
+        "playback plus digital microphone silence produced a VAD event");
+
+  for (const auto& test_case : std::vector<std::pair<double, int>>{
+           {0.08, 0}, {0.35, 0}, {1.4, 0}, {1.0, 4500}}) {
+    serve_detail::EchoRobustVad scaled_vad(vad_config, echo_config);
+    const auto scaled = make_synthetic_near(
+        reference, user, [](size_t) { return size_t{2027}; }, test_case.first,
+        test_case.second);
+    const auto result = run_synthetic_vad(scaled_vad, reference, scaled);
+    check(result.starts.empty(),
+          "attenuated, amplified, or moderately clipped echo started a turn");
+  }
+
+  // A completed frame split over two calls reports an offset in the second
+  // call, preserving RealtimeApi's turn-cut contract for arbitrary chunking.
+  serve_detail::EchoRobustVad chunked(vad_config, echo_config);
+  const std::string speech = echo_pcm_slice(user, 0, 160);
+  check(chunked.push(speech.data(), 100).empty(),
+        "a partial near-end frame emitted an early event");
+  const auto chunk_events = chunked.push(speech.data() + 100, speech.size() - 100);
+  check(chunk_events.size() == 1 && chunk_events[0].bytes_consumed == 220,
+        "split-frame speech start offset was not relative to the current push");
+
+  std::cout << "ECHO_VAD_SYNTHETIC echo_only_false_starts=0/100 "
+               "double_talk_detection_ms=10 near_only_detection_ms=10 "
+               "double_talk_endpoint_ms=100 attenuation_clipping_cases=4/4\n";
+}
+
+void test_echo_robust_vad_delay_bounds_and_session_isolation() {
+  serve_detail::VadConfig vad_config;
+  vad_config.silence_ms = 100;
+  serve_detail::EchoVadConfig echo_config;
+  constexpr size_t kFrames = 1000;
+  const auto reference = make_echo_reference(kFrames * 160, 0x87654321);
+  const auto user = make_near_end_user(kFrames * 160);
+  const auto delays = std::vector<size_t>{208, 1872, 3984, 7984, 1441};
+  const auto jittered = make_synthetic_near(
+      reference, user,
+      [&](size_t frame) { return delays[(frame / 20) % delays.size()]; }, 0.45);
+  serve_detail::EchoRobustVad jitter_vad(vad_config, echo_config);
+  const auto begin = std::chrono::steady_clock::now();
+  const auto jitter = run_synthetic_vad(jitter_vad, reference, jittered);
+  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - begin)
+                              .count();
+  check(jitter.starts.empty() && jitter.stops.empty(),
+        "delay jumps inside the 500 ms search window caused false speech");
+  check(jitter.max_candidates <= 8050,
+        "jitter search exceeded the bounded candidate count");
+
+  // Beyond the explicit alignment window the mechanism deliberately falls
+  // back to energy VAD instead of claiming an uncertain echo match.
+  const auto too_late = make_synthetic_near(
+      reference, user, [](size_t) { return size_t{8800}; }, 0.6);
+  serve_detail::EchoRobustVad outside_vad(vad_config, echo_config);
+  const auto outside = run_synthetic_vad(outside_vad, reference, too_late);
+  check(outside.starts.size() == 1 && outside.starts[0] == 55,
+        "insufficient alignment did not gracefully use the energy fallback");
+
+  // Three independent responses can each be interrupted once. Resetting the
+  // reference at each response boundary neither duplicates events nor leaks
+  // the preceding response's waveform into the next alignment search.
+  serve_detail::EchoRobustVad repeated_vad(vad_config, echo_config);
+  size_t repeated_starts = 0;
+  size_t repeated_stops = 0;
+  for (size_t cycle = 0; cycle < 3; ++cycle) {
+    repeated_vad.reset_reference();
+    check(repeated_vad.reference_size() == 0,
+          "response reset retained stale playback samples");
+    const auto response = make_echo_reference(30 * 160, 0x1000 + cycle);
+    const auto response_user = make_near_end_user(30 * 160);
+    const auto near = make_synthetic_near(
+        response, response_user, [](size_t) { return size_t{319}; }, 0.5, 0, 10, 20);
+    const auto result = run_synthetic_vad(repeated_vad, response, near);
+    check(result.starts == std::vector<size_t>{10} &&
+              result.stops == std::vector<size_t>{29},
+          "repeated barge-in did not start and stop exactly once per response");
+    repeated_starts += result.starts.size();
+    repeated_stops += result.stops.size();
+  }
+
+  // Old-response audio is intentionally not suppressed after a response reset.
+  const auto old_response = make_echo_reference(80 * 160, 0xaaa);
+  const auto new_response = make_echo_reference(80 * 160, 0xbbb);
+  const auto response_user = make_near_end_user(80 * 160);
+  const auto old_echo = make_synthetic_near(
+      old_response, response_user, [](size_t) { return size_t{640}; }, 0.5);
+  repeated_vad.reset_reference();
+  const auto stale = run_synthetic_vad(repeated_vad, new_response, old_echo);
+  check(stale.starts.size() == 1 && stale.starts[0] == 4,
+        "stale playback reference leaked across response generations");
+
+  serve_detail::EchoRobustVad session_a(vad_config, echo_config);
+  serve_detail::EchoRobustVad session_b(vad_config, echo_config);
+  const auto isolated_a = run_synthetic_vad(session_a, reference, jittered);
+  const auto isolated_b = run_synthetic_vad(session_b, {}, jittered);
+  check(isolated_a.starts.empty() && !isolated_b.starts.empty(),
+        "playback reference or suppression state leaked across sessions");
+
+  // Native TTS commonly emits 24 kHz. Analytic bandlimited tones provide an
+  // independent 16 kHz near-end signal while the wrapper resamples 24 kHz PCM.
+  constexpr size_t kResampleFrames = 100;
+  std::vector<int16_t> reference_24k(kResampleFrames * 240);
+  std::vector<int16_t> near_16k(kResampleFrames * 160, 0);
+  const auto analytic = [](double seconds) {
+    return 7000.0 * std::sin(2.0 * 3.14159265358979323846 * 397.0 * seconds) +
+           4000.0 * std::sin(2.0 * 3.14159265358979323846 * 1153.0 * seconds);
+  };
+  for (size_t i = 0; i < reference_24k.size(); ++i) {
+    reference_24k[i] = static_cast<int16_t>(analytic(i / 24000.0));
+  }
+  constexpr size_t kDelay = 1168;
+  for (size_t i = kDelay; i < near_16k.size(); ++i) {
+    near_16k[i] = static_cast<int16_t>(0.6 * analytic((i - kDelay) / 16000.0));
+  }
+  serve_detail::EchoRobustVad resampled(vad_config, echo_config);
+  const auto resample_result =
+      run_synthetic_vad(resampled, reference_24k, near_16k, 24000);
+  check(resample_result.starts.empty() && resample_result.stops.empty(),
+        "24 kHz playback reference did not suppress its 16 kHz echo");
+  check(resampled.last_alignment().aligned,
+        "24 kHz reference did not produce a final alignment");
+
+  std::cout << "ECHO_VAD_SYNTHETIC delay_jitter_false_starts=0/1000 "
+               "jitter_audio_ms=10000 processing_ms="
+            << elapsed_ms
+            << " max_candidates=" << jitter.max_candidates
+            << " out_of_window_fallback_detection_ms=10 repeated_barge_ins="
+            << repeated_starts << "/" << repeated_stops
+            << " session_isolation=PASS response_reset=PASS resample_24k=PASS\n";
 }
 
 // Stage::on_submit and Stage::fail_request over the real control sockets: a
@@ -9980,6 +10373,8 @@ int main() {
   RUN(test_public_http_multiturn_multimodal());
   RUN(test_control_message_parse_contract());
   RUN(test_energy_vad_speech_transitions());
+  RUN(test_echo_robust_vad_echo_and_double_talk());
+  RUN(test_echo_robust_vad_delay_bounds_and_session_isolation());
   RUN(test_stage_submit_fallback_and_failure_completion());
   RUN(test_stage_heartbeat_reregisters_after_coordinator_restart());
   RUN(test_upstream_media_proxy_routes());
