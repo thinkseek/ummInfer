@@ -13,6 +13,7 @@ struct PreprocessedImage {
   std::vector<float> pixel_values;
   int grid_t = 0, grid_h = 0, grid_w = 0;
   int resized_h = 0, resized_w = 0;
+  bool is_video = false;
   int rows() const { return grid_t * grid_h * grid_w; }
   static constexpr int kPatchDim = 3 * 2 * 16 * 16;  // 1536
 };

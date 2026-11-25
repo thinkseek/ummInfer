@@ -41,8 +41,8 @@ struct GenResult {
   int prompt_tokens = 0;
   int prefill_tokens = 0;
   int reused_tokens = 0;
-  int image_tokens = 0;
-  double vision_ms = 0.0;      // image tower + merger
+  int image_tokens = 0;        // merged vision tokens encoded in this call (0 on prefix hit)
+  double vision_ms = 0.0;      // image tower + merger (0.0 on prefix hit)
   double prefill_ms = 0.0;     // embedding -> first-token logits (excludes vision)
   double decode_ms = 0.0;      // steps after the first generated token
   int decode_steps = 0;
@@ -59,8 +59,9 @@ struct BatchRequest {
   // Token index where the prefix snapshot is published. -1 snapshots the whole
   // prompt, which is the historical behaviour. A value in (0, prompt size)
   // publishes the snapshot after the prefill reaches that index, so a chat
-  // prompt can be cached at the turn boundary instead of after the assistant
-  // header. Only pure-text requests use it.
+  // prompt (pure-text or multimodal, provided all image/video pads precede the
+  // boundary) can be cached at the turn boundary instead of after the
+  // assistant header.
   int cache_prefix_len = -1;
 };
 
@@ -87,10 +88,13 @@ class Engine {
   // dump_dir, when non-empty, receives per-layer bf16 tensors for parity tests.
   // An empty abort check and an empty token callback keep the original run.
   //
-  // A pure-text call whose ids extend the previous successful pure-text prompt
-  // reuses that call's snapshot: KV rows, the linear-attention recurrent state
-  // and the conv history at the cached length. The reused region was written
-  // by prefill, so a reused run is bit-identical to a full prefill.
+  // A call (pure-text or multimodal with the same media fingerprint and all
+  // visual pad tokens strictly inside the cached prefix) whose ids extend the
+  // previous successful snapshot reuses that snapshot: KV rows, the
+  // linear-attention recurrent state, the conv history, and the exact MRoPE
+  // position counter at the cached length, skipping vision_forward on hit.
+  // The reused region was written by prefill, so a reused run is bit-identical
+  // to a full prefill.
   // cache_prefix_len has the same meaning as in BatchRequest: the prefill is
   // split at that index so the snapshot lands on the cacheable turn boundary.
   GenResult generate(const std::vector<int>& prompt_ids,

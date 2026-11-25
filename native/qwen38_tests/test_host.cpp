@@ -6,9 +6,6 @@
 #include "qwen38/sampling.hpp"
 
 #include <algorithm>
-#include <algorithm>
-#include <algorithm>
-#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -20,7 +17,17 @@
 namespace {
 
 using umminfer::qwen38::ChatTurn;
+using umminfer::qwen38::MRoPEPositions;
+using umminfer::qwen38::PreprocessedImage;
+using umminfer::qwen38::build_mrope_positions;
+using umminfer::qwen38::build_suffix_mrope_positions;
+using umminfer::qwen38::can_snapshot_multimodal_prefix;
+using umminfer::qwen38::compute_media_hash;
+using umminfer::qwen38::kImagePadToken;
+using umminfer::qwen38::kVideoPadToken;
+using umminfer::qwen38::match_multimodal_prefix;
 using umminfer::qwen38::match_prefix;
+using umminfer::qwen38::mrope_pos_next_at;
 using umminfer::qwen38::render_chat_prompt;
 using umminfer::qwen38::render_chat_prompt_parts;
 using umminfer::qwen38::RenderedChatPrompt;
@@ -584,6 +591,322 @@ void test_video_preprocess_and_prompt() {
         "exact-size video path matches bicubic_resize output bit for bit");
 }
 
+// ---- cross-turn multimodal prefix cache & MRoPE continuity -----------------
+
+PreprocessedImage make_synthetic_media(int grid_t, int grid_h, int grid_w,
+                                       bool is_video, float seed_val) {
+  PreprocessedImage img;
+  img.grid_t = grid_t;
+  img.grid_h = grid_h;
+  img.grid_w = grid_w;
+  img.resized_h = grid_h * 16;
+  img.resized_w = grid_w * 16;
+  img.is_video = is_video;
+  const size_t n =
+      static_cast<size_t>(img.rows()) * PreprocessedImage::kPatchDim;
+  img.pixel_values.resize(n);
+  for (size_t i = 0; i < n; ++i) {
+    img.pixel_values[i] =
+        seed_val + static_cast<float>((i * 131u + 17u) % 256u) / 127.5f - 1.0f;
+  }
+  return img;
+}
+
+void test_compute_media_hash() {
+  check(compute_media_hash(nullptr) == 0, "nullptr media hashes to 0");
+
+  const PreprocessedImage a = make_synthetic_media(1, 4, 6, false, 0.0f);
+  const PreprocessedImage a_copy = make_synthetic_media(1, 4, 6, false, 0.0f);
+  const uint64_t ha = compute_media_hash(&a);
+  check(ha != 0, "non-null media hash is never 0");
+  check(ha == compute_media_hash(&a_copy),
+        "compute_media_hash is deterministic across identical copies");
+
+  // Sensitivity to grid_t, grid_h, grid_w, is_video.
+  PreprocessedImage diff_t = a;
+  diff_t.grid_t = 2;
+  check(compute_media_hash(&diff_t) != ha,
+        "compute_media_hash changes when grid_t changes");
+
+  PreprocessedImage diff_h = a;
+  diff_h.grid_h = 6;
+  diff_h.grid_w = 4;  // same row count (24), transposed spatial grid
+  check(compute_media_hash(&diff_h) != ha,
+        "compute_media_hash changes when grid_h/grid_w change");
+
+  PreprocessedImage diff_w = a;
+  diff_w.grid_w = 8;
+  check(compute_media_hash(&diff_w) != ha,
+        "compute_media_hash changes when grid_w changes");
+
+  PreprocessedImage diff_video = a;
+  diff_video.is_video = true;
+  check(compute_media_hash(&diff_video) != ha,
+        "compute_media_hash changes when is_video toggles");
+
+  // Sensitivity to single-pixel edits (first, middle, last float).
+  for (size_t idx : {size_t{0}, a.pixel_values.size() / 2,
+                     a.pixel_values.size() - 1}) {
+    PreprocessedImage edited = a;
+    edited.pixel_values[idx] += 1e-4f;
+    check(compute_media_hash(&edited) != ha,
+          "compute_media_hash changes when a single pixel value is edited");
+  }
+
+  // Real preprocessor sets is_video=false for RGB image and true for video.
+  std::vector<uint8_t> rgb(64 * 64 * 3, 120);
+  const PreprocessedImage real_img =
+      umminfer::qwen38::preprocess_rgb(rgb.data(), 64, 64, 4096, 16384);
+  check(!real_img.is_video, "preprocess_rgb sets is_video=false");
+  const PreprocessedImage real_vid = umminfer::qwen38::preprocess_video_frames(
+      {rgb, rgb}, 64, 64, 4096, 16384, 3584);
+  check(real_vid.is_video, "preprocess_video_frames sets is_video=true");
+  check(compute_media_hash(&real_img) != compute_media_hash(&real_vid),
+        "still image and 2-frame identical video hash distinctly");
+}
+
+void test_can_snapshot_multimodal_prefix() {
+  // Pure text accepts any snapshot_len in (0, n].
+  const std::vector<int> text_ids{10, 11, 12, 13, 14};
+  check(!can_snapshot_multimodal_prefix(text_ids, 0, false),
+        "text snapshot rejects len=0");
+  check(!can_snapshot_multimodal_prefix(text_ids, -1, false),
+        "text snapshot rejects negative len");
+  check(!can_snapshot_multimodal_prefix(text_ids, 6, false),
+        "text snapshot rejects len > size");
+  check(can_snapshot_multimodal_prefix(text_ids, 3, false),
+        "text snapshot accepts interior boundary");
+  check(can_snapshot_multimodal_prefix(text_ids, 5, false),
+        "text snapshot accepts full prompt");
+
+  // Single image: pads at indices [2, 6).
+  const std::vector<int> img_ids{
+      1, 2, kImagePadToken, kImagePadToken, kImagePadToken, kImagePadToken,
+      3, 4, 5, 6};
+  check(!can_snapshot_multimodal_prefix(img_ids, 1, true),
+        "image snapshot rejects boundary before image pads");
+  check(!can_snapshot_multimodal_prefix(img_ids, 2, true),
+        "image snapshot rejects boundary right at start of image pads");
+  check(!can_snapshot_multimodal_prefix(img_ids, 4, true),
+        "image snapshot rejects boundary cutting inside image pads");
+  check(!can_snapshot_multimodal_prefix(img_ids, 5, true),
+        "image snapshot rejects boundary leaving one image pad outside");
+  check(can_snapshot_multimodal_prefix(img_ids, 6, true),
+        "image snapshot accepts boundary right after all image pads");
+  check(can_snapshot_multimodal_prefix(img_ids, 8, true),
+        "image snapshot accepts turn boundary after all image pads");
+  check(can_snapshot_multimodal_prefix(img_ids, 10, true),
+        "image snapshot accepts whole prompt");
+
+  // Multi-slice video: pads at [2, 4) and [6, 8).
+  const std::vector<int> vid_ids{
+      1, 2, kVideoPadToken, kVideoPadToken, 100, 101,
+      kVideoPadToken, kVideoPadToken, 3, 4, 5};
+  check(!can_snapshot_multimodal_prefix(vid_ids, 4, true),
+        "video snapshot rejects boundary between slice 0 and slice 1");
+  check(!can_snapshot_multimodal_prefix(vid_ids, 6, true),
+        "video snapshot rejects boundary before slice 1");
+  check(!can_snapshot_multimodal_prefix(vid_ids, 7, true),
+        "video snapshot rejects boundary cutting inside slice 1");
+  check(can_snapshot_multimodal_prefix(vid_ids, 8, true),
+        "video snapshot accepts boundary right after final video slice");
+  check(can_snapshot_multimodal_prefix(vid_ids, 9, true),
+        "video snapshot accepts turn boundary strictly after all video slices");
+
+  // Malformed multimodal prompt with zero vision pads is rejected.
+  check(!can_snapshot_multimodal_prefix(text_ids, 5, true),
+        "multimodal snapshot rejects prompt without any vision pad");
+}
+
+void test_match_multimodal_prefix() {
+  const PreprocessedImage img_a = make_synthetic_media(1, 4, 4, false, 0.0f);
+  const PreprocessedImage img_b = make_synthetic_media(1, 4, 4, false, 0.25f);
+  const PreprocessedImage vid_a = make_synthetic_media(2, 4, 4, true, 0.1f);
+  const uint64_t hash_a = compute_media_hash(&img_a);
+  const uint64_t hash_b = compute_media_hash(&img_b);
+  const uint64_t hash_v = compute_media_hash(&vid_a);
+
+  // Pure-text hit and miss.
+  const std::vector<int> txt_cached{10, 20, 30};
+  check(match_multimodal_prefix(txt_cached, 0, {10, 20, 30, 40}, 0, true) == 3,
+        "text-only prompt hits text-only cache");
+  check(match_multimodal_prefix(txt_cached, 0, {10, 20, 99, 40}, 0, true) == 0,
+        "text-only mid-prefix mismatch misses");
+  check(match_multimodal_prefix(txt_cached, 0, {10, 20, 30}, 0, true) == 0,
+        "equal-length text prompt misses");
+  check(match_multimodal_prefix(txt_cached, 0, {10, 20}, 0, true) == 0,
+        "shorter text prompt misses");
+  check(match_multimodal_prefix(txt_cached, 0, {10, 20, 30, 40}, 0, false) == 0,
+        "disabled cache misses for text");
+
+  // Same-image hit on follow-up turn.
+  const std::vector<int> img_turn1_prefix{
+      1, 2, kImagePadToken, kImagePadToken, kImagePadToken, kImagePadToken, 3, 4};
+  const std::vector<int> img_turn2{
+      1, 2, kImagePadToken, kImagePadToken, kImagePadToken, kImagePadToken,
+      3, 4, 50, 51, 52, 53};
+  check(match_multimodal_prefix(img_turn1_prefix, hash_a, img_turn2, hash_a,
+                                true) ==
+            static_cast<int>(img_turn1_prefix.size()),
+        "same-image follow-up turn hits multimodal prefix cache");
+
+  // Same-video hit on follow-up turn.
+  const std::vector<int> vid_turn1_prefix{
+      1, 2, kVideoPadToken, kVideoPadToken, 9, kVideoPadToken, kVideoPadToken,
+      3, 4};
+  const std::vector<int> vid_turn2{
+      1, 2, kVideoPadToken, kVideoPadToken, 9, kVideoPadToken, kVideoPadToken,
+      3, 4, 60, 61, 62};
+  check(match_multimodal_prefix(vid_turn1_prefix, hash_v, vid_turn2, hash_v,
+                                true) ==
+            static_cast<int>(vid_turn1_prefix.size()),
+        "same-video follow-up turn hits multimodal prefix cache");
+
+  // Different-image miss.
+  check(match_multimodal_prefix(img_turn1_prefix, hash_a, img_turn2, hash_b,
+                                true) == 0,
+        "different-image follow-up misses");
+
+  // Image-to-text and text-to-image misses.
+  check(match_multimodal_prefix(img_turn1_prefix, hash_a, img_turn2, 0, true) ==
+            0,
+        "image-to-text request misses image snapshot");
+  check(match_multimodal_prefix(txt_cached, 0, {10, 20, 30, 40}, hash_a,
+                                true) == 0,
+        "text-to-image request misses text snapshot");
+
+  // Disabled cache and non-extending prompt misses.
+  check(match_multimodal_prefix(img_turn1_prefix, hash_a, img_turn2, hash_a,
+                                false) == 0,
+        "disabled cache misses for multimodal");
+  check(match_multimodal_prefix(img_turn1_prefix, hash_a, img_turn1_prefix,
+                                hash_a, true) == 0,
+        "non-extending equal-length multimodal prompt misses");
+  const std::vector<int> img_shorter(img_turn1_prefix.begin(),
+                                     img_turn1_prefix.end() - 1);
+  check(match_multimodal_prefix(img_turn1_prefix, hash_a, img_shorter, hash_a,
+                                true) == 0,
+        "shorter multimodal prompt misses");
+
+  // Follow-up prompt introducing new vision pads in the suffix must miss.
+  std::vector<int> img_turn2_extra_pad = img_turn2;
+  img_turn2_extra_pad.push_back(kImagePadToken);
+  check(match_multimodal_prefix(img_turn1_prefix, hash_a, img_turn2_extra_pad,
+                                hash_a, true) == 0,
+        "follow-up with new vision pad in suffix misses");
+}
+
+void test_mrope_suffix_continuity() {
+  // 1) Still image: grid_t=1, grid_h=6, grid_w=8 -> gh=3, gw=4, slice=12,
+  //    compressed MRoPE advance = max(3, 4) = 4 (saves 8 positions vs 12 tokens).
+  const int img_gt = 1, img_gh = 6, img_gw = 8;
+  const int img_slice = (img_gh / 2) * (img_gw / 2);  // 12
+  std::vector<int> img_t1_prefix{101, 102, 103};
+  img_t1_prefix.insert(img_t1_prefix.end(), static_cast<size_t>(img_slice),
+                       kImagePadToken);
+  img_t1_prefix.insert(img_t1_prefix.end(), {201, 202, 203, 204});
+  std::vector<int> img_t1_full = img_t1_prefix;
+  img_t1_full.insert(img_t1_full.end(), {301, 302, 303, 304, 305, 306});
+
+  const int img_snap1 = static_cast<int>(img_t1_prefix.size());
+  check(can_snapshot_multimodal_prefix(img_t1_full, img_snap1, true),
+        "image turn 1 snapshot boundary is valid");
+  const MRoPEPositions pos_t1 =
+      build_mrope_positions(img_t1_full, img_gt, img_gh, img_gw, true);
+  const int cached_pos_next1 =
+      mrope_pos_next_at(pos_t1, static_cast<int>(img_t1_full.size()), img_snap1);
+  // 3 leading text + max(3,4)=4 image + 4 trailing text = 11 (< img_snap1=19).
+  check(cached_pos_next1 == 11 && cached_pos_next1 < img_snap1,
+        "image cached_pos_next reflects 3D MRoPE compression");
+
+  // Turn 2 extends Turn 1 prefix with assistant reply + follow-up user turn.
+  std::vector<int> img_t2_prefix = img_t1_prefix;
+  img_t2_prefix.insert(img_t2_prefix.end(), {401, 402, 403, 404, 405, 406, 407});
+  std::vector<int> img_t2_full = img_t2_prefix;
+  img_t2_full.insert(img_t2_full.end(), {301, 302, 303, 304, 305, 306});
+  const MRoPEPositions full_t2 =
+      build_mrope_positions(img_t2_full, img_gt, img_gh, img_gw, true);
+  const MRoPEPositions reused_t2 = build_suffix_mrope_positions(
+      static_cast<int>(img_t2_full.size()), img_snap1, cached_pos_next1);
+  bool img_t2_exact = (reused_t2.next == full_t2.next);
+  for (int i = img_snap1; i < static_cast<int>(img_t2_full.size()); ++i) {
+    const size_t k = static_cast<size_t>(i);
+    if (reused_t2.t[k] != full_t2.t[k] || reused_t2.h[k] != full_t2.h[k] ||
+        reused_t2.w[k] != full_t2.w[k]) {
+      img_t2_exact = false;
+      break;
+    }
+  }
+  check(img_t2_exact,
+        "image turn 2 suffix MRoPE positions match full-prompt MRoPE exactly");
+
+  // Turn 3 reuses Turn 2's updated snapshot boundary.
+  const int img_snap2 = static_cast<int>(img_t2_prefix.size());
+  const int cached_pos_next2 = mrope_pos_next_at(
+      reused_t2, static_cast<int>(img_t2_full.size()), img_snap2);
+  std::vector<int> img_t3_full = img_t2_prefix;
+  img_t3_full.insert(img_t3_full.end(), {501, 502, 503, 301, 302, 303});
+  const MRoPEPositions full_t3 =
+      build_mrope_positions(img_t3_full, img_gt, img_gh, img_gw, true);
+  const MRoPEPositions reused_t3 = build_suffix_mrope_positions(
+      static_cast<int>(img_t3_full.size()), img_snap2, cached_pos_next2);
+  bool img_t3_exact = (reused_t3.next == full_t3.next);
+  for (int i = img_snap2; i < static_cast<int>(img_t3_full.size()); ++i) {
+    const size_t k = static_cast<size_t>(i);
+    if (reused_t3.t[k] != full_t3.t[k] || reused_t3.h[k] != full_t3.h[k] ||
+        reused_t3.w[k] != full_t3.w[k]) {
+      img_t3_exact = false;
+      break;
+    }
+  }
+  check(img_t3_exact,
+        "image turn 3 chained suffix MRoPE matches full-prompt MRoPE exactly");
+
+  // 2) Multi-slice video: grid_t=3, grid_h=4, grid_w=6 -> gh=2, gw=3, slice=6,
+  //    3 slices separated by timestamp tokens.
+  const int vid_gt = 3, vid_gh = 4, vid_gw = 6;
+  const int vid_slice = (vid_gh / 2) * (vid_gw / 2);  // 6
+  std::vector<int> vid_t1_prefix{10, 11};
+  for (int s = 0; s < vid_gt; ++s) {
+    vid_t1_prefix.push_back(700 + s);  // timestamp token
+    vid_t1_prefix.push_back(710);      // vision_start
+    vid_t1_prefix.insert(vid_t1_prefix.end(), static_cast<size_t>(vid_slice),
+                         kVideoPadToken);
+    vid_t1_prefix.push_back(711);      // vision_end
+  }
+  vid_t1_prefix.insert(vid_t1_prefix.end(), {800, 801, 802});
+  std::vector<int> vid_t1_full = vid_t1_prefix;
+  vid_t1_full.insert(vid_t1_full.end(), {900, 901, 902, 903});
+
+  const int vid_snap1 = static_cast<int>(vid_t1_prefix.size());
+  const MRoPEPositions vid_pos1 =
+      build_mrope_positions(vid_t1_full, vid_gt, vid_gh, vid_gw, true);
+  const int vid_cached_pos1 = mrope_pos_next_at(
+      vid_pos1, static_cast<int>(vid_t1_full.size()), vid_snap1);
+  // 2 lead + 3*(1 ts + 1 start + max(2,3)=3 + 1 end) + 3 trail = 2 + 18 + 3 = 23
+  check(vid_cached_pos1 == 23 && vid_cached_pos1 < vid_snap1,
+        "video cached_pos_next reflects multi-slice 3D MRoPE compression");
+
+  std::vector<int> vid_t2_full = vid_t1_prefix;
+  vid_t2_full.insert(vid_t2_full.end(), {810, 811, 812, 813, 900, 901, 902, 903});
+  const MRoPEPositions vid_full2 =
+      build_mrope_positions(vid_t2_full, vid_gt, vid_gh, vid_gw, true);
+  const MRoPEPositions vid_reused2 = build_suffix_mrope_positions(
+      static_cast<int>(vid_t2_full.size()), vid_snap1, vid_cached_pos1);
+  bool vid_t2_exact = (vid_reused2.next == vid_full2.next);
+  for (int i = vid_snap1; i < static_cast<int>(vid_t2_full.size()); ++i) {
+    const size_t k = static_cast<size_t>(i);
+    if (vid_reused2.t[k] != vid_full2.t[k] ||
+        vid_reused2.h[k] != vid_full2.h[k] ||
+        vid_reused2.w[k] != vid_full2.w[k]) {
+      vid_t2_exact = false;
+      break;
+    }
+  }
+  check(vid_t2_exact,
+        "video turn 2 suffix MRoPE positions match full-prompt MRoPE exactly");
+}
+
 }  // namespace
 
 int main() {
@@ -600,6 +923,10 @@ int main() {
   test_fast_matches_reference();
   test_large_vocab_latency();
   test_video_preprocess_and_prompt();
+  test_compute_media_hash();
+  test_can_snapshot_multimodal_prefix();
+  test_match_multimodal_prefix();
+  test_mrope_suffix_continuity();
   if (g_failures != 0) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

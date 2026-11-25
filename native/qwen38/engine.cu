@@ -62,33 +62,10 @@ constexpr int kPosSide = 48;
 constexpr int kVisTokenCap = 4096;
 constexpr float kVisRopeTheta = 10000.0f;
 
-constexpr int kImagePad = 248056;
-constexpr int kVideoPad = 248057;
 constexpr int kEos = 248046;       // <|im_end|>
 constexpr int kEndOfText = 248044; // <|endoftext|>
 
 bool is_eos(int id) { return id == kEos || id == kEndOfText; }
-bool is_vision_pad(int id) { return id == kImagePad || id == kVideoPad; }
-
-struct VisionRun {
-  int start = 0;
-  int length = 0;
-};
-
-std::vector<VisionRun> find_vision_runs(const std::vector<int>& ids) {
-  std::vector<VisionRun> runs;
-  const int n = static_cast<int>(ids.size());
-  for (int i = 0; i < n;) {
-    if (!is_vision_pad(ids[i])) {
-      ++i;
-      continue;
-    }
-    const int begin = i;
-    while (i < n && is_vision_pad(ids[i])) ++i;
-    runs.push_back(VisionRun{begin, i - begin});
-  }
-  return runs;
-}
 
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) {
@@ -107,84 +84,28 @@ void write_file(const std::string& dir, const std::string& name, const void* hos
   f.write(static_cast<const char*>(host), static_cast<std::streamsize>(bytes));
 }
 
-struct Positions {
-  std::vector<int> t, h, w;
-  int next = 0;
-};
-
-Positions build_positions(const std::vector<int>& ids, int grid_t, int grid_h,
-                          int grid_w, bool has_vision) {
-  const int n = static_cast<int>(ids.size());
-  Positions p;
-  p.t.resize(n);
-  p.h.resize(n);
-  p.w.resize(n);
-  if (!has_vision) {
-    for (int i = 0; i < n; ++i) p.t[i] = p.h[i] = p.w[i] = i;
-    p.next = n;
-    return p;
-  }
-  const int gh = grid_h / 2, gw = grid_w / 2;
-  const int slice_tokens = gh * gw;
-  const std::vector<VisionRun> runs = find_vision_runs(ids);
-  if (runs.empty()) {
-    throw std::runtime_error("vision prompt has no image_pad/video_pad run");
-  }
-  if (static_cast<int>(runs.size()) != grid_t) {
-    throw std::runtime_error("vision pad runs " + std::to_string(runs.size()) +
-                             " do not match grid_t " + std::to_string(grid_t));
-  }
-  // Matches Qwen3_5Model.get_rope_index: each temporal slice is a separate
-  // grid (1, grid_h, grid_w) separated by timestamp text tokens; for still
-  // images (grid_t == 1) this is bit-identical to the single-image layout.
-  int counter = 0;
-  size_t run_idx = 0;
-  for (int i = 0; i < n;) {
-    if (run_idx < runs.size() && i == runs[run_idx].start) {
-      const VisionRun& run = runs[run_idx];
-      if (run.length != slice_tokens) {
-        throw std::runtime_error("vision tokens " + std::to_string(run.length) +
-                                 " do not match merged slice grid " +
-                                 std::to_string(slice_tokens));
-      }
-      for (int k = 0; k < slice_tokens; ++k) {
-        p.t[i + k] = counter;
-        p.h[i + k] = counter + k / gw;
-        p.w[i + k] = counter + k % gw;
-      }
-      counter += std::max(gh, gw);
-      i += run.length;
-      ++run_idx;
-    } else {
-      p.t[i] = p.h[i] = p.w[i] = counter++;
-      ++i;
-    }
-  }
-  p.next = counter;
-  return p;
-}
-
 // mRoPE channel rule for the 32 half-slots: H occupies i%3==1 up to 33,
 // W occupies i%3==2 up to 30, everything else takes the text position.
-void build_text_rope(const Positions& p, int n, std::vector<Bf16>* cos,
-                     std::vector<Bf16>* sin) {
+void build_text_rope(const MRoPEPositions& p, int begin, int count,
+                     std::vector<Bf16>* cos, std::vector<Bf16>* sin) {
   const int half = kRotaryDim / 2;  // 32
   double inv[32];
   for (int i = 0; i < half; ++i)
     inv[i] = 1.0 / std::pow(static_cast<double>(kRopeTheta),
                             static_cast<double>(2 * i) / kRotaryDim);
-  cos->resize(static_cast<size_t>(n) * kRotaryDim);
+  cos->resize(static_cast<size_t>(count) * kRotaryDim);
   sin->resize(cos->size());
-  for (int row = 0; row < n; ++row) {
+  for (int r = 0; r < count; ++r) {
+    const int row = begin + r;
     for (int i = 0; i < half; ++i) {
-      int pos = p.t[row];
+      int pos = p.t[static_cast<size_t>(row)];
       if ((i % 3) == 1 && i < 33)
-        pos = p.h[row];
+        pos = p.h[static_cast<size_t>(row)];
       else if ((i % 3) == 2 && i < 30)
-        pos = p.w[row];
+        pos = p.w[static_cast<size_t>(row)];
       const double angle = inv[i] * pos;
-      (*cos)[static_cast<size_t>(row) * kRotaryDim + i] = Bf16(std::cos(angle));
-      (*sin)[static_cast<size_t>(row) * kRotaryDim + i] = Bf16(std::sin(angle));
+      (*cos)[static_cast<size_t>(r) * kRotaryDim + i] = Bf16(std::cos(angle));
+      (*sin)[static_cast<size_t>(r) * kRotaryDim + i] = Bf16(std::sin(angle));
     }
   }
 }
@@ -276,10 +197,12 @@ struct BatchJob {
   GenResult result;
   std::exception_ptr error;
   int slot = -1;
+  uint64_t media_hash = 0;  // compute_media_hash(req.image), computed on caller thread
   // Tokens this job takes from the prefix snapshot instead of prefilling.
   // Resolved once, before the job joins a group, so grouping can key on the
   // rows it will actually compute.
   int prefix = 0;
+  int prefix_pos_next = 0;  // MRoPE counter immediately after `prefix` tokens
   int seq_len = 0;   // tokens already in the KV cache
   int next_pos = 0;  // mRoPE position of next_token
   int next_token = 0;
@@ -327,12 +250,14 @@ struct Engine::Impl {
   float* rec_state = nullptr;    // [48 linear layers][48][128][128]
   Bf16* conv_state = nullptr;    // [48][10240][3]
 
-  // Prefix snapshot: the state a successful text-only prefill leaves at its
-  // prompt boundary. Allocated on the first snapshot so a disabled cache and
-  // image-only workloads never pay for it.
+  // Prefix snapshot: the state a successful prefill (pure-text or multimodal)
+  // leaves at its snapshot boundary. Allocated on the first snapshot so a
+  // disabled cache never pays for it.
   bool prefix_cache = true;
   std::vector<int> cached_ids;
   int cached_len = 0;
+  uint64_t cached_media_hash = 0;
+  int cached_pos_next = 0;
   Bf16* kv_snap = nullptr;    // same layout as `kv` for one sequence
   float* rec_snap = nullptr;  // same size as `rec_state`
   Bf16* conv_snap = nullptr;  // same size as `conv_state`
@@ -578,17 +503,25 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
                                         cudaMemcpyHostToDevice, st));
 
   const int slice_merged = slice_tokens / 4;
-  std::vector<Bf16> slice_pix(static_cast<size_t>(slice_tokens) * kPatchDim);
+  const size_t total_floats = static_cast<size_t>(total_tokens) * kPatchDim;
+  if (img.pixel_values.size() < total_floats) {
+    throw std::runtime_error("vision pixel_values buffer smaller than grid dimensions");
+  }
+  // Upload all temporal slices once into the pre-allocated kVisTokenCap pixel
+  // buffer so multi-slice video (grid_t > 1) avoids per-slice pageable H2D
+  // copies and enqueues all slices back-to-back on the stream.
+  std::vector<Bf16> all_pix(total_floats);
+  for (size_t i = 0; i < total_floats; ++i) {
+    all_pix[i] = Bf16(img.pixel_values[i]);
+  }
+  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_pixels, all_pix.data(),
+                                        all_pix.size() * sizeof(Bf16),
+                                        cudaMemcpyHostToDevice, st));
   for (int t = 0; t < img.grid_t; ++t) {
-    const size_t src_off = static_cast<size_t>(t) * slice_tokens * kPatchDim;
-    for (size_t i = 0; i < slice_pix.size(); ++i) {
-      slice_pix[i] = Bf16(img.pixel_values[src_off + i]);
-    }
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_pixels, slice_pix.data(),
-                                          slice_pix.size() * sizeof(Bf16),
-                                          cudaMemcpyHostToDevice, st));
+    const Bf16* slice_d_pixels =
+        im.d_pixels + static_cast<size_t>(t) * slice_tokens * kPatchDim;
 
-    gemm_bf16(im.v_hidden, im.d_pixels, im.bf(p + "patch_embed.proj.weight"),
+    gemm_bf16(im.v_hidden, slice_d_pixels, im.bf(p + "patch_embed.proj.weight"),
               im.bf(p + "patch_embed.proj.bias"), slice_tokens, kPatchDim, kVisH, st);
     add_residual(im.v_hidden, im.v_pos, slice_tokens * kVisH, st);
     if (!dump_dir.empty() && t == 0)
@@ -831,11 +764,18 @@ void copy_kv_rows(Bf16* dst, const Bf16* src, int len, size_t stride,
   }
 }
 
+void clear_snapshot_meta(Engine::Impl& im) {
+  im.cached_ids.clear();
+  im.cached_len = 0;
+  im.cached_media_hash = 0;
+  im.cached_pos_next = 0;
+}
+
 // The snapshot holds one sequence's worth of KV rows, recurrent state and conv
 // history, so it is copied from and into exactly one batch slot. The serial
 // executor owns slot 0.
 void snapshot_prefix(Engine::Impl& im, int slot, const std::vector<int>& ids,
-                     cudaStream_t st) {
+                     uint64_t media_hash, int pos_next, cudaStream_t st) {
   ensure_snapshot_buffers(im);
   const size_t stride = static_cast<size_t>(im.max_seq) * kKvRow;
   copy_kv_rows(im.kv_snap, im.kv + static_cast<size_t>(slot) * kv_slot_stride(im),
@@ -848,6 +788,8 @@ void snapshot_prefix(Engine::Impl& im, int slot, const std::vector<int>& ids,
       conv_state_bytes(), cudaMemcpyDeviceToDevice, st));
   im.cached_ids = ids;
   im.cached_len = static_cast<int>(ids.size());
+  im.cached_media_hash = media_hash;
+  im.cached_pos_next = pos_next;
 }
 
 void restore_prefix(Engine::Impl& im, int slot, int len, cudaStream_t st) {
@@ -1052,15 +994,28 @@ std::vector<int> batch_forward(
 }
 
 void prefill_group(Engine::Impl& im,
-                   const std::vector<std::shared_ptr<BatchJob>>& jobs) {
+                   const std::vector<std::shared_ptr<BatchJob>>& jobs,
+                   bool publish_snapshot) {
   cudaStream_t st = im.stream;
   const int nseq = static_cast<int>(jobs.size());
+  // If this group modifies the snapshot and later fails before returning, clear
+  // snapshot metadata so no partially-copied async snapshot is ever reused.
+  struct BatchSnapshotGuard {
+    Engine::Impl& im;
+    bool touched = false;
+    bool committed = false;
+    ~BatchSnapshotGuard() {
+      if (touched && !committed) clear_snapshot_meta(im);
+    }
+  } snap_guard{im};
+
   std::vector<int> prompt_len(static_cast<size_t>(nseq));
   std::vector<int> prefix(static_cast<size_t>(nseq), 0);
   // Token index where this job publishes its snapshot. Equal to prompt_len
   // when the job takes the historical whole-prompt boundary.
   std::vector<int> snap(static_cast<size_t>(nseq), 0);
-  std::vector<Positions> pos(static_cast<size_t>(nseq));
+  std::vector<bool> can_snap(static_cast<size_t>(nseq), false);
+  std::vector<MRoPEPositions> pos(static_cast<size_t>(nseq));
   std::vector<std::vector<VisionRun>> vis_runs(static_cast<size_t>(nseq));
   std::vector<int> n_img(static_cast<size_t>(nseq), 0);
   std::vector<double> vision_ms(static_cast<size_t>(nseq), 0.0);
@@ -1073,15 +1028,10 @@ void prefill_group(Engine::Impl& im,
     // snapshot this group publishes cannot change what a later job in the same
     // group reuses.
     prefix[i] = job.prefix;
-    const bool text = job.req.image == nullptr && im.prefix_cache;
-    snap[i] = text ? resolve_snapshot_len(P, job.req.cache_prefix_len) : P;
-    // A split keeps the code path of both phases identical to the one-pass
-    // path only when each phase still takes the multi-row GEMM kernel. A
-    // one-row phase would switch to GEMV, whose reduction order differs.
-    if (snap[i] < P && !(snap[i] - prefix[i] > 1 && P - snap[i] > 1)) snap[i] = P;
-    if (snap[i] < P) want_split = true;
     const PreprocessedImage* image = job.req.image;
-    if (image != nullptr) {
+    const bool has_media = (image != nullptr);
+    const bool need_vision = (has_media && prefix[i] == 0);
+    if (need_vision) {
       if (image->grid_t < 1)
         throw std::runtime_error("invalid vision grid_t");
       const auto t0 = Clock::now();
@@ -1091,10 +1041,33 @@ void prefill_group(Engine::Impl& im,
       vis_runs[i] = find_vision_runs(job.req.prompt_ids);
       if (static_cast<int>(vis_runs[i].size()) != image->grid_t)
         throw std::runtime_error("vision supplied but vision pad runs mismatch grid_t");
+      pos[i] = build_mrope_positions(job.req.prompt_ids, image->grid_t,
+                                     image->grid_h, image->grid_w, true);
+    } else if (prefix[i] > 0) {
+      pos[i] = build_suffix_mrope_positions(P, prefix[i], job.prefix_pos_next);
+    } else {
+      pos[i] = build_mrope_positions(job.req.prompt_ids, 0, 0, 0, false);
     }
-    pos[i] = build_positions(job.req.prompt_ids, image ? image->grid_t : 0,
-                             image ? image->grid_h : 0,
-                             image ? image->grid_w : 0, image != nullptr);
+
+    snap[i] = P;
+    if (publish_snapshot && im.prefix_cache) {
+      const int candidate = resolve_snapshot_len(P, job.req.cache_prefix_len);
+      if (can_snapshot_multimodal_prefix(job.req.prompt_ids, candidate,
+                                         has_media)) {
+        snap[i] = candidate;
+        can_snap[i] = true;
+      } else if (candidate != P &&
+                 can_snapshot_multimodal_prefix(job.req.prompt_ids, P,
+                                                has_media)) {
+        snap[i] = P;
+        can_snap[i] = true;
+      }
+    }
+    // A split keeps the code path of both phases identical to the one-pass
+    // path only when each phase still takes the multi-row GEMM kernel. A
+    // one-row phase would switch to GEMV, whose reduction order differs.
+    if (snap[i] < P && !(snap[i] - prefix[i] > 1 && P - snap[i] > 1)) snap[i] = P;
+    if (snap[i] < P) want_split = true;
   }
 
   // Every job in one phase must take the same linear-op path. The grouping
@@ -1180,14 +1153,18 @@ void prefill_group(Engine::Impl& im,
     for (int s = 0; s < n; ++s) {
       const int i = (*job_index)[s];
       if (n_img[i] <= 0) continue;
+      const int phase_begin = sp.hist[s];
+      const int phase_end = sp.hist[s] + sp.len[s];
       size_t pool_offset = 0;
       for (const VisionRun& run : vis_runs[i]) {
-        UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
-            im.hidden +
-                static_cast<size_t>(sp.off[s] + run.start - sp.hist[s]) * kHidden,
-            im.pooler + pool_offset * kHidden,
-            static_cast<size_t>(run.length) * kHidden * sizeof(Bf16),
-            cudaMemcpyDeviceToDevice, st));
+        if (run.start >= phase_begin && run.start + run.length <= phase_end) {
+          UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+              im.hidden +
+                  static_cast<size_t>(sp.off[s] + run.start - phase_begin) * kHidden,
+              im.pooler + pool_offset * kHidden,
+              static_cast<size_t>(run.length) * kHidden * sizeof(Bf16),
+              cudaMemcpyDeviceToDevice, st));
+        }
         pool_offset += static_cast<size_t>(run.length);
       }
     }
@@ -1199,10 +1176,9 @@ void prefill_group(Engine::Impl& im,
       // rope window rather than the positions inside it.
       const int i = (*job_index)[s];
       std::vector<Bf16> c, s2;
-      build_text_rope(pos[i], prompt_len[i], &c, &s2);
-      const size_t from = static_cast<size_t>(sp.hist[s]) * kRotaryDim;
-      cos.insert(cos.end(), c.begin() + from, c.end());
-      sin.insert(sin.end(), s2.begin() + from, s2.end());
+      build_text_rope(pos[i], sp.hist[s], sp.len[s], &c, &s2);
+      cos.insert(cos.end(), c.begin(), c.end());
+      sin.insert(sin.end(), s2.begin(), s2.end());
     }
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(),
                                           cos.size() * sizeof(Bf16),
@@ -1241,29 +1217,33 @@ void prefill_group(Engine::Impl& im,
     // Publish the snapshot between the phases. The KV rows [0, snap) and the
     // recurrent state at snap are exactly what a prefill of only those tokens
     // would leave, so the next turn reuses them and prefills just the tail.
-    if (im.prefix_cache)
+    if (publish_snapshot && im.prefix_cache)
       for (int i = nseq - 1; i >= 0; --i) {
-        if (jobs[i]->req.image != nullptr || snap[i] >= prompt_len[i]) continue;
+        if (!can_snap[i] || snap[i] >= prompt_len[i]) continue;
+        snap_guard.touched = true;
         snapshot_prefix(im, jobs[i]->slot,
                         std::vector<int>(jobs[i]->req.prompt_ids.begin(),
                                          jobs[i]->req.prompt_ids.begin() +
                                              snap[i]),
-                        st);
+                        jobs[i]->media_hash,
+                        mrope_pos_next_at(pos[i], prompt_len[i], snap[i]), st);
         break;
       }
     run_phase(/*first=*/false, &job_index, &tokens);
     for (size_t s = 0; s < job_index.size(); ++s) next[job_index[s]] = tokens[s];
-  } else if (im.prefix_cache) {
+  } else if (publish_snapshot && im.prefix_cache) {
     // Publish the snapshot at the prompt boundary, before the first decode row
     // is written into these slots. The snapshot holds one sequence, so the last
-    // pure-text job of the group refreshes it; an image job leaves it alone
-    // because the vision tower writes its own hidden rows.
+    // cache-eligible job of the group refreshes it.
     for (int i = nseq - 1; i >= 0; --i) {
-      if (jobs[i]->req.image != nullptr) continue;
-      snapshot_prefix(im, jobs[i]->slot, jobs[i]->req.prompt_ids, st);
+      if (!can_snap[i]) continue;
+      snap_guard.touched = true;
+      snapshot_prefix(im, jobs[i]->slot, jobs[i]->req.prompt_ids,
+                      jobs[i]->media_hash, pos[i].next, st);
       break;
     }
   }
+  snap_guard.committed = true;
   const double prefill_ms = ms_since(t0);
   for (int i = 0; i < nseq; ++i) {
     auto& job = jobs[i];
@@ -1297,10 +1277,10 @@ void step_decode(Engine::Impl& im,
     sp.slot[i] = job.slot;
     ids[i] = job.next_token;
     logit_rows[i] = i;
-    const Positions one{{job.next_pos}, {job.next_pos}, {job.next_pos},
-                        job.next_pos + 1};
+    const MRoPEPositions one{{job.next_pos}, {job.next_pos}, {job.next_pos},
+                             job.next_pos + 1};
     std::vector<Bf16> c, s2;
-    build_text_rope(one, 1, &c, &s2);
+    build_text_rope(one, 0, 1, &c, &s2);
     cos.insert(cos.end(), c.begin(), c.end());
     sin.insert(sin.end(), s2.begin(), s2.end());
   }
@@ -1372,8 +1352,10 @@ void batch_loop(Engine::Impl& im) {
       // joins depends on how many rows it will actually compute, and every job
       // admitted in one iteration must see the snapshot as it stood before any
       // of them touched it.
-      job->prefix = match_prefix(im.cached_ids, job->req.prompt_ids,
-                                 job->req.image != nullptr, im.prefix_cache);
+      job->prefix = match_multimodal_prefix(
+          im.cached_ids, im.cached_media_hash, job->req.prompt_ids,
+          job->media_hash, im.prefix_cache);
+      job->prefix_pos_next = (job->prefix > 0) ? im.cached_pos_next : 0;
       job->slot = im.free_slots.back();
       im.free_slots.pop_back();
       admitted.push_back(job);
@@ -1388,12 +1370,16 @@ void batch_loop(Engine::Impl& im) {
       const int rows_i = P - job->prefix;
       const bool single = (rows_i == 1);
       // The vision tower writes one shared workspace and the pooler is copied
-      // after the embedding pass, so an image request prefills alone.
-      const bool loner = (job->req.image != nullptr);
+      // after the embedding pass, so a request that runs vision_forward
+      // prefills alone. A multimodal prefix hit skips vision_forward and can
+      // batch its text-only suffix with other requests.
+      const bool loner = (job->req.image != nullptr && job->prefix == 0);
       bool placed = false;
       if (!loner)
         for (size_t g = 0; g < groups.size(); ++g) {
-          if (groups[g].front()->req.image != nullptr) continue;
+          if (groups[g].front()->req.image != nullptr &&
+              groups[g].front()->prefix == 0)
+            continue;
           const int first = static_cast<int>(groups[g].front()->req.prompt_ids.size()) -
                             groups[g].front()->prefix;
           if ((first == 1) != single) continue;
@@ -1410,8 +1396,14 @@ void batch_loop(Engine::Impl& im) {
     }
 
     for (size_t g = 0; g < groups.size(); ++g) {
+      // Do not overwrite the existing snapshot while a later group in the same
+      // batch iteration still needs to restore from it.
+      bool later_needs_snap = false;
+      for (size_t h = g + 1; h < groups.size() && !later_needs_snap; ++h)
+        for (const auto& j : groups[h])
+          if (j->prefix > 0) later_needs_snap = true;
       try {
-        prefill_group(im, groups[g]);
+        prefill_group(im, groups[g], /*publish_snapshot=*/!later_needs_snap);
       } catch (...) {
         for (auto& job : groups[g]) {
           job->error = std::current_exception();
@@ -1507,25 +1499,26 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
                prompt_ids.size() * sizeof(int));
   }
 
-  // Prefix reuse: continue from the snapshot the previous successful pure-text
-  // prefill left behind when this prompt extends it exactly. A parity dump
-  // always runs the full prompt.
+  // Prefix reuse: continue from the snapshot the previous successful prefill
+  // (pure-text or multimodal with matching media fingerprint and all vision
+  // pads strictly within the cached prefix) left behind when this prompt
+  // extends it exactly. A parity dump always runs the full prompt.
+  const uint64_t media_hash = compute_media_hash(image);
   int prefix = 0;
-  if (dump_dir.empty() && image == nullptr)
-    prefix = match_prefix(im.cached_ids, prompt_ids, /*has_image=*/false,
-                          im.prefix_cache);
-  im.cached_len = 0;
-  im.cached_ids.clear();
+  int prefix_pos_next = 0;
+  if (dump_dir.empty()) {
+    prefix = match_multimodal_prefix(im.cached_ids, im.cached_media_hash,
+                                     prompt_ids, media_hash, im.prefix_cache);
+    if (prefix > 0) prefix_pos_next = im.cached_pos_next;
+  }
+  clear_snapshot_meta(im);
   // Any failure leaves the live caches in an unknown state, so the snapshot is
   // published only when the call reaches its normal return.
   struct SnapshotGuard {
     Engine::Impl& im;
     bool keep = false;
     ~SnapshotGuard() {
-      if (!keep) {
-        im.cached_len = 0;
-        im.cached_ids.clear();
-      }
+      if (!keep) clear_snapshot_meta(im);
     }
   } snapshot_guard{im};
   const int M = P - prefix;
@@ -1547,10 +1540,11 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   result.prefill_tokens = M;
   result.reused_tokens = prefix;
 
+  const bool need_vision = (image != nullptr && prefix == 0);
   double vision_ms = 0.0;
   int n_img = 0;
   std::vector<VisionRun> vis_runs;
-  if (image) {
+  if (need_vision) {
     check_abort("vision");
     const auto t0 = Clock::now();
     vision_forward(im, *image, dump_dir);
@@ -1564,15 +1558,29 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   result.vision_ms = vision_ms;
 
   // Snapshot boundary. -1 keeps the whole prompt; an interior cut at the turn
-  // boundary lets the next turn of the same conversation reuse it.
-  const int snap_len = (image == nullptr && im.prefix_cache && dump_dir.empty())
-                           ? resolve_snapshot_len(P, cache_prefix_len)
-                           : P;
+  // boundary lets the next turn of the same conversation reuse it, provided
+  // every vision pad lies strictly before the boundary.
+  const bool can_cache = im.prefix_cache && dump_dir.empty();
+  int snap_len = P;
+  bool can_snapshot = false;
+  if (can_cache) {
+    const int candidate = resolve_snapshot_len(P, cache_prefix_len);
+    if (can_snapshot_multimodal_prefix(prompt_ids, candidate,
+                                       image != nullptr)) {
+      snap_len = candidate;
+      can_snapshot = true;
+    } else if (candidate != P &&
+               can_snapshot_multimodal_prefix(prompt_ids, P,
+                                              image != nullptr)) {
+      snap_len = P;
+      can_snapshot = true;
+    }
+  }
   // Two-phase prefill is only bit-identical to one pass when both phases take
   // the multi-row GEMM path: a single-row phase would switch the linear ops to
   // the GEMV kernel, whose reduction order differs. A one-row phase therefore
   // keeps the original single pass.
-  const bool split = snap_len > prefix + 1 && P - snap_len > 1;
+  const bool split = can_snapshot && snap_len > prefix + 1 && P - snap_len > 1;
 
   const auto t_prefill = Clock::now();
   // The linear-attention recurrent state and the conv history are cumulative.
@@ -1588,11 +1596,13 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     restore_prefix(im, /*slot=*/0, prefix, st);
   }
 
-  const Positions pos = build_positions(
-      prompt_ids, image ? image->grid_t : 0, image ? image->grid_h : 0,
-      image ? image->grid_w : 0, image != nullptr);
+  const MRoPEPositions pos =
+      (prefix > 0)
+          ? build_suffix_mrope_positions(P, prefix, prefix_pos_next)
+          : build_mrope_positions(prompt_ids, image ? image->grid_t : 0,
+                                  image ? image->grid_h : 0,
+                                  image ? image->grid_w : 0, image != nullptr);
   std::vector<Bf16> cos, sin;
-  build_text_rope(pos, P, &cos, &sin);
 
   // One prefill pass over the prompt rows [begin, end). Everything before
   // `begin` is already in the KV cache and the recurrent state.
@@ -1603,23 +1613,25 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
                                           st));
     index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
                      im.hidden, m, kHidden, st);
-    if (image) {
+    if (need_vision) {
       size_t pool_offset = 0;
       for (const VisionRun& run : vis_runs) {
-        UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
-            im.hidden + static_cast<size_t>(run.start - begin) * kHidden,
-            im.pooler + pool_offset * kHidden,
-            static_cast<size_t>(run.length) * kHidden * sizeof(Bf16),
-            cudaMemcpyDeviceToDevice, st));
+        if (run.start >= begin && run.start + run.length <= end) {
+          UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+              im.hidden + static_cast<size_t>(run.start - begin) * kHidden,
+              im.pooler + pool_offset * kHidden,
+              static_cast<size_t>(run.length) * kHidden * sizeof(Bf16),
+              cudaMemcpyDeviceToDevice, st));
+        }
         pool_offset += static_cast<size_t>(run.length);
       }
     }
-    const size_t rope_off = static_cast<size_t>(begin) * kRotaryDim;
-    const size_t rope_bytes = static_cast<size_t>(m) * kRotaryDim * sizeof(Bf16);
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data() + rope_off,
-                                          rope_bytes, cudaMemcpyHostToDevice, st));
-    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, sin.data() + rope_off,
-                                          rope_bytes, cudaMemcpyHostToDevice, st));
+    build_text_rope(pos, begin, m, &cos, &sin);
+    const size_t rope_bytes = cos.size() * sizeof(Bf16);
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(), rope_bytes,
+                                          cudaMemcpyHostToDevice, st));
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_sin, sin.data(), rope_bytes,
+                                          cudaMemcpyHostToDevice, st));
     if (!dump_dir.empty()) {
       dump_dev(im, dump_dir, "embed.bf16", im.hidden,
                static_cast<size_t>(P) * kHidden * sizeof(Bf16));
@@ -1648,13 +1660,13 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     snapshot_prefix(im, /*slot=*/0,
                     std::vector<int>(prompt_ids.begin(),
                                      prompt_ids.begin() + snap_len),
-                    st);
+                    media_hash, mrope_pos_next_at(pos, P, snap_len), st);
     prefill_rows(snap_len, P);
   }
 
   // Snapshot at the prompt boundary, before the first decode row is written.
-  if (!split && image == nullptr && im.prefix_cache)
-    snapshot_prefix(im, /*slot=*/0, prompt_ids, st);
+  if (!split && can_snapshot)
+    snapshot_prefix(im, /*slot=*/0, prompt_ids, media_hash, pos.next, st);
 
   rms_norm_zero_centered(im.hidden + static_cast<size_t>(P - last_begin - 1) * kHidden,
                          im.bf("model.language_model.norm.weight"), im.norm, 1,
@@ -1680,8 +1692,9 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
                                           cudaMemcpyHostToDevice, st));
     index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
                      im.hidden, 1, kHidden, st);
-    const Positions one_pos{{next_pos}, {next_pos}, {next_pos}, next_pos + 1};
-    build_text_rope(one_pos, 1, &cos, &sin);
+    const MRoPEPositions one_pos{{next_pos}, {next_pos}, {next_pos},
+                                 next_pos + 1};
+    build_text_rope(one_pos, 0, 1, &cos, &sin);
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.mrope_cos, cos.data(),
                                           cos.size() * sizeof(Bf16),
                                           cudaMemcpyHostToDevice, st));
@@ -1719,6 +1732,7 @@ GenResult Engine::generate_batched(const BatchRequest& request) {
     throw std::runtime_error("max_new_tokens must be positive");
   auto job = std::make_shared<BatchJob>();
   job->req = request;
+  job->media_hash = compute_media_hash(request.image);
   // Seed here, on the calling thread: the batch thread only advances the rng,
   // and a request's draw sequence must depend on its own seed alone.
   job->rng.seed(request.sampling.has_seed ? request.sampling.seed

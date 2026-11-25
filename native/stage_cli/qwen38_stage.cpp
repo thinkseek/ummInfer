@@ -356,23 +356,25 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const qwen38::RenderedChatPrompt parts =
         qwen38::render_chat_prompt_parts(turns, /*enable_thinking=*/false);
     std::vector<int> ids = tokenizer->encode(parts.full());
-    // Snapshot at the turn boundary. Only a prefix that tokenizes to a leading
-    // slice of the full prompt is usable; anything else keeps the whole-prompt
-    // snapshot rather than risk a wrong prefix.
-    int cache_prefix_len = -1;
-    if (image == nullptr) {
-      const std::vector<int> prefix_ids = tokenizer->encode(parts.prefix);
-      if (prefix_ids.size() < ids.size() &&
-          std::equal(prefix_ids.begin(), prefix_ids.end(), ids.begin())) {
-        cache_prefix_len = static_cast<int>(prefix_ids.size());
-      }
-    }
+    // Snapshot at the turn boundary for both pure-text and multimodal prompts.
+    // Visual placeholders live in parts.prefix (never in the open assistant
+    // header), so expanding both keeps prefix_ids a strict leading slice of
+    // ids with all image/video pads strictly inside [0, cache_prefix_len).
+    std::vector<int> prefix_ids = tokenizer->encode(parts.prefix);
     if (image != nullptr) {
       if (is_video) {
         ids = qwen38::expand_video_pads(ids, image_tokens, image->grid_t);
+        prefix_ids =
+            qwen38::expand_video_pads(prefix_ids, image_tokens, image->grid_t);
       } else {
         ids = qwen38::expand_image_pads(ids, image_tokens);
+        prefix_ids = qwen38::expand_image_pads(prefix_ids, image_tokens);
       }
+    }
+    int cache_prefix_len = -1;
+    if (prefix_ids.size() < ids.size() &&
+        std::equal(prefix_ids.begin(), prefix_ids.end(), ids.begin())) {
+      cache_prefix_len = static_cast<int>(prefix_ids.size());
     }
 
     // Byte-level BPE decode is additive per token: buffer only incomplete
@@ -440,6 +442,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " generated_tokens=" << result.ids.size()
               << " finish_reason=" << finish_reason
               << " chars=" << text.size()
+              << " vision_ms=" << std::fixed << std::setprecision(1)
+              << result.vision_ms
               << " prefill_ms=" << std::fixed << std::setprecision(1)
               << result.prefill_ms
               << " decode_ms=" << std::fixed << std::setprecision(1)

@@ -146,6 +146,7 @@ PreprocessedImage preprocess_rgb(const uint8_t* rgb, int src_h, int src_w,
   out.grid_w = grid_w;
   out.resized_h = dh;
   out.resized_w = dw;
+  out.is_video = false;
   // pixel_values keeps the full pre-merge patch grid: grid_t*grid_h*grid_w
   // rows (864 for the reference image). The 2x2 merge happens in the vision
   // tower merger, not in the preprocessor.
@@ -236,6 +237,7 @@ PreprocessedImage preprocess_video_frames(
   out.grid_w = grid_w;
   out.resized_h = dh;
   out.resized_w = dw;
+  out.is_video = true;
   out.pixel_values.resize(static_cast<size_t>(grid_t) * grid_h * grid_w *
                           PreprocessedImage::kPatchDim);
 
