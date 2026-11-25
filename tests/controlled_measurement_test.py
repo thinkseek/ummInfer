@@ -1,0 +1,658 @@
+#!/usr/bin/env python3
+"""CPU-only deterministic tests for the Stage C controlled-measurement layer.
+
+Covers schedule reproducibility, single-variable invariance, failed and
+precondition-failing arms, incomplete repetitions, latency aggregation, and
+contract/hash tamper rejection. Live-mode runs use loopback canned responses
+plus injected device/health samplers only: no GPU, remote host, real model,
+optimizer, or resident service is touched, and no run here is real controlled
+performance evidence.
+
+Usage: python3 -I tests/controlled_measurement_test.py
+"""
+
+import base64
+import copy
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "python"))
+
+import umminfer_ablation_run as runner  # noqa: E402
+import umminfer_controlled_measurement as controlled  # noqa: E402
+
+EXAMPLE = ROOT / "benchmarks" / "ablations" / "narrative-routing-controlled-example.json"
+ROUTING_REPLAY = ROOT / "benchmarks" / "ablations" / "narrative-routing-replay.json"
+VISUAL_CONFIG = ROOT / "benchmarks" / "ablations" / "visual-form.json"
+VISUAL_REPLAY = ROOT / "benchmarks" / "ablations" / "visual-form-replay.json"
+WEIGHTS = "a" * 64
+
+
+def tree_bytes(root):
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in Path(root).rglob("*") if path.is_file()}
+
+
+def run_cli(out, config=EXAMPLE, extra=()):
+    return subprocess.run(
+        [sys.executable, "-I", str(ROOT / "python" / "umminfer_ablation_run.py"),
+         "--config", str(config), "--replay-only", "--out", str(out), *extra],
+        capture_output=True, text=True, timeout=60)
+
+
+class ControlledHandler(BaseHTTPRequestHandler):
+    """Serves canned responses in the exact declared schedule order.
+
+    Any request that deviates from the expected (arm, prompt) sequence, or any
+    extra request after a fail-fast precondition abort, fails the test.
+    """
+
+    cases = {}
+    renders = {}
+    expected = []
+    requests = []
+    chat_count = 0
+    fail_indices = set()
+    misordered = []
+
+    def log_message(self, *args):
+        pass
+
+    def _fail(self, status, message):
+        raw = json.dumps({"error": {"message": message}}).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+        self.close_connection = True
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length))
+        type(self).requests.append((self.path, body))
+        if self.path == "/v1/visual/render":
+            case = self.renders[runner._sha256(body)]
+            raw = base64.b64decode(case["response_base64"])
+            content_type = "video/mp4"
+        else:
+            index = type(self).chat_count
+            type(self).chat_count = index + 1
+            if index >= len(self.expected):
+                self._fail(500, "request beyond declared schedule")
+                return
+            arm, prompt_id = self.expected[index]
+            actual_prompt = "conservation" if "momentum" in json.dumps(
+                body["messages"]) else "lantern"
+            if actual_prompt != prompt_id:
+                type(self).misordered.append((index, arm, prompt_id, actual_prompt))
+            if index in self.fail_indices:
+                self._fail(500, "injected measured-request failure")
+                return
+            case = self.cases[(arm, prompt_id)]
+            raw = base64.b64decode(case["response_sse_base64"])
+            content_type = "text/event-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
+        self.close_connection = True
+
+
+def good_contract(**overrides):
+    contract = {
+        "schema_version": 1, "warmup_repetitions": 1, "measured_repetitions": 2,
+        "arm_order": "interleaved", "seed": 7, "cooldown_ms": 0,
+        "exclusive_device": {"required": True, "gpu_indexes": [0],
+                             "allowed_pids": [4242], "max_other_compute_processes": 0},
+        "cleanup": {"require_in_flight_zero": True,
+                    "max_residual_memory_mib": 128, "timeout_s": 5.0},
+    }
+    contract.update(overrides)
+    return contract
+
+
+def good_coverage(arms=("a", "b")):
+    return {arm: {"warmups_declared": 1, "warmups_executed": 1, "warmup_failures": 0,
+                  "measured_declared": 2, "measured_completed": 2, "measured_failed": 0}
+            for arm in arms}
+
+
+def good_provenance():
+    return {"source_commit": "b" * 40, "source_state_sha256": "c" * 64,
+            "config_sha256": "d" * 64, "data_sha256": "e" * 64,
+            "artifact_manifest_sha256": "f" * 64}
+
+
+class ContractValidationTests(unittest.TestCase):
+    def assert_rejected(self, mutate):
+        contract = good_contract()
+        mutate(contract)
+        with self.assertRaises(ValueError):
+            controlled.parse_contract(contract)
+
+    def test_valid_contract_normalizes_defaults(self):
+        parsed = controlled.parse_contract(good_contract())
+        self.assertEqual(parsed["measured_repetitions"], 2)
+        self.assertEqual(parsed["exclusive_device"]["max_memory_used_mib"], None)
+        self.assertIsNone(controlled.parse_contract(None))
+
+    def test_tampered_contract_fields_are_rejected(self):
+        cases = [
+            lambda c: c.update(unknown_key=1),
+            lambda c: c.update(schema_version=2),
+            lambda c: c.pop("seed"),
+            lambda c: c.pop("warmup_repetitions"),
+            lambda c: c.pop("measured_repetitions"),
+            lambda c: c.pop("arm_order"),
+            lambda c: c.update(seed="7"),
+            lambda c: c.update(seed=True),
+            lambda c: c.update(measured_repetitions=0),
+            lambda c: c.update(warmup_repetitions=-1),
+            lambda c: c.update(arm_order="sequential"),
+            lambda c: c.update(cooldown_ms=-5),
+            lambda c: c["exclusive_device"].update(required=True, gpu_indexes=[]),
+            lambda c: c["exclusive_device"].update(gpu_indexes=[0, 0]),
+            lambda c: c["exclusive_device"].update(gpu_indexes=[-1]),
+            lambda c: c["exclusive_device"].update(unknown=1),
+            lambda c: c["cleanup"].update(timeout_s=0),
+            lambda c: c["cleanup"].update(timeout_s=float("inf")),
+            lambda c: c["cleanup"].update(require_in_flight_zero="yes"),
+            lambda c: c["cleanup"].update(max_residual_memory_mib=-2),
+        ]
+        for index, mutate in enumerate(cases):
+            with self.subTest(case=index):
+                self.assert_rejected(mutate)
+
+    def test_example_config_tamper_fails_closed(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-tamper-") as tmp:
+            config = json.loads(EXAMPLE.read_text())
+            config["dataset"]["path"] = str(
+                ROOT / "benchmarks" / "ablations" / config["dataset"]["path"])
+            config["replay"]["path"] = str(
+                ROOT / "benchmarks" / "ablations" / config["replay"]["path"])
+            config["measurement"]["seed"] = "not-an-integer"
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(config))
+            with self.assertRaises(ValueError):
+                runner.load_experiment(path)
+
+
+class ScheduleTests(unittest.TestCase):
+    def test_schedule_is_reproducible_and_seed_bound(self):
+        arms = list(runner.POLICIES)
+        contract = controlled.parse_contract(good_contract(measured_repetitions=3))
+        first = controlled.build_schedule(arms, contract)
+        second = controlled.build_schedule(arms, contract)
+        self.assertEqual(first, second)
+        descriptor = controlled.schedule_descriptor(arms, contract, first)
+        self.assertEqual(descriptor["schedule_sha256"],
+                         controlled.schedule_descriptor(arms, contract, second)[
+                             "schedule_sha256"])
+        reseeded = controlled.parse_contract(good_contract(
+            measured_repetitions=3, seed=8))
+        self.assertNotEqual(first, controlled.build_schedule(arms, reseeded))
+        self.assertEqual(len(first), len(arms) * (1 + 3))
+        self.assertEqual([step["index"] for step in first], list(range(len(first))))
+
+    def test_warmups_precede_measured_and_interleave_covers_arms(self):
+        arms = list(runner.POLICIES)
+        for order in ("interleaved", "randomized"):
+            with self.subTest(order=order):
+                contract = controlled.parse_contract(good_contract(arm_order=order))
+                steps = controlled.build_schedule(arms, contract)
+                warmup = [step for step in steps if step["phase"] == "warmup"]
+                measured = [step for step in steps if step["phase"] == "measured"]
+                self.assertEqual(steps[:len(warmup)], warmup)
+                self.assertEqual({step["arm"] for step in warmup}, set(arms))
+                self.assertEqual(len(measured), 2 * len(arms))
+                self.assertEqual(sorted((step["arm"], step["repetition"])
+                                        for step in measured),
+                                 sorted((arm, rep) for arm in arms for rep in (1, 2)))
+                if order == "interleaved":
+                    for offset in range(0, len(measured), len(arms)):
+                        block = measured[offset:offset + len(arms)]
+                        self.assertEqual({step["arm"] for step in block}, set(arms))
+                        self.assertEqual(len({step["repetition"] for step in block}), 1)
+
+    def test_schedule_hash_detects_step_tampering(self):
+        arms = list(runner.POLICIES)
+        contract = controlled.parse_contract(good_contract())
+        steps = controlled.build_schedule(arms, contract)
+        digest = controlled.schedule_descriptor(arms, contract, steps)["schedule_sha256"]
+        tampered = copy.deepcopy(steps)
+        tampered[0]["arm"], tampered[1]["arm"] = tampered[1]["arm"], tampered[0]["arm"]
+        self.assertNotEqual(digest, controlled.schedule_descriptor(
+            arms, contract, tampered)["schedule_sha256"])
+
+
+class AggregationTests(unittest.TestCase):
+    def test_median_p95_and_dispersion_with_sample_counts(self):
+        summary = controlled.summarize([4.0, 1.0, 3.0, 2.0])
+        self.assertEqual(summary["sample_count"], 4)
+        self.assertEqual(summary["total_count"], 4)
+        self.assertEqual(summary["coverage"], "COVERED")
+        self.assertEqual(summary["median_ms"], 2.5)
+        self.assertEqual(summary["p95_ms"], 4.0)
+        self.assertEqual(summary["iqr_ms"], 2.0)
+        self.assertEqual(summary["mad_ms"], 1.0)
+        self.assertEqual(summary["min_ms"], 1.0)
+        self.assertEqual(summary["max_ms"], 4.0)
+        odd = controlled.summarize([1.0, 2.0, 3.0])
+        self.assertEqual(odd["median_ms"], 2.0)
+        self.assertEqual(odd["iqr_ms"], 2.0)
+        self.assertEqual(odd["mad_ms"], 1.0)
+        self.assertEqual(odd["p95_ms"], 3.0)
+
+    def test_missing_samples_reduce_coverage_not_totals(self):
+        partial = controlled.summarize([1.0, None, 3.0])
+        self.assertEqual(partial["coverage"], "PARTIAL")
+        self.assertEqual(partial["sample_count"], 2)
+        self.assertEqual(partial["total_count"], 3)
+        empty = controlled.summarize([None, None])
+        self.assertEqual(empty["coverage"], "NOT_COVERED")
+        self.assertEqual(empty["sample_count"], 0)
+        self.assertIsNone(empty["median_ms"])
+        self.assertEqual(empty["total_count"], 2)
+
+
+class EligibilityTests(unittest.TestCase):
+    def evaluate(self, *, contract=None, provenance=None, model=None, arms=None,
+                 preconditions=None, cleanups=None):
+        return controlled.evaluate_eligibility(
+            contract or controlled.parse_contract(good_contract()),
+            provenance=provenance or good_provenance(),
+            model=model or {"weights_sha256": WEIGHTS},
+            arms=arms or good_coverage(),
+            preconditions=preconditions if preconditions is not None else [
+                {"check": "exclusive_device", "passed": True, "problems": []}],
+            cleanups=cleanups if cleanups is not None else [
+                {"passed": True, "schedule_index": 0, "problems": []}])
+
+    def test_fully_covered_run_is_controlled(self):
+        verdict = self.evaluate()
+        self.assertEqual(verdict["label"], "CONTROLLED_LIVE")
+        self.assertEqual(verdict["reasons"], [])
+
+    def test_each_missing_dimension_refuses_controlled(self):
+        cases = {
+            "weights": {"model": {"weights_sha256": None}},
+            "source": {"provenance": dict(good_provenance(), source_commit=None)},
+            "state": {"provenance": dict(good_provenance(), source_state_sha256="zz")},
+            "config": {"provenance": dict(good_provenance(), config_sha256=None)},
+            "data": {"provenance": dict(good_provenance(), data_sha256=None)},
+            "artifact": {"provenance": dict(good_provenance(),
+                                            artifact_manifest_sha256=None)},
+            "precondition-failed": {"preconditions": [
+                {"check": "exclusive_device", "passed": False,
+                 "problems": ["foreign pid"]}]},
+            "precondition-missing": {"preconditions": []},
+            "cleanup-failed": {"cleanups": [
+                {"passed": False, "schedule_index": 3, "problems": ["in_flight=2"]}]},
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                verdict = self.evaluate(**kwargs)
+                self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
+                self.assertTrue(verdict["reasons"])
+
+    def test_incomplete_repetitions_and_failed_arms_refuse_controlled(self):
+        arms = good_coverage()
+        arms["a"]["measured_completed"] = 1
+        verdict = self.evaluate(arms=arms)
+        self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
+        self.assertTrue(any("incomplete" in reason for reason in verdict["reasons"]))
+        arms = good_coverage()
+        arms["b"]["measured_failed"] = 1
+        self.assertEqual(self.evaluate(arms=arms)["label"], "UNCONTROLLED_LIVE")
+        arms = good_coverage()
+        arms["a"]["warmups_executed"] = 0
+        self.assertEqual(self.evaluate(arms=arms)["label"], "UNCONTROLLED_LIVE")
+        arms = good_coverage()
+        arms["a"]["warmup_failures"] = 1
+        self.assertEqual(self.evaluate(arms=arms)["label"], "UNCONTROLLED_LIVE")
+
+    def test_undeclared_exclusivity_refuses_controlled(self):
+        contract = good_contract()
+        contract["exclusive_device"]["required"] = False
+        verdict = self.evaluate(contract=controlled.parse_contract(contract),
+                                preconditions=[])
+        self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
+        self.assertTrue(any("exclusivity" in reason for reason in verdict["reasons"]))
+
+
+class PreconditionAndCleanupTests(unittest.TestCase):
+    def test_foreign_compute_process_fails_exclusivity(self):
+        contract = controlled.parse_contract(good_contract())
+        record = controlled.check_exclusive_device(
+            contract, lambda indexes: {i: [{"pid": 999, "used_mib": 50}]
+                                       for i in indexes})
+        self.assertFalse(record["passed"])
+        self.assertEqual(record["foreign_compute_processes"],
+                         [{"gpu_index": 0, "pid": 999, "used_mib": 50}])
+        allowed = controlled.check_exclusive_device(
+            contract, lambda indexes: {i: [{"pid": 4242, "used_mib": 50}]
+                                       for i in indexes})
+        self.assertTrue(allowed["passed"])
+
+    def test_memory_ceiling_and_residual_cleanup(self):
+        contract = controlled.parse_contract(good_contract())
+        contract["exclusive_device"]["max_memory_used_mib"] = 512
+        record = controlled.check_exclusive_device(
+            contract, lambda indexes: {i: [] for i in indexes},
+            baseline_mib={0: 900})
+        self.assertFalse(record["passed"])
+        cleanup = controlled.evaluate_cleanup(contract, in_flight=0,
+                                              residual_mib={0: 200})
+        self.assertFalse(cleanup["passed"])
+        ok = controlled.evaluate_cleanup(contract, in_flight=0,
+                                         residual_mib={0: 128})
+        self.assertTrue(ok["passed"])
+        stuck = controlled.evaluate_cleanup(contract, in_flight=2,
+                                            residual_mib={0: 0})
+        self.assertFalse(stuck["passed"])
+
+    def test_request_scoped_telemetry_is_honestly_not_covered(self):
+        telemetry = controlled.request_scoped_telemetry()
+        self.assertEqual(telemetry["coverage"], "NOT_COVERED")
+        self.assertEqual(telemetry["scope"], "whole-device-used-memory")
+
+
+class LiveHarness:
+    def __init__(self, test, config, *, visual=False, fail_indices=()):
+        self.test = test
+        self.config = config
+        self.visual = visual
+        replay_path = VISUAL_REPLAY if visual else ROUTING_REPLAY
+        replay = json.loads(replay_path.read_text())
+        key = "visual_form" if visual else "routing_policy"
+        ControlledHandler.cases = {(case[key], case["prompt_id"]): case
+                                   for case in replay["cases"]}
+        ControlledHandler.renders = {}
+        if visual:
+            for case in replay["cases"]:
+                for render in case.get("renders", []):
+                    ControlledHandler.renders[render["request_sha256"]] = render
+        ControlledHandler.fail_indices = set(fail_indices)
+        ControlledHandler.requests = []
+        ControlledHandler.misordered = []
+        ControlledHandler.chat_count = 0
+        self.server = None
+
+    def __enter__(self):
+        experiment_config = self.config
+        contract = controlled.parse_contract(experiment_config["measurement"])
+        variable = experiment_config["variable"]
+        arms = experiment_config["routing_policies" if variable == "routing_policy"
+                                 else "visual_forms"]
+        dataset = json.loads(Path(experiment_config["dataset"]["path"]).read_text())
+        steps = controlled.build_schedule(arms, contract)
+        ControlledHandler.expected = [
+            (step["arm"], prompt["id"])
+            for step in steps for prompt in dataset["prompts"]]
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), ControlledHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        return False
+
+    def run(self, out, *, require=False, foreign_pid=False, stuck_health=False):
+        memory = lambda indexes: {index: 1000 for index in indexes}  # noqa: E731
+        if foreign_pid:
+            apps = lambda indexes: {index: [{"pid": 999, "used_mib": 5}]  # noqa: E731
+                                    for index in indexes}
+        else:
+            apps = lambda indexes: {index: [{"pid": 4242, "used_mib": 5}]  # noqa: E731
+                                    for index in indexes}
+        health = (lambda: {"in_flight": 1}) if stuck_health \
+            else (lambda: {"in_flight": 0})
+        experiment = runner.load_experiment(self.config_path)
+        return runner.run_experiment(
+            experiment, out, replay_only=False,
+            base_url=f"127.0.0.1:{self.server.server_port}", timeout_s=5,
+            resource_gpu_indexes=[0], gpu_sampler=memory,
+            compute_apps_sampler=apps, health_probe=health,
+            sleep_fn=lambda seconds: None, require_controlled=require)
+
+    def write_config(self, tmp):
+        path = Path(tmp) / "config.json"
+        path.write_text(json.dumps(self.config, sort_keys=True))
+        self.config_path = path
+        return path
+
+
+def example_config(*, weights=WEIGHTS, measured=2, cleanup_timeout=5.0):
+    config = json.loads(EXAMPLE.read_text())
+    config["dataset"]["path"] = str(
+        ROOT / "benchmarks" / "ablations" / config["dataset"]["path"])
+    config["replay"]["path"] = str(
+        ROOT / "benchmarks" / "ablations" / config["replay"]["path"])
+    config["model"]["weights_sha256"] = weights
+    config["measurement"]["measured_repetitions"] = measured
+    config["measurement"]["exclusive_device"]["allowed_pids"] = [4242]
+    config["measurement"]["cleanup"]["timeout_s"] = cleanup_timeout
+    return config
+
+
+class ControlledLiveTests(unittest.TestCase):
+    def test_controlled_live_end_to_end_with_single_variable_invariance(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-live-") as tmp:
+            config = example_config()
+            harness = LiveHarness(self, config)
+            harness.write_config(tmp)
+            with harness:
+                report = harness.run(Path(tmp) / "out")
+            self.assertEqual(report["run_status"], "COMPLETED")
+            self.assertEqual(report["evidence_class"], "CONTROLLED_LIVE")
+            self.assertEqual(report["claims"]["latency_evidence"], "CONTROLLED_LIVE")
+            measurement = report["measurement"]
+            self.assertEqual(measurement["status"], "EXECUTED")
+            self.assertEqual(measurement["eligibility"]["reasons"], [])
+            self.assertEqual(ControlledHandler.misordered, [])
+            self.assertEqual(ControlledHandler.chat_count,
+                             len(ControlledHandler.expected))
+            arms = list(runner.POLICIES)
+            self.assertEqual(len(report["cases"]), 2 * 2 * len(arms))
+            for arm in arms:
+                coverage = measurement["arms"][arm]
+                self.assertEqual(coverage["warmups_executed"], 1)
+                self.assertEqual(coverage["warmup_failures"], 0)
+                self.assertEqual(coverage["measured_completed"], 2)
+                self.assertEqual(coverage["measured_failed"], 0)
+                for prompt_id in ("lantern", "conservation"):
+                    aggregates = coverage["aggregates"]["per_prompt"][prompt_id]
+                    self.assertEqual(aggregates["repetitions"], 2)
+                    terminal = aggregates["terminal_ms"]
+                    self.assertEqual(terminal["sample_count"], 2)
+                    self.assertEqual(terminal["total_count"], 2)
+                    self.assertEqual(terminal["coverage"], "COVERED")
+                    for key in ("median_ms", "p95_ms", "iqr_ms", "mad_ms"):
+                        self.assertIsNotNone(terminal[key])
+                per_arm = json.loads((Path(tmp) / "out" / arm / "report.json").read_text())
+                self.assertEqual(per_arm["evidence_class"], "CONTROLLED_LIVE")
+                self.assertEqual(per_arm["measurement"]["schedule_sha256"],
+                                 measurement["schedule"]["schedule_sha256"])
+                self.assertEqual(per_arm["resources"]["coverage"], "COVERED")
+                self.assertEqual(per_arm["resources"]["scope"],
+                                 "whole-device-used-memory")
+                matrix = per_arm["single_variable"]["fixed_matrix_sha256"]
+                self.assertEqual(matrix,
+                                 report["single_variable"]["fixed_matrix_sha256"])
+            self.assertEqual(measurement["request_scoped_telemetry"]["coverage"],
+                             "NOT_COVERED")
+            self.assertTrue(all(row["passed"] for row in measurement["cleanup_checks"]))
+            self.assertEqual(len(measurement["cleanup_checks"]),
+                             len(measurement["schedule"]["steps"]))
+            for warmups in measurement["warmups"]:
+                self.assertTrue(all(case["terminal_state"] == "completed"
+                                    for case in warmups["cases"]))
+            # Every repetition of one (arm, prompt) sends a byte-identical request,
+            # and the fixed projection is identical across all arms and repetitions.
+            by_pair = {}
+            for case in report["cases"]:
+                self.assertEqual(case["phase"], "measured")
+                by_pair.setdefault((case["routing_policy"], case["prompt_id"]),
+                                   []).append(case)
+            for (arm, prompt_id), cases in by_pair.items():
+                self.assertEqual(len(cases), 2)
+                self.assertEqual({case["request_sha256"] for case in cases},
+                                 {cases[0]["request_sha256"]})
+                self.assertEqual(sorted(case["repetition"] for case in cases), [1, 2])
+            fixed_by_prompt = {}
+            for path, body in ControlledHandler.requests:
+                if path != "/v1/chat/completions":
+                    continue
+                prompt_key = "momentum" in json.dumps(body["messages"])
+                projection = runner.fixed_request(body)
+                if prompt_key in fixed_by_prompt:
+                    self.assertEqual(fixed_by_prompt[prompt_key], projection)
+                else:
+                    fixed_by_prompt[prompt_key] = projection
+            self.assertEqual(len(fixed_by_prompt), 2)
+            # Warmup traffic is exported out-of-band, never mixed into metrics.
+            for arm in arms:
+                warmup_path = Path(tmp) / "out" / "warmup" / arm / "trajectory.jsonl"
+                self.assertTrue(warmup_path.is_file())
+                measured = (Path(tmp) / "out" / arm / "trajectory.jsonl").read_text()
+                self.assertEqual(len(measured.strip().splitlines()), 4)
+                self.assertIn('"repetition":2', measured)
+                self.assertNotIn("warmup", measured)
+
+    def test_unpinned_weights_refuse_controlled_label(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-weights-") as tmp:
+            config = example_config(weights=None, measured=1)
+            harness = LiveHarness(self, config)
+            harness.write_config(tmp)
+            with harness:
+                report = harness.run(Path(tmp) / "out")
+            self.assertEqual(report["run_status"], "COMPLETED")
+            self.assertEqual(report["evidence_class"], "UNCONTROLLED_LIVE")
+            reasons = report["measurement"]["eligibility"]["reasons"]
+            self.assertTrue(any("weights_sha256" in reason for reason in reasons))
+
+    def test_precondition_failure_downgrades_or_aborts(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-precond-") as tmp:
+            config = example_config(measured=1)
+            harness = LiveHarness(self, config)
+            harness.write_config(tmp)
+            with harness:
+                report = harness.run(Path(tmp) / "out", foreign_pid=True)
+                self.assertEqual(report["evidence_class"], "UNCONTROLLED_LIVE")
+                reasons = report["measurement"]["eligibility"]["reasons"]
+                self.assertTrue(any("precondition failed" in reason
+                                    for reason in reasons))
+                with self.assertRaises(ValueError):
+                    harness.run(Path(tmp) / "out-strict", require=True,
+                                foreign_pid=True)
+            # The strict abort happened before any request of the second run.
+            self.assertEqual(ControlledHandler.chat_count,
+                             len(ControlledHandler.expected))
+            self.assertFalse((Path(tmp) / "out-strict" / "report.json").exists())
+
+    def test_failed_measured_repetition_refuses_controlled(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-fail-") as tmp:
+            config = example_config(measured=1)
+            harness = LiveHarness(self, config, fail_indices={8})
+            harness.write_config(tmp)
+            with harness:
+                report = harness.run(Path(tmp) / "out")
+            self.assertEqual(report["run_status"], "FAILED")
+            self.assertEqual(report["evidence_class"], "UNCONTROLLED_LIVE")
+            reasons = report["measurement"]["eligibility"]["reasons"]
+            self.assertTrue(any("did not complete" in reason for reason in reasons))
+            failed = [case for case in report["cases"]
+                      if case["terminal_state"] != "completed"]
+            self.assertEqual(len(failed), 1)
+
+    def test_stuck_in_flight_cleanup_refuses_controlled(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-cleanup-") as tmp:
+            config = example_config(measured=1, cleanup_timeout=0.02)
+            harness = LiveHarness(self, config)
+            harness.write_config(tmp)
+            with harness:
+                report = harness.run(Path(tmp) / "out", stuck_health=True)
+            self.assertEqual(report["run_status"], "COMPLETED")
+            self.assertEqual(report["evidence_class"], "UNCONTROLLED_LIVE")
+            reasons = report["measurement"]["eligibility"]["reasons"]
+            self.assertTrue(any("cleanup" in reason for reason in reasons))
+            self.assertTrue(any(not row["passed"]
+                                for row in report["measurement"]["cleanup_checks"]))
+
+    def test_visual_form_controlled_live_binds_every_repetition(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-visual-") as tmp:
+            config = json.loads(VISUAL_CONFIG.read_text())
+            config["ablation_id"] = "stage-c-visual-form-controlled-test-v1"
+            config["dataset"]["path"] = str(
+                ROOT / "benchmarks" / "ablations" / config["dataset"]["path"])
+            config["replay"]["path"] = str(VISUAL_REPLAY)
+            config["model"]["weights_sha256"] = WEIGHTS
+            config["measurement"] = good_contract(measured_repetitions=2)
+            harness = LiveHarness(self, config, visual=True)
+            harness.write_config(tmp)
+            with harness:
+                report = harness.run(Path(tmp) / "out")
+            self.assertEqual(report["run_status"], "COMPLETED")
+            self.assertEqual(report["evidence_class"], "CONTROLLED_LIVE")
+            self.assertEqual(ControlledHandler.misordered, [])
+            equivalence = report["first_stage_image_equivalence"]
+            self.assertTrue(equivalence["passed"])
+            self.assertEqual(len(equivalence["cases"]), 4)
+            for row in equivalence["cases"]:
+                self.assertIn("repetition", row)
+                self.assertTrue(row["request_sha256_equal"])
+                self.assertTrue(row["source_bytes_identical"])
+            for case in report["cases"]:
+                if case["visual_form"] == "image_then_i2v_animate":
+                    self.assertEqual(len(case["animations"]), 1)
+                    self.assertEqual(case["animations"][0]["terminal_state"],
+                                     "completed")
+
+
+class ReplayContractTests(unittest.TestCase):
+    def test_replay_with_measurement_is_deterministic_and_not_live(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-replay-") as tmp:
+            first = Path(tmp) / "first"
+            second = Path(tmp) / "second"
+            for out in (first, second):
+                completed = run_cli(out)
+                self.assertEqual(completed.returncode, 0,
+                                 completed.stdout + completed.stderr)
+            self.assertEqual(tree_bytes(first), tree_bytes(second))
+            report = json.loads((first / "report.json").read_text())
+            self.assertEqual(report["evidence_class"], "CONTRACT_REPLAY")
+            self.assertEqual(report["claims"]["latency_evidence"], "CONTRACT_REPLAY")
+            measurement = report["measurement"]
+            self.assertEqual(measurement["status"], "NOT_RUN")
+            contract = controlled.parse_contract(
+                json.loads(EXAMPLE.read_text())["measurement"])
+            steps = controlled.build_schedule(list(runner.POLICIES), contract)
+            self.assertEqual(measurement["schedule"]["schedule_sha256"],
+                             controlled.schedule_descriptor(
+                                 list(runner.POLICIES), contract,
+                                 steps)["schedule_sha256"])
+            self.assertEqual(len(measurement["schedule"]["steps"]), 4 * (1 + 3))
+            self.assertEqual(measurement["contract"]["seed"], 20261126)
+
+    def test_require_controlled_rejects_replay_mode(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-strict-") as tmp:
+            completed = run_cli(Path(tmp) / "out", extra=("--require-controlled",))
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("measurement", completed.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

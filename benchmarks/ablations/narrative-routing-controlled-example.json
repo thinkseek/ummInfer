@@ -1,0 +1,77 @@
+{
+  "ablation_id": "stage-c-narrative-routing-controlled-example-v1",
+  "ablation_schema_version": 1,
+  "dataset": {
+    "path": "narrative-routing-prompts.json",
+    "sha256": "9279dda6c793d7e553d977f515415ad2c9e46fb639d49958935de7697850ba44"
+  },
+  "fixed": {
+    "audio": {
+      "format": "wav",
+      "sample_rate": 24000,
+      "stream": true,
+      "voice": "vivian"
+    },
+    "sampling": {
+      "max_tokens": 256,
+      "seed": 42,
+      "temperature": 0.0,
+      "top_p": 1.0
+    },
+    "visual": {
+      "image": {
+        "output_format": "png",
+        "seed": 42,
+        "size": "512x512",
+        "steps": 4
+      },
+      "max_slots": 2,
+      "video": {
+        "fps": 16,
+        "guidance_scale": 5.0,
+        "num_frames": 13,
+        "output_format": "mp4",
+        "seed": 42,
+        "size": "480x320",
+        "steps": 4
+      }
+    }
+  },
+  "measurement": {
+    "schema_version": 1,
+    "warmup_repetitions": 1,
+    "measured_repetitions": 3,
+    "arm_order": "interleaved",
+    "seed": 20261126,
+    "cooldown_ms": 0,
+    "exclusive_device": {
+      "required": true,
+      "gpu_indexes": [0],
+      "allowed_pids": [],
+      "max_other_compute_processes": 0,
+      "max_memory_used_mib": null
+    },
+    "cleanup": {
+      "require_in_flight_zero": true,
+      "max_residual_memory_mib": 128,
+      "timeout_s": 30.0
+    }
+  },
+  "model": {
+    "id": "narrative-routing-contract-v1",
+    "revision": "deterministic-contract-1",
+    "weights_sha256": null
+  },
+  "replay": {
+    "path": "narrative-routing-replay.json",
+    "sha256": "cd8bbde00085c53d75135ba25966b498744d7458beb026f484bf47edf1fd270b"
+  },
+  "routing_policies": [
+    "text_only",
+    "forced_image",
+    "forced_video",
+    "auto_tag"
+  ],
+  "trajectory_schema_version": 2,
+  "variable": "routing_policy"
+}

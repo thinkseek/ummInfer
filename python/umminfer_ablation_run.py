@@ -14,6 +14,15 @@ the RL exporter; latency, labels, and derived animations stay out-of-band.
 
 Live mode additionally requires --base-url host:port (or http://host:port).
 Replay is deterministic contract evidence, never real model/performance evidence.
+
+An optional config `measurement` block (schema v1) declares warmup/measured
+repetitions, deterministic interleaved or randomized arm order with a recorded
+seed, exclusive-device preconditions, and cooldown/cleanup checks. Live runs
+then execute that contract and earn CONTROLLED_LIVE only when every declared
+repetition, exclusivity check, hash, and completion coverage is present;
+otherwise they stay UNCONTROLLED_LIVE with explicit refusal reasons. Replay
+runs carrying the block stay CONTRACT_REPLAY and only validate the schedule.
+See python/umminfer_controlled_measurement.py and docs/narrative-routing-ablation.md.
 """
 
 import argparse
@@ -40,6 +49,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "python"))
 
 import umminfer_ablation_metrics as routing_metrics  # noqa: E402
+import umminfer_controlled_measurement as controlled  # noqa: E402
 import umminfer_rl_reward as reward_mod  # noqa: E402
 import umminfer_rl_trajectory as traj  # noqa: E402
 import umminfer_rl_worker as worker  # noqa: E402
@@ -258,6 +268,7 @@ def load_experiment(config_path):
         _validate_provenance_extras(backend, f"visual_backends.{name}")
     _validation_policy(Experiment(
         config_path, config_bytes, config, b"", {}, None, None))
+    controlled.parse_contract(config.get("measurement"))
 
     replay_bytes = replay = None
     if "replay" in config:
@@ -1086,23 +1097,28 @@ def _session_id(experiment, variant, prompt_id):
     return f"{experiment.config['ablation_id']}:{variant}:{prompt_id}"
 
 
-def _finalize_trajectory(path, experiment, variant, animation_rows=None):
+def _finalize_trajectory(path, experiment, variant, animation_rows=None, entries=None):
     records = []
     prompts = experiment.prompts
+    if entries is None:
+        entries = [{"prompt": prompt, "repetition": None} for prompt in prompts]
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         if line:
             records.append(json.loads(line))
-    if len(records) != len(prompts):
+    if len(records) != len(entries):
         raise ValueError("trajectory record count differs from prompt count")
     if animation_rows is None:
-        animation_rows = [[] for _ in prompts]
-    if len(animation_rows) != len(prompts):
+        animation_rows = [[] for _ in entries]
+    if len(animation_rows) != len(entries):
         raise ValueError("animation row count differs from prompt count")
     variable = _variable(experiment)
-    for record, prompt, animations in zip(records, prompts, animation_rows):
+    for record, entry, animations in zip(records, entries, animation_rows):
+        prompt = entry["prompt"]
         metadata = {"schema_version": 1,
                     "ablation_id": experiment.config["ablation_id"],
                     variable: variant, "prompt_id": prompt["id"]}
+        if entry["repetition"] is not None:
+            metadata["repetition"] = entry["repetition"]
         if "expected_visual_modalities" in prompt:
             metadata["expected_visual_modalities"] = copy.deepcopy(
                 prompt["expected_visual_modalities"])
@@ -1126,7 +1142,7 @@ def _latency_coverage(value):
 
 
 def _case_report(experiment, variant, prompt, body, record, latency, animations=None,
-                 media_validation=None):
+                 media_validation=None, repetition=None, schedule_index=None):
     variable = _variable(experiment)
     observation = routing_metrics.routing_observation(record) \
         if variable == "routing_policy" else None
@@ -1169,6 +1185,10 @@ def _case_report(experiment, variant, prompt, body, record, latency, animations=
                 else "NOT_COVERED",
         },
     }
+    if repetition is not None:
+        result["phase"] = "measured"
+        result["repetition"] = repetition
+        result["schedule_index"] = schedule_index
     if "audio" not in record["request_params"].get("modalities", []):
         result["metric_coverage"]["ttfa"] = "NOT_APPLICABLE"
     if observation is not None:
@@ -1220,14 +1240,18 @@ def _summary(values):
     return result
 
 
-def _claims(mode):
+def _default_evidence(mode):
+    return controlled.CONTRACT_REPLAY if mode == "replay" \
+        else controlled.UNCONTROLLED_LIVE
+
+
+def _claims(mode, evidence_class=None):
     return {
         "learned_routing": "NOT_RUN",
         "optimizer": "NOT_RUN",
         "quality_improvement": "NOT_COVERED",
         "real_model_quality": "NOT_RUN" if mode == "replay" else "NOT_MEASURED",
-        "latency_evidence": "CONTRACT_OBSERVATIONS_ONLY" if mode == "replay"
-            else "UNCONTROLLED_LIVE_MEASUREMENT",
+        "latency_evidence": evidence_class or _default_evidence(mode),
     }
 
 
@@ -1362,7 +1386,8 @@ def _metric_view(cases, records, variable="routing_policy"):
 
 
 def _policy_report(experiment, source, mode, variant, cases, records,
-                   trajectory_path, output_root, resources=None):
+                   trajectory_path, output_root, resources=None,
+                   evidence_class=None, measurement=None):
     entries = _artifact_entries(cases)
     variable = _variable(experiment)
     metrics, metric_coverage = _metric_view(cases, records, variable)
@@ -1371,11 +1396,12 @@ def _policy_report(experiment, source, mode, variant, cases, records,
         for leg in case["terminal_legs"]:
             state = leg.get("state", "unknown")
             leg_state_counts[state] = leg_state_counts.get(state, 0) + 1
+    evidence = evidence_class or _default_evidence(mode)
     report = {
         "report_schema_version": REPORT_SCHEMA_VERSION,
         "ablation_id": experiment.config["ablation_id"],
         "mode": mode,
-        "evidence_class": "contract-replay" if mode == "replay" else "live-uncontrolled",
+        "evidence_class": evidence,
         variable: variant,
         "single_variable": fixed_matrix(experiment),
         "cases": cases,
@@ -1392,21 +1418,308 @@ def _policy_report(experiment, source, mode, variant, cases, records,
         "resources": resources or _uncovered_resources(),
         "trajectory_file": str(Path(trajectory_path).relative_to(output_root).as_posix()),
         "trajectory_sha256": hashlib.sha256(Path(trajectory_path).read_bytes()).hexdigest(),
-        "claims": _claims(mode),
+        "claims": _claims(mode, evidence),
     }
+    if measurement is not None:
+        report["measurement"] = measurement
     report.update(_provenance(experiment, source, entries))
     return report
 
 
+def _replay_measurement(experiment, contract):
+    variants = _variants(experiment)
+    steps = controlled.build_schedule(variants, contract)
+    return {
+        "schema_version": controlled.MEASUREMENT_SCHEMA_VERSION,
+        "status": "NOT_RUN",
+        "reason": "CONTRACT_REPLAY validates the declared schedule only; "
+                  "controlled live measurement requires a separate exclusive live gate",
+        "contract": contract,
+        "schedule": controlled.schedule_descriptor(variants, contract, steps),
+        "request_scoped_telemetry": controlled.request_scoped_telemetry(),
+    }
+
+
+def _controlled_aggregates(cases):
+    """Per-prompt repetition statistics plus pooled per-arm dispersion."""
+    per_prompt = {}
+    for case in cases:
+        per_prompt.setdefault(case["prompt_id"], []).append(case)
+    prompts = {}
+    for prompt_id, rows in sorted(per_prompt.items()):
+        prompts[prompt_id] = {
+            "repetitions": len(rows),
+            "ttft_ms": controlled.summarize(
+                [row["latency"]["ttft_ms"] for row in rows]),
+            "ttfa_ms": controlled.summarize(
+                [row["latency"]["ttfa_ms"] for row in rows]),
+            "terminal_ms": controlled.summarize(
+                [row["latency"]["terminal_ms"] for row in rows]),
+        }
+    return {
+        "per_prompt": prompts,
+        "pooled": {
+            "ttft_ms": controlled.summarize(
+                [case["latency"]["ttft_ms"] for case in cases]),
+            "ttfa_ms": controlled.summarize(
+                [case["latency"]["ttfa_ms"] for case in cases]),
+            "terminal_ms": controlled.summarize(
+                [case["latency"]["terminal_ms"] for case in cases]),
+            "slot_to_artifact_ms": controlled.summarize(
+                [slot["slot_to_artifact_ms"] for case in cases
+                 for slot in case["latency"]["slots"]]),
+        },
+    }
+
+
+def _arm_resources(variant, step_resources, gpu_indexes):
+    rows = [row for row in step_resources if row["arm"] == variant]
+    if not rows:
+        return {"coverage": "NOT_COVERED", "scope": "whole-device-used-memory",
+                "reason": "no declared whole-device GPU sampler for controlled steps",
+                "gpus": {}}
+    gpus = {}
+    for index in gpu_indexes:
+        key = str(index)
+        baseline = rows[0]["whole_device_gpus"][key]["baseline_mib"]
+        finals = [row["whole_device_gpus"][key]["final_mib"] for row in rows]
+        gpus[key] = {"baseline_mib": baseline,
+                     "peak_mib": max(finals + [baseline]),
+                     "final_mib": finals[-1], "sample_count": len(rows) + 1}
+    return {
+        "coverage": "COVERED", "scope": "whole-device-used-memory",
+        "source": "nvidia-smi-poll",
+        "attribution": "per-step whole-device samples include persistent model "
+                       "baseline and other interleaved arms; not request-only allocation",
+        "gpus": gpus,
+    }
+
+
+def _run_controlled_experiment(experiment, output_root, source, normalized_url, *,
+                               timeout_s, contract, resource_gpu_indexes,
+                               gpu_sampler, compute_apps_sampler, health_probe,
+                               sleep_fn, require_controlled):
+    """Execute the declared measurement contract against a live endpoint.
+
+    The CONTROLLED_LIVE label is an eligibility decision, never a flag: any
+    missing repetition, exclusivity, hash, or completion coverage downgrades
+    the whole run to UNCONTROLLED_LIVE with explicit reasons.
+    """
+    mode = "live"
+    variable = _variable(experiment)
+    variants = _variants(experiment)
+    steps = controlled.build_schedule(variants, contract)
+    schedule = controlled.schedule_descriptor(variants, contract, steps)
+    sleep = sleep_fn or time.sleep
+    exclusive = contract["exclusive_device"]
+    gpu_indexes = sorted(set(exclusive["gpu_indexes"]) | set(resource_gpu_indexes))
+    sampler = gpu_sampler or _query_nvidia_smi
+    baseline = sampler(gpu_indexes) if gpu_indexes else None
+
+    preconditions = []
+    if exclusive["required"]:
+        apps = compute_apps_sampler or controlled.query_compute_apps
+        record = controlled.check_exclusive_device(contract, apps, baseline)
+        preconditions.append(record)
+        if require_controlled and not record["passed"]:
+            raise ValueError("controlled precondition failed before any request: "
+                             + "; ".join(record["problems"]))
+
+    def default_health():
+        conn = http.client.HTTPConnection(normalized_url, timeout=timeout_s)
+        try:
+            conn.request("GET", "/health")
+            response = conn.getresponse()
+            return json.loads(response.read().decode("utf-8"))
+        finally:
+            conn.close()
+
+    health = health_probe or default_health
+    recorders = {variant: traj.TrajectoryRecorder(
+        output_root / variant / "trajectory.jsonl") for variant in variants}
+    warmup_recorders = {}
+    pending = {variant: [] for variant in variants}
+    animation_rows = {variant: [] for variant in variants}
+    entries = {variant: [] for variant in variants}
+    arm_coverage = {
+        variant: {"warmups_declared": contract["warmup_repetitions"],
+                  "warmups_executed": 0, "warmup_failures": 0,
+                  "measured_declared": contract["measured_repetitions"],
+                  "measured_completed": 0, "measured_failed": 0}
+        for variant in variants}
+    warmups = []
+    cleanups = []
+    step_resources = []
+
+    for step in steps:
+        variant = step["arm"]
+        coverage = arm_coverage[variant]
+        is_warmup = step["phase"] == "warmup"
+        if is_warmup and variant not in warmup_recorders:
+            warmup_recorders[variant] = traj.TrajectoryRecorder(
+                output_root / "warmup" / variant / "trajectory.jsonl")
+        recorder = warmup_recorders[variant] if is_warmup else recorders[variant]
+        warmup_cases = []
+        for prompt in experiment.prompts:
+            body = build_request(experiment, prompt, variant)
+            session_id = (f"{experiment.config['ablation_id']}:{variant}:"
+                          f"{step['phase']}:r{step['repetition']}:{prompt['id']}")
+            tracker = LatencyTracker()
+            record = traj.record_chat_completion(
+                normalized_url, body, recorder, session_id,
+                timeout=timeout_s, event_observer=tracker.observe)
+            latency = normalize_latency(tracker.finish(), record, "monotonic-live")
+            animations = []
+            if variable == "visual_form" and variant == "image_then_i2v_animate":
+                animations = _run_animations(
+                    experiment, record, recorder, base_url=normalized_url,
+                    timeout_s=timeout_s)
+            media_validation = _validate_record_media(
+                experiment, record, recorder.artifact_dir)
+            if is_warmup:
+                warmup_cases.append({
+                    "prompt_id": prompt["id"],
+                    "terminal_state": record["terminal_state"],
+                    "error": record["error"],
+                    "terminal_ms": latency["terminal_ms"],
+                })
+                if record["terminal_state"] != "completed" or any(
+                        animation["terminal_state"] != "completed"
+                        for animation in animations):
+                    coverage["warmup_failures"] += 1
+            else:
+                pending[variant].append((prompt, body, record, latency,
+                                         media_validation, step["repetition"],
+                                         step["index"]))
+                animation_rows[variant].append(animations)
+                entries[variant].append({"prompt": prompt,
+                                         "repetition": step["repetition"]})
+        if is_warmup:
+            coverage["warmups_executed"] += 1
+            warmups.append({"schedule_index": step["index"], "arm": variant,
+                            "repetition": step["repetition"], "cases": warmup_cases})
+        else:
+            coverage["measured_completed"] += 1
+
+        deadline = time.monotonic() + contract["cleanup"]["timeout_s"]
+        while True:
+            in_flight = health().get("in_flight")
+            if not contract["cleanup"]["require_in_flight_zero"] or in_flight == 0:
+                break
+            if time.monotonic() >= deadline:
+                break
+            sleep(0.05)
+        residual = None
+        if gpu_indexes:
+            final = sampler(gpu_indexes)
+            step_resources.append({
+                "schedule_index": step["index"], "arm": variant,
+                "phase": step["phase"], "repetition": step["repetition"],
+                "whole_device_gpus": {
+                    str(index): {"baseline_mib": baseline[index],
+                                 "final_mib": final[index]}
+                    for index in gpu_indexes},
+            })
+            residual = {index: final[index] - baseline[index]
+                        for index in gpu_indexes}
+        verdict = controlled.evaluate_cleanup(
+            contract, in_flight=in_flight, residual_mib=residual)
+        verdict["schedule_index"] = step["index"]
+        cleanups.append(verdict)
+        if contract["cooldown_ms"]:
+            sleep(contract["cooldown_ms"] / 1000.0)
+
+    variant_data = {}
+    for variant in variants:
+        trajectory_path = output_root / variant / "trajectory.jsonl"
+        records = _finalize_trajectory(
+            trajectory_path, experiment, variant, animation_rows[variant],
+            entries[variant])
+        cases = [
+            _case_report(experiment, variant, prompt, body, record, latency,
+                         animations, media_validation, repetition=repetition,
+                         schedule_index=schedule_index)
+            for (prompt, body, _, latency, media_validation, repetition,
+                 schedule_index), record, animations
+            in zip(pending[variant], records, animation_rows[variant])]
+        arm_coverage[variant]["measured_failed"] = sum(
+            not _case_success(case) for case in cases)
+        variant_data[variant] = (cases, records, trajectory_path)
+
+    all_cases = [case for variant in variants for case in variant_data[variant][0]]
+    provenance = _provenance(experiment, source, _artifact_entries(all_cases))
+    eligibility = controlled.evaluate_eligibility(
+        contract, provenance=provenance, model=provenance["model"],
+        arms=arm_coverage, preconditions=preconditions, cleanups=cleanups)
+    evidence_class = eligibility["label"]
+
+    policy_reports = []
+    all_records = []
+    for variant in variants:
+        cases, records, trajectory_path = variant_data[variant]
+        measurement = dict(arm_coverage[variant])
+        measurement.update({
+            "schedule_sha256": schedule["schedule_sha256"],
+            "aggregates": _controlled_aggregates(cases),
+        })
+        report = _policy_report(
+            experiment, source, mode, variant, cases, records, trajectory_path,
+            output_root,
+            resources=_arm_resources(variant, step_resources, gpu_indexes),
+            evidence_class=evidence_class, measurement=measurement)
+        _write_json(output_root / variant / "report.json", report)
+        policy_reports.append(report)
+        all_records.extend(records)
+
+    measurement = {
+        "schema_version": controlled.MEASUREMENT_SCHEMA_VERSION,
+        "status": "EXECUTED",
+        "contract": contract,
+        "schedule": schedule,
+        "preconditions": preconditions,
+        "cleanup_checks": cleanups,
+        "arms": {variant: dict(arm_coverage[variant],
+                               aggregates=_controlled_aggregates(
+                                   variant_data[variant][0]))
+                 for variant in variants},
+        "warmups": warmups,
+        "resources": {
+            "coverage": "COVERED" if step_resources else "NOT_COVERED",
+            "scope": "whole-device-used-memory",
+            "source": "nvidia-smi-poll" if step_resources else "NOT_COVERED",
+            "attribution": "per-step whole-device samples; interleaved arms share "
+                           "devices and persistent model baselines",
+            "steps": step_resources,
+        },
+        "request_scoped_telemetry": controlled.request_scoped_telemetry(),
+        "eligibility": eligibility,
+    }
+    return _build_combined(experiment, source, mode, evidence_class, variants,
+                           policy_reports, all_cases, all_records, output_root,
+                           measurement=measurement)
+
+
 def run_experiment(experiment, output_root, *, replay_only, base_url=None,
-                   timeout_s=120.0, resource_gpu_indexes=(), gpu_sampler=None):
+                   timeout_s=120.0, resource_gpu_indexes=(), gpu_sampler=None,
+                   require_controlled=False, compute_apps_sampler=None,
+                   health_probe=None, sleep_fn=None):
     output_root = _prepare_output(output_root)
     source = _source_provenance()
     mode = "replay" if replay_only else "live"
-    replay_cases = _replay_map(experiment) if replay_only else None
+    contract = controlled.parse_contract(experiment.config.get("measurement"))
     if not replay_only and base_url is None:
         raise ValueError("live mode requires --base-url")
     normalized_url = _normalize_base_url(base_url) if base_url else None
+    if require_controlled and (replay_only or contract is None):
+        raise ValueError("--require-controlled needs live mode and a measurement block")
+    if not replay_only and contract is not None:
+        return _run_controlled_experiment(
+            experiment, output_root, source, normalized_url,
+            timeout_s=timeout_s, contract=contract,
+            resource_gpu_indexes=resource_gpu_indexes, gpu_sampler=gpu_sampler,
+            compute_apps_sampler=compute_apps_sampler, health_probe=health_probe,
+            sleep_fn=sleep_fn, require_controlled=require_controlled)
+    replay_cases = _replay_map(experiment) if replay_only else None
     variable = _variable(experiment)
     variants = _variants(experiment)
     policy_reports = []
@@ -1468,6 +1781,17 @@ def run_experiment(experiment, output_root, *, replay_only, base_url=None,
             if monitor is not None:
                 monitor.stop()
 
+    measurement = _replay_measurement(experiment, contract) \
+        if replay_only and contract is not None else None
+    return _build_combined(experiment, source, mode, _default_evidence(mode),
+                           variants, policy_reports, all_cases, all_records,
+                           output_root, measurement=measurement)
+
+
+def _build_combined(experiment, source, mode, evidence_class, variants,
+                    policy_reports, all_cases, all_records, output_root,
+                    measurement=None):
+    variable = _variable(experiment)
     all_entries = _artifact_entries(all_cases)
     summaries = []
     for report in policy_reports:
@@ -1486,31 +1810,35 @@ def run_experiment(experiment, output_root, *, replay_only, base_url=None,
     overall_metrics, overall_coverage = _metric_view(all_cases, all_records, variable)
     equivalence_rows = []
     if variable == "visual_form":
-        for prompt in experiment.prompts:
-            image_case = next(case for case in all_cases
-                              if case["prompt_id"] == prompt["id"]
-                              and case["visual_form"] == "image_only")
-            i2v_case = next(case for case in all_cases
-                            if case["prompt_id"] == prompt["id"]
-                            and case["visual_form"] == "image_then_i2v_animate")
+        for i2v_case in all_cases:
+            if i2v_case["visual_form"] != "image_then_i2v_animate":
+                continue
+            image_case = next(
+                case for case in all_cases
+                if case["prompt_id"] == i2v_case["prompt_id"]
+                and case["visual_form"] == "image_only"
+                and case.get("repetition") == i2v_case.get("repetition"))
             image_hashes = sorted(artifact["sha256"] for artifact in image_case["artifacts"]
                                   if artifact.get("media_type") == "image")
             i2v_hashes = sorted(artifact["sha256"] for artifact in i2v_case["artifacts"]
                                 if artifact.get("media_type") == "image")
-            equivalence_rows.append({
-                "prompt_id": prompt["id"],
+            row = {
+                "prompt_id": i2v_case["prompt_id"],
                 "request_sha256": image_case["request_sha256"],
                 "request_sha256_equal": image_case["request_sha256"]
                     == i2v_case["request_sha256"],
                 "image_only_source_sha256": image_hashes,
                 "i2v_source_sha256": i2v_hashes,
                 "source_bytes_identical": image_hashes == i2v_hashes,
-            })
+            }
+            if "repetition" in i2v_case:
+                row["repetition"] = i2v_case["repetition"]
+            equivalence_rows.append(row)
     equivalence_passed = all(row["request_sha256_equal"] for row in equivalence_rows)
     combined = {
         "ablation_id": experiment.config["ablation_id"],
         "mode": mode,
-        "evidence_class": "contract-replay" if mode == "replay" else "live-uncontrolled",
+        "evidence_class": evidence_class,
         "run_status": "COMPLETED" if equivalence_passed and all(
             _case_success(case) for case in all_cases) else "FAILED",
         "routing_policies" if variable == "routing_policy" else "visual_forms":
@@ -1526,8 +1854,10 @@ def run_experiment(experiment, output_root, *, replay_only, base_url=None,
             "cases": equivalence_rows,
         },
         "resources": {report[variable]: report["resources"] for report in policy_reports},
-        "claims": _claims(mode),
+        "claims": _claims(mode, evidence_class),
     }
+    if measurement is not None:
+        combined["measurement"] = measurement
     combined.update(_provenance(experiment, source, all_entries))
     _write_json(output_root / "report.json", combined)
     _write_checksums(output_root)
@@ -1553,6 +1883,9 @@ def main(argv=None):
     parser.add_argument("--timeout-s", type=float, default=120.0)
     parser.add_argument("--gpu-index", type=int, action="append", default=[],
                         help="sample this GPU's whole-device memory in live mode; repeatable")
+    parser.add_argument("--require-controlled", action="store_true",
+                        help="exit 2 unless a live measurement-contract run earns "
+                             "CONTROLLED_LIVE; precondition failures abort before any request")
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout_s) or args.timeout_s <= 0:
         parser.error("--timeout-s must be a finite positive number")
@@ -1563,13 +1896,20 @@ def main(argv=None):
         report = run_experiment(
             experiment, args.out, replay_only=args.replay_only,
             base_url=args.base_url, timeout_s=args.timeout_s,
-            resource_gpu_indexes=args.gpu_index)
+            resource_gpu_indexes=args.gpu_index,
+            require_controlled=args.require_controlled)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         parser.exit(2, f"ablation error: {exc}\n")
     print(json.dumps({"status": report["run_status"],
+                      "evidence_class": report["evidence_class"],
                       "report": str(Path(args.out) / "report.json"),
                       "variable": _variable(experiment),
                       "variants": _variants(experiment)}, sort_keys=True))
+    if args.require_controlled \
+            and report["evidence_class"] != controlled.CONTROLLED_LIVE:
+        reasons = report.get("measurement", {}).get("eligibility", {}).get(
+            "reasons", ["measurement contract is absent"])
+        parser.exit(2, "CONTROLLED_LIVE refused: " + "; ".join(reasons) + "\n")
     return 0 if report["run_status"] == "COMPLETED" else 1
 
 

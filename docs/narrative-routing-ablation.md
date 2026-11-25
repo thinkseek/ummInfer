@@ -153,12 +153,14 @@ python3 -I python/umminfer_ablation_run.py \
 Live mode uses the existing out-of-process schema-v2 recorder. An optional
 normalized-event observer measures monotonic latency outside the exported
 record. No C++ serving file imports the runner, metrics, reward, trainer, or
-optimizer. Live reports are `live-uncontrolled`; a real performance comparison
-still needs an exclusive measurement window and a real pinned model. For real
-model provenance, set a non-null `model.weights_sha256`; the default contract
-model has no weights and reports weights coverage as `NOT_COVERED`.
-`model.config_sha256` hashes the runner's `{id,revision}` identity descriptor,
-not an external model card or weight file.
+optimizer. Every report carries one of three evidence classes:
+`CONTRACT_REPLAY` for deterministic replay, `UNCONTROLLED_LIVE` for ad hoc
+live observation, and `CONTROLLED_LIVE` only for a live run that satisfies the
+controlled measurement contract below. `claims.latency_evidence` mirrors the
+same token. For real model provenance, set a non-null `model.weights_sha256`;
+the default contract model has no weights and reports weights coverage as
+`NOT_COVERED`. `model.config_sha256` hashes the runner's `{id,revision}`
+identity descriptor, not an external model card or weight file.
 
 The output directory must be absent or empty. It contains:
 
@@ -174,6 +176,10 @@ SHA256SUMS
   report.json
   trajectory.jsonl
   artifacts/
+# additionally, only for live measurement-contract runs:
+warmup/<arm>/
+  trajectory.jsonl
+  artifacts/
 ```
 
 Each trajectory is validated by the existing independent RL worker after CAS
@@ -181,6 +187,85 @@ reassembly and reward annotation. Media bytes stay out of JSONL. `SHA256SUMS`
 covers every report, trajectory, and artifact. Two replay runs from the same
 commit and inputs produce byte-identical relative file trees; the regression
 test compares the complete trees, not just summary values.
+
+## Controlled measurement contract
+
+`python/umminfer_controlled_measurement.py` replaces ad hoc
+`UNCONTROLLED_LIVE` inputs with a reusable, declarative experiment contract.
+An optional top-level `measurement` object (schema v1) in any ablation config
+declares:
+
+- `warmup_repetitions` (>= 0) and `measured_repetitions` (>= 1): declared per
+  arm counts. Warmups run first and are exported out-of-band under `warmup/`;
+  they never enter measured trajectories, metrics, or run status.
+- `arm_order`: `interleaved` (repetition-major round-robin, every arm once per
+  repetition) or `randomized` (full shuffle of the measured arm x repetition
+  matrix). Both orders are a SHA-256-ordered permutation keyed by the recorded
+  `seed`, identical on every host and Python version; no wall-clock or PRNG
+  state leaks into the schedule. One schedule step executes every prompt of
+  one arm once, in fixed dataset order.
+- `exclusive_device`: `required`, declared `gpu_indexes`, `allowed_pids` (the
+  serving stack under test), `max_other_compute_processes`, and an optional
+  `max_memory_used_mib` baseline ceiling. The precondition queries nvidia-smi
+  compute apps on exactly the declared devices; any foreign process fails it.
+- `cleanup`: `require_in_flight_zero` (polled against the existing public
+  `/health` interface after every step), an optional
+  `max_residual_memory_mib` tolerance against the recorded baseline, and a
+  poll `timeout_s`. `cooldown_ms` declares an optional inter-step cooldown.
+
+`benchmarks/ablations/narrative-routing-controlled-example.json` is a complete
+checked-in example. The same block can be added to `visual-form-sm90.json` for
+the scheduled live gate; request construction, single-variable overlays, media
+validation, and the I2V first-stage equivalence gate are unchanged, and every
+repetition of one (arm, prompt) sends a byte-identical request.
+
+Replay with a `measurement` block stays `CONTRACT_REPLAY`: the report embeds
+the validated schedule and its `schedule_sha256` with `status=NOT_RUN`, and
+two replay runs remain byte-identical. Live mode executes the schedule and
+adds a `measurement` report section with the contract, schedule, precondition
+and cleanup records, per-arm warmup/measured coverage, warmup summaries,
+per-step whole-device resource rows, and the eligibility verdict.
+
+`CONTROLLED_LIVE` is refused, with explicit `eligibility.reasons`, whenever
+any dimension is missing: declared warmups not executed, measured repetitions
+incomplete, any measured request not completed, exclusivity not declared or
+the precondition failing or never executed, any cleanup check failing, or any
+source/config/data/artifact/model-weights hash not pinned. The contract model
+in the example config has `weights_sha256: null`, so its live runs always
+downgrade until a real gate pins weights. `--require-controlled` exits 2
+unless the run earns `CONTROLLED_LIVE`; a failing precondition then aborts
+before any request is sent.
+
+Aggregation reports median, nearest-rank p95, IQR, and MAD dispersion with
+explicit `sample_count`/`total_count` per prompt across repetitions and pooled
+per arm, alongside the existing per-case latency fields. Measured cases and
+trajectory metadata carry `repetition` and `schedule_index`; visual-form
+first-stage image equivalence is checked per repetition.
+
+Telemetry stays within existing interfaces: `/health` `in_flight` for cleanup
+and nvidia-smi whole-device used-memory for baselines, residuals, and per-arm
+resource summaries. No existing public interface exposes request-scoped native
+allocator/VRAM telemetry, so `request_scoped_telemetry.coverage` is honestly
+`NOT_COVERED` and every device number is labelled
+`whole-device-used-memory`, including persistent model baselines and, under
+interleaving, other arms' activity. No serving, realtime/VAD, CLI realtime, or
+post-training file is modified by this layer, and no Wave 16 kernel, showcase,
+routing, or joint-trainer code is duplicated.
+
+Real controlled performance remains **NOT_RUN**: the only executions so far
+are deterministic replay and loopback canned-response tests with injected
+samplers. The separately scheduled exclusive live gate must:
+
+1. pin a real `model.weights_sha256` (and backend hashes for visual form) in a
+   copy of the example config on a clean committed tree;
+2. start the isolated stack on declared idle GPUs, record its serving pids in
+   `exclusive_device.allowed_pids`, and keep the resident service untouched;
+3. run `python3 -I python/umminfer_ablation_run.py --config <config>
+   --base-url http://127.0.0.1:PORT --require-controlled --out <empty-dir>`,
+   optionally with `--gpu-index` for additional whole-device sampling;
+4. publish the report, `SHA256SUMS`, schedule hash, and eligibility verdict;
+   any refusal reason downgrades the run to `UNCONTROLLED_LIVE` and it must
+   not be cited as controlled performance evidence.
 
 ## Latency and status fields
 
@@ -239,10 +324,13 @@ uncommitted execution explicit. Publishable evidence should still come from a
 clean committed tree. Metric coverage is explicit per case, per policy, and in
 the combined report.
 
-The checked-in replay reports `CONTRACT_OBSERVATIONS_ONLY`, learned routing
+The checked-in replay reports evidence class `CONTRACT_REPLAY`, learned routing
 `NOT_RUN`, optimizer `NOT_RUN`, quality improvement `NOT_COVERED`, and real model
 quality `NOT_RUN`. No latency, F1, redundancy, quality, learned-routing, or
-optimizer improvement claim may be made from these canned fixtures.
+optimizer improvement claim may be made from these canned fixtures. Live runs
+without a measurement contract are `UNCONTROLLED_LIVE`; `CONTROLLED_LIVE` is an
+eligibility verdict, never a flag, and the historical accepted SM90 sections
+below keep their original `UNCONTROLLED_LIVE_MEASUREMENT` wording unchanged.
 
 ## Measured SM90 narrative-routing result — 2026-11-26
 
@@ -424,6 +512,7 @@ quality, learned routing, and optimizer improvement remain uncovered or unrun.
 
 ```text
 python3 -I tests/ablation_runner_test.py
+python3 -I tests/controlled_measurement_test.py
 python3 -I tests/rl_architecture_test.py
 python3 -I tests/rl_phase2_test.py
 python3 -I tests/narrative_live_e2e.py --self-check
@@ -436,7 +525,15 @@ label gating and reward arithmetic, hash/policy/response/render tamper rejection
 live out-of-band timing, live-versus-replay trajectory byte identity, I2V
 source-image binding and animation completion, real PNG/H.264 decoder behavior,
 center-crop comparison, deterministic resource accounting, rejection of invalid
-contract media by the real decode gate, and serving isolation. Loopback canned
+contract media by the real decode gate, and serving isolation. The controlled
+measurement tests add contract/tamper validation, seeded schedule
+reproducibility and schedule-hash tamper detection, single-variable invariance
+across arms and repetitions, latency median/p95/IQR/MAD aggregation with sample
+counts, incomplete-repetition and failed-arm refusal, exclusive-device
+precondition failure and fail-fast abort, stuck-cleanup refusal, unpinned-weight
+refusal, and per-repetition visual-form equivalence. Loopback canned
 responses remain contract-only; decoder tests use independently generated tiny
 media and do not access a GPU, remote host, real model, optimizer, or resident
-service.
+service. Controlled loopback runs inject device/health samplers and are not
+real controlled performance evidence; that remains NOT_RUN until the scheduled
+exclusive live gate.

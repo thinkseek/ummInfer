@@ -154,8 +154,8 @@ class AblationRunnerTests(unittest.TestCase):
             self.assertEqual(report["claims"]["learned_routing"], "NOT_RUN")
             self.assertEqual(report["claims"]["optimizer"], "NOT_RUN")
             self.assertEqual(report["claims"]["quality_improvement"], "NOT_COVERED")
-            self.assertEqual(report["claims"]["latency_evidence"],
-                             "CONTRACT_OBSERVATIONS_ONLY")
+            self.assertEqual(report["claims"]["latency_evidence"], "CONTRACT_REPLAY")
+            self.assertEqual(report["evidence_class"], "CONTRACT_REPLAY")
             source = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                                     check=True, capture_output=True, text=True).stdout.strip()
             self.assertEqual(report["source_commit"], source)
@@ -390,7 +390,8 @@ class AblationRunnerTests(unittest.TestCase):
                     base_url=f"127.0.0.1:{server.server_port}", timeout_s=5)
                 self.assertEqual(report["run_status"], "COMPLETED")
                 self.assertEqual(report["claims"]["latency_evidence"],
-                                 "UNCONTROLLED_LIVE_MEASUREMENT")
+                                 "UNCONTROLLED_LIVE")
+                self.assertEqual(report["evidence_class"], "UNCONTROLLED_LIVE")
                 for case in report["cases"]:
                     self.assertEqual(case["latency"]["source"], "monotonic-live")
                     self.assertIsNotNone(case["latency"]["ttft_ms"])
@@ -636,7 +637,7 @@ class AblationRunnerTests(unittest.TestCase):
                              completed.stdout + completed.stderr)
             report = json.loads((Path(tmp) / "out" / "report.json").read_text())
             self.assertEqual(report["run_status"], "FAILED")
-            self.assertEqual(report["evidence_class"], "contract-replay")
+            self.assertEqual(report["evidence_class"], "CONTRACT_REPLAY")
             self.assertEqual(report["claims"]["real_model_quality"], "NOT_RUN")
             self.assertGreater(report["metrics"]["media_validation_failure_count"], 0)
             self.assertEqual(report["metrics"]["i2v_first_frame_behavior"]["total_count"], 0)
