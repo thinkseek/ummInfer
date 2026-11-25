@@ -410,6 +410,20 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 29 Explicit `source=slot-N` Narrative Anchor Binding (`e56d11e`, `efabf39`):
+  - **Gateway hot-swap & Live SM90 5-Modality Explicit `source=slot-0` I2V Verification**:
+    harvested accepted Task #24 (`e56d11e`, 56/56 Python tests + full `zig build test`
+    PASS), fixed a live-discovered 0-based `slot-N` prompt numbering omission in
+    `src/pipeline/unified_schema.cpp` (`efabf39`), rebuilt Linux `ReleaseFast`
+    `umm-infer` (`a4c9750a...`), and hot-swapped ONLY the supervised gateway
+    (`.wave28` backup; ready in `1.5 s`, all 5 GPU stages `restarts=0`):
+    - Live SM90 `43301` Journey 5 (`storyboard_i2v_chain`): **`PASS`** in
+      **`11.86 s`** (`TTFT 0.967 s`, `TTFA 1.105 s`, 62 PCM16 chunks / 32.8 s
+      audio, Slot 0 FLUX.2 PNG `0.669 s` `440,745 B` SHA-256 `3a9d5bbe...` ->
+      Slot 1 Wan2.2 704×480 29f I2V MP4 `7.225 s` `170,245 B` with native
+      `anchor_explicit=true`, `anchor_slot_index=0`, and exact matching
+      `anchor_sha256=3a9d5bbe...`; `5/5 SHA256SUMS`, `/health in_flight=0`).
+
 - Wave 28 Controlled SM90 Visual-Form Gate (`5890a4c`), 70/70 Real SM90 Multimodal Coverage (`13d9274`), and Live Web/macOS Showcase Presets & Telemetry HUD (`81227f1`):
   - **Web UI `/web/index.html` & macOS `ummmlx` North-Star Showcase Presets + Live Telemetry Strip**
     (`81227f1`): zero-restart hot-deployed `web/index.html` (`.wave27` backup)
