@@ -22,16 +22,54 @@ struct VisualSlotState: Identifiable, Equatable {
     var continuityMode: String? = nil
     /// Optional 0-based anchor slot index when chained via I2V.
     var anchorSlotIndex: Int? = nil
+    /// True when the slot used an explicit `source=slot-N` anchor directive.
+    var anchorExplicit: Bool = false
+    /// Optional verified 64-char hex SHA-256 digest of the resolved anchor image.
+    var anchorSha256: String? = nil
+
+    /// Short 8-character prefix of `anchorSha256` when a valid 64-char hex digest is present.
+    var anchorShortDigest: String? {
+        guard let normalized = UnifiedDecode.normalizedAnchorSHA256(anchorSha256) else {
+            return nil
+        }
+        return String(normalized.prefix(8))
+    }
+
+    var isChainedBadge: Bool {
+        guard let anchorSlotIndex, anchorSlotIndex >= 0 else { return false }
+        return continuityMode == NarrativeContinuityMode.i2vChain.rawValue
+            || continuityMode == nil
+            || continuityMode?.isEmpty == true
+            || anchorExplicit
+    }
 
     var continuityBadgeText: String? {
-        if continuityMode == NarrativeContinuityMode.i2vChain.rawValue,
-           let anchorSlotIndex, anchorSlotIndex >= 0 {
-            return "I2V ← Slot \(anchorSlotIndex + 1)"
+        if isChainedBadge, let anchorSlotIndex {
+            let slotLabel = "Slot \(anchorSlotIndex + 1)"
+            if anchorExplicit {
+                if let shortDigest = anchorShortDigest {
+                    return "Explicit I2V ← \(slotLabel) · \(shortDigest)"
+                }
+                return "Explicit I2V ← \(slotLabel)"
+            }
+            return "I2V ← \(slotLabel)"
         }
         if continuityMode == NarrativeContinuityMode.promptAnchor.rawValue {
             return "Anchor"
         }
         return nil
+    }
+
+    /// Hover tooltip (`help`) describing the anchor binding and full SHA-256 digest.
+    var continuityBadgeHelp: String? {
+        guard isChainedBadge, let anchorSlotIndex else { return nil }
+        let prefix = anchorExplicit
+            ? "Explicit anchor slot-\(anchorSlotIndex)"
+            : "Anchor slot-\(anchorSlotIndex)"
+        if let normalized = UnifiedDecode.normalizedAnchorSHA256(anchorSha256) {
+            return "\(prefix) · SHA-256: \(normalized)"
+        }
+        return anchorExplicit ? prefix : nil
     }
 }
 
@@ -165,6 +203,7 @@ struct TurnTelemetry: Equatable {
     var visualSettledCount: Int = 0
     var firstVisualMs: Double? = nil
     var hasI2VChain: Bool = false
+    var hasExplicitAnchor: Bool = false
     var totalMs: Double? = nil
 
     static func formatDuration(_ ms: Double) -> String? {
@@ -193,8 +232,8 @@ struct TurnTelemetry: Equatable {
                 pills.append(Pill(kind: .visual, label: countLabel))
             }
         }
-        if hasI2VChain {
-            pills.append(Pill(kind: .i2v, label: "I2V"))
+        if hasI2VChain || hasExplicitAnchor {
+            pills.append(Pill(kind: .i2v, label: hasExplicitAnchor ? "Explicit I2V" : "I2V"))
         }
         if let totalMs, let formatted = Self.formatDuration(totalMs) {
             pills.append(Pill(kind: .total, label: "Total \(formatted)"))
@@ -627,33 +666,47 @@ final class ChatModel: ObservableObject {
                         let slotID = event.slotID ?? "slot-\(slotIndex)"
                         let isVideo = event.mediaType == "video"
                             || (event.mediaType.isEmpty && event.stage == "video")
-                        if let anchor = event.anchorSlotIndex, anchor >= 0 {
-                            self.turns[index].telemetry.hasI2VChain = true
-                        }
-                        let known = self.turns[index].blocks.contains {
+                        self.recordAnchorTelemetry(
+                            anchorSlotIndex: event.anchorSlotIndex,
+                            anchorExplicit: event.anchorExplicit,
+                            turnIndex: index)
+                        if let existingIndex = self.turns[index].blocks.firstIndex(where: {
                             $0.visualSlot?.slotID == slotID
-                        }
-                        if !known {
+                        }), var existing = self.turns[index].blocks[existingIndex].visualSlot {
+                            if let mode = event.continuityMode, !mode.isEmpty {
+                                existing.continuityMode = mode
+                            }
+                            if let anchor = event.anchorSlotIndex, anchor >= 0 {
+                                existing.anchorSlotIndex = anchor
+                            }
+                            if event.anchorExplicit { existing.anchorExplicit = true }
+                            if let sha = event.anchorSha256 { existing.anchorSha256 = sha }
+                            self.turns[index].blocks[existingIndex] = .visual(existing)
+                        } else {
                             self.turns[index].blocks.append(.visual(VisualSlotState(
                                 slotID: slotID, slotIndex: slotIndex,
                                 prompt: event.prompt,
                                 activeKind: isVideo ? "video" : "image",
                                 isLoading: true,
                                 continuityMode: event.continuityMode,
-                                anchorSlotIndex: event.anchorSlotIndex)))
+                                anchorSlotIndex: event.anchorSlotIndex,
+                                anchorExplicit: event.anchorExplicit,
+                                anchorSha256: event.anchorSha256)))
                         }
                     case .legError:
                         let detail = event.error.isEmpty
                             ? "\(event.stage) output failed" : event.error
                         // A slot failure belongs on its card, not also in the
                         // turn-level list.
-                        let attributed = event.slotID.map {
-                            self.markSlotError(detail, slotID: $0, turnIndex: index)
-                        } ?? false
+                        let attributed = self.markSlotError(detail, event: event, turnIndex: index)
                         if !attributed {
                             self.turns[index].legErrors.append(detail)
                         }
                         self.status = "Completed with leg error"
+                    case .complete:
+                        for leg in event.legs {
+                            self.applyLegSummary(leg, turnIndex: index)
+                        }
                     default:
                         break
                     }
@@ -745,6 +798,15 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    private func recordAnchorTelemetry(anchorSlotIndex: Int?, anchorExplicit: Bool,
+                                       turnIndex: Int) {
+        guard let anchor = anchorSlotIndex, anchor >= 0 else { return }
+        turns[turnIndex].telemetry.hasI2VChain = true
+        if anchorExplicit {
+            turns[turnIndex].telemetry.hasExplicitAnchor = true
+        }
+    }
+
     private func attachVisualArtifact(_ artifact: GeneratedArtifact, slotID: String,
                                       turnIndex: Int) {
         guard artifact.mediaType == "image" || artifact.mediaType == "video",
@@ -757,6 +819,19 @@ final class ChatModel: ObservableObject {
         } else {
             slot.videoArtifact = artifact
         }
+        if let anchor = artifact.anchorSlotIndex, anchor >= 0 {
+            slot.anchorSlotIndex = anchor
+        }
+        if artifact.anchorExplicit {
+            slot.anchorExplicit = true
+        }
+        if let sha = artifact.anchorSha256 {
+            slot.anchorSha256 = sha
+        }
+        recordAnchorTelemetry(
+            anchorSlotIndex: slot.anchorSlotIndex,
+            anchorExplicit: slot.anchorExplicit,
+            turnIndex: turnIndex)
         slot.activeKind = artifact.mediaType
         slot.isLoading = false
         slot.error = nil
@@ -764,17 +839,79 @@ final class ChatModel: ObservableObject {
     }
 
     @discardableResult
-    private func markSlotError(_ detail: String, slotID: String,
+    private func markSlotError(_ detail: String, event: UnifiedEvent,
                                turnIndex: Int) -> Bool {
-        guard let blockIndex = turns[turnIndex].blocks.firstIndex(where: {
+        guard let slotID = event.slotID, !slotID.isEmpty else { return false }
+        if let blockIndex = turns[turnIndex].blocks.firstIndex(where: {
             $0.visualSlot?.slotID == slotID
-        }), var slot = turns[turnIndex].blocks[blockIndex].visualSlot else {
-            return false
+        }), var slot = turns[turnIndex].blocks[blockIndex].visualSlot {
+            if let anchor = event.anchorSlotIndex, anchor >= 0 {
+                slot.anchorSlotIndex = anchor
+            }
+            if event.anchorExplicit {
+                slot.anchorExplicit = true
+            }
+            if let sha = event.anchorSha256 {
+                slot.anchorSha256 = sha
+            }
+            recordAnchorTelemetry(
+                anchorSlotIndex: slot.anchorSlotIndex,
+                anchorExplicit: slot.anchorExplicit,
+                turnIndex: turnIndex)
+            slot.error = detail
+            slot.isLoading = false
+            turns[turnIndex].blocks[blockIndex] = .visual(slot)
+            return true
         }
-        slot.error = detail
-        slot.isLoading = false
-        turns[turnIndex].blocks[blockIndex] = .visual(slot)
+        // If an explicit-anchor leg_error arrives without a prior visual_slot,
+        // synthesize a failed slot card so the error is shown on-card rather
+        // than silently dropped.
+        guard event.anchorExplicit else { return false }
+        let isVideo = event.mediaType == "video"
+            || (event.mediaType.isEmpty && event.stage == "video")
+        let slotIndex = event.slotIndex ?? 0
+        recordAnchorTelemetry(
+            anchorSlotIndex: event.anchorSlotIndex,
+            anchorExplicit: event.anchorExplicit,
+            turnIndex: turnIndex)
+        turns[turnIndex].blocks.append(.visual(VisualSlotState(
+            slotID: slotID, slotIndex: slotIndex,
+            prompt: event.prompt,
+            activeKind: isVideo ? "video" : "image",
+            isLoading: false,
+            error: detail,
+            continuityMode: event.continuityMode ?? NarrativeContinuityMode.i2vChain.rawValue,
+            anchorSlotIndex: event.anchorSlotIndex,
+            anchorExplicit: true,
+            anchorSha256: event.anchorSha256)))
         return true
+    }
+
+    private func applyLegSummary(_ leg: UnifiedLegSummary, turnIndex: Int) {
+        guard let slotID = leg.slotID, !slotID.isEmpty,
+              let blockIndex = turns[turnIndex].blocks.firstIndex(where: {
+                  $0.visualSlot?.slotID == slotID
+              }),
+              var slot = turns[turnIndex].blocks[blockIndex].visualSlot else { return }
+        if let anchor = leg.anchorSlotIndex, anchor >= 0 {
+            slot.anchorSlotIndex = anchor
+        }
+        if leg.anchorExplicit {
+            slot.anchorExplicit = true
+        }
+        if let sha = leg.anchorSha256 {
+            slot.anchorSha256 = sha
+        }
+        recordAnchorTelemetry(
+            anchorSlotIndex: slot.anchorSlotIndex,
+            anchorExplicit: slot.anchorExplicit,
+            turnIndex: turnIndex)
+        if leg.state == "failed", let err = leg.error, !err.isEmpty,
+           slot.error == nil, slot.imageArtifact == nil, slot.videoArtifact == nil {
+            slot.error = err
+            slot.isLoading = false
+        }
+        turns[turnIndex].blocks[blockIndex] = .visual(slot)
     }
 
     /// Stops the spinner of any initial slot generation that will never

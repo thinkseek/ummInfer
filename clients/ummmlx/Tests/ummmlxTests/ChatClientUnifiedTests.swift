@@ -41,6 +41,10 @@ private func frame(
 private let artifactBytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3])
 private let artifactSHA = SHA256.hash(data: artifactBytes)
     .map { String(format: "%02x", $0) }.joined()
+private let videoArtifactBytes = Data([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70])
+private let videoArtifactSHA = SHA256.hash(data: videoArtifactBytes)
+    .map { String(format: "%02x", $0) }.joined()
+private let explicitAnchorSHA = "3a9d5bbe" + String(repeating: "4f12c890", count: 7)
 private let pcmChunk0 = Data([0x01, 0x02, 0x03, 0x04])
 private let pcmChunk0SHA = SHA256.hash(data: pcmChunk0)
     .map { String(format: "%02x", $0) }.joined()
@@ -253,6 +257,70 @@ private final class UnifiedSSEProtocol: URLProtocol {
                 "continuity_mode": "i2v_chain", "anchor_slot_index": 0
             ]),
             frame(kind: "complete", seq: 4, text: "Act one. Act two.")
+        ]),
+        // Wave 29 explicit source=slot-0 anchor: digest arrives on video artifact & complete.legs.
+        "10.1.2.15": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Frame one. "),
+            frame(kind: "visual_slot", seq: 1, stage: "image", extra: [
+                "slot_id": "slot-0", "slot_index": 0, "media_type": "image",
+                "prompt": "paper lantern keyframe", "text_offset": 11,
+                "continuity_mode": "i2v_chain"
+            ]),
+            slotArtifactFrame(seq: 2, slotID: "slot-0", index: 0),
+            frame(kind: "vlm_delta", seq: 3, text: "Frame two."),
+            frame(kind: "visual_slot", seq: 4, stage: "video", extra: [
+                "slot_id": "slot-1", "slot_index": 1, "media_type": "video",
+                "prompt": "lantern drifting over river", "text_offset": 21,
+                "continuity_mode": "i2v_chain", "anchor_slot_index": 0,
+                "anchor_explicit": true
+            ]),
+            frame(kind: "artifact", seq: 5, stage: "video", artifact: [
+                "artifact_id": "art-slot-1", "media_type": "video",
+                "mime_type": "video/mp4", "slot_id": "slot-1", "slot_index": 1,
+                "anchor_slot_index": 0, "anchor_explicit": true,
+                "anchor_sha256": explicitAnchorSHA,
+                "encoding": "base64", "index": 0, "total": 1,
+                "data": videoArtifactBytes.base64EncodedString(),
+                "sha256": videoArtifactSHA, "bytes": videoArtifactBytes.count
+            ]),
+            frame(kind: "complete", seq: 6, text: "Frame one. Frame two.", extra: [
+                "legs": [
+                    ["stage": "image", "state": "completed", "slot_id": "slot-0", "slot_index": 0],
+                    [
+                        "stage": "video", "state": "completed",
+                        "slot_id": "slot-1", "slot_index": 1,
+                        "anchor_slot_index": 0, "anchor_explicit": true,
+                        "anchor_sha256": explicitAnchorSHA
+                    ]
+                ]
+            ])
+        ]),
+        // Wave 29 explicit source=slot-1 self-reference failure: leg_error lands on slot card.
+        "10.1.2.16": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Bad link. "),
+            frame(kind: "visual_slot", seq: 1, stage: "video", extra: [
+                "slot_id": "slot-1", "slot_index": 1, "media_type": "video",
+                "prompt": "broken reference", "text_offset": 10,
+                "continuity_mode": "i2v_chain", "anchor_explicit": true
+            ]),
+            frame(kind: "leg_error", seq: 2, stage: "video",
+                  error: "source slot slot-1 is not an earlier slot",
+                  extra: [
+                    "slot_id": "slot-1", "slot_index": 1, "media_type": "video",
+                    "anchor_explicit": true
+                  ]),
+            frame(kind: "complete", seq: 3, text: "Bad link. ")
+        ]),
+        // Explicit leg_error without a prior visual_slot synthesizes a failed slot card.
+        "10.1.2.17": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Early error. "),
+            frame(kind: "leg_error", seq: 1, stage: "video",
+                  error: "source slot slot-1 is not an earlier slot",
+                  extra: [
+                    "slot_id": "slot-1", "slot_index": 1, "media_type": "video",
+                    "anchor_explicit": true
+                  ]),
+            frame(kind: "complete", seq: 2, text: "Early error. ")
         ])
     ]
 
@@ -1362,5 +1430,120 @@ final class ChatClientUnifiedTests: XCTestCase {
         XCTAssertEqual(slots[1].continuityMode, "i2v_chain")
         XCTAssertEqual(slots[1].anchorSlotIndex, 0)
         XCTAssertEqual(slots[1].continuityBadgeText, "I2V ← Slot 1")
+    }
+
+    @MainActor
+    func testVisualSlotContinuityBadgeTextAndHelpForExplicitAndImplicitAnchors() {
+        let explicitWithDigest = VisualSlotState(
+            slotID: "slot-1", slotIndex: 1, prompt: "river breeze",
+            activeKind: "video", isLoading: false,
+            continuityMode: "i2v_chain", anchorSlotIndex: 0,
+            anchorExplicit: true, anchorSha256: explicitAnchorSHA)
+        XCTAssertEqual(explicitWithDigest.continuityBadgeText, "Explicit I2V ← Slot 1 · 3a9d5bbe")
+        XCTAssertEqual(explicitWithDigest.continuityBadgeHelp,
+                       "Explicit anchor slot-0 · SHA-256: \(explicitAnchorSHA)")
+
+        let explicitNoDigest = VisualSlotState(
+            slotID: "slot-1", slotIndex: 1, prompt: "river breeze",
+            activeKind: "video", isLoading: true,
+            continuityMode: "i2v_chain", anchorSlotIndex: 0,
+            anchorExplicit: true, anchorSha256: nil)
+        XCTAssertEqual(explicitNoDigest.continuityBadgeText, "Explicit I2V ← Slot 1")
+        XCTAssertEqual(explicitNoDigest.continuityBadgeHelp, "Explicit anchor slot-0")
+
+        let implicitPlain = VisualSlotState(
+            slotID: "slot-1", slotIndex: 1, prompt: "river breeze",
+            activeKind: "video", isLoading: false,
+            continuityMode: "i2v_chain", anchorSlotIndex: 0)
+        XCTAssertEqual(implicitPlain.continuityBadgeText, "I2V ← Slot 1")
+        XCTAssertNil(implicitPlain.continuityBadgeHelp)
+
+        let implicitWithDigest = VisualSlotState(
+            slotID: "slot-1", slotIndex: 1, prompt: "river breeze",
+            activeKind: "video", isLoading: false,
+            continuityMode: "i2v_chain", anchorSlotIndex: 0,
+            anchorExplicit: false, anchorSha256: explicitAnchorSHA)
+        XCTAssertEqual(implicitWithDigest.continuityBadgeText, "I2V ← Slot 1")
+        XCTAssertEqual(implicitWithDigest.continuityBadgeHelp,
+                       "Anchor slot-0 · SHA-256: \(explicitAnchorSHA)")
+
+        let promptAnchor = VisualSlotState(
+            slotID: "slot-0", slotIndex: 0, prompt: "lantern",
+            activeKind: "image", isLoading: false,
+            continuityMode: "prompt_anchor")
+        XCTAssertEqual(promptAnchor.continuityBadgeText, "Anchor")
+        XCTAssertNil(promptAnchor.continuityBadgeHelp)
+
+        let telemetry = TurnTelemetry(
+            ttftMs: 120, visualSettledCount: 2, firstVisualMs: 2500,
+            hasI2VChain: true, hasExplicitAnchor: true, totalMs: 7400)
+        XCTAssertEqual(
+            telemetry.formattedPills.map(\.label),
+            ["TTFT 120 ms", "2 visuals (2.50 s)", "Explicit I2V", "Total 7.40 s"])
+    }
+
+    @MainActor
+    func testChatModelDecodesExplicitAnchorDigestFromArtifactAndCompleteLegs() async throws {
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        model.endpoint = "http://10.1.2.15/v1"
+        model.model = "m"
+        model.imageOutput = true
+        model.videoOutput = true
+        model.narrativeMode = true
+        model.narrativeContinuityMode = .i2vChain
+        model.prompt = "two-beat explicit storyboard"
+        model.send()
+
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(model.isRunning)
+        XCTAssertEqual(model.status, "Completed · stop")
+
+        let turn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        let slots = turn.blocks.compactMap(\.visualSlot)
+        XCTAssertEqual(slots.count, 2)
+        XCTAssertFalse(slots[0].anchorExplicit)
+        XCTAssertNil(slots[0].anchorSha256)
+        XCTAssertTrue(slots[1].anchorExplicit)
+        XCTAssertEqual(slots[1].anchorSlotIndex, 0)
+        XCTAssertEqual(slots[1].anchorSha256, explicitAnchorSHA)
+        XCTAssertEqual(slots[1].continuityBadgeText, "Explicit I2V ← Slot 1 · 3a9d5bbe")
+        XCTAssertEqual(slots[1].continuityBadgeHelp,
+                       "Explicit anchor slot-0 · SHA-256: \(explicitAnchorSHA)")
+        XCTAssertTrue(turn.telemetry.hasI2VChain)
+        XCTAssertTrue(turn.telemetry.hasExplicitAnchor)
+        XCTAssertTrue(turn.telemetry.formattedPills.contains {
+            $0.kind == .i2v && $0.label == "Explicit I2V"
+        })
+    }
+
+    @MainActor
+    func testChatModelPropagatesExplicitAnchorSlotLegErrorToSlotCard() async throws {
+        for host in ["10.1.2.16", "10.1.2.17"] {
+            let model = ChatModel(client: makeClient(),
+                                  audioStream: NoOpAudioStreamPlayer())
+            model.endpoint = "http://\(host)/v1"
+            model.model = "m"
+            model.videoOutput = true
+            model.narrativeMode = true
+            model.prompt = "bad explicit slot reference"
+            model.send()
+
+            for _ in 0..<200 where model.isRunning {
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            XCTAssertFalse(model.isRunning)
+            let turn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+            XCTAssertTrue(turn.legErrors.isEmpty,
+                          "explicit slot leg_error must land on the slot card, not turn-level legErrors (\(host))")
+            let slots = turn.blocks.compactMap(\.visualSlot)
+            XCTAssertEqual(slots.count, 1, host)
+            XCTAssertEqual(slots[0].slotID, "slot-1", host)
+            XCTAssertTrue(slots[0].anchorExplicit, host)
+            XCTAssertFalse(slots[0].isLoading, host)
+            XCTAssertEqual(slots[0].error, "source slot slot-1 is not an earlier slot", host)
+        }
     }
 }

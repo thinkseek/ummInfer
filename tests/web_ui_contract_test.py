@@ -362,6 +362,12 @@ def check_narrative_continuity(html, script):
             "style_anchor must enforce UTF-8 byte length via TextEncoder")
     require("visualSlotContinuityBadge(" in script,
             "visual_slot cards must render continuity attribution badges")
+    require("anchor_explicit" in script and "anchor_sha256" in script,
+            "SSE handling must parse optional anchor_explicit and anchor_sha256 metadata")
+    require("Explicit I2V ←" in script,
+            "explicit anchor badges must render Explicit I2V label")
+    require("updateSlotContinuity(" in script and "Array.isArray(unified.legs)" in script,
+            "slot continuity must update from artifact, leg_error, and complete.legs")
 
     send_fn = script.split("async function send()", 1)[1]
     require(send_fn.index("buildNarrativeConfig(") < send_fn.index("attachedImage = null;"),
@@ -385,9 +391,10 @@ def check_narrative_continuity_behavior(script):
         "// NARRATIVE_CONTINUITY_END", 1)[0]
     create_slot = re.search(r"function createSlot\(.*?\n\}", script, re.S)
     show_loading = re.search(r"function showSlotLoading\(slot\) \{.*?\n\}", script, re.S)
-    require(create_slot is not None and show_loading is not None,
-            "could not extract createSlot/showSlotLoading for badge behavior checks")
-    harness = helpers + "\n" + show_loading.group(0) + "\n" + create_slot.group(0) + r"""
+    show_error = re.search(r"function showSlotError\(slot, message\) \{.*?\n\}", script, re.S)
+    require(create_slot is not None and show_loading is not None and show_error is not None,
+            "could not extract createSlot/showSlotLoading/showSlotError for badge behavior checks")
+    harness = helpers + "\n" + show_loading.group(0) + "\n" + show_error.group(0) + "\n" + create_slot.group(0) + r"""
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
@@ -454,26 +461,106 @@ class FakeElement {
     this.tagName = tag.toUpperCase();
     this.className = '';
     this.textContent = '';
+    this.title = '';
     this.dataset = {};
     this.children = [];
     this.hidden = false;
+    this._classes = new Set();
+    this.classList = {
+      add: (...names) => names.forEach((n) => this._classes.add(n)),
+      remove: (...names) => names.forEach((n) => this._classes.delete(n)),
+      contains: (n) => this._classes.has(n),
+    };
   }
   append(...nodes) { this.children.push(...nodes); }
+  insertBefore(node, ref) {
+    const idx = this.children.indexOf(ref);
+    if (idx >= 0) this.children.splice(idx, 0, node);
+    else this.children.push(node);
+  }
   replaceChildren(...nodes) { this.children = [...nodes]; }
   addEventListener() {}
 }
 globalThis.document = { createElement: (tag) => new FakeElement(tag) };
 
+const sampleSha = '3a9d5bbe' + '4f12c890'.repeat(7);
+assert(sampleSha.length === 64, 'sampleSha must be 64 hex chars');
+
 const chainBadge = visualSlotContinuityBadge({
   continuity_mode: 'i2v_chain', anchor_slot_index: 0,
 });
-assert(chainBadge && chainBadge.text === 'I2V ← Slot 1' && chainBadge.kind === 'i2v-chain',
+assert(chainBadge && chainBadge.text === 'I2V ← Slot 1' && chainBadge.kind === 'i2v-chain' &&
+       chainBadge.explicit === false && chainBadge.sha256 === null,
   'i2v_chain anchor_slot_index 0 must map to I2V ← Slot 1');
 const chainSlot = createSlot('slot-1', 'lantern drifting in rain', 'video', chainBadge);
 const headChildren = chainSlot.el.children[0].children;
 assert(headChildren.some((node) => node.textContent === 'I2V ← Slot 1' &&
        node.dataset.continuity === 'i2v-chain'),
   'createSlot did not render the I2V ← Slot 1 badge');
+
+// Implicit I2V with anchor_sha256 preserves implicit label and adds SHA-256 hover tooltip.
+const implicitWithSha = visualSlotContinuityBadge({
+  continuity_mode: 'i2v_chain', anchor_slot_index: 0, anchor_explicit: false,
+  anchor_sha256: sampleSha.toUpperCase(),
+});
+assert(implicitWithSha && implicitWithSha.text === 'I2V ← Slot 1' &&
+       implicitWithSha.explicit === false && implicitWithSha.sha256 === sampleSha &&
+       implicitWithSha.title.includes(sampleSha),
+  'implicit i2v_chain with sha256 must preserve label and include full digest tooltip');
+
+// Explicit source=slot-0 with 64-char anchor_sha256 renders Explicit I2V + 8-char digest + tooltip.
+const explicitWithSha = visualSlotContinuityBadge({
+  continuity_mode: 'i2v_chain', anchor_slot_index: 0,
+  anchor_explicit: true, anchor_sha256: sampleSha,
+});
+assert(explicitWithSha && explicitWithSha.text === 'Explicit I2V ← Slot 1 · 3a9d5bbe' &&
+       explicitWithSha.kind === 'i2v-chain' && explicitWithSha.explicit === true &&
+       explicitWithSha.sha256 === sampleSha && explicitWithSha.title.includes(sampleSha),
+  'explicit anchor with sha256 must render Explicit I2V ← Slot 1 · 3a9d5bbe + full tooltip');
+const explicitSlot = createSlot('slot-1', 'lantern drifting', 'video', explicitWithSha);
+const explicitNode = explicitSlot.el.children[0].children.find(
+  (node) => node.dataset.continuity === 'i2v-chain');
+assert(explicitNode && explicitNode.textContent === 'Explicit I2V ← Slot 1 · 3a9d5bbe' &&
+       explicitNode.dataset.anchorExplicit === 'true' &&
+       explicitNode.dataset.anchorSha256 === sampleSha &&
+       explicitNode.title.includes(sampleSha),
+  'createSlot did not render explicit anchor badge text, datasets, and tooltip');
+
+// Explicit source=slot-0 without sha256 (or with null/empty/malformed sha256) omits digest cleanly.
+for (const absent of [undefined, null, '', 'not-a-sha', '3a9d5bbe']) {
+  const explicitNoSha = visualSlotContinuityBadge({
+    continuity_mode: 'i2v_chain', anchor_slot_index: 0,
+    anchor_explicit: true, anchor_sha256: absent,
+  });
+  assert(explicitNoSha && explicitNoSha.text === 'Explicit I2V ← Slot 1' &&
+         explicitNoSha.explicit === true && explicitNoSha.sha256 === null,
+    `explicit anchor without valid 64-char sha256 must omit short digest (got ${explicitNoSha?.text})`);
+}
+
+// Late arrival of anchor_sha256 (via artifact or complete.legs) upgrades badge in-place.
+const pendingExplicit = createSlot(
+  'slot-1', 'lantern drifting', 'video',
+  visualSlotContinuityBadge({ continuity_mode: 'i2v_chain', anchor_slot_index: 0, anchor_explicit: true }),
+);
+pendingExplicit.continuityMeta = {
+  continuity_mode: 'i2v_chain', anchor_slot_index: 0, anchor_explicit: true, anchor_sha256: '',
+};
+assert(pendingExplicit.continuityEl.textContent === 'Explicit I2V ← Slot 1',
+  'initial explicit slot badge before digest resolved mismatch');
+updateSlotContinuity(pendingExplicit, {
+  slot_id: 'slot-1', anchor_slot_index: 0, anchor_explicit: true, anchor_sha256: sampleSha,
+});
+assert(pendingExplicit.continuityEl.textContent === 'Explicit I2V ← Slot 1 · 3a9d5bbe' &&
+       pendingExplicit.continuityEl.title.includes(sampleSha) &&
+       pendingExplicit.continuityEl.dataset.anchorSha256 === sampleSha,
+  'updateSlotContinuity did not upgrade explicit badge with resolved anchor_sha256');
+
+// Explicit slot leg_error renders error message cleanly inside slot card.
+showSlotError(pendingExplicit, 'source slot slot-1 is not an earlier slot');
+assert(pendingExplicit.hasError === true && pendingExplicit.el.dataset.error === 'true' &&
+       pendingExplicit.el.classList.contains('has-error') &&
+       pendingExplicit.media.children[0].children[0].textContent.includes('source slot slot-1 is not an earlier slot'),
+  'showSlotError did not render explicit leg_error message on the slot card');
 
 const anchorBadge = visualSlotContinuityBadge({ continuity_mode: 'prompt_anchor' });
 assert(anchorBadge && anchorBadge.text === 'Anchor' && anchorBadge.kind === 'prompt-anchor',
@@ -872,6 +959,21 @@ const fullPills = formatTurnTelemetry({
 assert(JSON.stringify(fullPills.map((p) => p.label)) ===
   '["TTFT 265 ms","TTFA 380 ms","2 visuals (4.12 s)","I2V","Total 8.79 s"]',
   'full telemetry pill formatting mismatch: ' + JSON.stringify(fullPills));
+
+// Explicit anchor upgrades the I2V pill cleanly while keeping metric kind 'i2v'.
+const explicitPills = formatTurnTelemetry({
+  ttftMs: 210,
+  visualSettledCount: 2,
+  firstVisualMs: 3200,
+  hasI2VChain: true,
+  hasExplicitAnchor: true,
+  totalMs: 9100,
+});
+assert(JSON.stringify(explicitPills.map((p) => p.label)) ===
+  '["TTFT 210 ms","2 visuals (3.20 s)","Explicit I2V","Total 9.10 s"]',
+  'explicit anchor telemetry pill formatting mismatch: ' + JSON.stringify(explicitPills));
+assert(explicitPills.find((p) => p.label === 'Explicit I2V')?.kind === 'i2v',
+  'Explicit I2V pill must keep kind i2v');
 
 // Text-only turn omits TTFA, visuals, and I2V.
 const textOnlyPills = formatTurnTelemetry({

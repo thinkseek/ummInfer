@@ -15,7 +15,8 @@ private func unifiedEvent(
     artifact: [String: Any]? = nil, slotID: String? = nil,
     slotIndex: Int? = nil, mediaType: String? = nil, prompt: String? = nil,
     textOffset: Int? = nil, continuityMode: String? = nil,
-    anchorSlotIndex: Int? = nil
+    anchorSlotIndex: Int? = nil, anchorExplicit: Bool? = nil,
+    anchorSha256: String? = nil, legs: [[String: Any]]? = nil
 ) -> [String: Any] {
     var object: [String: Any] = [
         "kind": kind, "seq": seq, "session_id": session, "stage": stage,
@@ -30,6 +31,9 @@ private func unifiedEvent(
     if let textOffset { object["text_offset"] = textOffset }
     if let continuityMode { object["continuity_mode"] = continuityMode }
     if let anchorSlotIndex { object["anchor_slot_index"] = anchorSlotIndex }
+    if let anchorExplicit { object["anchor_explicit"] = anchorExplicit }
+    if let anchorSha256 { object["anchor_sha256"] = anchorSha256 }
+    if let legs { object["legs"] = legs }
     return object
 }
 
@@ -167,6 +171,111 @@ final class UnifiedDecodeTests: XCTestCase {
         XCTAssertEqual(event.slotID, "slot-1")
         XCTAssertEqual(event.slotIndex, 1)
         XCTAssertEqual(event.mediaType, "video")
+        XCTAssertFalse(event.anchorExplicit)
+        XCTAssertNil(event.anchorSha256)
+    }
+
+    func testDecodesExplicitAnchorAndSha256AcrossEventsAndToleratesOmission() throws {
+        let digest = "3a9d5bbe" + String(repeating: "4f12c890", count: 7)
+        XCTAssertEqual(digest.count, 64)
+
+        // 1. visual_slot with anchor_explicit=true and uppercase anchor_sha256.
+        let explicitSlot = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "visual_slot", seq: 1, stage: "video",
+            slotID: "slot-1", slotIndex: 1, mediaType: "video",
+            prompt: "river breeze", textOffset: 80,
+            continuityMode: "i2v_chain", anchorSlotIndex: 0,
+            anchorExplicit: true, anchorSha256: digest.uppercased())))
+        XCTAssertEqual(explicitSlot.anchorSlotIndex, 0)
+        XCTAssertTrue(explicitSlot.anchorExplicit)
+        XCTAssertEqual(explicitSlot.anchorSha256, digest)
+
+        // 2. leg_error with anchor_explicit=true, anchor_slot_index, and anchor_sha256.
+        let explicitErr = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "leg_error", seq: 2, stage: "video",
+            error: "source slot slot-1 is not an earlier slot",
+            slotID: "slot-1", slotIndex: 1, mediaType: "video",
+            anchorSlotIndex: 0, anchorExplicit: true, anchorSha256: digest)))
+        XCTAssertEqual(explicitErr.kind, .legError)
+        XCTAssertEqual(explicitErr.error, "source slot slot-1 is not an earlier slot")
+        XCTAssertEqual(explicitErr.anchorSlotIndex, 0)
+        XCTAssertTrue(explicitErr.anchorExplicit)
+        XCTAssertEqual(explicitErr.anchorSha256, digest)
+
+        // 3. complete.legs carrying anchor_explicit + anchor_sha256 + omission compatibility.
+        let complete = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "complete", seq: 3, text: "done", stage: "vlm", isFinal: true,
+            legs: [
+                ["stage": "image", "state": "completed", "slot_id": "slot-0", "slot_index": 0],
+                [
+                    "stage": "video", "state": "completed",
+                    "slot_id": "slot-1", "slot_index": 1,
+                    "anchor_slot_index": 0, "anchor_explicit": true,
+                    "anchor_sha256": digest
+                ]
+            ])))
+        XCTAssertEqual(complete.legs.count, 2)
+        XCTAssertEqual(complete.legs[0].slotID, "slot-0")
+        XCTAssertFalse(complete.legs[0].anchorExplicit)
+        XCTAssertNil(complete.legs[0].anchorSha256)
+        XCTAssertEqual(complete.legs[1].slotID, "slot-1")
+        XCTAssertEqual(complete.legs[1].anchorSlotIndex, 0)
+        XCTAssertTrue(complete.legs[1].anchorExplicit)
+        XCTAssertEqual(complete.legs[1].anchorSha256, digest)
+
+        // 4. artifact carrying anchor_slot_index + anchor_explicit + anchor_sha256 survives collector.
+        let bytes = Data([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70])
+        var chunk = artifactChunk(
+            id: "art-vid-1", media: "video", mime: "video/mp4",
+            index: 0, total: 1, data: bytes, sha: shaHex(bytes), bytes: bytes.count)
+        chunk["slot_id"] = "slot-1"
+        chunk["slot_index"] = 1
+        chunk["anchor_slot_index"] = 0
+        chunk["anchor_explicit"] = true
+        chunk["anchor_sha256"] = digest
+        let artEvent = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "artifact", seq: 4, stage: "video", artifact: chunk)))
+        XCTAssertEqual(artEvent.artifact?.anchorSlotIndex, 0)
+        XCTAssertEqual(artEvent.artifact?.anchorExplicit, true)
+        XCTAssertEqual(artEvent.artifact?.anchorSha256, digest)
+        var collector = ArtifactCollector()
+        let assembled = try XCTUnwrap(try collector.ingest(try XCTUnwrap(artEvent.artifact)))
+        XCTAssertEqual(assembled.anchorSlotIndex, 0)
+        XCTAssertTrue(assembled.anchorExplicit)
+        XCTAssertEqual(assembled.anchorSha256, digest)
+
+        // 5. Omission, null, empty, and non-64-hex anchor_sha256 yield defaults cleanly.
+        var nullable = unifiedEvent(
+            kind: "visual_slot", seq: 5, stage: "video",
+            slotID: "slot-1", slotIndex: 1, mediaType: "video",
+            continuityMode: "i2v_chain", anchorSlotIndex: 0)
+        nullable["anchor_explicit"] = NSNull()
+        nullable["anchor_sha256"] = NSNull()
+        let decodedNull = try UnifiedDecode.decode(eventData(nullable))
+        XCTAssertFalse(decodedNull.anchorExplicit)
+        XCTAssertNil(decodedNull.anchorSha256)
+
+        for emptyOrShort in ["", "   ", "3a9d5bbe", String(repeating: "z", count: 64)] {
+            let decoded = try UnifiedDecode.decode(eventData(unifiedEvent(
+                kind: "visual_slot", seq: 6, stage: "video",
+                slotID: "slot-1", slotIndex: 1, mediaType: "video",
+                anchorSlotIndex: 0, anchorExplicit: true, anchorSha256: emptyOrShort)))
+            XCTAssertTrue(decoded.anchorExplicit)
+            XCTAssertNil(decoded.anchorSha256)
+        }
+
+        // 6. Wrong JSON types for anchor_explicit / anchor_sha256 are rejected.
+        var badExplicit = unifiedEvent(
+            kind: "visual_slot", seq: 7, stage: "video",
+            slotID: "slot-1", slotIndex: 1, mediaType: "video")
+        badExplicit["anchor_explicit"] = "yes"
+        XCTAssertThrowsError(try UnifiedDecode.decode(eventData(badExplicit)))
+
+        var badSha = unifiedEvent(
+            kind: "leg_error", seq: 8, stage: "video", error: "fail",
+            slotID: "slot-1", slotIndex: 1)
+        badSha["anchor_sha256"] = 12345
+        XCTAssertThrowsError(try UnifiedDecode.decode(eventData(badSha)))
     }
 
     func testArtifactDecodesSlotAttribution() throws {

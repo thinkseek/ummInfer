@@ -550,16 +550,21 @@ struct RootView: View {
                     .foregroundStyle(theme.accent)
                     .accessibilityHidden(true)
                 if let badge = slot.continuityBadgeText {
-                    let isChain = slot.continuityMode == NarrativeContinuityMode.i2vChain.rawValue
-                    Text(badge)
-                        .font(.system(size: 11, weight: .medium))
+                    let isChain = slot.isChainedBadge
+                    let badgeLabel = Text(badge)
+                        .font(.system(size: 11, weight: slot.anchorExplicit ? .semibold : .medium))
                         .foregroundStyle(isChain ? theme.accent : theme.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(isChain ? theme.accent.opacity(0.12) : theme.hover)
+                        .background(isChain ? theme.accent.opacity(slot.anchorExplicit ? 0.16 : 0.12) : theme.hover)
                         .clipShape(Capsule())
-                        .overlay(Capsule().stroke(isChain ? theme.accent.opacity(0.35) : theme.line))
+                        .overlay(Capsule().stroke(isChain ? theme.accent.opacity(slot.anchorExplicit ? 0.55 : 0.35) : theme.line))
                         .accessibilityIdentifier("visual-slot-continuity")
+                    if let helpText = slot.continuityBadgeHelp {
+                        badgeLabel.help(helpText)
+                    } else {
+                        badgeLabel
+                    }
                 }
                 Text(slot.prompt.isEmpty ? "Visual \(slot.slotIndex + 1)" : slot.prompt)
                     .font(.system(size: theme.captionSize))
@@ -617,17 +622,24 @@ struct RootView: View {
                 Spacer(minLength: 0)
             }
             if let error = slot.error {
-                Text(error)
-                    .font(.system(size: theme.captionSize))
-                    .foregroundStyle(theme.danger)
-                    .textSelection(.enabled)
-                    .accessibilityIdentifier("visual-slot-error")
+                HStack(alignment: .top, spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.danger)
+                        .accessibilityHidden(true)
+                    Text(error)
+                        .font(.system(size: theme.captionSize))
+                        .foregroundStyle(theme.danger)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("visual-slot-error")
+                }
             }
         }
         .padding(11)
         .background(theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
-        .overlay(RoundedRectangle(cornerRadius: theme.cardRadius).stroke(theme.line))
+        .overlay(RoundedRectangle(cornerRadius: theme.cardRadius)
+            .stroke(slot.error != nil ? theme.danger.opacity(0.45) : theme.line))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("visual-slot")
     }

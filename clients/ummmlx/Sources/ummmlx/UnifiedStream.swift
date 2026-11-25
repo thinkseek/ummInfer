@@ -57,12 +57,18 @@ struct ArtifactChunk {
     /// Narrative slot attribution. Present only for interleaved visual legs.
     let slotID: String?
     let slotIndex: Int?
+    /// Optional cross-slot anchor metadata carried on resolved visual artifacts.
+    let anchorSlotIndex: Int?
+    let anchorExplicit: Bool
+    let anchorSha256: String?
 
     init(artifactID: String, mediaType: String, mimeType: String,
          encoding: String, index: Int, total: Int, data: Data,
          sha256: String?, bytes: Int?, format: String? = nil,
          sampleRate: Int? = nil, channels: Int? = nil,
-         slotID: String? = nil, slotIndex: Int? = nil) {
+         slotID: String? = nil, slotIndex: Int? = nil,
+         anchorSlotIndex: Int? = nil, anchorExplicit: Bool = false,
+         anchorSha256: String? = nil) {
         self.artifactID = artifactID
         self.mediaType = mediaType
         self.mimeType = mimeType
@@ -77,6 +83,9 @@ struct ArtifactChunk {
         self.channels = channels
         self.slotID = slotID
         self.slotIndex = slotIndex
+        self.anchorSlotIndex = anchorSlotIndex
+        self.anchorExplicit = anchorExplicit
+        self.anchorSha256 = anchorSha256
     }
 }
 
@@ -84,6 +93,32 @@ struct AudioStreamChunk: Equatable, Sendable {
     let pcm16: Data
     let sampleRate: Int
     let channels: Int
+}
+
+/// One entry of the terminal `legs` summary array on `complete`/`cancelled`/`error`.
+struct UnifiedLegSummary: Equatable {
+    let stage: String
+    let state: String
+    let error: String?
+    let slotID: String?
+    let slotIndex: Int?
+    let anchorSlotIndex: Int?
+    let anchorExplicit: Bool
+    let anchorSha256: String?
+
+    init(stage: String, state: String, error: String? = nil,
+         slotID: String? = nil, slotIndex: Int? = nil,
+         anchorSlotIndex: Int? = nil, anchorExplicit: Bool = false,
+         anchorSha256: String? = nil) {
+        self.stage = stage
+        self.state = state
+        self.error = error
+        self.slotID = slotID
+        self.slotIndex = slotIndex
+        self.anchorSlotIndex = anchorSlotIndex
+        self.anchorExplicit = anchorExplicit
+        self.anchorSha256 = anchorSha256
+    }
 }
 
 struct UnifiedEvent {
@@ -108,15 +143,22 @@ struct UnifiedEvent {
     /// Optional cross-slot continuity mode on `visual_slot` events
     /// (e.g. "i2v_chain" or "prompt_anchor").
     let continuityMode: String?
-    /// Optional 0-based anchor slot index on `visual_slot` events when chained.
+    /// Optional 0-based anchor slot index on `visual_slot`/`leg_error` events when chained.
     let anchorSlotIndex: Int?
+    /// True when the slot used an explicit `source=slot-N` anchor directive.
+    let anchorExplicit: Bool
+    /// Optional verified 64-char hex SHA-256 digest of the resolved anchor image.
+    let anchorSha256: String?
+    /// Optional terminal leg summaries carried on `complete`/`cancelled`/`error`.
+    let legs: [UnifiedLegSummary]
 
     init(kind: UnifiedKind, seq: Int, sessionID: String, stage: String,
          isFinal: Bool, text: String, error: String,
          artifact: ArtifactChunk? = nil, slotID: String? = nil,
          slotIndex: Int? = nil, mediaType: String = "", prompt: String = "",
          textOffset: Int? = nil, continuityMode: String? = nil,
-         anchorSlotIndex: Int? = nil) {
+         anchorSlotIndex: Int? = nil, anchorExplicit: Bool = false,
+         anchorSha256: String? = nil, legs: [UnifiedLegSummary] = []) {
         self.kind = kind
         self.seq = seq
         self.sessionID = sessionID
@@ -132,6 +174,9 @@ struct UnifiedEvent {
         self.textOffset = textOffset
         self.continuityMode = continuityMode
         self.anchorSlotIndex = anchorSlotIndex
+        self.anchorExplicit = anchorExplicit
+        self.anchorSha256 = anchorSha256
+        self.legs = legs
     }
 }
 
@@ -147,10 +192,16 @@ struct GeneratedArtifact: Identifiable, Equatable {
     /// Narrative slot attribution carried from the wire, when present.
     let slotID: String?
     let slotIndex: Int?
+    /// Optional cross-slot anchor metadata carried from the wire, when present.
+    let anchorSlotIndex: Int?
+    let anchorExplicit: Bool
+    let anchorSha256: String?
 
     init(id: String, mediaType: String, mimeType: String, data: Data,
          sha256: String, sampleRate: Int? = nil, channels: Int? = nil,
-         slotID: String? = nil, slotIndex: Int? = nil) {
+         slotID: String? = nil, slotIndex: Int? = nil,
+         anchorSlotIndex: Int? = nil, anchorExplicit: Bool = false,
+         anchorSha256: String? = nil) {
         self.id = id
         self.mediaType = mediaType
         self.mimeType = mimeType
@@ -160,6 +211,9 @@ struct GeneratedArtifact: Identifiable, Equatable {
         self.channels = channels
         self.slotID = slotID
         self.slotIndex = slotIndex
+        self.anchorSlotIndex = anchorSlotIndex
+        self.anchorExplicit = anchorExplicit
+        self.anchorSha256 = anchorSha256
     }
 }
 
@@ -193,6 +247,34 @@ enum UnifiedDecode {
             throw ChatClientError.invalidResponse("unified \(name) is not a boolean")
         }
         return flag.intValue == 1
+    }
+
+    static func normalizedAnchorSHA256(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed.count == 64,
+              trimmed.unicodeScalars.allSatisfy({ scalar in
+                  (scalar.value >= 0x30 && scalar.value <= 0x39)
+                      || (scalar.value >= 0x61 && scalar.value <= 0x66)
+              }) else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func optionalAnchorExplicit(_ value: Any?, _ name: String) throws -> Bool {
+        guard let value, !(value is NSNull) else { return false }
+        guard let flag = value as? NSNumber,
+              CFGetTypeID(flag) == CFBooleanGetTypeID() else {
+            throw ChatClientError.invalidResponse("unified \(name) is not a boolean")
+        }
+        return flag.boolValue
+    }
+
+    private static func optionalAnchorSHA256(_ value: Any?, _ name: String) throws -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        let raw = try string(value, name)
+        return normalizedAnchorSHA256(raw)
     }
 
     static func decode(_ data: Data) throws -> UnifiedEvent {
@@ -237,6 +319,8 @@ enum UnifiedDecode {
         } else {
             anchorSlotIndex = nil
         }
+        let anchorExplicit = try optionalAnchorExplicit(root["anchor_explicit"], "anchor_explicit")
+        let anchorSha256 = try optionalAnchorSHA256(root["anchor_sha256"], "anchor_sha256")
         if kind == .visualSlot {
             guard slotID?.isEmpty == false, slotIndex != nil else {
                 throw ChatClientError.invalidResponse(
@@ -249,12 +333,68 @@ enum UnifiedDecode {
             let raw = try object(root["artifact"])
             artifact = try decodeArtifact(raw)
         }
+        var legs: [UnifiedLegSummary] = []
+        if let rawLegs = root["legs"], !(rawLegs is NSNull) {
+            guard let array = rawLegs as? [Any] else {
+                throw ChatClientError.invalidResponse("unified legs is not an array")
+            }
+            legs = try array.map { try decodeLeg(try object($0)) }
+        }
         return UnifiedEvent(
             kind: kind, seq: seq, sessionID: sessionID, stage: stage,
             isFinal: isFinal, text: text, error: errorText,
             artifact: artifact, slotID: slotID, slotIndex: slotIndex,
             mediaType: mediaType, prompt: prompt, textOffset: textOffset,
-            continuityMode: continuityMode, anchorSlotIndex: anchorSlotIndex
+            continuityMode: continuityMode, anchorSlotIndex: anchorSlotIndex,
+            anchorExplicit: anchorExplicit, anchorSha256: anchorSha256,
+            legs: legs
+        )
+    }
+
+    private static func decodeLeg(_ raw: [String: Any]) throws -> UnifiedLegSummary {
+        let stage: String
+        if let value = raw["stage"], !(value is NSNull) {
+            stage = try string(value, "legs.stage")
+        } else {
+            stage = ""
+        }
+        let state: String
+        if let value = raw["state"], !(value is NSNull) {
+            state = try string(value, "legs.state")
+        } else {
+            state = ""
+        }
+        let error: String?
+        if let value = raw["error"], !(value is NSNull) {
+            error = try string(value, "legs.error")
+        } else {
+            error = nil
+        }
+        let slotID: String?
+        if let value = raw["slot_id"], !(value is NSNull) {
+            slotID = try string(value, "legs.slot_id")
+        } else {
+            slotID = nil
+        }
+        let slotIndex: Int?
+        if let value = raw["slot_index"], !(value is NSNull) {
+            slotIndex = try integer(value, "legs.slot_index")
+        } else {
+            slotIndex = nil
+        }
+        let anchorSlotIndex: Int?
+        if let value = raw["anchor_slot_index"], !(value is NSNull) {
+            anchorSlotIndex = try integer(value, "legs.anchor_slot_index")
+        } else {
+            anchorSlotIndex = nil
+        }
+        let anchorExplicit = try optionalAnchorExplicit(raw["anchor_explicit"], "legs.anchor_explicit")
+        let anchorSha256 = try optionalAnchorSHA256(raw["anchor_sha256"], "legs.anchor_sha256")
+        return UnifiedLegSummary(
+            stage: stage, state: state, error: error,
+            slotID: slotID, slotIndex: slotIndex,
+            anchorSlotIndex: anchorSlotIndex, anchorExplicit: anchorExplicit,
+            anchorSha256: anchorSha256
         )
     }
 
@@ -288,12 +428,22 @@ enum UnifiedDecode {
         let slotIndex = try raw["slot_index"].map {
             try integer($0, "artifact.slot_index")
         }
+        let anchorSlotIndex: Int?
+        if let rawAnchor = raw["anchor_slot_index"], !(rawAnchor is NSNull) {
+            anchorSlotIndex = try integer(rawAnchor, "artifact.anchor_slot_index")
+        } else {
+            anchorSlotIndex = nil
+        }
+        let anchorExplicit = try optionalAnchorExplicit(raw["anchor_explicit"], "artifact.anchor_explicit")
+        let anchorSha256 = try optionalAnchorSHA256(raw["anchor_sha256"], "artifact.anchor_sha256")
         return ArtifactChunk(
             artifactID: artifactID, mediaType: mediaType, mimeType: mimeType,
             encoding: encoding, index: index, total: total, data: decoded,
             sha256: sha, bytes: bytes, format: format,
             sampleRate: sampleRate, channels: channels,
-            slotID: slotID, slotIndex: slotIndex
+            slotID: slotID, slotIndex: slotIndex,
+            anchorSlotIndex: anchorSlotIndex, anchorExplicit: anchorExplicit,
+            anchorSha256: anchorSha256
         )
     }
 }
@@ -327,6 +477,9 @@ struct ArtifactCollector {
         var mimeType: String
         var slotID: String?
         var slotIndex: Int?
+        var anchorSlotIndex: Int?
+        var anchorExplicit: Bool
+        var anchorSha256: String?
         var nextIndex: Int
         var total: Int
         var data: Data
@@ -385,8 +538,20 @@ struct ArtifactCollector {
         var slot = slots[chunk.artifactID] ?? Slot(
             mediaType: chunk.mediaType, mimeType: chunk.mimeType,
             slotID: chunk.slotID, slotIndex: chunk.slotIndex,
+            anchorSlotIndex: chunk.anchorSlotIndex,
+            anchorExplicit: chunk.anchorExplicit,
+            anchorSha256: chunk.anchorSha256,
             nextIndex: 0, total: chunk.total, data: Data()
         )
+        if slot.anchorSlotIndex == nil, let anchor = chunk.anchorSlotIndex {
+            slot.anchorSlotIndex = anchor
+        }
+        if chunk.anchorExplicit {
+            slot.anchorExplicit = true
+        }
+        if slot.anchorSha256 == nil, let sha = chunk.anchorSha256 {
+            slot.anchorSha256 = sha
+        }
         guard slot.mediaType == chunk.mediaType, slot.mimeType == chunk.mimeType else {
             throw ChatClientError.invalidResponse(
                 "artifact descriptor changed between chunks")
@@ -449,7 +614,10 @@ struct ArtifactCollector {
             mimeType: chunk.mimeType, data: slot.data, sha256: digest,
             sampleRate: pcmSampleRate, channels: pcmChannels,
             slotID: slot.slotID ?? chunk.slotID,
-            slotIndex: slot.slotIndex ?? chunk.slotIndex
+            slotIndex: slot.slotIndex ?? chunk.slotIndex,
+            anchorSlotIndex: slot.anchorSlotIndex ?? chunk.anchorSlotIndex,
+            anchorExplicit: slot.anchorExplicit || chunk.anchorExplicit,
+            anchorSha256: slot.anchorSha256 ?? chunk.anchorSha256
         )
     }
 

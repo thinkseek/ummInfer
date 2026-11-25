@@ -237,6 +237,7 @@
     border: 1px solid var(--line); border-radius: var(--r-card); background: var(--bg);
     animation: rise .2s ease-out;
   }
+  .slot.has-error { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
   .slot-card-head { display: flex; align-items: center; gap: 8px; }
   .slot-caption {
     font-size: var(--f-caption); color: var(--secondary);
@@ -255,6 +256,11 @@
     color: var(--accent);
     border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
     background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  .badge.continuity.i2v-chain.explicit {
+    font-weight: 600;
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
   }
   .badge.continuity.prompt-anchor { color: var(--secondary); }
   .slot-media {
@@ -919,8 +925,11 @@ function formatTurnTelemetry(telemetry) {
       label: firstVisual !== null ? `${countLabel} (${firstVisual})` : countLabel,
     });
   }
-  if (telemetry.hasI2VChain === true) {
-    pills.push({ kind: 'i2v', label: 'I2V' });
+  if (telemetry.hasI2VChain === true || telemetry.hasExplicitAnchor === true) {
+    pills.push({
+      kind: 'i2v',
+      label: telemetry.hasExplicitAnchor === true ? 'Explicit I2V' : 'I2V',
+    });
   }
   const total = formatTelemetryDuration(telemetry.totalMs);
   if (total !== null) pills.push({ kind: 'total', label: `Total ${total}` });
@@ -1276,12 +1285,17 @@ function createSlot(id, prompt, kind, continuity = null) {
   badge.className = 'badge ' + kind;
   badge.textContent = kind === 'video' ? 'Video' : 'Image';
   head.append(badge);
+  let continuityEl = null;
   if (continuity) {
-    const continuityBadge = document.createElement('span');
-    continuityBadge.className = 'badge continuity ' + continuity.kind;
-    continuityBadge.textContent = continuity.text;
-    continuityBadge.dataset.continuity = continuity.kind;
-    head.append(continuityBadge);
+    continuityEl = document.createElement('span');
+    continuityEl.className = 'badge continuity ' + continuity.kind
+      + (continuity.explicit ? ' explicit' : '');
+    continuityEl.textContent = continuity.text;
+    continuityEl.dataset.continuity = continuity.kind;
+    if (continuity.explicit) continuityEl.dataset.anchorExplicit = 'true';
+    if (continuity.sha256) continuityEl.dataset.anchorSha256 = continuity.sha256;
+    if (continuity.title) continuityEl.title = continuity.title;
+    head.append(continuityEl);
   }
   const caption = document.createElement('span');
   caption.className = 'slot-caption';
@@ -1309,8 +1323,9 @@ function createSlot(id, prompt, kind, continuity = null) {
 
   el.append(head, media, actions);
 
-  const slot = { id, prompt, kind, el, media, badge, swap, regen, dl,
-                 url: '', cache: {}, loading: false };
+  const slot = { id, prompt, kind, el, head, caption, continuityEl,
+                 continuityMeta: null, media, badge, swap, regen, dl,
+                 url: '', cache: {}, loading: false, hasError: false };
   swap.addEventListener('click', () => {
     renderSlot(slot, slot.kind === 'video' ? 'image' : 'video');
   });
@@ -1322,6 +1337,9 @@ function createSlot(id, prompt, kind, continuity = null) {
 }
 
 function showSlotLoading(slot) {
+  slot.hasError = false;
+  if (slot.el?.dataset) delete slot.el.dataset.error;
+  slot.el?.classList?.remove('has-error');
   const shimmer = document.createElement('div');
   shimmer.className = 'shimmer';
   const overlay = document.createElement('div');
@@ -1331,6 +1349,9 @@ function showSlotLoading(slot) {
 }
 
 function showSlotError(slot, message) {
+  slot.hasError = true;
+  if (slot.el?.dataset) slot.el.dataset.error = 'true';
+  slot.el?.classList?.add('has-error');
   const overlay = document.createElement('div');
   overlay.className = 'slot-overlay';
   const note = document.createElement('div');
@@ -1341,6 +1362,9 @@ function showSlotError(slot, message) {
 }
 
 function setSlotMedia(slot, kind, url) {
+  slot.hasError = false;
+  if (slot.el?.dataset) delete slot.el.dataset.error;
+  slot.el?.classList?.remove('has-error');
   slot.kind = kind;
   slot.url = url;
   slot.cache[kind] = url;
@@ -1374,18 +1398,44 @@ function setSlotMedia(slot, kind, url) {
   slot.dl.hidden = false;
 }
 
+function recordSlotContinuityTelemetry(targetTurn, meta) {
+  if (!targetTurn?.telemetry || !meta || typeof meta !== 'object') return;
+  let changed = false;
+  if (Number.isInteger(meta.anchor_slot_index) && meta.anchor_slot_index >= 0) {
+    if (!targetTurn.telemetry.hasI2VChain) {
+      targetTurn.telemetry.hasI2VChain = true;
+      changed = true;
+    }
+    if (meta.anchor_explicit === true && !targetTurn.telemetry.hasExplicitAnchor) {
+      targetTurn.telemetry.hasExplicitAnchor = true;
+      changed = true;
+    }
+  }
+  if (changed) renderTurnTelemetry(targetTurn);
+}
+
 function onVisualSlot(unified) {
   if (!turn) return;
   if (turn.tailText) turn.tailText.classList.remove('caret');
   turn.tailText = null;
   const kind = (unified.media_type || unified.stage) === 'video' ? 'video' : 'image';
   const slotId = unified.slot_id || `slot-${turn.slots.size}`;
-  const continuity = visualSlotContinuityBadge(unified);
-  if (turn.telemetry && Number.isInteger(unified?.anchor_slot_index) && unified.anchor_slot_index >= 0) {
-    turn.telemetry.hasI2VChain = true;
-    renderTurnTelemetry(turn);
+  if (turn.slots.has(slotId)) {
+    const existing = turn.slots.get(slotId);
+    updateSlotContinuity(existing, unified);
+    recordSlotContinuityTelemetry(turn, unified);
+    return;
   }
+  const continuity = visualSlotContinuityBadge(unified);
+  recordSlotContinuityTelemetry(turn, unified);
   const slot = createSlot(slotId, unified.prompt || '', kind, continuity);
+  slot.continuityMeta = {
+    continuity_mode: typeof unified?.continuity_mode === 'string' ? unified.continuity_mode : '',
+    anchor_slot_index: Number.isInteger(unified?.anchor_slot_index) && unified.anchor_slot_index >= 0
+      ? unified.anchor_slot_index : undefined,
+    anchor_explicit: unified?.anchor_explicit === true,
+    anchor_sha256: normalizeAnchorSha256(unified?.anchor_sha256),
+  };
   turn.slots.set(slotId, slot);
   turn.flow.append(slot.el);
   scrollToEnd();
@@ -2161,6 +2211,8 @@ function deliver(chunk, bytes) {
     if (kindHint === 'image' && mime.startsWith('image/')) {
       slot.imageDataURL = dataURLFor(mime, bytes);
     }
+    updateSlotContinuity(slot, chunk);
+    recordSlotContinuityTelemetry(turn, chunk);
     setSlotMedia(slot, kindHint, url);
     recordVisualSettled(chunk.slot_id);
     scrollToEnd();
@@ -2269,13 +2321,39 @@ async function consume(payload, st) {
       case 'visual_slot': onVisualSlot(unified); break;
       case 'artifact': await ingestArtifact(unified.artifact); break;
       case 'leg_error':
-        if (unified.slot_id && turn.slots.has(unified.slot_id)) {
-          showSlotError(turn.slots.get(unified.slot_id), unified.error);
+        if (unified.slot_id) {
+          if (!turn.slots.has(unified.slot_id) && unified.anchor_explicit === true) {
+            onVisualSlot(unified);
+          }
+          if (turn.slots.has(unified.slot_id)) {
+            const failedSlot = turn.slots.get(unified.slot_id);
+            updateSlotContinuity(failedSlot, unified);
+            recordSlotContinuityTelemetry(turn, unified);
+            showSlotError(failedSlot, unified.error);
+          } else {
+            turn.legs.textContent = `${unified.stage} output: ${unified.error || 'failed'}`;
+          }
         } else {
           turn.legs.textContent = `${unified.stage} output: ${unified.error || 'failed'}`;
         }
         break;
-      case 'complete': st.terminal = 1; recordTurnTotal(turn); break;
+      case 'complete':
+        st.terminal = 1;
+        if (Array.isArray(unified.legs)) {
+          for (const leg of unified.legs) {
+            if (!leg || typeof leg !== 'object' || typeof leg.slot_id !== 'string') continue;
+            if (!turn.slots.has(leg.slot_id)) continue;
+            const slot = turn.slots.get(leg.slot_id);
+            updateSlotContinuity(slot, leg);
+            recordSlotContinuityTelemetry(turn, leg);
+            if (leg.state === 'failed' && typeof leg.error === 'string' && leg.error
+                && !slot.url && !slot.hasError) {
+              showSlotError(slot, leg.error);
+            }
+          }
+        }
+        recordTurnTotal(turn);
+        break;
       case 'error': st.terminal = 1; throw new Error(unified.error || 'The request failed.');
       case 'cancelled': {
         st.terminal = 1;
@@ -2459,16 +2537,75 @@ function buildNarrativeConfig({
   return narrative;
 }
 
+function normalizeAnchorSha256(raw) {
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(trimmed) ? trimmed : '';
+}
+
 function visualSlotContinuityBadge(unified) {
   const mode = typeof unified?.continuity_mode === 'string' ? unified.continuity_mode : '';
   const anchorIdx = unified?.anchor_slot_index;
-  if (mode === 'i2v_chain' && Number.isInteger(anchorIdx) && anchorIdx >= 0) {
-    return { text: `I2V ← Slot ${anchorIdx + 1}`, kind: 'i2v-chain' };
+  const explicit = unified?.anchor_explicit === true;
+  const sha256 = normalizeAnchorSha256(unified?.anchor_sha256);
+  if (Number.isInteger(anchorIdx) && anchorIdx >= 0
+      && (mode === 'i2v_chain' || mode === '' || explicit)) {
+    const slotLabel = `Slot ${anchorIdx + 1}`;
+    if (explicit) {
+      const shortSha = sha256 ? ` · ${sha256.slice(0, 8)}` : '';
+      return {
+        text: `Explicit I2V ← ${slotLabel}${shortSha}`,
+        kind: 'i2v-chain',
+        explicit: true,
+        sha256: sha256 || null,
+        title: sha256
+          ? `Explicit anchor slot-${anchorIdx} · SHA-256: ${sha256}`
+          : `Explicit anchor slot-${anchorIdx}`,
+      };
+    }
+    return {
+      text: `I2V ← ${slotLabel}`,
+      kind: 'i2v-chain',
+      explicit: false,
+      sha256: sha256 || null,
+      title: sha256 ? `Anchor slot-${anchorIdx} · SHA-256: ${sha256}` : '',
+    };
   }
   if (mode === 'prompt_anchor') {
-    return { text: 'Anchor', kind: 'prompt-anchor' };
+    return { text: 'Anchor', kind: 'prompt-anchor', explicit: false, sha256: null, title: '' };
   }
   return null;
+}
+
+function updateSlotContinuity(slot, incoming) {
+  if (!slot || !incoming || typeof incoming !== 'object') return;
+  const prev = slot.continuityMeta || {};
+  const merged = {
+    continuity_mode: typeof incoming.continuity_mode === 'string' && incoming.continuity_mode
+      ? incoming.continuity_mode : (prev.continuity_mode || ''),
+    anchor_slot_index: Number.isInteger(incoming.anchor_slot_index) && incoming.anchor_slot_index >= 0
+      ? incoming.anchor_slot_index : prev.anchor_slot_index,
+    anchor_explicit: incoming.anchor_explicit === true || prev.anchor_explicit === true,
+    anchor_sha256: normalizeAnchorSha256(incoming.anchor_sha256) || prev.anchor_sha256 || '',
+  };
+  slot.continuityMeta = merged;
+  const badge = visualSlotContinuityBadge(merged);
+  if (!badge) return;
+  if (!slot.continuityEl) {
+    slot.continuityEl = document.createElement('span');
+    if (slot.head && typeof slot.head.insertBefore === 'function' && slot.caption) {
+      slot.head.insertBefore(slot.continuityEl, slot.caption);
+    } else if (slot.head) {
+      slot.head.append(slot.continuityEl);
+    }
+  }
+  slot.continuityEl.className = 'badge continuity ' + badge.kind
+    + (badge.explicit ? ' explicit' : '');
+  slot.continuityEl.textContent = badge.text;
+  slot.continuityEl.dataset.continuity = badge.kind;
+  if (badge.explicit) slot.continuityEl.dataset.anchorExplicit = 'true';
+  if (badge.sha256) slot.continuityEl.dataset.anchorSha256 = badge.sha256;
+  if (badge.title) slot.continuityEl.title = badge.title;
 }
 // NARRATIVE_CONTINUITY_END
 
@@ -2634,6 +2771,7 @@ async function send() {
     settledSlotIds: new Set(),
     firstVisualMs: null,
     hasI2VChain: false,
+    hasExplicitAnchor: false,
     totalMs: null,
   };
   if (body.audio?.stream) player.begin(ui.voiceWave);
