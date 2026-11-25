@@ -1,0 +1,534 @@
+{
+  "config_schema_version": 1,
+  "config_type": "objective_mix_ablation",
+  "ablation_row": "vision_3_2_row_5_post_training_objective_mix",
+  "variable_name": "objective_mix",
+  "description": "Stage C Ablation #5 (Row 5 of docs/vision.md section 3.2): 4-arm single-variable post-training objective-mix ablation evaluating CompositeUmmReward quality vs policy-weighted expected P95 terminal latency Pareto frontier.",
+  "evaluation": {
+    "quality_reference_weights": {
+      "routing_f1": 0.4,
+      "prose_visual_balance": 0.3,
+      "barge_in_stability": 0.3,
+      "latency_penalty": 0.0
+    },
+    "full_reward_reference_weights": {
+      "routing_f1": 0.4,
+      "prose_visual_balance": 0.3,
+      "barge_in_stability": 0.3,
+      "latency_penalty": 0.2
+    },
+    "latency_budget_ms": {
+      "ttft_ms": 1000.0,
+      "ttfa_ms": 1500.0,
+      "terminal_ms": 30000.0,
+      "barge_in_ms": 250.0
+    },
+    "offline_projection_step_scale": 0.35
+  },
+  "arms": [
+    {
+      "arm_id": "sft_only",
+      "description": "Baseline: pure supervised fine-tuning on the unranked rollout pool (grpo_weight = 0.0).",
+      "model": {
+        "base_model_placeholder": "Qwen/Qwen2.5-0.5B-Instruct",
+        "dtype": "bfloat16",
+        "attn_implementation": "eager",
+        "gradient_checkpointing": false,
+        "trust_remote_code": false
+      },
+      "optimization": {
+        "seed": "umminfer-stage-c-objective-mix-ablation-v1",
+        "learning_rate": 0.00005,
+        "weight_decay": 0.0,
+        "max_grad_norm": 1.0,
+        "max_seq_len": 256,
+        "steps": 2
+      },
+      "grpo": {
+        "clip_eps": 0.2,
+        "kl_coef": 0.04,
+        "log_ratio_clamp": 20.0,
+        "advantage_eps": 0.0,
+        "zero_std_policy": "zero_advantage"
+      },
+      "sft_weight": 1.0,
+      "objective_mix": {
+        "sft_weight": 1.0,
+        "grpo_weight": 0.0,
+        "reward_weights": null
+      }
+    },
+    {
+      "arm_id": "sft_plus_consistency",
+      "description": "SFT + GRPO with prose/visual balance and barge-in stability reward (no routing F1, no latency penalty).",
+      "model": {
+        "base_model_placeholder": "Qwen/Qwen2.5-0.5B-Instruct",
+        "dtype": "bfloat16",
+        "attn_implementation": "eager",
+        "gradient_checkpointing": false,
+        "trust_remote_code": false
+      },
+      "optimization": {
+        "seed": "umminfer-stage-c-objective-mix-ablation-v1",
+        "learning_rate": 0.00005,
+        "weight_decay": 0.0,
+        "max_grad_norm": 1.0,
+        "max_seq_len": 256,
+        "steps": 2
+      },
+      "grpo": {
+        "clip_eps": 0.2,
+        "kl_coef": 0.04,
+        "log_ratio_clamp": 20.0,
+        "advantage_eps": 0.0,
+        "zero_std_policy": "zero_advantage"
+      },
+      "sft_weight": 1.0,
+      "objective_mix": {
+        "sft_weight": 1.0,
+        "grpo_weight": 1.0,
+        "reward_weights": {
+          "routing_f1": 0.0,
+          "prose_visual_balance": 0.6,
+          "barge_in_stability": 0.4,
+          "latency_penalty": 0.0
+        }
+      }
+    },
+    {
+      "arm_id": "sft_plus_routing",
+      "description": "SFT + GRPO with pure modality-routing F1 reward (blind to redundant slots, barge-in stability, and latency).",
+      "model": {
+        "base_model_placeholder": "Qwen/Qwen2.5-0.5B-Instruct",
+        "dtype": "bfloat16",
+        "attn_implementation": "eager",
+        "gradient_checkpointing": false,
+        "trust_remote_code": false
+      },
+      "optimization": {
+        "seed": "umminfer-stage-c-objective-mix-ablation-v1",
+        "learning_rate": 0.00005,
+        "weight_decay": 0.0,
+        "max_grad_norm": 1.0,
+        "max_seq_len": 256,
+        "steps": 2
+      },
+      "grpo": {
+        "clip_eps": 0.2,
+        "kl_coef": 0.04,
+        "log_ratio_clamp": 20.0,
+        "advantage_eps": 0.0,
+        "zero_std_policy": "zero_advantage"
+      },
+      "sft_weight": 1.0,
+      "objective_mix": {
+        "sft_weight": 1.0,
+        "grpo_weight": 1.0,
+        "reward_weights": {
+          "routing_f1": 1.0,
+          "prose_visual_balance": 0.0,
+          "barge_in_stability": 0.0,
+          "latency_penalty": 0.0
+        }
+      }
+    },
+    {
+      "arm_id": "sft_plus_full_latency_pareto",
+      "description": "SFT + GRPO with full multi-objective CompositeUmmReward including explicit latency penalty.",
+      "model": {
+        "base_model_placeholder": "Qwen/Qwen2.5-0.5B-Instruct",
+        "dtype": "bfloat16",
+        "attn_implementation": "eager",
+        "gradient_checkpointing": false,
+        "trust_remote_code": false
+      },
+      "optimization": {
+        "seed": "umminfer-stage-c-objective-mix-ablation-v1",
+        "learning_rate": 0.00005,
+        "weight_decay": 0.0,
+        "max_grad_norm": 1.0,
+        "max_seq_len": 256,
+        "steps": 2
+      },
+      "grpo": {
+        "clip_eps": 0.2,
+        "kl_coef": 0.04,
+        "log_ratio_clamp": 20.0,
+        "advantage_eps": 0.0,
+        "zero_std_policy": "zero_advantage"
+      },
+      "sft_weight": 1.0,
+      "objective_mix": {
+        "sft_weight": 1.0,
+        "grpo_weight": 1.0,
+        "reward_weights": {
+          "routing_f1": 0.4,
+          "prose_visual_balance": 0.3,
+          "barge_in_stability": 0.3,
+          "latency_penalty": 0.2
+        }
+      }
+    }
+  ],
+  "rollout_groups": [
+    {
+      "group_id": "group_black_hole_accretion",
+      "prompt_text": "Explain how a black hole accretion disk heats gas and include one clear diagram.",
+      "candidates": [
+        {
+          "candidate_id": "bh_optimal_balanced_fast",
+          "candidate_profile": "optimal_balanced_fast",
+          "assistant_target": "Matter spiraling into a black hole forms a flattened accretion disk where differential rotation creates viscous friction and X-ray heat.\n[[VISUAL:image|Labeled cross-section diagram of a glowing black hole accretion disk with inflowing gas and relativistic jets]]\nInner orbits move faster than outer orbits, converting gravitational binding energy into radiation.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "Matter spiraling into a black hole forms a flattened accretion disk where differential rotation creates viscous friction and X-ray heat. Inner orbits move faster than outer orbits, converting gravitational binding energy into radiation.",
+            "visual_slots": [
+              {
+                "slot_id": "slot_bh_opt_1",
+                "media_type": "image",
+                "prompt": "Labeled cross-section diagram of a glowing black hole accretion disk with inflowing gas and relativistic jets"
+              }
+            ],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "visual.slot.completed", "slot_id": "slot_bh_opt_1"},
+              {"seq": 3, "type": "response.completed"}
+            ],
+            "terminal_state": "completed",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "completed"},
+              {"leg_id": "slot_bh_opt_1", "state": "completed"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image"],
+              "latency": {
+                "ttft_ms": 180.0,
+                "ttfa_ms": 340.0,
+                "terminal_ms": 2800.0
+              }
+            }
+          }
+        },
+        {
+          "candidate_id": "bh_overtriggered_redundant_slow",
+          "candidate_profile": "overtriggered_redundant_slow",
+          "assistant_target": "Matter spiraling into a black hole heats up through friction in an accretion disk.\n[[VISUAL:image|Wide view of a black hole accretion disk in deep space]]\nHere is another angle of the same disk structure.\n[[VISUAL:image|Duplicate angle of the same black hole accretion disk with extra labels]]\nBoth panels illustrate the same inner thermal ring.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "Matter spiraling into a black hole heats up through friction in an accretion disk. Here is another angle of the same disk structure. Both panels illustrate the same inner thermal ring.",
+            "visual_slots": [
+              {
+                "slot_id": "slot_bh_slow_1",
+                "media_type": "image",
+                "prompt": "Wide view of a black hole accretion disk in deep space"
+              },
+              {
+                "slot_id": "slot_bh_slow_2",
+                "media_type": "image",
+                "prompt": "Duplicate angle of the same black hole accretion disk with extra labels"
+              }
+            ],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "visual.slot.completed", "slot_id": "slot_bh_slow_1"},
+              {"seq": 3, "type": "visual.slot.completed", "slot_id": "slot_bh_slow_2"},
+              {"seq": 4, "type": "response.completed"}
+            ],
+            "terminal_state": "completed",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "completed"},
+              {"leg_id": "slot_bh_slow_1", "state": "completed"},
+              {"leg_id": "slot_bh_slow_2", "state": "completed"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image"],
+              "latency": {
+                "ttft_ms": 620.0,
+                "ttfa_ms": 1180.0,
+                "terminal_ms": 24500.0
+              }
+            }
+          }
+        },
+        {
+          "candidate_id": "bh_undertriggered_text_fast",
+          "candidate_profile": "undertriggered_text_fast",
+          "assistant_target": "Infalling gas forms a rotating accretion disk around the black hole, where shear viscosity converts orbital energy into thermal X-ray emission without needing extra visual panels.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "Infalling gas forms a rotating accretion disk around the black hole, where shear viscosity converts orbital energy into thermal X-ray emission without needing extra visual panels.",
+            "visual_slots": [],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "response.completed"}
+            ],
+            "terminal_state": "completed",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "completed"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image"],
+              "latency": {
+                "ttft_ms": 120.0,
+                "ttfa_ms": 210.0,
+                "terminal_ms": 950.0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "group_id": "group_barge_in_storyboard_edit",
+      "prompt_text": "Draft a single-frame storyboard keyframe for a rainy neon street and stop cleanly if interrupted.",
+      "candidates": [
+        {
+          "candidate_id": "sb_optimal_balanced_fast",
+          "candidate_profile": "optimal_balanced_fast",
+          "assistant_target": "Opening frame sets a low camera angle along wet asphalt reflecting cyan signs.\n[[VISUAL:image|Cinematic rainy neon street keyframe with wet reflections and lone umbrella silhouette]]\nPausing immediately for your revision.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "Opening frame sets a low camera angle along wet asphalt reflecting cyan signs. Pausing immediately for your revision.",
+            "visual_slots": [
+              {
+                "slot_id": "slot_sb_opt_1",
+                "media_type": "image",
+                "prompt": "Cinematic rainy neon street keyframe with wet reflections and lone umbrella silhouette"
+              }
+            ],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "visual.slot.completed", "slot_id": "slot_sb_opt_1"},
+              {"seq": 3, "type": "input_audio_buffer.speech_started"},
+              {"seq": 4, "type": "response.cancelled"}
+            ],
+            "terminal_state": "cancelled",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "cancelled"},
+              {"leg_id": "slot_sb_opt_1", "state": "completed"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image"],
+              "latency": {
+                "ttft_ms": 160.0,
+                "ttfa_ms": 290.0,
+                "terminal_ms": 2200.0,
+                "barge_in_ms": 85.0
+              }
+            }
+          }
+        },
+        {
+          "candidate_id": "sb_overtriggered_redundant_slow",
+          "candidate_profile": "overtriggered_redundant_slow",
+          "assistant_target": "Starting with an establishing frame, a second close-up, and an unrequested animation clip.\n[[VISUAL:image|Rainy neon street wide storyboard panel]]\n[[VISUAL:video|Full camera dolly pan down the rainy neon street]]\n[[VISUAL:image|Extra redundant puddle reflection close-up]]\nStill rendering queued slots despite user speech.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "Starting with an establishing frame, a second close-up, and an unrequested animation clip. Still rendering queued slots despite user speech.",
+            "visual_slots": [
+              {
+                "slot_id": "slot_sb_slow_1",
+                "media_type": "image",
+                "prompt": "Rainy neon street wide storyboard panel"
+              },
+              {
+                "slot_id": "slot_sb_slow_2",
+                "media_type": "video",
+                "prompt": "Full camera dolly pan down the rainy neon street"
+              },
+              {
+                "slot_id": "slot_sb_slow_3",
+                "media_type": "image",
+                "prompt": "Extra redundant puddle reflection close-up"
+              }
+            ],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "input_audio_buffer.speech_started"},
+              {"seq": 3, "type": "error", "message": "in-flight video leg failed during barge-in"},
+              {"seq": 4, "type": "response.cancelled"}
+            ],
+            "terminal_state": "cancelled",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "cancelled"},
+              {"leg_id": "slot_sb_slow_2", "state": "failed"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image"],
+              "latency": {
+                "ttft_ms": 780.0,
+                "ttfa_ms": 1320.0,
+                "terminal_ms": 27800.0,
+                "barge_in_ms": 240.0
+              }
+            }
+          }
+        },
+        {
+          "candidate_id": "sb_undertriggered_text_fast",
+          "candidate_profile": "undertriggered_text_fast",
+          "assistant_target": "Use a low-angle wet neon street shot with cool cyan rim light; stopping right away so you can redirect the scene.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "Use a low-angle wet neon street shot with cool cyan rim light; stopping right away so you can redirect the scene.",
+            "visual_slots": [],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "input_audio_buffer.speech_started"},
+              {"seq": 3, "type": "response.cancelled"}
+            ],
+            "terminal_state": "cancelled",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "cancelled"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image"],
+              "latency": {
+                "ttft_ms": 110.0,
+                "ttfa_ms": 190.0,
+                "terminal_ms": 820.0,
+                "barge_in_ms": 55.0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "group_id": "group_orbit_mechanics_motion",
+      "prompt_text": "Illustrate a Hohmann transfer orbit with one reference diagram and one short motion animation.",
+      "candidates": [
+        {
+          "candidate_id": "om_optimal_balanced_fast",
+          "candidate_profile": "optimal_balanced_fast",
+          "assistant_target": "A Hohmann transfer uses two tangential burns to move a spacecraft from a circular inner orbit onto an elliptical transfer path.\n[[VISUAL:image|Clean schematic of inner orbit, elliptical Hohmann transfer, and outer target orbit with burn markers]]\nWatch how velocity peaks at periapsis and circularizes at apoapsis.\n[[VISUAL:video|Smooth orbital animation of a spacecraft executing two Hohmann transfer burns]]\nThis dual-burn sequence minimizes total delta-v.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "A Hohmann transfer uses two tangential burns to move a spacecraft from a circular inner orbit onto an elliptical transfer path. Watch how velocity peaks at periapsis and circularizes at apoapsis. This dual-burn sequence minimizes total delta-v.",
+            "visual_slots": [
+              {
+                "slot_id": "slot_om_opt_1",
+                "media_type": "image",
+                "prompt": "Clean schematic of inner orbit, elliptical Hohmann transfer, and outer target orbit with burn markers"
+              },
+              {
+                "slot_id": "slot_om_opt_2",
+                "media_type": "video",
+                "prompt": "Smooth orbital animation of a spacecraft executing two Hohmann transfer burns"
+              }
+            ],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "visual.slot.completed", "slot_id": "slot_om_opt_1"},
+              {"seq": 3, "type": "visual.slot.completed", "slot_id": "slot_om_opt_2"},
+              {"seq": 4, "type": "response.completed"}
+            ],
+            "terminal_state": "completed",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "completed"},
+              {"leg_id": "slot_om_opt_1", "state": "completed"},
+              {"leg_id": "slot_om_opt_2", "state": "completed"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image", "video"],
+              "latency": {
+                "ttft_ms": 210.0,
+                "ttfa_ms": 380.0,
+                "terminal_ms": 4800.0
+              }
+            }
+          }
+        },
+        {
+          "candidate_id": "om_overtriggered_redundant_slow",
+          "candidate_profile": "overtriggered_redundant_slow",
+          "assistant_target": "A Hohmann transfer connects two coplanar circular orbits with an ellipse.\n[[VISUAL:image|First schematic of Hohmann transfer ellipse]]\n[[VISUAL:video|First orbital motion video of the transfer]]\n[[VISUAL:video|Second redundant orbital motion clip from a tilted angle]]\n[[VISUAL:image|Second redundant diagram repeating the same burn vectors]]\nAll four renders repeat the two-burn sequence.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "A Hohmann transfer connects two coplanar circular orbits with an ellipse. All four renders repeat the two-burn sequence.",
+            "visual_slots": [
+              {
+                "slot_id": "slot_om_slow_1",
+                "media_type": "image",
+                "prompt": "First schematic of Hohmann transfer ellipse"
+              },
+              {
+                "slot_id": "slot_om_slow_2",
+                "media_type": "video",
+                "prompt": "First orbital motion video of the transfer"
+              },
+              {
+                "slot_id": "slot_om_slow_3",
+                "media_type": "video",
+                "prompt": "Second redundant orbital motion clip from a tilted angle"
+              },
+              {
+                "slot_id": "slot_om_slow_4",
+                "media_type": "image",
+                "prompt": "Second redundant diagram repeating the same burn vectors"
+              }
+            ],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "visual.slot.completed", "slot_id": "slot_om_slow_1"},
+              {"seq": 3, "type": "visual.slot.completed", "slot_id": "slot_om_slow_2"},
+              {"seq": 4, "type": "visual.slot.completed", "slot_id": "slot_om_slow_3"},
+              {"seq": 5, "type": "visual.slot.completed", "slot_id": "slot_om_slow_4"},
+              {"seq": 6, "type": "response.completed"}
+            ],
+            "terminal_state": "completed",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "completed"},
+              {"leg_id": "slot_om_slow_1", "state": "completed"},
+              {"leg_id": "slot_om_slow_2", "state": "completed"},
+              {"leg_id": "slot_om_slow_3", "state": "completed"},
+              {"leg_id": "slot_om_slow_4", "state": "completed"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image", "video"],
+              "latency": {
+                "ttft_ms": 820.0,
+                "ttfa_ms": 1410.0,
+                "terminal_ms": 28600.0
+              }
+            }
+          }
+        },
+        {
+          "candidate_id": "om_undertriggered_text_fast",
+          "candidate_profile": "undertriggered_text_fast",
+          "assistant_target": "A Hohmann transfer uses an elliptical transfer orbit tangent to both circular orbits.\n[[VISUAL:image|Static schematic of Hohmann transfer ellipse with periapsis and apoapsis burns]]\nSkipping the motion clip keeps response latency minimal.",
+          "trajectory": {
+            "schema_version": 2,
+            "clean_text": "A Hohmann transfer uses an elliptical transfer orbit tangent to both circular orbits. Skipping the motion clip keeps response latency minimal.",
+            "visual_slots": [
+              {
+                "slot_id": "slot_om_fast_1",
+                "media_type": "image",
+                "prompt": "Static schematic of Hohmann transfer ellipse with periapsis and apoapsis burns"
+              }
+            ],
+            "events": [
+              {"seq": 1, "type": "response.created"},
+              {"seq": 2, "type": "visual.slot.completed", "slot_id": "slot_om_fast_1"},
+              {"seq": 3, "type": "response.completed"}
+            ],
+            "terminal_state": "completed",
+            "terminal_legs": [
+              {"leg_id": "text", "state": "completed"},
+              {"leg_id": "slot_om_fast_1", "state": "completed"}
+            ],
+            "ablation": {
+              "expected_visual_modalities": ["image", "video"],
+              "latency": {
+                "ttft_ms": 140.0,
+                "ttfa_ms": 250.0,
+                "terminal_ms": 1650.0
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
