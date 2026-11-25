@@ -203,6 +203,16 @@ and `--web-root`:
     before VLM finished) and delivered in `1.46 s`, `slot-1` Wan2.2 H.264 MP4
     (`100,541 B`) in `7.96 s`, `clean_prose=true`, live `POST /v1/visual/render`
     PNG -> H.264 MP4 swap (`51,368 B`, `ffprobe` PASS), `/health` `in_flight=0`.
+- Wave 11 live Wan2.2-TI2V-5B native CUDA I2V animation (`dba0538b`):
+  - Hot-upgraded `/bin/umm-infer`, GPU 6 `/bin/umm-native-stage-video` (preserving
+    `.wave10` backups), and `web/index.html`: `/ready` 200 and GPU 6 `ready` in
+    `26 s` with **`0` restarts** on GPUs 2, 3, 4, and 5.
+  - GPU 7 Diffusers parity: `encode_wan_vae_image_fp32` `cosine=1.000000`,
+    `PSNR=134.07 dB` (`217.3 ms`); scalar T2V bit-identical MD5 to prior baseline.
+  - Live `tests/narrative_live_e2e.py` on `43301`: animated `slot-0` FLUX.2 PNG
+    (`298,032 B`, `0.90 s`) in place via `POST /v1/visual/render` (`i2v=true`,
+    `704x480`, `29` frames, `20` steps) -> H.264 MP4 (`83,359 B`, `ffprobe` PASS,
+    frame 0/28 visually verified crisp & faithful), `/health` `in_flight=0`.
 
 ## Validation, 2026-11-19 (historical)
 
