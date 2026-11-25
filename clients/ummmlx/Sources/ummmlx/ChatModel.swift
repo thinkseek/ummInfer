@@ -101,6 +101,7 @@ final class ChatModel: ObservableObject {
     @Published var videoStepsText = "25"
     @Published var videoGuidanceText = "5.0"
     @Published var attachedImageURL: URL?
+    @Published var attachedVideoURL: URL?
     @Published var partialTranscript = ""
     @Published private(set) var isListening = false
     @Published private(set) var speechStatus = ""
@@ -167,6 +168,16 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    private static func videoMimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "webm": return "video/webm"
+        case "mov": return "video/quicktime"
+        default: return "video/mp4"
+        }
+    }
+
+    private static let maxAttachedVideoBytes = 32 * 1024 * 1024
+
     private static func dataURL(from url: URL) throws -> String {
         let data = try Data(contentsOf: url)
         return "data:\(imageMimeType(for: url));base64,\(data.base64EncodedString())"
@@ -176,7 +187,7 @@ final class ChatModel: ObservableObject {
         guard !isRunning else { return }
         error = nil
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || attachedImageURL != nil else {
+        guard !text.isEmpty || attachedImageURL != nil || attachedVideoURL != nil else {
             error = "Enter a prompt."
             status = "Input required"
             return
@@ -193,8 +204,11 @@ final class ChatModel: ObservableObject {
         }
 
         let sentImageURL = attachedImageURL
+        let sentVideoURL = attachedImageURL == nil ? attachedVideoURL : nil
         var attachedImageDataURL: String?
         var attachedImageBytes: Data?
+        var attachedVideoDataURL: String?
+        var attachedVideoBytes: Data?
         if let sentImageURL {
             do {
                 let data = try Data(contentsOf: sentImageURL)
@@ -202,6 +216,21 @@ final class ChatModel: ObservableObject {
                 attachedImageDataURL = "data:\(Self.imageMimeType(for: sentImageURL));base64,\(data.base64EncodedString())"
             } catch {
                 self.error = "Could not read attached image: \(error.localizedDescription)"
+                status = "Input error"
+                return
+            }
+        } else if let sentVideoURL {
+            do {
+                let data = try Data(contentsOf: sentVideoURL)
+                guard data.count <= Self.maxAttachedVideoBytes else {
+                    self.error = "Attached video exceeds the 32 MiB upload limit."
+                    status = "Input error"
+                    return
+                }
+                attachedVideoBytes = data
+                attachedVideoDataURL = "data:\(Self.videoMimeType(for: sentVideoURL));base64,\(data.base64EncodedString())"
+            } catch {
+                self.error = "Could not read attached video: \(error.localizedDescription)"
                 status = "Input error"
                 return
             }
@@ -216,6 +245,10 @@ final class ChatModel: ObservableObject {
             let last = history.removeLast()
             history.append(ChatMessage(role: last.role, content: last.content,
                                        imageDataURL: attachedImageDataURL))
+        } else if let attachedVideoDataURL, !history.isEmpty {
+            let last = history.removeLast()
+            history.append(ChatMessage(role: last.role, content: last.content,
+                                       videoDataURL: attachedVideoDataURL))
         }
         onRequest?(history)
 
@@ -294,7 +327,8 @@ final class ChatModel: ObservableObject {
             audioStream.beginStream()
         }
 
-        var userTurn = ChatTurn(role: .user, text: text.isEmpty ? "[Image]" : text, state: .complete)
+        let fallbackLabel = sentVideoURL != nil ? "[Video]" : "[Image]"
+        var userTurn = ChatTurn(role: .user, text: text.isEmpty ? fallbackLabel : text, state: .complete)
         if let attachedImageBytes, let sentImageURL {
             userTurn.artifacts.append(GeneratedArtifact(
                 id: "input-\(UUID().uuidString)",
@@ -303,8 +337,17 @@ final class ChatModel: ObservableObject {
                 data: attachedImageBytes,
                 sha256: ""
             ))
+        } else if let attachedVideoBytes, let sentVideoURL {
+            userTurn.artifacts.append(GeneratedArtifact(
+                id: "input-\(UUID().uuidString)",
+                mediaType: "video",
+                mimeType: Self.videoMimeType(for: sentVideoURL),
+                data: attachedVideoBytes,
+                sha256: ""
+            ))
         }
         attachedImageURL = nil
+        attachedVideoURL = nil
         turns.append(userTurn)
         let assistant = ChatTurn(role: .assistant, text: "", state: .streaming)
         turns.append(assistant)

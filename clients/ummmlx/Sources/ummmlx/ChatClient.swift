@@ -10,11 +10,14 @@ struct ChatMessage: Codable, Equatable {
     let role: String
     let content: String
     var imageDataURL: String? = nil
+    var videoDataURL: String? = nil
 
-    init(role: String, content: String, imageDataURL: String? = nil) {
+    init(role: String, content: String, imageDataURL: String? = nil,
+         videoDataURL: String? = nil) {
         self.role = role
         self.content = content
         self.imageDataURL = imageDataURL
+        self.videoDataURL = videoDataURL
     }
 }
 
@@ -325,6 +328,14 @@ final class ChatClient {
                     parts.append(["type": "text", "text": message.content])
                 }
                 parts.append(["type": "image_url", "image_url": ["url": imageURL]])
+                return ["role": message.role, "content": parts]
+            }
+            if let videoURL = message.videoDataURL, !videoURL.isEmpty {
+                var parts: [[String: Any]] = []
+                if !message.content.isEmpty {
+                    parts.append(["type": "text", "text": message.content])
+                }
+                parts.append(["type": "video_url", "video_url": ["url": videoURL]])
                 return ["role": message.role, "content": parts]
             }
             return ["role": message.role, "content": message.content]

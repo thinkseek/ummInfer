@@ -694,6 +694,24 @@ final class ChatClientUnifiedTests: XCTestCase {
     }
 
     @MainActor
+    func testRequestBodyEncodesVideoURLContentPart() {
+        let vidURL = "data:video/mp4;base64,AAAAIGZ0eXBpc29t"
+        let body = ChatClient.requestBody(
+            model: "qwen3-native",
+            messages: [ChatMessage(role: "user", content: "describe motion",
+                                   videoDataURL: vidURL)],
+            options: ChatStreamOptions())
+        let msgs = body["messages"] as? [[String: Any]]
+        let parts = msgs?.first?["content"] as? [[String: Any]]
+        XCTAssertEqual(parts?.count, 2)
+        XCTAssertEqual(parts?[0]["type"] as? String, "text")
+        XCTAssertEqual(parts?[0]["text"] as? String, "describe motion")
+        XCTAssertEqual(parts?[1]["type"] as? String, "video_url")
+        let videoObj = parts?[1]["video_url"] as? [String: Any]
+        XCTAssertEqual(videoObj?["url"] as? String, vidURL)
+    }
+
+    @MainActor
     func testVisualRenderURLKeepsTheChatURLSecurityPolicyAndPath() throws {
         XCTAssertEqual(
             try ChatClient.visualRenderURL(

@@ -618,9 +618,24 @@ struct RootView: View {
                     Spacer()
                 }
             }
+            if let attachedVid = model.attachedVideoURL {
+                HStack(spacing: 6) {
+                    Image(systemName: "film")
+                        .foregroundStyle(theme.accent)
+                    Text("VLM video: \(attachedVid.lastPathComponent)")
+                        .font(.system(size: theme.captionSize))
+                        .foregroundStyle(theme.secondary)
+                    Button("×") { model.attachedVideoURL = nil }
+                        .buttonStyle(.plain)
+                    Spacer()
+                }
+            }
             HStack(alignment: .bottom, spacing: 10) {
                 Button {
-                    model.attachedImageURL = pickFile(types: [.png, .jpeg, .webP])
+                    if let url = pickFile(types: [.png, .jpeg, .webP]) {
+                        model.attachedImageURL = url
+                        model.attachedVideoURL = nil
+                    }
                 } label: {
                     Image(systemName: "photo.badge.plus")
                         .font(.system(size: 14))
@@ -629,6 +644,19 @@ struct RootView: View {
                 .buttonStyle(.bordered)
                 .disabled(model.isRunning)
                 .help("Attach an image for VLM visual QA")
+                Button {
+                    if let url = pickFile(types: [.mpeg4Movie, .quickTimeMovie, .movie]) {
+                        model.attachedVideoURL = url
+                        model.attachedImageURL = nil
+                    }
+                } label: {
+                    Image(systemName: "video.badge.plus")
+                        .font(.system(size: 14))
+                        .frame(width: 24, height: 22)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.isRunning)
+                .help("Attach a video clip for native VLM video understanding")
                 TextField("Write a prompt", text: $model.prompt, axis: .vertical)
                     .lineLimit(1...5)
                     .textFieldStyle(.roundedBorder)
@@ -661,7 +689,8 @@ struct RootView: View {
                         .tint(theme.ink)
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                  && model.attachedImageURL == nil)
+                                  && model.attachedImageURL == nil
+                                  && model.attachedVideoURL == nil)
                         .accessibilityIdentifier("send")
                 }
             }
