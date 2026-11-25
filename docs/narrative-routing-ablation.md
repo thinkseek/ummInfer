@@ -91,9 +91,37 @@ metadata, preserving live-versus-replay trajectory byte identity. Every source
 and derived artifact remains in CAS and is covered by `SHA256SUMS`.
 
 Visual-form completion and animation success measure protocol/artifact
-completion only. Image-text relevance, first-frame perceptual consistency, and
-user blind preference remain `NOT_COVERED`; no numerical visual-quality claim is
-made by the harness.
+completion only. Image-text relevance, perceptual quality, and user blind
+preference remain `NOT_COVERED`; no numerical visual-quality claim is made by the
+harness.
+
+`benchmarks/ablations/visual-form-sm90.json` is the live real-model manifest. It
+pins Qwen3.8-27B, native Qwen-Image 2.1, and native Wan2.2-TI2V-5B configuration
+hashes and the SHA-256 of each model's relative-filename Safetensors manifest.
+These manifest hashes identify the available local bytes; they are not claimed
+to be upstream revision IDs.
+
+With `validation.decode_media=true`, every real PNG is CRC-checked, zlib
+decoded, and unfiltered to RGB8; every real MP4 is fully decoded by ffmpeg and
+counted by ffprobe. Dimensions and frame count must match the request. Contract
+replay keeps media decoding `NOT_COVERED` because its deliberately tiny PNG/MP4
+markers are not real media evidence.
+
+The live manifest also enables `i2v_first_frame_crop`. The runner decodes the
+source PNG and first H.264 frame, mirrors the native engine's half-pixel bilinear
+aspect-preserving center crop, and compares the frame against center-crop,
+stretch, and top-left-crop references. The behavioral gate requires center-crop
+MAE no greater than 32.0 and no worse than either alternative. PSNR, MAE, frame
+hashes, and pass/fail are reported as **algorithmic behavior proxies**, not human
+perceptual-quality scores. Source and derived artifacts remain CAS-bound.
+
+For live resource observations, repeat `--gpu-index` for each explicitly idle,
+assigned GPU. The runner polls only those devices with `nvidia-smi` and reports
+per-arm baseline, peak, final MiB, sample count, and poll interval. These are
+whole-device used-memory samples that include the persistent model baseline, not
+request-only or allocator-native peaks. Without the flags, VRAM coverage remains
+`NOT_COVERED`. Reports also aggregate terminal states, terminal leg states,
+animation states, observed video frame counts, and animation terminal latency.
 
 ## Run
 
@@ -115,6 +143,11 @@ python3 -I python/umminfer_ablation_run.py \
   --config benchmarks/ablations/narrative-routing.json \
   --base-url http://127.0.0.1:PORT \
   --out /tmp/umminfer-narrative-routing-live
+python3 -I python/umminfer_ablation_run.py \
+  --config benchmarks/ablations/visual-form-sm90.json \
+  --base-url http://127.0.0.1:PORT \
+  --gpu-index 0 --gpu-index 1 --gpu-index 7 \
+  --timeout-s 900 --out /tmp/umminfer-visual-form-sm90-live
 ```
 
 Live mode uses the existing out-of-process schema-v2 recorder. An optional
@@ -293,6 +326,100 @@ Its 18-shard relative-filename `sha256sum` manifest SHA-256 is
 Other worker weight manifests are `NOT_COVERED`, so this run does not claim full
 Phase 3 reproducibility or model-quality acceptance.
 
+## Measured SM90 visual-form result — 2026-11-26
+
+The accepted real-model visual-form run used clean commit
+`7dc2586800f82b812c551e1b4129995639492ab9`, public chat plus
+`POST /v1/visual/render`, native Qwen-Image 2.1, and native C++/CUDA Wan2.2.
+The isolated loopback endpoint was port 43415. Only explicitly idle GPUs 0, 1,
+and 7 were assigned: ASR+VLM on 0, Wan2.2 on 1, and image on 7. No audio/TTS leg
+or worker was used. The resident service and its devices were not contacted,
+restarted, or assigned work.
+
+All six first-stage cases completed, with two completed terminal image legs in
+`image_only`, two completed video legs in `video_only`, and two completed image
+legs plus two completed public I2V renders in `image_then_i2v_animate`. There
+were no failed or cancelled cases, legs, or animations. `/health` ended with
+`in_flight=0`.
+
+| Arm | TTFT median ms | First-stage terminal median ms | Slot-to-artifact median ms | I2V terminal median ms | Peak whole-device MiB, GPU 0 / 1 / 7 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `image_only` | 384.510 | 15,707.466 | 11,790.863 | N/A | 61,582 / 20,859 / 28,917 |
+| `video_only` | 365.242 | 9,136.093 | 5,532.940 | N/A | 61,582 / 26,533 / 28,337 |
+| `image_then_i2v_animate` | 362.297 | 12,761.678 | 8,866.072 | 5,920.607 | 61,582 / 26,533 / 28,917 |
+
+These are two-sample `UNCONTROLLED_LIVE_MEASUREMENT` values, not a Phase 5
+performance baseline or evidence of a latency improvement. First-stage terminal
+latency excludes the explicitly separate I2V render. GPU values are 50 ms
+whole-device `nvidia-smi` samples including persistent model memory, not
+request-only allocator peaks. Per-arm baseline/final values and sample counts
+are in each arm's `report.json`.
+
+Every PNG passed chunk CRC, zlib, scanline, RGB8, and 512x512 checks. Every MP4
+passed full ffmpeg decode and ffprobe reported H.264, 480x320, 16 fps, and 13
+frames. Independent `sha256sum -c SHA256SUMS` passed for all reports,
+trajectories, and artifacts. The eight artifact occurrences (six unique blobs,
+because the two I2V source PNGs repeat byte-identically) were:
+
+| Arm / prompt | Artifact | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| image-only / lantern | PNG | 98,594 | `ea3534e9e2ef358a2973123b14f9f143a06a4eb8fbe0f28a058a2e9733e9eee9` |
+| image-only / conservation | PNG | 269,919 | `5f753197ca1cbdec6cb4a68fe7a3d81d8e269a85d9a1c65adf360b8f9966d6b9` |
+| video-only / lantern | MP4, 13 frames | 65,966 | `303a58a36c58b5656d70f7fc2f235cdc4f4b684995f9a9eaab062ac573d7a9a4` |
+| video-only / conservation | MP4, 13 frames | 66,170 | `c66494fdcc2264ec3c5ca1387d4fc71688e8f7b7b400f02d1d5836bc8c05a032` |
+| I2V / lantern source | PNG | 98,594 | `ea3534e9e2ef358a2973123b14f9f143a06a4eb8fbe0f28a058a2e9733e9eee9` |
+| I2V / lantern animation | MP4, 13 frames | 12,026 | `b8f0e50391eacf337ec44918e0ec1c2e5ff3e183ce1c22448c5260874f7c14c6` |
+| I2V / conservation source | PNG | 269,919 | `5f753197ca1cbdec6cb4a68fe7a3d81d8e269a85d9a1c65adf360b8f9966d6b9` |
+| I2V / conservation animation | MP4, 13 frames | 31,396 | `d20f5681613646d249723cfbccd2a5c6dfb95b22123df2aac355daf56f6f5cf2` |
+
+### First-stage identity and I2V behavior
+
+| Prompt | Shared image-only/I2V request SHA-256 | Shared source PNG SHA-256 | Request and source bytes identical |
+| --- | --- | --- | --- |
+| lantern | `3d62026b3913f20308230738640585db7714713bb83a7e4ccae5bce8c3f27028` | `ea3534e9e2ef358a2973123b14f9f143a06a4eb8fbe0f28a058a2e9733e9eee9` | yes |
+| conservation | `843c28c8365882ac1fd4a2f5562347da477e7663f8ec23b57987224896511cf2` | `5f753197ca1cbdec6cb4a68fe7a3d81d8e269a85d9a1c65adf360b8f9966d6b9` | yes |
+
+Each animation's `source_image_sha256` equals its source PNG's CAS hash. The
+render-request SHA-256 values were
+`24b9fec06904a69cefc5e2336957ebb138868df3479560953610da4ec72a959f` (lantern)
+and `17b4013963213aba961d80476d0aa9ed4e0e54fa51f777fb50f12f106f5d6381`
+(conservation).
+
+| I2V prompt | Center-crop MAE | Stretch MAE | Top-left-crop MAE | First-frame PSNR dB | Behavioral gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| lantern | 1.083559 | 16.687817 | 40.043331 | 45.369568 | PASS |
+| conservation | 1.924601 | 14.183991 | 31.584082 | 35.398458 | PASS |
+
+Both decoded first frames were closer to the native half-pixel center-crop
+reference than to either alternative. This validates the requested
+first-frame/crop behavior for these two cases only. It is not a perceptual
+quality label, user preference study, or generalized I2V quality claim.
+
+### Provenance and limits
+
+Evidence is retained on the isolated SM90 worker under
+`/root/umm-visual-form-7dc2586-live/evidence/visual-form-live-7dc2586/`.
+Weight manifests are in its sibling `evidence/provenance/` directory.
+
+| Evidence item | SHA-256 |
+| --- | --- |
+| Combined `report.json` | `b63ca8ab9290804a43101cb054805f7c2c6a7c00f2ad6fb9b9c9e369d048cb66` |
+| `SHA256SUMS` file | `21731a15ff13d1d3e93d38add82a9a2fa54a7c08b26dcde858c2dd1244f4f0fd` |
+| Source state | `8ba91dcf56da64aa0ee43098587033347afb0dfb96c81245c3211a2463035cf7` |
+| Live config bytes | `4bace54699829f4ac45227273dbdf5b59519a9b0c371d7ee580cd96e86f8019d` |
+| Prompt dataset bytes | `9279dda6c793d7e553d977f515415ad2c9e46fb639d49958935de7697850ba44` |
+| Combined artifact manifest | `9f72852bf842604c1fcaf89d1eaac813a505dc2cc1bc3ade2e13f5e5a384a1bf` |
+| Qwen3.8 18-file weight manifest | `3ebc83ee545cc54cb2558d805802d4a4e9da42c316d1b248846debee545b99c9` |
+| Qwen-Image 2.1 seven-file weight manifest | `f9262ab51a1781039bbb4d750fddf29caaee25ce8880a3d4e96201a1ac694f93` |
+| Wan2.2 nine-file weight manifest | `9375ac1b2e4da911ddf669a30e2c4126771b785d6bbd6ca30e58acc4fca296b1` |
+
+The tracked live manifest also carries the actual model/config-file hashes.
+Local snapshots have no verified upstream revision ID. Two fixed prompts,
+uncontrolled latency, polling-based whole-device memory, and no perceptual or
+preference labels limit this result to reproducible protocol/artifact and
+algorithmic behavior acceptance. Image-text relevance, generalized visual
+quality, learned routing, and optimizer improvement remain uncovered or unrun.
+
 ## Verification
 
 ```text
@@ -307,6 +434,9 @@ python3 -I tools/check_feature_map.py
 The ablation tests cover full-tree replay reproducibility, request invariance,
 label gating and reward arithmetic, hash/policy/response/render tamper rejection,
 live out-of-band timing, live-versus-replay trajectory byte identity, I2V
-source-image binding and animation completion, and serving isolation. They use
-loopback canned responses only and do not access a GPU, remote host, real model,
-optimizer, or resident service.
+source-image binding and animation completion, real PNG/H.264 decoder behavior,
+center-crop comparison, deterministic resource accounting, rejection of invalid
+contract media by the real decode gate, and serving isolation. Loopback canned
+responses remain contract-only; decoder tests use independently generated tiny
+media and do not access a GPU, remote host, real model, optimizer, or resident
+service.

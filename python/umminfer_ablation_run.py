@@ -28,10 +28,13 @@ import math
 from pathlib import Path
 import re
 import statistics
+import struct
 import subprocess
 import sys
+import threading
 import time
 from urllib.parse import urlsplit
+import zlib
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "python"))
@@ -139,6 +142,45 @@ def _validate_prompt(prompt):
             raise ValueError("expected_visual_modalities accepts only image/video")
 
 
+def _validate_optional_hash(block, key):
+    value = block.get(key)
+    if value is not None and (not isinstance(value, str) or not HEX_256.fullmatch(value)):
+        raise ValueError(f"{key} must be null or lowercase SHA-256")
+
+
+def _validate_provenance_extras(block, label):
+    _validate_optional_hash(block, "config_file_sha256")
+    _validate_optional_hash(block, "weights_sha256")
+    if "weights_sha256_scope" in block and not isinstance(
+            block["weights_sha256_scope"], str):
+        raise ValueError(f"{label}.weights_sha256_scope must be a string")
+    files = block.get("config_files_sha256", {})
+    if not isinstance(files, dict):
+        raise ValueError(f"{label}.config_files_sha256 must be an object")
+    for name, digest in files.items():
+        if not isinstance(name, str) or not name or not isinstance(digest, str) \
+                or not HEX_256.fullmatch(digest):
+            raise ValueError(f"{label}.config_files_sha256 contains an invalid entry")
+
+
+def _validation_policy(experiment):
+    value = experiment.config.get("validation", {})
+    if not isinstance(value, dict):
+        raise ValueError("validation must be an object")
+    decode = value.get("decode_media", False)
+    first_frame = value.get("i2v_first_frame_crop", False)
+    if not isinstance(decode, bool) or not isinstance(first_frame, bool):
+        raise ValueError("validation decode_media and i2v_first_frame_crop must be boolean")
+    maximum_mae = value.get("first_frame_max_mae", 32.0)
+    if isinstance(maximum_mae, bool) or not isinstance(maximum_mae, (int, float)) \
+            or not math.isfinite(maximum_mae) or not 0 <= maximum_mae <= 255:
+        raise ValueError("validation.first_frame_max_mae must be finite in [0,255]")
+    if first_frame and not decode:
+        raise ValueError("i2v_first_frame_crop requires decode_media=true")
+    return {"decode_media": decode, "i2v_first_frame_crop": first_frame,
+            "first_frame_max_mae": float(maximum_mae)}
+
+
 def _variable(experiment):
     return experiment.config["variable"]
 
@@ -204,9 +246,18 @@ def load_experiment(config_path):
     if weights_hash is not None and (
             not isinstance(weights_hash, str) or not HEX_256.fullmatch(weights_hash)):
         raise ValueError("model.weights_sha256 must be null or lowercase SHA-256")
-    if "weights_sha256_scope" in model and not isinstance(
-            model["weights_sha256_scope"], str):
-        raise ValueError("model.weights_sha256_scope must be a string")
+    _validate_provenance_extras(model, "model")
+    backends = config.get("visual_backends", {})
+    if not isinstance(backends, dict):
+        raise ValueError("visual_backends must be an object")
+    for name, backend in backends.items():
+        if name not in VISUAL_MODALITIES or not isinstance(backend, dict) \
+                or not isinstance(backend.get("id"), str) or not backend["id"] \
+                or not isinstance(backend.get("revision"), str) or not backend["revision"]:
+            raise ValueError("visual_backends accepts image/video id and revision objects")
+        _validate_provenance_extras(backend, f"visual_backends.{name}")
+    _validation_policy(Experiment(
+        config_path, config_bytes, config, b"", {}, None, None))
 
     replay_bytes = replay = None
     if "replay" in config:
@@ -322,8 +373,7 @@ def fixed_matrix(experiment):
             "fixed_matrix_sha256": _sha256(rows), "prompts": rows}
 
 
-def _model_provenance(experiment):
-    model = experiment.config["model"]
+def _model_provenance(model):
     identity = {"id": model["id"], "revision": model["revision"]}
     result = {
         "id": model["id"], "revision": model["revision"],
@@ -331,8 +381,9 @@ def _model_provenance(experiment):
         "weights_sha256": model.get("weights_sha256"),
         "weights_coverage": "COVERED" if model.get("weights_sha256") else "NOT_COVERED",
     }
-    if "weights_sha256_scope" in model:
-        result["weights_sha256_scope"] = model["weights_sha256_scope"]
+    for key in ("weights_sha256_scope", "config_file_sha256", "config_files_sha256"):
+        if key in model:
+            result[key] = copy.deepcopy(model[key])
     return result
 
 
@@ -441,6 +492,353 @@ def _optional_us(value, label):
 
 def _ms(value):
     return None if value is None else value / 1000.0
+
+
+def _paeth(a, b, c):
+    estimate = a + b - c
+    distances = (abs(estimate - a), abs(estimate - b), abs(estimate - c))
+    return (a, b, c)[distances.index(min(distances))]
+
+
+def decode_png_rgb8(raw):
+    """Decode non-interlaced 8-bit PNG and verify every chunk CRC."""
+    if not isinstance(raw, bytes) or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("PNG signature is missing")
+    offset = 8
+    header = None
+    compressed = bytearray()
+    ended = False
+    while offset < len(raw):
+        if offset + 12 > len(raw):
+            raise ValueError("truncated PNG chunk header")
+        length = struct.unpack_from(">I", raw, offset)[0]
+        kind = raw[offset + 4:offset + 8]
+        end = offset + 12 + length
+        if end > len(raw):
+            raise ValueError("truncated PNG chunk payload")
+        payload = raw[offset + 8:offset + 8 + length]
+        expected_crc = struct.unpack_from(">I", raw, offset + 8 + length)[0]
+        if zlib.crc32(kind + payload) & 0xffffffff != expected_crc:
+            raise ValueError("PNG chunk CRC mismatch")
+        if kind == b"IHDR":
+            if header is not None or length != 13 or offset != 8:
+                raise ValueError("invalid PNG IHDR")
+            header = struct.unpack(">IIBBBBB", payload)
+        elif kind == b"IDAT":
+            compressed.extend(payload)
+        elif kind == b"IEND":
+            if length != 0 or end != len(raw):
+                raise ValueError("invalid PNG IEND")
+            ended = True
+            offset = end
+            break
+        offset = end
+    if header is None or not ended or not compressed:
+        raise ValueError("PNG lacks IHDR, IDAT, or IEND")
+    width, height, depth, color, compression, filter_method, interlace = header
+    channels_by_color = {0: 1, 2: 3, 4: 2, 6: 4}
+    if width <= 0 or height <= 0 or width * height > 100_000_000:
+        raise ValueError("invalid or excessive PNG dimensions")
+    if depth != 8 or color not in channels_by_color or compression != 0 \
+            or filter_method != 0 or interlace != 0:
+        raise ValueError("only non-interlaced 8-bit grayscale/RGB/alpha PNG is supported")
+    channels = channels_by_color[color]
+    stride = width * channels
+    try:
+        packed = zlib.decompress(bytes(compressed))
+    except zlib.error as exc:
+        raise ValueError(f"PNG zlib decode failed: {exc}") from exc
+    if len(packed) != height * (stride + 1):
+        raise ValueError("PNG decoded scanline length mismatch")
+    rows = []
+    previous = bytearray(stride)
+    cursor = 0
+    for _ in range(height):
+        filter_type = packed[cursor]
+        cursor += 1
+        source = packed[cursor:cursor + stride]
+        cursor += stride
+        row = bytearray(stride)
+        for index, byte in enumerate(source):
+            left = row[index - channels] if index >= channels else 0
+            above = previous[index]
+            upper_left = previous[index - channels] if index >= channels else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = above
+            elif filter_type == 3:
+                predictor = (left + above) // 2
+            elif filter_type == 4:
+                predictor = _paeth(left, above, upper_left)
+            else:
+                raise ValueError("unsupported PNG scanline filter")
+            row[index] = (byte + predictor) & 0xff
+        rows.append(row)
+        previous = row
+    rgb = bytearray(width * height * 3)
+    for y, row in enumerate(rows):
+        for x in range(width):
+            source = x * channels
+            target = (y * width + x) * 3
+            if color == 2:
+                rgb[target:target + 3] = row[source:source + 3]
+            elif color == 6:
+                rgb[target:target + 3] = row[source:source + 3]
+            else:
+                gray = row[source]
+                rgb[target:target + 3] = bytes((gray, gray, gray))
+    return width, height, bytes(rgb)
+
+
+def _media_command(command, raw, label, timeout_s=120.0):
+    try:
+        completed = subprocess.run(command, input=raw, capture_output=True,
+                                   timeout=timeout_s, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"{label} failed: {exc}") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", "replace")[-2048:]
+        raise ValueError(f"{label} exited {completed.returncode}: {detail}")
+    return completed.stdout
+
+
+def decode_video_mp4(raw, *, expected_frames=None, expected_size=None):
+    """Fully decode one video with ffmpeg and count frames with ffprobe."""
+    if not raw.startswith(b"\x00\x00\x00") or raw[4:8] != b"ftyp":
+        raise ValueError("MP4 ftyp box is missing")
+    probe_raw = _media_command([
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+        "-show_entries",
+        "stream=codec_name,width,height,nb_read_frames,avg_frame_rate",
+        "-of", "json", "-i", "pipe:0"], raw, "ffprobe")
+    try:
+        streams = json.loads(probe_raw).get("streams")
+        if not isinstance(streams, list) or len(streams) != 1:
+            raise ValueError("expected exactly one video stream")
+        stream = streams[0]
+        frames = int(stream["nb_read_frames"])
+        width = int(stream["width"])
+        height = int(stream["height"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid ffprobe video metadata: {exc}") from exc
+    if frames <= 0 or width <= 0 or height <= 0:
+        raise ValueError("video decode returned no frames or invalid dimensions")
+    if expected_frames is not None and frames != expected_frames:
+        raise ValueError(f"video frame count {frames} != requested {expected_frames}")
+    if expected_size is not None and (width, height) != expected_size:
+        raise ValueError(f"video size {width}x{height} != requested {expected_size}")
+    _media_command(["ffmpeg", "-v", "error", "-xerror", "-i", "pipe:0",
+                    "-map", "0:v:0", "-f", "null", "-"], raw, "ffmpeg full decode")
+    first = _media_command(["ffmpeg", "-v", "error", "-xerror", "-i", "pipe:0",
+                            "-map", "0:v:0", "-frames:v", "1", "-pix_fmt", "rgb24",
+                            "-f", "rawvideo", "pipe:1"], raw, "ffmpeg first-frame decode")
+    if len(first) != width * height * 3:
+        raise ValueError("decoded first-frame byte count does not match video dimensions")
+    descriptor = {
+        "codec": stream.get("codec_name"), "width": width, "height": height,
+        "frame_count": frames, "avg_frame_rate": stream.get("avg_frame_rate"),
+        "full_decode": "PASSED", "first_frame_sha256": hashlib.sha256(first).hexdigest(),
+    }
+    return descriptor, first
+
+
+def _resize_rgb8(source, src_width, src_height, dst_width, dst_height,
+                 *, preserve_aspect, centered):
+    """Mirror native Wan I2V half-pixel bilinear sampling in RGB8 space."""
+    if len(source) != src_width * src_height * 3:
+        raise ValueError("source RGB buffer size mismatch")
+    scale_x = src_width / dst_width
+    scale_y = src_height / dst_height
+    if preserve_aspect:
+        scale_x = scale_y = min(scale_x, scale_y)
+    offset_x = (src_width - scale_x * dst_width) * 0.5 if centered else 0.0
+    offset_y = (src_height - scale_y * dst_height) * 0.5 if centered else 0.0
+    output = bytearray(dst_width * dst_height * 3)
+    for y in range(dst_height):
+        sy = min(max(offset_y + (y + 0.5) * scale_y - 0.5, 0.0), src_height - 1.0)
+        y0 = int(sy)
+        y1 = min(y0 + 1, src_height - 1)
+        wy = sy - y0
+        for x in range(dst_width):
+            sx = min(max(offset_x + (x + 0.5) * scale_x - 0.5, 0.0), src_width - 1.0)
+            x0 = int(sx)
+            x1 = min(x0 + 1, src_width - 1)
+            wx = sx - x0
+            target = (y * dst_width + x) * 3
+            for channel in range(3):
+                def at(px, py):
+                    return source[(py * src_width + px) * 3 + channel]
+                top = at(x0, y0) * (1.0 - wx) + at(x1, y0) * wx
+                bottom = at(x0, y1) * (1.0 - wx) + at(x1, y1) * wx
+                output[target + channel] = min(255, max(0, round(
+                    top * (1.0 - wy) + bottom * wy)))
+    return bytes(output)
+
+
+def _pixel_error(actual, expected):
+    if len(actual) != len(expected) or not actual:
+        raise ValueError("pixel comparison buffer size mismatch")
+    absolute = [abs(a - b) for a, b in zip(actual, expected)]
+    mae = sum(absolute) / len(absolute)
+    mse = sum(value * value for value in absolute) / len(absolute)
+    return mae, mse
+
+
+def check_i2v_first_frame(source, source_size, first_frame, video_size, max_mae):
+    """Check the known center-crop behavior, not perceptual generation quality."""
+    src_width, src_height = source_size
+    width, height = video_size
+    if len(first_frame) != width * height * 3:
+        raise ValueError("first-frame RGB buffer size mismatch")
+    center = _resize_rgb8(source, src_width, src_height, width, height,
+                          preserve_aspect=True, centered=True)
+    stretch = _resize_rgb8(source, src_width, src_height, width, height,
+                           preserve_aspect=False, centered=False)
+    top_left = _resize_rgb8(source, src_width, src_height, width, height,
+                            preserve_aspect=True, centered=False)
+    center_mae, center_mse = _pixel_error(first_frame, center)
+    stretch_mae, _ = _pixel_error(first_frame, stretch)
+    top_left_mae, _ = _pixel_error(first_frame, top_left)
+    exact = center_mse == 0
+    psnr = None if exact else 10.0 * math.log10(255.0 * 255.0 / center_mse)
+    passed = center_mae <= max_mae and center_mae <= stretch_mae \
+        and center_mae <= top_left_mae
+    return {
+        "metric_class": "algorithmic-behavior-proxy",
+        "passed": passed, "source_size": [src_width, src_height],
+        "video_size": [width, height],
+        "center_crop_mae": center_mae, "stretch_mae": stretch_mae,
+        "top_left_crop_mae": top_left_mae,
+        "center_crop_minus_stretch_mae": center_mae - stretch_mae,
+        "center_crop_minus_top_left_mae": center_mae - top_left_mae,
+        "first_frame_psnr_db": psnr, "exact_pixel_match": exact,
+        "maximum_allowed_mae": max_mae,
+        "quality_coverage": "NOT_COVERED",
+    }
+
+
+def _expected_size(options):
+    match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", options.get("size", ""))
+    if not match:
+        raise ValueError("media validation requires fixed WIDTHxHEIGHT size")
+    return int(match.group(1)), int(match.group(2))
+
+
+def _validate_record_media(experiment, record, artifact_dir):
+    policy = _validation_policy(experiment)
+    rows = []
+    for artifact in record["artifacts"]:
+        row = {"artifact_id": artifact.get("artifact_id"),
+               "sha256": artifact.get("sha256"),
+               "media_type": artifact.get("media_type")}
+        try:
+            raw = (Path(artifact_dir) / artifact["ref"]).read_bytes()
+            if hashlib.sha256(raw).hexdigest() != artifact["sha256"] \
+                    or len(raw) != artifact["bytes"]:
+                raise ValueError("artifact CAS size/hash mismatch")
+            if not policy["decode_media"]:
+                row.update({"status": "NOT_COVERED", "decode_coverage": "NOT_COVERED"})
+            elif artifact.get("media_type") == "image":
+                width, height, pixels = decode_png_rgb8(raw)
+                expected = _expected_size(experiment.config["fixed"]["visual"]["image"])
+                if (width, height) != expected:
+                    raise ValueError(f"image size {width}x{height} != requested {expected}")
+                row.update({"status": "passed", "decode_coverage": "COVERED",
+                            "full_decode": "PASSED", "width": width, "height": height,
+                            "frame_count": 1,
+                            "decoded_rgb_sha256": hashlib.sha256(pixels).hexdigest()})
+            elif artifact.get("media_type") == "video":
+                visual = experiment.config["fixed"]["visual"]["video"]
+                descriptor, _ = decode_video_mp4(
+                    raw, expected_frames=visual.get("num_frames"),
+                    expected_size=_expected_size(visual))
+                row.update(descriptor)
+                row.update({"status": "passed", "decode_coverage": "COVERED"})
+            else:
+                row.update({"status": "NOT_APPLICABLE",
+                            "decode_coverage": "NOT_APPLICABLE"})
+        except (OSError, KeyError, ValueError) as exc:
+            row.update({"status": "failed", "decode_coverage": "COVERED",
+                        "error": str(exc)})
+        rows.append(row)
+    return rows
+
+
+def _query_nvidia_smi(indexes):
+    try:
+        output = subprocess.run([
+            "nvidia-smi", "-i", ",".join(str(index) for index in indexes),
+            "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
+            check=True, capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+        raise ValueError(f"nvidia-smi sampling failed: {exc}") from exc
+    result = {}
+    for line in output.splitlines():
+        index, used = line.split(",", 1)
+        result[int(index.strip())] = int(used.strip())
+    if set(result) != set(indexes):
+        raise ValueError("nvidia-smi returned a different GPU set")
+    return result
+
+
+class GpuResourceMonitor:
+    """Sample explicitly selected whole-device memory without process discovery."""
+
+    def __init__(self, indexes, sampler=None, interval_s=0.05):
+        self.indexes = tuple(sorted(set(indexes)))
+        self.sampler = sampler or _query_nvidia_smi
+        self.interval_s = interval_s
+        self.samples = []
+        self.error = None
+        self.stop_event = threading.Event()
+        self.thread = None
+
+    def _sample(self):
+        sample = self.sampler(self.indexes)
+        if set(sample) != set(self.indexes):
+            raise ValueError("GPU sampler returned a different device set")
+        self.samples.append({str(index): int(sample[index]) for index in self.indexes})
+
+    def _run(self):
+        try:
+            while not self.stop_event.wait(self.interval_s):
+                self._sample()
+        except Exception as exc:  # surfaced by stop; never silently drop coverage
+            self.error = exc
+            self.stop_event.set()
+
+    def start(self):
+        if not self.indexes:
+            raise ValueError("GPU monitor requires at least one device")
+        self._sample()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        return self
+
+    def stop(self):
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=10)
+        if self.error is not None:
+            raise ValueError(f"GPU resource sampling failed: {self.error}")
+        self._sample()
+        rows = {}
+        for index in self.indexes:
+            values = [sample[str(index)] for sample in self.samples]
+            rows[str(index)] = {"baseline_mib": values[0], "peak_mib": max(values),
+                                "final_mib": values[-1], "sample_count": len(values)}
+        return {"coverage": "COVERED", "scope": "whole-device-used-memory",
+                "source": "nvidia-smi-poll", "poll_interval_ms": self.interval_s * 1000,
+                "attribution": "includes persistent model baseline; not request-only allocation",
+                "gpus": rows}
+
+
+def _uncovered_resources():
+    return {"coverage": "NOT_COVERED", "reason": "no explicit --gpu-index sampler",
+            "gpus": {}}
 
 
 def normalize_latency(raw, record, source):
@@ -638,6 +1036,29 @@ def _run_one_animation(experiment, record, slot, recorder, *, base_url,
         "latency": {"source": source_name, "terminal_ms": _ms(elapsed_us)},
         "artifact": artifact,
     })
+    policy = _validation_policy(experiment)
+    if state == "completed" and policy["decode_media"]:
+        try:
+            video = experiment.config["fixed"]["visual"]["video"]
+            descriptor, first_frame = decode_video_mp4(
+                raw, expected_frames=video.get("num_frames"),
+                expected_size=_expected_size(video))
+            result["media_validation"] = descriptor
+            if policy["i2v_first_frame_crop"]:
+                source_size = decode_png_rgb8(image_bytes)
+                behavior = check_i2v_first_frame(
+                    source_size[2], source_size[:2], first_frame,
+                    (descriptor["width"], descriptor["height"]),
+                    policy["first_frame_max_mae"])
+                result["first_frame_crop"] = behavior
+                if not behavior["passed"]:
+                    state = "failed"
+                    error = "I2V first frame failed center-crop/anchor behavior gate"
+                    result["terminal_state"] = state
+                    result["error"] = error
+        except (OSError, ValueError, KeyError) as exc:
+            result["terminal_state"] = "failed"
+            result["error"] = f"I2V media validation failed: {exc}"
     return result
 
 
@@ -688,7 +1109,8 @@ def _finalize_trajectory(path, experiment, variant, animation_rows=None):
         if variable == "visual_form":
             metadata["animations"] = [
                 {key: copy.deepcopy(value) for key, value in animation.items()
-                 if key != "latency"} for animation in animations]
+                 if key not in ("latency", "media_validation", "first_frame_crop")}
+                for animation in animations]
         record["ablation"] = metadata
     Path(path).write_bytes(b"".join(_canonical(record) + b"\n" for record in records))
     if variable == "routing_policy":
@@ -703,7 +1125,8 @@ def _latency_coverage(value):
     return "COVERED" if value is not None else "NOT_COVERED"
 
 
-def _case_report(experiment, variant, prompt, body, record, latency, animations=None):
+def _case_report(experiment, variant, prompt, body, record, latency, animations=None,
+                 media_validation=None):
     variable = _variable(experiment)
     observation = routing_metrics.routing_observation(record) \
         if variable == "routing_policy" else None
@@ -736,11 +1159,14 @@ def _case_report(experiment, variant, prompt, body, record, latency, animations=
         "output_sha256": record["output_sha256"],
         "clean_text_sha256": record["clean_text_sha256"],
         "artifacts": copy.deepcopy(record["artifacts"]),
+        "media_validation": copy.deepcopy(media_validation or []),
         "metric_coverage": {
             "ttft": _latency_coverage(latency["ttft_ms"]),
             "ttfa": _latency_coverage(latency["ttfa_ms"]),
             "terminal_latency": _latency_coverage(latency["terminal_ms"]),
             "slot_latency": slot_coverage,
+            "media_decode": "COVERED" if _validation_policy(experiment)["decode_media"]
+                else "NOT_COVERED",
         },
     }
     if "audio" not in record["request_params"].get("modalities", []):
@@ -755,14 +1181,21 @@ def _case_report(experiment, variant, prompt, body, record, latency, animations=
         result["metric_coverage"]["animation_success"] = (
             "COVERED" if form_observation["expected_animation_count"]
             else "NOT_APPLICABLE")
+        result["metric_coverage"]["i2v_first_frame_crop"] = (
+            "COVERED" if variant == "image_then_i2v_animate"
+            and _validation_policy(experiment)["i2v_first_frame_crop"]
+            else "NOT_APPLICABLE" if variant != "image_then_i2v_animate"
+            else "NOT_COVERED")
         result["metric_coverage"]["quality"] = "NOT_COVERED"
     return result
 
 
 def _case_success(case):
+    media_ok = all(row.get("status") in ("passed", "NOT_COVERED", "NOT_APPLICABLE")
+                   for row in case.get("media_validation", []))
     if "visual_form_metrics" in case:
-        return case["visual_form_metrics"]["completion"] == 1.0
-    return case["terminal_state"] == "completed" and all(
+        return case["visual_form_metrics"]["completion"] == 1.0 and media_ok
+    return case["terminal_state"] == "completed" and media_ok and all(
         animation["terminal_state"] == "completed"
         for animation in case.get("animations", []))
 
@@ -819,7 +1252,7 @@ def _artifact_entries(case_reports):
 
 
 def _provenance(experiment, source, artifact_entries):
-    return {
+    result = {
         "source_commit": source["commit"],
         "source_tree_dirty": source["dirty"],
         "source_state_sha256": source["state_sha256"],
@@ -827,9 +1260,14 @@ def _provenance(experiment, source, artifact_entries):
         "data_sha256": experiment.data_sha256,
         "replay_data_sha256": experiment.replay_sha256,
         "artifact_manifest_sha256": _sha256(artifact_entries),
-        "model": _model_provenance(experiment),
+        "model": _model_provenance(experiment.config["model"]),
         "trajectory_schema_version": 2,
     }
+    backends = experiment.config.get("visual_backends", {})
+    if backends:
+        result["visual_backends"] = {
+            name: _model_provenance(backend) for name, backend in backends.items()}
+    return result
 
 
 def _metric_view(cases, records, variable="routing_policy"):
@@ -838,26 +1276,72 @@ def _metric_view(cases, records, variable="routing_policy"):
     ttft = _summary([case["latency"]["ttft_ms"] for case in cases])
     ttfa = _summary([case["latency"]["ttfa_ms"] for case in cases])
     terminal = _summary([case["latency"]["terminal_ms"] for case in cases])
+    animation_terminal = _summary([
+        animation["latency"]["terminal_ms"] for case in cases
+        for animation in case.get("animations", [])])
     slots = _summary(slot_values)
     if not slot_values and all(not case["latency"]["slots"]
                                and case["terminal_state"] == "completed"
                                for case in cases):
         slots["coverage"] = "NOT_APPLICABLE"
+    media_rows = [row for case in cases for row in case.get("media_validation", [])]
+    animation_media = [animation["media_validation"] for case in cases
+                       for animation in case.get("animations", [])
+                       if "media_validation" in animation]
+    video_frames = [{"artifact_id": row.get("artifact_id"),
+                     "frame_count": row["frame_count"]}
+                    for row in media_rows + animation_media if "frame_count" in row
+                    and row.get("media_type", "video") == "video"]
+    first_frame_rows = [animation["first_frame_crop"] for case in cases
+                        for animation in case.get("animations", [])
+                        if "first_frame_crop" in animation]
     metrics = {"ttft_ms": ttft, "ttfa_ms": ttfa, "terminal_ms": terminal,
-               "slot_to_artifact_ms": slots}
+               "animation_terminal_ms": animation_terminal,
+               "slot_to_artifact_ms": slots,
+               "decoded_video_frame_counts": video_frames,
+               "media_validation_failure_count": sum(
+                   row.get("status") == "failed" for row in media_rows),
+               "i2v_first_frame_behavior": {
+                   "coverage": "COVERED" if first_frame_rows else "NOT_COVERED",
+                   "passed_count": sum(row["passed"] for row in first_frame_rows),
+                   "total_count": len(first_frame_rows),
+                   "cases": first_frame_rows,
+               }}
     coverage = {"ttft": ttft["coverage"], "ttfa": ttfa["coverage"],
                 "terminal_latency": terminal["coverage"],
                 "slot_latency": slots["coverage"], "quality": "NOT_COVERED"}
+    media_states = {case.get("metric_coverage", {}).get("media_decode", "NOT_COVERED")
+                    for case in cases}
+    coverage["media_decode"] = "COVERED" if media_states == {"COVERED"} \
+        else "PARTIAL" if "COVERED" in media_states else "NOT_COVERED"
+    coverage["i2v_first_frame_crop"] = "COVERED" if first_frame_rows \
+        and all(row["passed"] for row in first_frame_rows) else \
+        "FAILED" if first_frame_rows else "NOT_COVERED"
     if variable == "visual_form":
         aggregate = routing_metrics.aggregate_visual_form(records)
         metrics["visual_form_counts"] = aggregate
         metrics["visual_form_completion_rate"] = aggregate["visual_form_completion_rate"]
         metrics["animation_success_rate"] = aggregate["animation_success_rate"]
         metrics["image_text_relevance"] = None
-        metrics["first_frame_consistency"] = None
+        psnr_values = [row["first_frame_psnr_db"] for row in first_frame_rows
+                       if row["first_frame_psnr_db"] is not None]
+        metrics["first_frame_consistency"] = None if not first_frame_rows else {
+            "metric_class": "algorithmic-center-crop-and-anchor-proxy",
+            "passed": all(row["passed"] for row in first_frame_rows),
+            "center_crop_mae": {
+                "min": min(row["center_crop_mae"] for row in first_frame_rows),
+                "mean": statistics.mean(row["center_crop_mae"] for row in first_frame_rows),
+                "max": max(row["center_crop_mae"] for row in first_frame_rows)},
+            "first_frame_psnr_db": None if not psnr_values else {
+                "min_db": min(psnr_values), "max_db": max(psnr_values)},
+            "quality_coverage": "NOT_COVERED",
+        }
         metrics["user_blind_preference"] = None
         coverage["visual_form_completion"] = aggregate["coverage"]
         coverage["animation_success"] = aggregate["animation_coverage"]
+        if not first_frame_rows and cases and all(
+                case.get("visual_form") != "image_then_i2v_animate" for case in cases):
+            coverage["i2v_first_frame_crop"] = "NOT_APPLICABLE"
         if not cases:
             coverage["ttfa"] = "NOT_COVERED"
         else:
@@ -878,10 +1362,15 @@ def _metric_view(cases, records, variable="routing_policy"):
 
 
 def _policy_report(experiment, source, mode, variant, cases, records,
-                   trajectory_path, output_root):
+                   trajectory_path, output_root, resources=None):
     entries = _artifact_entries(cases)
     variable = _variable(experiment)
     metrics, metric_coverage = _metric_view(cases, records, variable)
+    leg_state_counts = {}
+    for case in cases:
+        for leg in case["terminal_legs"]:
+            state = leg.get("state", "unknown")
+            leg_state_counts[state] = leg_state_counts.get(state, 0) + 1
     report = {
         "report_schema_version": REPORT_SCHEMA_VERSION,
         "ablation_id": experiment.config["ablation_id"],
@@ -895,6 +1384,12 @@ def _policy_report(experiment, source, mode, variant, cases, records,
         "terminal_state_counts": {
             state: sum(case["terminal_state"] == state for case in cases)
             for state in ("completed", "failed", "cancelled")},
+        "terminal_leg_state_counts": leg_state_counts,
+        "animation_terminal_state_counts": {
+            state: sum(animation.get("terminal_state") == state for case in cases
+                       for animation in case.get("animations", []))
+            for state in ("completed", "failed", "cancelled")},
+        "resources": resources or _uncovered_resources(),
         "trajectory_file": str(Path(trajectory_path).relative_to(output_root).as_posix()),
         "trajectory_sha256": hashlib.sha256(Path(trajectory_path).read_bytes()).hexdigest(),
         "claims": _claims(mode),
@@ -904,7 +1399,7 @@ def _policy_report(experiment, source, mode, variant, cases, records,
 
 
 def run_experiment(experiment, output_root, *, replay_only, base_url=None,
-                   timeout_s=120.0):
+                   timeout_s=120.0, resource_gpu_indexes=(), gpu_sampler=None):
     output_root = _prepare_output(output_root)
     source = _source_provenance()
     mode = "replay" if replay_only else "live"
@@ -918,46 +1413,60 @@ def run_experiment(experiment, output_root, *, replay_only, base_url=None,
     all_cases = []
     all_records = []
 
+    if replay_only and resource_gpu_indexes:
+        raise ValueError("GPU sampling belongs to live mode, not deterministic replay")
+
     for variant in variants:
         policy_dir = output_root / variant
         trajectory_path = policy_dir / "trajectory.jsonl"
         recorder = traj.TrajectoryRecorder(trajectory_path)
         pending = []
         animation_rows = []
-        for prompt in experiment.prompts:
-            body = build_request(experiment, prompt, variant)
-            session_id = _session_id(experiment, variant, prompt["id"])
-            replay_case = replay_cases[(variant, prompt["id"])] if replay_only else None
-            if replay_only:
-                record, latency = _record_replay(
-                    replay_case, body, recorder, session_id)
-            else:
-                tracker = LatencyTracker()
-                record = traj.record_chat_completion(
-                    normalized_url, body, recorder, session_id,
-                    timeout=timeout_s, event_observer=tracker.observe)
-                latency = normalize_latency(
-                    tracker.finish(), record, "monotonic-live")
-            animations = []
-            if variable == "visual_form" and variant == "image_then_i2v_animate":
-                animations = _run_animations(
-                    experiment, record, recorder, base_url=normalized_url,
-                    timeout_s=timeout_s, replay_case=replay_case)
-            elif replay_case is not None and replay_case.get("renders"):
-                raise ValueError("non-I2V replay case unexpectedly contains renders")
-            animation_rows.append(animations)
-            pending.append((prompt, body, record, latency))
-        records = _finalize_trajectory(
-            trajectory_path, experiment, variant, animation_rows)
-        cases = [_case_report(experiment, variant, prompt, body, record, latency, animations)
-                 for (prompt, body, _, latency), record, animations
-                 in zip(pending, records, animation_rows)]
-        report = _policy_report(experiment, source, mode, variant, cases,
-                                records, trajectory_path, output_root)
-        _write_json(policy_dir / "report.json", report)
-        policy_reports.append(report)
-        all_cases.extend(cases)
-        all_records.extend(records)
+        monitor = GpuResourceMonitor(resource_gpu_indexes, sampler=gpu_sampler).start() \
+            if resource_gpu_indexes else None
+        try:
+            for prompt in experiment.prompts:
+                body = build_request(experiment, prompt, variant)
+                session_id = _session_id(experiment, variant, prompt["id"])
+                replay_case = replay_cases[(variant, prompt["id"])] if replay_only else None
+                if replay_only:
+                    record, latency = _record_replay(
+                        replay_case, body, recorder, session_id)
+                else:
+                    tracker = LatencyTracker()
+                    record = traj.record_chat_completion(
+                        normalized_url, body, recorder, session_id,
+                        timeout=timeout_s, event_observer=tracker.observe)
+                    latency = normalize_latency(
+                        tracker.finish(), record, "monotonic-live")
+                animations = []
+                if variable == "visual_form" and variant == "image_then_i2v_animate":
+                    animations = _run_animations(
+                        experiment, record, recorder, base_url=normalized_url,
+                        timeout_s=timeout_s, replay_case=replay_case)
+                elif replay_case is not None and replay_case.get("renders"):
+                    raise ValueError("non-I2V replay case unexpectedly contains renders")
+                media_validation = _validate_record_media(
+                    experiment, record, recorder.artifact_dir)
+                animation_rows.append(animations)
+                pending.append((prompt, body, record, latency, media_validation))
+            records = _finalize_trajectory(
+                trajectory_path, experiment, variant, animation_rows)
+            cases = [_case_report(experiment, variant, prompt, body, record, latency,
+                                  animations, media_validation)
+                     for (prompt, body, _, latency, media_validation), record, animations
+                     in zip(pending, records, animation_rows)]
+            resources = monitor.stop() if monitor is not None else _uncovered_resources()
+            monitor = None
+            report = _policy_report(experiment, source, mode, variant, cases,
+                                    records, trajectory_path, output_root, resources)
+            _write_json(policy_dir / "report.json", report)
+            policy_reports.append(report)
+            all_cases.extend(cases)
+            all_records.extend(records)
+        finally:
+            if monitor is not None:
+                monitor.stop()
 
     all_entries = _artifact_entries(all_cases)
     summaries = []
@@ -967,16 +1476,42 @@ def run_experiment(experiment, output_root, *, replay_only, base_url=None,
             "metrics": report["metrics"],
             "metric_coverage": report["metric_coverage"],
             "terminal_state_counts": report["terminal_state_counts"],
+            "terminal_leg_state_counts": report["terminal_leg_state_counts"],
+            "animation_terminal_state_counts": report["animation_terminal_state_counts"],
+            "resources": report["resources"],
             "trajectory_file": report["trajectory_file"],
             "trajectory_sha256": report["trajectory_sha256"],
             "artifact_manifest_sha256": report["artifact_manifest_sha256"],
         })
     overall_metrics, overall_coverage = _metric_view(all_cases, all_records, variable)
+    equivalence_rows = []
+    if variable == "visual_form":
+        for prompt in experiment.prompts:
+            image_case = next(case for case in all_cases
+                              if case["prompt_id"] == prompt["id"]
+                              and case["visual_form"] == "image_only")
+            i2v_case = next(case for case in all_cases
+                            if case["prompt_id"] == prompt["id"]
+                            and case["visual_form"] == "image_then_i2v_animate")
+            image_hashes = sorted(artifact["sha256"] for artifact in image_case["artifacts"]
+                                  if artifact.get("media_type") == "image")
+            i2v_hashes = sorted(artifact["sha256"] for artifact in i2v_case["artifacts"]
+                                if artifact.get("media_type") == "image")
+            equivalence_rows.append({
+                "prompt_id": prompt["id"],
+                "request_sha256": image_case["request_sha256"],
+                "request_sha256_equal": image_case["request_sha256"]
+                    == i2v_case["request_sha256"],
+                "image_only_source_sha256": image_hashes,
+                "i2v_source_sha256": i2v_hashes,
+                "source_bytes_identical": image_hashes == i2v_hashes,
+            })
+    equivalence_passed = all(row["request_sha256_equal"] for row in equivalence_rows)
     combined = {
         "ablation_id": experiment.config["ablation_id"],
         "mode": mode,
         "evidence_class": "contract-replay" if mode == "replay" else "live-uncontrolled",
-        "run_status": "COMPLETED" if all(
+        "run_status": "COMPLETED" if equivalence_passed and all(
             _case_success(case) for case in all_cases) else "FAILED",
         "routing_policies" if variable == "routing_policy" else "visual_forms":
             list(variants),
@@ -985,6 +1520,12 @@ def run_experiment(experiment, output_root, *, replay_only, base_url=None,
         "cases": all_cases,
         "metrics": overall_metrics,
         "metric_coverage": overall_coverage,
+        "first_stage_image_equivalence": {
+            "coverage": "COVERED" if variable == "visual_form" else "NOT_APPLICABLE",
+            "passed": equivalence_passed,
+            "cases": equivalence_rows,
+        },
+        "resources": {report[variable]: report["resources"] for report in policy_reports},
         "claims": _claims(mode),
     }
     combined.update(_provenance(experiment, source, all_entries))
@@ -1010,14 +1551,19 @@ def main(argv=None):
     parser.add_argument("--replay-only", action="store_true")
     parser.add_argument("--base-url")
     parser.add_argument("--timeout-s", type=float, default=120.0)
+    parser.add_argument("--gpu-index", type=int, action="append", default=[],
+                        help="sample this GPU's whole-device memory in live mode; repeatable")
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout_s) or args.timeout_s <= 0:
         parser.error("--timeout-s must be a finite positive number")
+    if any(index < 0 for index in args.gpu_index):
+        parser.error("--gpu-index must be non-negative")
     try:
         experiment = load_experiment(args.config)
         report = run_experiment(
             experiment, args.out, replay_only=args.replay_only,
-            base_url=args.base_url, timeout_s=args.timeout_s)
+            base_url=args.base_url, timeout_s=args.timeout_s,
+            resource_gpu_indexes=args.gpu_index)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         parser.exit(2, f"ablation error: {exc}\n")
     print(json.dumps({"status": report["run_status"],

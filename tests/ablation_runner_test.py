@@ -12,11 +12,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+import zlib
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "python"))
@@ -28,6 +30,7 @@ CONFIG = ROOT / "benchmarks" / "ablations" / "narrative-routing.json"
 REPLAY = ROOT / "benchmarks" / "ablations" / "narrative-routing-replay.json"
 VISUAL_CONFIG = ROOT / "benchmarks" / "ablations" / "visual-form.json"
 VISUAL_REPLAY = ROOT / "benchmarks" / "ablations" / "visual-form-replay.json"
+VISUAL_SM90_CONFIG = ROOT / "benchmarks" / "ablations" / "visual-form-sm90.json"
 
 
 def tree_bytes(root):
@@ -40,6 +43,17 @@ def run_cli(out, config=CONFIG, extra=()):
         [sys.executable, "-I", str(ROOT / "python" / "umminfer_ablation_run.py"),
          "--config", str(config), "--replay-only", "--out", str(out), *extra],
         capture_output=True, text=True, timeout=60)
+
+
+def encode_test_png(width, height, pixels):
+    def chunk(kind, payload):
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(
+            ">I", zlib.crc32(kind + payload) & 0xffffffff)
+    scanlines = b"".join(b"\0" + pixels[y * width * 3:(y + 1) * width * 3]
+                         for y in range(height))
+    return b"\x89PNG\r\n\x1a\n" + chunk(
+        b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(
+        b"IDAT", zlib.compress(scanlines)) + chunk(b"IEND", b"")
 
 
 class ReplayHandler(BaseHTTPRequestHandler):
@@ -419,6 +433,12 @@ class AblationRunnerTests(unittest.TestCase):
             self.assertIsNone(report["metrics"]["first_frame_consistency"])
             self.assertEqual(report["metric_coverage"]["quality"], "NOT_COVERED")
             self.assertEqual(report["metric_coverage"]["ttfa"], "NOT_APPLICABLE")
+            self.assertEqual(report["metric_coverage"]["media_decode"], "NOT_COVERED")
+            for form in runner.VISUAL_FORMS:
+                per_form = json.loads((first / form / "report.json").read_text())
+                self.assertEqual(per_form["resources"]["coverage"], "NOT_COVERED")
+                self.assertIn("completed", per_form["terminal_leg_state_counts"])
+            self.assertTrue(report["first_stage_image_equivalence"]["passed"])
 
             by_prompt = {}
             for case in report["cases"]:
@@ -468,6 +488,10 @@ class AblationRunnerTests(unittest.TestCase):
         self.assertFalse(runner._case_success({
             "terminal_state": "completed", "animations": [],
             "visual_form_metrics": {"completion": 0.0}}))
+        self.assertFalse(runner._case_success({
+            "terminal_state": "completed", "animations": [],
+            "visual_form_metrics": {"completion": 1.0},
+            "media_validation": [{"status": "failed"}]}))
 
     def test_visual_form_live_matches_replay_and_records_render_latency(self):
         replay = json.loads(VISUAL_REPLAY.read_text())
@@ -532,6 +556,93 @@ class AblationRunnerTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 2,
                              completed.stdout + completed.stderr)
             self.assertIn("replay I2V response SHA-256 mismatch", completed.stderr)
+
+    def test_png_and_mp4_decoders_reject_corruption_and_count_real_frames(self):
+        pixels = bytes(range(4 * 4 * 3))
+        raw = encode_test_png(4, 4, pixels)
+        width, height, decoded = runner.decode_png_rgb8(raw)
+        self.assertEqual((width, height), (4, 4))
+        self.assertEqual(decoded, pixels)
+        corrupted = bytearray(raw)
+        corrupted[20] ^= 1
+        with self.assertRaisesRegex(ValueError, "CRC"):
+            runner.decode_png_rgb8(bytes(corrupted))
+
+        frames = pixels * 2
+        encoded = subprocess.run([
+            "ffmpeg", "-v", "error", "-xerror", "-f", "rawvideo",
+            "-pix_fmt", "rgb24", "-s", "4x4", "-r", "1", "-i", "pipe:0",
+            "-frames:v", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"],
+            input=frames, capture_output=True, check=True, timeout=30).stdout
+        descriptor, first = runner.decode_video_mp4(encoded, expected_frames=2,
+                                                    expected_size=(4, 4))
+        self.assertEqual(descriptor["full_decode"], "PASSED")
+        self.assertEqual(descriptor["frame_count"], 2)
+        self.assertEqual(descriptor["codec"], "h264")
+        self.assertEqual(len(first), 4 * 4 * 3)
+        with self.assertRaisesRegex(ValueError, "frame count"):
+            runner.decode_video_mp4(encoded, expected_frames=3)
+
+    def test_center_crop_behavior_and_resource_monitor_are_deterministic(self):
+        source = bytes((x * 31 + y * 47 + channel * 59) % 256
+                       for y in range(4) for x in range(4) for channel in range(3))
+        center = runner._resize_rgb8(source, 4, 4, 4, 2,
+                                     preserve_aspect=True, centered=True)
+        result = runner.check_i2v_first_frame(source, (4, 4), center, (4, 2), 0.0)
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["exact_pixel_match"])
+        self.assertLess(result["center_crop_mae"], result["stretch_mae"])
+        self.assertLess(result["center_crop_mae"], result["top_left_crop_mae"])
+        self.assertEqual(result["quality_coverage"], "NOT_COVERED")
+
+        readings = iter([{0: 100, 7: 300}, {0: 140, 7: 360}])
+        monitor = runner.GpuResourceMonitor(
+            [7, 0], sampler=lambda indexes: next(readings), interval_s=3600)
+        monitor.start()
+        resources = monitor.stop()
+        self.assertEqual(resources["gpus"]["0"],
+                         {"baseline_mib": 100, "peak_mib": 140,
+                          "final_mib": 140, "sample_count": 2})
+        self.assertEqual(resources["gpus"]["7"]["peak_mib"], 360)
+        self.assertIn("persistent model baseline", resources["attribution"])
+
+    def test_sm90_visual_form_config_pins_live_validation_and_backend_provenance(self):
+        experiment = runner.load_experiment(VISUAL_SM90_CONFIG)
+        policy = runner._validation_policy(experiment)
+        self.assertTrue(policy["decode_media"])
+        self.assertTrue(policy["i2v_first_frame_crop"])
+        provenance = runner._provenance(experiment, {
+            "commit": "0" * 40, "dirty": False, "state_sha256": "1" * 64}, [])
+        self.assertEqual(provenance["model"]["config_file_sha256"],
+                         "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab")
+        self.assertEqual(set(provenance["visual_backends"]), {"image", "video"})
+        for backend in provenance["visual_backends"].values():
+            self.assertEqual(backend["weights_coverage"], "COVERED")
+            self.assertRegex(backend["weights_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(len(backend["config_files_sha256"]), 5)
+
+    def test_contract_media_markers_fail_real_decode_gate_without_becoming_evidence(self):
+        with tempfile.TemporaryDirectory(prefix="umm-visual-decode-gate-") as tmp:
+            case_dir = Path(tmp) / "config"
+            shutil.copytree(VISUAL_CONFIG.parent, case_dir)
+            config_path = case_dir / VISUAL_CONFIG.name
+            config = json.loads(config_path.read_text())
+            config["validation"] = {"decode_media": True,
+                                    "i2v_first_frame_crop": True}
+            config_path.write_text(json.dumps(config, sort_keys=True) + "\n")
+            completed = run_cli(Path(tmp) / "out", config_path)
+            self.assertEqual(completed.returncode, 1,
+                             completed.stdout + completed.stderr)
+            report = json.loads((Path(tmp) / "out" / "report.json").read_text())
+            self.assertEqual(report["run_status"], "FAILED")
+            self.assertEqual(report["evidence_class"], "contract-replay")
+            self.assertEqual(report["claims"]["real_model_quality"], "NOT_RUN")
+            self.assertGreater(report["metrics"]["media_validation_failure_count"], 0)
+            self.assertEqual(report["metrics"]["i2v_first_frame_behavior"]["total_count"], 0)
+            i2v = json.loads((Path(tmp) / "out" / "image_then_i2v_animate" /
+                              "report.json").read_text())
+            self.assertEqual(i2v["animation_terminal_state_counts"]["failed"], 2)
 
     def test_serving_has_no_ablation_or_optimizer_dependency(self):
         for directory in (ROOT / "src", ROOT / "include"):

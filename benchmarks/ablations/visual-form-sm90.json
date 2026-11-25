@@ -1,0 +1,81 @@
+{
+  "ablation_id": "stage-c-visual-form-sm90-v1",
+  "ablation_schema_version": 1,
+  "dataset": {
+    "path": "narrative-routing-prompts.json",
+    "sha256": "9279dda6c793d7e553d977f515415ad2c9e46fb639d49958935de7697850ba44"
+  },
+  "fixed": {
+    "sampling": {
+      "max_tokens": 256,
+      "seed": 42,
+      "temperature": 0.0,
+      "top_p": 1.0
+    },
+    "visual": {
+      "image": {
+        "output_format": "png",
+        "seed": 42,
+        "size": "512x512",
+        "steps": 4
+      },
+      "max_slots": 2,
+      "video": {
+        "fps": 16,
+        "guidance_scale": 5.0,
+        "num_frames": 13,
+        "output_format": "mp4",
+        "seed": 42,
+        "size": "480x320",
+        "steps": 4
+      }
+    }
+  },
+  "model": {
+    "id": "qwen3-native",
+    "revision": "Qwen/Qwen3.8-27B local snapshot",
+    "config_file_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+    "weights_sha256": "3ebc83ee545cc54cb2558d805802d4a4e9da42c316d1b248846debee545b99c9",
+    "weights_sha256_scope": "SHA-256 of the newline-terminated sha256sum manifest for 18 model-*.safetensors shards with relative filenames"
+  },
+  "trajectory_schema_version": 2,
+  "validation": {
+    "decode_media": true,
+    "first_frame_max_mae": 32.0,
+    "i2v_first_frame_crop": true
+  },
+  "variable": "visual_form",
+  "visual_backends": {
+    "image": {
+      "id": "qwen-image-native-2.1",
+      "revision": "Qwen-Image 2.1 local snapshot; native C++/CUDA backend=2.1",
+      "config_files_sha256": {
+        "model_index.json": "cf1ecd104ea090855d60d8cec0895c1e9d6ee41b2f87e231b678beecd1cf7809",
+        "scheduler/scheduler_config.json": "5895f3a167c14a967fe9ac70c64924ae5acc79799e0679fd12907e594a713cd1",
+        "text_encoder/config.json": "6001331949f7f86ab6d791a80b12246d4f8da5159fa08c3e62368a39f36d63a9",
+        "transformer/config.json": "56ae3281c4e6c2d1aa3658252d187488071815fd79bef15808bb0205fc1a2241",
+        "vae/config.json": "9785d527b278cb8b210e9f48a8028d92a4190968ce7e24c8fc85d9d1b82f6ba2"
+      },
+      "weights_sha256": "f9262ab51a1781039bbb4d750fddf29caaee25ce8880a3d4e96201a1ac694f93",
+      "weights_sha256_scope": "SHA-256 of the newline-terminated sha256sum manifest for all 7 Safetensors files with model-root-relative filenames"
+    },
+    "video": {
+      "id": "native-cuda-wan",
+      "revision": "Wan2.2-TI2V-5B-Diffusers local snapshot; native C++/CUDA backend",
+      "config_files_sha256": {
+        "model_index.json": "6a72faeb564b0e894aea8fc4ef27241106eb739e8584e869b61589a65473add7",
+        "scheduler/scheduler_config.json": "571a3eed68bcd943a61b9fea8efa9e141472216ada59f928c8b5128ce24b32e0",
+        "text_encoder/config.json": "a2bcb24699f6c009a2427432bdd483ef8b2b42a712abc9503759cdc77d171f07",
+        "transformer/config.json": "dc00d9866e72cf77db6b531aaa33be4dc7148fef9338442bd0ae9181f7075e9b",
+        "vae/config.json": "d996c340fe9a7df5d7371f76a7d8d6956f6c98256080074d8434fa5eeac11360"
+      },
+      "weights_sha256": "9375ac1b2e4da911ddf669a30e2c4126771b785d6bbd6ca30e58acc4fca296b1",
+      "weights_sha256_scope": "SHA-256 of the newline-terminated sha256sum manifest for all 9 Safetensors files with model-root-relative filenames"
+    }
+  },
+  "visual_forms": [
+    "image_only",
+    "video_only",
+    "image_then_i2v_animate"
+  ]
+}
