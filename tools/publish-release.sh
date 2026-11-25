@@ -85,14 +85,15 @@ log "archiving $SOURCE_REF ($COMMIT)"
 mkdir -p "$WORK/src" "$WORK/dist/$VERSION"
 git archive --format=tar "$COMMIT" | tar -x -C "$WORK/src"
 
-CURL_ARG=()
-[ -n "$CURL_PREFIX" ] && CURL_ARG=(-Dcurl-prefix="$CURL_PREFIX")
-
 log "building umm-infer on $PLATFORM"
 (
   cd "$WORK/src"
-  "$ZIG" build -Doptimize=ReleaseFast -Ddeps-prefix="$DEPS_PREFIX" \
-    ${CURL_ARG[@]+"${CURL_ARG[@]}"}
+  if [ -n "$CURL_PREFIX" ]; then
+    "$ZIG" build -Doptimize=ReleaseFast -Ddeps-prefix="$DEPS_PREFIX" \
+      -Dcurl-prefix="$CURL_PREFIX"
+  else
+    "$ZIG" build -Doptimize=ReleaseFast -Ddeps-prefix="$DEPS_PREFIX"
+  fi
 )
 mkdir -p "$WORK/dist/$VERSION/$PLATFORM"
 install -m755 "$WORK/src/zig-out/bin/umm-infer" "$WORK/dist/$VERSION/$PLATFORM/umm-infer"
