@@ -176,6 +176,16 @@ def check_markdown(html, script):
             "markdown h3 must stay balanced (13.5px)")
 
 
+def check_video_input(html, script):
+    # Wave 13 native video input upload (+ Vid -> video_url content part).
+    require('id="askVideo"' in html and 'id="pickVideo"' in html,
+            "composer must expose askVideo file input and pickVideo button")
+    require("type: 'video_url'" in script,
+            "composer must serialize attached videos as video_url content parts")
+    require("attachedVideo" in script,
+            "composer must track attachedVideo state")
+
+
 def check_theme_tokens(html):
     """The CSS palette mirrors Theme.swift; both files must agree."""
     theme = THEME.read_text(encoding="utf-8")
@@ -221,6 +231,7 @@ def main():
         ("wave10", lambda: check_wave10(script)),
         ("wave11", lambda: check_wave11(script)),
         ("markdown", lambda: check_markdown(html, script)),
+        ("video_input", lambda: check_video_input(html, script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0

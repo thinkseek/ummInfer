@@ -453,6 +453,55 @@ void test_prefix_boundary_reuses_next_turn() {
         "the boundary cut is a valid snapshot length");
 }
 
+void test_video_preprocess_and_prompt() {
+  using umminfer::qwen38::PreprocessedImage;
+  using umminfer::qwen38::expand_video_pads;
+  using umminfer::qwen38::preprocess_video_frames;
+  // 5 solid-color 64x64 frames -> padded to 6 even frames -> grid_t = 3.
+  std::vector<std::vector<uint8_t>> frames(5, std::vector<uint8_t>(64 * 64 * 3, 0));
+  for (size_t f = 0; f < frames.size(); ++f) {
+    for (size_t i = 0; i < frames[f].size(); i += 3) {
+      frames[f][i + 0] = static_cast<uint8_t>(f * 50);
+      frames[f][i + 1] = 128;
+      frames[f][i + 2] = 255;
+    }
+  }
+  const PreprocessedImage vid =
+      preprocess_video_frames(frames, 64, 64, 4096, 16384, 3584);
+  check(vid.grid_t == 3, "5 frames pack into grid_t == 3 temporal slices");
+  check(vid.grid_h >= 2 && vid.grid_w >= 2 && (vid.grid_h % 2 == 0) &&
+            (vid.grid_w % 2 == 0),
+        "video grid dimensions are positive multiples of spatial merge size");
+  check(vid.rows() == vid.grid_t * vid.grid_h * vid.grid_w &&
+            vid.rows() <= 3584,
+        "video patch rows match grid_t*grid_h*grid_w and fit workspace cap");
+  check(vid.pixel_values.size() ==
+            static_cast<size_t>(vid.rows()) * PreprocessedImage::kPatchDim,
+        "video pixel_values size matches rows * kPatchDim");
+
+  ChatTurn vturn;
+  vturn.role = "user";
+  vturn.text = "Describe this clip.";
+  vturn.video_slices = 3;
+  vturn.video_timestamps = {0.0, 1.0, 2.0};
+  const RenderedChatPrompt rendered = render_chat_prompt_parts({vturn}, false);
+  check(rendered.prefix.find("<0.0 seconds><|vision_start|><|video_pad|><|vision_end|>") !=
+            std::string::npos,
+        "video prompt emits first timestamp + video_pad marker");
+  check(rendered.prefix.find("<2.0 seconds><|vision_start|><|video_pad|><|vision_end|>") !=
+            std::string::npos,
+        "video prompt emits third timestamp + video_pad marker");
+
+  // Expanding 3 video_pad placeholders by 4 merged tokens each yields 12 video_pads.
+  const std::vector<int> ids{10, 248057, 11, 248057, 12, 248057, 13};
+  const std::vector<int> expanded = expand_video_pads(ids, 4, 3);
+  check(expanded.size() == 4 + 12, "expand_video_pads expands every slice");
+  int count = 0;
+  for (int id : expanded)
+    if (id == 248057) ++count;
+  check(count == 12, "expand_video_pads emits exact total video_pad count");
+}
+
 }  // namespace
 
 int main() {
@@ -468,6 +517,7 @@ int main() {
   test_prefix_boundary_reuses_next_turn();
   test_fast_matches_reference();
   test_large_vocab_latency();
+  test_video_preprocess_and_prompt();
   if (g_failures != 0) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

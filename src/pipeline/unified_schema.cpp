@@ -103,6 +103,7 @@ ValidatedSubmission validate_submission(const Value& inputs,
   }
 
   size_t image_count = 0;
+  size_t video_count = 0;
   size_t audio_part_count = 0;
   size_t text_part_count = 0;
   for (const Value& message : inputs.find("messages")->as_array()) {
@@ -126,10 +127,21 @@ ValidatedSubmission validate_submission(const Value& inputs,
       if (type == nullptr || !type->is_str()) continue;
       const UnifiedModality modality = modality_of_part_type(type->as_str());
       if (modality == UnifiedModality::kVideo) {
-        throw ProtocolError(std::string("content part ") + type->as_str() +
-                            " is declared but has no worker in unified engine v1");
-      }
-      if (modality == UnifiedModality::kText) {
+        if (type->as_str() != "video_url") {
+          throw ProtocolError(std::string("content part ") + type->as_str() +
+                              " is not supported; use video_url");
+        }
+        const Value* video_url = part.find("video_url");
+        if (video_url == nullptr || !video_url->is_map() ||
+            video_url->find("url") == nullptr ||
+            !video_url->find("url")->is_str() ||
+            video_url->find("url")->as_str().empty()) {
+          throw ProtocolError("video_url part requires a nonempty video_url.url");
+        }
+        if (++video_count > 1) {
+          throw ProtocolError("unified request accepts at most one video_url part");
+        }
+      } else if (modality == UnifiedModality::kText) {
         if (++text_part_count > 1) {
           throw ProtocolError("unified request accepts at most one text part");
         }
@@ -148,6 +160,10 @@ ValidatedSubmission validate_submission(const Value& inputs,
         }
       }
     }
+  }
+  if (image_count > 0 && video_count > 0) {
+    throw ProtocolError(
+        "unified request cannot combine image_url and video_url in one turn");
   }
 
   ValidatedSubmission out;
@@ -343,6 +359,9 @@ Value build_vlm_inputs(const std::string& transcript,
           const UnifiedModality modality = modality_of_part_type(type->as_str());
           if (modality == UnifiedModality::kImage) {
             has_image = true;
+            extra_parts.push_back(part);
+          } else if (modality == UnifiedModality::kVideo &&
+                     type->as_str() == "video_url") {
             extra_parts.push_back(part);
           } else if (modality == UnifiedModality::kText) {
             extra_parts.push_back(part);

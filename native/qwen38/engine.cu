@@ -63,10 +63,32 @@ constexpr int kVisTokenCap = 4096;
 constexpr float kVisRopeTheta = 10000.0f;
 
 constexpr int kImagePad = 248056;
+constexpr int kVideoPad = 248057;
 constexpr int kEos = 248046;       // <|im_end|>
 constexpr int kEndOfText = 248044; // <|endoftext|>
 
 bool is_eos(int id) { return id == kEos || id == kEndOfText; }
+bool is_vision_pad(int id) { return id == kImagePad || id == kVideoPad; }
+
+struct VisionRun {
+  int start = 0;
+  int length = 0;
+};
+
+std::vector<VisionRun> find_vision_runs(const std::vector<int>& ids) {
+  std::vector<VisionRun> runs;
+  const int n = static_cast<int>(ids.size());
+  for (int i = 0; i < n;) {
+    if (!is_vision_pad(ids[i])) {
+      ++i;
+      continue;
+    }
+    const int begin = i;
+    while (i < n && is_vision_pad(ids[i])) ++i;
+    runs.push_back(VisionRun{begin, i - begin});
+  }
+  return runs;
+}
 
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t0) {
@@ -90,39 +112,54 @@ struct Positions {
   int next = 0;
 };
 
-Positions build_positions(const std::vector<int>& ids, int grid_h, int grid_w,
-                          bool has_image) {
+Positions build_positions(const std::vector<int>& ids, int grid_t, int grid_h,
+                          int grid_w, bool has_vision) {
   const int n = static_cast<int>(ids.size());
   Positions p;
   p.t.resize(n);
   p.h.resize(n);
   p.w.resize(n);
-  if (!has_image) {
+  if (!has_vision) {
     for (int i = 0; i < n; ++i) p.t[i] = p.h[i] = p.w[i] = i;
     p.next = n;
     return p;
   }
-  int img_start = -1, img_end = -1;
-  for (int i = 0; i < n; ++i)
-    if (ids[i] == kImagePad) {
-      if (img_start < 0) img_start = i;
-      img_end = i + 1;
-    }
-  if (img_start < 0) throw std::runtime_error("image prompt has no image_pad run");
-  const int n_img = img_end - img_start;
   const int gh = grid_h / 2, gw = grid_w / 2;
-  if (n_img != gh * gw)
-    throw std::runtime_error("image tokens " + std::to_string(n_img) +
-                             " do not match merged grid " + std::to_string(gh * gw));
-  for (int i = 0; i < img_start; ++i) p.t[i] = p.h[i] = p.w[i] = i;
-  const int st = img_start;
-  for (int k = 0; k < n_img; ++k) {
-    p.t[img_start + k] = st;
-    p.h[img_start + k] = st + k / gw;
-    p.w[img_start + k] = st + k % gw;
+  const int slice_tokens = gh * gw;
+  const std::vector<VisionRun> runs = find_vision_runs(ids);
+  if (runs.empty()) {
+    throw std::runtime_error("vision prompt has no image_pad/video_pad run");
   }
-  int counter = st + std::max(gh, gw);
-  for (int i = img_end; i < n; ++i) p.t[i] = p.h[i] = p.w[i] = counter++;
+  if (static_cast<int>(runs.size()) != grid_t) {
+    throw std::runtime_error("vision pad runs " + std::to_string(runs.size()) +
+                             " do not match grid_t " + std::to_string(grid_t));
+  }
+  // Matches Qwen3_5Model.get_rope_index: each temporal slice is a separate
+  // grid (1, grid_h, grid_w) separated by timestamp text tokens; for still
+  // images (grid_t == 1) this is bit-identical to the single-image layout.
+  int counter = 0;
+  size_t run_idx = 0;
+  for (int i = 0; i < n;) {
+    if (run_idx < runs.size() && i == runs[run_idx].start) {
+      const VisionRun& run = runs[run_idx];
+      if (run.length != slice_tokens) {
+        throw std::runtime_error("vision tokens " + std::to_string(run.length) +
+                                 " do not match merged slice grid " +
+                                 std::to_string(slice_tokens));
+      }
+      for (int k = 0; k < slice_tokens; ++k) {
+        p.t[i + k] = counter;
+        p.h[i + k] = counter + k / gw;
+        p.w[i + k] = counter + k % gw;
+      }
+      counter += std::max(gh, gw);
+      i += run.length;
+      ++run_idx;
+    } else {
+      p.t[i] = p.h[i] = p.w[i] = counter++;
+      ++i;
+    }
+  }
   p.next = counter;
   return p;
 }
@@ -512,31 +549,24 @@ void dump_dev(Engine::Impl& im, const std::string& dir, const std::string& name,
 
 void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
                     const std::string& dump_dir) {
-  const int tokens = img.rows();
-  if (tokens > kVisTokenCap)
-    throw std::runtime_error("image exceeds the bounded vision workspace");
-  if (img.grid_t != 1) throw std::runtime_error("only still images are supported");
+  const int total_tokens = img.rows();
+  if (img.grid_t < 1 || img.grid_h <= 0 || img.grid_w <= 0)
+    throw std::runtime_error("invalid vision grid dimensions");
+  const int slice_tokens = img.grid_h * img.grid_w;
+  if (slice_tokens > kVisTokenCap || total_tokens > kVisTokenCap)
+    throw std::runtime_error("vision input exceeds the bounded vision workspace");
   const std::string p = "model.visual.";
   cudaStream_t st = im.stream;
 
-  std::vector<Bf16> pix(img.pixel_values.size());
-  for (size_t i = 0; i < pix.size(); ++i) pix[i] = Bf16(img.pixel_values[i]);
-  UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_pixels, pix.data(),
-                                        pix.size() * sizeof(Bf16),
-                                        cudaMemcpyHostToDevice, st));
-
-  gemm_bf16(im.v_hidden, im.d_pixels, im.bf(p + "patch_embed.proj.weight"),
-            im.bf(p + "patch_embed.proj.bias"), tokens, kPatchDim, kVisH, st);
-
+  // Position embeddings and 2D spatial RoPE are shared across every temporal
+  // slice; Qwen3_5VisionModel runs per-slice cu_seqlens attention (independent
+  // per temporal slice), so looping over t matches HF Qwen3.5 exactly while
+  // keeping peak vision workspace bounded to a single slice.
   const std::vector<Bf16> pos = interpolate_pos_embed(im.pos_table_host, img.grid_h,
                                                      img.grid_w);
   UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.v_pos, pos.data(),
                                         pos.size() * sizeof(Bf16),
                                         cudaMemcpyHostToDevice, st));
-  add_residual(im.v_hidden, im.v_pos, tokens * kVisH, st);
-  if (!dump_dir.empty())
-    dump_dev(im, dump_dir, "vpatch.bf16", im.v_hidden,
-             static_cast<size_t>(tokens) * kVisH * sizeof(Bf16));
 
   std::vector<float> vcos, vsin;
   build_vision_rope(img.grid_h, img.grid_w, &vcos, &vsin);
@@ -547,48 +577,68 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
                                         vsin.size() * sizeof(float),
                                         cudaMemcpyHostToDevice, st));
 
-  for (int blk = 0; blk < kVisBlocks; ++blk) {
-    const std::string bp = p + "blocks." + std::to_string(blk);
-    layer_norm(im.v_hidden, im.bf(bp + ".norm1.weight"),
-               im.bf(bp + ".norm1.bias"), im.v_norm, tokens, kVisH, kEps, st);
-    gemm_bf16(im.v_qkv, im.v_norm, im.bf(bp + ".attn.qkv.weight"),
-              im.bf(bp + ".attn.qkv.bias"), tokens, kVisH, 3 * kVisH, st);
-    split_qkv(im.v_qkv, im.v_q, im.v_k, im.v_v, tokens, kVisH, st);
-    vision_rope(im.v_q, im.v_rope_cos, im.v_rope_sin, tokens, kVisHeads,
-                kVisHeadDim, st);
-    vision_rope(im.v_k, im.v_rope_cos, im.v_rope_sin, tokens, kVisHeads,
-                kVisHeadDim, st);
-    vision_attention(im.v_q, im.v_k, im.v_v, im.v_proj, tokens, kVisHeads,
-                     kVisHeadDim, st);
-    gemm_bf16(im.v_qkv, im.v_proj, im.bf(bp + ".attn.proj.weight"),
-              im.bf(bp + ".attn.proj.bias"), tokens, kVisH, kVisH, st);
-    add_residual(im.v_hidden, im.v_qkv, tokens * kVisH, st);
+  const int slice_merged = slice_tokens / 4;
+  std::vector<Bf16> slice_pix(static_cast<size_t>(slice_tokens) * kPatchDim);
+  for (int t = 0; t < img.grid_t; ++t) {
+    const size_t src_off = static_cast<size_t>(t) * slice_tokens * kPatchDim;
+    for (size_t i = 0; i < slice_pix.size(); ++i) {
+      slice_pix[i] = Bf16(img.pixel_values[src_off + i]);
+    }
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_pixels, slice_pix.data(),
+                                          slice_pix.size() * sizeof(Bf16),
+                                          cudaMemcpyHostToDevice, st));
 
-    layer_norm(im.v_hidden, im.bf(bp + ".norm2.weight"),
-               im.bf(bp + ".norm2.bias"), im.v_norm, tokens, kVisH, kEps, st);
-    gemm_bf16(im.v_mlp, im.v_norm, im.bf(bp + ".mlp.linear_fc1.weight"),
-              im.bf(bp + ".mlp.linear_fc1.bias"), tokens, kVisH, kVisInter, st);
-    gelu_tanh_inplace(im.v_mlp, tokens * kVisInter, st);
-    gemm_bf16(im.v_proj, im.v_mlp, im.bf(bp + ".mlp.linear_fc2.weight"),
-              im.bf(bp + ".mlp.linear_fc2.bias"), tokens, kVisInter, kVisH, st);
-    add_residual(im.v_hidden, im.v_proj, tokens * kVisH, st);
-    if (!dump_dir.empty())
-      dump_dev(im, dump_dir, "vblock_" + std::to_string(blk) + ".bf16", im.v_hidden,
-               static_cast<size_t>(tokens) * kVisH * sizeof(Bf16));
+    gemm_bf16(im.v_hidden, im.d_pixels, im.bf(p + "patch_embed.proj.weight"),
+              im.bf(p + "patch_embed.proj.bias"), slice_tokens, kPatchDim, kVisH, st);
+    add_residual(im.v_hidden, im.v_pos, slice_tokens * kVisH, st);
+    if (!dump_dir.empty() && t == 0)
+      dump_dev(im, dump_dir, "vpatch.bf16", im.v_hidden,
+               static_cast<size_t>(slice_tokens) * kVisH * sizeof(Bf16));
+
+    for (int blk = 0; blk < kVisBlocks; ++blk) {
+      const std::string bp = p + "blocks." + std::to_string(blk);
+      layer_norm(im.v_hidden, im.bf(bp + ".norm1.weight"),
+                 im.bf(bp + ".norm1.bias"), im.v_norm, slice_tokens, kVisH, kEps, st);
+      gemm_bf16(im.v_qkv, im.v_norm, im.bf(bp + ".attn.qkv.weight"),
+                im.bf(bp + ".attn.qkv.bias"), slice_tokens, kVisH, 3 * kVisH, st);
+      split_qkv(im.v_qkv, im.v_q, im.v_k, im.v_v, slice_tokens, kVisH, st);
+      vision_rope(im.v_q, im.v_rope_cos, im.v_rope_sin, slice_tokens, kVisHeads,
+                  kVisHeadDim, st);
+      vision_rope(im.v_k, im.v_rope_cos, im.v_rope_sin, slice_tokens, kVisHeads,
+                  kVisHeadDim, st);
+      vision_attention(im.v_q, im.v_k, im.v_v, im.v_proj, slice_tokens, kVisHeads,
+                       kVisHeadDim, st);
+      gemm_bf16(im.v_qkv, im.v_proj, im.bf(bp + ".attn.proj.weight"),
+                im.bf(bp + ".attn.proj.bias"), slice_tokens, kVisH, kVisH, st);
+      add_residual(im.v_hidden, im.v_qkv, slice_tokens * kVisH, st);
+
+      layer_norm(im.v_hidden, im.bf(bp + ".norm2.weight"),
+                 im.bf(bp + ".norm2.bias"), im.v_norm, slice_tokens, kVisH, kEps, st);
+      gemm_bf16(im.v_mlp, im.v_norm, im.bf(bp + ".mlp.linear_fc1.weight"),
+                im.bf(bp + ".mlp.linear_fc1.bias"), slice_tokens, kVisH, kVisInter, st);
+      gelu_tanh_inplace(im.v_mlp, slice_tokens * kVisInter, st);
+      gemm_bf16(im.v_proj, im.v_mlp, im.bf(bp + ".mlp.linear_fc2.weight"),
+                im.bf(bp + ".mlp.linear_fc2.bias"), slice_tokens, kVisInter, kVisH, st);
+      add_residual(im.v_hidden, im.v_proj, slice_tokens * kVisH, st);
+      if (!dump_dir.empty() && t == 0)
+        dump_dev(im, dump_dir, "vblock_" + std::to_string(blk) + ".bf16", im.v_hidden,
+                 static_cast<size_t>(slice_tokens) * kVisH * sizeof(Bf16));
+    }
+
+    layer_norm(im.v_hidden, im.bf(p + "merger.norm.weight"),
+               im.bf(p + "merger.norm.bias"), im.v_norm, slice_tokens, kVisH, kEps, st);
+    gemm_bf16(im.v_mlp, im.v_norm, im.bf(p + "merger.linear_fc1.weight"),
+              im.bf(p + "merger.linear_fc1.bias"), slice_merged, 4 * kVisH, 4 * kVisH, st);
+    gelu_erf_inplace(im.v_mlp, slice_merged * 4 * kVisH, st);
+    Bf16* dst_pooler = im.pooler + static_cast<size_t>(t) * slice_merged * kVisOut;
+    gemm_bf16(dst_pooler, im.v_mlp, im.bf(p + "merger.linear_fc2.weight"),
+              im.bf(p + "merger.linear_fc2.bias"), slice_merged, 4 * kVisH, kVisOut, st);
   }
-
-  const int merged = tokens / 4;
-  layer_norm(im.v_hidden, im.bf(p + "merger.norm.weight"),
-             im.bf(p + "merger.norm.bias"), im.v_norm, tokens, kVisH, kEps, st);
-  gemm_bf16(im.v_mlp, im.v_norm, im.bf(p + "merger.linear_fc1.weight"),
-            im.bf(p + "merger.linear_fc1.bias"), merged, 4 * kVisH, 4 * kVisH, st);
-  gelu_erf_inplace(im.v_mlp, merged * 4 * kVisH, st);
-  gemm_bf16(im.pooler, im.v_mlp, im.bf(p + "merger.linear_fc2.weight"),
-            im.bf(p + "merger.linear_fc2.bias"), merged, 4 * kVisH, kVisOut, st);
   UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
 
+  const int total_merged = total_tokens / 4;
   if (!dump_dir.empty()) {
-    std::vector<Bf16> host(static_cast<size_t>(merged) * kVisOut);
+    std::vector<Bf16> host(static_cast<size_t>(total_merged) * kVisOut);
     UMM_QWEN38_CUDA_CHECK(cudaMemcpy(host.data(), im.pooler,
                                      host.size() * sizeof(Bf16),
                                      cudaMemcpyDeviceToHost));
@@ -1011,7 +1061,7 @@ void prefill_group(Engine::Impl& im,
   // when the job takes the historical whole-prompt boundary.
   std::vector<int> snap(static_cast<size_t>(nseq), 0);
   std::vector<Positions> pos(static_cast<size_t>(nseq));
-  std::vector<int> img_start(static_cast<size_t>(nseq), -1);
+  std::vector<std::vector<VisionRun>> vis_runs(static_cast<size_t>(nseq));
   std::vector<int> n_img(static_cast<size_t>(nseq), 0);
   std::vector<double> vision_ms(static_cast<size_t>(nseq), 0.0);
   bool want_split = false;
@@ -1032,22 +1082,18 @@ void prefill_group(Engine::Impl& im,
     if (snap[i] < P) want_split = true;
     const PreprocessedImage* image = job.req.image;
     if (image != nullptr) {
-      if (image->grid_t != 1)
-        throw std::runtime_error("only still images are supported");
+      if (image->grid_t < 1)
+        throw std::runtime_error("invalid vision grid_t");
       const auto t0 = Clock::now();
       vision_forward(im, *image, "");
       vision_ms[i] = ms_since(t0);
       n_img[i] = image->rows() / 4;
-      for (int k = 0; k < P; ++k) {
-        if (job.req.prompt_ids[k] == kImagePad) {
-          img_start[i] = k;
-          break;
-        }
-      }
-      if (img_start[i] < 0)
-        throw std::runtime_error("image supplied but no image_pad id");
+      vis_runs[i] = find_vision_runs(job.req.prompt_ids);
+      if (static_cast<int>(vis_runs[i].size()) != image->grid_t)
+        throw std::runtime_error("vision supplied but vision pad runs mismatch grid_t");
     }
-    pos[i] = build_positions(job.req.prompt_ids, image ? image->grid_h : 0,
+    pos[i] = build_positions(job.req.prompt_ids, image ? image->grid_t : 0,
+                             image ? image->grid_h : 0,
                              image ? image->grid_w : 0, image != nullptr);
   }
 
@@ -1134,11 +1180,16 @@ void prefill_group(Engine::Impl& im,
     for (int s = 0; s < n; ++s) {
       const int i = (*job_index)[s];
       if (n_img[i] <= 0) continue;
-      UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
-          im.hidden +
-              static_cast<size_t>(sp.off[s] + img_start[i] - sp.hist[s]) * kHidden,
-          im.pooler, static_cast<size_t>(n_img[i]) * kHidden * sizeof(Bf16),
-          cudaMemcpyDeviceToDevice, st));
+      size_t pool_offset = 0;
+      for (const VisionRun& run : vis_runs[i]) {
+        UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+            im.hidden +
+                static_cast<size_t>(sp.off[s] + run.start - sp.hist[s]) * kHidden,
+            im.pooler + pool_offset * kHidden,
+            static_cast<size_t>(run.length) * kHidden * sizeof(Bf16),
+            cudaMemcpyDeviceToDevice, st));
+        pool_offset += static_cast<size_t>(run.length);
+      }
     }
     std::vector<Bf16> cos, sin;
     cos.reserve(static_cast<size_t>(rows) * kRotaryDim);
@@ -1498,18 +1549,16 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
 
   double vision_ms = 0.0;
   int n_img = 0;
-  int img_start = -1;
+  std::vector<VisionRun> vis_runs;
   if (image) {
     check_abort("vision");
     const auto t0 = Clock::now();
     vision_forward(im, *image, dump_dir);
     vision_ms = ms_since(t0);
     n_img = image->rows() / 4;
-    for (int i = 0; i < P; ++i)
-      if (prompt_ids[i] == kImagePad) {
-        if (img_start < 0) img_start = i;
-      }
-    if (img_start < 0) throw std::runtime_error("image supplied but no image_pad id");
+    vis_runs = find_vision_runs(prompt_ids);
+    if (static_cast<int>(vis_runs.size()) != image->grid_t)
+      throw std::runtime_error("vision supplied but vision pad runs mismatch grid_t");
   }
   result.image_tokens = n_img;
   result.vision_ms = vision_ms;
@@ -1540,7 +1589,8 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   }
 
   const Positions pos = build_positions(
-      prompt_ids, image ? image->grid_h : 0, image ? image->grid_w : 0, image != nullptr);
+      prompt_ids, image ? image->grid_t : 0, image ? image->grid_h : 0,
+      image ? image->grid_w : 0, image != nullptr);
   std::vector<Bf16> cos, sin;
   build_text_rope(pos, P, &cos, &sin);
 
@@ -1554,10 +1604,15 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     index_embeddings(im.bf("model.language_model.embed_tokens.weight"), im.d_ids,
                      im.hidden, m, kHidden, st);
     if (image) {
-      UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
-          im.hidden + static_cast<size_t>(img_start) * kHidden, im.pooler,
-          static_cast<size_t>(n_img) * kHidden * sizeof(Bf16),
-          cudaMemcpyDeviceToDevice, st));
+      size_t pool_offset = 0;
+      for (const VisionRun& run : vis_runs) {
+        UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
+            im.hidden + static_cast<size_t>(run.start - begin) * kHidden,
+            im.pooler + pool_offset * kHidden,
+            static_cast<size_t>(run.length) * kHidden * sizeof(Bf16),
+            cudaMemcpyDeviceToDevice, st));
+        pool_offset += static_cast<size_t>(run.length);
+      }
     }
     const size_t rope_off = static_cast<size_t>(begin) * kRotaryDim;
     const size_t rope_bytes = static_cast<size_t>(m) * kRotaryDim * sizeof(Bf16);

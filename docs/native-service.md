@@ -213,6 +213,27 @@ and `--web-root`:
     (`298,032 B`, `0.90 s`) in place via `POST /v1/visual/render` (`i2v=true`,
     `704x480`, `29` frames, `20` steps) -> H.264 MP4 (`83,359 B`, `ffprobe` PASS,
     frame 0/28 visually verified crisp & faithful), `/health` `in_flight=0`.
+- Wave 12 live Wan2.2 aspect-preserving center-crop I2V (`b80805c`):
+  - Hot-upgraded GPU 6 `/bin/umm-native-stage-video` (preserving `.wave11`
+    backup) in `2 s` with `0` restarts on GPUs 2–5; verified `704x480` 29-frame
+    I2V from a square FLUX.2 PNG (`84,974 B` H.264 MP4) with zero aspect
+    stretching on frames 0 and 28.
+- Wave 13 live native video input understanding (`video_url` + Web UI `+ Vid`):
+  - Hot-upgraded `/bin/umm-infer`, GPU 3 `/bin/umm-native-stage-qwen38`
+    (preserving `.wave12` backups), and `web/index.html`; `/ready` 200 in `36 s`
+    with **`0` restarts** on GPUs 2, 4, 5, and 6 (GPU 3 steady `60,733 MiB`,
+    GPUs 0/1/7 `3 MiB`).
+  - Live `POST /v1/chat/completions` (`model=qwen3-native`) with real `704x480`
+    29-frame H.264 MP4 (`84,974 B`) as `video_url` (`data:video/mp4;base64,...`):
+    FFmpeg extracts 8 RGB keyframes into 4 temporal-2 slices (`grid_t=4`,
+    `384` visual tokens, `533` prompt tokens, `prefill=814 ms`, `22.1 tok/s`,
+    `elapsed=6.32 s` SSE / `8.53 s` non-stream), accurately describing the
+    glowing red Chinese lantern, misty karst mountains, water reflection, and
+    gentle swaying motion.
+  - Zero-regression single-image VQA (`2.58 s`) and live `video_url` ->
+    interleaved narrative + FLUX.2 image slot + streaming PCM16 voice
+    (`ttft=1.78 s`, `ttfa=2.01 s`, `54` PCM chunks, `1` visual slot) both
+    passed; `/health` `in_flight=0`.
 
 ## Validation, 2026-11-19 (historical)
 

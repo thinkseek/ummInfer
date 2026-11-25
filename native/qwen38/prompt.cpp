@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Host-only prompt construction shared by the CLI and the host tests.
 #include <cctype>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 namespace umminfer::qwen38 {
 namespace {
 constexpr int kImagePad = 248056;
+constexpr int kVideoPad = 248057;
 
 std::string_view trim_ascii(std::string_view s) {
   size_t b = 0;
@@ -32,6 +34,19 @@ RenderedChatPrompt render_chat_prompt_parts(const std::vector<ChatTurn>& turns,
     parts.prefix += "<|im_start|>" + role + "\n";
     if (turn.has_image) {
       parts.prefix += "<|vision_start|><|image_pad|><|vision_end|>";
+    } else if (turn.video_slices > 0) {
+      // Qwen3.5/Qwen3.8 separates video temporal slices with timestamp markers
+      // matching Qwen3_5Model.get_rope_index.
+      for (int s = 0; s < turn.video_slices; ++s) {
+        const double sec =
+            static_cast<size_t>(s) < turn.video_timestamps.size()
+                ? turn.video_timestamps[static_cast<size_t>(s)]
+                : static_cast<double>(s);
+        char stamp[48];
+        std::snprintf(stamp, sizeof(stamp), "<%.1f seconds>", sec);
+        parts.prefix += stamp;
+        parts.prefix += "<|vision_start|><|video_pad|><|vision_end|>";
+      }
     }
     // The Jinja template applies |trim to the rendered content of each turn.
     const std::string_view trimmed = trim_ascii(turn.text);
@@ -72,6 +87,34 @@ std::vector<int> expand_image_pads(const std::vector<int>& ids, int n_tokens) {
     out.push_back(id);
   }
   if (!inserted) throw std::runtime_error("no image_pad token in rendered prompt");
+  return out;
+}
+
+std::vector<int> expand_video_pads(const std::vector<int>& ids,
+                                   int n_tokens_per_slice,
+                                   int expected_slices) {
+  if (n_tokens_per_slice <= 0) {
+    throw std::invalid_argument("n_tokens_per_slice must be positive");
+  }
+  std::vector<int> out;
+  out.reserve(ids.size() +
+              static_cast<size_t>(std::max(1, expected_slices)) *
+                  static_cast<size_t>(n_tokens_per_slice));
+  int slices = 0;
+  for (int id : ids) {
+    if (id == kVideoPad) {
+      out.insert(out.end(), static_cast<size_t>(n_tokens_per_slice), kVideoPad);
+      ++slices;
+      continue;
+    }
+    out.push_back(id);
+  }
+  if (slices == 0) {
+    throw std::runtime_error("no video_pad token in rendered prompt");
+  }
+  if (expected_slices > 0 && slices != expected_slices) {
+    throw std::runtime_error("video_pad placeholder count does not match grid_t");
+  }
   return out;
 }
 

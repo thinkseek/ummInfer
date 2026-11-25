@@ -76,11 +76,13 @@ struct OmniMessage {
   std::string role;
   std::string text;
   bool has_image = false;
+  bool has_video = false;
 };
 
 struct OmniWork {
   std::string text;       // last text-bearing message
   std::string image_url;  // empty when the turn has no image
+  std::string video_url;  // empty when the turn has no video
   // Every message in wire order, for the multi-turn prompt. The omni stage
   // renders all of them so session history is part of the prompt.
   std::vector<OmniMessage> messages;
@@ -222,6 +224,7 @@ bool text_is_mostly_cjk(const std::string& text);
 std::string decode_data_url(const std::string& url);
 std::string base64_decode(const std::string& text);
 std::string load_image_bytes(const std::string& url);
+std::string load_video_bytes(const std::string& url);
 
 Value asr_result(const std::string& text, int generated_tokens,
                  const std::string& finish_reason);

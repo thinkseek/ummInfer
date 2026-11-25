@@ -341,11 +341,13 @@
 <div class="attach-bar" id="attachBar" hidden></div>
 <footer>
   <input id="askImage" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+  <input id="askVideo" type="file" accept="video/mp4,video/webm,video/quicktime" hidden>
   <input id="askAudio" type="file" accept="audio/*" hidden>
   <button id="pickImage" type="button" title="Attach image for VLM visual QA">+ Img</button>
+  <button id="pickVideo" type="button" title="Attach video for VLM video understanding">+ Vid</button>
   <button id="pickAudio" type="button" title="Attach audio file for ASR -> VLM">+ Audio</button>
   <button id="mic" type="button" title="Record voice for ASR -> VLM">Mic</button>
-  <textarea id="prompt" rows="1" placeholder="Write a prompt (or attach image / record voice)"></textarea>
+  <textarea id="prompt" rows="1" placeholder="Write a prompt (or attach image / video / record voice)"></textarea>
   <button id="send" class="primary">Send</button>
   <button id="stop" class="danger" hidden>Stop</button>
 </footer>
@@ -365,8 +367,9 @@ const ui = {
   refAudio: $('refAudio'), videoSize: $('videoSize'), videoSeconds: $('videoSeconds'),
   videoFrames: $('videoFrames'), videoSteps: $('videoSteps'),
   videoGuidance: $('videoGuidance'), transcript: $('transcript'), error: $('error'),
-  attachBar: $('attachBar'), askImage: $('askImage'), askAudio: $('askAudio'),
-  pickImage: $('pickImage'), pickAudio: $('pickAudio'), mic: $('mic'),
+  attachBar: $('attachBar'), askImage: $('askImage'), askVideo: $('askVideo'),
+  askAudio: $('askAudio'), pickImage: $('pickImage'), pickVideo: $('pickVideo'),
+  pickAudio: $('pickAudio'), mic: $('mic'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
   narrative: $('narrative'), visualMode: $('visualMode'), maxSlots: $('maxSlots'),
   voiceToggle: $('voiceToggle'), voiceWave: $('voiceWave'),
@@ -535,6 +538,7 @@ async function decodeAudioToWav16kBase64(arrayBuffer) {
 // ---------- multimodal composer attachments ----------
 
 let attachedImage = null; // { name, dataURL }
+let attachedVideo = null; // { name, dataURL }
 let attachedAudio = null; // { name, wavBase64 }
 let micState = null;      // { stream, ctx, src, proc, chunks, sampleRate }
 
@@ -556,12 +560,17 @@ function renderAttachments() {
       attachedImage = null; ui.askImage.value = ''; renderAttachments();
     });
   }
+  if (attachedVideo) {
+    addChip(`Video: ${attachedVideo.name}`, () => {
+      attachedVideo = null; ui.askVideo.value = ''; renderAttachments();
+    });
+  }
   if (attachedAudio) {
     addChip(`Audio (16k WAV): ${attachedAudio.name}`, () => {
       attachedAudio = null; ui.askAudio.value = ''; renderAttachments();
     });
   }
-  ui.attachBar.hidden = !attachedImage && !attachedAudio;
+  ui.attachBar.hidden = !attachedImage && !attachedVideo && !attachedAudio;
 }
 
 ui.pickImage.addEventListener('click', () => ui.askImage.click());
@@ -571,6 +580,24 @@ ui.askImage.addEventListener('change', async () => {
   try {
     const dataURL = await readFileAsDataURL(ui.askImage);
     attachedImage = { name: file.name, dataURL };
+    attachedVideo = null; ui.askVideo.value = '';
+    renderAttachments();
+  } catch (err) { showError(err.message); }
+});
+
+ui.pickVideo.addEventListener('click', () => ui.askVideo.click());
+ui.askVideo.addEventListener('change', async () => {
+  const file = ui.askVideo.files?.[0];
+  if (!file) return;
+  if (file.size > 32 * 1024 * 1024) {
+    showError('Attached video exceeds the 32 MiB upload limit.');
+    ui.askVideo.value = '';
+    return;
+  }
+  try {
+    const dataURL = await readFileAsDataURL(ui.askVideo);
+    attachedVideo = { name: file.name, dataURL };
+    attachedImage = null; ui.askImage.value = '';
     renderAttachments();
   } catch (err) { showError(err.message); }
 });
@@ -1485,7 +1512,7 @@ function setBusy(busy) {
     ui.temperature, ui.topP, ui.seed, ui.apiKey, ui.imageSize, ui.imageSteps,
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
-    ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots]) {
+    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots]) {
     control.disabled = busy;
   }
   ui.dot.classList.toggle('busy', busy);
@@ -1524,7 +1551,7 @@ function videoConfig() {
 async function send() {
   if (running) return;
   const text = ui.prompt.value.trim();
-  if (!text && !attachedImage && !attachedAudio) {
+  if (!text && !attachedImage && !attachedVideo && !attachedAudio) {
     setStatus('Input required', false); ui.prompt.focus(); return;
   }
 
@@ -1540,10 +1567,11 @@ async function send() {
   if (!sessionID) sessionID = newSessionID();
 
   let userContent;
-  if (attachedImage || attachedAudio) {
+  if (attachedImage || attachedVideo || attachedAudio) {
     const parts = [];
     if (text) parts.push({ type: 'text', text });
     if (attachedImage) parts.push({ type: 'image_url', image_url: { url: attachedImage.dataURL } });
+    if (attachedVideo) parts.push({ type: 'video_url', video_url: { url: attachedVideo.dataURL } });
     if (attachedAudio) parts.push({ type: 'input_audio', input_audio: { data: attachedAudio.wavBase64, format: 'wav' } });
     userContent = parts;
   } else {
@@ -1615,10 +1643,13 @@ async function send() {
   const userLabel = [
     text,
     attachedImage ? `[Image: ${attachedImage.name}]` : '',
+    attachedVideo ? `[Video: ${attachedVideo.name}]` : '',
     attachedAudio ? `[Audio: ${attachedAudio.name}]` : '',
   ].filter(Boolean).join(' ');
   const sentImage = attachedImage;
+  const sentVideo = attachedVideo;
   attachedImage = null; ui.askImage.value = '';
+  attachedVideo = null; ui.askVideo.value = '';
   attachedAudio = null; ui.askAudio.value = '';
   renderAttachments();
 
@@ -1634,6 +1665,16 @@ async function send() {
     thumb.src = sentImage.dataURL;
     thumb.alt = sentImage.name;
     userTurn.artifacts.append(thumb);
+  }
+  if (sentVideo) {
+    const preview = document.createElement('video');
+    preview.src = sentVideo.dataURL;
+    preview.controls = true;
+    preview.muted = true;
+    preview.playsInline = true;
+    preview.style.maxWidth = '260px';
+    preview.style.maxHeight = '180px';
+    userTurn.artifacts.append(preview);
   }
   turn = addTurn('assistant', '');
   if (body.audio?.stream) player.begin(ui.voiceWave);

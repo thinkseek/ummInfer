@@ -184,6 +184,7 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
                          std::string& error) {
   size_t audio_count = 0;
   size_t image_count = 0;
+  size_t video_count = 0;
   size_t text_count = 0;
   has_audio = false;
   try {
@@ -207,7 +208,7 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
       for (const auto& part : content) {
         if (!part.is_object() || !part.contains("type") ||
             !part["type"].is_string()) {
-          error = "unified chat supports input_audio, image_url and text parts only";
+          error = "unified chat supports input_audio, image_url, video_url and text parts only";
           return false;
         }
         const std::string type = part["type"].get<std::string>();
@@ -225,6 +226,33 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
           }
           continue;
         }
+        if (type == "video_url") {
+          if (!part.contains("video_url") || !part["video_url"].is_object() ||
+              !part["video_url"].contains("url") ||
+              !part["video_url"]["url"].is_string() ||
+              part["video_url"]["url"].get<std::string>().empty()) {
+            error = "video_url part requires a nonempty video_url.url";
+            return false;
+          }
+          const std::string& url = part["video_url"]["url"].get_ref<const std::string&>();
+          const size_t comma = url.find(',');
+          if (url.rfind("data:video/", 0) != 0 || comma == std::string::npos ||
+              url.substr(0, comma).find(";base64") == std::string::npos) {
+            error = "video_url.url must be a data:video/...;base64,... URL";
+            return false;
+          }
+          const std::string decoded =
+              util::base64_decode(url.substr(comma + 1), 32u << 20);
+          if (decoded.empty()) {
+            error = "video_url.url payload must be non-empty";
+            return false;
+          }
+          if (++video_count > 1) {
+            error = "unified chat accepts at most one video_url part";
+            return false;
+          }
+          continue;
+        }
         if (type == "text") {
           if (!part.contains("text") || !part["text"].is_string() ||
               part["text"].get<std::string>().empty()) {
@@ -238,7 +266,7 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
           continue;
         }
         if (type != "input_audio") {
-          error = "unified chat supports input_audio, image_url and text parts only";
+          error = "unified chat supports input_audio, image_url, video_url and text parts only";
           return false;
         }
         ++audio_count;
@@ -263,6 +291,10 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
     error = exc.what();
     return false;
   }
+  if (image_count > 0 && video_count > 0) {
+    error = "unified chat cannot combine image_url and video_url in one turn";
+    return false;
+  }
   if (audio_count > 1) {
     error = "unified chat accepts at most one input_audio part";
     return false;
@@ -273,8 +305,8 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
       return false;
     }
     has_audio = true;
-  } else if (text_count == 0 && image_count == 0) {
-    error = "unified chat without input_audio requires text or image content";
+  } else if (text_count == 0 && image_count == 0 && video_count == 0) {
+    error = "unified chat without input_audio requires text, image or video content";
     return false;
   }
   return true;

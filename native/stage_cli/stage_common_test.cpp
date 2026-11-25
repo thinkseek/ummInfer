@@ -116,6 +116,36 @@ void test_tts_work() {
   img_edit["image"] = Value("data:image/png;base64,AAAA");
   check(throws_protocol([&] { (void)umminfer::stage::parse_image_work(Value(img_edit)); }),
         "native Qwen-Image parse_image_work rejects inputs.image editing");
+
+  // Native Qwen3.8 video_url parsing & mutual exclusion with image_url.
+  Value::Map vpart;
+  vpart["type"] = Value("video_url");
+  vpart["video_url"] = Value(Value::Map{{"url", Value("data:video/mp4;base64,AAAA")}});
+  Value::Map tpart;
+  tpart["type"] = Value("text");
+  tpart["text"] = Value("what moves?");
+  Value::Map vmsg;
+  vmsg["role"] = Value("user");
+  vmsg["content"] = Value::Array{Value(vpart), Value(tpart)};
+  Value::Map vwork;
+  vwork["messages"] = Value::Array{Value(vmsg)};
+  const auto parsed_vid = umminfer::stage::parse_qwen38_work(Value(vwork));
+  check(parsed_vid.video_url == "data:video/mp4;base64,AAAA" &&
+            parsed_vid.messages.size() == 1 && parsed_vid.messages[0].has_video,
+        "qwen38 parses video_url content part");
+
+  Value::Map ipart;
+  ipart["type"] = Value("image_url");
+  ipart["image_url"] = Value(Value::Map{{"url", Value("data:image/png;base64,AAAA")}});
+  Value::Map both_msg;
+  both_msg["role"] = Value("user");
+  both_msg["content"] = Value::Array{Value(ipart), Value(vpart)};
+  Value::Map both_work;
+  both_work["messages"] = Value::Array{Value(both_msg)};
+  check(throws_protocol([&] {
+          (void)umminfer::stage::parse_qwen38_work(Value(both_work));
+        }),
+        "qwen38 rejects combining image_url and video_url in one turn");
 }
 
 void test_tts_result() {

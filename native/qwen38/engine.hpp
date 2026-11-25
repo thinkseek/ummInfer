@@ -120,6 +120,8 @@ struct ChatTurn {
   std::string role;
   std::string text;
   bool has_image = false;
+  int video_slices = 0;
+  std::vector<double> video_timestamps;
 };
 
 std::string render_chat_prompt(const std::string& user_text, bool has_image,
@@ -142,5 +144,10 @@ RenderedChatPrompt render_chat_prompt_parts(const std::vector<ChatTurn>& turns,
                                             bool enable_thinking);
 // Expand a single image_pad placeholder to n_tokens copies.
 std::vector<int> expand_image_pads(const std::vector<int>& ids, int n_tokens);
+// Expand each video_pad placeholder to n_tokens_per_slice copies (one per
+// temporal slice in Qwen3.5/Qwen3.8 timestamp-separated video prompts).
+std::vector<int> expand_video_pads(const std::vector<int>& ids,
+                                   int n_tokens_per_slice,
+                                   int expected_slices = 0);
 
 }  // namespace umminfer::qwen38

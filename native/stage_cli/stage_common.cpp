@@ -66,6 +66,22 @@ void take_image_part(const Value& part, std::string_view stage_name,
   work.image_url = url->as_str();
 }
 
+void take_video_part(const Value& part, std::string_view stage_name,
+                     OmniWork& work) {
+  const Value* video = part.find("video_url");
+  if (video == nullptr || !video->is_map()) {
+    bad("video_url part requires a video_url map");
+  }
+  const Value* url = video->find("url");
+  if (url == nullptr || !url->is_str() || url->as_str().empty()) {
+    bad("video_url part requires a nonempty url");
+  }
+  if (!work.video_url.empty()) {
+    bad(std::string(stage_name) + " stage accepts at most one video");
+  }
+  work.video_url = url->as_str();
+}
+
 OmniWork parse_vlm_work(const Value& work, std::string_view stage_name,
                         bool text_and_image_only) {
   const Value& inputs = unwrap_inputs(work);
@@ -134,9 +150,9 @@ OmniWork parse_vlm_work(const Value& work, std::string_view stage_name,
         const Value* type = part.find("type");
         if (type == nullptr || !type->is_str()) bad("content part requires a type");
         const std::string& kind = type->as_str();
-        if (kind == "text" || kind == "image_url") continue;
+        if (kind == "text" || kind == "image_url" || kind == "video_url") continue;
         bad(std::string(stage_name) + " stage does not support content part type '" +
-            kind + "': text and image_url only; audio goes through the ASR stage");
+            kind + "': text, image_url and video_url only; audio goes through the ASR stage");
       }
     }
     std::string joined;
@@ -146,6 +162,9 @@ OmniWork parse_vlm_work(const Value& work, std::string_view stage_name,
       if (type->as_str() == "image_url") {
         take_image_part(part, stage_name, out);
         turn.has_image = true;
+      } else if (type->as_str() == "video_url") {
+        take_video_part(part, stage_name, out);
+        turn.has_video = true;
       }
     }
     if (has_text) {
@@ -155,8 +174,12 @@ OmniWork parse_vlm_work(const Value& work, std::string_view stage_name,
     }
     out.messages.push_back(std::move(turn));
   }
-  if (!have_text && out.image_url.empty()) {
-    bad(std::string(stage_name) + " inputs require text or an image");
+  if (!out.image_url.empty() && !out.video_url.empty()) {
+    bad(std::string(stage_name) +
+        " stage cannot combine image_url and video_url in one turn");
+  }
+  if (!have_text && out.image_url.empty() && out.video_url.empty()) {
+    bad(std::string(stage_name) + " inputs require text, an image, or a video");
   }
   return out;
 }
@@ -668,6 +691,13 @@ std::string decode_data_url(const std::string& url) {
 std::string load_image_bytes(const std::string& url) {
   if (!starts_with(url, "data:")) {
     bad("image url must be a base64 data: URL; http(s) and local file paths are rejected");
+  }
+  return decode_data_url(url);
+}
+
+std::string load_video_bytes(const std::string& url) {
+  if (!starts_with(url, "data:video/")) {
+    bad("video url must be a base64 data:video/... URL; http(s) and local file paths are rejected");
   }
   return decode_data_url(url);
 }

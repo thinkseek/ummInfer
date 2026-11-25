@@ -8627,6 +8627,125 @@ void test_public_http_narrative_sse() {
              "narrative SSE request stayed in flight");
 }
 
+// Wave 13: HTTP video_url content part passthrough to VLM & rejection of
+// malformed URLs or combining image_url + video_url in a single turn.
+void test_public_http_video_url_input() {
+  Harness h("videourl");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "video_url HTTP server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  const std::string url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                          "/v1/chat/completions";
+  const std::string data_vid = "data:video/mp4;base64,AAAAIGZ0eXBpc29t";
+
+  // 1. Valid video_url + text reaches VLM with video_url intact.
+  nlohmann::json ok_body = {
+      {"model", "qwen3-unified"},
+      {"stream", false},
+      {"messages", nlohmann::json::array({nlohmann::json{
+                       {"role", "user"},
+                       {"content",
+                        nlohmann::json::array({
+                            nlohmann::json{{"type", "video_url"},
+                                           {"video_url", {{"url", data_vid}}}},
+                            nlohmann::json{{"type", "text"},
+                                           {"text", "describe the clip"}},
+                        })}}})}};
+  auto fut = std::async(std::launch::async, [&] {
+    test_http::HttpRequest req;
+    req.url = url;
+    req.body = ok_body.dump();
+    req.headers.emplace("Content-Type", "application/json");
+    return test_http::perform(req);
+  });
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "video_url request did not reach VLM");
+  if (vlm) {
+    bool saw_video_part = false;
+    const StagePayload payload = StagePayload::from_value(vlm->data);
+    const Value* msgs = payload.request.inputs.find("messages");
+    if (msgs != nullptr && msgs->is_array()) {
+      for (const Value& m : msgs->as_array()) {
+        const Value* c = m.find("content");
+        if (c != nullptr && c->is_array()) {
+          for (const Value& p : c->as_array()) {
+            const Value* t = p.find("type");
+            const Value* vu = p.find("video_url");
+            if (t != nullptr && t->is_str() && t->as_str() == "video_url" &&
+                vu != nullptr && vu->is_map() && vu->find("url") != nullptr &&
+                vu->find("url")->as_str() == data_vid) {
+              saw_video_part = true;
+            }
+          }
+        }
+      }
+    }
+    check(saw_video_part, "VLM submission did not preserve video_url part");
+    h.complete(vlm->request_id, "vlm", true, text_result("A glowing lantern."));
+  }
+  const auto ok_res = fut.get();
+  check(ok_res.status == 200 &&
+            ok_res.body.find("A glowing lantern.") != std::string::npos,
+        "video_url HTTP request did not return VLM answer");
+
+  // 2. Rejects non-data video_url and image_url + video_url in the same turn.
+  const auto expect_400 = [&](const nlohmann::json& bad_body, const char* msg) {
+    bool rejected = false;
+    try {
+      test_http::HttpRequest req;
+      req.url = url;
+      req.body = bad_body.dump();
+      req.headers.emplace("Content-Type", "application/json");
+      (void)test_http::perform(req);
+    } catch (const client::Error& err) {
+      rejected = (err.status() == 400);
+    }
+    check(rejected, msg);
+  };
+
+  expect_400(
+      nlohmann::json{
+          {"model", "qwen3-unified"},
+          {"messages",
+           nlohmann::json::array({nlohmann::json{
+               {"role", "user"},
+               {"content",
+                nlohmann::json::array({nlohmann::json{
+                    {"type", "video_url"},
+                    {"video_url", {{"url", "https://example.com/a.mp4"}}}}})}}})}},
+      "non-data video_url was not rejected with 400");
+
+  expect_400(
+      nlohmann::json{
+          {"model", "qwen3-unified"},
+          {"messages",
+           nlohmann::json::array({nlohmann::json{
+               {"role", "user"},
+               {"content",
+                nlohmann::json::array({
+                    nlohmann::json{
+                        {"type", "image_url"},
+                        {"image_url", {{"url", "data:image/png;base64,AAAA"}}}},
+                    nlohmann::json{{"type", "video_url"},
+                                   {"video_url", {{"url", data_vid}}}},
+                })}}})}},
+      "combining image_url and video_url was not rejected with 400");
+
+  api.stop();
+  server_thread.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "video_url request stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -8738,6 +8857,7 @@ int main() {
   RUN(test_public_http_narrative_validation());
   RUN(test_public_http_visual_render());
   RUN(test_public_http_narrative_sse());
+  RUN(test_public_http_video_url_input());
   RUN(test_control_message_parse_contract());
   RUN(test_energy_vad_speech_transitions());
   RUN(test_stage_submit_fallback_and_failure_completion());

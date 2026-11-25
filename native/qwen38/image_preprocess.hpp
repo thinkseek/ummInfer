@@ -27,6 +27,14 @@ PreprocessedImage preprocess_image(const std::string& path, int min_pixels = 655
 PreprocessedImage preprocess_rgb(const uint8_t* rgb, int src_h, int src_w,
                                  int min_pixels, int max_pixels);
 
+// Native Qwen3.5/Qwen3.8 video preprocessor: packs 2*grid_t uniformly sampled
+// RGB frames (odd counts duplicate the final frame) into temporal-2 16x16
+// merged patch slices bounded by max_total_patches <= 4096.
+PreprocessedImage preprocess_video_frames(
+    const std::vector<std::vector<uint8_t>>& frames, int src_h, int src_w,
+    int min_pixels = 32768, int max_frame_pixels = 131072,
+    int max_total_patches = 3584);
+
 // Decode + bicubic resize only; returns HxWx3 uint8-equivalent floats.
 std::vector<float> resize_image_rgb(const uint8_t* rgb, int src_h, int src_w,
                                     int dst_h, int dst_w);
