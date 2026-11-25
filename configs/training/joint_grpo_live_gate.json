@@ -1,0 +1,73 @@
+{
+  "config_schema_version": 1,
+  "config_type": "joint_grpo_live_gate",
+  "description": "Bounded real Stage C joint-GRPO optimizer acceptance gate; full-parameter clipped GRPO over verified deterministic schema-v2 rollout groups.",
+  "ablation_profile": "joint_full",
+  "model": {
+    "base_model_placeholder": "Qwen/Qwen2.5-0.5B-Instruct",
+    "reference_policy_placeholder": "${BASE_MODEL}",
+    "dtype": "bfloat16",
+    "attn_implementation": "eager",
+    "gradient_checkpointing": false,
+    "trust_remote_code": false
+  },
+  "peft": {
+    "method": "none",
+    "r": 0,
+    "lora_alpha": 0,
+    "lora_dropout": 0.0,
+    "bias": "none",
+    "target_modules": []
+  },
+  "span_loss_weights": {
+    "narrative_prose": 1.0,
+    "visual_route_tag": 1.5,
+    "visual_prompt_body": 1.0,
+    "spoken_style": 1.0,
+    "image_form_multiplier": 1.0,
+    "video_form_multiplier": 1.0
+  },
+  "grpo": {
+    "clip_eps": 0.2,
+    "kl_coef": 0.04,
+    "advantage_eps": 0.0,
+    "group_size": 3,
+    "zero_std_policy": "zero_advantage",
+    "old_policy": "frozen_initial_base_model",
+    "reference_policy": "frozen_initial_base_model",
+    "ratio_computation": "span_weighted_target_mean_sequence_logp",
+    "surrogate_normalization": "rollout_mean",
+    "log_ratio_clamp": 20.0,
+    "max_prompt_length": 128,
+    "max_length": 256
+  },
+  "reward": {
+    "spec": "umminfer_ablation_metrics:NarrativeRoutingReward",
+    "export_only": true,
+    "description": "Schema-v2 export-only modality-routing set F1 minus multiset redundant-slot rate; labels and predictions are read only from the export."
+  },
+  "optimization": {
+    "learning_rate": 0.0001,
+    "lr_scheduler": "constant",
+    "warmup_ratio": 0.0,
+    "weight_decay": 0.0,
+    "max_grad_norm": 1.0,
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 1,
+    "num_train_epochs": 1,
+    "max_seq_len": 256,
+    "seed": "umminfer-stage-c-joint-grpo-live-gate-v1"
+  },
+  "micro_step_reference": {
+    "sft_learning_rate": 0.15,
+    "dpo_learning_rate": 0.25,
+    "grpo_learning_rate": 0.15,
+    "grad_clip": 5.0,
+    "vocab_buckets": 32,
+    "feature_dim": 32
+  },
+  "isolation": {
+    "decoupled_from_cpp_serving": true,
+    "real_training_requires_gpu_launch": true
+  }
+}

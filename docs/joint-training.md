@@ -177,9 +177,7 @@ image, visual-scene video/auto, and mixed narrative beats, 2 contrasting rollout
 per prompt) to `POST /v1/chat/completions` (`stream: true`), parses the live SSE
 stream into verified schema-v2 JSONL records with local CAS media artifacts, and
 executes the identical SFT -> Preference -> Leakage Audit -> Joint Trainer
-pipeline end-to-end (`source_mode: "live_capture"`, `REAL_TRAINING: "NOT_RUN"`).
-The bounded real SFT and DPO optimizer adapters below are separate opt-in
-commands and do not contact this capture endpoint:
+pipeline end-to-end (`source_mode: "live_capture"`, `REAL_TRAINING: "NOT_RUN"`):
 
 ```text
 python3 -I tools/umminfer_stage_c_pipeline.py \
@@ -198,6 +196,7 @@ Run the offline CPU-only contract tests:
 python3 -m unittest tests/stage_c_pipeline_test.py tests/sft_dataset_test.py tests/joint_trainer_test.py
 python3 -I tests/joint_sft_live_test.py
 python3 -I tests/joint_dpo_live_test.py
+python3 -I tests/joint_grpo_live_test.py
 ```
 
 | Capability | Status | Notes |
@@ -209,7 +208,7 @@ python3 -I tests/joint_dpo_live_test.py
 | End-to-end trajectory -> pack -> ablation-matrix dry-run driver | **COVERED** | `tools/umminfer_stage_c_pipeline.py` + `tests/stage_c_pipeline_test.py` |
 | Real joint-SFT optimizer gate | **PASS (SM90)** | Two real AdamW steps, changed finite parameters, exact resume equivalence, and invalid-input rejection; see measured record below |
 | Real joint-DPO optimizer gate | **PASS (SM90)** | Two real sigmoid-DPO AdamW steps, policy/reference log-probabilities, independent chosen/rejected masks, exact resume equivalence, and pre-import malformed/crossed-pair rejection |
-| Real GRPO GPU training run | **`NOT_RUN`** | No group-relative preference optimizer step or model weight update claimed |
+| Real joint-GRPO optimizer gate | **PASS (SM90)** | Two complete export-bound three-rollout groups, clipped policy ratios + KL, finite AdamW updates, exact fresh-process resume, and six pre-import rejection gates |
 
 ## Bounded real joint-SFT optimizer gate
 
@@ -340,22 +339,22 @@ The separate bounded DPO gate is documented below.
 ## Bounded real joint-DPO optimizer gate
 
 `python/umminfer_joint_dpo_live.py` executes the existing Stage C DPO plan over
-verified schema-v2-derived preference pairs.  It reuses the dataset verifier,
+verified schema-v2-derived preference pairs. It reuses the dataset verifier,
 span masker, deterministic pair scheduler, HF offset masks, tensor fingerprints,
 and atomic checkpoint helpers; it does not duplicate the planner or trainer and
-does not depend on a serving process.  The narrow configuration in
+does not depend on a serving process. The narrow configuration in
 `configs/training/joint_dpo_live_gate.json` selects one local Qwen2 causal LM,
 full parameters, BF16 eager attention, one pair per step, constant LR, zero
 weight decay, sigmoid loss, and a frozen independent copy of the initial base
 model as reference.
 
 The deterministic fixture builds two pairs through the real schema-v2 recorder
-and preference dataset builder.  Chosen and rejected responses both contain
+and preference dataset builder. Chosen and rejected responses both contain
 clean prose, structured visual markers, on-disk-verified CAS artifacts, and
-completed terminal-leg bindings.  The gate independently audits prompt masking,
-route-tag, visual-prompt-body, and closing-delimiter weights on each side.  It
+completed terminal-leg bindings. The gate independently audits prompt masking,
+route-tag, visual-prompt-body, and closing-delimiter weights on each side. It
 recomputes pair identity and margins, and rejects malformed, crossed, or
-CAS-broken pairs before importing ML frameworks.  Each real step records finite
+CAS-broken pairs before importing ML frameworks. Each real step records finite
 loss, changed finite parameters, pre/post-update policy log-probabilities,
 frozen-reference log-probabilities, weighted sums and normalizers, beta, order
 and source/config/data/model/weight hashes, timing, and CUDA memory.
@@ -372,18 +371,19 @@ CUDA_VISIBLE_DEVICES=<idle-gpu> python3 -I tests/joint_dpo_live_test.py --live \
 
 The live harness compares two uninterrupted steps with a split-first process and
 a fresh-process resume, including exact model/optimizer/checkpoint hashes and
-all DPO log-probability evidence.  Model quality, generalized improvement,
-production-model training, GRPO, upstream revision verification, and vision or
-media forward execution remain **`NOT_RUN`**.
+all DPO log-probability evidence. At that DPO gate, model quality, generalized
+improvement, production-model training, GRPO, upstream revision verification,
+and vision or media forward execution remained **`NOT_RUN`**. The separate
+bounded GRPO gate is documented below.
 
 ### Measured SM90 DPO acceptance — 2026-11-26
 
 The gate ran on explicitly idle physical GPU 7 (NVIDIA H20, SM90), with
 `CUDA_VISIBLE_DEVICES=7`, exactly one visible logical `cuda:0`, deterministic
-algorithms, and `CUBLAS_WORKSPACE_CONFIG=:4096:8`.  Python 3.12.3, torch
-2.6.0+cu124, and Transformers 5.23.0 were recorded.  No server or network port
-was started or contacted.  Source commit was
-`8978945ba2e98feaa309b28ae02c841cfd0ac051`.  Runtime evidence is under
+algorithms, and `CUBLAS_WORKSPACE_CONFIG=:4096:8`. Python 3.12.3, torch
+2.6.0+cu124, and Transformers 5.23.0 were recorded. No server or network port
+was started or contacted. Source commit was
+`8978945ba2e98feaa309b28ae02c841cfd0ac051`. Runtime evidence is under
 `/tmp/umminfer-joint-dpo-live-19/evidence/`; `acceptance.json` SHA-256 is
 `84e61247e182a5c08ebd7c23300182f686ef792eb20efa3f3dd80d357e1f9bc0`.
 
@@ -399,7 +399,7 @@ was started or contacted.  Source commit was
 | DPO reference | Frozen independent copy of the initial base model, beta `0.1`, sigmoid loss, zero label smoothing, span-weighted target-mean log-probabilities; base/reference all-parameter SHA-256 `4b4c678c452575cbc29e0b80a86698fd07fdb83bc7c1b9710e50cfca13d06b9a` |
 
 Two uninterrupted full-parameter AdamW updates used LR `1e-4`, zero weight
-decay, and gradient clipping at `1.0`.  Every one of the 290 gradient tensors
+decay, and gradient clipping at `1.0`. Every one of the 290 gradient tensors
 was non-zero; all post-step parameters and metrics were finite.
 
 | Step / pair | Pre-update loss | Grad norm | Changed tensors / scalar parameters | Max absolute delta | Step wall ms | CUDA peak allocated / reserved bytes |
@@ -409,20 +409,20 @@ was non-zero; all post-step parameters and metrics were finite.
 
 At the initial step, policy and reference log-probabilities matched exactly on
 both sides: chosen `-4.336180686950684`, rejected `-5.1937127113342285`, implicit
-margin `0`, and loss `log(2)` within FP32 evaluation.  After step 1, chosen and
+margin `0`, and loss `log(2)` within FP32 evaluation. After step 1, chosen and
 rejected policy log-probabilities were `-8.367234230041504` and
 `-17.169437408447266`; the scaled margin increased by `0.7944671154022217` and
-post-update loss was `0.3728192778466993`.  Step 2 started with policy/reference
+post-update loss was `0.3728192778466993`. Step 2 started with policy/reference
 chosen log-probabilities `-7.120877265930176 / -4.153624057769775` and rejected
 `-9.917153358459473 / -5.279360771179199`; its scaled margin increased by
-`0.7519716262817383`, with post-update loss `0.3356916188548742`.  These are
+`0.7519716262817383`, with post-update loss `0.3356916188548742`. These are
 optimizer-direction measurements on two fixture pairs, not quality improvement.
 
 Step-1 prompt-masked/supervised tokens were `10/34` chosen and `10/24` rejected;
 route-tag/prompt-body/closing-delimiter tokens were `10/15/2` and `5/7/1`.
 Step-2 prompt-masked/supervised tokens were `12/39` chosen and `12/26` rejected;
 route-tag/prompt-body/closing-delimiter tokens were `10/16/2` and `5/7/1`.
-Every side had verified CAS-backed completed terminal legs.  Total uninterrupted
+Every side had verified CAS-backed completed terminal legs. Total uninterrupted
 run wall time, including hashing, post-update evaluation, and checkpoint writes,
 was `26,523.731 ms`.
 
@@ -433,16 +433,164 @@ optimizer-state SHA-256 was
 Step-1 and step-2 checkpoint SHA-256 values were
 `148fb996938fd34ace37e55d5c6db055d057d5a543bc518c95436e09c0d64368` and
 `d68bf3cf5609e24e97c9b630c7f1dc22a79fcfe50ffaf2f19ed78a9e6622b5c0`.
-The split-first process reproduced step 1 exactly.  A fresh process resumed its
+The split-first process reproduced step 1 exactly. A fresh process resumed its
 checkpoint and reproduced step 2 exactly: all compared losses, gradients,
 policy/reference log-probability blocks, masks, parameters, optimizer state, and
-both checkpoint hashes matched with zero mismatch fields.  Re-signed malformed
+both checkpoint hashes matched with zero mismatch fields. Re-signed malformed
 and crossed-pair processes each exited 2, emitted no ML-import marker, and
 created neither a success manifest nor a checkpoint.
 
 After all subprocesses exited, physical GPU 7 returned to 3 MiB used and 0%
-utilization, with no compute processes reported.  GPUs 2–6 and the resident
-service were not contacted or restarted.  The prior real SFT evidence is
-preserved unchanged.  GRPO, model quality, generalized improvement,
-production-model training, upstream revision verification, and vision/media
-forward execution remain **`NOT_RUN`**.
+utilization, with no compute processes reported. GPUs 2–6 and the resident
+service were not contacted or restarted. The prior real SFT evidence is
+preserved unchanged. At that DPO run, GRPO, model quality, generalized
+improvement, production-model training, upstream revision verification, and
+vision/media forward execution remained **`NOT_RUN`**.
+
+## Bounded real joint-GRPO optimizer gate
+
+`python/umminfer_joint_grpo_live.py` executes the existing Stage C GRPO plan over
+complete deterministic groups derived from schema-v2 exports. It reuses the
+dataset verifier and reward interface, whole-group scheduler, DPO/SFT response
+and HF-mask helpers, tensor fingerprints, and atomic checkpoint helpers. It does
+not replace the planner or trainer and never starts or contacts a serving
+process. The narrow configuration in
+`configs/training/joint_grpo_live_gate.json` selects one local Qwen2 causal LM,
+full parameters, BF16 eager attention, one whole group per step, constant LR,
+zero weight decay, `clip_eps=0.2`, `kl_coef=0.04`, and a frozen independent copy
+of the initial base as both old/behavior policy and KL reference.
+
+The objective matches the existing Stage C sequence-level GRPO numerical
+reference. For each rollout, a span-weighted target-mean log-probability gives
+`ratio = exp(clamp(policy_logp - old_logp, -20, 20))`; the clipped surrogate is
+averaged over rollouts and combined with the non-negative Schulman KL
+approximation. The old policy remains the frozen initial base across this
+bounded offline gate; it is not silently refreshed after step 1. Cached
+old/reference log-probabilities and the behavior-model fingerprint are saved in
+each checkpoint and recomputed for comparison before resume.
+
+The fixture contains two prompts and exactly three distinct rollouts per prompt:
+image+video, image-only, and two redundant image slots. Every rollout contains
+clean prose and structured visual markers with completed terminal legs and real
+on-disk CAS artifacts. Before any ML import, the adapter:
+
+- rehashes the exact source JSONL inputs against the dataset manifest and
+  independently revalidates every schema-v2 event, terminal, hash, and CAS byte;
+- recomputes `NarrativeRoutingReward` from each export and records its set-F1,
+  redundancy, expected/predicted-modality, and source-terminal components;
+- requires one-to-one source/pack membership, distinct targets and provenance,
+  exact configured group size, contiguous ranks, deterministic score/provenance
+  order, and a group ID bound to ordered target hashes;
+- recomputes the population baseline/std and normalized advantages, rejects a
+  zero-variance scheduled group, and binds the trained prompt text to the source;
+- validates every source record is consumed exactly once across the GRPO packs,
+  then applies the existing prompt/route/prompt-body/terminal HF masks.
+
+Default CPU preflight and opt-in live commands are:
+
+```text
+python3 -I tests/joint_grpo_live_test.py
+CUDA_VISIBLE_DEVICES=<idle-sm90-gpu> python3 -I tests/joint_grpo_live_test.py --live \
+  --model-path <local-qwen2.5-0.5b-instruct> \
+  --evidence-dir <new-evidence-dir> \
+  --source-commit <40-character-commit>
+```
+
+The live harness runs two uninterrupted steps, an independent split-first
+process stopped after step 1, and a fresh process resumed into a separate output
+directory. It compares losses, gradients, ordered groups/rollouts, all reward and
+mask audits, policy ratios/KL, parameter/optimizer/behavior hashes, and both
+checkpoint byte hashes. Six additional re-signed-pack processes cover invalid
+groups, missing and duplicate rollouts, numeric NaN rewards, tampered finite
+rewards, and terminal/hash inconsistencies; each must fail before the ML-import
+marker and create neither a success manifest nor a checkpoint.
+
+### Measured SM90 GRPO acceptance — 2026-11-26
+
+The gate ran on explicitly idle physical GPU 7 (NVIDIA H20, SM90), with
+`CUDA_VISIBLE_DEVICES=7`, exactly one visible logical `cuda:0`, device capability
+`(9, 0)`, deterministic algorithms, and `CUBLAS_WORKSPACE_CONFIG=:4096:8`.
+Python 3.12.3, torch 2.6.0+cu124, and Transformers 5.23.0 were recorded. No
+server or network port was started or contacted. Source commit was
+`19e1fba72d3ebadd7df196910175438f872e389b`. Runtime evidence is under
+`/tmp/umminfer-joint-grpo-live-21/evidence/`; `acceptance.json` SHA-256 is
+`480a7b4708fb023c10a12cac987daabcc456a8c2c498eed4229aa5597c2dc158`.
+
+| Item | Measured value |
+| --- | --- |
+| GRPO adapter / DPO helper / SFT helper / existing trainer SHA-256 | `a34e775f1bd5d104b662ecdf70ac062a4bdc0fb1365b6a94c05c4173ab06a691` / `6b72be4f7417562d5769ebc46943287ad28127a02c3fd27b12ac2cc88022fa77` / `f48c217e296d0f787f01ff7dcc3564aa9b8261495abeedf16baa12b010a634e8` / `2c0405d4a3a692aae31a4cc94d50e90e169f471038bac17dae94edeacf6725fd` |
+| Live test / dataset builder / trajectory / reward-metric SHA-256 | `1bf1a7559a1aea88c2880007326c3c396bbc0e534ebab2f60b44c99b5ef38163` / `1742eb39d611f4affce14b6205b4d750fc7c242e6c4ca56a4fe1977d981bd348` / `3307e3b84156b4b6effce8506c48876051f4d0f9962b7af1247a572f43b517e9` / `9b5e387933aad5c3a6252178562185bd3d9d0e07bf15e62b494432e7ee9eb5a4` |
+| Exact config / resolved config SHA-256 | `5fe53f6b7aa29ca9c7389ee00f8819978aa50b977f1c5d9c4c2f46828f1a3ce4` / `63938049b83918b1c3ff977a65bab42fad9558700596cba28a8878151c8e2a32` |
+| Schema-v2 fixture / dataset manifest / two-group GRPO train SHA-256 | `0458c07e095c6210bc4c33cd297fc94cecabf921819de702227e17e1ac475a65` / `66f8972c7ed429f67a020b4982f6bbfb4b811ab82453444a51dff419cd3da067` / `e24f024493c78f8bc8628a971a3aaae7d34a1942715b99882ef85d95b2d010aa` |
+| Model and available weights | Qwen2.5-0.5B-Instruct; revision `UNKNOWN`; `model.safetensors` 988,097,824 bytes, SHA-256 `fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe`; available-weight-set SHA-256 `0d79ed576a7c2e115025787de0f0536c260affeaeb73f6c8022141290609eec7` |
+| Seeds | Fixture `joint-grpo-live-fixture-v1`; optimizer `umminfer-stage-c-joint-grpo-live-gate-v1`; derived uint31 `960949850` |
+| Schedule / group-order SHA-256 | `4e728b95f0073346802f3dba8a12ae611a76d4d4494ab8cf284dfe3b2229ecec` / `c492fd2a2b5691477b5b5510c7fb4a02c7f4d7f56feaf2beb3edc0d822d77371` |
+| Objective | Frozen initial base as old+reference; weighted-target-mean sequence ratio; rollout-mean clipped surrogate; clip `0.2`; KL coefficient `0.04`; log-ratio/KL clamp `20.0` |
+
+Each group's export-derived rank-0/1/2 rewards were respectively `1.0`,
+`0.6666666666666666`, and `0.16666666666666663`. Their F1 components were
+`1.0`, `2/3`, and `2/3`; redundant-slot rates were `0`, `0`, and `0.5`.
+Population baseline/std were `0.611111111111111 / 0.3424674446093876`, and
+ordered normalized advantages were
+`[1.135549947915338, 0.1622214211307626, -1.2977713690461001]`.
+
+| Step | Group ID | Ordered rollout IDs (best / partial / redundant) | Group / membership order SHA-256 |
+| --- | --- | --- | --- |
+| 1 | `ef44963f41c433592613107f8354dd74` | `66568b201c2f9261659e6594fffcb21b` / `17f4942856a627b83b9579d0f9f91906` / `960df4e260034a056f833db5a2aa85c7` | `b8c4df6c109a237d5dfb759f7f3bc7632d0cc158be71599993099b2a2c135bf8` / `851d60020d99d1a06aaac41da6437d5543e8f432dd9cd6d75cf188aa0af4c7d2` |
+| 2 | `039e01981969c6e2164f50b79bb33ee6` | `3b2137f2f23de9fe7bfd0f686856c226` / `481f6ae6a0cd642163f26c106f315e07` / `7f33acb951aaa282795ef3f0b198e572` | `3cfba510424c80841271e39da17fb2f71cd4a04d7060516138aad599a287b3f5` / `6af27d6779d52106eba78e2b23beeb2c67b95082090290c2b84e65101e3a1931` |
+
+Two uninterrupted full-parameter AdamW updates used LR `1e-4`, zero weight
+decay, and gradient clipping at `1.0`. Every one of the 290 gradient tensors was
+non-zero on both steps; all metrics and post-step parameters were finite.
+
+| Step | Pre-update loss | Post-update loss | Grad norm | Changed tensors / scalar parameters | Max absolute delta | Step wall ms | CUDA peak allocated / reserved bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 4.967053879312289e-09 | 1.2877223492189325 | 32.75 | 254 / 341,486,883 | 0.0001220703125 | 2,080.076 | 6,269,683,200 / 6,889,144,320 |
+| 2 | 0.44793424010276794 | 0.12280015869104227 | 88.5 | 252 / 281,449,704 | 0.0001220703125 | 1,893.023 | 6,781,109,760 / 8,057,257,984 |
+
+| Step | Mean policy ratio pre → post | Mean KL pre → post | Clip fraction pre → post |
+| --- | ---: | ---: | ---: |
+| 1 | `1.0 → 0.41552761728517856` | `0.0 → 31.783343393459358` | `0.0 → 0.3333333333333333` |
+| 2 | `0.6836801035517396 → 3.9505230142849093` | `11.938733363059441 → 0.580464061061047` | `0.6666666666666666 → 0.6666666666666666` |
+
+The first pre-update loss is approximately zero because normalized advantages
+sum to zero at unit ratios and zero KL; its non-zero real gradients still produce
+a measured parameter update. The first post-update objective increases, while
+the second decreases. These are recorded optimizer mechanics on two static
+fixture groups, not a monotonic-training or model-quality claim. Total
+uninterrupted wall time, including behavior-logp caching, post-update evaluation,
+hashing, and checkpoint writes, was `27,146.972 ms`.
+
+Step-1 best/partial/redundant prompt-masked/supervised tokens were `10/34`,
+`10/25`, and `10/39`; route-tag/prompt-body/closing-delimiter tokens were
+`10/15/2`, `5/10/1`, and `10/20/2`. Step-2 corresponding supervised counts were
+`12/39`, `12/30`, and `12/47`; structured counts were `10/16/2`, `5/12/1`, and
+`10/24/2`. The full evidence includes input-ID, label, loss-weight, and
+membership hashes for every rollout.
+
+Base, step-1, and final all-parameter SHA-256 values were respectively
+`4b4c678c452575cbc29e0b80a86698fd07fdb83bc7c1b9710e50cfca13d06b9a`,
+`e969633afce2ffcf2d3cd0bccdc98be1172815457a93c7c6773f8c0234ee849f`, and
+`b1ce0dd8e96b780142de33b5016049f95ac1a8108891ad55e361f16dff002d18`.
+The behavior/reference fingerprint remained the base hash throughout. Final
+optimizer-state SHA-256 was
+`fb1924934bf43ca1d95a8af943a9cbad381b033cbc9fdb3832256bbcc5a421a5`.
+Step-1 and step-2 checkpoint SHA-256 values were
+`a519e5364f1dc27fa88849903da1fa72854d3588ba4ced11ca6323934191858a` and
+`e0bffea20e4fb375322584aff026e9ac714f156295ce8be041c9ec1e343d7806`.
+
+The split-first process reproduced step 1 and its checkpoint exactly. Its fresh
+process revalidated the cached old/reference log-probabilities, resumed step 2,
+and reproduced every compared field and the second checkpoint with zero mismatch
+fields. Final parameter and optimizer hashes matched the uninterrupted run. All
+six rejection processes exited 2 before ML import or optimizer execution and
+created neither a success manifest nor a checkpoint. CPU preflights additionally
+cover reordered rollouts, infinite advantages, advantage/prompt/target tampering,
+and actual source-export/CAS byte changes.
+
+After all subprocesses exited, physical GPU 7 returned to 3 MiB used and 0%
+utilization with no compute processes. No training work was submitted to GPUs
+0/1 or 2–6, and the resident service was not contacted or restarted. Prior real
+SFT and DPO evidence is preserved unchanged. Online rollout generation, model
+quality, generalized improvement, production-model training, upstream revision
+verification, and vision/media forward execution remain **`NOT_RUN`**.
