@@ -3,7 +3,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <thread>
+
+#include "decode_helpers.hpp"
 
 namespace umminfer::native {
 namespace {
@@ -100,7 +103,6 @@ MelFeatures WhisperMel::compute(const std::vector<float>& samples_in) const {
   for (int i = 0; i < real; ++i) wave[i] = static_cast<double>(samples_in[i]);
 
   // STFT with center=True, reflect padding (numpy convention: edge not repeated).
-  const int padded_len = kChunkSamples + 2 * (kNfft / 2);
   auto at = [&](int idx) -> double {
     if (idx >= kNfft / 2 && idx < kNfft / 2 + kChunkSamples)
       return wave[idx - kNfft / 2];
@@ -109,34 +111,48 @@ MelFeatures WhisperMel::compute(const std::vector<float>& samples_in) const {
     return wave[2 * kChunkSamples - 2 - d];                    // right reflect
   };
 
-  const int raw_frames = 1 + (padded_len - kNfft) / kHop;  // 3001 for a full chunk
-  std::vector<double> power(static_cast<size_t>(raw_frames) * kFftBins, 0.0);
+  // Frames at t >= active_frames see exclusively zero samples in `wave` and
+  // therefore produce exact power == 0.0 and log10(1e-10) == -10.0 across all
+  // mel bands. Computing only [0, active_frames) is bit-identical to running
+  // all 3001 STFT frames while avoiding ~10-30x wasted work on short clips.
+  const int active_frames =
+      asr_mel_active_frames(real, kChunkFrames, kNfft, kHop);
+  std::vector<double> power(static_cast<size_t>(active_frames) * kFftBins, 0.0);
 
-  const int threads = std::min(8, static_cast<int>(std::thread::hardware_concurrency()));
-  auto worker = [&](int t0, int t1) {
-    std::vector<double> frame(kNfft);
-    for (int t = t0; t < t1; ++t) {
-      const int center = t * kHop;
-      for (int n = 0; n < kNfft; ++n)
-        frame[n] = at(center + n) * static_cast<double>(window_[n]);
-      for (int k = 0; k < kFftBins; ++k) {
-        double re = 0.0, im = 0.0;
-        const int base = k * kNfft;
-        for (int n = 0; n < kNfft; ++n) {
-          re += frame[n] * dft_cos_[base + n];
-          im -= frame[n] * dft_sin_[base + n];
+  if (active_frames > 0) {
+    const int hw = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+    const int threads = std::min({8, hw, active_frames});
+    auto worker = [&](int t0, int t1) {
+      std::vector<double> frame(kNfft);
+      for (int t = t0; t < t1; ++t) {
+        const int center = t * kHop;
+        for (int n = 0; n < kNfft; ++n)
+          frame[n] = at(center + n) * static_cast<double>(window_[n]);
+        for (int k = 0; k < kFftBins; ++k) {
+          double re = 0.0, im = 0.0;
+          const float* cos_row = dft_cos_.data() + k * kNfft;
+          const float* sin_row = dft_sin_.data() + k * kNfft;
+          for (int n = 0; n < kNfft; ++n) {
+            re += frame[n] * cos_row[n];
+            im -= frame[n] * sin_row[n];
+          }
+          power[static_cast<size_t>(t) * kFftBins + k] = re * re + im * im;
         }
-        power[static_cast<size_t>(t) * kFftBins + k] = re * re + im * im;
       }
+    };
+    if (threads <= 1) {
+      worker(0, active_frames);
+    } else {
+      std::vector<std::thread> pool;
+      pool.reserve(threads);
+      for (int i = 0; i < threads; ++i) {
+        const int t0 = active_frames * i / threads;
+        const int t1 = active_frames * (i + 1) / threads;
+        if (t1 > t0) pool.emplace_back(worker, t0, t1);
+      }
+      for (auto& th : pool) th.join();
     }
-  };
-  std::vector<std::thread> pool;
-  for (int i = 0; i < threads; ++i) {
-    const int t0 = raw_frames * i / threads;
-    const int t1 = raw_frames * (i + 1) / threads;
-    if (t1 > t0) pool.emplace_back(worker, t0, t1);
   }
-  for (auto& th : pool) th.join();
 
   // Mel projection + log, dropping the final STFT frame like Whisper.
   MelFeatures out;
@@ -144,14 +160,17 @@ MelFeatures WhisperMel::compute(const std::vector<float>& samples_in) const {
   out.valid_frames = valid_frame_count(real);
   out.data.assign(static_cast<size_t>(kMels) * kChunkFrames, 0.0f);
 
-  double log_max = -std::numeric_limits<double>::infinity();
-  std::vector<double> logmel(static_cast<size_t>(kMels) * kChunkFrames);
-  for (int t = 0; t < kChunkFrames; ++t) {
+  const double kZeroLog = std::log10(1e-10);
+  double log_max = active_frames < kChunkFrames
+                       ? kZeroLog
+                       : -std::numeric_limits<double>::infinity();
+  std::vector<double> logmel(static_cast<size_t>(kMels) * kChunkFrames, kZeroLog);
+  for (int t = 0; t < active_frames; ++t) {
+    const double* prow = power.data() + static_cast<size_t>(t) * kFftBins;
     for (int m = 0; m < kMels; ++m) {
       double acc = 0.0;
       for (int b = 0; b < kFftBins; ++b)
-        acc += static_cast<double>(mel_bank_[b * kMels + m]) *
-               power[static_cast<size_t>(t) * kFftBins + b];
+        acc += static_cast<double>(mel_bank_[b * kMels + m]) * prow[b];
       if (acc < 1e-10) acc = 1e-10;
       const double v = std::log10(acc);
       logmel[static_cast<size_t>(m) * kChunkFrames + t] = v;

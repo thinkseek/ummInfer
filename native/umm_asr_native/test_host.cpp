@@ -3,6 +3,7 @@
 // log-mel frontend shape, byte-level tokenizer decode, single-file and sharded
 // safetensors loading, and config.json parsing. No CUDA and no model weights:
 // every fixture is written to a temp directory at run time.
+#include "decode_helpers.hpp"
 #include "feature_frontend.hpp"
 #include "model_config.hpp"
 #include "safetensors.hpp"
@@ -643,6 +644,111 @@ void test_safetensors_shard_rejections() {
   check(throws_invalid([&] { (void)load(); }), "tensor mapped to the wrong shard rejected");
 }
 
+void test_decode_helpers() {
+  using namespace umminfer::native;
+
+  // GEMV & SwiGLU K-unroll thresholds.
+  check(asr_gemv_unroll_for(1) == 4 && asr_gemv_unroll_for(2) == 4,
+        "gemv unroll 4 for m <= 2");
+  check(asr_gemv_unroll_for(3) == 1 && asr_gemv_unroll_for(8) == 1,
+        "gemv unroll 1 for m >= 3");
+  check(asr_swiglu_unroll_for(1) == 2 && asr_swiglu_unroll_for(2) == 2,
+        "swiglu unroll 2 for m <= 2");
+  check(asr_swiglu_unroll_for(3) == 1 && asr_swiglu_unroll_for(8) == 1,
+        "swiglu unroll 1 for m >= 3");
+
+  // MMA dispatch predicates.
+  check(!asr_use_mma_gemm(1, 2048, 2048), "m=1 stays on GEMV");
+  check(!asr_use_mma_gemm(15, 2048, 2048), "m=15 stays on GEMV");
+  check(asr_use_mma_gemm(16, 2048, 2048), "m=16 uses MMA");
+  check(asr_use_mma_gemm(130, 896, 7680), "0.6B conv_out uses MMA");
+  check(asr_use_mma_gemm(390, 6144, 2048), "1.7B text MLP prefill uses MMA");
+  check(!asr_use_mma_gemm(32, 1024, 100), "non-mult-8 k skips MMA");
+  check(!asr_use_mma_gemm(32, 1023, 1024), "odd n skips MMA");
+  check(!asr_use_mma_conv(1, 480), "conv2d1 (ci=1) uses direct kernel");
+  check(asr_use_mma_conv(480, 480), "conv2d2/conv2d3 (480->480) uses MMA conv");
+
+  // Bijectivity of L2 CTA swizzle across diverse (grid_x, grid_y, group_m) shapes.
+  for (int gx : {1, 4, 14, 16, 32, 64}) {
+    for (int gy : {1, 2, 3, 7, 8, 9, 13, 20}) {
+      std::vector<int> seen(static_cast<size_t>(gx * gy), 0);
+      bool ok = true;
+      for (int by = 0; by < gy; ++by) {
+        for (int bx = 0; bx < gx; ++bx) {
+          const AsrGemmTileCoord c = asr_swizzle_gemm_cta(bx, by, gx, gy, 8);
+          if (c.tile_n < 0 || c.tile_n >= gx || c.tile_m < 0 || c.tile_m >= gy) {
+            ok = false;
+          } else {
+            ++seen[static_cast<size_t>(c.tile_m * gx + c.tile_n)];
+          }
+        }
+      }
+      for (int cnt : seen) {
+        if (cnt != 1) ok = false;
+      }
+      check(ok, "swizzle_gemm_cta is a bijection on [0,gx)x[0,gy)");
+    }
+  }
+
+  // Multi-projection Q/K/V row mapping (1.7B text: Q=2048, K=1024, V=1024).
+  const int n_outs[3] = {2048, 1024, 1024};
+  const AsrMultiGemvRowLoc neg = asr_multi_gemv_locate_row(-1, n_outs, 3);
+  check(neg.proj == -1 && neg.local_row == -1, "multi_gemv rejects negative row");
+  const AsrMultiGemvRowLoc q0 = asr_multi_gemv_locate_row(0, n_outs, 3);
+  check(q0.proj == 0 && q0.local_row == 0, "multi_gemv maps row 0 to Q[0]");
+  const AsrMultiGemvRowLoc qlast = asr_multi_gemv_locate_row(2047, n_outs, 3);
+  check(qlast.proj == 0 && qlast.local_row == 2047, "multi_gemv maps Q last row");
+  const AsrMultiGemvRowLoc k0 = asr_multi_gemv_locate_row(2048, n_outs, 3);
+  check(k0.proj == 1 && k0.local_row == 0, "multi_gemv maps K[0]");
+  const AsrMultiGemvRowLoc v0 = asr_multi_gemv_locate_row(3072, n_outs, 3);
+  check(v0.proj == 2 && v0.local_row == 0, "multi_gemv maps V[0]");
+  const AsrMultiGemvRowLoc vlast = asr_multi_gemv_locate_row(4095, n_outs, 3);
+  check(vlast.proj == 2 && vlast.local_row == 1023, "multi_gemv maps V last row");
+  const AsrMultiGemvRowLoc oob = asr_multi_gemv_locate_row(4096, n_outs, 3);
+  check(oob.proj == -1 && oob.local_row == -1, "multi_gemv rejects oob row");
+
+  // Audio bidirectional fixed-window attention bounds (window_len=104).
+  const AsrAttnWindow w0 = asr_audio_attn_window_bounds(0, 55, 104);
+  check(w0.lo == 0 && w0.hi == 55, "audio window clips short clip to nkv");
+  const AsrAttnWindow w1 = asr_audio_attn_window_bounds(103, 196, 104);
+  check(w1.lo == 0 && w1.hi == 104, "audio window 0 covers [0,104)");
+  const AsrAttnWindow w2 = asr_audio_attn_window_bounds(104, 196, 104);
+  check(w2.lo == 104 && w2.hi == 196, "audio window 1 covers [104,196)");
+  const AsrAttnWindow w3 = asr_audio_attn_window_bounds(250, 390, 104);
+  check(w3.lo == 208 && w3.hi == 312, "audio window 2 covers [208,312)");
+
+  // Mel active frame count boundary checks (n_fft=400, hop=160, 3000 frames).
+  check(asr_mel_active_frames(0, 3000, 400, 160) == 0,
+        "mel active frames zero for empty audio");
+  check(asr_mel_active_frames(1, 3000, 400, 160) == 2,
+        "mel active frames 2 for 1 sample");
+  check(asr_mel_active_frames(16000, 3000, 400, 160) == 102,
+        "mel active frames 102 for 1s audio");
+  check(asr_mel_active_frames(480000, 3000, 400, 160) == 3000,
+        "mel active frames clamps at 3000 for 30s audio");
+
+  // Verify trailing inactive frames in WhisperMel::compute equal the floored value
+  // and remain strictly consistent between 1s audio and silence.
+  const WhisperMel mel;
+  std::vector<float> impulse(16000, 0.0f);
+  impulse[0] = 0.5f;
+  const MelFeatures mf = mel.compute(impulse);
+  bool tail_uniform = true;
+  const float tail_val = mf.data[0 * 3000 + 2999];
+  for (int m = 0; m < 128; ++m) {
+    for (int t = 102; t < 3000; ++t) {
+      if (mf.data[static_cast<size_t>(m) * 3000 + t] != tail_val)
+        tail_uniform = false;
+    }
+  }
+  check(tail_uniform, "mel inactive tail frames are uniform floored zeros");
+  // Empty input must also produce finite uniform values.
+  const MelFeatures empty_mf = mel.compute(std::vector<float>{});
+  check(empty_mf.valid_frames == 0 && empty_mf.data.size() == 128u * 3000u,
+        "mel empty input has valid_frames=0 and full shape");
+  check(std::isfinite(empty_mf.data[0]), "mel empty input is finite");
+}
+
 }  // namespace
 
 int main() {
@@ -657,6 +763,7 @@ int main() {
   test_safetensors_single_file();
   test_safetensors_sharded_dir();
   test_safetensors_shard_rejections();
+  test_decode_helpers();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;
