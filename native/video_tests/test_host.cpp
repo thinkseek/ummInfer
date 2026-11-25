@@ -611,6 +611,27 @@ void test_unipc_bh2_matches_diffusers() {
   check(rejected, "UniPC rejects out-of-range step index");
 }
 
+void test_wan_vae_causal_chunk_schedule() {
+  using namespace umminfer::video;
+  WanVaeConfig cfg;
+  cfg.temperal_downsample = {false, true, true};
+  const int64_t tf = wan_vae_temporal_factor(cfg);
+  check(tf == 4, "Wan2.2 temporal factor is 4");
+  check(wan_vae_decoded_frame_count(1, tf) == 1, "latent_t=1 -> 1 frame");
+  check(wan_vae_decoded_frame_count(4, tf) == 13, "latent_t=4 -> 13 frames");
+  check(wan_vae_decoded_frame_count(8, tf) == 29, "latent_t=8 -> 29 frames");
+  check(wan_vae_decoded_frame_count(20, tf) == 77, "latent_t=20 -> 77 frames");
+  check(wan_vae_decoded_frame_count(0, tf) == 0, "latent_t=0 -> 0 frames");
+
+  int64_t total = 0;
+  for (int64_t t = 0; t < 20; ++t) {
+    check(wan_vae_chunk_frame_offset(t, tf) == total,
+          "chunk frame offset is contiguous at latent step " + std::to_string(t));
+    total += wan_vae_chunk_frame_count(t, tf);
+  }
+  check(total == 77, "20 latent chunks sum cleanly to 77 frames");
+}
+
 }  // namespace
 
 int main() {
@@ -618,6 +639,7 @@ int main() {
       {"size_and_frame_alignment", test_size_and_frame_alignment},
       {"wan_config_loading", test_wan_config_loading},
       {"wan_vae_config_loading", test_wan_vae_config_loading},
+      {"wan_vae_causal_chunk_schedule", test_wan_vae_causal_chunk_schedule},
       {"safetensors_mmap", test_safetensors_mmap},
       {"sharded_safetensors_mmap", test_sharded_safetensors_mmap},
       {"umt5_tokenizer", test_umt5_tokenizer},

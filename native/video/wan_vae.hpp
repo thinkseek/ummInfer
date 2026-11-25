@@ -27,6 +27,35 @@ struct WanVaeConfig {
 
 WanVaeConfig load_wan_vae_config(const std::filesystem::path& vae_dir);
 
+// Exact temporal upsampling factor from temperal_downsample (4 for Wan2.2).
+inline int64_t wan_vae_temporal_factor(const WanVaeConfig& config) {
+  int64_t factor = 1;
+  for (bool up : config.temperal_downsample) {
+    if (up) factor *= 2;
+  }
+  return factor;
+}
+
+// Causal Wan2.2 VAE emits 1 frame for latent step 0 and `temporal_factor`
+// frames for every subsequent latent step.
+inline int64_t wan_vae_decoded_frame_count(int64_t latent_t,
+                                           int64_t temporal_factor) {
+  if (latent_t <= 0 || temporal_factor <= 0) return 0;
+  return 1 + (latent_t - 1) * temporal_factor;
+}
+
+inline int64_t wan_vae_chunk_frame_count(int64_t latent_index,
+                                         int64_t temporal_factor) {
+  if (latent_index < 0 || temporal_factor <= 0) return 0;
+  return latent_index == 0 ? 1 : temporal_factor;
+}
+
+inline int64_t wan_vae_chunk_frame_offset(int64_t latent_index,
+                                          int64_t temporal_factor) {
+  if (latent_index <= 0 || temporal_factor <= 0) return 0;
+  return 1 + (latent_index - 1) * temporal_factor;
+}
+
 struct WanVaeOutput {
   // FP32 NCHW video with one batch item, ordered channel, time, height, width.
   std::vector<int64_t> shape;

@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Wan2.2 AutoencoderKLWan decoder in FP32 CUDA.
 //
-// The decoder is a causal 3D convolutional network. Diffusers decodes one
-// latent frame at a time and keeps a 2-frame feature cache in every causal
-// convolution. For a non-streaming decode that cache is exactly causal
-// zero-padding on the left of the time axis, so the whole clip can be decoded
-// in one pass as long as the temporal upsamplers reproduce the reference's
-// first-chunk rule (frame 0 is emitted unchanged, every later input step is
-// split into two output steps after the causal time convolution). This file
-// implements that equivalent whole-sequence form.
+// The decoder is a causal 3D convolutional network. Like Diffusers
+// AutoencoderKLWan._decode, this file decodes one latent frame at a time and
+// keeps a 2-frame causal feature cache in every kd=3 convolution. That keeps
+// peak VRAM O(1) in clip length (e.g. 1280x704 77-frame fits comfortably on
+// one GPU without OOM) while remaining mathematically identical to whole-clip
+// causal decoding with zero spatial seams.
 #include "wan_vae.hpp"
 
 #ifdef UMM_VIDEO_CUDA
@@ -213,10 +211,12 @@ __global__ void denormalize_kernel(float* x, size_t positions, int64_t channels,
   x[index] = x[index] * std[channel] + mean[channel];
 }
 
-// im2col for a causal 3D convolution: left temporal padding of kd-1, symmetric
-// spatial padding of kh/2 and kw/2. Output matrix is [K, positions] row-major
-// with K = channels * kd * kh * kw.
-__global__ void im2col_causal_kernel(const float* input, float* columns,
+// im2col for a causal 3D convolution: left temporal padding of kd-1 (reading
+// from `cache` when provided, otherwise zeros) and symmetric spatial padding
+// of kh/2 and kw/2. Output matrix is [K, positions] row-major with
+// K = channels * kd * kh * kw.
+__global__ void im2col_causal_kernel(const float* input, const float* cache,
+                                     int64_t cache_time, float* columns,
                                      int64_t channels, int64_t time, int64_t height,
                                      int64_t width, int64_t kd, int64_t kh,
                                      int64_t kw, int64_t position_begin,
@@ -237,9 +237,15 @@ __global__ void im2col_causal_kernel(const float* input, float* columns,
         for (int64_t dx = 0; dx < kw; ++dx, ++k) {
           const int64_t iw = ow + dx - kw / 2;
           float value = 0.0f;
-          if (it >= 0 && it < time && ih >= 0 && ih < height && iw >= 0 &&
-              iw < width) {
-            value = input[((c * time + it) * height + ih) * width + iw];
+          if (ih >= 0 && ih < height && iw >= 0 && iw < width) {
+            if (it >= 0 && it < time) {
+              value = input[((c * time + it) * height + ih) * width + iw];
+            } else if (it < 0 && cache != nullptr) {
+              const int64_t ct = cache_time + it;
+              if (ct >= 0 && ct < cache_time) {
+                value = cache[((c * cache_time + ct) * height + ih) * width + iw];
+              }
+            }
           }
           columns[k * chunk_positions + local] = value;
         }
@@ -247,6 +253,29 @@ __global__ void im2col_causal_kernel(const float* input, float* columns,
     }
   }
 }
+
+__global__ void update_causal_cache_kernel(const float* old_cache,
+                                           const float* input,
+                                           float* next_cache, int64_t channels,
+                                           int64_t cache_time, int64_t in_time,
+                                           int64_t spatial) {
+  const size_t total = static_cast<size_t>(channels * cache_time * spatial);
+  const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= total) return;
+  const int64_t s = index % spatial;
+  const int64_t ct = (index / spatial) % cache_time;
+  const int64_t c = index / (cache_time * spatial);
+  const int64_t src = in_time + ct;
+  if (src < cache_time) {
+    next_cache[index] = old_cache[(c * cache_time + src) * spatial + s];
+  } else {
+    next_cache[index] = input[(c * in_time + (src - cache_time)) * spatial + s];
+  }
+}
+
+struct CausalCache {
+  Tensor frames;
+};
 
 __global__ void bias_chunk_kernel(float* x, int64_t positions,
                                   int64_t position_begin, int64_t chunk_positions,
@@ -276,7 +305,11 @@ class CudaContext {
 
 // out[o, n] = sum_k weight[o, k] * columns[k, n]. Position chunks cap the
 // temporary im2col allocation at 1 GiB; the output keeps full NCTHW strides.
-Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv) {
+// When `cache` is provided for a kd > 1 convolution, the left temporal context
+// is read from cache->frames and cache->frames is updated to the trailing kd-1
+// input frames.
+Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv,
+              CausalCache* cache = nullptr) {
   if (input.channels != conv.input_channels) {
     throw std::invalid_argument("convolution input channel mismatch");
   }
@@ -287,6 +320,15 @@ Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv) {
       conv.output_channels > std::numeric_limits<int>::max()) {
     throw std::overflow_error("convolution dimensions exceed cuBLAS limits");
   }
+  const bool use_cache = cache != nullptr && conv.kd > 1;
+  const int64_t cache_time = use_cache ? (conv.kd - 1) : 0;
+  if (use_cache && cache->frames.numel() == 0) {
+    cache->frames = Tensor(input.channels, cache_time, input.height, input.width);
+    UMM_CUDA(cudaMemset(cache->frames.data(), 0,
+                        cache->frames.numel() * sizeof(float)));
+  }
+  const float* cache_ptr = use_cache ? cache->frames.data() : nullptr;
+
   constexpr int64_t kMaxColumnElements = 1LL << 28;
   const int64_t chunk_capacity =
       std::max<int64_t>(1, std::min(positions, kMaxColumnElements / kernel_size));
@@ -297,8 +339,9 @@ Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv) {
   for (int64_t begin = 0; begin < positions; begin += chunk_capacity) {
     const int64_t chunk = std::min(chunk_capacity, positions - begin);
     im2col_causal_kernel<<<grid_for(chunk), 256>>>(
-        input.data(), columns.data(), input.channels, input.time, input.height,
-        input.width, conv.kd, conv.kh, conv.kw, begin, chunk);
+        input.data(), cache_ptr, cache_time, columns.data(), input.channels,
+        input.time, input.height, input.width, conv.kd, conv.kh, conv.kw, begin,
+        chunk);
     UMM_CUDA(cudaGetLastError());
     UMM_CUBLAS(cublasSgemm(
         context.handle(), CUBLAS_OP_N, CUBLAS_OP_N, static_cast<int>(chunk),
@@ -310,6 +353,14 @@ Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv) {
         output.data(), positions, begin, chunk, conv.output_channels,
         conv.bias.data());
     UMM_CUDA(cudaGetLastError());
+  }
+  if (use_cache) {
+    Tensor next_cache(input.channels, cache_time, input.height, input.width);
+    update_causal_cache_kernel<<<grid_for(next_cache.numel()), 256>>>(
+        cache->frames.data(), input.data(), next_cache.data(), input.channels,
+        cache_time, input.time, input.height * input.width);
+    UMM_CUDA(cudaGetLastError());
+    cache->frames = std::move(next_cache);
   }
   return output;
 }
@@ -395,66 +446,52 @@ Tensor nearest_spatial(const Tensor& input) {
   return output;
 }
 
-// Temporal upsample: output frame 0 is the input frame 0 unchanged; each later
-// input step j contributes two frames built from the two halves of the causal
-// time convolution output at step j.
-__global__ void temporal_interleave_kernel(const float* input, const float* convolved,
-                                           float* output, int64_t channels,
-                                           int64_t time, int64_t spatial) {
-  const int64_t out_time = time * 2 - 1;
+// Temporal upsample for non-first streaming chunks: each input step j expands
+// into two output frames from the two channel halves of the cached causal
+// time_conv output. For the first chunk (latent step 0), Diffusers emits frame
+// 0 unchanged without running or updating time_conv.
+__global__ void temporal_interleave_chunk_kernel(const float* convolved,
+                                                 float* output,
+                                                 int64_t channels, int64_t time,
+                                                 int64_t spatial) {
+  const int64_t out_time = time * 2;
   const size_t count = static_cast<size_t>(channels * out_time * spatial);
   const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (index >= count) return;
   const int64_t n = index % spatial;
   const int64_t ot = (index / spatial) % out_time;
   const int64_t c = index / (out_time * spatial);
-  float value;
-  if (ot == 0) {
-    value = input[(c * time) * spatial + n];
-  } else {
-    const int64_t j = (ot + 1) / 2;
-    const int64_t source_channel = (ot % 2 == 1) ? c : channels + c;
-    value = convolved[(source_channel * time + j) * spatial + n];
-  }
-  output[index] = value;
-}
-
-// The reference temporal upsampler isolates the first chunk: it emits input
-// frame 0 unchanged and then runs the causal time convolution over a sequence
-// whose frame 0 is replaced by zero. Reproduce that before convolving.
-__global__ void zero_first_frame_kernel(float* x, size_t total, int64_t time,
-                                        int64_t spatial) {
-  const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (index >= total) return;
-  if (static_cast<int64_t>(index / spatial) % time == 0) x[index] = 0.0f;
+  const int64_t j = ot / 2;
+  const int64_t source_channel = (ot % 2 == 0) ? c : channels + c;
+  output[index] = convolved[(source_channel * time + j) * spatial + n];
 }
 
 Tensor temporal_upsample(CudaContext& context, const Tensor& input,
-                         const Conv& time_conv) {
+                         const Conv& time_conv, CausalCache& time_cache,
+                         bool first_chunk) {
   if (time_conv.kd != 3 || time_conv.kh != 1 || time_conv.kw != 1 ||
       time_conv.input_channels != input.channels ||
       time_conv.output_channels != input.channels * 2) {
     throw std::invalid_argument("time convolution must be C -> 2C with a 3x1x1 kernel");
   }
-  Tensor zeroed = clone_tensor(input);
-  zero_first_frame_kernel<<<grid_for(zeroed.numel()), 256>>>(
-      zeroed.data(), zeroed.numel(), zeroed.time, zeroed.height * zeroed.width);
-  UMM_CUDA(cudaGetLastError());
-  Tensor convolved = conv3d(context, zeroed, time_conv);
-  Tensor expanded(input.channels, input.time * 2 - 1, input.height, input.width);
-  temporal_interleave_kernel<<<grid_for(expanded.numel()), 256>>>(
-      input.data(), convolved.data(), expanded.data(), input.channels,
-      input.time, input.height * input.width);
+  if (first_chunk) {
+    return clone_tensor(input);
+  }
+  Tensor convolved = conv3d(context, input, time_conv, &time_cache);
+  Tensor expanded(input.channels, input.time * 2, input.height, input.width);
+  temporal_interleave_chunk_kernel<<<grid_for(expanded.numel()), 256>>>(
+      convolved.data(), expanded.data(), input.channels, input.time,
+      input.height * input.width);
   UMM_CUDA(cudaGetLastError());
   return expanded;
 }
 
-// DupUp3D shortcut: nearest duplication over time and space, then drop the
-// first factor_t-1 frames of the duplicated sequence.
+// DupUp3D shortcut: nearest duplication over time and space, dropping the
+// leading factor_t-1 frames only on the first streaming chunk.
 __global__ void dup_up_kernel(const float* input, float* output, int64_t out_channels,
                               int64_t in_time, int64_t out_time, int64_t height,
                               int64_t width, int64_t factor_t, int64_t factor_s,
-                              int64_t repeats, int64_t factor) {
+                              int64_t repeats, int64_t drop_first) {
   const int64_t out_height = height * factor_s;
   const int64_t out_width = width * factor_s;
   const size_t count =
@@ -465,7 +502,7 @@ __global__ void dup_up_kernel(const float* input, float* output, int64_t out_cha
   const int64_t oh = (index / out_width) % out_height;
   const int64_t ot = (index / (out_height * out_width)) % out_time;
   const int64_t oc = index / (out_time * out_height * out_width);
-  const int64_t shifted = ot + (factor_t - 1);
+  const int64_t shifted = ot + drop_first;
   const int64_t ft = shifted % factor_t;
   const int64_t st = shifted / factor_t;
   const int64_t fs1 = oh % factor_s;
@@ -480,19 +517,20 @@ __global__ void dup_up_kernel(const float* input, float* output, int64_t out_cha
 }
 
 Tensor dup_up3d(const Tensor& input, int64_t out_channels, int64_t factor_t,
-                int64_t factor_s) {
+                int64_t factor_s, bool first_chunk) {
   const int64_t factor = factor_t * factor_s * factor_s;
   const int64_t numerator = out_channels * factor;
   if (numerator % input.channels != 0) {
     throw std::invalid_argument("DupUp3D channel ratio is not integral");
   }
   const int64_t repeats = numerator / input.channels;
-  const int64_t out_time = factor_t * (input.time - 1) + 1;
+  const int64_t drop_first = first_chunk ? (factor_t - 1) : 0;
+  const int64_t out_time = factor_t * input.time - drop_first;
   Tensor output(out_channels, out_time, input.height * factor_s,
                 input.width * factor_s);
   dup_up_kernel<<<grid_for(output.numel()), 256>>>(
       input.data(), output.data(), out_channels, input.time, out_time,
-      input.height, input.width, factor_t, factor_s, repeats, factor);
+      input.height, input.width, factor_t, factor_s, repeats, drop_first);
   UMM_CUDA(cudaGetLastError());
   return output;
 }
@@ -596,6 +634,11 @@ struct ResBlock {
   Conv shortcut;
 };
 
+struct ResBlockCache {
+  CausalCache conv1;
+  CausalCache conv2;
+};
+
 ResBlock load_res_block(const SafetensorsMmap& file, const std::string& prefix) {
   ResBlock block;
   Conv conv1 = load_conv(file, prefix + ".conv1");
@@ -611,19 +654,23 @@ ResBlock load_res_block(const SafetensorsMmap& file, const std::string& prefix) 
   if (file.contains(prefix + ".conv_shortcut.weight")) {
     block.has_shortcut = true;
     block.shortcut = load_conv(file, prefix + ".conv_shortcut");
+    if (block.shortcut.kd != 1) {
+      throw std::invalid_argument("residual shortcut must have kd=1 at " + prefix);
+    }
   } else if (in_channels != out_channels) {
     throw std::invalid_argument("residual block needs a shortcut at " + prefix);
   }
   return block;
 }
 
-Tensor res_block(CudaContext& context, const Tensor& input, const ResBlock& block) {
+Tensor res_block(CudaContext& context, const Tensor& input, const ResBlock& block,
+                 ResBlockCache& cache) {
   Tensor output = rms_norm(input, block.norm1);
   silu_inplace(output);
-  output = conv3d(context, output, block.conv1);
+  output = conv3d(context, output, block.conv1, &cache.conv1);
   output = rms_norm(output, block.norm2);
   silu_inplace(output);
-  output = conv3d(context, output, block.conv2);
+  output = conv3d(context, output, block.conv2, &cache.conv2);
   if (block.has_shortcut) {
     Tensor identity = conv3d(context, input, block.shortcut);
     add_inplace(output, identity);
@@ -644,6 +691,12 @@ struct UpBlock {
   Conv time_conv;
 };
 
+struct UpBlockCache {
+  std::vector<ResBlockCache> resnets;
+  CausalCache time_conv;
+  CausalCache resample_conv;
+};
+
 struct Decoder {
   Conv conv_in;
   ResBlock mid_res0;
@@ -654,6 +707,21 @@ struct Decoder {
   std::vector<UpBlock> up_blocks;
   Norm norm_out;
   Conv conv_out;
+};
+
+struct DecoderCache {
+  CausalCache conv_in;
+  ResBlockCache mid_res0;
+  ResBlockCache mid_res1;
+  std::vector<UpBlockCache> up_blocks;
+  CausalCache conv_out;
+
+  explicit DecoderCache(const Decoder& decoder) {
+    up_blocks.resize(decoder.up_blocks.size());
+    for (size_t i = 0; i < decoder.up_blocks.size(); ++i) {
+      up_blocks[i].resnets.resize(decoder.up_blocks[i].resnets.size());
+    }
+  }
 };
 
 Decoder load_decoder(const SafetensorsMmap& file, const WanVaeConfig& config) {
@@ -751,25 +819,28 @@ Tensor unpatchify_clamp(const Tensor& input, int64_t output_channels, int64_t pa
 }
 
 Tensor upsample_block(CudaContext& context, const Tensor& input,
-                      const UpBlock& block) {
+                      const UpBlock& block, UpBlockCache& cache,
+                      bool first_chunk) {
   if (input.channels != block.input_channels || block.resnets.empty()) {
     throw std::invalid_argument("up block input channel mismatch");
   }
-  Tensor current = res_block(context, input, block.resnets.front());
+  Tensor current = res_block(context, input, block.resnets.front(), cache.resnets[0]);
   for (size_t i = 1; i < block.resnets.size(); ++i) {
-    current = res_block(context, current, block.resnets[i]);
+    current = res_block(context, current, block.resnets[i], cache.resnets[i]);
   }
   if (block.has_upsample) {
     if (block.temporal) {
-      Tensor expanded = temporal_upsample(context, current, block.time_conv);
+      Tensor expanded = temporal_upsample(context, current, block.time_conv,
+                                          cache.time_conv, first_chunk);
       Tensor spatial = nearest_spatial(expanded);
-      current = conv3d(context, spatial, block.resample_conv);
+      current = conv3d(context, spatial, block.resample_conv, &cache.resample_conv);
     } else {
       Tensor spatial = nearest_spatial(current);
-      current = conv3d(context, spatial, block.resample_conv);
+      current = conv3d(context, spatial, block.resample_conv, &cache.resample_conv);
     }
     // DupUp3D shortcut reads the block input, before any residual block ran.
-    Tensor shortcut = dup_up3d(input, block.output_channels, block.factor_t, 2);
+    Tensor shortcut = dup_up3d(input, block.output_channels, block.factor_t, 2,
+                               first_chunk);
     add_inplace(current, shortcut);
   }
   return current;
@@ -803,52 +874,94 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
   const auto safetensors = vae_dir / "diffusion_pytorch_model.safetensors";
   SafetensorsMmap file(safetensors);
   Decoder decoder = load_decoder(file, config);
-
-  Tensor input(static_cast<int64_t>(latent_shape[1]),
-               static_cast<int64_t>(latent_shape[2]),
-               static_cast<int64_t>(latent_shape[3]),
-               static_cast<int64_t>(latent_shape[4]));
-  DeviceBuffer host_input = upload(latent);
-  UMM_CUDA(cudaMemcpy(input.data(), host_input.data(),
-                      input.numel() * sizeof(float), cudaMemcpyDeviceToDevice));
-
-  // Latent denormalization exactly as the Wan pipeline does before decoding.
-  const auto begin = std::chrono::steady_clock::now();
-  DeviceBuffer mean = upload(config.latents_mean);
-  DeviceBuffer stddev = upload(config.latents_std);
-  denormalize_kernel<<<grid_for(input.numel()), 256>>>(
-      input.data(), input.positions(), input.channels, mean.data(), stddev.data());
-  UMM_CUDA(cudaGetLastError());
-
   if (file.tensor("post_quant_conv.weight").numel() !=
       static_cast<size_t>(config.z_dim * config.z_dim)) {
     throw std::invalid_argument("post_quant_conv weight does not match z_dim");
   }
   Conv post_quant = load_conv(file, "post_quant_conv");
-  Tensor current = conv3d(context, input, post_quant);
-  current = conv3d(context, current, decoder.conv_in);
-  current = res_block(context, current, decoder.mid_res0);
-  current = attention(context, current, decoder.mid_norm, decoder.mid_qkv,
-                      decoder.mid_proj);
-  current = res_block(context, current, decoder.mid_res1);
-  for (const UpBlock& block : decoder.up_blocks) {
-    current = upsample_block(context, current, block);
-  }
-  current = rms_norm(current, decoder.norm_out);
-  silu_inplace(current);
-  current = conv3d(context, current, decoder.conv_out);
+  DeviceBuffer mean = upload(config.latents_mean);
+  DeviceBuffer stddev = upload(config.latents_std);
+
+  const int64_t latent_c = latent_shape[1];
+  const int64_t latent_t = latent_shape[2];
+  const int64_t latent_h = latent_shape[3];
+  const int64_t latent_w = latent_shape[4];
+  const int64_t latent_spatial = latent_h * latent_w;
+
   const int64_t patch_area = static_cast<int64_t>(config.patch_size) * config.patch_size;
   const int64_t output_channels = config.out_channels / patch_area;
-  current = unpatchify_clamp(current, output_channels, config.patch_size);
+  const int64_t temporal_factor = wan_vae_temporal_factor(config);
+  const int64_t total_out_t = wan_vae_decoded_frame_count(latent_t, temporal_factor);
+  int64_t spatial_factor = config.patch_size;
+  for (const UpBlock& block : decoder.up_blocks) {
+    if (block.has_upsample) spatial_factor *= 2;
+  }
+  const int64_t out_h = latent_h * spatial_factor;
+  const int64_t out_w = latent_w * spatial_factor;
+  const int64_t out_spatial = out_h * out_w;
+
+  WanVaeOutput output;
+  output.shape = {1, output_channels, total_out_t, out_h, out_w};
+  output.data.resize(checked_product({output_channels, total_out_t, out_h, out_w}));
+
+  DecoderCache cache(decoder);
+  std::vector<float> frame_host(checked_product({latent_c, latent_h, latent_w}));
+
+  // Exact causal streaming decode: one latent frame per step with persistent
+  // 2-frame causal caches, matching Diffusers AutoencoderKLWan._decode while
+  // bounding peak VRAM independently of clip length.
+  const auto begin = std::chrono::steady_clock::now();
+  for (int64_t t = 0; t < latent_t; ++t) {
+    for (int64_t c = 0; c < latent_c; ++c) {
+      const float* src =
+          latent.data() + static_cast<size_t>((c * latent_t + t) * latent_spatial);
+      float* dst = frame_host.data() + static_cast<size_t>(c * latent_spatial);
+      std::copy(src, src + latent_spatial, dst);
+    }
+
+    Tensor input(latent_c, 1, latent_h, latent_w);
+    UMM_CUDA(cudaMemcpy(input.data(), frame_host.data(),
+                        frame_host.size() * sizeof(float), cudaMemcpyHostToDevice));
+    denormalize_kernel<<<grid_for(input.numel()), 256>>>(
+        input.data(), input.positions(), input.channels, mean.data(), stddev.data());
+    UMM_CUDA(cudaGetLastError());
+
+    const bool first_chunk = (t == 0);
+    Tensor current = conv3d(context, input, post_quant);
+    current = conv3d(context, current, decoder.conv_in, &cache.conv_in);
+    current = res_block(context, current, decoder.mid_res0, cache.mid_res0);
+    current = attention(context, current, decoder.mid_norm, decoder.mid_qkv,
+                        decoder.mid_proj);
+    current = res_block(context, current, decoder.mid_res1, cache.mid_res1);
+    for (size_t i = 0; i < decoder.up_blocks.size(); ++i) {
+      current = upsample_block(context, current, decoder.up_blocks[i],
+                               cache.up_blocks[i], first_chunk);
+    }
+    current = rms_norm(current, decoder.norm_out);
+    silu_inplace(current);
+    current = conv3d(context, current, decoder.conv_out, &cache.conv_out);
+    current = unpatchify_clamp(current, output_channels, config.patch_size);
+
+    const int64_t expected_chunk_t = wan_vae_chunk_frame_count(t, temporal_factor);
+    const int64_t out_t_offset = wan_vae_chunk_frame_offset(t, temporal_factor);
+    if (current.channels != output_channels || current.time != expected_chunk_t ||
+        current.height != out_h || current.width != out_w) {
+      throw std::runtime_error("unexpected streamed Wan2.2 VAE chunk shape");
+    }
+    const size_t chunk_plane = static_cast<size_t>(current.time * out_spatial);
+    for (int64_t c = 0; c < output_channels; ++c) {
+      const float* dev_plane = current.data() + static_cast<size_t>(c) * chunk_plane;
+      float* host_plane =
+          output.data.data() +
+          static_cast<size_t>((c * total_out_t + out_t_offset) * out_spatial);
+      UMM_CUDA(cudaMemcpy(host_plane, dev_plane, chunk_plane * sizeof(float),
+                          cudaMemcpyDeviceToHost));
+    }
+  }
 
   UMM_CUDA(cudaDeviceSynchronize());
   const auto end = std::chrono::steady_clock::now();
 
-  WanVaeOutput output;
-  output.shape = {1, current.channels, current.time, current.height, current.width};
-  output.data.resize(current.numel());
-  UMM_CUDA(cudaMemcpy(output.data.data(), current.data(),
-                      current.numel() * sizeof(float), cudaMemcpyDeviceToHost));
   output.decode_ms =
       std::chrono::duration<double, std::milli>(end - begin).count();
   output.peak_native_device_bytes = g_peak_device_bytes;
