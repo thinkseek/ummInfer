@@ -17,10 +17,32 @@ void SessionHistoryStore::erase_from_order(const std::string& session_id) {
 Value::Array SessionHistoryStore::prepend_history(
     const std::string& session_id,
     const Value::Array& current_messages) const {
+  size_t first_turn = 0;
+  while (first_turn < current_messages.size()) {
+    const Value& msg = current_messages[first_turn];
+    const Value* role = msg.is_map() ? msg.find("role") : nullptr;
+    if (role != nullptr && role->is_str() && role->as_str() == "system") {
+      ++first_turn;
+    } else {
+      break;
+    }
+  }
+  // If the client already provided multi-turn conversation history (more than
+  // one non-system message), preserve it directly instead of duplicating turns
+  // from the server-side session store.
+  if (current_messages.size() - first_turn > 1) {
+    return current_messages;
+  }
+
   Value::Array messages;
   const auto it = sessions_.find(session_id);
+  const size_t history_msgs =
+      it != sessions_.end() ? it->second.size() * 2 : 0;
+  messages.reserve(history_msgs + current_messages.size());
+  for (size_t i = 0; i < first_turn; ++i) {
+    messages.push_back(current_messages[i]);
+  }
   if (it != sessions_.end()) {
-    messages.reserve(it->second.size() * 2 + current_messages.size());
     for (const Turn& turn : it->second) {
       Value::Map user;
       user["role"] = Value("user");
@@ -32,7 +54,9 @@ Value::Array SessionHistoryStore::prepend_history(
       messages.push_back(Value(std::move(assistant)));
     }
   }
-  for (const Value& message : current_messages) messages.push_back(message);
+  for (size_t i = first_turn; i < current_messages.size(); ++i) {
+    messages.push_back(current_messages[i]);
+  }
   return messages;
 }
 

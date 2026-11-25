@@ -9220,6 +9220,618 @@ void test_public_http_video_url_input() {
              "video_url request stayed in flight");
 }
 
+// Multi-turn multimodal messages through UnifiedEngine: preserves all turns
+// (optional leading system + user/assistant history ending in user), keeps
+// image_url/video_url anchored on their original turn for VLM prefix KV-cache
+// reuse, extracts only the latest user text for session history recording, and
+// preserves all single-message and cross-turn safety invariants.
+void test_unified_multiturn_engine_and_schema() {
+  Harness h("mtengine");
+  UnifiedEngine engine(h.coordinator, history_config(8, 16384));
+  h.start_pump();
+
+  const std::string img_url = "data:image/png;base64,AA";
+  const std::string vid_url = "data:video/mp4;base64,AAAAIGZ0eXBpc29t";
+  auto make_text_part = [](const std::string& text) {
+    Value::Map p;
+    p["type"] = Value("text");
+    p["text"] = Value(text);
+    return Value(std::move(p));
+  };
+  auto make_video_part = [](const std::string& url) {
+    Value::Map vu;
+    vu["url"] = Value(url);
+    Value::Map p;
+    p["type"] = Value("video_url");
+    p["video_url"] = Value(std::move(vu));
+    return Value(std::move(p));
+  };
+  auto make_msg = [](const std::string& role, Value content) {
+    Value::Map m;
+    m["role"] = Value(role);
+    m["content"] = std::move(content);
+    return Value(std::move(m));
+  };
+
+  // 1. Multi-turn video conversation: [user(video+text), assistant, user].
+  {
+    StagePayload req;
+    Value::Array msgs;
+    msgs.push_back(make_msg(
+        "user", Value::Array{make_video_part(vid_url),
+                             make_text_part("Describe this video.")}));
+    msgs.push_back(make_msg("assistant", Value("A red lantern sways at night.")));
+    msgs.push_back(make_msg("user", Value("What color is the lantern?")));
+    Value::Map inputs;
+    inputs["messages"] = Value(std::move(msgs));
+    inputs["session_id"] = Value("mt-engine-sess");
+    inputs["session_history"] = Value(true);
+    req.request.inputs = Value(std::move(inputs));
+
+    const std::string id = engine.submit(std::move(req));
+    check(h.no_submit(h.asr_recv), "multi-turn video turn reached ASR");
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "multi-turn video turn missed VLM");
+    if (vlm) {
+      const StagePayload payload = StagePayload::from_value(vlm->data);
+      const auto roles = prompt_roles(payload);
+      check(roles.size() == 3 &&
+                roles[0].first == "user" &&
+                roles[0].second == "Describe this video." &&
+                roles[1].first == "assistant" &&
+                roles[1].second == "A red lantern sways at night." &&
+                roles[2].first == "user" &&
+                roles[2].second == "What color is the lantern?",
+            "multi-turn video did not forward all 3 turns intact");
+      const Value& turn0_content =
+          *payload.request.inputs.find("messages")->as_array()[0].find("content");
+      check(turn0_content.is_array() && turn0_content.as_array().size() == 2 &&
+                turn0_content.as_array()[0].find("type")->as_str() == "video_url" &&
+                turn0_content.as_array()[0].find("video_url")->find("url")->as_str() ==
+                    vid_url,
+            "multi-turn video lost video_url on turn 0");
+      const Value& modalities = *payload.request.inputs.find("modalities");
+      check(modalities.as_array().size() == 1 &&
+                modalities.as_array()[0].as_str() == "text",
+            "multi-turn video declared unexpected VLM modalities");
+    }
+    h.complete(id, "vlm", true, text_result("Red."));
+    check(engine.wait(id, 5.0), "multi-turn video request did not complete");
+    engine.release(id);
+  }
+
+  // Verify session_store_ recorded ONLY the latest user turn text ("What color
+  // is the lantern?"), not concatenated prior turns.
+  {
+    StagePayload probe;
+    Value::Array msgs;
+    msgs.push_back(make_msg("system", Value("Be concise.")));
+    msgs.push_back(make_msg("user", Value("Next question")));
+    Value::Map inputs;
+    inputs["messages"] = Value(std::move(msgs));
+    inputs["session_id"] = Value("mt-engine-sess");
+    inputs["session_history"] = Value(true);
+    probe.request.inputs = Value(std::move(inputs));
+
+    const std::string id = engine.submit(std::move(probe));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "session-history follow-up missed VLM");
+    if (vlm) {
+      const StagePayload payload = StagePayload::from_value(vlm->data);
+      const auto roles = prompt_roles(payload);
+      check(roles.size() == 4 &&
+                roles[0].first == "system" && roles[0].second == "Be concise." &&
+                roles[1].first == "user" &&
+                roles[1].second == "What color is the lantern?" &&
+                roles[2].first == "assistant" && roles[2].second == "Red." &&
+                roles[3].first == "user" && roles[3].second == "Next question",
+            "session_history failed to keep leading system or recorded wrong user text");
+    }
+    h.complete(id, "vlm", true, text_result("Done."));
+    check(engine.wait(id, 5.0), "session-history follow-up did not complete");
+    engine.release(id);
+  }
+
+  // 2. Direct schema rejections: invalid multi-turn / media combinations.
+  auto rejects = [&](Value::Array msgs, const char* what) {
+    StagePayload req;
+    req.request.inputs = Value::Map{{"messages", Value(std::move(msgs))}};
+    bool threw = false;
+    try {
+      (void)engine.submit(std::move(req));
+    } catch (const ProtocolError&) {
+      threw = true;
+    }
+    check(threw, what);
+  };
+
+  rejects(Value::Array{}, "empty messages array was accepted");
+  rejects(Value::Array{make_msg("user", Value("hi")),
+                       make_msg("assistant", Value("hello"))},
+          "non-user final turn was accepted");
+  rejects(Value::Array{make_msg("user", Value("hi")),
+                       make_msg("system", Value("late")),
+                       make_msg("user", Value("next"))},
+          "late system message was accepted");
+  rejects(Value::Array{make_msg("tool", Value("out")),
+                       make_msg("user", Value("hi"))},
+          "unsupported role was accepted");
+  rejects(Value::Array{make_msg("user", Value::Array{make_text_part("a"),
+                                                     make_text_part("b")})},
+          "two text parts in the same message were accepted");
+  rejects(Value::Array{make_msg("user", Value::Array{image_part(img_url),
+                                                     make_text_part("a")}),
+                       make_msg("assistant", Value("b")),
+                       make_msg("user", Value::Array{make_video_part(vid_url),
+                                                     make_text_part("c")})},
+          "image_url + video_url across turns was accepted");
+  rejects(Value::Array{make_msg("user", Value::Array{image_part(img_url),
+                                                     make_text_part("a")}),
+                       make_msg("assistant", Value("b")),
+                       make_msg("user", Value::Array{image_part(img_url),
+                                                     make_text_part("c")})},
+          "two image_urls across turns were accepted");
+  rejects(Value::Array{make_msg("user", Value::Array{Value(part("input_audio"))}),
+                       make_msg("assistant", Value("ok")),
+                       make_msg("user", Value("next"))},
+          "input_audio on non-final turn was accepted");
+  check(h.no_submit(h.asr_recv) && h.no_submit(h.vlm_recv),
+        "a rejected multi-turn engine request reached a stage");
+}
+
+// Public HTTP contract for OpenAI multi-turn multimodal messages in unified
+// mode: [system?, user(text|image_url|video_url), assistant, user(followup)].
+void test_public_http_multiturn_multimodal() {
+  Harness h("httpmultiturn");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, history_config(8, 16384));
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "multi-turn HTTP server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  const std::string url =
+      "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+      "/v1/chat/completions";
+  const std::string data_img = "data:image/png;base64,AAAA";
+  const std::string data_vid = "data:video/mp4;base64,AAAAIGZ0eXBpc29t";
+  const std::string wav = audio::wav_from_pcm16(std::string(800, '\0'));
+  const nlohmann::json img_part = {{"type", "image_url"},
+                                   {"image_url", {{"url", data_img}}}};
+  const nlohmann::json vid_part = {{"type", "video_url"},
+                                   {"video_url", {{"url", data_vid}}}};
+  const nlohmann::json audio_part = {
+      {"type", "input_audio"},
+      {"input_audio", {{"data", util::base64_encode(wav)}, {"format", "wav"}}}};
+
+  auto post = [&](nlohmann::json body) {
+    body["model"] = "qwen3-unified";
+    body["stream"] = false;
+    test_http::HttpRequest req;
+    req.url = url;
+    req.body = body.dump();
+    req.headers.emplace("Content-Type", "application/json");
+    req.timeout = client::Milliseconds{10000};
+    return test_http::perform(req);
+  };
+  auto expect_400 = [&](nlohmann::json body, const char* what) {
+    bool rejected = false;
+    try {
+      (void)post(std::move(body));
+    } catch (const client::Error& err) {
+      rejected = (err.status() == 400);
+    }
+    check(rejected, what);
+  };
+
+  // 1. Multi-turn text: [system, user, assistant, user].
+  {
+    nlohmann::json body = {
+        {"messages",
+         nlohmann::json::array({
+             nlohmann::json{{"role", "system"}, {"content", "Be concise."}},
+             nlohmann::json{{"role", "user"}, {"content", "Hello"}},
+             nlohmann::json{{"role", "assistant"}, {"content", "Hi there!"}},
+             nlohmann::json{{"role", "user"}, {"content", "What is 2+2?"}},
+         })}};
+    auto fut = std::async(std::launch::async, [&] { return post(body); });
+    check(h.no_submit(h.asr_recv), "multi-turn text reached ASR");
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "multi-turn text did not reach VLM");
+    if (vlm) {
+      const StagePayload payload = StagePayload::from_value(vlm->data);
+      const auto roles = prompt_roles(payload);
+      check(roles.size() == 4 &&
+                roles[0] == std::pair<std::string, std::string>("system", "Be concise.") &&
+                roles[1] == std::pair<std::string, std::string>("user", "Hello") &&
+                roles[2] == std::pair<std::string, std::string>("assistant", "Hi there!") &&
+                roles[3] == std::pair<std::string, std::string>("user", "What is 2+2?"),
+            "multi-turn text did not forward full 4-turn history to VLM");
+      h.complete(vlm->request_id, "vlm", true, text_result("4"));
+    }
+    const auto res = fut.get();
+    check(res.status == 200 &&
+              res.body.find("\"content\":\"4\"") != std::string::npos,
+          "multi-turn text HTTP response failed");
+  }
+
+  // 2. Multi-turn image: [user(image_url + text), assistant, user(followup)].
+  {
+    nlohmann::json body = {
+        {"messages",
+         nlohmann::json::array({
+             nlohmann::json{
+                 {"role", "user"},
+                 {"content",
+                  nlohmann::json::array({
+                      img_part,
+                      nlohmann::json{{"type", "text"},
+                                     {"text", "What is in this photo?"}},
+                  })}},
+             nlohmann::json{{"role", "assistant"},
+                            {"content", "A red lantern hangs outside."}},
+             nlohmann::json{{"role", "user"},
+                            {"content", "What color is the lantern?"}},
+         })}};
+    auto fut = std::async(std::launch::async, [&] { return post(body); });
+    check(h.no_submit(h.asr_recv), "multi-turn image reached ASR");
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "multi-turn image did not reach VLM");
+    if (vlm) {
+      const StagePayload payload = StagePayload::from_value(vlm->data);
+      const auto roles = prompt_roles(payload);
+      check(roles.size() == 3 &&
+                roles[0] == std::pair<std::string, std::string>(
+                                "user", "What is in this photo?") &&
+                roles[1] == std::pair<std::string, std::string>(
+                                "assistant", "A red lantern hangs outside.") &&
+                roles[2] == std::pair<std::string, std::string>(
+                                "user", "What color is the lantern?"),
+            "multi-turn image did not forward all 3 turns");
+      const Value& msgs = *payload.request.inputs.find("messages");
+      const Value& turn0_content = *msgs.as_array()[0].find("content");
+      check(turn0_content.is_array() && turn0_content.as_array().size() == 2 &&
+                turn0_content.as_array()[0].find("type")->as_str() == "image_url" &&
+                turn0_content.as_array()[0].find("image_url")->find("url")->as_str() ==
+                    data_img,
+            "multi-turn image did not keep image_url on turn 0");
+      const Value& modalities = *payload.request.inputs.find("modalities");
+      check(modalities.as_array().size() == 2 &&
+                modalities.as_array()[0].as_str() == "text" &&
+                modalities.as_array()[1].as_str() == "image",
+            "multi-turn image did not declare text+image modalities");
+      h.complete(vlm->request_id, "vlm", true, text_result("Red."));
+    }
+    const auto res = fut.get();
+    check(res.status == 200 &&
+              res.body.find("\"content\":\"Red.\"") != std::string::npos,
+          "multi-turn image HTTP response failed");
+  }
+
+  // 3. Multi-turn video: [user(video_url + text), assistant, user(followup)].
+  {
+    nlohmann::json body = {
+        {"messages",
+         nlohmann::json::array({
+             nlohmann::json{
+                 {"role", "user"},
+                 {"content",
+                  nlohmann::json::array({
+                      vid_part,
+                      nlohmann::json{{"type", "text"},
+                                     {"text", "Describe this video."}},
+                  })}},
+             nlohmann::json{{"role", "assistant"},
+                            {"content", "A red lantern sways at night."}},
+             nlohmann::json{{"role", "user"},
+                            {"content", "What color is the lantern?"}},
+         })}};
+    auto fut = std::async(std::launch::async, [&] { return post(body); });
+    check(h.no_submit(h.asr_recv), "multi-turn video reached ASR");
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "multi-turn video did not reach VLM");
+    if (vlm) {
+      const StagePayload payload = StagePayload::from_value(vlm->data);
+      const auto roles = prompt_roles(payload);
+      check(roles.size() == 3 &&
+                roles[0] == std::pair<std::string, std::string>(
+                                "user", "Describe this video.") &&
+                roles[1] == std::pair<std::string, std::string>(
+                                "assistant", "A red lantern sways at night.") &&
+                roles[2] == std::pair<std::string, std::string>(
+                                "user", "What color is the lantern?"),
+            "multi-turn video did not forward all 3 turns");
+      const Value& msgs = *payload.request.inputs.find("messages");
+      const Value& turn0_content = *msgs.as_array()[0].find("content");
+      check(turn0_content.is_array() && turn0_content.as_array().size() == 2 &&
+                turn0_content.as_array()[0].find("type")->as_str() == "video_url" &&
+                turn0_content.as_array()[0].find("video_url")->find("url")->as_str() ==
+                    data_vid,
+            "multi-turn video did not keep video_url on turn 0");
+      h.complete(vlm->request_id, "vlm", true, text_result("Red."));
+    }
+    const auto res = fut.get();
+    check(res.status == 200 &&
+              res.body.find("\"content\":\"Red.\"") != std::string::npos,
+          "multi-turn video HTTP response failed");
+  }
+
+  // 4. Multi-turn with input_audio on the final user turn.
+  {
+    nlohmann::json body = {
+        {"messages",
+         nlohmann::json::array({
+             nlohmann::json{
+                 {"role", "user"},
+                 {"content",
+                  nlohmann::json::array({
+                      img_part,
+                      nlohmann::json{{"type", "text"},
+                                     {"text", "Look at this cat."}},
+                  })}},
+             nlohmann::json{{"role", "assistant"},
+                            {"content", "I see an orange tabby."}},
+             nlohmann::json{{"role", "user"},
+                            {"content", nlohmann::json::array({audio_part})}},
+         })}};
+    auto fut = std::async(std::launch::async, [&] { return post(body); });
+    auto asr = h.next_submit(h.asr_recv);
+    check(asr.has_value(), "multi-turn audio follow-up did not reach ASR");
+    if (asr) {
+      h.complete(asr->request_id, "asr", true, text_result("Is it sleeping?"));
+    }
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "multi-turn audio follow-up did not reach VLM");
+    if (vlm) {
+      const StagePayload payload = StagePayload::from_value(vlm->data);
+      const auto roles = prompt_roles(payload);
+      check(roles.size() == 3 &&
+                roles[0].second == "Look at this cat." &&
+                roles[1].second == "I see an orange tabby." &&
+                roles[2].second == "Is it sleeping?",
+            "multi-turn audio follow-up did not preserve history + transcript");
+      h.complete(vlm->request_id, "vlm", true, text_result("Yes."));
+    }
+    const auto res = fut.get();
+    check(res.status == 200 &&
+              res.body.find("\"content\":\"Yes.\"") != std::string::npos,
+          "multi-turn audio follow-up HTTP response failed");
+  }
+
+  // 5. session_history: true does not duplicate client-supplied multi-turn
+  // messages and preserves leading system messages on single-turn requests.
+  {
+    auto run_hist = [&](nlohmann::json messages, const std::string& answer) {
+      nlohmann::json body = {{"session_id", "http-mt-sess"},
+                             {"session_history", true},
+                             {"messages", std::move(messages)}};
+      auto fut = std::async(std::launch::async, [&] { return post(body); });
+      auto vlm = h.next_submit(h.vlm_recv);
+      check(vlm.has_value(), "HTTP multi-turn history request missed VLM");
+      StagePayload payload;
+      if (vlm) {
+        payload = StagePayload::from_value(vlm->data);
+        h.complete(vlm->request_id, "vlm", true, text_result(answer));
+      }
+      const auto res = fut.get();
+      check(res.status == 200, "HTTP multi-turn history turn failed");
+      wait_until([&] { return engine.in_flight() == 0; },
+                 "HTTP multi-turn history turn stayed in flight");
+      return payload;
+    };
+    (void)run_hist(nlohmann::json::array({nlohmann::json{
+                       {"role", "user"}, {"content", "turn one"}}}),
+                   "answer one");
+    const StagePayload client_mt = run_hist(
+        nlohmann::json::array({
+            nlohmann::json{{"role", "user"}, {"content", "turn one"}},
+            nlohmann::json{{"role", "assistant"}, {"content", "answer one"}},
+            nlohmann::json{{"role", "user"}, {"content", "turn two"}},
+        }),
+        "answer two");
+    const auto roles = prompt_roles(client_mt);
+    check(roles.size() == 3 &&
+              roles[0].second == "turn one" &&
+              roles[1].second == "answer one" &&
+              roles[2].second == "turn two",
+          "session_history duplicated client-supplied multi-turn messages");
+  }
+
+  // 6. Invalid cases must still be rejected with HTTP 400 before any stage.
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({nlohmann::json{
+               {"role", "user"},
+               {"content",
+                nlohmann::json::array({
+                    nlohmann::json{{"type", "text"}, {"text", "first"}},
+                    nlohmann::json{{"type", "text"}, {"text", "second"}},
+                })}}})}},
+      "two text parts in the same user message were not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{
+                   {"role", "user"},
+                   {"content",
+                    nlohmann::json::array({
+                        img_part,
+                        nlohmann::json{{"type", "text"}, {"text", "img turn"}},
+                    })}},
+               nlohmann::json{{"role", "assistant"}, {"content", "ok"}},
+               nlohmann::json{
+                   {"role", "user"},
+                   {"content",
+                    nlohmann::json::array({
+                        vid_part,
+                        nlohmann::json{{"type", "text"}, {"text", "vid turn"}},
+                    })}},
+           })}},
+      "image_url + video_url across turns was not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{
+                   {"role", "user"},
+                   {"content",
+                    nlohmann::json::array({
+                        img_part,
+                        nlohmann::json{{"type", "text"}, {"text", "img 1"}},
+                    })}},
+               nlohmann::json{{"role", "assistant"}, {"content", "ok"}},
+               nlohmann::json{
+                   {"role", "user"},
+                   {"content",
+                    nlohmann::json::array({
+                        img_part,
+                        nlohmann::json{{"type", "text"}, {"text", "img 2"}},
+                    })}},
+           })}},
+      "two image_urls across turns were not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{
+                   {"role", "user"},
+                   {"content",
+                    nlohmann::json::array({
+                        vid_part,
+                        nlohmann::json{{"type", "text"}, {"text", "vid 1"}},
+                    })}},
+               nlohmann::json{{"role", "assistant"}, {"content", "ok"}},
+               nlohmann::json{
+                   {"role", "user"},
+                   {"content",
+                    nlohmann::json::array({
+                        vid_part,
+                        nlohmann::json{{"type", "text"}, {"text", "vid 2"}},
+                    })}},
+           })}},
+      "two video_urls across turns were not rejected");
+
+  expect_400(nlohmann::json{{"messages", nlohmann::json::array()}},
+             "empty messages array was not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{{"role", "user"}, {"content", "hi"}},
+               nlohmann::json{{"role", "assistant"}, {"content", "hello"}},
+           })}},
+      "non-user final turn (assistant) was not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{{"role", "system"}, {"content", "only system"}},
+           })}},
+      "non-user final turn (system) was not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{{"role", "user"}, {"content", "hi"}},
+               nlohmann::json{{"role", "system"}, {"content", "late system"}},
+               nlohmann::json{{"role", "user"}, {"content", "next"}},
+           })}},
+      "non-leading system message was not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{{"role", "tool"}, {"content", "result"}},
+               nlohmann::json{{"role", "user"}, {"content", "next"}},
+           })}},
+      "unsupported role was not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{{"role", "user"},
+                              {"content", nlohmann::json::array({audio_part})}},
+               nlohmann::json{{"role", "assistant"}, {"content", "ok"}},
+               nlohmann::json{{"role", "user"}, {"content", "followup"}},
+           })}},
+      "input_audio on non-final turn was not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{{"role", "user"}, {"content", "hi"}},
+               nlohmann::json{{"role", "assistant"},
+                              {"content", nlohmann::json::array({img_part})}},
+               nlohmann::json{{"role", "user"}, {"content", "next"}},
+           })}},
+      "image_url on assistant message was not rejected");
+
+  expect_400(
+      nlohmann::json{
+          {"messages",
+           nlohmann::json::array({
+               nlohmann::json{
+                   {"role", "user"},
+                   {"content",
+                    nlohmann::json::array({
+                        nlohmann::json{
+                            {"type", "video_url"},
+                            {"video_url", {{"url", "data:image/png;base64,AAAA"}}}},
+                        nlohmann::json{{"type", "text"}, {"text", "bad mime"}},
+                    })}},
+               nlohmann::json{{"role", "assistant"}, {"content", "ok"}},
+               nlohmann::json{{"role", "user"}, {"content", "followup"}},
+           })}},
+      "invalid video_url MIME in multi-turn was not rejected");
+
+  // Oversized video_url (> 32 MiB decoded payload).
+  {
+    const std::string oversized_b64(((32u << 20) / 3u + 4u) * 4u, 'A');
+    expect_400(
+        nlohmann::json{
+            {"messages",
+             nlohmann::json::array({
+                 nlohmann::json{
+                     {"role", "user"},
+                     {"content",
+                      nlohmann::json::array({
+                          nlohmann::json{
+                              {"type", "video_url"},
+                              {"video_url",
+                               {{"url", "data:video/mp4;base64," + oversized_b64}}}},
+                          nlohmann::json{{"type", "text"}, {"text", "too big"}},
+                      })}},
+                 nlohmann::json{{"role", "assistant"}, {"content", "ok"}},
+                 nlohmann::json{{"role", "user"}, {"content", "followup"}},
+             })}},
+        "oversized video_url (> 32 MiB) in multi-turn was not rejected");
+  }
+
+  check(h.no_submit(h.asr_recv) && h.no_submit(h.vlm_recv),
+        "a rejected multi-turn HTTP request reached a stage");
+
+  api.stop();
+  server_thread.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "multi-turn HTTP requests stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -9334,6 +9946,8 @@ int main() {
   RUN(test_public_http_visual_render());
   RUN(test_public_http_narrative_sse());
   RUN(test_public_http_video_url_input());
+  RUN(test_unified_multiturn_engine_and_schema());
+  RUN(test_public_http_multiturn_multimodal());
   RUN(test_control_message_parse_contract());
   RUN(test_energy_vad_speech_transitions());
   RUN(test_stage_submit_fallback_and_failure_completion());

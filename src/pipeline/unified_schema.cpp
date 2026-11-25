@@ -50,18 +50,20 @@ std::string user_text_from_inputs(const Value& original_inputs) {
   if (!original_inputs.is_map()) return joined;
   const Value* messages = original_inputs.find("messages");
   if (messages == nullptr || !messages->is_array()) return joined;
-  for (const Value& message : messages->as_array()) {
+  const auto& arr = messages->as_array();
+  for (size_t idx = arr.size(); idx > 0; --idx) {
+    const Value& message = arr[idx - 1];
     if (!message.is_map()) continue;
-    const Value* content = message.find("content");
-    if (content == nullptr) continue;
-    if (content->is_str()) {
-      if (!content->as_str().empty()) {
-        if (!joined.empty()) joined += " ";
-        joined += content->as_str();
-      }
+    const Value* role = message.find("role");
+    if (role != nullptr && role->is_str() && role->as_str() != "user") {
       continue;
     }
-    if (!content->is_array()) continue;
+    const Value* content = message.find("content");
+    if (content == nullptr) return joined;
+    if (content->is_str()) {
+      return content->as_str();
+    }
+    if (!content->is_array()) return joined;
     for (const Value& part : content->as_array()) {
       const Value* type = part.find("type");
       if (type == nullptr || !type->is_str() ||
@@ -74,6 +76,7 @@ std::string user_text_from_inputs(const Value& original_inputs) {
         joined += text->as_str();
       }
     }
+    return joined;
   }
   return joined;
 }
@@ -81,8 +84,9 @@ std::string user_text_from_inputs(const Value& original_inputs) {
 ValidatedSubmission validate_submission(const Value& inputs,
                                         const UnifiedConfig& config) {
   if (!inputs.is_map() || inputs.find("messages") == nullptr ||
-      !inputs.find("messages")->is_array()) {
-    throw ProtocolError("unified request inputs must contain a messages array");
+      !inputs.find("messages")->is_array() ||
+      inputs.find("messages")->as_array().empty()) {
+    throw ProtocolError("unified request inputs must contain a non-empty messages array");
   }
 
   if (const Value* declared = inputs.find("modalities"); declared != nullptr) {
@@ -105,15 +109,41 @@ ValidatedSubmission validate_submission(const Value& inputs,
   size_t image_count = 0;
   size_t video_count = 0;
   size_t audio_part_count = 0;
-  size_t text_part_count = 0;
-  for (const Value& message : inputs.find("messages")->as_array()) {
-    if (!message.is_map()) continue;
+  bool saw_conversation_turn = false;
+  const auto& messages = inputs.find("messages")->as_array();
+  for (size_t i = 0; i < messages.size(); ++i) {
+    const Value& message = messages[i];
+    const bool is_last = (i + 1 == messages.size());
+    if (!message.is_map()) {
+      throw ProtocolError("each message must be a map");
+    }
+    const Value* role_val = message.find("role");
+    const std::string role =
+        (role_val != nullptr && role_val->is_str()) ? role_val->as_str()
+                                                    : std::string();
+    if (role != "system" && role != "user" && role != "assistant") {
+      throw ProtocolError(
+          "unified request supports system, user and assistant roles only");
+    }
+    if (role == "system") {
+      if (saw_conversation_turn) {
+        throw ProtocolError(
+            "system messages must appear before conversation turns");
+      }
+    } else {
+      saw_conversation_turn = true;
+    }
+    if (is_last && role != "user") {
+      throw ProtocolError("unified request messages must end with a user message");
+    }
+
     const Value* content = message.find("content");
-    if (content == nullptr) continue;
+    if (content == nullptr) {
+      throw ProtocolError("each message requires content");
+    }
     if (content->is_str()) {
-      // The HTTP boundary and this schema apply one rule: one text part.
-      if (++text_part_count > 1) {
-        throw ProtocolError("unified request accepts at most one text part");
+      if (content->as_str().empty()) {
+        throw ProtocolError("message content string must be nonempty");
       }
       continue;
     }
@@ -121,12 +151,19 @@ ValidatedSubmission validate_submission(const Value& inputs,
       throw ProtocolError(
           "message content must be a text string or a content part array");
     }
+    if (content->as_array().empty()) {
+      throw ProtocolError("message content array must be nonempty");
+    }
+    size_t msg_text_count = 0;
     for (const Value& part : content->as_array()) {
       if (!part.is_map()) continue;
       const Value* type = part.find("type");
       if (type == nullptr || !type->is_str()) continue;
       const UnifiedModality modality = modality_of_part_type(type->as_str());
       if (modality == UnifiedModality::kVideo) {
+        if (role != "user") {
+          throw ProtocolError("video_url is only supported on user messages");
+        }
         if (type->as_str() != "video_url") {
           throw ProtocolError(std::string("content part ") + type->as_str() +
                               " is not supported; use video_url");
@@ -142,12 +179,25 @@ ValidatedSubmission validate_submission(const Value& inputs,
           throw ProtocolError("unified request accepts at most one video_url part");
         }
       } else if (modality == UnifiedModality::kText) {
-        if (++text_part_count > 1) {
-          throw ProtocolError("unified request accepts at most one text part");
+        // The HTTP boundary and this schema apply one rule: at most one text
+        // part per message.
+        if (++msg_text_count > 1) {
+          throw ProtocolError(
+              "unified request accepts at most one text part per message");
         }
       } else if (modality == UnifiedModality::kAudio) {
-        ++audio_part_count;
+        if (!is_last || role != "user") {
+          throw ProtocolError(
+              "input_audio is only supported on the final user message");
+        }
+        if (++audio_part_count > 1) {
+          throw ProtocolError(
+              "unified request accepts at most one input_audio part");
+        }
       } else if (modality == UnifiedModality::kImage) {
+        if (role != "user") {
+          throw ProtocolError("image_url is only supported on user messages");
+        }
         const Value* image_url = part.find("image_url");
         if (image_url == nullptr || !image_url->is_map() ||
             image_url->find("url") == nullptr ||
@@ -350,58 +400,106 @@ Value build_vlm_inputs(const std::string& transcript,
       }
     }
   }
-  Value::Array extra_parts;
+  Value::Array out_messages;
   bool has_image = false;
   if (original_inputs.is_map()) {
     const Value* messages = original_inputs.find("messages");
-    if (messages != nullptr && messages->is_array()) {
-      for (const Value& message : messages->as_array()) {
+    if (messages != nullptr && messages->is_array() &&
+        !messages->as_array().empty()) {
+      const auto& src = messages->as_array();
+      out_messages.reserve(src.size());
+      for (size_t i = 0; i < src.size(); ++i) {
+        const Value& message = src[i];
         if (!message.is_map()) continue;
+        const bool is_last = (i + 1 == src.size());
+        const Value* role_val = message.find("role");
+        const std::string role =
+            (role_val != nullptr && role_val->is_str() &&
+             !role_val->as_str().empty())
+                ? role_val->as_str()
+                : std::string("user");
         const Value* content = message.find("content");
-        if (content == nullptr) continue;
-        if (content->is_str()) {
+        Value::Map out_msg;
+        out_msg["role"] = Value(role);
+        if (!is_last) {
+          if (content != nullptr && content->is_str()) {
+            out_msg["content"] = Value(content->as_str());
+          } else if (content != nullptr && content->is_array()) {
+            Value::Array parts;
+            for (const Value& part : content->as_array()) {
+              const Value* type = part.find("type");
+              if (type == nullptr || !type->is_str()) continue;
+              const UnifiedModality modality =
+                  modality_of_part_type(type->as_str());
+              if (modality == UnifiedModality::kImage) {
+                has_image = true;
+                parts.push_back(part);
+              } else if (modality == UnifiedModality::kVideo &&
+                         type->as_str() == "video_url") {
+                parts.push_back(part);
+              } else if (modality == UnifiedModality::kText) {
+                parts.push_back(part);
+              }
+            }
+            out_msg["content"] = Value(std::move(parts));
+          } else {
+            out_msg["content"] = Value("");
+          }
+          out_messages.push_back(Value(std::move(out_msg)));
+          continue;
+        }
+
+        // Final user turn: preserve non-audio parts and append any ASR
+        // transcript. Single-turn wire shape stays unchanged: string content
+        // becomes a one-element text part array and an audio-only turn becomes
+        // a plain transcript string.
+        Value::Array extra_parts;
+        if (content != nullptr && content->is_str()) {
           if (!content->as_str().empty()) {
             Value::Map text_part;
             text_part["type"] = Value("text");
             text_part["text"] = Value(content->as_str());
             extra_parts.push_back(Value(std::move(text_part)));
           }
-          continue;
-        }
-        if (!content->is_array()) continue;
-        for (const Value& part : content->as_array()) {
-          const Value* type = part.find("type");
-          if (type == nullptr || !type->is_str()) continue;
-          const UnifiedModality modality = modality_of_part_type(type->as_str());
-          if (modality == UnifiedModality::kImage) {
-            has_image = true;
-            extra_parts.push_back(part);
-          } else if (modality == UnifiedModality::kVideo &&
-                     type->as_str() == "video_url") {
-            extra_parts.push_back(part);
-          } else if (modality == UnifiedModality::kText) {
-            extra_parts.push_back(part);
+        } else if (content != nullptr && content->is_array()) {
+          for (const Value& part : content->as_array()) {
+            const Value* type = part.find("type");
+            if (type == nullptr || !type->is_str()) continue;
+            const UnifiedModality modality =
+                modality_of_part_type(type->as_str());
+            if (modality == UnifiedModality::kImage) {
+              has_image = true;
+              extra_parts.push_back(part);
+            } else if (modality == UnifiedModality::kVideo &&
+                       type->as_str() == "video_url") {
+              extra_parts.push_back(part);
+            } else if (modality == UnifiedModality::kText) {
+              extra_parts.push_back(part);
+            }
           }
         }
+        if (!extra_parts.empty()) {
+          if (!transcript.empty()) {
+            Value::Map text_part;
+            text_part["type"] = Value("text");
+            text_part["text"] = Value(transcript);
+            extra_parts.push_back(Value(std::move(text_part)));
+          }
+          out_msg["content"] = Value(std::move(extra_parts));
+        } else {
+          out_msg["content"] = Value(transcript);
+        }
+        out_messages.push_back(Value(std::move(out_msg)));
       }
     }
   }
-  Value::Map user_message;
-  user_message["role"] = Value("user");
-  if (!extra_parts.empty()) {
-    if (!transcript.empty()) {
-      Value::Map text_part;
-      text_part["type"] = Value("text");
-      text_part["text"] = Value(transcript);
-      extra_parts.push_back(Value(std::move(text_part)));
-    }
-    user_message["content"] = Value(std::move(extra_parts));
-  } else {
+  if (out_messages.empty()) {
+    Value::Map user_message;
+    user_message["role"] = Value("user");
     user_message["content"] = Value(transcript);
+    out_messages.push_back(Value(std::move(user_message)));
   }
-  Value::Array messages;
-  messages.push_back(Value(std::move(user_message)));
-  out["messages"] = Value(std::move(messages));
+  out["messages"] = Value(std::move(out_messages));
   Value::Array modalities;
   modalities.push_back(Value("text"));
   if (has_image) modalities.push_back(Value("image"));

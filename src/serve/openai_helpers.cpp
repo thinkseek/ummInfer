@@ -185,26 +185,54 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
   size_t audio_count = 0;
   size_t image_count = 0;
   size_t video_count = 0;
-  size_t text_count = 0;
   has_audio = false;
   try {
-    for (const auto& message : body["messages"]) {
+    const json& messages = body["messages"];
+    if (!messages.is_array() || messages.empty()) {
+      error = "messages must be a non-empty array";
+      return false;
+    }
+    bool saw_conversation_turn = false;
+    bool final_turn_has_non_audio = false;
+    for (size_t i = 0; i < messages.size(); ++i) {
+      const json& message = messages[i];
+      const bool is_last = (i + 1 == messages.size());
+      const std::string role = message["role"].get<std::string>();
+      if (role != "system" && role != "user" && role != "assistant") {
+        error = "unified chat supports system, user and assistant roles only";
+        return false;
+      }
+      if (role == "system") {
+        if (saw_conversation_turn) {
+          error = "system messages must appear before conversation turns";
+          return false;
+        }
+      } else {
+        saw_conversation_turn = true;
+      }
+      if (is_last && role != "user") {
+        error = "unified chat messages must end with a user message";
+        return false;
+      }
+
       const json& content = message["content"];
       if (content.is_string()) {
         if (content.get<std::string>().empty()) {
           error = "message content string must be nonempty";
           return false;
         }
-        if (++text_count > 1) {
-          error = "unified chat accepts at most one text part";
-          return false;
-        }
+        if (is_last) final_turn_has_non_audio = true;
         continue;
       }
       if (!content.is_array()) {
         error = "unified chat content must be a text string or content part array";
         return false;
       }
+      if (content.empty()) {
+        error = "unified chat message content array must be nonempty";
+        return false;
+      }
+      size_t msg_text_count = 0;
       for (const auto& part : content) {
         if (!part.is_object() || !part.contains("type") ||
             !part["type"].is_string()) {
@@ -213,6 +241,10 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
         }
         const std::string type = part["type"].get<std::string>();
         if (type == "image_url") {
+          if (role != "user") {
+            error = "image_url is only supported on user messages";
+            return false;
+          }
           if (!part.contains("image_url") || !part["image_url"].is_object() ||
               !part["image_url"].contains("url") ||
               !part["image_url"]["url"].is_string() ||
@@ -224,9 +256,14 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
             error = "unified chat accepts at most one image_url part";
             return false;
           }
+          if (is_last) final_turn_has_non_audio = true;
           continue;
         }
         if (type == "video_url") {
+          if (role != "user") {
+            error = "video_url is only supported on user messages";
+            return false;
+          }
           if (!part.contains("video_url") || !part["video_url"].is_object() ||
               !part["video_url"].contains("url") ||
               !part["video_url"]["url"].is_string() ||
@@ -251,6 +288,7 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
             error = "unified chat accepts at most one video_url part";
             return false;
           }
+          if (is_last) final_turn_has_non_audio = true;
           continue;
         }
         if (type == "text") {
@@ -259,14 +297,19 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
             error = "text part requires a nonempty text string";
             return false;
           }
-          if (++text_count > 1) {
-            error = "unified chat accepts at most one text part";
+          if (++msg_text_count > 1) {
+            error = "unified chat accepts at most one text part per message";
             return false;
           }
+          if (is_last) final_turn_has_non_audio = true;
           continue;
         }
         if (type != "input_audio") {
           error = "unified chat supports input_audio, image_url, video_url and text parts only";
+          return false;
+        }
+        if (!is_last || role != "user") {
+          error = "input_audio is only supported on the final user message";
           return false;
         }
         ++audio_count;
@@ -287,26 +330,26 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
         pcm = client::pcm16_from_wav(wav);
       }
     }
-  } catch (const std::exception& exc) {
-    error = exc.what();
-    return false;
-  }
-  if (image_count > 0 && video_count > 0) {
-    error = "unified chat cannot combine image_url and video_url in one turn";
-    return false;
-  }
-  if (audio_count > 1) {
-    error = "unified chat accepts at most one input_audio part";
-    return false;
-  }
-  if (audio_count == 1) {
-    if (pcm.empty()) {
-      error = "unified chat input_audio part must be nonempty";
+    if (image_count > 0 && video_count > 0) {
+      error = "unified chat cannot combine image_url and video_url in one turn";
       return false;
     }
-    has_audio = true;
-  } else if (text_count == 0 && image_count == 0 && video_count == 0) {
-    error = "unified chat without input_audio requires text, image or video content";
+    if (audio_count > 1) {
+      error = "unified chat accepts at most one input_audio part";
+      return false;
+    }
+    if (audio_count == 1) {
+      if (pcm.empty()) {
+        error = "unified chat input_audio part must be nonempty";
+        return false;
+      }
+      has_audio = true;
+    } else if (!final_turn_has_non_audio) {
+      error = "unified chat without input_audio requires text, image or video content";
+      return false;
+    }
+  } catch (const std::exception& exc) {
+    error = exc.what();
     return false;
   }
   return true;
