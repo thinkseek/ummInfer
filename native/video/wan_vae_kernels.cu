@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -292,7 +293,12 @@ class CudaContext {
   explicit CudaContext(int gpu) {
     UMM_CUDA(cudaSetDevice(gpu));
     UMM_CUBLAS(cublasCreate(&handle_));
-    UMM_CUBLAS(cublasSetMathMode(handle_, CUBLAS_PEDANTIC_MATH));
+    const char* pedantic = std::getenv("UMM_VAE_PEDANTIC_FP32");
+    const bool use_pedantic =
+        pedantic != nullptr && pedantic[0] != '\0' && pedantic[0] != '0';
+    UMM_CUBLAS(cublasSetMathMode(
+        handle_,
+        use_pedantic ? CUBLAS_PEDANTIC_MATH : CUBLAS_TF32_TENSOR_OP_MATH));
   }
   ~CudaContext() {
     if (handle_ != nullptr) cublasDestroy(handle_);
