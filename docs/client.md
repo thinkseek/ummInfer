@@ -46,7 +46,7 @@ Plain HTTP is allowed only for a loopback host. Other OpenAI endpoints must use
 HTTPS. Redirects are disabled.
 
 Options include `--system`, `--max-tokens`, `--temperature`, `--top-p`,
-`--timeout-ms`, `--first-token-ms`, `--stall-ms`, and `--max-attempts`.
+`--seed`, `--timeout-ms`, `--first-token-ms`, `--stall-ms`, and `--max-attempts`.
 Retries use exponential backoff with equal jitter: the delay is drawn from
 `[cap/2, cap)`, and `cap` doubles from `retry_base` up to `retry_max`.
 `Retry-After` and `Retry-After-Ms` are honored; a wait above `max_retry_after`
@@ -100,32 +100,61 @@ data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],...,
 
 A unified server can return generated image, audio and video artifacts alongside
 the text answer. The request opts in with `modalities` plus an `image`, `audio`
-and/or `video` object, and requires `stream=true`; non-streaming mixed output is
-rejected with 400.
+and/or `video` object, and works with both `stream=true` (SSE) and `stream=false`
+(non-streaming JSON with `artifacts` and `legs`; only `audio.stream=true` with
+`stream=false` is rejected with 400).
 
 ```sh
 ./zig-out/bin/umm-infer chat \
-  --url http://127.0.0.1:30000/v1 --model omni --prompt 'Draw this' --stream \
+  --url http://127.0.0.1:43301/v1 --model qwen3-native --prompt 'Draw this' \
   --image-out /tmp/picture.png --image-prompt 'a red cube' \
-  --image-size 512x512 --image-seed 7 --image-format png
+  --image-size 1024x1024 --image-steps 4 --image-seed 7 --image-format png
 
 ./zig-out/bin/umm-infer chat \
-  --url http://127.0.0.1:30000/v1 --model omni --prompt 'Say hello' --stream \
-  --audio-out /tmp/hello.wav --voice Tina
+  --url http://127.0.0.1:43301/v1 --model qwen3-native --prompt 'Edit this' \
+  --image-out /tmp/edited.png --image-ref /tmp/picture.png \
+  --image-prompt 'turn it into blue glass' --image-steps 4
+
+./zig-out/bin/umm-infer chat \
+  --url http://127.0.0.1:43301/v1 --model qwen3-native --prompt 'Say hello' \
+  --audio-out /tmp/hello.wav --voice vivian [--ref-audio /tmp/ref24k.wav]
+
+./zig-out/bin/umm-infer chat \
+  --url http://127.0.0.1:43301/v1 --model qwen3-native --prompt 'Animate this' \
+  --video-out /tmp/clip.mp4 --video-prompt 'ocean waves at sunset' \
+  --video-size 480x320 --video-fps 16 --video-frames 13 --video-steps 15 \
+  --video-guidance 5.0 --video-seed 11
 ```
 
 - `image` accepts `prompt` (absent means the full aggregated text answer is
-  used), `size` (default `512x512`), integer `seed`, and `output_format`
-  (`png` or `jpeg`).
-- `audio` requires `voice`, accepts only `format=wav` and `sample_rate=24000`
-  (WAV, PCM16, mono). The CLI does not expose `audio.stream`, so it always
-  receives one complete WAV and writes it after the request finishes.
-- `video` (via C++ `OpenAIClient::chat` with `ChatRequest::modalities` including
-  `"video"` and optional `ChatRequest::video` / `VideoOutput`) accepts `prompt`
+  used), `size` (default `512x512`), optional `steps` (`1..100`), optional
+  `image` (`data:image/...;base64,...`, `--image-ref PATH` in CLI) for editing,
+  integer `seed`, and `output_format` (`png` or `jpeg`).
+- `audio` requires `voice`, accepts `format=wav`, `sample_rate=24000`
+  (WAV, PCM16, mono), and optional `ref_audio` (base64/data-URL WAV,
+  `--ref-audio PATH` in CLI) for `Qwen3-TTS-12Hz-1.7B-Base` voice cloning. The
+  CLI does not expose `audio.stream`, so it always receives one complete WAV
+  and writes it after the request finishes.
+- `video` (`VideoOutput` and CLI `--video-out`) accepts `prompt`
   (absent falls back to the aggregated text answer), `size` (default `1280x720`),
-  optional positive `seconds` and `fps`, optional non-negative `seed`, and
-  `output_format="mp4"`; decoded `video/mp4` bytes are returned in
-  `ChatResponse::artifacts`.
+  optional positive `seconds`, `fps`, `num_frames` (`1..241`, `--video-frames`),
+  `steps` (`1..100`, `--video-steps`), `guidance_scale` (`0..30`,
+  `--video-guidance`), optional non-negative `seed`, and `output_format="mp4"`;
+  decoded `video/mp4` bytes are returned in `ChatResponse::artifacts`.
+
+## Direct Speech (`POST /v1/audio/speech`)
+
+`OpenAIClient::speech(const SpeechRequest&)` and the `umm-infer speech`
+subcommand synthesize WAV or raw 24 kHz mono PCM16 directly without a VLM turn:
+
+```sh
+./zig-out/bin/umm-infer speech \
+  --url http://127.0.0.1:43301/v1 --model qwen3-native \
+  --text 'Hello world.' --voice vivian --format wav --out /tmp/out.wav
+```
+
+Pass `--ref-audio PATH` (24 kHz mono PCM16 WAV) when targeting a
+`Qwen3-TTS-12Hz-1.7B-Base` stage. Requests are sent once with no retries.
 - A client that wants audio before synthesis ends sends `"stream": true` in the
   `audio` object (see the mixed output contract). The server then delivers
   `mime_type: audio/pcm` artifacts, one per finished sentence, and sends no WAV

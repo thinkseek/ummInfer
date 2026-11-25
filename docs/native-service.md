@@ -177,6 +177,21 @@ and `--web-root`:
   Wan2.2 native CUDA video 480x320 13f 15 steps with streaming 3D-VAE (`7.74 s`,
   H.264 MP4 `177,034 B`, `ffprobe` verified); Web UI `GET /` `30,476 B`;
   `/health` `in_flight=0`.
+- Wave 9 live CLI E2E, gateway hot-upgrade, and 1280x704 77-frame E2E (`6144a621`):
+  - Native `umm-infer` CLI verified against `43301` over a loopback tunnel:
+    `speech` WAV (`153,644 B`) & PCM (`88,320 B`) -> `transcribe` exact verbatim
+    roundtrip; `chat --seed --image-steps` t2i (`363,169 B`) -> `--image-ref`
+    FLUX.2 edit (`417,646 B`, `l1_diff=45.47`); `chat --video-out` (`70,144 B`,
+    480x320 13f H.264 MP4).
+  - Hot-upgraded `/bin/umm-infer` in place (`umm-infer.wave8` backup preserved)
+    and sent `SIGTERM` only to the server PID: supervisor respawned the server
+    and reached `/ready` 200 in **`3 s`** with **`0` stage restarts** across all
+    5 GPU stages (GPUs 2–6 kept resident via `stage_ready` heartbeat), followed
+    by live `chat` 200 and `/health` `in_flight=0`.
+  - Full end-to-end 1280x704 77-frame native CUDA Wan2.2 (UMT5-XXL + DiT 2-step
+    + streaming 3D-VAE + H.264 MP4) via `umm-infer serve` + `umm-native-stage-video`
+    + `umm-infer chat --video-out` on free GPU 7: `92.66 s` (`270,505 B` H.264
+    MP4, `ffprobe` verified), GPU 7 returned to `3 MiB`.
 
 ## Validation, 2026-11-19 (historical)
 
