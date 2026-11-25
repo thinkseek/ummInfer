@@ -57,6 +57,82 @@ std::vector<float> wan_patchify_host(const float* latent_ncfhw, int channels,
                                      int frames, int height, int width);
 std::vector<float> wan_unpatchify_host(const float* tokens, int channels,
                                        int frames, int height, int width);
+std::vector<float> wan_cfg_unpatchify_host(const float* cond_tokens,
+                                           const float* uncond_tokens,
+                                           int channels, int frames, int height,
+                                           int width, float guidance_scale);
+
+#ifdef __CUDACC__
+#define UMM_DIT_HD __host__ __device__
+#else
+#define UMM_DIT_HD
+#endif
+
+// Exact element-index bijections between NCFHW [channels, frames, height, width]
+// and flattened patch tokens [tokens, 4, channels] (with patch_t=1, patch_h=2,
+// patch_w=2). Shared by host unit tests and GPU patchify/unpatchify kernels.
+UMM_DIT_HD inline constexpr size_t wan_dit_patch_index_to_ncfhw(
+    size_t patch_index, int channels, int frames, int height,
+    int width) noexcept {
+  const int ph = height >> 1;
+  const int pw = width >> 1;
+  const int c = static_cast<int>(patch_index % static_cast<size_t>(channels));
+  const size_t t0 = patch_index / static_cast<size_t>(channels);
+  const int sub = static_cast<int>(t0 & 3u);
+  const int dy = sub >> 1;
+  const int dx = sub & 1;
+  const size_t token = t0 >> 2;
+  const int x = static_cast<int>(token % static_cast<size_t>(pw));
+  const size_t t1 = token / static_cast<size_t>(pw);
+  const int y = static_cast<int>(t1 % static_cast<size_t>(ph));
+  const int f = static_cast<int>(t1 / static_cast<size_t>(ph));
+  return ((static_cast<size_t>(c) * static_cast<size_t>(frames) +
+           static_cast<size_t>(f)) *
+              static_cast<size_t>(height) +
+          static_cast<size_t>(y * 2 + dy)) *
+             static_cast<size_t>(width) +
+         static_cast<size_t>(x * 2 + dx);
+}
+
+UMM_DIT_HD inline constexpr size_t wan_dit_ncfhw_to_patch_index(
+    size_t ncfhw_index, int channels, int frames, int height,
+    int width) noexcept {
+  const int ph = height >> 1;
+  const int pw = width >> 1;
+  const int x_full = static_cast<int>(ncfhw_index % static_cast<size_t>(width));
+  const size_t t0 = ncfhw_index / static_cast<size_t>(width);
+  const int y_full = static_cast<int>(t0 % static_cast<size_t>(height));
+  const size_t t1 = t0 / static_cast<size_t>(height);
+  const int f = static_cast<int>(t1 % static_cast<size_t>(frames));
+  const int c = static_cast<int>(t1 / static_cast<size_t>(frames));
+  const int y = y_full >> 1;
+  const int dy = y_full & 1;
+  const int x = x_full >> 1;
+  const int dx = x_full & 1;
+  const size_t token =
+      (static_cast<size_t>(f) * static_cast<size_t>(ph) +
+       static_cast<size_t>(y)) *
+          static_cast<size_t>(pw) +
+      static_cast<size_t>(x);
+  return (token * 4u + static_cast<size_t>(dy * 2 + dx)) *
+             static_cast<size_t>(channels) +
+         static_cast<size_t>(c);
+}
+
+// Batched-CFG (B=2) token indexing helpers: maps a global token index in
+// [0, B * tokens_per_batch) to its intra-batch token index and I2V per-frame
+// timestep group (0 = latent frame 0 with t=0, 1 = remaining frames).
+UMM_DIT_HD inline constexpr int wan_dit_batched_token_in_batch(
+    int batched_token, int tokens_per_batch) noexcept {
+  return batched_token % tokens_per_batch;
+}
+
+UMM_DIT_HD inline constexpr int wan_dit_batched_per_frame_group(
+    int batched_token, int tokens_per_batch, int first_frame_tokens) noexcept {
+  return (batched_token % tokens_per_batch) < first_frame_tokens ? 0 : 1;
+}
+
+#undef UMM_DIT_HD
 
 // Attention query tile size used by the CUDA Wan DiT reference attention loop.
 inline constexpr int kWanDitQueryTile = 512;
@@ -126,6 +202,13 @@ inline bool wan_dit_use_flash_attn(const char* ref_env) noexcept {
     return false;
   }
   return true;
+}
+
+// Selects Batched-CFG (B=2, M=2*tokens) execution for CFG denoising steps
+// (default: true). Disabled when UMM_DIT_NO_BATCH_CFG is set to a truthy
+// value ("1", "true", "yes", or "on", case-insensitive).
+inline bool wan_dit_use_batch_cfg(const char* disable_env) noexcept {
+  return wan_dit_use_flash_attn(disable_env);
 }
 
 struct WanTextEmbedCacheKey {
@@ -216,6 +299,35 @@ class TeaCacheController {
 
 using TeaCacheState = TeaCacheController;
 
+enum class WanDitCfgDispatchMode {
+  kBatchedBothMiss,  // Run B=2 (2*tokens) across all 30 transformer layers
+  kBothCachedHit,    // Skip all 30 layers; add cached residuals to both slices
+  kCondOnlyMiss,     // Run B=1 on cond branch; add cached residual to uncond
+  kUncondOnlyMiss,   // Run B=1 on uncond branch; add cached residual to cond
+};
+
+struct WanDitCfgTeaCachePlan {
+  TeaCacheDecision cond{};
+  TeaCacheDecision uncond{};
+  WanDitCfgDispatchMode mode = WanDitCfgDispatchMode::kBatchedBothMiss;
+};
+
+inline constexpr WanDitCfgDispatchMode wan_dit_plan_cfg_dispatch(
+    bool cond_hit, bool uncond_hit) noexcept {
+  if (cond_hit && uncond_hit) return WanDitCfgDispatchMode::kBothCachedHit;
+  if (!cond_hit && !uncond_hit) return WanDitCfgDispatchMode::kBatchedBothMiss;
+  return cond_hit ? WanDitCfgDispatchMode::kUncondOnlyMiss
+                  : WanDitCfgDispatchMode::kCondOnlyMiss;
+}
+
+// Evaluates TeaCache decisions for both CFG branches (cond and uncond) from a
+// single timestep modulation vector. When TeaCache is disabled, records both
+// calls with zero modulation inspection (cur_e0 may be nullptr, e0_len == 0).
+WanDitCfgTeaCachePlan wan_dit_evaluate_cfg_teacache(
+    TeaCacheController& controller, WanDitTeaCacheHint cond_hint,
+    WanDitTeaCacheHint uncond_hint, int frames, int height, int width,
+    bool first_frame_zero_timestep, const float* cur_e0, size_t e0_len);
+
 struct WanDitStats {
   double load_ms = 0.0;
   double forward_ms = 0.0;
@@ -227,6 +339,13 @@ struct WanDitStats {
 struct WanDitOutput {
   std::vector<float> velocity;
   WanDitStats stats;
+};
+
+struct WanDitCfgOutput {
+  std::vector<float> velocity;
+  WanDitStats stats;
+  bool cond_teacache_hit = false;
+  bool uncond_teacache_hit = false;
 };
 
 #ifdef UMM_VIDEO_CUDA
@@ -255,6 +374,17 @@ class WanDit {
                        int text_len,
                        bool first_frame_zero_timestep = false,
                        WanDitTeaCacheHint teacache_hint = {});
+
+  // Batched-CFG (B=2, M=2*tokens) forward pass that shares timestep embedding,
+  // patch embedding, RoPE, and DiT weight reads across conditional and
+  // unconditional branches, then fuses CFG combination and unpatchify on GPU.
+  WanDitCfgOutput forward_cfg(
+      const float* latent_ncfhw, int frames, int height, int width,
+      float timestep, const float* pos_context, int pos_len,
+      const float* neg_context, int neg_len, float guidance_scale,
+      bool first_frame_zero_timestep = false,
+      WanDitTeaCacheHint cond_hint = {-1, 0, 0},
+      WanDitTeaCacheHint uncond_hint = {-1, 0, 1});
 
  private:
   struct Impl;

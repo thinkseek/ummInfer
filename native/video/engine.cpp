@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <random>
 #include <stdexcept>
@@ -471,6 +472,8 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     wan_cuda_->dit.set_teacache_thresh(effective_teacache);
     wan_cuda_->dit.reset_teacache();
 
+    const bool use_batch_cfg =
+        use_cfg && wan_dit_use_batch_cfg(std::getenv("UMM_DIT_NO_BATCH_CFG"));
     const auto dit_started = std::chrono::steady_clock::now();
     for (int step = 0; step < params.steps; ++step) {
       check_abort(abort, "aborted before step " + std::to_string(step + 1) +
@@ -478,23 +481,36 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       const float t_val = schedule.timesteps[static_cast<size_t>(step)];
       if (has_init_image) pin_first_frame(latents);
       const WanDitTeaCacheHint cond_hint{step, params.steps, 0};
-      WanDitOutput cond = wan_cuda_->dit.forward(
-          latents.data(), latent_t, latent_h, latent_w, t_val,
-          pos_ctx.hidden_states.data(), pos_len, has_init_image, cond_hint);
-      update_peak_vram(cond.stats.peak_vram_bytes);
 
-      std::vector<float> velocity = std::move(cond.velocity);
-      if (use_cfg) {
-        check_abort(abort, "aborted mid-step CFG " + std::to_string(step + 1) +
-                               "/" + std::to_string(params.steps));
+      std::vector<float> velocity;
+      if (use_batch_cfg) {
         const WanDitTeaCacheHint uncond_hint{step, params.steps, 1};
-        WanDitOutput uncond = wan_cuda_->dit.forward(
+        WanDitCfgOutput cfg_out = wan_cuda_->dit.forward_cfg(
             latents.data(), latent_t, latent_h, latent_w, t_val,
-            neg_hidden.data(), neg_len, has_init_image, uncond_hint);
-        update_peak_vram(uncond.stats.peak_vram_bytes);
-        const float gs = params.guidance_scale;
-        for (size_t i = 0; i < latent_count; ++i) {
-          velocity[i] = uncond.velocity[i] + gs * (velocity[i] - uncond.velocity[i]);
+            pos_ctx.hidden_states.data(), pos_len, neg_hidden.data(), neg_len,
+            params.guidance_scale, has_init_image, cond_hint, uncond_hint);
+        update_peak_vram(cfg_out.stats.peak_vram_bytes);
+        velocity = std::move(cfg_out.velocity);
+      } else {
+        WanDitOutput cond = wan_cuda_->dit.forward(
+            latents.data(), latent_t, latent_h, latent_w, t_val,
+            pos_ctx.hidden_states.data(), pos_len, has_init_image, cond_hint);
+        update_peak_vram(cond.stats.peak_vram_bytes);
+
+        velocity = std::move(cond.velocity);
+        if (use_cfg) {
+          check_abort(abort, "aborted mid-step CFG " + std::to_string(step + 1) +
+                                 "/" + std::to_string(params.steps));
+          const WanDitTeaCacheHint uncond_hint{step, params.steps, 1};
+          WanDitOutput uncond = wan_cuda_->dit.forward(
+              latents.data(), latent_t, latent_h, latent_w, t_val,
+              neg_hidden.data(), neg_len, has_init_image, uncond_hint);
+          update_peak_vram(uncond.stats.peak_vram_bytes);
+          const float gs = params.guidance_scale;
+          for (size_t i = 0; i < latent_count; ++i) {
+            velocity[i] =
+                uncond.velocity[i] + gs * (velocity[i] - uncond.velocity[i]);
+          }
         }
       }
 
@@ -530,24 +546,30 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       throw std::runtime_error("unexpected Wan2.2 VAE decoded output shape");
     }
 
-    const int64_t out_t = decoded.shape[2];
-    const int64_t out_h = decoded.shape[3];
-    const int64_t out_w = decoded.shape[4];
-    rgb_frames.resize(static_cast<size_t>(out_t));
-    for (int64_t t = 0; t < out_t; ++t) {
-      auto& frame = rgb_frames[static_cast<size_t>(t)];
-      frame.resize(static_cast<size_t>(out_h * out_w * 3));
-      for (int64_t y = 0; y < out_h; ++y) {
-        for (int64_t x = 0; x < out_w; ++x) {
-          for (int64_t c = 0; c < 3; ++c) {
-            const size_t src = static_cast<size_t>(
-                ((c * out_t + t) * out_h + y) * out_w + x);
-            const float clamped =
-                std::max(-1.0f, std::min(1.0f, decoded.data[src]));
-            frame[static_cast<size_t>((y * out_w + x) * 3 + c)] =
-                static_cast<uint8_t>(std::lround((clamped + 1.0f) * 127.5f));
-          }
-        }
+    const size_t out_t = static_cast<size_t>(decoded.shape[2]);
+    const size_t out_h = static_cast<size_t>(decoded.shape[3]);
+    const size_t out_w = static_cast<size_t>(decoded.shape[4]);
+    const size_t plane = out_h * out_w;
+    const size_t channel_stride = out_t * plane;
+    const float* r_base = decoded.data.data();
+    const float* g_base = r_base + channel_stride;
+    const float* b_base = g_base + channel_stride;
+    const auto float_to_u8 = [](float v) noexcept -> uint8_t {
+      const float clamped = !(v > -1.0f) ? -1.0f : (v < 1.0f ? v : 1.0f);
+      return static_cast<uint8_t>(clamped * 127.5f + 128.0f);
+    };
+    rgb_frames.resize(out_t);
+    for (size_t t = 0; t < out_t; ++t) {
+      auto& frame = rgb_frames[t];
+      frame.resize(plane * 3u);
+      uint8_t* dst = frame.data();
+      const float* r = r_base + t * plane;
+      const float* g = g_base + t * plane;
+      const float* b = b_base + t * plane;
+      for (size_t p = 0; p < plane; ++p) {
+        dst[p * 3u + 0u] = float_to_u8(r[p]);
+        dst[p * 3u + 1u] = float_to_u8(g[p]);
+        dst[p * 3u + 2u] = float_to_u8(b[p]);
       }
     }
 #endif

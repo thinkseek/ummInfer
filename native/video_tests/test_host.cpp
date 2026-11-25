@@ -713,6 +713,179 @@ void test_wan_dit_teacache_controller() {
   }
 }
 
+void test_wan_dit_batch_cfg_policy_and_layout() {
+  using namespace umminfer::video;
+
+  // 1. UMM_DIT_NO_BATCH_CFG env parser: default ON, truthy disables.
+  check(wan_dit_use_batch_cfg(nullptr), "null UMM_DIT_NO_BATCH_CFG enables batch CFG");
+  check(wan_dit_use_batch_cfg(""), "empty UMM_DIT_NO_BATCH_CFG enables batch CFG");
+  check(wan_dit_use_batch_cfg("   "), "whitespace UMM_DIT_NO_BATCH_CFG enables batch CFG");
+  check(wan_dit_use_batch_cfg("0"), "0 enables batch CFG");
+  check(wan_dit_use_batch_cfg("false"), "false enables batch CFG");
+  check(wan_dit_use_batch_cfg("off"), "off enables batch CFG");
+  check(wan_dit_use_batch_cfg("no"), "no enables batch CFG");
+  for (const char* off_val :
+       {"1", " 1 ", "true", "TRUE", "True", "yes", "YES", "\tyes\n", "on", "ON"}) {
+    check(!wan_dit_use_batch_cfg(off_val),
+          std::string("UMM_DIT_NO_BATCH_CFG='") + off_val + "' disables batch CFG");
+  }
+
+  // 2. GPU patchify/unpatchify index bijections match wan_patchify_host /
+  // wan_unpatchify_host element-for-element across realistic & asymmetric shapes.
+  struct Shape {
+    int c;
+    int f;
+    int h;
+    int w;
+  };
+  const Shape shapes[] = {{2, 2, 4, 6}, {48, 2, 4, 6}, {4, 3, 6, 4}};
+  for (const Shape& s : shapes) {
+    const size_t total =
+        static_cast<size_t>(s.c) * s.f * s.h * s.w;
+    std::vector<float> latent(total);
+    for (size_t i = 0; i < total; ++i) {
+      latent[i] = static_cast<float>(i % 97) * 0.25f - 11.0f;
+    }
+    const auto host_patch = wan_patchify_host(latent.data(), s.c, s.f, s.h, s.w);
+    std::vector<float> indexed_patch(total);
+    for (size_t i = 0; i < total; ++i) {
+      const size_t src = wan_dit_patch_index_to_ncfhw(i, s.c, s.f, s.h, s.w);
+      check(src < total, "patch->ncfhw index in bounds");
+      check(wan_dit_ncfhw_to_patch_index(src, s.c, s.f, s.h, s.w) == i,
+            "ncfhw_to_patch_index is exact inverse of patch_index_to_ncfhw");
+      indexed_patch[i] = latent[src];
+    }
+    check(indexed_patch == host_patch,
+          "GPU patchify index math matches wan_patchify_host identically");
+
+    // Verify fused CFG + unpatchify equivalence vs separate unpatchify + CFG.
+    std::vector<float> cond_tokens(total);
+    std::vector<float> uncond_tokens(total);
+    for (size_t i = 0; i < total; ++i) {
+      cond_tokens[i] = static_cast<float>((i * 13) % 101) * 0.1f - 5.0f;
+      uncond_tokens[i] = static_cast<float>((i * 7 + 3) % 89) * 0.1f - 4.0f;
+    }
+    const auto cond_ref =
+        wan_unpatchify_host(cond_tokens.data(), s.c, s.f, s.h, s.w);
+    const auto uncond_ref =
+        wan_unpatchify_host(uncond_tokens.data(), s.c, s.f, s.h, s.w);
+    for (float gs : {1.0f, 5.0f, 7.5f}) {
+      const auto fused = wan_cfg_unpatchify_host(
+          cond_tokens.data(), uncond_tokens.data(), s.c, s.f, s.h, s.w, gs);
+      check(fused.size() == total, "fused CFG unpatchify output size");
+      for (size_t i = 0; i < total; ++i) {
+        const float expected =
+            uncond_ref[i] + gs * (cond_ref[i] - uncond_ref[i]);
+        check(std::fabs(fused[i] - expected) < 1e-6f,
+              "fused CFG unpatchify matches reference scalar CFG");
+      }
+    }
+  }
+
+  // 3. Batched-CFG (B=2) token indexing & I2V per-frame grouping (704x480 29f).
+  constexpr int kTokens = 8 * 15 * 22;        // 2640
+  constexpr int kFirstFrameTokens = 15 * 22;  // 330
+  for (int t = 0; t < 2 * kTokens; ++t) {
+    const int in_batch = wan_dit_batched_token_in_batch(t, kTokens);
+    const int expected_in_batch = (t < kTokens) ? t : (t - kTokens);
+    check(in_batch == expected_in_batch,
+          "batched token maps to identical RoPE token across both batches");
+    const int group =
+        wan_dit_batched_per_frame_group(t, kTokens, kFirstFrameTokens);
+    const int expected_group = (expected_in_batch < kFirstFrameTokens) ? 0 : 1;
+    check(group == expected_group,
+          "batched I2V per-frame group assigns t=0 to frame 0 in BOTH batches");
+  }
+
+  // 4. TeaCache dual-branch CFG decision matrix: disabled, both miss, both hit,
+  // cond-only miss, uncond-only miss, and branch collision rejection.
+  check(wan_dit_plan_cfg_dispatch(false, false) ==
+            WanDitCfgDispatchMode::kBatchedBothMiss,
+        "dispatch(miss, miss) -> kBatchedBothMiss");
+  check(wan_dit_plan_cfg_dispatch(true, true) ==
+            WanDitCfgDispatchMode::kBothCachedHit,
+        "dispatch(hit, hit) -> kBothCachedHit");
+  check(wan_dit_plan_cfg_dispatch(false, true) ==
+            WanDitCfgDispatchMode::kCondOnlyMiss,
+        "dispatch(miss, hit) -> kCondOnlyMiss");
+  check(wan_dit_plan_cfg_dispatch(true, false) ==
+            WanDitCfgDispatchMode::kUncondOnlyMiss,
+        "dispatch(hit, miss) -> kUncondOnlyMiss");
+
+  // Disabled zero-overhead guarantee: cur_e0 == nullptr, e0_len == 0 accepted.
+  {
+    TeaCacheController ctrl(0.0f);
+    for (int step = 0; step < 5; ++step) {
+      const WanDitCfgTeaCachePlan plan = wan_dit_evaluate_cfg_teacache(
+          ctrl, {step, 5, 0}, {step, 5, 1}, 8, 30, 44, false, nullptr, 0);
+      check(plan.mode == WanDitCfgDispatchMode::kBatchedBothMiss &&
+                !plan.cond.use_cached_residual && !plan.cond.save_residual &&
+                !plan.uncond.use_cached_residual && !plan.uncond.save_residual,
+            "disabled TeaCache CFG always runs batched both-miss with no save");
+    }
+    check(ctrl.hits() == 0 && ctrl.total_calls() == 10,
+          "disabled TeaCache CFG records 2 calls per step (0/10)");
+  }
+
+  // Active TeaCache: exercise all 4 outcomes cleanly.
+  {
+    TeaCacheController ctrl(0.15f);
+    const std::vector<float> e0 = {2.5f, 2.5f, 2.5f, 2.5f};
+
+    // Step 0: both miss & save -> kBatchedBothMiss.
+    const auto p0 = wan_dit_evaluate_cfg_teacache(
+        ctrl, {0, 6, 0}, {0, 6, 1}, 8, 30, 44, true, e0.data(), e0.size());
+    check(p0.mode == WanDitCfgDispatchMode::kBatchedBothMiss &&
+              p0.cond.save_residual && p0.uncond.save_residual,
+          "CFG step 0 -> both miss and save");
+
+    // Step 1: identical e0 -> both hit -> kBothCachedHit.
+    const auto p1 = wan_dit_evaluate_cfg_teacache(
+        ctrl, {1, 6, 0}, {1, 6, 1}, 8, 30, 44, true, e0.data(), e0.size());
+    check(p1.mode == WanDitCfgDispatchMode::kBothCachedHit &&
+              p1.cond.use_cached_residual && p1.uncond.use_cached_residual,
+          "CFG step 1 -> both hit");
+
+    // Invalidate cond branch only -> step 2 -> kCondOnlyMiss.
+    ctrl.invalidate_branch(0);
+    const auto p2 = wan_dit_evaluate_cfg_teacache(
+        ctrl, {2, 6, 0}, {2, 6, 1}, 8, 30, 44, true, e0.data(), e0.size());
+    check(p2.mode == WanDitCfgDispatchMode::kCondOnlyMiss &&
+              !p2.cond.use_cached_residual && p2.cond.save_residual &&
+              p2.uncond.use_cached_residual && !p2.uncond.save_residual,
+          "CFG step 2 after cond invalidate -> kCondOnlyMiss");
+
+    // Invalidate uncond branch only -> step 3 -> kUncondOnlyMiss.
+    ctrl.invalidate_branch(1);
+    const auto p3 = wan_dit_evaluate_cfg_teacache(
+        ctrl, {3, 6, 0}, {3, 6, 1}, 8, 30, 44, true, e0.data(), e0.size());
+    check(p3.mode == WanDitCfgDispatchMode::kUncondOnlyMiss &&
+              p3.cond.use_cached_residual && !p3.cond.save_residual &&
+              !p3.uncond.use_cached_residual && p3.uncond.save_residual,
+          "CFG step 3 after uncond invalidate -> kUncondOnlyMiss");
+
+    // Final step 5: both miss and neither saves.
+    const auto p5 = wan_dit_evaluate_cfg_teacache(
+        ctrl, {5, 6, 0}, {5, 6, 1}, 8, 30, 44, true, e0.data(), e0.size());
+    check(p5.mode == WanDitCfgDispatchMode::kBatchedBothMiss &&
+              !p5.cond.use_cached_residual && !p5.cond.save_residual &&
+              !p5.uncond.use_cached_residual && !p5.uncond.save_residual,
+          "CFG final step -> both miss and do not save");
+    check(ctrl.hits() == 4 && ctrl.total_calls() == 10,
+          "CFG TeaCache hit/call telemetry counts 4/10");
+
+    // Duplicate branch index rejected when enabled.
+    bool same_branch_threw = false;
+    try {
+      (void)wan_dit_evaluate_cfg_teacache(ctrl, {0, 6, 0}, {0, 6, 0}, 8, 30, 44,
+                                          false, e0.data(), e0.size());
+    } catch (const std::invalid_argument&) {
+      same_branch_threw = true;
+    }
+    check(same_branch_threw, "identical cond/uncond TeaCache branches rejected");
+  }
+}
+
 void test_flow_match_schedule_and_euler() {
   using namespace umminfer::video;
   FlowMatchConfig cfg;
@@ -1200,6 +1373,8 @@ int main() {
       {"wan_dit_perf_helpers", test_wan_dit_perf_helpers},
       {"wan_dit_flash_attn_policy", test_wan_dit_flash_attn_policy},
       {"wan_dit_teacache_controller", test_wan_dit_teacache_controller},
+      {"wan_dit_batch_cfg_policy_and_layout",
+       test_wan_dit_batch_cfg_policy_and_layout},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"unipc_bh2_matches_diffusers", test_unipc_bh2_matches_diffusers},
       {"i2v_center_crop_preserves_aspect_ratio",

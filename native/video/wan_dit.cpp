@@ -195,6 +195,28 @@ std::vector<float> wan_unpatchify_host(const float* tokens, int channels,
   return output;
 }
 
+std::vector<float> wan_cfg_unpatchify_host(const float* cond_tokens,
+                                           const float* uncond_tokens,
+                                           int channels, int frames, int height,
+                                           int width, float guidance_scale) {
+  if (cond_tokens == nullptr || uncond_tokens == nullptr) {
+    throw std::invalid_argument("null Wan CFG token buffer");
+  }
+  if (!std::isfinite(guidance_scale)) {
+    throw std::invalid_argument("Wan CFG guidance_scale must be finite");
+  }
+  const size_t count = checked_count(frames, height, width, channels);
+  std::vector<float> output(count);
+  for (size_t i = 0; i < count; ++i) {
+    const size_t src =
+        wan_dit_ncfhw_to_patch_index(i, channels, frames, height, width);
+    const float c = cond_tokens[src];
+    const float u = uncond_tokens[src];
+    output[i] = u + guidance_scale * (c - u);
+  }
+  return output;
+}
+
 int wan_attention_tile_len(int tokens, int q_start, int tile_size) {
   if (tokens <= 0 || tile_size <= 0 || q_start < 0 || q_start >= tokens) {
     throw std::invalid_argument("invalid Wan DiT attention tile bounds");
@@ -418,6 +440,32 @@ TeaCacheDecision TeaCacheController::evaluate(
   decision.save_residual = true;
   decision.accumulated_rel_l1 = 0.0f;
   return decision;
+}
+
+WanDitCfgTeaCachePlan wan_dit_evaluate_cfg_teacache(
+    TeaCacheController& controller, WanDitTeaCacheHint cond_hint,
+    WanDitTeaCacheHint uncond_hint, int frames, int height, int width,
+    bool first_frame_zero_timestep, const float* cur_e0, size_t e0_len) {
+  WanDitCfgTeaCachePlan plan;
+  if (!controller.enabled()) {
+    controller.record_disabled_call();
+    controller.record_disabled_call();
+    plan.mode = WanDitCfgDispatchMode::kBatchedBothMiss;
+    return plan;
+  }
+  if (cond_hint.branch == uncond_hint.branch) {
+    throw std::invalid_argument(
+        "Wan CFG TeaCache cond and uncond branches must be distinct");
+  }
+  plan.cond = controller.evaluate(cond_hint.branch, cond_hint.step_index,
+                                  cond_hint.total_steps, frames, height, width,
+                                  first_frame_zero_timestep, cur_e0, e0_len);
+  plan.uncond = controller.evaluate(
+      uncond_hint.branch, uncond_hint.step_index, uncond_hint.total_steps,
+      frames, height, width, first_frame_zero_timestep, cur_e0, e0_len);
+  plan.mode = wan_dit_plan_cfg_dispatch(plan.cond.use_cached_residual,
+                                        plan.uncond.use_cached_residual);
+  return plan;
 }
 
 }  // namespace umminfer::video
