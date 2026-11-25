@@ -434,8 +434,21 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     if (request.image->size.empty()) {
       throw Error(ErrorCode::kConfig, "image.size must be non-empty");
     }
+    if (request.image->steps &&
+        (*request.image->steps < 1 || *request.image->steps > 100)) {
+      throw Error(ErrorCode::kConfig, "image.steps must be between 1 and 100");
+    }
     if (request.image->seed && *request.image->seed < 0) {
       throw Error(ErrorCode::kConfig, "image.seed must not be negative");
+    }
+    if (!request.image->image.empty()) {
+      const size_t comma = request.image->image.find(',');
+      if (request.image->image.rfind("data:image/", 0) != 0 ||
+          comma == std::string::npos ||
+          request.image->image.substr(0, comma).find(";base64") == std::string::npos) {
+        throw Error(ErrorCode::kConfig,
+                    "image.image must be a data:image/...;base64,... URL");
+      }
     }
   }
   if (request.audio) {
@@ -471,6 +484,20 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     if (request.video->fps && *request.video->fps < 1) {
       throw Error(ErrorCode::kConfig, "video.fps must be positive");
     }
+    if (request.video->num_frames &&
+        (*request.video->num_frames < 1 || *request.video->num_frames > 241)) {
+      throw Error(ErrorCode::kConfig, "video.num_frames must be between 1 and 241");
+    }
+    if (request.video->steps &&
+        (*request.video->steps < 1 || *request.video->steps > 100)) {
+      throw Error(ErrorCode::kConfig, "video.steps must be between 1 and 100");
+    }
+    if (request.video->guidance_scale &&
+        (!std::isfinite(*request.video->guidance_scale) ||
+         *request.video->guidance_scale < 0.0 ||
+         *request.video->guidance_scale > 30.0)) {
+      throw Error(ErrorCode::kConfig, "video.guidance_scale must be between 0 and 30");
+    }
     if (request.video->seed && *request.video->seed < 0) {
       throw Error(ErrorCode::kConfig, "video.seed must not be negative");
     }
@@ -495,9 +522,13 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     }
     if (!request.modalities.empty()) body["modalities"] = request.modalities;
     if (request.audio) {
-      body["audio"] = {{"voice", request.audio->voice},
-                       {"format", request.audio->format},
-                       {"sample_rate", request.audio->sample_rate}};
+      json audio = {{"voice", request.audio->voice},
+                    {"format", request.audio->format},
+                    {"sample_rate", request.audio->sample_rate}};
+      if (!request.audio->ref_audio.empty()) {
+        audio["ref_audio"] = request.audio->ref_audio;
+      }
+      body["audio"] = std::move(audio);
     }
     if (request.image) {
       json image = {{"size", request.image->size},
@@ -505,7 +536,9 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
       if (!request.image->prompt.empty()) {
         image["prompt"] = request.image->prompt;
       }
+      if (request.image->steps) image["steps"] = *request.image->steps;
       if (request.image->seed) image["seed"] = *request.image->seed;
+      if (!request.image->image.empty()) image["image"] = request.image->image;
       body["image"] = std::move(image);
     }
     if (request.video) {
@@ -516,6 +549,11 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
       }
       if (request.video->seconds) video["seconds"] = *request.video->seconds;
       if (request.video->fps) video["fps"] = *request.video->fps;
+      if (request.video->num_frames) video["num_frames"] = *request.video->num_frames;
+      if (request.video->steps) video["steps"] = *request.video->steps;
+      if (request.video->guidance_scale) {
+        video["guidance_scale"] = *request.video->guidance_scale;
+      }
       if (request.video->seed) video["seed"] = *request.video->seed;
       body["video"] = std::move(video);
     }
@@ -896,6 +934,36 @@ ImageResponse OpenAIClient::generate_image(const ImageRequest& request) const {
   http.accept = "application/json";
   http.body = encoded_body(body);
   return parse_image_response(detail::perform(http), config_.api_key);
+}
+
+std::string OpenAIClient::speech(const SpeechRequest& request) const {
+  const std::string& model = request.model.empty() ? config_.model : request.model;
+  if (blank(model)) throw Error(ErrorCode::kConfig, "model is required");
+  if (request.input.empty()) throw Error(ErrorCode::kConfig, "input text is required");
+  if (blank(request.voice)) throw Error(ErrorCode::kConfig, "voice is required");
+  if (request.response_format != "wav" && request.response_format != "pcm") {
+    throw Error(ErrorCode::kConfig, "response_format must be wav or pcm");
+  }
+  detail::check_cancelled(request.cancel);
+
+  json body = {{"model", model},
+               {"input", request.input},
+               {"voice", request.voice},
+               {"response_format", request.response_format}};
+  if (!request.ref_audio.empty()) body["ref_audio"] = request.ref_audio;
+
+  auto http = media_request(config_, base_url_, "/audio/speech",
+                            detail::HttpMethod::kPost, request.timeout,
+                            request.cancel);
+  http.headers.emplace("Content-Type", "application/json");
+  http.accept = request.response_format == "pcm" ? "audio/pcm" : "audio/wav";
+  http.body_limit = kMaxAudioBytes;
+  http.body = encoded_body(body);
+  const detail::HttpResponse response = detail::perform(http);
+  if (response.body.empty()) {
+    throw Error(ErrorCode::kBadResponse, "speech response is empty");
+  }
+  return response.body;
 }
 
 ImageResponse OpenAIClient::edit_image(const ImageEditRequest& request) const {

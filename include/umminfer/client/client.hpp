@@ -94,6 +94,9 @@ struct AudioOutput {
   std::string voice;
   std::string format = "wav";
   int64_t sample_rate = 24000;
+  // Optional base64 or data:audio/wav;base64,... reference clip for zero-shot
+  // voice cloning on Base TTS checkpoints.
+  std::string ref_audio;
 };
 
 // Requested generated image. An empty prompt makes the server use the full
@@ -101,7 +104,10 @@ struct AudioOutput {
 struct ImageOutput {
   std::string prompt;
   std::string size = "512x512";
+  std::optional<int64_t> steps;
   std::optional<int64_t> seed;
+  // Optional data:image/...;base64,... URL for image-to-image editing.
+  std::string image;
   std::string output_format = "png";
 };
 
@@ -112,6 +118,9 @@ struct VideoOutput {
   std::string size = "1280x720";
   std::optional<int64_t> seconds;
   std::optional<int64_t> fps;
+  std::optional<int64_t> num_frames;
+  std::optional<int64_t> steps;
+  std::optional<double> guidance_scale;
   std::optional<int64_t> seed;
   std::string output_format = "mp4";
 };
@@ -217,6 +226,18 @@ struct VideoJob {
   nlohmann::json raw;
 };
 
+// Direct speech synthesis via POST /v1/audio/speech.
+struct SpeechRequest {
+  std::string model;
+  std::string input;
+  std::string voice = "vivian";
+  std::string response_format = "wav";  // "wav" or "pcm"
+  // Optional base64 or data:audio/wav;base64,... reference WAV for Base cloning.
+  std::string ref_audio;
+  Milliseconds timeout{0};
+  CancelFlag cancel = nullptr;
+};
+
 class OpenAIClient {
  public:
   explicit OpenAIClient(OpenAIConfig config);
@@ -224,6 +245,7 @@ class OpenAIClient {
 
   // Creation calls are sent once. A retry could submit a second job or a
   // second billable generation, so none of these methods retries.
+  std::string speech(const SpeechRequest& request) const;
   ImageResponse generate_image(const ImageRequest& request) const;
   ImageResponse edit_image(const ImageEditRequest& request) const;
   VideoJob create_video(const VideoRequest& request) const;

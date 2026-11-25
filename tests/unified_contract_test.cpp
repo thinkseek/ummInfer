@@ -7570,6 +7570,91 @@ void test_public_http_wave7_media_passthrough_and_tts_chunk_meta() {
           "streamed TTS chunk did not propagate dynamic sample_rate/channels");
   }
 
+  // 5. C++ OpenAIClient::speech and OpenAIClient::chat Wave 9 struct parity.
+  {
+    client::OpenAIConfig cfg;
+    cfg.base_url = base + "/v1";
+    cfg.model = "qwen3-unified";
+    cfg.timeout = client::Milliseconds{8000};
+    client::OpenAIClient cli(cfg);
+
+    // OpenAIClient::speech with ref_audio
+    {
+      client::SpeechRequest sreq;
+      sreq.input = "hello clone";
+      sreq.voice = "clone";
+      sreq.response_format = "wav";
+      sreq.ref_audio = wav_data_url;
+      auto fut = std::async(std::launch::async, [&] { return cli.speech(sreq); });
+      auto tts = h.next_submit(h.tts_recv);
+      check(tts.has_value(), "OpenAIClient::speech did not reach tts stage");
+      if (tts) {
+        StagePayload p = StagePayload::from_value(tts->data);
+        check(p.request.inputs.find("ref_audio") &&
+                  p.request.inputs.find("ref_audio")->as_bin() == sample_wav,
+              "OpenAIClient::speech ref_audio binary WAV mismatch");
+        h.complete(tts->request_id, "tts", true,
+                   artifact_result("audio", "audio/wav", sample_wav));
+      }
+      check(fut.get() == sample_wav, "OpenAIClient::speech WAV bytes mismatch");
+    }
+
+    // OpenAIClient::chat with ImageOutput{steps,image}, AudioOutput{ref_audio},
+    // VideoOutput{num_frames,steps,guidance_scale}
+    {
+      client::ChatRequest creq;
+      creq.messages.push_back({"user", "all"});
+      creq.modalities = {"text", "image", "audio", "video"};
+      client::ImageOutput io;
+      io.prompt = "lantern";
+      io.size = "512x512";
+      io.steps = 4;
+      io.image = img_data_url;
+      creq.image = io;
+      client::AudioOutput ao;
+      ao.voice = "clone";
+      ao.ref_audio = wav_b64;
+      creq.audio = ao;
+      client::VideoOutput vo;
+      vo.prompt = "waves";
+      vo.size = "480x320";
+      vo.num_frames = 13;
+      vo.steps = 15;
+      vo.guidance_scale = 5.0;
+      creq.video = vo;
+      auto fut = std::async(std::launch::async, [&] { return cli.chat(creq); });
+      if (auto vlm = h.next_submit(h.vlm_recv)) {
+        h.complete(vlm->request_id, "vlm", true, text_result("ok"));
+      }
+      if (auto img = h.next_submit(h.image_recv)) {
+        StagePayload p = StagePayload::from_value(img->data);
+        check(p.request.inputs.find("steps")->as_int() == 4 &&
+                  p.request.inputs.find("image")->as_str() == img_data_url,
+              "OpenAIClient::chat image fields mismatch");
+        h.complete(img->request_id, "image", true,
+                   artifact_result("image", "image/png", "PNG1"));
+      }
+      if (auto tts = h.next_submit(h.tts_recv)) {
+        StagePayload p = StagePayload::from_value(tts->data);
+        check(p.request.inputs.find("ref_audio")->as_bin() == sample_wav,
+              "OpenAIClient::chat audio.ref_audio mismatch");
+        h.complete(tts->request_id, "tts", true,
+                   artifact_result("audio", "audio/wav", sample_wav));
+      }
+      if (auto vid = h.next_submit(h.video_recv)) {
+        StagePayload p = StagePayload::from_value(vid->data);
+        check(p.request.inputs.find("num_frames")->as_int() == 13 &&
+                  p.request.inputs.find("steps")->as_int() == 15 &&
+                  p.request.inputs.find("guidance_scale")->as_double() == 5.0,
+              "OpenAIClient::chat video fields mismatch");
+        h.complete(vid->request_id, "video", true,
+                   artifact_result("video", "video/mp4", "MP4DATA"));
+      }
+      const client::ChatResponse cresp = fut.get();
+      check(cresp.artifacts.size() == 3, "OpenAIClient::chat expected 3 artifacts");
+    }
+  }
+
   api.stop();
   server_thread.join();
   wait_until([&]() -> bool { return engine.in_flight() == 0; },

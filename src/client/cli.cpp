@@ -94,12 +94,19 @@ void usage(const std::string& command, std::ostream& out) {
   if (command == "chat") {
     out << "usage: umm-infer chat --prompt TEXT [--url https://api.openai.com/v1] "
            "[--model M] [--system TEXT] [--stream] [--max-tokens N] [--temperature X] "
-           "[--top-p X] [--timeout-ms N] [--first-token-ms N] [--stall-ms N] "
+           "[--top-p X] [--seed N] [--timeout-ms N] [--first-token-ms N] [--stall-ms N] "
            "[--max-attempts N]\n"
            "       [--image-url URL ...] [--video-url URL ...] [--audio PATH]\n"
-           "       [--audio-out PATH --voice NAME]  speech output\n"
-           "       [--image-out PATH --image-prompt TEXT --image-size WxH\n"
-           "        --image-seed N --image-format png|jpeg]  generated image\n";
+           "       [--audio-out PATH --voice NAME [--ref-audio PATH]]  speech output\n"
+           "       [--image-out PATH [--image-prompt TEXT] [--image-size WxH]\n"
+           "        [--image-steps N] [--image-ref PATH] [--image-seed N]\n"
+           "        [--image-format png|jpeg]]  generated/edited image\n"
+           "       [--video-out PATH [--video-prompt TEXT] [--video-size WxH]\n"
+           "        [--video-seconds N] [--video-fps N] [--video-frames N]\n"
+           "        [--video-steps N] [--video-guidance X] [--video-seed N]]  generated video\n";
+  } else if (command == "speech") {
+    out << "usage: umm-infer speech --url URL --model M --text TEXT --out PATH "
+           "[--voice NAME] [--format wav|pcm] [--ref-audio PATH] [--timeout-ms N]\n";
   } else if (command == "transcribe") {
     out << "usage: umm-infer transcribe --url http://127.0.0.1:8000 --model M --file PATH "
            "[--format wav|pcm] [--language L] [--prompt TEXT] [--max-new-tokens N] "
@@ -375,12 +382,23 @@ void require_model(const OpenAIConfig& config) {
   if (config.model.empty()) throw UsageError("--model is required");
 }
 
+const Artifact* find_artifact(const ChatResponse& response,
+                              std::string_view media_type) {
+  for (const auto& artifact : response.artifacts) {
+    if (artifact.media_type == media_type) return &artifact;
+  }
+  return nullptr;
+}
+
 int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   Options options(argc, argv, 2,
                   {"url", "model", "prompt", "system", "max-tokens", "temperature",
-                   "top-p", "timeout-ms", "first-token-ms", "stall-ms", "max-attempts",
-                   "audio", "audio-out", "voice", "image-out", "image-prompt",
-                   "image-size", "image-seed", "image-format"},
+                   "top-p", "seed", "timeout-ms", "first-token-ms", "stall-ms",
+                   "max-attempts", "audio", "audio-out", "voice", "ref-audio",
+                   "image-out", "image-prompt", "image-size", "image-steps",
+                   "image-ref", "image-seed", "image-format", "video-out",
+                   "video-prompt", "video-size", "video-seconds", "video-fps",
+                   "video-frames", "video-steps", "video-guidance", "video-seed"},
                   {"stream"}, {"image-url", "video-url"});
   if (options.help) {
     usage("chat", std::cout);
@@ -442,10 +460,19 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   request.max_tokens = static_cast<int>(integer(options, "max-tokens", 0, 0, 1000000));
   if (options.has("temperature")) request.temperature = number(options, "temperature", 0, 0, 2);
   if (options.has("top-p")) request.top_p = number(options, "top-p", 0, 0, 1);
+  if (options.has("seed")) {
+    request.seed = integer(options, "seed", 0, std::numeric_limits<int64_t>::min(),
+                           std::numeric_limits<int64_t>::max());
+  }
   request.first_token_timeout = milliseconds(options, "first-token-ms", 0);
   request.stall_timeout = milliseconds(options, "stall-ms", 0);
   request.stream = options.has("stream");
   request.cancel = cancel;
+
+  auto add_modality = [&](const char* mod) {
+    if (request.modalities.empty()) request.modalities.push_back("text");
+    request.modalities.push_back(mod);
+  };
 
   const std::string audio_out = options.get("audio-out");
   if (options.has("audio-out") && audio_out.empty()) {
@@ -455,13 +482,18 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
     AudioOutput output;
     output.voice = options.get("voice");
     if (output.voice.empty()) throw UsageError("--audio-out requires --voice");
+    if (options.has("ref-audio")) {
+      const std::string ref_bytes =
+          read_limited(options.get("ref-audio"), 16u << 20, "ref-audio");
+      output.ref_audio = detail::base64_encode(ref_bytes);
+    }
     // Checked before the request: the speech is billable and local failure must
     // not discard it.
     check_output(audio_out);
-    request.modalities = {"text", "audio"};
+    add_modality("audio");
     request.audio = std::move(output);
-  } else if (options.has("voice")) {
-    throw UsageError("--voice requires --audio-out");
+  } else if (options.has("voice") || options.has("ref-audio")) {
+    throw UsageError("--voice and --ref-audio require --audio-out");
   }
 
   const std::string image_out = options.get("image-out");
@@ -472,6 +504,18 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
     ImageOutput output;
     output.prompt = options.get("image-prompt");
     if (options.has("image-size")) output.size = options.get("image-size");
+    if (options.has("image-steps")) {
+      output.steps = integer(options, "image-steps", 0, 1, 100);
+    }
+    if (options.has("image-ref")) {
+      const std::string ref_path = options.get("image-ref");
+      const std::string mime = image_content_type(ref_path);
+      if (mime.rfind("image/", 0) != 0) {
+        throw UsageError("--image-ref must be a .png, .jpg, .jpeg, or .webp file");
+      }
+      const std::string bytes = read_limited(ref_path, 16u << 20, "image-ref");
+      output.image = "data:" + mime + ";base64," + detail::base64_encode(bytes);
+    }
     if (options.has("image-seed")) {
       output.seed = integer(options, "image-seed", 0, 0,
                             std::numeric_limits<int64_t>::max());
@@ -481,11 +525,49 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
       throw UsageError("--image-format must be png or jpeg");
     }
     check_output(image_out);
-    request.modalities.push_back("image");
+    add_modality("image");
     request.image = std::move(output);
   } else if (options.has("image-prompt") || options.has("image-size") ||
+             options.has("image-steps") || options.has("image-ref") ||
              options.has("image-seed") || options.has("image-format")) {
     throw UsageError("image options require --image-out");
+  }
+
+  const std::string video_out = options.get("video-out");
+  if (options.has("video-out") && video_out.empty()) {
+    throw UsageError("--video-out requires a path");
+  }
+  if (!video_out.empty()) {
+    VideoOutput output;
+    output.prompt = options.get("video-prompt");
+    if (options.has("video-size")) output.size = options.get("video-size");
+    if (options.has("video-seconds")) {
+      output.seconds = integer(options, "video-seconds", 0, 1, 600);
+    }
+    if (options.has("video-fps")) {
+      output.fps = integer(options, "video-fps", 0, 1, 120);
+    }
+    if (options.has("video-frames")) {
+      output.num_frames = integer(options, "video-frames", 0, 1, 241);
+    }
+    if (options.has("video-steps")) {
+      output.steps = integer(options, "video-steps", 0, 1, 100);
+    }
+    if (options.has("video-guidance")) {
+      output.guidance_scale = number(options, "video-guidance", 0, 0, 30);
+    }
+    if (options.has("video-seed")) {
+      output.seed = integer(options, "video-seed", 0, 0,
+                            std::numeric_limits<int64_t>::max());
+    }
+    check_output(video_out);
+    add_modality("video");
+    request.video = std::move(output);
+  } else if (options.has("video-prompt") || options.has("video-size") ||
+             options.has("video-seconds") || options.has("video-fps") ||
+             options.has("video-frames") || options.has("video-steps") ||
+             options.has("video-guidance") || options.has("video-seed")) {
+    throw UsageError("video options require --video-out");
   }
 
   if (request.stream) {
@@ -499,13 +581,7 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   if (!audio_out.empty()) {
     // The unified TTS leg delivers audio as an artifact; the fixed upstream
     // proxy still uses the legacy delta audio field.
-    const Artifact* audio_artifact = nullptr;
-    for (const auto& artifact : response.artifacts) {
-      if (artifact.media_type == "audio") {
-        audio_artifact = &artifact;
-        break;
-      }
-    }
+    const Artifact* audio_artifact = find_artifact(response, "audio");
     const std::string& audio_bytes =
         audio_artifact != nullptr ? audio_artifact->data : response.audio;
     if (audio_bytes.empty()) {
@@ -517,18 +593,59 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
     }
   }
   if (!image_out.empty()) {
-    const Artifact* image_artifact = nullptr;
-    for (const auto& artifact : response.artifacts) {
-      if (artifact.media_type == "image") {
-        image_artifact = &artifact;
-        break;
-      }
-    }
+    const Artifact* image_artifact = find_artifact(response, "image");
     if (image_artifact == nullptr) {
       throw Error(ErrorCode::kEmpty, "the server returned no image");
     }
     write_output(image_out, image_artifact->data);
   }
+  if (!video_out.empty()) {
+    const Artifact* video_artifact = find_artifact(response, "video");
+    if (video_artifact == nullptr) {
+      throw Error(ErrorCode::kEmpty, "the server returned no video");
+    }
+    write_output(video_out, video_artifact->data);
+  }
+  return 0;
+}
+
+int speech(int argc, char** argv, std::atomic<bool>* cancel) {
+  Options options(argc, argv, 2,
+                  {"url", "model", "text", "out", "voice", "format", "ref-audio",
+                   "timeout-ms"},
+                  {});
+  if (options.help) {
+    usage("speech", std::cout);
+    return 0;
+  }
+  const std::string text = options.get("text");
+  if (text.empty()) throw UsageError("--text is required");
+  const std::string out = options.get("out");
+  if (out.empty()) throw UsageError("--out is required");
+  const std::string format = options.get("format", "wav");
+  if (format != "wav" && format != "pcm") {
+    throw UsageError("--format must be wav or pcm");
+  }
+  check_output(out);
+
+  const OpenAIConfig config = media_config(options);
+  require_model(config);
+  OpenAIClient client(config);
+
+  SpeechRequest request;
+  request.model = config.model;
+  request.input = text;
+  request.voice = options.get("voice", "vivian");
+  request.response_format = format;
+  if (options.has("ref-audio")) {
+    const std::string ref_bytes =
+        read_limited(options.get("ref-audio"), 16u << 20, "ref-audio");
+    request.ref_audio = detail::base64_encode(ref_bytes);
+  }
+  request.timeout = milliseconds(options, "timeout-ms", 0);
+  request.cancel = cancel;
+  write_output(out, client.speech(request));
+  std::cout << out << '\n';
   return 0;
 }
 
@@ -776,6 +893,7 @@ int video(int argc, char** argv, std::atomic<bool>* cancel) {
 int run_cli(const std::string& command, int argc, char** argv, std::atomic<bool>* cancel) {
   try {
     if (command == "chat") return chat(argc, argv, cancel);
+    if (command == "speech") return speech(argc, argv, cancel);
     if (command == "transcribe") return transcribe(argc, argv, cancel);
     if (command == "realtime") return realtime(argc, argv, cancel);
     if (command == "image") return image(argc, argv, cancel);

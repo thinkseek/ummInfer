@@ -57,6 +57,20 @@
       "gpu": 7,
       "args": ["--backend", "diffusers", "--default-seconds", "2"],
       "launcher": "python/umminfer_video_stage.py"
+    },
+    {
+      "name": "video-native",
+      "kind": "video",
+      "model": "/opt/umminfer/models/Wan2.2-TI2V-5B-Diffusers",
+      "gpu": 6,
+      "args": ["--video-backend", "cuda", "--size", "704x480",
+               "--fps", "16", "--steps", "15"]
+    },
+    {
+      "name": "tts-base",
+      "kind": "tts",
+      "model": "/opt/umminfer/models/Qwen3-TTS-12Hz-1.7B-Base",
+      "gpu": 5
     }
   ],
   "env": {

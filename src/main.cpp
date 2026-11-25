@@ -213,10 +213,12 @@ void print_usage(std::ostream& out) {
       << "  umm-infer stage --name N --recv EP --coordinator EP --abort EP "
          "[--next name=EP ...] [--peer name=EP ...]\n"
          "      [--gpu-id N --peer-gpu name=N ...]  staged CUDA IPC\n"
-      << "  umm-infer chat --prompt TEXT [--url URL --model M --stream]\n"
+      << "  umm-infer chat --prompt TEXT [--url URL --model M --stream] [--seed N]\n"
       << "      [--image-url URL ...] [--video-url URL ...] [--audio PATH]\n"
-      << "      [--audio-out PATH --voice NAME]  speech output, requires --stream\n"
-      << "      [--image-out PATH [--image-prompt TEXT]]  generated image, requires --stream\n"
+      << "      [--audio-out PATH --voice NAME [--ref-audio PATH]]  speech output\n"
+      << "      [--image-out PATH [--image-prompt TEXT] [--image-steps N] [--image-ref PATH]]  image output\n"
+      << "      [--video-out PATH [--video-prompt TEXT] [--video-frames N] [--video-steps N]]  video output\n"
+      << "  umm-infer speech --url URL --model M --text TEXT --out PATH [--voice NAME] [--format wav|pcm] [--ref-audio PATH]\n"
       << "  umm-infer transcribe --url URL --model M --file audio.wav\n"
       << "  umm-infer realtime --url URL --model M --file audio.wav [--live-result]\n"
       << "  umm-infer image generate --url URL --model M --prompt TEXT --out PATH\n"
@@ -587,8 +589,8 @@ int main(int argc, char** argv) {
       if (command == "serve") return run_serve(options.flags);
       return run_stage(options.flags);
     }
-    if (command == "chat" || command == "transcribe" || command == "realtime" ||
-        command == "image" || command == "video") {
+    if (command == "chat" || command == "speech" || command == "transcribe" ||
+        command == "realtime" || command == "image" || command == "video") {
       return umminfer::client::run_cli(command, argc, argv, &g_cancelled);
     }
   } catch (const FlagError& exc) {

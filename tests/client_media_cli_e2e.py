@@ -128,6 +128,52 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/videos":
             self.json(200, {"id": "vid-1", "object": "video", "status": "queued"})
             return
+        if self.path == "/v1/audio/speech":
+            request = json.loads(body)
+            if request.get("input") == "boom":
+                self.json(400, {"error": {"message": "speech rejected"}})
+                return
+            if request.get("response_format") == "pcm":
+                self.reply(200, b"\x01\x02\x03\x04", "audio/pcm")
+            else:
+                self.reply(200, b"RIFF\x24\x00\x00\x00WAVEfmt ", "audio/wav")
+            return
+        if self.path == "/v1/chat/completions":
+            import hashlib
+            artifacts = []
+            mods = set(json.loads(body).get("modalities", []))
+            if "image" in mods:
+                artifacts.append({
+                    "artifact_id": "art-img", "media_type": "image",
+                    "mime_type": "image/png", "encoding": "base64",
+                    "bytes": len(EDITED),
+                    "sha256": hashlib.sha256(EDITED).hexdigest(),
+                    "data": base64.b64encode(EDITED).decode(),
+                })
+            if "audio" in mods:
+                wav = b"RIFF\x24\x00\x00\x00WAVEfmt "
+                artifacts.append({
+                    "artifact_id": "art-aud", "media_type": "audio",
+                    "mime_type": "audio/wav", "encoding": "base64",
+                    "bytes": len(wav),
+                    "sha256": hashlib.sha256(wav).hexdigest(),
+                    "data": base64.b64encode(wav).decode(),
+                })
+            if "video" in mods:
+                artifacts.append({
+                    "artifact_id": "art-vid", "media_type": "video",
+                    "mime_type": "video/mp4", "encoding": "base64",
+                    "bytes": len(MP4),
+                    "sha256": hashlib.sha256(MP4).hexdigest(),
+                    "data": base64.b64encode(MP4).decode(),
+                })
+            self.json(200, {
+                "id": "chat-w9", "object": "chat.completion", "model": "m",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "done"}}],
+                "artifacts": artifacts,
+            })
+            return
         self.json(404, {"error": "not found"})
 
     def do_GET(self):
@@ -303,6 +349,79 @@ def test_video_rejects_a_bad_id(binary, base, _workdir):
     require(not take(), "an invalid id must not reach the server")
 
 
+def test_speech_subcommand(binary, base, workdir):
+    ref = workdir / "ref.wav"
+    ref.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+    wav_out = workdir / "out.wav"
+    res = run_cli(binary, [
+        "speech", "--url", base, "--model", "tts-m", "--text", "hello world",
+        "--voice", "clone", "--ref-audio", str(ref), "--out", str(wav_out),
+    ])
+    require(res.returncode == 0, f"speech wav failed: {res.stderr}")
+    [entry] = take()
+    require(entry["path"] == "/v1/audio/speech", f"speech path: {entry['path']}")
+    req = json.loads(entry["body"])
+    require(req["model"] == "tts-m" and req["input"] == "hello world", f"body: {req}")
+    require(req["voice"] == "clone" and req["response_format"] == "wav", f"body: {req}")
+    require(base64.b64decode(req["ref_audio"]) == ref.read_bytes(), "ref_audio mismatch")
+    require(wav_out.read_bytes().startswith(b"RIFF"), "wav bytes not written")
+
+    pcm_out = workdir / "out.pcm"
+    res_pcm = run_cli(binary, [
+        "speech", "--url", base, "--model", "tts-m", "--text", "hi",
+        "--format", "pcm", "--out", str(pcm_out),
+    ])
+    require(res_pcm.returncode == 0, f"speech pcm failed: {res_pcm.stderr}")
+    [entry_pcm] = take()
+    require(json.loads(entry_pcm["body"])["response_format"] == "pcm", "pcm format")
+    require(pcm_out.read_bytes() == b"\x01\x02\x03\x04", "pcm bytes not written")
+
+    bad_out = workdir / "bad.wav"
+    bad = run_cli(binary, [
+        "speech", "--url", base, "--model", "tts-m", "--text", "boom",
+        "--out", str(bad_out),
+    ])
+    require(bad.returncode != 0 and not bad_out.exists(), "failed speech must not write file")
+    take()
+
+
+def test_chat_wave9_multimodal_flags(binary, base, workdir):
+    img_ref = workdir / "src.png"
+    img_ref.write_bytes(PNG_ONE)
+    aud_ref = workdir / "voice.wav"
+    aud_ref.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+    img_out = workdir / "chat-edit.png"
+    aud_out = workdir / "chat-clone.wav"
+    vid_out = workdir / "chat-vid.mp4"
+
+    res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "remix",
+        "--temperature", "0.7", "--top-p", "0.9", "--seed", "-42",
+        "--image-out", str(img_out), "--image-prompt", "lantern",
+        "--image-size", "1024x1024", "--image-steps", "4",
+        "--image-ref", str(img_ref), "--image-seed", "7",
+        "--audio-out", str(aud_out), "--voice", "clone", "--ref-audio", str(aud_ref),
+        "--video-out", str(vid_out), "--video-prompt", "waves",
+        "--video-size", "480x320", "--video-fps", "16", "--video-frames", "13",
+        "--video-steps", "15", "--video-guidance", "5.0", "--video-seed", "9",
+    ])
+    require(res.returncode == 0, f"chat wave9 failed: {res.stderr}")
+    [entry] = take()
+    req = json.loads(entry["body"])
+    require(req["seed"] == -42 and req["top_p"] == 0.9, f"sampling: {req}")
+    require(set(req["modalities"]) == {"text", "image", "audio", "video"}, f"mods: {req['modalities']}")
+    require(req["image"]["steps"] == 4, f"image.steps: {req['image']}")
+    require(req["image"]["image"].startswith("data:image/png;base64,"), "image.image data URL")
+    require(base64.b64decode(req["image"]["image"].split(",", 1)[1]) == PNG_ONE, "image.image bytes")
+    require(base64.b64decode(req["audio"]["ref_audio"]) == aud_ref.read_bytes(), "audio.ref_audio bytes")
+    require(req["video"]["num_frames"] == 13 and req["video"]["steps"] == 15 and
+            req["video"]["guidance_scale"] == 5.0 and req["video"]["seed"] == 9,
+            f"video opts: {req['video']}")
+    require(img_out.read_bytes() == EDITED, "chat --image-out mismatch")
+    require(aud_out.read_bytes().startswith(b"RIFF"), "chat --audio-out mismatch")
+    require(vid_out.read_bytes() == MP4, "chat --video-out mismatch")
+
+
 def main():
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_BIN
     if not binary.exists():
@@ -317,6 +436,8 @@ def main():
         test_image_http_error,
         test_video_lifecycle,
         test_video_rejects_a_bad_id,
+        test_speech_subcommand,
+        test_chat_wave9_multimodal_flags,
     ]
     failures = 0
     try:
