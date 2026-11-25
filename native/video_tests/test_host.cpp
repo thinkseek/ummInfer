@@ -988,15 +988,15 @@ void test_wan_vae_pool_policy_and_pointwise() {
 void test_wan_vae_gemm_prec_policy() {
   using namespace umminfer::video;
 
-  // 1. Default and empty/null values resolve to kTf32.
-  check(parse_wan_vae_gemm_prec(nullptr, nullptr) == WanVaeGemmPrec::kTf32,
-        "null envs default to kTf32");
-  check(parse_wan_vae_gemm_prec("", nullptr) == WanVaeGemmPrec::kTf32,
-        "empty gemm_prec defaults to kTf32");
-  check(parse_wan_vae_gemm_prec("", "") == WanVaeGemmPrec::kTf32,
-        "empty envs default to kTf32");
-  check(parse_wan_vae_gemm_prec("", "0") == WanVaeGemmPrec::kTf32,
-        "pedantic=0 with empty gemm_prec defaults to kTf32");
+  // 1. Default and empty/null values resolve to kBf16.
+  check(parse_wan_vae_gemm_prec(nullptr, nullptr) == WanVaeGemmPrec::kBf16,
+        "null envs default to kBf16");
+  check(parse_wan_vae_gemm_prec("", nullptr) == WanVaeGemmPrec::kBf16,
+        "empty gemm_prec defaults to kBf16");
+  check(parse_wan_vae_gemm_prec("", "") == WanVaeGemmPrec::kBf16,
+        "empty envs default to kBf16");
+  check(parse_wan_vae_gemm_prec("", "0") == WanVaeGemmPrec::kBf16,
+        "pedantic=0 with empty gemm_prec defaults to kBf16");
 
   // 2. Explicit precision names (lowercase, uppercase, mixed case, whitespace).
   check(parse_wan_vae_gemm_prec("tf32", nullptr) == WanVaeGemmPrec::kTf32,
@@ -1019,11 +1019,11 @@ void test_wan_vae_gemm_prec_policy() {
   check(parse_wan_vae_gemm_prec("TF32", nullptr) == WanVaeGemmPrec::kTf32,
         "TF32 parses to kTf32");
 
-  // 3. Unknown/invalid strings fall back safely to kTf32.
+  // 3. Unknown/invalid strings fall back safely to kBf16.
   for (const char* bad :
        {"fp8", "int8", "bf32", "float16", "bfloat16", "garbage", "   "}) {
-    check(parse_wan_vae_gemm_prec(bad, nullptr) == WanVaeGemmPrec::kTf32,
-          std::string("unknown gemm_prec '") + bad + "' falls back to kTf32");
+    check(parse_wan_vae_gemm_prec(bad, nullptr) == WanVaeGemmPrec::kBf16,
+          std::string("unknown gemm_prec '") + bad + "' falls back to kBf16");
   }
 
   // 4. Legacy UMM_VAE_PEDANTIC_FP32=1 takes precedence over UMM_VAE_GEMM_PREC.

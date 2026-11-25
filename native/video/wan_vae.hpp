@@ -82,8 +82,9 @@ inline constexpr bool wan_conv3d_is_causal_3x3x3(int64_t kd, int64_t kh,
 }
 
 // Selectable Tensor Core GEMM precision for the Wan2.2 3D-VAE CUDA path.
-// Default is kTf32 to preserve exact Wave-16 default parity with zero extra
-// weight-cache VRAM.
+// Default is kBf16 on SM90 (measured 52.77 dB avg / 51.39 dB min PSNR vs TF32,
+// +0 MiB peak VRAM, 3.69 s vs 6.68 s vae_ms at 704x480 29f). Set
+// UMM_VAE_GEMM_PREC=tf32|fp16|fp32 or UMM_VAE_PEDANTIC_FP32=1 to override.
 enum class WanVaeGemmPrec { kTf32, kBf16, kFp16, kFp32 };
 
 inline const char* wan_vae_gemm_prec_name(WanVaeGemmPrec prec) noexcept {
@@ -97,15 +98,15 @@ inline const char* wan_vae_gemm_prec_name(WanVaeGemmPrec prec) noexcept {
     case WanVaeGemmPrec::kFp32:
       return "fp32";
   }
-  return "tf32";
+  return "bf16";
 }
 
 // Resolves Wan2.2 3D-VAE GEMM precision from environment variables:
 //   1. Legacy UMM_VAE_PEDANTIC_FP32 (non-empty and not starting with '0')
 //      always forces kFp32 for 100% backward compatibility.
-//   2. Otherwise parses UMM_VAE_GEMM_PREC ("tf32", "bf16", "fp16", "fp32";
+//   2. Otherwise parses UMM_VAE_GEMM_PREC ("bf16", "tf32", "fp16", "fp32";
 //      case-insensitive, surrounding ASCII whitespace trimmed).
-//   3. Null, empty, or unknown values fall back to kTf32.
+//   3. Null, empty, or unknown values fall back to kBf16.
 inline WanVaeGemmPrec parse_wan_vae_gemm_prec(
     const char* gemm_prec_env, const char* pedantic_fp32_env) noexcept {
   if (pedantic_fp32_env != nullptr && pedantic_fp32_env[0] != '\0' &&
@@ -113,7 +114,7 @@ inline WanVaeGemmPrec parse_wan_vae_gemm_prec(
     return WanVaeGemmPrec::kFp32;
   }
   if (gemm_prec_env == nullptr) {
-    return WanVaeGemmPrec::kTf32;
+    return WanVaeGemmPrec::kBf16;
   }
   const char* begin = gemm_prec_env;
   while (*begin == ' ' || *begin == '\t' || *begin == '\r' || *begin == '\n') {
@@ -128,7 +129,7 @@ inline WanVaeGemmPrec parse_wan_vae_gemm_prec(
   }
   const size_t len = static_cast<size_t>(end - begin);
   if (len != 4) {
-    return WanVaeGemmPrec::kTf32;
+    return WanVaeGemmPrec::kBf16;
   }
   char lower[4];
   for (size_t i = 0; i < 4; ++i) {
@@ -136,9 +137,9 @@ inline WanVaeGemmPrec parse_wan_vae_gemm_prec(
     lower[i] =
         (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch;
   }
-  if (lower[0] == 'b' && lower[1] == 'f' && lower[2] == '1' &&
-      lower[3] == '6') {
-    return WanVaeGemmPrec::kBf16;
+  if (lower[0] == 't' && lower[1] == 'f' && lower[2] == '3' &&
+      lower[3] == '2') {
+    return WanVaeGemmPrec::kTf32;
   }
   if (lower[0] == 'f' && lower[1] == 'p' && lower[2] == '1' &&
       lower[3] == '6') {
@@ -148,7 +149,7 @@ inline WanVaeGemmPrec parse_wan_vae_gemm_prec(
       lower[3] == '2') {
     return WanVaeGemmPrec::kFp32;
   }
-  return WanVaeGemmPrec::kTf32;
+  return WanVaeGemmPrec::kBf16;
 }
 
 // Default cap on idle cached blocks in the Wan2.2 3D-VAE GPU scratch pool.
