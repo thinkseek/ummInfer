@@ -12,8 +12,16 @@ protocol AudioStreamPlaying: AnyObject {
     var onStateChange: ((Bool) -> Void)? { get set }
     func beginStream()
     func enqueue(_ chunk: AudioStreamChunk)
+    func enqueue(_ chunk: AudioStreamChunk, onPlayed: (@MainActor @Sendable () -> Void)?)
     func finishStream()
     func stop()
+}
+
+extension AudioStreamPlaying {
+    func enqueue(_ chunk: AudioStreamChunk, onPlayed: (@MainActor @Sendable () -> Void)?) {
+        enqueue(chunk)
+        onPlayed?()
+    }
 }
 
 @MainActor
@@ -178,6 +186,10 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
     }
 
     func enqueue(_ chunk: AudioStreamChunk) {
+        enqueue(chunk, onPlayed: nil)
+    }
+
+    func enqueue(_ chunk: AudioStreamChunk, onPlayed: (@MainActor @Sendable () -> Void)?) {
         guard !engineFailed, let buffer = Self.makePCMBuffer(chunk) else { return }
         if engine == nil || activeRate != chunk.sampleRate || activeChannels != chunk.channels {
             teardownEngine()
@@ -228,7 +240,7 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         let needed = Int(jitter.targetSeconds * sampleRate)
         node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.didFinishBuffer(generation: currentGen, frames: frames)
+                self?.didFinishBuffer(generation: currentGen, frames: frames, onPlayed: onPlayed)
             }
         }
         if !playbackStarted && !bufferToEnd && bufferedFrames >= needed {
@@ -292,10 +304,12 @@ final class LiveAudioStreamPlayer: AudioStreamPlaying {
         return true
     }
 
-    private func didFinishBuffer(generation value: Int, frames: Int) {
+    private func didFinishBuffer(generation value: Int, frames: Int,
+                                 onPlayed: (@MainActor @Sendable () -> Void)?) {
         guard generation == value else { return }
         pendingBuffers = max(0, pendingBuffers - 1)
         bufferedFrames = max(0, bufferedFrames - frames)
+        onPlayed?()
         if streamEnded && pendingBuffers == 0 {
             teardownEngine()
             isPlaying = false

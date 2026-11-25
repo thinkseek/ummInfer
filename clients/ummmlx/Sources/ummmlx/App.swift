@@ -86,7 +86,7 @@ struct RootView: View {
         HStack(spacing: 12) {
             Text("ummmlx")
                 .font(.system(size: 16, weight: .semibold))
-            Circle().fill(model.isRunning ? theme.accent : theme.tertiary)
+            Circle().fill((model.isRunning || model.isLiveVoiceActive) ? theme.accent : theme.tertiary)
                 .frame(width: 7, height: 7)
                 .accessibilityHidden(true)
             Text(model.status)
@@ -110,6 +110,23 @@ struct RootView: View {
             .toggleStyle(.checkbox)
             .help("Stream spoken audio while text and visual legs render")
             .accessibilityIdentifier("audio-output")
+            Button {
+                model.isLiveVoiceActive ? model.stopLiveVoice() : model.startLiveVoice()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: model.isLiveVoiceActive
+                          ? "waveform.circle.fill" : "waveform.circle")
+                        .accessibilityHidden(true)
+                    Text(model.isLiveVoiceActive ? "End Live Voice" : "Live Voice")
+                        .font(.system(size: theme.captionSize, weight: .medium))
+                }
+            }
+            .buttonStyle(.bordered)
+            .tint(model.isLiveVoiceActive ? theme.danger : theme.accent)
+            .controlSize(.small)
+            .disabled(model.isRunning || model.isListening)
+            .help("Opt-in full-duplex WebSocket voice session with server VAD, playback ack, and barge-in")
+            .accessibilityIdentifier("live-voice")
             if model.isStreamingAudioPlaying {
                 HStack(spacing: 5) {
                     Image(systemName: "waveform")
@@ -246,7 +263,7 @@ struct RootView: View {
                 .padding(.top, 4)
             }
         }
-        .disabled(model.isRunning)
+        .disabled(model.isRunning || model.isLiveVoiceActive)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(theme.surface)
@@ -592,6 +609,26 @@ struct RootView: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if model.isLiveVoiceActive {
+                HStack(spacing: 8) {
+                    Image(systemName: "waveform.and.mic")
+                        .foregroundStyle(theme.accent)
+                        .accessibilityHidden(true)
+                    Text(model.liveVoicePartialTranscript.isEmpty
+                         ? "Live Voice active — speak anytime to interrupt."
+                         : model.liveVoicePartialTranscript)
+                        .font(.system(size: theme.bodySize))
+                        .foregroundStyle(theme.secondary)
+                        .lineLimit(2)
+                        .accessibilityIdentifier("live-voice-transcript")
+                    Spacer()
+                    Button("End") { model.stopLiveVoice() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(theme.danger)
+                        .accessibilityIdentifier("live-voice-end")
+                }
+            }
             if model.isListening || !model.partialTranscript.isEmpty {
                 HStack(spacing: 7) {
                     Image(systemName: "waveform")
@@ -642,7 +679,7 @@ struct RootView: View {
                         .frame(width: 24, height: 22)
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.isRunning)
+                .disabled(model.isRunning || model.isLiveVoiceActive)
                 .help("Attach an image for VLM visual QA")
                 Button {
                     if let url = pickFile(types: [.mpeg4Movie, .quickTimeMovie, .movie]) {
@@ -655,13 +692,14 @@ struct RootView: View {
                         .frame(width: 24, height: 22)
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.isRunning)
+                .disabled(model.isRunning || model.isLiveVoiceActive)
                 .help("Attach a video clip for native VLM video understanding")
                 TextField("Write a prompt", text: $model.prompt, axis: .vertical)
                     .lineLimit(1...5)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: theme.bodySize))
                     .onSubmit { model.send() }
+                    .disabled(model.isLiveVoiceActive)
                     .accessibilityLabel("Prompt")
                     .accessibilityIdentifier("prompt")
                 Button {
@@ -674,7 +712,7 @@ struct RootView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(model.isListening ? theme.danger : theme.accent)
-                .disabled(model.isRunning)
+                .disabled(model.isRunning || model.isLiveVoiceActive)
                 .accessibilityLabel(model.isListening ? "Stop recording" : "Record")
                 .accessibilityIdentifier("mic")
                 if model.isRunning {
@@ -688,15 +726,20 @@ struct RootView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(theme.ink)
                         .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                  && model.attachedImageURL == nil
-                                  && model.attachedVideoURL == nil)
+                        .disabled(model.isLiveVoiceActive
+                                  || (model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                      && model.attachedImageURL == nil
+                                      && model.attachedVideoURL == nil))
                         .accessibilityIdentifier("send")
                 }
             }
             HStack(spacing: 4) {
-                Text("⌘Return to send ·")
-                Text("Voice uses Apple's on-device model; audio never leaves this Mac.")
+                if model.isLiveVoiceActive {
+                    Text("Live Voice streams 16 kHz PCM16 over WebSocket to the configured ummInfer server.")
+                } else {
+                    Text("⌘Return to send ·")
+                    Text("Voice uses Apple's on-device model; audio never leaves this Mac.")
+                }
             }
             .font(.system(size: theme.captionSize))
             .foregroundStyle(theme.tertiary)

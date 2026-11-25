@@ -107,9 +107,15 @@ final class ChatModel: ObservableObject {
     @Published private(set) var speechStatus = ""
     @Published private(set) var streamingAudioTurnID: UUID?
     @Published private(set) var isStreamingAudioPlaying = false
+    @Published private(set) var isLiveVoiceActive = false
+    @Published private(set) var liveVoiceState: RealtimeSessionState = .idle
+    @Published private(set) var liveVoicePartialTranscript = ""
+    @Published private(set) var liveVoiceLastAckCursor = 0
+    @Published var liveVoiceSilenceMs = 400
 
     let speech: SpeechController
     let audioStream: AudioStreamPlaying
+    let realtime: RealtimeClient
 
     private let client: ChatClient
     private var requestTask: Task<Void, Never>?
@@ -117,15 +123,18 @@ final class ChatModel: ObservableObject {
     private var stopping = false
     private var receivedDelta = false
     private var requestSessionID = ""
+    private var liveVoiceAssistantTurns: [String: UUID] = [:]
     var onFirstDelta: (() -> Void)?
     /// Automation hook: the exact messages sent for one request.
     var onRequest: (([ChatMessage]) -> Void)?
 
     init(speech: SpeechController = SpeechController(),
          client: ChatClient? = nil,
-         audioStream: AudioStreamPlaying? = nil) {
+         audioStream: AudioStreamPlaying? = nil,
+         realtime: RealtimeClient? = nil) {
         self.speech = speech
         self.client = client ?? ChatClient()
+        self.realtime = realtime ?? RealtimeClient()
         // Automation runs are silent by default so a gate run never makes noise.
         // --automation-audio opts into the live player for a manual listen.
         let automation = ProcessInfo.processInfo.arguments.contains("--automation")
@@ -184,7 +193,7 @@ final class ChatModel: ObservableObject {
     }
 
     func send() {
-        guard !isRunning else { return }
+        guard !isRunning, !isLiveVoiceActive else { return }
         error = nil
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || attachedImageURL != nil || attachedVideoURL != nil else {
@@ -668,7 +677,7 @@ final class ChatModel: ObservableObject {
     // MARK: - Local speech input (Apple on-device model only)
 
     func startListening() {
-        guard !isRunning, !isListening else { return }
+        guard !isRunning, !isListening, !isLiveVoiceActive else { return }
         stopStreamingAudio()
         error = nil
         speech.onPartial = { [weak self] text in
@@ -729,6 +738,211 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    // MARK: - Full-duplex Live Voice (WebSocket /v1/realtime, Stage B playback_ack)
+
+    func startLiveVoice() {
+        guard !isLiveVoiceActive else { return }
+        if isRunning { stop() }
+        if isListening { stopListening() }
+        stopStreamingAudio()
+        error = nil
+
+        let trimmedVoice = audioVoice.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsedMaxTokens = Int(maxTokensText.trimmingCharacters(in: .whitespaces))
+        let config = RealtimeSessionConfig(
+            voice: trimmedVoice.isEmpty ? "vivian" : trimmedVoice,
+            silenceMs: liveVoiceSilenceMs,
+            playbackAck: true,
+            maxNewTokens: parsedMaxTokens.flatMap { $0 > 0 ? $0 : nil }
+        )
+
+        do {
+            try realtime.start(
+                base: endpoint,
+                model: model,
+                config: config,
+                audioStream: audioStream,
+                onEvent: { [weak self] event in
+                    self?.handleRealtimeEvent(event)
+                },
+                onError: { [weak self] err in
+                    guard let self else { return }
+                    self.isLiveVoiceActive = false
+                    self.liveVoiceState = .error(err.localizedDescription)
+                    self.liveVoicePartialTranscript = ""
+                    self.liveVoiceAssistantTurns.removeAll()
+                    self.streamingAudioTurnID = nil
+                    self.isStreamingAudioPlaying = false
+                    self.error = err.localizedDescription
+                    self.status = "Live Voice error"
+                },
+                onDisconnect: { [weak self] in
+                    guard let self else { return }
+                    self.isLiveVoiceActive = false
+                    self.liveVoiceState = .idle
+                    self.liveVoicePartialTranscript = ""
+                    self.liveVoiceAssistantTurns.removeAll()
+                    self.streamingAudioTurnID = nil
+                    self.isStreamingAudioPlaying = false
+                    if self.error == nil {
+                        self.status = "Ready"
+                    }
+                }
+            )
+        } catch {
+            self.error = error.localizedDescription
+            status = "Configuration error"
+            return
+        }
+
+        if !ProcessInfo.processInfo.arguments.contains("--automation") {
+            UserDefaults.standard.set(endpoint, forKey: "endpoint")
+            UserDefaults.standard.set(model, forKey: "model")
+        }
+        isLiveVoiceActive = true
+        liveVoiceState = .connecting
+        liveVoicePartialTranscript = ""
+        liveVoiceLastAckCursor = 0
+        liveVoiceAssistantTurns.removeAll()
+        status = "Live Voice · Connecting…"
+    }
+
+    func stopLiveVoice() {
+        guard isLiveVoiceActive || realtime.isActive else { return }
+        realtime.stop()
+        stopStreamingAudio()
+        isLiveVoiceActive = false
+        liveVoiceState = .idle
+        liveVoicePartialTranscript = ""
+        liveVoiceAssistantTurns.removeAll()
+        if error == nil {
+            status = "Ready"
+        }
+    }
+
+    private func ensureRealtimeAssistantTurn(responseID: String) -> Int {
+        if let turnID = liveVoiceAssistantTurns[responseID],
+           let existing = turns.firstIndex(where: { $0.id == turnID }) {
+            return existing
+        }
+        let assistant = ChatTurn(role: .assistant, text: "", state: .streaming)
+        turns.append(assistant)
+        liveVoiceAssistantTurns[responseID] = assistant.id
+        return turns.count - 1
+    }
+
+    private func handleRealtimeEvent(_ event: RealtimeServerEvent) {
+        switch event {
+        case .sessionUpdated:
+            liveVoiceState = .listening
+            status = "Live Voice · Listening"
+
+        case .speechStarted:
+            liveVoiceState = .userSpeaking
+            liveVoicePartialTranscript = ""
+            status = "Live Voice · Hearing speech…"
+
+        case .speechStopped:
+            status = "Live Voice · Transcribing…"
+
+        case .transcriptionSegment(_, _, let text, let isFinal):
+            if !isFinal {
+                liveVoicePartialTranscript = text
+            }
+
+        case .transcriptionCompleted(_, let text):
+            liveVoicePartialTranscript = ""
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                turns.append(ChatTurn(role: .user, text: trimmed, state: .complete))
+            }
+
+        case .responseTextDelta(let responseID, _, let text, _):
+            let index = ensureRealtimeAssistantTurn(responseID: responseID)
+            appendTextDelta(text, to: index)
+            liveVoiceState = .responding
+            status = "Live Voice · Responding…"
+
+        case .audioDelta(let delta):
+            let index = ensureRealtimeAssistantTurn(responseID: delta.responseID)
+            streamingAudioTurnID = turns[index].id
+            liveVoiceState = .responding
+            status = "Live Voice · Speaking…"
+
+        case .audioDone:
+            break
+
+        case .responseCompleted(let responseID, _, _):
+            if let turnID = liveVoiceAssistantTurns[responseID],
+               let index = turns.firstIndex(where: { $0.id == turnID }),
+               turns[index].state == .streaming {
+                turns[index].state = .complete
+            }
+            if !realtime.stateMachine.playbackAckEnabled && !isStreamingAudioPlaying {
+                liveVoiceState = .listening
+                status = "Live Voice · Listening"
+            }
+
+        case .responsePlaybackAck(let responseID, _, let cursor, let isFinal):
+            liveVoiceLastAckCursor = cursor
+            if isFinal {
+                if let turnID = liveVoiceAssistantTurns.removeValue(forKey: responseID),
+                   let index = turns.firstIndex(where: { $0.id == turnID }),
+                   turns[index].state == .streaming {
+                    turns[index].state = .complete
+                }
+                liveVoiceState = .listening
+                status = "Live Voice · Listening"
+            }
+
+        case .responseCancelled(let cancellation):
+            streamingAudioTurnID = nil
+            isStreamingAudioPlaying = false
+            if let turnID = liveVoiceAssistantTurns.removeValue(forKey: cancellation.responseID),
+               let index = turns.firstIndex(where: { $0.id == turnID }) {
+                if let ackText = cancellation.acknowledgedText {
+                    if ackText.isEmpty && turns[index].artifacts.isEmpty {
+                        turns.remove(at: index)
+                    } else {
+                        turns[index].text = ackText
+                        turns[index].blocks = ackText.isEmpty
+                            ? [] : [.text(id: UUID(), content: ackText)]
+                        turns[index].state = .stopped
+                    }
+                } else if turns[index].text.isEmpty && turns[index].artifacts.isEmpty {
+                    turns.remove(at: index)
+                } else {
+                    turns[index].state = .stopped
+                }
+            }
+            liveVoiceState = .listening
+            status = "Live Voice · Interrupted"
+
+        case .responseFailed(let responseID, _, let detail):
+            streamingAudioTurnID = nil
+            if let responseID,
+               let turnID = liveVoiceAssistantTurns.removeValue(forKey: responseID),
+               let index = turns.firstIndex(where: { $0.id == turnID }) {
+                if turns[index].text.isEmpty && turns[index].artifacts.isEmpty {
+                    turns.remove(at: index)
+                } else {
+                    turns[index].state = .failed
+                }
+            }
+            self.error = detail
+            liveVoiceState = .listening
+            status = "Live Voice · Error"
+
+        case .error(_, let message):
+            self.error = message
+            liveVoiceState = .error(message)
+            status = "Live Voice error"
+
+        case .unknown:
+            break
+        }
+    }
+
     func stopStreamingAudio() {
         audioStream.stop()
         isStreamingAudioPlaying = false
@@ -744,6 +958,7 @@ final class ChatModel: ObservableObject {
     }
 
     func newChat() {
+        stopLiveVoice()
         stopStreamingAudio()
         requestTask?.cancel()
         requestTask = nil

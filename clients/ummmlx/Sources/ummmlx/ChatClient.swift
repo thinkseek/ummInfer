@@ -283,7 +283,7 @@ final class ChatClient {
         return url
     }
 
-    private static func isPlainHTTPHost(_ host: String, allowed: Set<String>) -> Bool {
+    static func isPlainHTTPHost(_ host: String, allowed: Set<String>) -> Bool {
         if isLoopback(host) { return true }
         if allowed.contains(host) { return true }
         if let octets = ipv4Octets(host) {
@@ -296,7 +296,9 @@ final class ChatClient {
         // URLComponents in some versions, so trim them defensively.
         let bare = host.hasPrefix("[") && host.hasSuffix("]")
             ? String(host.dropFirst().dropLast()) : host
-        if bare.hasPrefix("fc") || bare.hasPrefix("fd") { return true }
+        if bare.contains(":") && (bare.hasPrefix("fc") || bare.hasPrefix("fd")) {
+            return true
+        }
         return false
     }
 
