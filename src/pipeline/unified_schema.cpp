@@ -599,10 +599,11 @@ std::string narrative_director_prompt(const std::string& visual_mode,
   if (continuity_mode == "i2v_chain" && visual_mode != "image") {
     out +=
         "\nTo animate a specific earlier generated image, use "
-        "[[video: <motion and camera description> | source=slot-N]] where N is "
-        "that earlier image slot's number. Use source only for I2V continuity; "
-        "never invent, duplicate, or forward-reference a slot. Without this "
-        "explicit suffix the engine's ordinary i2v_chain anchor selection applies.";
+        "[[video: <motion and camera description> | source=slot-N]] where slot "
+        "numbers are 0-based (the first visual tag is slot-0, the second is "
+        "slot-1, etc.). Use source only for I2V continuity; never invent, "
+        "duplicate, or forward-reference a slot. Without this explicit suffix "
+        "the engine's ordinary i2v_chain anchor selection applies.";
   }
   out += "\nDo not use any other bracket syntax.";
   return out;
