@@ -390,6 +390,19 @@ and `--web-root`:
     checkpoint resume equivalence, `25/25` Stage C tests PASS; GRPO & quality
     remain `NOT_RUN`).
 
+- Wave 18 CPU-only native video temporal keyframe selection:
+  - Added opt-in `video_url.frame_selection.policy=temporal` with bounded
+    scene/motion selection (64 candidates -> at most 8 frames), chronological
+    source timestamps, deterministic tie-breaking/fallback, and unchanged
+    default uniform decode bytes. Existing 32 MiB input and 3584-patch budgets
+    remain in force; native temporal-2 packing, video prompt, 3D MRoPE, batched
+    multi-slice ViT, and serial/batched engine calls are shared.
+  - Synthetic FFmpeg/host, Stage schema, public HTTP, C++ client/CLI, narrative,
+    and deterministic benchmark checks cover policy propagation and edge cases.
+    `tests/video_temporal_live.py` is the later SM90 uniform-vs-temporal
+    motion/question A/B harness. This task accessed no GPU or resident service:
+    **REAL_MODEL_QUALITY: NOT_RUN; LIVE_LATENCY: NOT_RUN; deployed: NOT_RUN**.
+
 ## Validation, 2026-11-19 (historical)
 
 Offline supervisor coverage now lives in `tests/umminfer_service_test.py`

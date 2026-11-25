@@ -9580,7 +9580,8 @@ void test_public_http_video_url_input() {
             if (t != nullptr && t->is_str() && t->as_str() == "video_url" &&
                 vu != nullptr && vu->is_map() && vu->find("url") != nullptr &&
                 vu->find("url")->as_str() == data_vid) {
-              saw_video_part = true;
+              saw_video_part = vu->as_map().size() == 1 &&
+                               vu->find("frame_selection") == nullptr;
             }
           }
         }
@@ -9593,6 +9594,46 @@ void test_public_http_video_url_input() {
   check(ok_res.status == 200 &&
             ok_res.body.find("A glowing lantern.") != std::string::npos,
         "video_url HTTP request did not return VLM answer");
+
+  // Temporal opt-in is preserved end to end; no server-side default option is
+  // injected into the legacy request above.
+  nlohmann::json temporal_body = ok_body;
+  temporal_body["messages"][0]["content"][0]["video_url"]["frame_selection"] = {
+      {"policy", "temporal"}, {"motion_threshold", 0.04}, {"scene_threshold", 0.3}};
+  auto temporal_fut = std::async(std::launch::async, [&] {
+    test_http::HttpRequest req;
+    req.url = url;
+    req.body = temporal_body.dump();
+    req.headers.emplace("Content-Type", "application/json");
+    return test_http::perform(req);
+  });
+  auto temporal_vlm = h.next_submit(h.vlm_recv);
+  check(temporal_vlm.has_value(), "temporal video request did not reach VLM");
+  if (temporal_vlm) {
+    const StagePayload payload = StagePayload::from_value(temporal_vlm->data);
+    const Value* msgs = payload.request.inputs.find("messages");
+    bool saw_temporal = false;
+    if (msgs != nullptr && msgs->is_array() && !msgs->as_array().empty()) {
+      const Value* content = msgs->as_array()[0].find("content");
+      if (content != nullptr && content->is_array() && !content->as_array().empty()) {
+        const Value* video = content->as_array()[0].find("video_url");
+        const Value* selection = video != nullptr && video->is_map()
+                                     ? video->find("frame_selection")
+                                     : nullptr;
+        if (selection != nullptr && selection->is_map()) {
+          const Value* policy = selection->find("policy");
+          const Value* motion = selection->find("motion_threshold");
+          const Value* scene = selection->find("scene_threshold");
+          saw_temporal = policy != nullptr && policy->as_str() == "temporal" &&
+                         motion != nullptr && motion->as_double() == 0.04 &&
+                         scene != nullptr && scene->as_double() == 0.3;
+        }
+      }
+    }
+    check(saw_temporal, "VLM submission dropped temporal frame_selection options");
+    h.complete(temporal_vlm->request_id, "vlm", true, text_result("Scene change."));
+  }
+  check(temporal_fut.get().status == 200, "temporal video request failed");
 
   // 2. Rejects non-data video_url and image_url + video_url in the same turn.
   const auto expect_400 = [&](const nlohmann::json& bad_body, const char* msg) {
@@ -9636,6 +9677,25 @@ void test_public_http_video_url_input() {
                                    {"video_url", {{"url", data_vid}}}},
                 })}}})}},
       "combining image_url and video_url was not rejected with 400");
+
+  auto selection_body = [&](nlohmann::json selection) {
+    nlohmann::json body = ok_body;
+    body["messages"][0]["content"][0]["video_url"]["frame_selection"] =
+        std::move(selection);
+    return body;
+  };
+  expect_400(selection_body({{"policy", "random"}}),
+             "unknown video frame policy was not rejected");
+  expect_400(selection_body({{"policy", "temporal"}, {"motion_threshold", -0.01}}),
+             "negative motion threshold was not rejected");
+  expect_400(selection_body({{"policy", "temporal"}, {"scene_threshold", 1.01}}),
+             "scene threshold above one was not rejected");
+  expect_400(selection_body({{"policy", "temporal"}, {"max_frames", 1000}}),
+             "API frame budget override was not rejected");
+  expect_400(selection_body({{"policy", "uniform"}, {"motion_threshold", 0.1}}),
+             "uniform policy with an ignored threshold was not rejected");
+  expect_400(selection_body(nlohmann::json::array()),
+             "non-object frame_selection was not rejected");
 
   api.stop();
   server_thread.join();

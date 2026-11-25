@@ -57,6 +57,8 @@ add_library(qwen38_host STATIC
   qwen38/tokenizer.cpp
   qwen38/image_preprocess.cpp
   qwen38/prompt.cpp
+  qwen38/video_sampling.cpp
+  qwen38/video_input.cpp
 )
 target_include_directories(qwen38_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(nlohmann_json_FOUND)
@@ -70,6 +72,10 @@ endif()
 add_executable(qwen38_host_tests qwen38_tests/test_host.cpp)
 target_link_libraries(qwen38_host_tests PRIVATE qwen38_host)
 add_test(NAME qwen38_host_tests COMMAND qwen38_host_tests)
+
+add_executable(qwen38_video_input_tests qwen38_tests/test_video_input.cpp)
+target_link_libraries(qwen38_video_input_tests PRIVATE qwen38_host)
+add_test(NAME qwen38_video_input_tests COMMAND qwen38_video_input_tests)
 
 if(UMM_QWEN38_CUDA)
   include(CheckLanguage)

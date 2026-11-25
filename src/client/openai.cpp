@@ -146,6 +146,16 @@ json content_part_json(const ContentPart& part) {
       return {{"type", "video"}, {"video", part.video_urls}};
     case ContentPart::Kind::kVideoUrl: {
       json out = {{"type", "video_url"}, {"video_url", {{"url", part.url}}}};
+      if (part.frame_selection) {
+        json selection = {{"policy", part.frame_selection->policy}};
+        if (part.frame_selection->motion_threshold) {
+          selection["motion_threshold"] = *part.frame_selection->motion_threshold;
+        }
+        if (part.frame_selection->scene_threshold) {
+          selection["scene_threshold"] = *part.frame_selection->scene_threshold;
+        }
+        out["video_url"]["frame_selection"] = std::move(selection);
+      }
       if (part.fps) out["fps"] = *part.fps;
       return out;
     }
@@ -187,6 +197,25 @@ void validate_message_parts(const Message& message, size_t index) {
         }
         if (part.fps && (!std::isfinite(*part.fps) || *part.fps < 0.1 || *part.fps > 10)) {
           throw Error(ErrorCode::kConfig, where + " video fps must be between 0.1 and 10");
+        }
+        if (part.frame_selection) {
+          const auto& selection = *part.frame_selection;
+          if (selection.policy != "uniform" && selection.policy != "temporal") {
+            throw Error(ErrorCode::kConfig,
+                        where + " video frame_selection.policy must be uniform or temporal");
+          }
+          if (selection.policy == "uniform" &&
+              (selection.motion_threshold || selection.scene_threshold)) {
+            throw Error(ErrorCode::kConfig,
+                        where + " uniform video frame_selection rejects temporal thresholds");
+          }
+          for (const double threshold : {selection.motion_threshold.value_or(0.0),
+                                         selection.scene_threshold.value_or(0.0)}) {
+            if (!std::isfinite(threshold) || threshold < 0.0 || threshold > 1.0) {
+              throw Error(ErrorCode::kConfig,
+                          where + " video frame_selection thresholds must be in [0,1]");
+            }
+          }
         }
         if (part.url.rfind("data:", 0) == 0) {
           const size_t comma = part.url.find(',');

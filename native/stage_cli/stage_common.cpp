@@ -66,6 +66,48 @@ void take_image_part(const Value& part, std::string_view stage_name,
   work.image_url = url->as_str();
 }
 
+VideoFrameSelectionWork parse_frame_selection(const Value& video) {
+  VideoFrameSelectionWork out;
+  const Value* selection = video.find("frame_selection");
+  if (selection == nullptr) return out;
+  if (!selection->is_map()) bad("video_url.frame_selection must be an object");
+  const Value* policy = selection->find("policy");
+  if (policy == nullptr || !policy->is_str()) {
+    bad("video_url.frame_selection.policy must be uniform or temporal");
+  }
+  for (const auto& [key, value] : selection->as_map()) {
+    if (key != "policy" && key != "motion_threshold" && key != "scene_threshold") {
+      bad("unsupported video_url.frame_selection field: " + key);
+    }
+    (void)value;
+  }
+  if (policy->as_str() == "uniform") {
+    if (selection->as_map().size() != 1) {
+      bad("uniform video frame_selection does not accept temporal thresholds");
+    }
+    return out;
+  }
+  if (policy->as_str() != "temporal") {
+    bad("video_url.frame_selection.policy must be uniform or temporal");
+  }
+  out.temporal = true;
+  auto threshold = [&](const char* key, double* target) {
+    const Value* value = selection->find(key);
+    if (value == nullptr) return;
+    if (!value->is_int() && !value->is_float()) {
+      bad(std::string("video_url.frame_selection.") + key + " must be a number");
+    }
+    const double parsed = value->as_double();
+    if (!std::isfinite(parsed) || parsed < 0.0 || parsed > 1.0) {
+      bad(std::string("video_url.frame_selection.") + key + " must be in [0,1]");
+    }
+    *target = parsed;
+  };
+  threshold("motion_threshold", &out.motion_threshold);
+  threshold("scene_threshold", &out.scene_threshold);
+  return out;
+}
+
 void take_video_part(const Value& part, std::string_view stage_name,
                      OmniWork& work) {
   const Value* video = part.find("video_url");
@@ -80,6 +122,7 @@ void take_video_part(const Value& part, std::string_view stage_name,
     bad(std::string(stage_name) + " stage accepts at most one video");
   }
   work.video_url = url->as_str();
+  work.frame_selection = parse_frame_selection(*video);
 }
 
 OmniWork parse_vlm_work(const Value& work, std::string_view stage_name,

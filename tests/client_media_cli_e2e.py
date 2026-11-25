@@ -445,6 +445,41 @@ def test_chat_video_input(binary, base, workdir):
     require(url.startswith("data:video/mp4;base64,"), f"video data URL: {url[:80]}")
     require(base64.b64decode(url.split(",", 1)[1]) == MP4,
             "--video-input must preserve the exact file bytes")
+    require("frame_selection" not in parts[1]["video_url"],
+            "default video input must not acquire a frame_selection field")
+
+    temporal = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "find the scene change", "--video-input", str(clip),
+        "--video-frame-policy", "temporal", "--video-motion-threshold", "0.04",
+        "--video-scene-threshold", "0.3",
+    ])
+    require(temporal.returncode == 0, f"temporal video input failed: {temporal.stderr}")
+    [temporal_entry] = take()
+    temporal_parts = json.loads(temporal_entry["body"])["messages"][0]["content"]
+    selection = temporal_parts[1]["video_url"]["frame_selection"]
+    require(selection == {"policy": "temporal", "motion_threshold": 0.04,
+                          "scene_threshold": 0.3}, f"temporal selection: {selection}")
+
+    uniform = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "uniform", "--video-input", str(clip),
+        "--video-frame-policy", "uniform",
+    ])
+    require(uniform.returncode == 0, f"explicit uniform failed: {uniform.stderr}")
+    [uniform_entry] = take()
+    uniform_parts = json.loads(uniform_entry["body"])["messages"][0]["content"]
+    require(uniform_parts[1]["video_url"]["frame_selection"] == {"policy": "uniform"},
+            "explicit uniform must be the only selection field")
+
+    invalid_threshold = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "bad",
+        "--video-input", str(clip), "--video-motion-threshold", "0.2",
+    ])
+    require(invalid_threshold.returncode == 2 and
+            "require --video-frame-policy temporal" in invalid_threshold.stderr,
+            f"threshold without temporal opt-in: {invalid_threshold.stderr}")
+    require(not take(), "invalid temporal options must be rejected before HTTP")
 
     rejected = run_cli(binary, [
         "chat", "--url", base, "--model", "qwen3-native", "--prompt", "mixed",

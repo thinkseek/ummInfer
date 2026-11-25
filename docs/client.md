@@ -94,6 +94,55 @@ that combines image and video inputs before sending it. The existing remote
 `--video-url` option remains available for compatible OpenAI endpoints; unified
 ummInfer requires a native data URL.
 
+The default sampler is deterministic uniform selection of at most 8 decoded RGB
+frames. It is unchanged when `frame_selection` is absent. Native Qwen3.8 also
+accepts an explicit bounded temporal policy, either through the CLI:
+
+```sh
+./zig-out/bin/umm-infer chat \
+  --url "$UMMINFER_URL" --model qwen3-native \
+  --prompt 'Identify the first scene change and describe the motion' \
+  --video-input /tmp/input.mp4 \
+  --video-frame-policy temporal \
+  --video-motion-threshold 0.02 --video-scene-threshold 0.25
+```
+
+or on the `video_url` object:
+
+```json
+{
+  "type": "video_url",
+  "video_url": {
+    "url": "data:video/mp4;base64,...",
+    "frame_selection": {
+      "policy": "temporal",
+      "motion_threshold": 0.02,
+      "scene_threshold": 0.25
+    }
+  }
+}
+```
+
+`policy` is `uniform` or `temporal`; both thresholds are finite numbers in
+`[0,1]`. `{"policy":"uniform"}` is equivalent to omission. Uniform mode rejects
+threshold fields rather than silently ignoring them, and unknown fields
+(including attempts to raise frame limits) return HTTP 400. Temporal mode
+analyzes at most 64 candidates and selects at most 8 frames; these hard limits
+are not API-configurable. Adjacent scene detections are deduplicated, motion and
+scene ties use the earliest decode index, and static/repeated/high-threshold
+clips fill unused slots by deterministic uniform coverage. First/last candidate
+anchors and short-decode fallback always leave a valid bounded video. Selected
+frames stay in decode order with their source presentation timestamps;
+non-monotonic timestamps are not sorted. The existing temporal-2 patch packer,
+video prompt, 3D MRoPE, and serial/batched engine paths are shared with uniform
+mode.
+
+For a later real-model A/B run, `python3 -I tests/video_temporal_live.py
+--self-check` validates the request fixture offline. The live mode requires
+`UMMINFER_LIVE_OPT_IN=1`, `--url`, `--video`, `--question`, and `--out-dir`, and
+records answers, TTFT, and total latency for both policies. CPU/offline runs
+report `REAL_MODEL_QUALITY: NOT_RUN` and `LIVE_LATENCY: NOT_RUN`.
+
 ### Token usage in a stream
 
 The last `chat.completion.chunk` of a streaming chat response, the one that

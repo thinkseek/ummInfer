@@ -176,6 +176,42 @@ ValidatedSubmission validate_submission(const Value& inputs,
             video_url->find("url")->as_str().empty()) {
           throw ProtocolError("video_url part requires a nonempty video_url.url");
         }
+        if (const Value* selection = video_url->find("frame_selection");
+            selection != nullptr) {
+          if (!selection->is_map()) {
+            throw ProtocolError("video_url.frame_selection must be an object");
+          }
+          const Value* policy = selection->find("policy");
+          if (policy == nullptr || !policy->is_str() ||
+              (policy->as_str() != "uniform" && policy->as_str() != "temporal")) {
+            throw ProtocolError(
+                "video_url.frame_selection.policy must be uniform or temporal");
+          }
+          for (const auto& [key, value] : selection->as_map()) {
+            if (key != "policy" && key != "motion_threshold" &&
+                key != "scene_threshold") {
+              throw ProtocolError("unsupported video_url.frame_selection field: " + key);
+            }
+            (void)value;
+          }
+          if (policy->as_str() == "uniform" && selection->as_map().size() != 1) {
+            throw ProtocolError(
+                "uniform video frame_selection does not accept temporal thresholds");
+          }
+          for (const char* key : {"motion_threshold", "scene_threshold"}) {
+            const Value* threshold = selection->find(key);
+            if (threshold == nullptr) continue;
+            if (!threshold->is_int() && !threshold->is_float()) {
+              throw ProtocolError(std::string("video_url.frame_selection.") + key +
+                                  " must be a number");
+            }
+            const double value = threshold->as_double();
+            if (!std::isfinite(value) || value < 0.0 || value > 1.0) {
+              throw ProtocolError(std::string("video_url.frame_selection.") + key +
+                                  " must be in [0,1]");
+            }
+          }
+        }
         if (++video_count > 1) {
           throw ProtocolError("unified request accepts at most one video_url part");
         }

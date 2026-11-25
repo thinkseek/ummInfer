@@ -176,6 +176,8 @@ if(UMM_STAGE_CUDA)
     main.cpp qwen38_stage.cpp
     ${NATIVE_DIR}/qwen38/safetensors_mmap.cpp
     ${NATIVE_DIR}/qwen38/image_preprocess.cpp
+    ${NATIVE_DIR}/qwen38/video_sampling.cpp
+    ${NATIVE_DIR}/qwen38/video_input.cpp
     ${NATIVE_DIR}/qwen38/tokenizer.cpp
     ${NATIVE_DIR}/qwen38/prompt.cpp
     ${NATIVE_DIR}/qwen38/engine.cu

@@ -133,6 +133,71 @@ void test_tts_work() {
   check(parsed_vid.video_url == "data:video/mp4;base64,AAAA" &&
             parsed_vid.messages.size() == 1 && parsed_vid.messages[0].has_video,
         "qwen38 parses video_url content part");
+  check(!parsed_vid.frame_selection.temporal &&
+            parsed_vid.frame_selection.motion_threshold == 0.02 &&
+            parsed_vid.frame_selection.scene_threshold == 0.25,
+        "omitted frame_selection keeps the historical uniform defaults");
+
+  Value::Map temporal_part = vpart;
+  temporal_part["video_url"] = Value(Value::Map{
+      {"url", Value("data:video/mp4;base64,AAAA")},
+      {"frame_selection", Value(Value::Map{
+                              {"policy", Value("temporal")},
+                              {"motion_threshold", Value(0.04)},
+                              {"scene_threshold", Value(0.3)},
+                          })}});
+  Value::Map temporal_msg;
+  temporal_msg["role"] = Value("user");
+  temporal_msg["content"] = Value::Array{Value(temporal_part), Value(tpart)};
+  Value::Map temporal_work;
+  temporal_work["messages"] = Value::Array{Value(temporal_msg)};
+  const auto parsed_temporal = umminfer::stage::parse_qwen38_work(Value(temporal_work));
+  check(parsed_temporal.frame_selection.temporal &&
+            parsed_temporal.frame_selection.motion_threshold == 0.04 &&
+            parsed_temporal.frame_selection.scene_threshold == 0.3,
+        "qwen38 parses explicit temporal selection and thresholds");
+
+  Value::Map uniform_part = vpart;
+  uniform_part["video_url"] = Value(Value::Map{
+      {"url", Value("data:video/mp4;base64,AAAA")},
+      {"frame_selection", Value(Value::Map{{"policy", Value("uniform")}})}});
+  Value::Map uniform_msg;
+  uniform_msg["role"] = Value("user");
+  uniform_msg["content"] = Value::Array{Value(uniform_part), Value(tpart)};
+  Value::Map uniform_work;
+  uniform_work["messages"] = Value::Array{Value(uniform_msg)};
+  check(!umminfer::stage::parse_qwen38_work(Value(uniform_work))
+             .frame_selection.temporal,
+        "explicit uniform and omitted policy have identical native options");
+
+  auto reject_selection = [&](Value::Map selection) {
+    Value::Map bad_part = vpart;
+    bad_part["video_url"] = Value(Value::Map{
+        {"url", Value("data:video/mp4;base64,AAAA")},
+        {"frame_selection", Value(std::move(selection))}});
+    Value::Map bad_msg;
+    bad_msg["role"] = Value("user");
+    bad_msg["content"] = Value::Array{Value(bad_part), Value(tpart)};
+    Value::Map bad_work;
+    bad_work["messages"] = Value::Array{Value(bad_msg)};
+    return throws_protocol([&] {
+      (void)umminfer::stage::parse_qwen38_work(Value(bad_work));
+    });
+  };
+  check(reject_selection(Value::Map{{"policy", Value("random")}}),
+        "unknown frame selection policy rejected");
+  check(reject_selection(Value::Map{{"policy", Value("temporal")},
+                                    {"motion_threshold", Value(-0.1)}}),
+        "negative motion threshold rejected");
+  check(reject_selection(Value::Map{{"policy", Value("temporal")},
+                                    {"scene_threshold", Value(1.1)}}),
+        "scene threshold above one rejected");
+  check(reject_selection(Value::Map{{"policy", Value("uniform")},
+                                    {"motion_threshold", Value(0.1)}}),
+        "uniform silently ignored thresholds are rejected");
+  check(reject_selection(Value::Map{{"policy", Value("temporal")},
+                                    {"max_frames", Value(static_cast<int64_t>(100))}}),
+        "API cannot raise the native frame budget");
 
   Value::Map ipart;
   ipart["type"] = Value("image_url");

@@ -50,6 +50,14 @@ class Error : public std::runtime_error {
   Milliseconds retry_after_;
 };
 
+struct VideoFrameSelection {
+  // "uniform" is the historical default; "temporal" opts into bounded
+  // scene/motion keyframe selection on the native Qwen3.8 worker.
+  std::string policy = "uniform";
+  std::optional<double> motion_threshold;
+  std::optional<double> scene_threshold;
+};
+
 // One part of a multimodal message. The kind selects which fields are read.
 struct ContentPart {
   enum class Kind { kText, kImageUrl, kInputAudio, kVideoUrl, kVideo };
@@ -63,6 +71,7 @@ struct ContentPart {
   std::string audio_format;          // kInputAudio, e.g. wav or mp3
   std::vector<std::string> video_urls;  // kVideo
   std::optional<double> fps;         // kVideoUrl, 0.1 to 10
+  std::optional<VideoFrameSelection> frame_selection;  // kVideoUrl, native input
 };
 
 struct Message {

@@ -84,6 +84,37 @@ flowchart TB
 
 ---
 
+### 2.1 原生 Qwen3.8 视频输入与有界时序关键帧
+
+`video_url` 默认仍沿用原有确定性均匀抽帧：FFmpeg 单次缩放、最多 8 帧、
+temporal-2 patch packing、按历史公式生成 4 个时间片时间戳，随后复用同一
+`expand_video_pads`、3D MRoPE、批量多片 ViT 以及串行/批处理生成路径。未提供
+`frame_selection` 时，HTTP/Stage wire shape 不增加字段，解码与归一化像素保持
+逐字节一致；`{"policy":"uniform"}` 与缺省等价。
+
+显式 `video_url.frame_selection={"policy":"temporal",
+"motion_threshold":0.02,"scene_threshold":0.25}` 才启用新路径：
+
+1. 输入仍先经过公开 32 MiB data-URL 上限；解码器在分配 stdout 前固定候选
+   64 帧、最终 8 帧、3584 pre-merge patch 的硬上限，API 不可放大预算。
+2. 容器有帧数/帧率元数据时，以源帧序号 `select` 均匀覆盖全片并保持 PTS
+   passthrough；未知元数据时使用有界 `fps` 候选回退。`showinfo` 提供源时间戳，
+   缺失或非有限 PTS 才使用确定性名义时间戳；短解码不补造新帧。
+3. CPU 在固定 16×16 Rec.601 luma 网格上计算相邻帧平均绝对运动差和 16-bin
+   直方图场景差。首末候选是覆盖锚点；相邻场景检测合并为一个代表，先选场景
+   边界再选运动峰值，同分按较早解码序号。严格阈值使重复帧即使在零阈值下也
+   不消耗优先槽位；静态、重复、全部超过阈值或全部低于阈值均有确定性均匀补位。
+4. 结果只按解码顺序输出，绝不按时间戳重排；非单调有限 PTS 原样保留。每个
+   temporal-2 时间片使用所选帧对第一帧的源时间戳。选择结果仍一次性进入
+   `preprocess_video_frames`，不是互相独立的静图，因此 Wave 16 多片 ViT、视频
+   模板、mRoPE、prefix media hash 与 serial/batched parity 均不改变。
+
+离线验证由 `native/qwen38_tests/test_video_input.cpp`、Stage schema、公开 HTTP
+与 C++ CLI/Client 契约覆盖；`tests/video_temporal_live.py` 保留后续 SM90 同视频
+同问题 A/B 门禁。本任务未访问 GPU，真实模型质量与线上时延均 `NOT_RUN`。
+
+---
+
 ## 3. 本机轻量构建与测试验证矩阵
 
 > 环境：macOS 25.3.0 (ARM64), Zig 0.16.0, AppleClang 21.0.0, CMake, Swift, Python 3.13.7（系统 Python 无 `msgpack`/`pyzmq`/`mlx`/`websockets` 第三方包），无 NVIDIA CUDA GPU。

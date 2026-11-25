@@ -272,6 +272,38 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
             return false;
           }
           const std::string& url = part["video_url"]["url"].get_ref<const std::string&>();
+          if (part["video_url"].contains("frame_selection")) {
+            const json& selection = part["video_url"]["frame_selection"];
+            if (!selection.is_object() || !selection.contains("policy") ||
+                !selection["policy"].is_string() ||
+                (selection["policy"] != "uniform" && selection["policy"] != "temporal")) {
+              error = "video_url.frame_selection.policy must be uniform or temporal";
+              return false;
+            }
+            for (const auto& item : selection.items()) {
+              if (item.key() != "policy" && item.key() != "motion_threshold" &&
+                  item.key() != "scene_threshold") {
+                error = "unsupported video_url.frame_selection field: " + item.key();
+                return false;
+              }
+            }
+            if (selection["policy"] == "uniform" && selection.size() != 1) {
+              error = "uniform video frame_selection does not accept temporal thresholds";
+              return false;
+            }
+            for (const char* key : {"motion_threshold", "scene_threshold"}) {
+              if (!selection.contains(key)) continue;
+              if (!selection[key].is_number()) {
+                error = std::string("video_url.frame_selection.") + key + " must be a number";
+                return false;
+              }
+              const double threshold = selection[key].get<double>();
+              if (!std::isfinite(threshold) || threshold < 0.0 || threshold > 1.0) {
+                error = std::string("video_url.frame_selection.") + key + " must be in [0,1]";
+                return false;
+              }
+            }
+          }
           const size_t comma = url.find(',');
           if (url.rfind("data:video/", 0) != 0 || comma == std::string::npos ||
               url.substr(0, comma).find(";base64") == std::string::npos) {

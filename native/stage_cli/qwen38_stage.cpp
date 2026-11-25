@@ -1,26 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// qwen38 kind: Qwen3.8-27B (text + one optional image) behind the Stage
-// protocol. Prompt rendering and image preprocessing follow native/qwen38_cli.
+// qwen38 kind: Qwen3.8-27B (text + one optional image or native video) behind
+// the Stage protocol. Prompt rendering and visual preprocessing follow the
+// native Qwen3.8 host-tested helpers.
 //
 // Deltas: every generated token is detokenized and the new suffix is sent as a
 // stream chunk {"text": ...}. The HTTP layer forwards them as SSE deltas and
 // still receives the aggregate result at completion.
 #include <cuda_runtime.h>
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <cmath>
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -36,6 +28,7 @@
 #include "qwen38/engine.hpp"
 #include "qwen38/image_preprocess.hpp"
 #include "qwen38/tokenizer.hpp"
+#include "qwen38/video_input.hpp"
 #include "stage_common.hpp"
 #include "stage_kind.hpp"
 
@@ -73,166 +66,6 @@ qwen38::PreprocessedImage decode_image(const std::string& url) {
   std::vector<uint8_t> rgb(pixels, pixels + static_cast<size_t>(width) * height * 3);
   stbi_image_free(pixels);
   return qwen38::preprocess_rgb(rgb.data(), height, width, kMinPixels, kMaxPixels);
-}
-
-struct DecodedVideo {
-  qwen38::PreprocessedImage preprocessed;
-  std::vector<double> timestamps;
-};
-
-struct TempFileGuard {
-  std::filesystem::path path;
-  ~TempFileGuard() {
-    if (!path.empty()) {
-      std::error_code ec;
-      std::filesystem::remove(path, ec);
-    }
-  }
-};
-
-// Runs a POSIX child process directly (no shell) and captures stdout.
-std::string run_capture(const std::vector<std::string>& args,
-                        size_t max_bytes = 64u << 20) {
-  int pipefd[2];
-  if (pipe(pipefd) != 0) {
-    throw ProtocolError("pipe() failed while invoking media decoder");
-  }
-  const pid_t pid = fork();
-  if (pid < 0) {
-    close(pipefd[0]);
-    close(pipefd[1]);
-    throw ProtocolError("fork() failed while invoking media decoder");
-  }
-  if (pid == 0) {
-    close(pipefd[0]);
-    dup2(pipefd[1], STDOUT_FILENO);
-    close(pipefd[1]);
-    const int devnull = open("/dev/null", O_WRONLY);
-    if (devnull >= 0) {
-      dup2(devnull, STDERR_FILENO);
-      close(devnull);
-    }
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
-    execvp(argv[0], argv.data());
-    _exit(127);
-  }
-  close(pipefd[1]);
-  std::string out;
-  char buf[65536];
-  ssize_t n = 0;
-  while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-    if (out.size() + static_cast<size_t>(n) > max_bytes) {
-      close(pipefd[0]);
-      int status = 0;
-      waitpid(pid, &status, 0);
-      throw ProtocolError("video decoder stdout exceeded safety limit");
-    }
-    out.append(buf, static_cast<size_t>(n));
-  }
-  close(pipefd[0]);
-  int status = 0;
-  if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) ||
-      WEXITSTATUS(status) != 0) {
-    throw ProtocolError("video decoder (" + args[0] + ") failed");
-  }
-  return out;
-}
-
-DecodedVideo decode_video(const std::string& url) {
-  const std::string bytes = load_video_bytes(url);
-  static std::atomic<uint64_t> seq{0};
-  TempFileGuard guard;
-  guard.path = std::filesystem::temp_directory_path() /
-               ("umm-qwen38-vid-" + std::to_string(getpid()) + "-" +
-                std::to_string(++seq) + ".mp4");
-  {
-    std::ofstream f(guard.path, std::ios::binary | std::ios::trunc);
-    if (!f) throw ProtocolError("failed to create temp file for video decode");
-    f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-  }
-
-  // Probe source width, height, and duration (seconds).
-  const std::string probe = run_capture(
-      {"ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-       "stream=width,height,duration:format=duration", "-of",
-       "default=noprint_wrappers=1", guard.path.string()},
-      64u << 10);
-  int src_w = 0, src_h = 0;
-  double duration = 0.0;
-  std::istringstream iss(probe);
-  std::string line;
-  while (std::getline(iss, line)) {
-    const size_t eq = line.find('=');
-    if (eq == std::string::npos) continue;
-    const std::string key = line.substr(0, eq);
-    const std::string val = line.substr(eq + 1);
-    try {
-      if (key == "width" && src_w == 0) src_w = std::stoi(val);
-      else if (key == "height" && src_h == 0) src_h = std::stoi(val);
-      else if (key == "duration" && duration <= 0.0 && val != "N/A") {
-        duration = std::stod(val);
-      }
-    } catch (...) {
-    }
-  }
-  if (src_w <= 0 || src_h <= 0) {
-    throw ProtocolError("video probe failed: no valid video stream found");
-  }
-  if (!(duration > 0.0) || !std::isfinite(duration)) duration = 2.0;
-
-  // Compute the exact Qwen smart_resize target (divisible by 32) once before
-  // ffmpeg so ffmpeg performs the single bicubic scale and
-  // preprocess_video_frames skips a second resize pass.
-  constexpr int kTargetFrames = 8;  // 4 temporal patches (temporal_patch_size=2)
-  constexpr int kVideoMinPixels = 32768;
-  constexpr int kVideoMaxFramePixels = 131072;
-  constexpr int kVideoMaxTotalPatches = 3584;
-  int dst_h = 0, dst_w = 0;
-  qwen38::smart_resize(
-      src_h, src_w, 32, kVideoMinPixels,
-      std::min(kVideoMaxFramePixels, (kVideoMaxTotalPatches / 4) * 256),
-      &dst_h, &dst_w);
-  const double sample_fps =
-      std::max(0.25, static_cast<double>(kTargetFrames) / std::max(0.5, duration));
-  char vf[160];
-  std::snprintf(vf, sizeof(vf), "fps=%.4f,scale=%d:%d:flags=bicubic",
-                sample_fps, dst_w, dst_h);
-  const std::string raw = run_capture(
-      {"ffmpeg", "-v", "error", "-i", guard.path.string(), "-an", "-sn", "-dn",
-       "-vf", vf, "-frames:v", std::to_string(kTargetFrames), "-f", "rawvideo",
-       "-pix_fmt", "rgb24", "pipe:1"},
-      static_cast<size_t>(kTargetFrames + 2) * static_cast<size_t>(dst_w) *
-          static_cast<size_t>(dst_h) * 3u);
-
-  const size_t frame_bytes =
-      static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h) * 3u;
-  const size_t n_frames = frame_bytes > 0 ? raw.size() / frame_bytes : 0;
-  if (n_frames == 0) {
-    throw ProtocolError("video decode produced zero RGB frames");
-  }
-  std::vector<std::vector<uint8_t>> frames;
-  frames.reserve(n_frames);
-  for (size_t i = 0; i < n_frames; ++i) {
-    const auto* ptr = reinterpret_cast<const uint8_t*>(raw.data() + i * frame_bytes);
-    frames.emplace_back(ptr, ptr + frame_bytes);
-  }
-
-  DecodedVideo out;
-  out.preprocessed = qwen38::preprocess_video_frames(
-      frames, dst_h, dst_w, kVideoMinPixels, kVideoMaxFramePixels,
-      kVideoMaxTotalPatches);
-  const int slices = out.preprocessed.grid_t;
-  out.timestamps.reserve(static_cast<size_t>(slices));
-  for (int s = 0; s < slices; ++s) {
-    const double t_sec =
-        slices > 1 ? (duration * static_cast<double>(s) / static_cast<double>(slices))
-                   : 0.0;
-    out.timestamps.push_back(t_sec);
-  }
-  return out;
 }
 
 }  // namespace
@@ -300,7 +133,23 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       }
       image_tokens = image->rows() / 4;
     } else if (!input.video_url.empty()) {
-      DecodedVideo decoded = decode_video(input.video_url);
+      qwen38::VideoFrameSelection selection;
+      selection.policy = input.frame_selection.temporal
+                             ? qwen38::VideoFramePolicy::kTemporal
+                             : qwen38::VideoFramePolicy::kUniform;
+      selection.motion_threshold = input.frame_selection.motion_threshold;
+      selection.scene_threshold = input.frame_selection.scene_threshold;
+      qwen38::DecodedVideo decoded;
+      try {
+        decoded = qwen38::decode_video_bytes(load_video_bytes(input.video_url), selection);
+      } catch (const std::exception& error) {
+        throw ProtocolError(std::string("video decode failed: ") + error.what());
+      }
+      if (selection.policy == qwen38::VideoFramePolicy::kTemporal) {
+        std::cerr << "qwen38 video_selection=temporal candidates="
+                  << decoded.decoded_frame_count << " selected="
+                  << decoded.selected_frame_indices.size() << "\n";
+      }
       video_timestamps = std::move(decoded.timestamps);
       image = std::make_unique<qwen38::PreprocessedImage>(
           std::move(decoded.preprocessed));

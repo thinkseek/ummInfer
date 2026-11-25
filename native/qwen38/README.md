@@ -264,12 +264,31 @@ state whether the sequence is processed in one prefill call or token by token
 kernel (sdpa -> eager) moves its own pooler by 2.6e-2; a wrong merger order or
 cross-block state would be O(1).
 
+## Native video input selection
+
+The stage accepts one `video_url` instead of one still image. Default/explicit
+`uniform` sampling retains the historical FFmpeg command, at most 8 RGB frames,
+temporal-2 packing, and synthetic slice timestamps. The opt-in
+`video_url.frame_selection.policy="temporal"` path decodes at most 64 candidates,
+ranks deduplicated scene boundaries and motion on a fixed 16×16 luma grid, and
+selects at most 8 frames with first/last anchors and uniform fallback. Ties use
+the earliest decode index; short/static/repeated clips always have a bounded
+valid result. Selection stays in decode order and preserves finite source PTS,
+including non-monotonic PTS. Pair-first source timestamps feed the existing
+video prompt and 3D MRoPE. Both policies use `preprocess_video_frames`, the same
+batched multi-slice ViT, and the same serial/batched engine calls; selected
+frames are never submitted as independent still images. Candidate, output-frame,
+and patch ceilings are validated before output allocation and cannot be raised
+through the API. See `video_sampling.*`, `video_input.*`, and
+`native/qwen38_tests/test_video_input.cpp`.
+
 ## Known limitations
 
-- Greedy decoding only. Sampling (`temperature`, `top_k`, `top_p`) is not
-  implemented; the delivered use cases are deterministic.
-- One image per request, still images only (no video, no temporal merge).
-- The vision workspace is capped at 4096 pre-merge patch tokens (1024×1024).
+- Sampling supports `temperature`, `top_p`, and signed `seed`; no `top_k` knob.
+- One image or one video per request; image and video inputs are mutually
+  exclusive. Video frames use native temporal merge, not independent images.
+- The vision workspace is capped at 4096 pre-merge patch tokens (1024×1024);
+  the video preprocessor retains its tighter 3584-patch budget.
 - `max_seq` is 8192 (prompt + generated).
 - Attention is a two-pass FP32 softmax with per-(head, token) blocks; it is
   O(n²) and not a FlashAttention kernel. Fine for the measured prompt sizes.
@@ -277,7 +296,8 @@ cross-block state would be O(1).
   pretokenizer; Unicode NFC normalisation and combining-mark (M) grouping are
   not implemented. ASCII, Chinese and the tested prompts match the HF ids
   exactly.
-- No weight quantisation, no multi-GPU, no batching.
+- No weight quantisation or multi-GPU. Decode continuous batching is available
+  through the native stage `--batch-size N`; the standalone CLI is serial.
 - Load time is dominated by reading 55.6 GB from disk and copying it over PCIe;
   it is reported as `load_ms` and excluded from `prefill_ms`.
 

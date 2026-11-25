@@ -84,7 +84,8 @@ Prompt rendering and the `image_pad` expansion copy `native/omni_cli`.
 Qwen38 (the default VLM leg, after `UnifiedEngine::build_vlm_inputs`):
 
 ```
-{"messages": [{"role": "user", "content": "text" | [text part, image_url part]}],
+{"messages": [{"role": "user", "content": "text" |
+              [text part, image_url part | video_url part]}],
  "modalities": ["text"] | ["text", "image"]}
 -> {"content", "generated_token_count", "finish_reason"}
 ```
@@ -100,22 +101,24 @@ field the engine cannot consume is an error, never a silently dropped input:
 
 | Input | Result |
 | --- | --- |
-| content part `input_audio`, `audio_url`, `video_url` or any other type | error naming the part type; no generation runs |
+| content part `input_audio`, `audio_url`, or any unknown type | error naming the part type; no generation runs |
 | `modalities` containing `audio` or `video` | error naming the modality |
 | an `audio` byte field in the inputs | error: audio goes through the ASR stage |
-| more than one `image_url` part | error: one image per request |
-| an `image_url` with an `http(s)` URL | error; send a `data:` URL or a local path |
+| more than one `image_url` or `video_url` part | error: one visual input per request |
+| image and video input together | error: modalities are mutually exclusive |
+| an `image_url`/`video_url` with an `http(s)` URL | error; native input requires a `data:` URL |
 | an image with `grid_t != 1` | error: still images only |
+| malformed `video_url.frame_selection` | error: policy must be `uniform`/`temporal`, thresholds in `[0,1]`, no budget overrides |
 
-`native/stage_tests/test_host.cpp` covered each row. It was removed in
-`ab51cf5`, together with the rest of `native/stage_tests/`; no automated host
-test for this table remains. The VLM stage is also reachable directly, without
-the unified engine in front of it, so any future check cannot rely on the server
-having already removed these fields.
+`native/stage_cli/stage_common_test.cpp` covers the wire-shape and option rows;
+`native/qwen38_tests/test_video_input.cpp` covers uniform byte equivalence and
+bounded temporal selection. The VLM stage remains directly reachable, so native
+parsing does not rely on the server having already rejected malformed fields.
 
 `max_new_tokens` from request `params` is read via `bound_request_params()`
 and clamped to `max_seq` (falling back to `--max-new-tokens` when omitted);
-`temperature` and sampling controls are ignored (greedy decoding).
+`temperature`, `top_p`, and signed `seed` are validated and forwarded to the
+engine; omitted sampling fields retain greedy decoding.
 
 TTS (the audio leg, from `UnifiedEngine::build_tts_inputs`):
 

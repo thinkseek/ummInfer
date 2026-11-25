@@ -106,6 +106,8 @@ void usage(const std::string& command, std::ostream& out) {
            "[--max-attempts N]\n"
            "       [--image-url URL ... | --video-input PATH] [--video-url URL ...]\n"
            "       [--audio PATH]  --video-input accepts .mp4/.webm/.mov up to 32 MiB\n"
+           "       [--video-frame-policy uniform|temporal [--video-motion-threshold X]\n"
+           "        [--video-scene-threshold X]]  native video input selection\n"
            "       [--audio-out PATH --voice NAME [--ref-audio PATH]]  speech output\n"
            "       [--image-out PATH [--image-prompt TEXT] [--image-size WxH]\n"
            "        [--image-steps N] [--image-ref PATH] [--image-seed N]\n"
@@ -420,7 +422,8 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
                   {"url", "model", "prompt", "system", "max-tokens", "temperature",
                    "top-p", "seed", "timeout-ms", "first-token-ms", "stall-ms",
                    "max-attempts", "audio", "audio-out", "voice", "ref-audio",
-                   "video-input",
+                   "video-input", "video-frame-policy", "video-motion-threshold",
+                   "video-scene-threshold",
                    "image-out", "image-prompt", "image-size", "image-steps",
                    "image-ref", "image-seed", "image-format", "video-out",
                    "video-prompt", "video-size", "video-seconds", "video-fps",
@@ -450,6 +453,34 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   const std::vector<std::string> image_urls = options.all("image-url");
   const std::vector<std::string> video_urls = options.all("video-url");
   const bool video_input = options.has("video-input");
+  std::optional<VideoFrameSelection> frame_selection;
+  const bool has_frame_policy = options.has("video-frame-policy");
+  const bool has_motion_threshold = options.has("video-motion-threshold");
+  const bool has_scene_threshold = options.has("video-scene-threshold");
+  if ((has_frame_policy || has_motion_threshold || has_scene_threshold) &&
+      !video_input && video_urls.empty()) {
+    throw UsageError("video frame selection requires --video-input or --video-url");
+  }
+  if (has_frame_policy) {
+    frame_selection.emplace();
+    frame_selection->policy = options.get("video-frame-policy");
+    if (frame_selection->policy != "uniform" && frame_selection->policy != "temporal") {
+      throw UsageError("--video-frame-policy must be uniform or temporal");
+    }
+  }
+  if (has_motion_threshold || has_scene_threshold) {
+    if (!frame_selection || frame_selection->policy != "temporal") {
+      throw UsageError("video thresholds require --video-frame-policy temporal");
+    }
+    if (has_motion_threshold) {
+      frame_selection->motion_threshold =
+          number(options, "video-motion-threshold", 0, 0, 1);
+    }
+    if (has_scene_threshold) {
+      frame_selection->scene_threshold =
+          number(options, "video-scene-threshold", 0, 0, 1);
+    }
+  }
   if (video_input && !image_urls.empty()) {
     throw UsageError("--video-input and --image-url are mutually exclusive");
   }
@@ -478,6 +509,7 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
       ContentPart part;
       part.kind = ContentPart::Kind::kVideoUrl;
       part.url = url;
+      part.frame_selection = frame_selection;
       message.parts.push_back(std::move(part));
     }
     if (video_input) {
@@ -488,6 +520,7 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
       part.kind = ContentPart::Kind::kVideoUrl;
       part.url = "data:" + video_content_type(path) + ";base64," +
                  detail::base64_encode(bytes);
+      part.frame_selection = frame_selection;
       message.parts.push_back(std::move(part));
     }
     if (input_audio) {

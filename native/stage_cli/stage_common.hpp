@@ -80,10 +80,19 @@ struct OmniMessage {
   bool has_video = false;
 };
 
+struct VideoFrameSelectionWork {
+  // False is the historical deterministic uniform sampler. Temporal selection
+  // is enabled only by frame_selection.policy="temporal".
+  bool temporal = false;
+  double motion_threshold = 0.02;
+  double scene_threshold = 0.25;
+};
+
 struct OmniWork {
   std::string text;       // last text-bearing message
   std::string image_url;  // empty when the turn has no image
   std::string video_url;  // empty when the turn has no video
+  VideoFrameSelectionWork frame_selection;
   // Every message in wire order, for the multi-turn prompt. The omni stage
   // renders all of them so session history is part of the prompt.
   std::vector<OmniMessage> messages;
