@@ -418,6 +418,84 @@ void test_wan_dit_host_helpers() {
   check(explicit_output == expected, "proj_out patch, row, column, channel order");
 }
 
+void test_wan_dit_perf_helpers() {
+  using namespace umminfer::video;
+  check(kWanDitQueryTile == 512, "Wan DiT query tile raised to 512");
+
+  // Verify attention query tile partitioning across <512, ==512, and >512 token counts.
+  const int token_cases[] = {1, 63, 64, 264, 511, 512, 513, 1024, 2640};
+  for (int tokens : token_cases) {
+    int covered = 0;
+    int tiles = 0;
+    for (int begin = 0; begin < tokens; begin += kWanDitQueryTile) {
+      const int len = wan_attention_tile_len(tokens, begin);
+      check(len > 0 && len <= kWanDitQueryTile && begin + len <= tokens,
+            "tile bounds valid for tokens=" + std::to_string(tokens));
+      covered += len;
+      ++tiles;
+    }
+    check(covered == tokens,
+          "tile partition covers all tokens for tokens=" + std::to_string(tokens));
+    const int expected_tiles = (tokens + kWanDitQueryTile - 1) / kWanDitQueryTile;
+    check(tiles == expected_tiles,
+          "tile count matches ceil(tokens/512) for tokens=" + std::to_string(tokens));
+  }
+  check(wan_attention_tile_len(2640, 2560) == 80,
+        "704x480 29f final query tile has 80 tokens");
+
+  bool bad_tile = false;
+  try {
+    (void)wan_attention_tile_len(512, 512);
+  } catch (const std::invalid_argument&) {
+    bad_tile = true;
+  }
+  check(bad_tile, "out-of-range q_start rejected");
+
+  // Verify text-embedding content hashing: deterministic, shape-sensitive, bit-sensitive.
+  std::vector<float> small = {1.0f, -2.5f, 0.25f, 4.0f, -0.5f, 3.0f, 0.125f, 7.5f};
+  const uint64_t h_2x4 = wan_hash_text_embeds(small.data(), 2, 4);
+  const uint64_t h_2x4_repeat = wan_hash_text_embeds(small.data(), 2, 4);
+  const uint64_t h_4x2 = wan_hash_text_embeds(small.data(), 4, 2);
+  check(h_2x4 == h_2x4_repeat, "text embed hash is deterministic");
+  check(h_2x4 != h_4x2, "text embed hash distinguishes shape with identical data");
+
+  // Exercise unaligned tail sizes (1 float = 4B, 3 floats = 12B, 9 floats = 36B).
+  for (int elems : {1, 3, 9}) {
+    std::vector<float> buf(static_cast<size_t>(elems), 1.25f);
+    const uint64_t h0 = wan_hash_text_embeds(buf.data(), 1, elems);
+    buf.back() = 1.250001f;
+    const uint64_t h1 = wan_hash_text_embeds(buf.data(), 1, elems);
+    check(h0 != h1, "tail float mutation changes hash for elems=" + std::to_string(elems));
+  }
+
+  // Exercise realistic [512, 4096] prompt tensor (~8 MiB).
+  std::vector<float> full(512u * 4096u, 0.0f);
+  for (size_t i = 0; i < full.size(); ++i) {
+    full[i] = static_cast<float>((i * 2654435761u) & 0xFFFFu) * 1e-4f;
+  }
+  const uint64_t h_full = wan_hash_text_embeds(full.data(), 512, 4096);
+  const WanTextEmbedCacheKey key_a{h_full, 512, 4096};
+  const WanTextEmbedCacheKey key_a_copy{wan_hash_text_embeds(full.data(), 512, 4096), 512, 4096};
+  check(key_a == key_a_copy, "WanTextEmbedCacheKey matches identical prompt");
+
+  for (size_t idx : {size_t{0}, full.size() / 2, full.size() - 1}) {
+    const float saved = full[idx];
+    full[idx] = saved + 1e-5f;
+    const uint64_t mutated = wan_hash_text_embeds(full.data(), 512, 4096);
+    check(mutated != h_full,
+          "full [512,4096] hash detects mutation at index " + std::to_string(idx));
+    full[idx] = saved;
+  }
+
+  bool null_rejected = false;
+  try {
+    (void)wan_hash_text_embeds(nullptr, 512, 4096);
+  } catch (const std::invalid_argument&) {
+    null_rejected = true;
+  }
+  check(null_rejected, "null text embedding pointer rejected");
+}
+
 void test_flow_match_schedule_and_euler() {
   using namespace umminfer::video;
   FlowMatchConfig cfg;
@@ -701,6 +779,7 @@ int main() {
       {"umt5_tokenizer", test_umt5_tokenizer},
       {"umt5_relative_position_buckets", test_umt5_relative_position_buckets},
       {"wan_dit_host_helpers", test_wan_dit_host_helpers},
+      {"wan_dit_perf_helpers", test_wan_dit_perf_helpers},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"unipc_bh2_matches_diffusers", test_unipc_bh2_matches_diffusers},
       {"i2v_center_crop_preserves_aspect_ratio",

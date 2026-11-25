@@ -12,6 +12,7 @@
 #include <cublas_v2.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -39,7 +40,8 @@ constexpr int kChannels = 48;
 constexpr int kPatchVolume = 4;
 constexpr int kProjection = kChannels * kPatchVolume;
 constexpr int kThreads = 256;
-constexpr int kQueryTile = 64;
+constexpr int kQueryTile = kWanDitQueryTile;
+constexpr size_t kCrossKvCacheSlots = 2;
 
 #define UMM_DIT_CUDA(expr)                                                     \
   do {                                                                         \
@@ -110,14 +112,39 @@ class DeviceBuffer {
  public:
   DeviceBuffer() = default;
   DeviceBuffer(size_t bytes, AllocationTracker& tracker) { allocate(bytes, tracker); }
-  ~DeviceBuffer() {
-    if (data_ != nullptr) {
-      cudaFree(data_);
-      tracker_->current -= bytes_;
-    }
+  DeviceBuffer(DeviceBuffer&& other) noexcept
+      : data_(other.data_), bytes_(other.bytes_), tracker_(other.tracker_) {
+    other.data_ = nullptr;
+    other.bytes_ = 0;
+    other.tracker_ = nullptr;
   }
+  DeviceBuffer& operator=(DeviceBuffer&& other) noexcept {
+    if (this != &other) {
+      reset();
+      data_ = other.data_;
+      bytes_ = other.bytes_;
+      tracker_ = other.tracker_;
+      other.data_ = nullptr;
+      other.bytes_ = 0;
+      other.tracker_ = nullptr;
+    }
+    return *this;
+  }
+  ~DeviceBuffer() { reset(); }
   DeviceBuffer(const DeviceBuffer&) = delete;
   DeviceBuffer& operator=(const DeviceBuffer&) = delete;
+
+  void reset() noexcept {
+    if (data_ != nullptr) {
+      (void)cudaFree(data_);
+      if (tracker_ != nullptr) {
+        tracker_->current -= bytes_;
+      }
+      data_ = nullptr;
+      bytes_ = 0;
+      tracker_ = nullptr;
+    }
+  }
 
   void allocate(size_t bytes, AllocationTracker& tracker) {
     if (data_ != nullptr) throw std::logic_error("Wan DiT buffer allocated twice");
@@ -130,7 +157,15 @@ class DeviceBuffer {
     tracker.current += bytes;
     tracker.peak = std::max(tracker.peak, tracker.current);
   }
+
+  void resize(size_t bytes, AllocationTracker& tracker) {
+    if (bytes == bytes_ && (bytes == 0 || data_ != nullptr)) return;
+    reset();
+    allocate(bytes, tracker);
+  }
+
   void* data() const { return data_; }
+  size_t bytes() const { return bytes_; }
   template <typename T>
   T* as() const { return static_cast<T*>(data_); }
 
@@ -472,12 +507,70 @@ __global__ void residual_pair_kernel(Bf16* hidden, const Bf16* update,
 }  // namespace
 
 struct WanDit::Impl {
-  Impl(const std::filesystem::path& model_dir, int gpu) : context_(gpu) {
+  struct WorkspaceBuffers {
+    int frames = 0;
+    int height = 0;
+    int width = 0;
+    int text_len = 0;
+
+    // Fixed-capacity buffers (max 2 rows: scalar T2V uses 1 row, per-frame I2V uses 2).
+    DeviceBuffer time_input;
+    DeviceBuffer time_a;
+    DeviceBuffer time_b;
+    DeviceBuffer temb;
+    DeviceBuffer temb_act;
+    DeviceBuffer time_proj;
+    DeviceBuffer modulation;
+
+    // Text-projection scratch (used on cross-attention K/V cache miss).
+    DeviceBuffer context_fp32;
+    DeviceBuffer text_input;
+    DeviceBuffer text_a;
+    DeviceBuffer text_projected;
+
+    // Latent and transformer activations sized for (frames, height, width, text_len).
+    DeviceBuffer patch_fp32;
+    DeviceBuffer patch_tokens;
+    DeviceBuffer x;
+    DeviceBuffer normed;
+    DeviceBuffer q;
+    DeviceBuffer k;
+    DeviceBuffer v;
+    DeviceBuffer attended;
+    DeviceBuffer ff;
+    DeviceBuffer scores;
+    DeviceBuffer probabilities;
+    DeviceBuffer output_tiles;
+  };
+
+  struct RopeCache {
+    int frames = 0;
+    int height = 0;
+    int width = 0;
+    DeviceBuffer cos;
+    DeviceBuffer sin;
+  };
+
+  struct CrossAttnKvEntry {
+    WanTextEmbedCacheKey key{};
+    bool valid = false;
+    uint64_t last_used = 0;
+    // Contiguous [kLayers, text_len, kDim] BF16 post-RMSNorm K and V tensors.
+    DeviceBuffer k_all;
+    DeviceBuffer v_all;
+  };
+
+  Impl(const std::filesystem::path& model_dir, int gpu)
+      : context_(gpu), gpu_(gpu) {
     config_ = load_wan_dit_config(model_dir.string());
     const auto started = std::chrono::steady_clock::now();
     load_weights(model_dir / "transformer");
     load_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - started).count();
+  }
+
+  ~Impl() {
+    (void)cudaSetDevice(gpu_);
   }
 
   void add_spec(std::vector<LoadSpec>& specs, const std::string& name,
@@ -639,7 +732,7 @@ struct WanDit::Impl {
     const float alpha = 1.0f;
     const float beta = 0.0f;
     for (int begin = 0; begin < tokens; begin += kQueryTile) {
-      const int queries = std::min(kQueryTile, tokens - begin);
+      const int queries = wan_attention_tile_len(tokens, begin, kQueryTile);
       UMM_DIT_CUBLAS(cublasGemmStridedBatchedEx(
           context_.get(), CUBLAS_OP_T, CUBLAS_OP_N, context_tokens, queries,
           kHeadDim, &alpha, key, CUDA_R_16BF, kDim, kHeadDim,
@@ -656,11 +749,153 @@ struct WanDit::Impl {
           probabilities.as<Bf16>(), CUDA_R_16BF, context_tokens,
           static_cast<int64_t>(context_tokens) * queries, &beta,
           output_tiles.as<float>(), CUDA_R_32F, kHeadDim,
-          kHeadDim * queries, kHeads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+          static_cast<int64_t>(kHeadDim) * queries, kHeads,
+          CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
       attention_output_kernel<<<grid_for(static_cast<size_t>(queries) * kDim), kThreads>>>(
           output_tiles.as<float>(), output, begin, queries);
       UMM_DIT_CUDA(cudaGetLastError());
     }
+  }
+
+  void ensure_workspace(int frames, int height, int width, int text_len) {
+    if (ws_.frames == frames && ws_.height == height && ws_.width == width &&
+        ws_.text_len == text_len) {
+      return;
+    }
+    ws_.frames = 0;
+    ws_.height = 0;
+    ws_.width = 0;
+    ws_.text_len = 0;
+
+    constexpr size_t kMaxTimeRows = 2;
+    const int tokens = frames * (height / 2) * (width / 2);
+    const size_t model_count = static_cast<size_t>(tokens) * kDim;
+    const size_t text_count = static_cast<size_t>(text_len) * kDim;
+    const size_t context_count = static_cast<size_t>(text_len) * kTextDim;
+    const size_t patch_count = static_cast<size_t>(tokens) * kProjection;
+    const int query_tile = std::min(kQueryTile, tokens);
+    const int attention_keys = std::max(tokens, text_len);
+
+    ws_.time_input.resize(checked_bytes(kFreqDim * kMaxTimeRows, sizeof(float)), tracker_);
+    ws_.time_a.resize(checked_bytes(kDim * kMaxTimeRows, sizeof(float)), tracker_);
+    ws_.time_b.resize(checked_bytes(kDim * kMaxTimeRows, sizeof(float)), tracker_);
+    ws_.temb.resize(checked_bytes(kDim * kMaxTimeRows, sizeof(Bf16)), tracker_);
+    ws_.temb_act.resize(checked_bytes(kDim * kMaxTimeRows, sizeof(Bf16)), tracker_);
+    ws_.time_proj.resize(checked_bytes(6 * kDim * kMaxTimeRows, sizeof(Bf16)), tracker_);
+    ws_.modulation.resize(checked_bytes(6 * kDim * kMaxTimeRows, sizeof(float)), tracker_);
+
+    ws_.context_fp32.resize(checked_bytes(context_count, sizeof(float)), tracker_);
+    ws_.text_input.resize(checked_bytes(context_count, sizeof(Bf16)), tracker_);
+    ws_.text_a.resize(checked_bytes(text_count, sizeof(Bf16)), tracker_);
+    ws_.text_projected.resize(checked_bytes(text_count, sizeof(Bf16)), tracker_);
+
+    ws_.patch_fp32.resize(checked_bytes(patch_count, sizeof(float)), tracker_);
+    ws_.patch_tokens.resize(checked_bytes(patch_count, sizeof(Bf16)), tracker_);
+    ws_.x.resize(checked_bytes(model_count, sizeof(Bf16)), tracker_);
+    ws_.normed.resize(checked_bytes(model_count, sizeof(Bf16)), tracker_);
+    ws_.q.resize(checked_bytes(model_count, sizeof(Bf16)), tracker_);
+    ws_.k.resize(checked_bytes(model_count, sizeof(Bf16)), tracker_);
+    ws_.v.resize(checked_bytes(model_count, sizeof(Bf16)), tracker_);
+    ws_.attended.resize(checked_bytes(model_count, sizeof(Bf16)), tracker_);
+    ws_.ff.resize(checked_bytes(static_cast<size_t>(tokens) * kFf, sizeof(Bf16)), tracker_);
+    ws_.scores.resize(
+        checked_bytes(static_cast<size_t>(kHeads) * query_tile * attention_keys, sizeof(float)),
+        tracker_);
+    ws_.probabilities.resize(
+        checked_bytes(static_cast<size_t>(kHeads) * query_tile * attention_keys, sizeof(Bf16)),
+        tracker_);
+    ws_.output_tiles.resize(
+        checked_bytes(static_cast<size_t>(query_tile) * kDim, sizeof(float)), tracker_);
+
+    ws_.frames = frames;
+    ws_.height = height;
+    ws_.width = width;
+    ws_.text_len = text_len;
+  }
+
+  void ensure_rope(int frames, int height, int width) {
+    if (rope_.frames == frames && rope_.height == height && rope_.width == width) {
+      return;
+    }
+    rope_.frames = 0;
+    rope_.height = 0;
+    rope_.width = 0;
+
+    const auto rope = wan_build_rope_3d(frames, height, width, kHeadDim);
+    const size_t cos_bytes = checked_bytes(rope.cos.size(), sizeof(float));
+    const size_t sin_bytes = checked_bytes(rope.sin.size(), sizeof(float));
+    rope_.cos.resize(cos_bytes, tracker_);
+    rope_.sin.resize(sin_bytes, tracker_);
+    UMM_DIT_CUDA(cudaMemcpy(rope_.cos.data(), rope.cos.data(), cos_bytes,
+                            cudaMemcpyHostToDevice));
+    UMM_DIT_CUDA(cudaMemcpy(rope_.sin.data(), rope.sin.data(), sin_bytes,
+                            cudaMemcpyHostToDevice));
+
+    rope_.frames = frames;
+    rope_.height = height;
+    rope_.width = width;
+  }
+
+  const CrossAttnKvEntry& get_or_build_cross_kv(const float* context, int text_len) {
+    const WanTextEmbedCacheKey key{
+        wan_hash_text_embeds(context, text_len, kTextDim), text_len, kTextDim};
+    for (auto& entry : cross_kv_cache_) {
+      if (entry.valid && entry.key == key) {
+        entry.last_used = ++cross_kv_clock_;
+        return entry;
+      }
+    }
+
+    size_t victim = 0;
+    for (size_t i = 0; i < kCrossKvCacheSlots; ++i) {
+      if (!cross_kv_cache_[i].valid) {
+        victim = i;
+        break;
+      }
+      if (cross_kv_cache_[i].last_used < cross_kv_cache_[victim].last_used) {
+        victim = i;
+      }
+    }
+
+    CrossAttnKvEntry& entry = cross_kv_cache_[victim];
+    entry.valid = false;
+
+    const size_t context_count = static_cast<size_t>(text_len) * kTextDim;
+    const size_t text_count = static_cast<size_t>(text_len) * kDim;
+    const size_t all_layers_bytes =
+        checked_bytes(static_cast<size_t>(kLayers) * text_count, sizeof(Bf16));
+    entry.k_all.resize(all_layers_bytes, tracker_);
+    entry.v_all.resize(all_layers_bytes, tracker_);
+
+    UMM_DIT_CUDA(cudaMemcpy(ws_.context_fp32.data(), context,
+                            checked_bytes(context_count, sizeof(float)),
+                            cudaMemcpyHostToDevice));
+    float_to_bf16_kernel<<<grid_for(context_count), kThreads>>>(
+        ws_.context_fp32.as<float>(), ws_.text_input.as<Bf16>(), context_count);
+    UMM_DIT_CUDA(cudaGetLastError());
+    linear("condition_embedder.text_embedder.linear_1", kTextDim, kDim, text_len,
+           ws_.text_input.data(), ws_.text_a.data());
+    gelu_tanh_kernel<<<grid_for(text_count), kThreads>>>(ws_.text_a.as<Bf16>(), text_count);
+    UMM_DIT_CUDA(cudaGetLastError());
+    linear("condition_embedder.text_embedder.linear_2", kDim, kDim, text_len,
+           ws_.text_a.data(), ws_.text_projected.data());
+
+    for (int layer = 0; layer < kLayers; ++layer) {
+      const std::string prefix = "blocks." + std::to_string(layer) + ".";
+      Bf16* layer_k = entry.k_all.as<Bf16>() + static_cast<size_t>(layer) * text_count;
+      Bf16* layer_v = entry.v_all.as<Bf16>() + static_cast<size_t>(layer) * text_count;
+      linear(prefix + "attn2.to_k", kDim, kDim, text_len, ws_.text_projected.data(), layer_k);
+      linear(prefix + "attn2.to_v", kDim, kDim, text_len, ws_.text_projected.data(), layer_v);
+      rms_norm_kernel<<<text_len, kThreads>>>(
+          layer_k, static_cast<const float*>(tensor(prefix + "attn2.norm_k.weight").data),
+          layer_k, text_len, config_.eps);
+      UMM_DIT_CUDA(cudaGetLastError());
+    }
+
+    entry.key = key;
+    entry.last_used = ++cross_kv_clock_;
+    entry.valid = true;
+    return entry;
   }
 
   WanDitOutput forward(const float* latent, int frames, int height, int width,
@@ -674,17 +909,23 @@ struct WanDit::Impl {
     const auto started = std::chrono::steady_clock::now();
     tracker_.peak = tracker_.current;
     UMM_DIT_CUDA(cudaSetDevice(gpu_));
-    const int tokens = frames * (height / 2) * (width / 2);
+    const int64_t tokens64 =
+        static_cast<int64_t>(frames) * (height / 2) * (width / 2);
+    if (tokens64 <= 0 || tokens64 > std::numeric_limits<int>::max()) {
+      throw std::overflow_error("Wan DiT token count overflows int");
+    }
+    const int tokens = static_cast<int>(tokens64);
     // Wan2.2-TI2V-5B expand_timesteps: latent frame 0 tokens get t=0.
     const bool per_frame = first_frame_zero_timestep;
     const int temb_rows = per_frame ? 2 : 1;
     const size_t time_rows = static_cast<size_t>(temb_rows);
     const int first_frame_tokens = (height / 2) * (width / 2);
     const size_t model_count = static_cast<size_t>(tokens) * kDim;
-    const size_t kv_count = static_cast<size_t>(std::max(tokens, text_len)) * kDim;
     const size_t text_count = static_cast<size_t>(text_len) * kDim;
     const size_t latent_count = static_cast<size_t>(kChannels) * frames * height * width;
-    const int attention_keys = std::max(tokens, text_len);
+
+    ensure_workspace(frames, height, width, text_len);
+    ensure_rope(frames, height, width);
 
     std::vector<float> time_embedding;
     if (per_frame) {
@@ -696,96 +937,54 @@ struct WanDit::Impl {
     } else {
       time_embedding = wan_sinusoidal_timestep_embedding(timestep, kFreqDim);
     }
-    const auto rope = wan_build_rope_3d(frames, height, width, kHeadDim);
     const auto patch = wan_patchify_host(latent, kChannels, frames, height, width);
 
-    DeviceBuffer time_input(checked_bytes(kFreqDim * time_rows, 4), tracker_);
-    DeviceBuffer time_a(checked_bytes(kDim * time_rows, 4), tracker_);
-    DeviceBuffer time_b(checked_bytes(kDim * time_rows, 4), tracker_);
-    DeviceBuffer temb(checked_bytes(kDim * time_rows, 2), tracker_);
-    DeviceBuffer temb_act(checked_bytes(kDim * time_rows, 2), tracker_);
-    DeviceBuffer time_proj(checked_bytes(6 * kDim * time_rows, 2), tracker_);
-    DeviceBuffer modulation(checked_bytes(6 * kDim * time_rows, 4), tracker_);
-    DeviceBuffer text_input(checked_bytes(static_cast<size_t>(text_len) * kTextDim, 2), tracker_);
-    DeviceBuffer text_a(checked_bytes(text_count, 2), tracker_);
-    DeviceBuffer text_projected(checked_bytes(text_count, 2), tracker_);
-    DeviceBuffer rope_cos(checked_bytes(rope.cos.size(), 4), tracker_);
-    DeviceBuffer rope_sin(checked_bytes(rope.sin.size(), 4), tracker_);
-    DeviceBuffer patch_tokens(checked_bytes(patch.size(), 2), tracker_);
-    DeviceBuffer x(checked_bytes(model_count, 2), tracker_);
-    DeviceBuffer normed(checked_bytes(model_count, 2), tracker_);
-    DeviceBuffer q(checked_bytes(model_count, 2), tracker_);
-    DeviceBuffer k(checked_bytes(kv_count, 2), tracker_);
-    DeviceBuffer v(checked_bytes(kv_count, 2), tracker_);
-    DeviceBuffer attended(checked_bytes(model_count, 2), tracker_);
-    DeviceBuffer ff(checked_bytes(static_cast<size_t>(tokens) * kFf, 2), tracker_);
-    DeviceBuffer scores(checked_bytes(static_cast<size_t>(kHeads) * kQueryTile * attention_keys, 4), tracker_);
-    DeviceBuffer probabilities(checked_bytes(static_cast<size_t>(kHeads) * kQueryTile * attention_keys, 2), tracker_);
-    DeviceBuffer output_tiles(checked_bytes(static_cast<size_t>(kQueryTile) * kDim, 4), tracker_);
-
     UMM_DIT_CUDA(cudaMemcpy(
-        time_input.data(), time_embedding.data(),
+        ws_.time_input.data(), time_embedding.data(),
         checked_bytes(kFreqDim * time_rows, 4), cudaMemcpyHostToDevice));
     linear("condition_embedder.time_embedder.linear_1", kFreqDim, kDim,
-           temb_rows, time_input.data(), time_a.data());
+           temb_rows, ws_.time_input.data(), ws_.time_a.data());
     silu_f32_kernel<<<grid_for(kDim * time_rows), kThreads>>>(
-        time_a.as<float>(), kDim * time_rows);
+        ws_.time_a.as<float>(), kDim * time_rows);
     UMM_DIT_CUDA(cudaGetLastError());
     linear("condition_embedder.time_embedder.linear_2", kDim, kDim,
-           temb_rows, time_a.data(), time_b.data());
+           temb_rows, ws_.time_a.data(), ws_.time_b.data());
     float_to_bf16_kernel<<<grid_for(kDim * time_rows), kThreads>>>(
-        time_b.as<float>(), temb.as<Bf16>(), kDim * time_rows);
+        ws_.time_b.as<float>(), ws_.temb.as<Bf16>(), kDim * time_rows);
     UMM_DIT_CUDA(cudaGetLastError());
     if (per_frame) {
       // time_proj consumes the activated embedding; the output norm keeps
       // the unactivated one, so the activated copy gets its own buffer.
-      UMM_DIT_CUDA(cudaMemcpy(temb_act.data(), temb.data(),
+      UMM_DIT_CUDA(cudaMemcpy(ws_.temb_act.data(), ws_.temb.data(),
                               checked_bytes(kDim * time_rows, 2),
                               cudaMemcpyDeviceToDevice));
       silu_bf16_kernel<<<grid_for(kDim * time_rows), kThreads>>>(
-          temb_act.as<Bf16>(), kDim * time_rows);
+          ws_.temb_act.as<Bf16>(), kDim * time_rows);
       UMM_DIT_CUDA(cudaGetLastError());
       linear("condition_embedder.time_proj", kDim, 6 * kDim, temb_rows,
-             temb_act.data(), time_proj.data());
+             ws_.temb_act.data(), ws_.time_proj.data());
     } else {
-      silu_bf16_kernel<<<grid_for(kDim), kThreads>>>(temb.as<Bf16>(), kDim);
+      silu_bf16_kernel<<<grid_for(kDim), kThreads>>>(ws_.temb.as<Bf16>(), kDim);
       UMM_DIT_CUDA(cudaGetLastError());
-      linear("condition_embedder.time_proj", kDim, 6 * kDim, 1, temb.data(), time_proj.data());
+      linear("condition_embedder.time_proj", kDim, 6 * kDim, 1,
+             ws_.temb.data(), ws_.time_proj.data());
       // The output norm uses the unactivated time embedding, so restore temb after time_proj.
-      float_to_bf16_kernel<<<grid_for(kDim), kThreads>>>(time_b.as<float>(), temb.as<Bf16>(), kDim);
+      float_to_bf16_kernel<<<grid_for(kDim), kThreads>>>(
+          ws_.time_b.as<float>(), ws_.temb.as<Bf16>(), kDim);
       UMM_DIT_CUDA(cudaGetLastError());
     }
 
-    {
-      std::vector<float> context_f32(context, context + static_cast<size_t>(text_len) * kTextDim);
-      DeviceBuffer context_fp32(checked_bytes(context_f32.size(), 4), tracker_);
-      UMM_DIT_CUDA(cudaMemcpy(context_fp32.data(), context_f32.data(),
-                              checked_bytes(context_f32.size(), 4), cudaMemcpyHostToDevice));
-      float_to_bf16_kernel<<<grid_for(context_f32.size()), kThreads>>>(
-          context_fp32.as<float>(), text_input.as<Bf16>(), context_f32.size());
-      UMM_DIT_CUDA(cudaGetLastError());
-    }
-    linear("condition_embedder.text_embedder.linear_1", kTextDim, kDim, text_len,
-           text_input.data(), text_a.data());
-    gelu_tanh_kernel<<<grid_for(text_count), kThreads>>>(text_a.as<Bf16>(), text_count);
+    // Cache hit skips text projection and all 30 layers' attn2 K/V GEMMs + RMSNorms.
+    const CrossAttnKvEntry& cross_kv = get_or_build_cross_kv(context, text_len);
+
+    UMM_DIT_CUDA(cudaMemcpy(ws_.patch_fp32.data(), patch.data(),
+                            checked_bytes(patch.size(), 4),
+                            cudaMemcpyHostToDevice));
+    float_to_bf16_kernel<<<grid_for(patch.size()), kThreads>>>(
+        ws_.patch_fp32.as<float>(), ws_.patch_tokens.as<Bf16>(), patch.size());
     UMM_DIT_CUDA(cudaGetLastError());
-    linear("condition_embedder.text_embedder.linear_2", kDim, kDim, text_len,
-           text_a.data(), text_projected.data());
-
-    UMM_DIT_CUDA(cudaMemcpy(rope_cos.data(), rope.cos.data(), checked_bytes(rope.cos.size(), 4),
-                            cudaMemcpyHostToDevice));
-    UMM_DIT_CUDA(cudaMemcpy(rope_sin.data(), rope.sin.data(), checked_bytes(rope.sin.size(), 4),
-                            cudaMemcpyHostToDevice));
-    {
-      DeviceBuffer patch_fp32(checked_bytes(patch.size(), 4), tracker_);
-      UMM_DIT_CUDA(cudaMemcpy(patch_fp32.data(), patch.data(), checked_bytes(patch.size(), 4),
-                              cudaMemcpyHostToDevice));
-      float_to_bf16_kernel<<<grid_for(patch.size()), kThreads>>>(
-          patch_fp32.as<float>(), patch_tokens.as<Bf16>(), patch.size());
-      UMM_DIT_CUDA(cudaGetLastError());
-    }
     linear("patch_embedding", kChannels * kPatchVolume, kDim, tokens,
-           patch_tokens.data(), x.data());
+           ws_.patch_tokens.data(), ws_.x.data());
 
     // Per-token modulation differs only between latent frame 0 and the
     // remaining frames, so two embedding groups drive the pair kernels.
@@ -794,10 +993,10 @@ struct WanDit::Impl {
                                 int shift_row, int scale_row, int rows) {
       if (per_frame) {
         layer_norm_pair_kernel<<<tokens, kThreads>>>(
-            input, output, gamma, beta, modulation.as<float>(), rows, scale_row,
+            input, output, gamma, beta, ws_.modulation.as<float>(), rows, scale_row,
             shift_row, tokens, config_.eps, first_frame_tokens);
       } else {
-        const float* mod = modulation.as<float>();
+        const float* mod = ws_.modulation.as<float>();
         layer_norm_kernel<<<tokens, kThreads>>>(
             input, output, gamma, beta, mod + shift_row * kDim,
             mod + scale_row * kDim, tokens, config_.eps);
@@ -807,11 +1006,11 @@ struct WanDit::Impl {
     const auto apply_residual = [&](const Bf16* update, int gate_row) {
       if (per_frame) {
         residual_pair_kernel<<<grid_for(model_count), kThreads>>>(
-            x.as<Bf16>(), update, modulation.as<float>(), 6, gate_row,
+            ws_.x.as<Bf16>(), update, ws_.modulation.as<float>(), 6, gate_row,
             model_count, first_frame_tokens);
       } else {
         residual_kernel<<<grid_for(model_count), kThreads>>>(
-            x.as<Bf16>(), update, modulation.as<float>() + gate_row * kDim,
+            ws_.x.as<Bf16>(), update, ws_.modulation.as<float>() + gate_row * kDim,
             model_count);
       }
       UMM_DIT_CUDA(cudaGetLastError());
@@ -822,91 +1021,90 @@ struct WanDit::Impl {
       const auto& table = tensor(prefix + "scale_shift_table");
       if (per_frame) {
         modulation_pair_kernel<<<grid_for(2 * 6 * kDim), kThreads>>>(
-            static_cast<const float*>(table.data), time_proj.as<Bf16>(),
-            modulation.as<float>(), 6 * kDim);
+            static_cast<const float*>(table.data), ws_.time_proj.as<Bf16>(),
+            ws_.modulation.as<float>(), 6 * kDim);
       } else {
         modulation_kernel<<<grid_for(6 * kDim), kThreads>>>(
-            static_cast<const float*>(table.data), time_proj.as<Bf16>(),
-            modulation.as<float>(), 6);
+            static_cast<const float*>(table.data), ws_.time_proj.as<Bf16>(),
+            ws_.modulation.as<float>(), 6);
       }
       UMM_DIT_CUDA(cudaGetLastError());
-      apply_norm(x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr, 0, 1, 6);
-      linear(prefix + "attn1.to_q", kDim, kDim, tokens, normed.data(), q.data());
-      linear(prefix + "attn1.to_k", kDim, kDim, tokens, normed.data(), k.data());
-      linear(prefix + "attn1.to_v", kDim, kDim, tokens, normed.data(), v.data());
+      apply_norm(ws_.x.as<Bf16>(), ws_.normed.as<Bf16>(), nullptr, nullptr, 0, 1, 6);
+      linear(prefix + "attn1.to_q", kDim, kDim, tokens, ws_.normed.data(), ws_.q.data());
+      linear(prefix + "attn1.to_k", kDim, kDim, tokens, ws_.normed.data(), ws_.k.data());
+      linear(prefix + "attn1.to_v", kDim, kDim, tokens, ws_.normed.data(), ws_.v.data());
       rms_norm_kernel<<<tokens, kThreads>>>(
-          q.as<Bf16>(), static_cast<const float*>(tensor(prefix + "attn1.norm_q.weight").data),
-          q.as<Bf16>(), tokens, config_.eps);
+          ws_.q.as<Bf16>(), static_cast<const float*>(tensor(prefix + "attn1.norm_q.weight").data),
+          ws_.q.as<Bf16>(), tokens, config_.eps);
       rms_norm_kernel<<<tokens, kThreads>>>(
-          k.as<Bf16>(), static_cast<const float*>(tensor(prefix + "attn1.norm_k.weight").data),
-          k.as<Bf16>(), tokens, config_.eps);
+          ws_.k.as<Bf16>(), static_cast<const float*>(tensor(prefix + "attn1.norm_k.weight").data),
+          ws_.k.as<Bf16>(), tokens, config_.eps);
       UMM_DIT_CUDA(cudaGetLastError());
       rope_kernel<<<grid_for(static_cast<size_t>(tokens) * kDim / 2), kThreads>>>(
-          q.as<Bf16>(), rope_cos.as<float>(), rope_sin.as<float>(), tokens);
+          ws_.q.as<Bf16>(), rope_.cos.as<float>(), rope_.sin.as<float>(), tokens);
       rope_kernel<<<grid_for(static_cast<size_t>(tokens) * kDim / 2), kThreads>>>(
-          k.as<Bf16>(), rope_cos.as<float>(), rope_sin.as<float>(), tokens);
+          ws_.k.as<Bf16>(), rope_.cos.as<float>(), rope_.sin.as<float>(), tokens);
       UMM_DIT_CUDA(cudaGetLastError());
-      attention(q.as<Bf16>(), k.as<Bf16>(), v.as<Bf16>(), tokens, tokens,
-                attended.as<Bf16>(), scores, probabilities, output_tiles);
-      linear(prefix + "attn1.to_out.0", kDim, kDim, tokens, attended.data(), q.data());
-      apply_residual(q.as<Bf16>(), 2);
+      attention(ws_.q.as<Bf16>(), ws_.k.as<Bf16>(), ws_.v.as<Bf16>(), tokens, tokens,
+                ws_.attended.as<Bf16>(), ws_.scores, ws_.probabilities, ws_.output_tiles);
+      linear(prefix + "attn1.to_out.0", kDim, kDim, tokens, ws_.attended.data(), ws_.q.data());
+      apply_residual(ws_.q.as<Bf16>(), 2);
 
       layer_norm_kernel<<<tokens, kThreads>>>(
-          x.as<Bf16>(), normed.as<Bf16>(),
+          ws_.x.as<Bf16>(), ws_.normed.as<Bf16>(),
           static_cast<const float*>(tensor(prefix + "norm2.weight").data),
           static_cast<const float*>(tensor(prefix + "norm2.bias").data),
           nullptr, nullptr, tokens, config_.eps);
       UMM_DIT_CUDA(cudaGetLastError());
-      linear(prefix + "attn2.to_q", kDim, kDim, tokens, normed.data(), q.data());
-      linear(prefix + "attn2.to_k", kDim, kDim, text_len, text_projected.data(), k.data());
-      linear(prefix + "attn2.to_v", kDim, kDim, text_len, text_projected.data(), v.data());
+      linear(prefix + "attn2.to_q", kDim, kDim, tokens, ws_.normed.data(), ws_.q.data());
       rms_norm_kernel<<<tokens, kThreads>>>(
-          q.as<Bf16>(), static_cast<const float*>(tensor(prefix + "attn2.norm_q.weight").data),
-          q.as<Bf16>(), tokens, config_.eps);
-      rms_norm_kernel<<<text_len, kThreads>>>(
-          k.as<Bf16>(), static_cast<const float*>(tensor(prefix + "attn2.norm_k.weight").data),
-          k.as<Bf16>(), text_len, config_.eps);
+          ws_.q.as<Bf16>(), static_cast<const float*>(tensor(prefix + "attn2.norm_q.weight").data),
+          ws_.q.as<Bf16>(), tokens, config_.eps);
       UMM_DIT_CUDA(cudaGetLastError());
-      attention(q.as<Bf16>(), k.as<Bf16>(), v.as<Bf16>(), tokens, text_len,
-                attended.as<Bf16>(), scores, probabilities, output_tiles);
-      linear(prefix + "attn2.to_out.0", kDim, kDim, tokens, attended.data(), q.data());
+      const Bf16* layer_k_cross =
+          cross_kv.k_all.as<Bf16>() + static_cast<size_t>(layer) * text_count;
+      const Bf16* layer_v_cross =
+          cross_kv.v_all.as<Bf16>() + static_cast<size_t>(layer) * text_count;
+      attention(ws_.q.as<Bf16>(), layer_k_cross, layer_v_cross, tokens, text_len,
+                ws_.attended.as<Bf16>(), ws_.scores, ws_.probabilities, ws_.output_tiles);
+      linear(prefix + "attn2.to_out.0", kDim, kDim, tokens, ws_.attended.data(), ws_.q.data());
       residual_kernel<<<grid_for(model_count), kThreads>>>(
-          x.as<Bf16>(), q.as<Bf16>(), nullptr, model_count);
+          ws_.x.as<Bf16>(), ws_.q.as<Bf16>(), nullptr, model_count);
       UMM_DIT_CUDA(cudaGetLastError());
 
-      apply_norm(x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr, 3, 4, 6);
-      linear(prefix + "ffn.net.0.proj", kDim, kFf, tokens, normed.data(), ff.data());
+      apply_norm(ws_.x.as<Bf16>(), ws_.normed.as<Bf16>(), nullptr, nullptr, 3, 4, 6);
+      linear(prefix + "ffn.net.0.proj", kDim, kFf, tokens, ws_.normed.data(), ws_.ff.data());
       gelu_tanh_kernel<<<grid_for(static_cast<size_t>(tokens) * kFf), kThreads>>>(
-          ff.as<Bf16>(), static_cast<size_t>(tokens) * kFf);
+          ws_.ff.as<Bf16>(), static_cast<size_t>(tokens) * kFf);
       UMM_DIT_CUDA(cudaGetLastError());
-      linear(prefix + "ffn.net.2", kFf, kDim, tokens, ff.data(), q.data());
-      apply_residual(q.as<Bf16>(), 5);
+      linear(prefix + "ffn.net.2", kFf, kDim, tokens, ws_.ff.data(), ws_.q.data());
+      apply_residual(ws_.q.as<Bf16>(), 5);
     }
 
     if (per_frame) {
       output_modulation_pair_kernel<<<grid_for(4 * kDim), kThreads>>>(
           static_cast<const float*>(tensor("scale_shift_table").data),
-          temb.as<Bf16>(), modulation.as<float>());
+          ws_.temb.as<Bf16>(), ws_.modulation.as<float>());
       UMM_DIT_CUDA(cudaGetLastError());
       layer_norm_pair_kernel<<<tokens, kThreads>>>(
-          x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr,
-          modulation.as<float>(), 2, 1, 0, tokens, config_.eps,
+          ws_.x.as<Bf16>(), ws_.normed.as<Bf16>(), nullptr, nullptr,
+          ws_.modulation.as<float>(), 2, 1, 0, tokens, config_.eps,
           first_frame_tokens);
     } else {
       output_modulation_kernel<<<grid_for(2 * kDim), kThreads>>>(
           static_cast<const float*>(tensor("scale_shift_table").data),
-          temb.as<Bf16>(), modulation.as<float>());
+          ws_.temb.as<Bf16>(), ws_.modulation.as<float>());
       UMM_DIT_CUDA(cudaGetLastError());
       layer_norm_kernel<<<tokens, kThreads>>>(
-          x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr,
-          modulation.as<float>(), modulation.as<float>() + kDim, tokens,
+          ws_.x.as<Bf16>(), ws_.normed.as<Bf16>(), nullptr, nullptr,
+          ws_.modulation.as<float>(), ws_.modulation.as<float>() + kDim, tokens,
           config_.eps);
     }
     UMM_DIT_CUDA(cudaGetLastError());
-    linear("proj_out", kDim, kProjection, tokens, normed.data(), q.data());
+    linear("proj_out", kDim, kProjection, tokens, ws_.normed.data(), ws_.q.data());
 
     std::vector<uint16_t> projected_bits(static_cast<size_t>(tokens) * kProjection);
-    UMM_DIT_CUDA(cudaMemcpy(projected_bits.data(), q.data(),
+    UMM_DIT_CUDA(cudaMemcpy(projected_bits.data(), ws_.q.data(),
                             checked_bytes(projected_bits.size(), 2), cudaMemcpyDeviceToHost));
     std::vector<float> projected(projected_bits.size());
     for (size_t i = 0; i < projected.size(); ++i) projected[i] = bf16_bits_to_f32(projected_bits[i]);
@@ -929,14 +1127,16 @@ struct WanDit::Impl {
   AllocationTracker tracker_;
   DeviceBuffer bf16_weights_;
   DeviceBuffer f32_weights_;
+  WorkspaceBuffers ws_;
+  RopeCache rope_;
+  std::array<CrossAttnKvEntry, kCrossKvCacheSlots> cross_kv_cache_{};
+  uint64_t cross_kv_clock_ = 0;
   std::unordered_map<std::string, DeviceTensor> tensors_;
   double load_ms_ = 0.0;
 };
 
 WanDit::WanDit(const std::filesystem::path& model_dir, int gpu)
-    : impl_(std::make_unique<Impl>(model_dir, gpu)) {
-  impl_->gpu_ = gpu;
-}
+    : impl_(std::make_unique<Impl>(model_dir, gpu)) {}
 WanDit::~WanDit() = default;
 WanDitOutput WanDit::forward(const float* latent, int frames, int height,
                              int width, float timestep, const float* context,

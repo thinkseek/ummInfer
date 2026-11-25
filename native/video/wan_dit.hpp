@@ -57,6 +57,27 @@ std::vector<float> wan_patchify_host(const float* latent_ncfhw, int channels,
 std::vector<float> wan_unpatchify_host(const float* tokens, int channels,
                                        int frames, int height, int width);
 
+// Attention query tile size used by the CUDA Wan DiT attention loop.
+inline constexpr int kWanDitQueryTile = 512;
+
+// Returns min(tile_size, tokens - q_start) for attention query tiling.
+int wan_attention_tile_len(int tokens, int q_start,
+                           int tile_size = kWanDitQueryTile);
+
+struct WanTextEmbedCacheKey {
+  uint64_t hash = 0;
+  int text_len = 0;
+  int text_dim = 0;
+  bool operator==(const WanTextEmbedCacheKey& other) const {
+    return hash == other.hash && text_len == other.text_len &&
+           text_dim == other.text_dim;
+  }
+};
+
+// Fast 64-bit FNV-1a content hash over IEEE-754 bytes of [text_len, text_dim]
+// plus shape dimensions, used to key the cross-attention K/V cache across steps.
+uint64_t wan_hash_text_embeds(const float* data, int text_len, int text_dim);
+
 struct WanDitStats {
   double load_ms = 0.0;
   double forward_ms = 0.0;

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -192,6 +193,72 @@ std::vector<float> wan_unpatchify_host(const float* tokens, int channels,
     }
   }
   return output;
+}
+
+int wan_attention_tile_len(int tokens, int q_start, int tile_size) {
+  if (tokens <= 0 || tile_size <= 0 || q_start < 0 || q_start >= tokens) {
+    throw std::invalid_argument("invalid Wan DiT attention tile bounds");
+  }
+  return std::min(tile_size, tokens - q_start);
+}
+
+uint64_t wan_hash_text_embeds(const float* data, int text_len, int text_dim) {
+  if (data == nullptr || text_len <= 0 || text_dim <= 0) {
+    throw std::invalid_argument("invalid Wan DiT text embedding buffer for hashing");
+  }
+  const uint64_t count =
+      static_cast<uint64_t>(text_len) * static_cast<uint64_t>(text_dim);
+  if (count > std::numeric_limits<size_t>::max() / sizeof(float)) {
+    throw std::overflow_error("Wan DiT text embedding size overflows size_t");
+  }
+  const size_t bytes = static_cast<size_t>(count) * sizeof(float);
+  const auto* raw = reinterpret_cast<const uint8_t*>(data);
+
+  constexpr uint64_t kFnvOffset = 14695981039346656037ull;
+  constexpr uint64_t kFnvPrime = 1099511628211ull;
+
+  uint64_t h0 = kFnvOffset ^ static_cast<uint64_t>(text_len);
+  h0 *= kFnvPrime;
+  h0 ^= static_cast<uint64_t>(text_dim);
+  h0 *= kFnvPrime;
+  uint64_t h1 = h0 ^ 0x9e3779b97f4a7c15ull;
+  uint64_t h2 = h0 ^ 0xbf58476d1ce4e5b9ull;
+  uint64_t h3 = h0 ^ 0x94d049bb133111ebull;
+
+  size_t offset = 0;
+  for (; offset + 32 <= bytes; offset += 32) {
+    uint64_t w0 = 0;
+    uint64_t w1 = 0;
+    uint64_t w2 = 0;
+    uint64_t w3 = 0;
+    std::memcpy(&w0, raw + offset + 0, sizeof(w0));
+    std::memcpy(&w1, raw + offset + 8, sizeof(w1));
+    std::memcpy(&w2, raw + offset + 16, sizeof(w2));
+    std::memcpy(&w3, raw + offset + 24, sizeof(w3));
+    h0 = (h0 ^ w0) * kFnvPrime;
+    h1 = (h1 ^ w1) * kFnvPrime;
+    h2 = (h2 ^ w2) * kFnvPrime;
+    h3 = (h3 ^ w3) * kFnvPrime;
+  }
+  for (; offset + 8 <= bytes; offset += 8) {
+    uint64_t w = 0;
+    std::memcpy(&w, raw + offset, sizeof(w));
+    h0 = (h0 ^ w) * kFnvPrime;
+  }
+  for (; offset < bytes; ++offset) {
+    h0 = (h0 ^ static_cast<uint64_t>(raw[offset])) * kFnvPrime;
+  }
+
+  uint64_t h = h0;
+  h = (h ^ h1) * kFnvPrime;
+  h = (h ^ h2) * kFnvPrime;
+  h = (h ^ h3) * kFnvPrime;
+  h ^= h >> 33;
+  h *= 0xff51afd7ed558ccdull;
+  h ^= h >> 33;
+  h *= 0xc4ceb9fe1a85ec53ull;
+  h ^= h >> 33;
+  return h;
 }
 
 }  // namespace umminfer::video
