@@ -118,6 +118,12 @@ __global__ void residual_kernel(Bf16* y, const Bf16* r, int n) {
   if (i < n) y[i] = to_bf(bf(y[i]) + bf(r[i]));
 }
 
+__global__ void residual_tiled_kernel(Bf16* y, const Bf16* r, int total_n,
+                                      int tile_n) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < total_n) y[i] = to_bf(bf(y[i]) + bf(r[i % tile_n]));
+}
+
 __global__ void silu_mul_kernel(Bf16* out, const Bf16* gate, const Bf16* up, int n) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= n) return;
@@ -192,6 +198,16 @@ __global__ void attention_kernel(const Bf16* __restrict__ q,
   const int qi = blockIdx.y;
   const int qh = blockIdx.x;
   const int tid = threadIdx.x;
+  if constexpr (!kCausal && !kGated) {
+    // Batched vision attention: blockIdx.z selects an independent temporal
+    // slice packed at stride m * n_q_heads * head_dim (m == nkv, n_q_heads == n_kv_heads).
+    const size_t slice_elems =
+        static_cast<size_t>(blockIdx.z) * m * n_q_heads * head_dim;
+    q += slice_elems;
+    k += slice_elems;
+    v += slice_elems;
+    out += slice_elems;
+  }
   const int kvh = qh * n_kv_heads / n_q_heads;
   const Bf16* qrow = q + (static_cast<size_t>(qi) * n_q_heads + qh) * head_dim;
   for (int i = tid; i < head_dim; i += blockDim.x) qs[i] = bf(qrow[i]);
@@ -269,14 +285,18 @@ __global__ void mrope_partial_kernel(Bf16* x, const Bf16* cos, const Bf16* sin,
 }
 
 __global__ void vision_rope_kernel(Bf16* x, const float* cos, const float* sin,
-                                   int n, int heads, int head_dim) {
+                                   int n, int slice_tokens, int heads,
+                                   int head_dim) {
   const int token = blockIdx.y;
+  if (token >= n) return;
+  const int pos_tok =
+      (slice_tokens > 0 && slice_tokens < n) ? (token % slice_tokens) : token;
   const int half = head_dim / 2;
   for (int h = threadIdx.y; h < heads; h += blockDim.y) {
     Bf16* row = x + (static_cast<size_t>(token) * heads + h) * head_dim;
     for (int i = threadIdx.x; i < half; i += blockDim.x) {
-      const float c = cos[static_cast<size_t>(token) * head_dim + i];
-      const float s = sin[static_cast<size_t>(token) * head_dim + i];
+      const float c = cos[static_cast<size_t>(pos_tok) * head_dim + i];
+      const float s = sin[static_cast<size_t>(pos_tok) * head_dim + i];
       const float x1 = bf(row[i]), x2 = bf(row[i + half]);
       row[i] = to_bf(x1 * c - x2 * s);
       row[i + half] = to_bf(x2 * c + x1 * s);
@@ -746,6 +766,17 @@ void add_residual(Bf16* y, const Bf16* residual, int n, cudaStream_t stream) {
   residual_kernel<<<(n + 255) / 256, 256, 0, stream>>>(y, residual, n);
 }
 
+void add_residual_tiled(Bf16* y, const Bf16* residual, int total_n, int tile_n,
+                        cudaStream_t stream) {
+  if (total_n <= 0 || tile_n <= 0) return;
+  if (total_n <= tile_n) {
+    add_residual(y, residual, total_n, stream);
+    return;
+  }
+  residual_tiled_kernel<<<(total_n + 255) / 256, 256, 0, stream>>>(
+      y, residual, total_n, tile_n);
+}
+
 void silu_mul(Bf16* out, const Bf16* gate, const Bf16* up, int n, cudaStream_t stream) {
   silu_mul_kernel<<<(n + 255) / 256, 256, 0, stream>>>(out, gate, up, n);
 }
@@ -788,9 +819,17 @@ void mrope_partial(Bf16* x, const Bf16* cos, const Bf16* sin, int n, int heads,
 
 void vision_rope(Bf16* x, const float* cos, const float* sin, int n, int heads,
                  int head_dim, cudaStream_t stream) {
+  vision_rope_tiled(x, cos, sin, n, n, heads, head_dim, stream);
+}
+
+void vision_rope_tiled(Bf16* x, const float* cos, const float* sin, int n,
+                       int slice_tokens, int heads, int head_dim,
+                       cudaStream_t stream) {
+  if (n <= 0) return;
   dim3 grid(1, n);
   dim3 block(64, 4);
-  vision_rope_kernel<<<grid, block, 0, stream>>>(x, cos, sin, n, heads, head_dim);
+  vision_rope_kernel<<<grid, block, 0, stream>>>(x, cos, sin, n, slice_tokens,
+                                                 heads, head_dim);
 }
 
 void split_q_gate(const Bf16* qg, Bf16* q, Bf16* gate, int m, int heads, int head_dim,
@@ -817,10 +856,18 @@ void gqa_attention(const Bf16* q, const Bf16* k, const Bf16* v, const Bf16* gate
 
 void vision_attention(const Bf16* q, const Bf16* k, const Bf16* v, Bf16* out, int n,
                       int heads, int head_dim, cudaStream_t stream) {
-  dim3 grid(heads, n);
+  vision_attention_batched(q, k, v, out, n, 1, heads, head_dim, stream);
+}
+
+void vision_attention_batched(const Bf16* q, const Bf16* k, const Bf16* v,
+                              Bf16* out, int slice_tokens, int num_slices,
+                              int heads, int head_dim, cudaStream_t stream) {
+  if (slice_tokens <= 0 || num_slices <= 0) return;
+  dim3 grid(heads, slice_tokens, num_slices);
   const size_t smem = (2 * head_dim + 32) * sizeof(float);
   attention_kernel<false, false><<<grid, 128, smem, stream>>>(
-      q, k, v, nullptr, out, n, n, heads, heads, head_dim, 0);
+      q, k, v, nullptr, out, slice_tokens, slice_tokens, heads, heads, head_dim,
+      0);
 }
 
 void split_qkv_widths(const Bf16* qkv, Bf16* q, Bf16* k, Bf16* v, int m, int wq,

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -46,5 +48,43 @@ std::vector<uint8_t> decode_image_rgb(const std::string& path, int* h, int* w);
 // smart_resize from image_processing_qwen2_vl.py: factor = patch * merge = 32.
 void smart_resize(int height, int width, int factor, int min_pixels, int max_pixels,
                   int* out_h, int* out_w);
+
+// Contiguous chunk of temporal slices processed together through the ViT
+// workspace without exceeding `token_cap` tokens.
+struct VisionSliceChunk {
+  int start_slice = 0;  // 0-based temporal slice index
+  int num_slices = 0;   // number of contiguous slices in this batch
+  int tokens = 0;       // num_slices * slice_tokens (<= token_cap)
+};
+
+// Partitions `grid_t` temporal slices (each of `slice_tokens` patches) into the
+// minimum number of contiguous chunks such that every chunk fits within
+// `token_cap` tokens (`num_slices * slice_tokens <= token_cap`).
+// For `grid_t == 1`, returns a single chunk `{0, 1, slice_tokens}`.
+// Throws std::invalid_argument on non-positive arguments or if a single slice
+// exceeds `token_cap`.
+inline std::vector<VisionSliceChunk> plan_vision_slice_chunks(int grid_t,
+                                                              int slice_tokens,
+                                                              int token_cap) {
+  if (grid_t < 1 || slice_tokens <= 0 || token_cap <= 0) {
+    throw std::invalid_argument(
+        "plan_vision_slice_chunks requires positive grid_t, slice_tokens, and token_cap");
+  }
+  if (slice_tokens > token_cap) {
+    throw std::invalid_argument(
+        "plan_vision_slice_chunks: single slice exceeds token_cap");
+  }
+  const int max_slices = token_cap / slice_tokens;
+  const int num_chunks = (grid_t - 1) / max_slices + 1;
+  std::vector<VisionSliceChunk> chunks;
+  chunks.reserve(static_cast<size_t>(num_chunks));
+  int start = 0;
+  while (start < grid_t) {
+    const int count = std::min(max_slices, grid_t - start);
+    chunks.push_back(VisionSliceChunk{start, count, count * slice_tokens});
+    start += count;
+  }
+  return chunks;
+}
 
 }  // namespace umminfer::qwen38

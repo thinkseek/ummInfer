@@ -48,6 +48,10 @@ void layer_norm(const Bf16* x, const Bf16* weight, const Bf16* bias, Bf16* out,
                 int rows, int dim, float eps, cudaStream_t stream);
 void add_bias(Bf16* y, const Bf16* bias, int rows, int dim, cudaStream_t stream);
 void add_residual(Bf16* y, const Bf16* residual, int n, cudaStream_t stream);
+// Adds a repeating `tile_n`-element residual across `total_n` elements:
+// y[i] += residual[i % tile_n]. Dispatches to add_residual when total_n <= tile_n.
+void add_residual_tiled(Bf16* y, const Bf16* residual, int total_n, int tile_n,
+                        cudaStream_t stream);
 // act = bf16(silu(float(bf16(gate)))) * up, each product rounded once.
 void silu_mul(Bf16* out, const Bf16* gate, const Bf16* up, int n,
               cudaStream_t stream);
@@ -78,9 +82,20 @@ void gqa_attention(const Bf16* q, const Bf16* k, const Bf16* v, const Bf16* gate
 // Bidirectional MHA for the vision tower (one packed image per call).
 void vision_attention(const Bf16* q, const Bf16* k, const Bf16* v, Bf16* out,
                       int n, int heads, int head_dim, cudaStream_t stream);
+// Batched bidirectional MHA for multi-slice video: `num_slices` independent
+// slices of `slice_tokens` packed contiguously in [num_slices, slice_tokens,
+// heads, head_dim]. Tokens in slice s attend strictly within slice s.
+void vision_attention_batched(const Bf16* q, const Bf16* k, const Bf16* v,
+                              Bf16* out, int slice_tokens, int num_slices,
+                              int heads, int head_dim, cudaStream_t stream);
 // Vision rope: full-dim half rotation, fp32 cos/sin tables [n, head_dim].
 void vision_rope(Bf16* x, const float* cos, const float* sin, int n, int heads,
                  int head_dim, cudaStream_t stream);
+// Batched vision rope: applies a [slice_tokens, head_dim] spatial table across
+// `n` contiguous tokens (spatial index = token % slice_tokens).
+void vision_rope_tiled(Bf16* x, const float* cos, const float* sin, int n,
+                       int slice_tokens, int heads, int head_dim,
+                       cudaStream_t stream);
 // Split the per-head interleaved q_proj output [m, heads, 2*head_dim] into
 // contiguous query [m, heads, head_dim] and gate [m, heads, head_dim].
 void split_q_gate(const Bf16* qg, Bf16* q, Bf16* gate, int m, int heads,

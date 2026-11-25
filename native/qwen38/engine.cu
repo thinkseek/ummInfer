@@ -484,9 +484,8 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
   cudaStream_t st = im.stream;
 
   // Position embeddings and 2D spatial RoPE are shared across every temporal
-  // slice; Qwen3_5VisionModel runs per-slice cu_seqlens attention (independent
-  // per temporal slice), so looping over t matches HF Qwen3.5 exactly while
-  // keeping peak vision workspace bounded to a single slice.
+  // slice. Upload one slice's spatial tables once; multi-slice chunks index
+  // them modulo `slice_tokens` with zero extra VRAM.
   const std::vector<Bf16> pos = interpolate_pos_embed(im.pos_table_host, img.grid_h,
                                                      img.grid_w);
   UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.v_pos, pos.data(),
@@ -509,7 +508,7 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
   }
   // Upload all temporal slices once into the pre-allocated kVisTokenCap pixel
   // buffer so multi-slice video (grid_t > 1) avoids per-slice pageable H2D
-  // copies and enqueues all slices back-to-back on the stream.
+  // copies and enqueues all work back-to-back on the stream.
   std::vector<Bf16> all_pix(total_floats);
   for (size_t i = 0; i < total_floats; ++i) {
     all_pix[i] = Bf16(img.pixel_values[i]);
@@ -517,55 +516,68 @@ void vision_forward(Engine::Impl& im, const PreprocessedImage& img,
   UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_pixels, all_pix.data(),
                                         all_pix.size() * sizeof(Bf16),
                                         cudaMemcpyHostToDevice, st));
-  for (int t = 0; t < img.grid_t; ++t) {
-    const Bf16* slice_d_pixels =
-        im.d_pixels + static_cast<size_t>(t) * slice_tokens * kPatchDim;
 
-    gemm_bf16(im.v_hidden, slice_d_pixels, im.bf(p + "patch_embed.proj.weight"),
-              im.bf(p + "patch_embed.proj.bias"), slice_tokens, kPatchDim, kVisH, st);
-    add_residual(im.v_hidden, im.v_pos, slice_tokens * kVisH, st);
-    if (!dump_dir.empty() && t == 0)
+  // Batch as many temporal slices as fit within the pre-allocated kVisTokenCap
+  // workspace so every token-independent GEMM, LayerNorm, RoPE, GELU, and 2x2
+  // patch merger runs once across all slices in the chunk, while self-attention
+  // stays strictly per-slice (matching Qwen3_5VisionModel cu_seqlens). For
+  // still images (grid_t == 1), this yields a single 1-slice chunk.
+  const std::vector<VisionSliceChunk> chunks =
+      plan_vision_slice_chunks(img.grid_t, slice_tokens, kVisTokenCap);
+  for (const VisionSliceChunk& chunk : chunks) {
+    const int chunk_slices = chunk.num_slices;
+    const int chunk_tokens = chunk.tokens;
+    const int chunk_merged = chunk_slices * slice_merged;
+    const Bf16* chunk_d_pixels =
+        im.d_pixels + static_cast<size_t>(chunk.start_slice) * slice_tokens * kPatchDim;
+
+    gemm_bf16(im.v_hidden, chunk_d_pixels, im.bf(p + "patch_embed.proj.weight"),
+              im.bf(p + "patch_embed.proj.bias"), chunk_tokens, kPatchDim, kVisH, st);
+    add_residual_tiled(im.v_hidden, im.v_pos, chunk_tokens * kVisH,
+                       slice_tokens * kVisH, st);
+    if (!dump_dir.empty() && chunk.start_slice == 0)
       dump_dev(im, dump_dir, "vpatch.bf16", im.v_hidden,
                static_cast<size_t>(slice_tokens) * kVisH * sizeof(Bf16));
 
     for (int blk = 0; blk < kVisBlocks; ++blk) {
       const std::string bp = p + "blocks." + std::to_string(blk);
       layer_norm(im.v_hidden, im.bf(bp + ".norm1.weight"),
-                 im.bf(bp + ".norm1.bias"), im.v_norm, slice_tokens, kVisH, kEps, st);
+                 im.bf(bp + ".norm1.bias"), im.v_norm, chunk_tokens, kVisH, kEps, st);
       gemm_bf16(im.v_qkv, im.v_norm, im.bf(bp + ".attn.qkv.weight"),
-                im.bf(bp + ".attn.qkv.bias"), slice_tokens, kVisH, 3 * kVisH, st);
-      split_qkv(im.v_qkv, im.v_q, im.v_k, im.v_v, slice_tokens, kVisH, st);
-      vision_rope(im.v_q, im.v_rope_cos, im.v_rope_sin, slice_tokens, kVisHeads,
-                  kVisHeadDim, st);
-      vision_rope(im.v_k, im.v_rope_cos, im.v_rope_sin, slice_tokens, kVisHeads,
-                  kVisHeadDim, st);
-      vision_attention(im.v_q, im.v_k, im.v_v, im.v_proj, slice_tokens, kVisHeads,
-                       kVisHeadDim, st);
+                im.bf(bp + ".attn.qkv.bias"), chunk_tokens, kVisH, 3 * kVisH, st);
+      split_qkv(im.v_qkv, im.v_q, im.v_k, im.v_v, chunk_tokens, kVisH, st);
+      vision_rope_tiled(im.v_q, im.v_rope_cos, im.v_rope_sin, chunk_tokens,
+                        slice_tokens, kVisHeads, kVisHeadDim, st);
+      vision_rope_tiled(im.v_k, im.v_rope_cos, im.v_rope_sin, chunk_tokens,
+                        slice_tokens, kVisHeads, kVisHeadDim, st);
+      vision_attention_batched(im.v_q, im.v_k, im.v_v, im.v_proj, slice_tokens,
+                               chunk_slices, kVisHeads, kVisHeadDim, st);
       gemm_bf16(im.v_qkv, im.v_proj, im.bf(bp + ".attn.proj.weight"),
-                im.bf(bp + ".attn.proj.bias"), slice_tokens, kVisH, kVisH, st);
-      add_residual(im.v_hidden, im.v_qkv, slice_tokens * kVisH, st);
+                im.bf(bp + ".attn.proj.bias"), chunk_tokens, kVisH, kVisH, st);
+      add_residual(im.v_hidden, im.v_qkv, chunk_tokens * kVisH, st);
 
       layer_norm(im.v_hidden, im.bf(bp + ".norm2.weight"),
-                 im.bf(bp + ".norm2.bias"), im.v_norm, slice_tokens, kVisH, kEps, st);
+                 im.bf(bp + ".norm2.bias"), im.v_norm, chunk_tokens, kVisH, kEps, st);
       gemm_bf16(im.v_mlp, im.v_norm, im.bf(bp + ".mlp.linear_fc1.weight"),
-                im.bf(bp + ".mlp.linear_fc1.bias"), slice_tokens, kVisH, kVisInter, st);
-      gelu_tanh_inplace(im.v_mlp, slice_tokens * kVisInter, st);
+                im.bf(bp + ".mlp.linear_fc1.bias"), chunk_tokens, kVisH, kVisInter, st);
+      gelu_tanh_inplace(im.v_mlp, chunk_tokens * kVisInter, st);
       gemm_bf16(im.v_proj, im.v_mlp, im.bf(bp + ".mlp.linear_fc2.weight"),
-                im.bf(bp + ".mlp.linear_fc2.bias"), slice_tokens, kVisInter, kVisH, st);
-      add_residual(im.v_hidden, im.v_proj, slice_tokens * kVisH, st);
-      if (!dump_dir.empty() && t == 0)
+                im.bf(bp + ".mlp.linear_fc2.bias"), chunk_tokens, kVisInter, kVisH, st);
+      add_residual(im.v_hidden, im.v_proj, chunk_tokens * kVisH, st);
+      if (!dump_dir.empty() && chunk.start_slice == 0)
         dump_dev(im, dump_dir, "vblock_" + std::to_string(blk) + ".bf16", im.v_hidden,
                  static_cast<size_t>(slice_tokens) * kVisH * sizeof(Bf16));
     }
 
     layer_norm(im.v_hidden, im.bf(p + "merger.norm.weight"),
-               im.bf(p + "merger.norm.bias"), im.v_norm, slice_tokens, kVisH, kEps, st);
+               im.bf(p + "merger.norm.bias"), im.v_norm, chunk_tokens, kVisH, kEps, st);
     gemm_bf16(im.v_mlp, im.v_norm, im.bf(p + "merger.linear_fc1.weight"),
-              im.bf(p + "merger.linear_fc1.bias"), slice_merged, 4 * kVisH, 4 * kVisH, st);
-    gelu_erf_inplace(im.v_mlp, slice_merged * 4 * kVisH, st);
-    Bf16* dst_pooler = im.pooler + static_cast<size_t>(t) * slice_merged * kVisOut;
+              im.bf(p + "merger.linear_fc1.bias"), chunk_merged, 4 * kVisH, 4 * kVisH, st);
+    gelu_erf_inplace(im.v_mlp, chunk_merged * 4 * kVisH, st);
+    Bf16* dst_pooler =
+        im.pooler + static_cast<size_t>(chunk.start_slice) * slice_merged * kVisOut;
     gemm_bf16(dst_pooler, im.v_mlp, im.bf(p + "merger.linear_fc2.weight"),
-              im.bf(p + "merger.linear_fc2.bias"), slice_merged, 4 * kVisH, kVisOut, st);
+              im.bf(p + "merger.linear_fc2.bias"), chunk_merged, 4 * kVisH, kVisOut, st);
   }
   UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
 

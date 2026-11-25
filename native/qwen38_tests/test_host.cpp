@@ -907,6 +907,109 @@ void test_mrope_suffix_continuity() {
         "video turn 2 suffix MRoPE positions match full-prompt MRoPE exactly");
 }
 
+void test_plan_vision_slice_chunks() {
+  using umminfer::qwen38::VisionSliceChunk;
+  using umminfer::qwen38::plan_vision_slice_chunks;
+
+  auto verify_coverage = [](const std::vector<VisionSliceChunk>& chunks,
+                            int grid_t, int slice_tokens, int token_cap) {
+    int expected_start = 0;
+    int total_slices = 0;
+    int total_tokens = 0;
+    for (const VisionSliceChunk& c : chunks) {
+      check(c.start_slice == expected_start,
+            "vision chunk start_slice is contiguous");
+      check(c.num_slices > 0, "vision chunk has positive slice count");
+      check(c.tokens == c.num_slices * slice_tokens,
+            "vision chunk tokens equals num_slices * slice_tokens");
+      check(c.tokens <= token_cap,
+            "vision chunk tokens stays within token_cap");
+      expected_start += c.num_slices;
+      total_slices += c.num_slices;
+      total_tokens += c.tokens;
+    }
+    check(total_slices == grid_t,
+          "vision chunks cover every temporal slice exactly once");
+    check(total_tokens == grid_t * slice_tokens,
+          "vision chunks cover exact total token count");
+  };
+
+  // 1) Still image (grid_t == 1): 1 chunk of 1 slice.
+  {
+    const auto chunks = plan_vision_slice_chunks(1, 864, 4096);
+    check(chunks.size() == 1 && chunks[0].start_slice == 0 &&
+              chunks[0].num_slices == 1 && chunks[0].tokens == 864,
+          "still image produces a single 1-slice chunk");
+    verify_coverage(chunks, 1, 864, 4096);
+  }
+
+  // 2) 4-slice video fitting inside a single kVisTokenCap=4096 chunk.
+  {
+    const auto chunks = plan_vision_slice_chunks(4, 468, 4096);
+    check(chunks.size() == 1 && chunks[0].start_slice == 0 &&
+              chunks[0].num_slices == 4 && chunks[0].tokens == 1872,
+          "4-slice 468-token video batches into a single chunk");
+    verify_coverage(chunks, 4, 468, 4096);
+  }
+
+  // 3) Exact capacity boundary (4 * 1024 == 4096): still 1 chunk.
+  {
+    const auto chunks = plan_vision_slice_chunks(4, 1024, 4096);
+    check(chunks.size() == 1 && chunks[0].num_slices == 4 &&
+              chunks[0].tokens == 4096,
+          "exact token_cap multiple fits in a single chunk");
+    verify_coverage(chunks, 4, 1024, 4096);
+  }
+
+  // 4) Large video splitting cleanly across multiple chunks with tail remainder.
+  {
+    const auto chunks = plan_vision_slice_chunks(5, 1024, 4096);
+    check(chunks.size() == 2 && chunks[0].start_slice == 0 &&
+              chunks[0].num_slices == 4 && chunks[0].tokens == 4096 &&
+              chunks[1].start_slice == 4 && chunks[1].num_slices == 1 &&
+              chunks[1].tokens == 1024,
+          "5x1024 video splits into [4, 1] chunks under cap 4096");
+    verify_coverage(chunks, 5, 1024, 4096);
+  }
+  {
+    const auto chunks = plan_vision_slice_chunks(7, 1500, 4096);
+    check(chunks.size() == 4 && chunks[0].num_slices == 2 &&
+              chunks[1].num_slices == 2 && chunks[2].num_slices == 2 &&
+              chunks[3].num_slices == 1 && chunks[3].start_slice == 6,
+          "7x1500 video splits into [2, 2, 2, 1] chunks under cap 4096");
+    verify_coverage(chunks, 7, 1500, 4096);
+  }
+  {
+    const auto chunks = plan_vision_slice_chunks(3, 4096, 4096);
+    check(chunks.size() == 3 && chunks[0].num_slices == 1 &&
+              chunks[1].num_slices == 1 && chunks[2].num_slices == 1,
+          "full-cap slices fall back cleanly to 1 slice per chunk");
+    verify_coverage(chunks, 3, 4096, 4096);
+  }
+
+  // 5) Invalid input guards.
+  auto expect_invalid = [](int grid_t, int slice_tokens, int token_cap,
+                           const char* label) {
+    bool threw = false;
+    try {
+      (void)plan_vision_slice_chunks(grid_t, slice_tokens, token_cap);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    check(threw, label);
+  };
+  expect_invalid(0, 468, 4096, "plan_vision_slice_chunks rejects grid_t == 0");
+  expect_invalid(-2, 468, 4096, "plan_vision_slice_chunks rejects grid_t < 0");
+  expect_invalid(4, 0, 4096,
+                 "plan_vision_slice_chunks rejects slice_tokens == 0");
+  expect_invalid(4, -16, 4096,
+                 "plan_vision_slice_chunks rejects slice_tokens < 0");
+  expect_invalid(4, 468, 0, "plan_vision_slice_chunks rejects token_cap == 0");
+  expect_invalid(4, 468, -1, "plan_vision_slice_chunks rejects token_cap < 0");
+  expect_invalid(2, 4097, 4096,
+                 "plan_vision_slice_chunks rejects slice_tokens > token_cap");
+}
+
 }  // namespace
 
 int main() {
@@ -927,6 +1030,7 @@ int main() {
   test_can_snapshot_multimodal_prefix();
   test_match_multimodal_prefix();
   test_mrope_suffix_continuity();
+  test_plan_vision_slice_chunks();
   if (g_failures != 0) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;
