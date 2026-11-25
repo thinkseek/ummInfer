@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-25T21:37:40Z",
+  "updated_at": "2026-11-25T22:17:48Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "e7fc9f468f97eb5e7d38f350917d9028f45cb1d9ce84d1d04fd4969c7920bc2d",
-      "size": 219859,
-      "normalized_sha256": "e7fc9f468f97eb5e7d38f350917d9028f45cb1d9ce84d1d04fd4969c7920bc2d"
+      "sha256": "31c341c2b5f9f050a984cd6d79c0330f311677dcc3996e828e1487179085386a",
+      "size": 220645,
+      "normalized_sha256": "31c341c2b5f9f050a984cd6d79c0330f311677dcc3996e828e1487179085386a"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -116,6 +116,12 @@
       "sha256": "52342af174e2faf182e93b9dcee241d943c0fb1daf35e4f99ac85120387586ee",
       "size": 1141,
       "normalized_sha256": "52342af174e2faf182e93b9dcee241d943c0fb1daf35e4f99ac85120387586ee"
+    },
+    "benchmarks/ablations/voice-strategy-controlled-sm90.json": {
+      "role": "index",
+      "sha256": "281bad8fac935477639893041c9376f181aba541dff51293ef7740e12d6822b5",
+      "size": 1364,
+      "normalized_sha256": "281bad8fac935477639893041c9376f181aba541dff51293ef7740e12d6822b5"
     },
     "benchmarks/ablations/voice-strategy-prompts.json": {
       "role": "index",
@@ -461,9 +467,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "87ebc7f1be0c5d17fe89253c34c7ead84a77fd14ceb8d015ddbf6b8264983183",
-      "size": 124049,
-      "normalized_sha256": "87ebc7f1be0c5d17fe89253c34c7ead84a77fd14ceb8d015ddbf6b8264983183"
+      "sha256": "e722a5d20daeab386ce7e0c1053c3b1ccb7f0d8c913129a05dc6f7289f26dcc0",
+      "size": 124140,
+      "normalized_sha256": "e722a5d20daeab386ce7e0c1053c3b1ccb7f0d8c913129a05dc6f7289f26dcc0"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -533,9 +539,9 @@
     },
     "docs/native-service.md": {
       "role": "index",
-      "sha256": "46bd1d38bb31393fc6d14a0b9b215b6e8e9935f6ccc71e24dc1c25a2fa4d92e0",
-      "size": 38333,
-      "normalized_sha256": "46bd1d38bb31393fc6d14a0b9b215b6e8e9935f6ccc71e24dc1c25a2fa4d92e0"
+      "sha256": "4bc05d5c0793a778489610e46ac1156e472f0ac6d06c0895c0e06646cd09e128",
+      "size": 39621,
+      "normalized_sha256": "4bc05d5c0793a778489610e46ac1156e472f0ac6d06c0895c0e06646cd09e128"
     },
     "docs/observability.md": {
       "role": "index",
@@ -599,9 +605,9 @@
     },
     "docs/voice-strategy-ablation.md": {
       "role": "index",
-      "sha256": "34226ec54f67ae1a5ebefc340571b7edeba196b3ec89b3b39859a4d270d0cae4",
-      "size": 7116,
-      "normalized_sha256": "34226ec54f67ae1a5ebefc340571b7edeba196b3ec89b3b39859a4d270d0cae4"
+      "sha256": "aef67357d31dee65e8bc2e680e319a060518fd14bf6b3b958c76228e080683d2",
+      "size": 13129,
+      "normalized_sha256": "aef67357d31dee65e8bc2e680e319a060518fd14bf6b3b958c76228e080683d2"
     },
     "include/umminfer/audio/audio.hpp": {
       "role": "index",
@@ -2071,9 +2077,9 @@
     },
     "python/umminfer_voice_ablation.py": {
       "role": "index",
-      "sha256": "445b3dbf65773ce97db0a30e4677a08ebb44a63c6501edf5b1f1e6801cb30da5",
-      "size": 47212,
-      "normalized_sha256": "445b3dbf65773ce97db0a30e4677a08ebb44a63c6501edf5b1f1e6801cb30da5"
+      "sha256": "1abd1158593319a88b34dc1a8656465647f39b66bfd6e9154ca3bf5459a1cb00",
+      "size": 69530,
+      "normalized_sha256": "1abd1158593319a88b34dc1a8656465647f39b66bfd6e9154ca3bf5459a1cb00"
     },
     "release/README.md": {
       "role": "index",
@@ -2623,9 +2629,9 @@
     },
     "tests/voice_ablation_test.py": {
       "role": "observe",
-      "sha256": "e8ff84e0ee2642103cce3d4db05732c8bf6d196c0bcec7f699ad0b0a7874f0eb",
-      "size": 14927,
-      "normalized_sha256": "e8ff84e0ee2642103cce3d4db05732c8bf6d196c0bcec7f699ad0b0a7874f0eb"
+      "sha256": "fd379fb1b6c9c2e83517fee60e7a4674a843577bf880a44ec119d9ab0aeb0cf8",
+      "size": 35885,
+      "normalized_sha256": "fd379fb1b6c9c2e83517fee60e7a4674a843577bf880a44ec119d9ab0aeb0cf8"
     },
     "tests/voice_client_test.cpp": {
       "role": "observe",

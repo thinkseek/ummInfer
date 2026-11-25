@@ -410,6 +410,24 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 27 Stage C Ablation #3 Controlled SM90 Voice-Strategy Gate (`f31e2ed`):
+  - **Controlled SM90 Voice-Strategy Ablation (`CONTROLLED_LIVE / COMPLETED`)**
+    (`f31e2ed`, `docs/voice-strategy-ablation.md`,
+    `benchmarks/ablations/voice-strategy-controlled-sm90.json`): executed on
+    isolated SM90 GPU 1 (`Qwen3.8-27B` CUDA Graph, `UMM_QWEN38_PREFIX_CACHE=0`,
+    `--max-new-tokens 256`, `--batch-size 1`) + GPU 7 (`Qwen3-TTS-12Hz-1.7B`
+    dual CUDA Graph + idle required entry `Qwen3-ASR-1.7B`) over ephemeral
+    loopback (`127.0.0.1:43911`; resident GPUs 2–6 untouched; pre/post GPU 1/7
+    `3 MiB / 0` compute processes; post `/health in_flight=0`; `3/3 SHA256SUMS OK`):
+    - Schedule: `1` warmup (`6` requests excluded) + `3` interleaved alternating
+      repetitions (`18` measured = `9/9` per arm, `0` failures, `172.2 s`).
+    - `sentence_streaming_tts` (`audio.stream=true`) vs `full_response_tts`
+      (`audio.stream=false`): median TTFT `153.3 vs 153.4 ms`; median TTFA
+      **`265.8 ms` (`p95 266.6 ms`, `IQR 1.9 ms`, `MAD 0.7 ms`)** vs
+      `5,285.4 ms` (**`19.88×` TTFA speedup**, `-5,019.5 ms`); post-TTFT onset
+      **`112.5 ms` (`IQR 0.2 ms`)** vs `5,132.0 ms` (**`45.62×`**); stalls
+      **`0 / 687` (`0.0%`)**, pooled inter-chunk gap p95 `210.6 ms`.
+
 - Wave 26 real SM90 16-VQA + 6-SpeechCOCO Joint Multimodal Benchmark Gate (`a2f9eec`):
   - **Real SM90 Qwen3.8-27B + Qwen3-ASR-1.7B multimodal benchmark** (`a2f9eec`,
     `docs/multimodal-benchmark-results.md`): executed 22/22 usable cases over
