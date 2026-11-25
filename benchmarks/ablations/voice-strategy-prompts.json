@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "dataset_id": "voice-strategy-contract-prompts-v1",
+  "evidence_class": "CONTRACT_REPLAY",
+  "real_model_evidence": "NOT_RUN",
+  "prompts": [
+    {
+      "id": "short_factual",
+      "category": "short_factual",
+      "messages": [
+        {
+          "role": "user",
+          "content": "State the exact speed of light in vacuum and name the SI unit of frequency in one concise sentence."
+        }
+      ]
+    },
+    {
+      "id": "physics_explanation",
+      "category": "multi_sentence_physics",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain in three clear sentences why ice floats on liquid water, mentioning hydrogen bonding, open crystal lattice spacing, and lower density."
+        }
+      ]
+    },
+    {
+      "id": "vivid_narrative",
+      "category": "vivid_4_sentence_narrative",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Narrate a vivid four-sentence scene of an autumn express train crossing a stone viaduct above a misty river valley at sunrise."
+        }
+      ]
+    }
+  ]
+}

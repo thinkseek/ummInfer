@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """North-Star Native Multimodal Showcase & Verification Suite for ummInfer.
 
-Runs all four native multimodal showcase journeys against either an in-process
+Runs all five native multimodal showcase journeys against either an in-process
 deterministic loopback mock server (--self-check) or a live ummInfer server
 (--url):
 
@@ -15,11 +15,14 @@ deterministic loopback mock server (--self-check) or a live ummInfer server
   4. Autonomous Modality Routing Contrast (visual_mode=auto)
      Pure-text reasoning prompt vs rich visual scene prompt under identical
      narrative settings.
+  5. Native Cross-Slot Storyboard I2V Chain (continuity_mode=i2v_chain)
+     POST /v1/chat/completions (stream=true, narrative.continuity_mode=i2v_chain,
+     style_anchor, video.teacache_thresh=0.05, modalities=[text,audio,image,video])
 
 Usage:
   python3 -I tools/umminfer_showcase.py --self-check
   python3 -I tools/umminfer_showcase.py --url http://127.0.0.1:43301 \\
-      --model qwen3-native --out-dir /tmp/umminfer-showcase --journeys 1,2,3,4
+      --model qwen3-native --out-dir /tmp/umminfer-showcase --journey all
 
 Pure Python 3 standard library only (optional ffprobe on PATH for live MP4
 metadata inspection).
@@ -59,7 +62,7 @@ DEFAULT_MANIFEST = REPO_ROOT / "benchmarks" / "showcase" / "prompts.json"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 MARKER_RE = re.compile(r"\[\[\s*(?:image|video|visual)\s*:", re.IGNORECASE)
 TERMINAL_KINDS = {"complete", "error", "cancelled"}
-ALL_JOURNEYS = (1, 2, 3, 4)
+ALL_JOURNEYS = (1, 2, 3, 4, 5)
 
 
 def require(condition: object, message: str) -> None:
@@ -118,7 +121,10 @@ MOCK_MP4_J1 = make_mock_mp4(b"j1-narrative-orbit")
 MOCK_MP4_J2 = make_mock_mp4(b"j2-i2v-animate-704x480-29f")
 MOCK_PNG_J4 = make_valid_png(8, 8, (36, 178, 196))
 MOCK_MP4_J4 = make_mock_mp4(b"j4-bioluminescent-current")
+MOCK_PNG_J5 = make_valid_png(8, 8, (242, 176, 86))
+MOCK_MP4_J5 = make_mock_mp4(b"j5-storyboard-i2v-chain-704x480-29f")
 MOCK_PCM_J1 = make_mock_pcm16(sample_rate=24000, duration_s=0.20, freq_hz=440.0)
+MOCK_PCM_J5 = make_mock_pcm16(sample_rate=24000, duration_s=0.20, freq_hz=523.25)
 
 
 def validate_server_url(url: str, allow_remote_http: bool = False) -> str:
@@ -170,6 +176,7 @@ def load_manifest(path: Path) -> dict:
         "journey_2_i2v_animation",
         "journey_3_multiturn_video_qa",
         "journey_4_modality_routing_contrast",
+        "journey_5",
     ):
         require(isinstance(journeys.get(key), dict), f"Manifest missing {key}")
     return data
@@ -437,6 +444,17 @@ def validate_narrative_stream(
             is_int(event.get("text_offset")) and event["text_offset"] >= 0,
             "visual_slot text_offset must be a non-negative integer",
         )
+        if "continuity_mode" in event and event["continuity_mode"] is not None:
+            require(
+                isinstance(event["continuity_mode"], str)
+                and bool(event["continuity_mode"].strip()),
+                f"visual_slot continuity_mode must be a non-empty string: {event}",
+            )
+        if "anchor_slot_index" in event and event["anchor_slot_index"] is not None:
+            require(
+                is_int(event["anchor_slot_index"]) and event["anchor_slot_index"] >= 0,
+                f"visual_slot anchor_slot_index must be a non-negative integer: {event}",
+            )
 
     vlm_finish_s = deltas[-1]["time"]
     mid_stream_slots = sum(1 for item in slots if item["time"] < vlm_finish_s)
@@ -551,6 +569,8 @@ def validate_narrative_stream(
             "media_type": slot_ev["media_type"],
             "prompt": slot_ev["prompt"],
             "text_offset": slot_ev["text_offset"],
+            "continuity_mode": slot_ev.get("continuity_mode"),
+            "anchor_slot_index": slot_ev.get("anchor_slot_index"),
             "slot_arrival_s": round(slot["time"], 6),
             "artifact_arrival_s": round(item["time"], 6),
             "render_latency_s": round(item["time"] - slot["time"], 6),
@@ -1047,6 +1067,146 @@ def run_journey_4(
     return metrics, saved_artifacts
 
 
+def validate_journey_5_stream(
+    stream: dict,
+    *,
+    max_slots: int = 2,
+) -> tuple[dict, list[dict], list[dict]]:
+    """Validate Journey 5 (storyboard_i2v_chain) SSE stream and cross-slot I2V continuity."""
+    metrics, visual, audio = validate_narrative_stream(
+        stream,
+        max_slots=max_slots,
+        min_slots=2,
+        require_audio=True,
+        require_mid_stream_slot=True,
+    )
+    slots = metrics["slots"]
+    require(len(slots) >= 2, f"Journey 5 requires at least 2 visual slots, got {len(slots)}")
+
+    slot0 = slots[0]
+    slot1 = slots[1]
+    require(
+        slot0["slot_index"] == 0 and slot0["media_type"] == "image",
+        f"Journey 5 Slot 0 must be an image keyframe, got {slot0}",
+    )
+    require(
+        slot1["slot_index"] == 1 and slot1["media_type"] == "video",
+        f"Journey 5 Slot 1 must be a video continuation, got {slot1}",
+    )
+    require(
+        slot1.get("continuity_mode") == "i2v_chain",
+        f"Journey 5 Slot 1 continuity_mode must be 'i2v_chain', got {slot1.get('continuity_mode')!r}",
+    )
+    require(
+        slot1.get("anchor_slot_index") == 0,
+        f"Journey 5 Slot 1 anchor_slot_index must be 0, got {slot1.get('anchor_slot_index')!r}",
+    )
+
+    visual_by_slot_index = {item["descriptor"]["slot_index"]: item for item in visual}
+    img_item = visual_by_slot_index.get(0)
+    vid_item = visual_by_slot_index.get(1)
+    require(
+        img_item is not None and img_item["bytes"].startswith(PNG_MAGIC),
+        "Journey 5 Slot 0 missing verified PNG artifact",
+    )
+    require(
+        vid_item is not None and len(vid_item["bytes"]) >= 12 and vid_item["bytes"][4:8] == b"ftyp",
+        "Journey 5 Slot 1 missing verified MP4 artifact",
+    )
+
+    metrics["continuity_mode"] = "i2v_chain"
+    metrics["slot_0_continuity_mode"] = slot0.get("continuity_mode")
+    metrics["slot_1_continuity_mode"] = slot1["continuity_mode"]
+    metrics["slot_1_anchor_slot_index"] = slot1["anchor_slot_index"]
+    metrics["slot_0_png_sha256"] = img_item["descriptor"]["sha256"]
+    metrics["slot_1_mp4_sha256"] = vid_item["descriptor"]["sha256"]
+    metrics["i2v_chain_verified"] = True
+    return metrics, visual, audio
+
+
+def run_journey_5(
+    base_url: str,
+    model: str,
+    spec: dict,
+    out_dir: Path,
+    *,
+    timeout: float,
+    allow_ffprobe: bool,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[dict, list[dict]]:
+    """Journey 5: Native Cross-Slot Storyboard I2V Chain (continuity_mode=i2v_chain)."""
+    body = {
+        "model": model,
+        "stream": True,
+        "max_tokens": spec["max_tokens"],
+        "temperature": spec["temperature"],
+        "seed": spec["seed"],
+        "messages": [{"role": "user", "content": spec["prompt"]}],
+        "modalities": list(spec["modalities"]),
+        "narrative": copy.deepcopy(spec["narrative"]),
+        "image": copy.deepcopy(spec["image"]),
+        "video": copy.deepcopy(spec["video"]),
+        "audio": copy.deepcopy(spec["audio"]),
+    }
+    stream = stream_chat(base_url, body, timeout=timeout, extra_headers=extra_headers)
+    metrics, visual, audio = validate_journey_5_stream(
+        stream,
+        max_slots=spec["narrative"]["max_slots"],
+    )
+
+    saved_artifacts: list[dict] = []
+    slot_by_id = {slot["slot_id"]: slot for slot in metrics["slots"]}
+    mp4_probe: dict | None = None
+    for item in visual:
+        desc = item["descriptor"]
+        slot_id = desc["slot_id"]
+        ext = "png" if desc["media_type"] == "image" else "mp4"
+        filename = f"journey5_{slot_id}.{ext}"
+        path = out_dir / filename
+        path.write_bytes(item["bytes"])
+        slot_by_id[slot_id]["saved_file"] = filename
+        if desc["media_type"] == "video":
+            mp4_probe = probe_mp4_optional(path, allow_probe=allow_ffprobe)
+        saved_artifacts.append({
+            "filename": filename,
+            "journey": 5,
+            "media_type": desc["media_type"],
+            "bytes": len(item["bytes"]),
+            "sha256": desc["sha256"],
+        })
+
+    sample_rates = sorted({item["descriptor"].get("sample_rate", 24000) for item in audio})
+    channels_list = sorted({item["descriptor"].get("channels", 1) for item in audio})
+    require(
+        len(sample_rates) == 1 and len(channels_list) == 1,
+        f"inconsistent Journey 5 streaming PCM format: sr={sample_rates} ch={channels_list}",
+    )
+    pcm_all = b"".join(item["bytes"] for item in audio)
+    wav_path = out_dir / "journey5_audio.wav"
+    wav_info = write_and_verify_wav(
+        pcm_all, wav_path, sample_rate=sample_rates[0], channels=channels_list[0]
+    )
+    saved_artifacts.append({
+        "filename": wav_info["filename"],
+        "journey": 5,
+        "media_type": "audio",
+        "bytes": wav_info["wav_bytes"],
+        "sha256": wav_info["wav_sha256"],
+    })
+
+    metrics["journey_id"] = spec.get("id", "storyboard_i2v_chain")
+    metrics["style_anchor"] = spec["narrative"].get("style_anchor")
+    metrics["video_teacache_thresh"] = spec["video"].get("teacache_thresh")
+    metrics["ffprobe"] = mp4_probe
+    metrics["audio"] = {
+        "artifact_count": len(audio),
+        "chunk_count": sum(item["descriptor"]["total"] for item in audio),
+        **wav_info,
+    }
+    metrics["passed"] = True
+    return metrics, saved_artifacts
+
+
 def render_markdown_report(report: dict) -> str:
     """Render a deterministic GitHub-flavored Markdown showcase report."""
     ev = report["evidence_class"]
@@ -1098,6 +1258,15 @@ def render_markdown_report(report: dict) -> str:
             f"pure_text_slots={j4['pure_text_visual_slots']}, "
             f"visual_scene_slots={j4['visual_scene_visual_slots']}, "
             f"zero_redundant={j4['zero_redundant_visuals_on_pure_text']} |"
+        )
+    if "journey_5" in journeys:
+        j5 = journeys["journey_5"]
+        lines.append(
+            f"| 5. Native Storyboard I2V Chain (`storyboard_i2v_chain`) | PASS | "
+            f"TTFT={j5['ttft_s']:.3f}s, TTFA={j5['ttfa_s']:.3f}s, "
+            f"continuity={j5['slot_1_continuity_mode']}, "
+            f"anchor_slot={j5['slot_1_anchor_slot_index']}, "
+            f"slots={j5['visual_slots_emitted']} |"
         )
 
     if "journey_1" in journeys:
@@ -1185,6 +1354,32 @@ def render_markdown_report(report: dict) -> str:
             f"- **Visual Routing Active on Scene**: `{j4['visual_routing_active_on_scene']}`",
             f"- **Contrast Delta Slots**: `{j4['contrast_delta_slots']}`",
         ])
+
+    if "journey_5" in journeys:
+        j5 = journeys["journey_5"]
+        lines.extend([
+            "",
+            "## Journey 5: Native Cross-Slot Storyboard I2V Chain",
+            "",
+            f"- **Journey ID**: `{j5['journey_id']}`",
+            f"- **Continuity Mode**: `{j5['slot_1_continuity_mode']}` (Slot 1 `anchor_slot_index={j5['slot_1_anchor_slot_index']}`)",
+            f"- **Style Anchor**: `{j5['style_anchor']}`",
+            f"- **TTFT**: `{j5['ttft_s']:.6f}s`",
+            f"- **TTFA**: `{j5['ttfa_s']:.6f}s`",
+            f"- **Audio WAV**: `{j5['audio']['filename']}` ({j5['audio']['wav_bytes']} bytes, "
+            f"{j5['audio']['sample_rate']} Hz, {j5['audio']['channels']}ch, {j5['audio']['duration_s']}s, "
+            f"SHA-256 `{j5['audio']['wav_sha256']}`)",
+            "",
+            "| Slot | Media | Continuity | Anchor Slot | Bytes | SHA-256 |",
+            "| --- | --- | --- | ---: | ---: | --- |",
+        ])
+        for slot in j5["slots"]:
+            anchor_val = slot["anchor_slot_index"] if slot["anchor_slot_index"] is not None else "-"
+            cont_val = slot["continuity_mode"] or "-"
+            lines.append(
+                f"| `{slot['slot_id']}` | `{slot['media_type']}` | `{cont_val}` | "
+                f"{anchor_val} | {slot['bytes']} | `{slot['sha256']}` |"
+            )
 
     lines.extend([
         "",
@@ -1433,7 +1628,21 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
                 _mock_envelope(seq, "complete", part1 + part2, finish="stop", legs=[])
             )
         else:
-            if want_audio:
+            is_i2v_chain = narrative.get("continuity_mode") == "i2v_chain"
+            slot0_extra: dict = {}
+            slot1_extra: dict = {}
+            pcm_bytes = MOCK_PCM_J1
+            if is_i2v_chain:
+                part1 = "Above the misty coastal cliffs, a lone wooden lighthouse glows with warm golden amber light."
+                part2 = " Moments later, the lantern beam sweeps steadily across rolling twilight waves in a smooth cinematic pan."
+                png_bytes = MOCK_PNG_J5
+                mp4_bytes = MOCK_MP4_J5
+                pcm_bytes = MOCK_PCM_J5
+                img_prompt = "Lone wooden lighthouse glowing above misty coastal cliffs, cinematic warm golden glow, 35mm film"
+                vid_prompt = "Amber lighthouse beam sweeping steadily across rolling misty twilight coastal waves"
+                slot0_extra = {"continuity_mode": "i2v_chain"}
+                slot1_extra = {"continuity_mode": "i2v_chain", "anchor_slot_index": 0}
+            elif want_audio:
                 part1 = "Around a supermassive black hole, superheated plasma forms a luminous accretion disk that glows brighter than an entire galaxy."
                 part2 = " Intense spacetime curvature bends light from the far side of the disk over and under the shadow, producing a double-arched Einstein ring."
                 png_bytes = MOCK_PNG_J1
@@ -1460,13 +1669,14 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
                     media_type="image",
                     prompt=img_prompt,
                     text_offset=len(part1),
+                    **slot0_extra,
                 )
             )
             seq += 1
             if want_audio:
-                half = len(MOCK_PCM_J1) // 2
+                half = len(pcm_bytes) // 2
                 first_pcm = _mock_artifact_frames(
-                    seq, "art-audio-0", "audio", "audio/pcm", MOCK_PCM_J1[:half],
+                    seq, "art-audio-0", "audio", "audio/pcm", pcm_bytes[:half],
                     "tts", stream_index=0, chunks=2,
                 )
                 events.extend(first_pcm)
@@ -1483,13 +1693,14 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
                     media_type="video",
                     prompt=vid_prompt,
                     text_offset=len(part1 + part2),
+                    **slot1_extra,
                 )
             )
             seq += 1
             if want_audio:
-                half = len(MOCK_PCM_J1) // 2
+                half = len(pcm_bytes) // 2
                 second_pcm = _mock_artifact_frames(
-                    seq, "art-audio-1", "audio", "audio/pcm", MOCK_PCM_J1[half:],
+                    seq, "art-audio-1", "audio", "audio/pcm", pcm_bytes[half:],
                     "tts", stream_index=1, chunks=1,
                 )
                 events.extend(second_pcm)
@@ -1587,14 +1798,20 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
 
 
 def parse_journeys(spec: str) -> list[int]:
+    cleaned = spec.strip().lower()
+    if cleaned == "all":
+        return list(ALL_JOURNEYS)
     result = []
     for raw in spec.split(","):
         token = raw.strip()
         if not token:
             continue
+        if token.lower() == "all":
+            return list(ALL_JOURNEYS)
         num = int(token)
         if num not in ALL_JOURNEYS:
-            raise ValueError(f"Unsupported journey number: {num}; valid values are 1,2,3,4")
+            valid = ",".join(str(x) for x in ALL_JOURNEYS)
+            raise ValueError(f"Unsupported journey number: {num}; valid values are {valid} or all")
         if num not in result:
             result.append(num)
     if not result:
@@ -1698,6 +1915,19 @@ def execute_showcase(
         results["journey_4"] = j4_metrics
         all_artifacts.extend(j4_arts)
 
+    if 5 in journeys:
+        j5_metrics, j5_arts = run_journey_5(
+            base_url,
+            model,
+            journey_specs["journey_5"],
+            out_dir,
+            timeout=timeout,
+            allow_ffprobe=allow_ffprobe,
+            extra_headers=extra_headers,
+        )
+        results["journey_5"] = j5_metrics
+        all_artifacts.extend(j5_arts)
+
     final_health = check_health(base_url, extra_headers=extra_headers)
     passed_count = sum(1 for item in results.values() if item.get("passed"))
     report = {
@@ -1741,8 +1971,13 @@ def verify_sha256sums_file(out_dir: Path, sums_path: Path) -> int:
     return len(lines)
 
 
-def run_self_check(manifest_path: Path, out_dir: Path | None = None) -> dict:
+def run_self_check(
+    manifest_path: Path,
+    out_dir: Path | None = None,
+    journeys: list[int] | None = None,
+) -> dict:
     manifest = load_manifest(manifest_path)
+    selected_journeys = list(ALL_JOURNEYS) if journeys is None else list(journeys)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _MockShowcaseHandler)
     server.chat_requests = []
     server.render_requests = []
@@ -1764,7 +1999,7 @@ def run_self_check(manifest_path: Path, out_dir: Path | None = None) -> dict:
             model=manifest.get("default_model", "qwen3-native"),
             out_dir=work_dir,
             manifest=manifest,
-            journeys=[1, 2, 3, 4],
+            journeys=selected_journeys,
             evidence_class="OFFLINE_SELF_CHECK",
             real_model="NOT_RUN",
             timeout=30.0,
@@ -1775,25 +2010,46 @@ def run_self_check(manifest_path: Path, out_dir: Path | None = None) -> dict:
         verified_count = verify_sha256sums_file(work_dir, paths["sha256sums"])
         require(report["evidence_class"] == "OFFLINE_SELF_CHECK", "wrong self-check evidence_class")
         require(report["real_model"] == "NOT_RUN", "wrong self-check real_model stamp")
-        require(report["journeys"]["journey_1"]["mid_stream_slot_before_vlm_finish"],
-                "Journey 1 did not dispatch visual slot mid-stream")
-        require(report["journeys"]["journey_2"]["ftyp_verified"],
-                "Journey 2 MP4 ftyp verification failed")
-        require(report["journeys"]["journey_3"]["turn2_speedup_vs_turn1"] > 1.5,
-                "Journey 3 Turn 2 speedup below expected mock threshold")
-        require(report["journeys"]["journey_3"]["turn3_speedup_vs_turn1"] > 1.5,
-                "Journey 3 Turn 3 speedup below expected mock threshold")
-        require(report["journeys"]["journey_4"]["pure_text_visual_slots"] == 0,
-                "Journey 4 pure-text case emitted visual slots")
-        require(report["journeys"]["journey_4"]["visual_scene_visual_slots"] == 2,
-                "Journey 4 visual-scene case did not emit expected 2 slots")
-        require(len(server.render_requests) == 1, "expected exactly 1 /v1/visual/render request")
-        require(len(server.chat_requests) == 6,
-                f"expected 6 /v1/chat/completions requests (J1+J3*3+J4*2), got {len(server.chat_requests)}")
+        if 1 in selected_journeys:
+            require(report["journeys"]["journey_1"]["mid_stream_slot_before_vlm_finish"],
+                    "Journey 1 did not dispatch visual slot mid-stream")
+        if 2 in selected_journeys:
+            require(report["journeys"]["journey_2"]["ftyp_verified"],
+                    "Journey 2 MP4 ftyp verification failed")
+        if 3 in selected_journeys:
+            require(report["journeys"]["journey_3"]["turn2_speedup_vs_turn1"] > 1.5,
+                    "Journey 3 Turn 2 speedup below expected mock threshold")
+            require(report["journeys"]["journey_3"]["turn3_speedup_vs_turn1"] > 1.5,
+                    "Journey 3 Turn 3 speedup below expected mock threshold")
+        if 4 in selected_journeys:
+            require(report["journeys"]["journey_4"]["pure_text_visual_slots"] == 0,
+                    "Journey 4 pure-text case emitted visual slots")
+            require(report["journeys"]["journey_4"]["visual_scene_visual_slots"] == 2,
+                    "Journey 4 visual-scene case did not emit expected 2 slots")
+        if 5 in selected_journeys:
+            j5 = report["journeys"]["journey_5"]
+            require(j5["i2v_chain_verified"], "Journey 5 i2v_chain verification failed")
+            require(j5["slot_1_continuity_mode"] == "i2v_chain",
+                    "Journey 5 Slot 1 continuity_mode mismatch")
+            require(j5["slot_1_anchor_slot_index"] == 0,
+                    "Journey 5 Slot 1 anchor_slot_index mismatch")
+
+        expected_renders = 1 if 2 in selected_journeys else 0
+        expected_chats = (
+            (1 if 1 in selected_journeys else 0)
+            + (3 if 3 in selected_journeys else 0)
+            + (2 if 4 in selected_journeys else 0)
+            + (1 if 5 in selected_journeys else 0)
+        )
+        require(len(server.render_requests) == expected_renders,
+                f"expected {expected_renders} /v1/visual/render request(s), got {len(server.render_requests)}")
+        require(len(server.chat_requests) == expected_chats,
+                f"expected {expected_chats} /v1/chat/completions request(s), got {len(server.chat_requests)}")
 
         print(
             "SELF-CHECK PASS [OFFLINE_SELF_CHECK | REAL_MODEL: NOT_RUN]: "
-            f"4/4 journeys passed, {report['summary']['verified_artifacts']} media artifacts + "
+            f"{report['summary']['journeys_passed']}/{report['summary']['journeys_total']} journeys passed, "
+            f"{report['summary']['verified_artifacts']} media artifacts + "
             f"{verified_count} SHA256SUMS entries verified."
         )
         return report
@@ -1812,7 +2068,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--self-check",
         action="store_true",
-        help="Run deterministic offline loopback server verification across all 4 journeys",
+        help="Run deterministic offline loopback server verification across selected journeys (default: all 5)",
     )
     parser.add_argument(
         "--url",
@@ -1831,8 +2087,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--journeys",
-        default="1,2,3,4",
-        help="Comma-separated journey numbers to execute (default: 1,2,3,4)",
+        "--journey",
+        dest="journeys",
+        default="all",
+        help="Comma-separated journey numbers (1..5) or 'all' (default: all)",
     )
     parser.add_argument(
         "--manifest",
@@ -1878,7 +2136,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_check:
         if args.url:
             parser.error("--self-check and --url are mutually exclusive")
-        run_self_check(args.manifest, out_dir=args.out_dir)
+        journeys = parse_journeys(args.journeys)
+        run_self_check(args.manifest, out_dir=args.out_dir, journeys=journeys)
         return 0
 
     if not args.url:

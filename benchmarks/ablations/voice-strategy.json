@@ -1,0 +1,41 @@
+{
+  "ablation_id": "stage-c-voice-strategy-v1",
+  "ablation_schema_version": 1,
+  "variable": "voice_strategy",
+  "voice_strategies": [
+    "full_response_tts",
+    "sentence_streaming_tts"
+  ],
+  "stall_threshold_ms": 500.0,
+  "evidence_note": "Replay fixture carries CONTRACT_REPLAY / REAL_MODEL_EVIDENCE: NOT_RUN; ad-hoc --base-url runs carry UNCONTROLLED_LIVE.",
+  "model": {
+    "id": "voice-strategy-contract-v1",
+    "revision": "deterministic-contract-1",
+    "weights_sha256": null
+  },
+  "fixed": {
+    "modalities": [
+      "text",
+      "audio"
+    ],
+    "audio": {
+      "voice": "vivian",
+      "format": "wav",
+      "sample_rate": 24000
+    },
+    "sampling": {
+      "max_tokens": 256,
+      "seed": 42,
+      "temperature": 0.0,
+      "top_p": 1.0
+    }
+  },
+  "dataset": {
+    "path": "voice-strategy-prompts.json",
+    "sha256": "4ecdae663f8c2816387dac5f5dd133259d497add04fc9c310a4a1d7024b05dae"
+  },
+  "replay": {
+    "path": "voice-strategy-replay.json",
+    "sha256": "d9fc4ea33222b4e12117f0eaa96c4d18147a10e070a6c0c4a562e1f44433b131"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "ablation_id": "stage-c-voice-strategy-sm90-v1",
+  "ablation_schema_version": 1,
+  "variable": "voice_strategy",
+  "voice_strategies": [
+    "full_response_tts",
+    "sentence_streaming_tts"
+  ],
+  "stall_threshold_ms": 500.0,
+  "evidence_note": "Live SM90 voice-collaboration ablation config against qwen3-native + native Qwen3-TTS (ad-hoc --base-url runs report UNCONTROLLED_LIVE).",
+  "model": {
+    "id": "qwen3-native",
+    "revision": "Qwen/Qwen3.8-27B local snapshot + Qwen3-TTS-12Hz-1.7B-CustomVoice native CUDA",
+    "weights_sha256": "3ebc83ee545cc54cb2558d805802d4a4e9da42c316d1b248846debee545b99c9"
+  },
+  "fixed": {
+    "modalities": [
+      "text",
+      "audio"
+    ],
+    "audio": {
+      "voice": "vivian",
+      "format": "wav",
+      "sample_rate": 24000
+    },
+    "sampling": {
+      "max_tokens": 256,
+      "seed": 42,
+      "temperature": 0.0,
+      "top_p": 1.0
+    }
+  },
+  "dataset": {
+    "path": "voice-strategy-prompts.json",
+    "sha256": "4ecdae663f8c2816387dac5f5dd133259d497add04fc9c310a4a1d7024b05dae"
+  }
+}

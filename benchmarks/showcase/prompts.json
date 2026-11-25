@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "suite_id": "north-star-native-multimodal-showcase-v1",
-  "description": "Deterministic North-Star native multimodal showcase scenarios covering interleaved narrative with streaming voice, in-place I2V animation, 3-turn native video understanding with prefix KV-cache reuse, and autonomous modality routing contrast.",
+  "description": "Deterministic North-Star native multimodal showcase scenarios covering interleaved narrative with streaming voice, in-place I2V animation, 3-turn native video understanding with prefix KV-cache reuse, autonomous modality routing contrast, and native cross-slot I2V continuity storyboard.",
   "default_model": "qwen3-native",
   "journeys": {
     "journey_1_interleaved_narrative": {
@@ -102,6 +102,43 @@
         "id": "rich_visual_scene",
         "prompt": "Narrate a two-beat documentary vignette of a sunlit coral reef transitioning into a bioluminescent night tide. Include one still frame for the sunlit reef and one motion clip for the glowing night current.",
         "expected_min_visual_slots": 1
+      }
+    },
+    "journey_5": {
+      "id": "storyboard_i2v_chain",
+      "title": "Native Cross-Slot Storyboard I2V Chain (continuity_mode=i2v_chain)",
+      "prompt": "Write a crisp two-sentence coastal twilight storyboard. Place one [[image: ...]] directive after the first sentence for an opening keyframe of a lone wooden lighthouse glowing above misty cliffs, and one [[video: ...]] directive after the second sentence for an animated continuation as amber beam light sweeps over rolling waves.",
+      "stream": true,
+      "max_tokens": 256,
+      "temperature": 0.2,
+      "seed": 42,
+      "modalities": ["text", "audio", "image", "video"],
+      "narrative": {
+        "enabled": true,
+        "visual_mode": "auto",
+        "max_slots": 2,
+        "continuity_mode": "i2v_chain",
+        "style_anchor": "cinematic warm golden glow, misty coastal twilight, 35mm film"
+      },
+      "image": {
+        "size": "512x512",
+        "output_format": "png",
+        "steps": 4,
+        "seed": 42
+      },
+      "video": {
+        "size": "704x480",
+        "output_format": "mp4",
+        "num_frames": 29,
+        "steps": 15,
+        "guidance_scale": 5.0,
+        "teacache_thresh": 0.05,
+        "seed": 42
+      },
+      "audio": {
+        "voice": "vivian",
+        "format": "wav",
+        "stream": true
       }
     }
   }
