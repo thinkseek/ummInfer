@@ -519,4 +519,45 @@ final class ChatClientUnifiedTests: XCTestCase {
         model.stopStreamingAudio()
         XCTAssertFalse(model.isStreamingAudioPlaying)
     }
+
+    @MainActor
+    func testRequestBodyEncodesWave9MediaAndSamplingOptions() {
+        var options = ChatStreamOptions()
+        options.sessionID = "sess-w9"
+        options.temperature = 0.7
+        options.topP = 0.9
+        options.seed = -42
+        options.image = ImageOptions(
+            prompt: "lantern", size: "1024x1024", steps: 4, seed: 7,
+            imageDataURL: "data:image/png;base64,AA==", outputFormat: "png")
+        options.audio = AudioOptions(
+            voice: "clone", format: "wav", stream: true,
+            refAudio: "data:audio/wav;base64,UklGRg==")
+        options.video = VideoOptions(
+            prompt: "waves", size: "480x320", seconds: 2, fps: 16,
+            numFrames: 13, steps: 15, guidanceScale: 5.0, seed: 9)
+
+        let body = ChatClient.requestBody(
+            model: "qwen3-native",
+            messages: [ChatMessage(role: "user", content: "remix")],
+            options: options)
+        XCTAssertEqual(body["temperature"] as? Double, 0.7)
+        XCTAssertEqual(body["top_p"] as? Double, 0.9)
+        XCTAssertEqual(body["seed"] as? Int64, -42)
+        XCTAssertEqual(body["modalities"] as? [String], ["text", "image", "audio", "video"])
+
+        let img = body["image"] as? [String: Any]
+        XCTAssertEqual(img?["steps"] as? Int, 4)
+        XCTAssertEqual(img?["image"] as? String, "data:image/png;base64,AA==")
+
+        let aud = body["audio"] as? [String: Any]
+        XCTAssertEqual(aud?["ref_audio"] as? String, "data:audio/wav;base64,UklGRg==")
+        XCTAssertNil(aud?["stream"], "audio.stream must stay off when video/image is active")
+
+        let vid = body["video"] as? [String: Any]
+        XCTAssertEqual(vid?["num_frames"] as? Int, 13)
+        XCTAssertEqual(vid?["steps"] as? Int, 15)
+        XCTAssertEqual(vid?["guidance_scale"] as? Double, 5.0)
+        XCTAssertEqual(vid?["seed"] as? Int, 9)
+    }
 }

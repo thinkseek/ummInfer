@@ -21,7 +21,9 @@ struct ChatCompletion {
 struct ImageOptions: Equatable {
     var prompt: String?
     var size = "512x512"
+    var steps: Int?
     var seed: Int?
+    var imageDataURL: String?
     var outputFormat = "png"
 }
 
@@ -29,12 +31,29 @@ struct AudioOptions: Equatable {
     var voice: String
     var format = "wav"
     var stream = true
+    var refAudio: String?
+}
+
+struct VideoOptions: Equatable {
+    var prompt: String?
+    var size = "704x480"
+    var seconds: Int?
+    var fps: Int?
+    var numFrames: Int?
+    var steps: Int?
+    var guidanceScale: Double?
+    var seed: Int?
+    var outputFormat = "mp4"
 }
 
 struct ChatStreamOptions: Equatable {
     var sessionID: String?
+    var temperature: Double?
+    var topP: Double?
+    var seed: Int64?
     var image: ImageOptions?
     var audio: AudioOptions?
+    var video: VideoOptions?
     /// Unified servers hold multi-turn context themselves: the wire carries one
     /// user message plus session_history=true. Set by the capability fallback
     /// when a server rejects replayed history.
@@ -44,6 +63,7 @@ struct ChatStreamOptions: Equatable {
         var values = ["text"]
         if image != nil { values.append("image") }
         if audio != nil { values.append("audio") }
+        if video != nil { values.append("video") }
         return values
     }
 }
@@ -267,9 +287,11 @@ final class ChatClient {
             "model": model,
             "messages": messages.map { ["role": $0.role, "content": $0.content] },
             "max_tokens": 64,
-            "temperature": 0,
+            "temperature": options.temperature ?? 0,
             "stream": true
         ]
+        if let topP = options.topP { body["top_p"] = topP }
+        if let seed = options.seed { body["seed"] = seed }
         if let sessionID = options.sessionID, !sessionID.isEmpty {
             body["session_id"] = sessionID
         }
@@ -280,7 +302,11 @@ final class ChatClient {
                 "size": image.size, "output_format": image.outputFormat
             ]
             if let prompt = image.prompt, !prompt.isEmpty { object["prompt"] = prompt }
+            if let steps = image.steps { object["steps"] = steps }
             if let seed = image.seed { object["seed"] = seed }
+            if let imageDataURL = image.imageDataURL, !imageDataURL.isEmpty {
+                object["image"] = imageDataURL
+            }
             body["image"] = object
         }
         if let audio = options.audio {
@@ -288,12 +314,29 @@ final class ChatClient {
             var object: [String: Any] = [
                 "voice": audio.voice, "format": audio.format
             ]
-            // Image + audio requests keep the server's ordered single-leg WAV
-            // path; audio-only turns stream PCM16 chunks as sentences complete.
-            if audio.stream && options.image == nil {
+            if let refAudio = audio.refAudio, !refAudio.isEmpty {
+                object["ref_audio"] = refAudio
+            }
+            // Mixed image/video + audio requests keep the server's ordered
+            // single-leg WAV path; audio-only turns stream PCM16 chunks.
+            if audio.stream && options.image == nil && options.video == nil {
                 object["stream"] = true
             }
             body["audio"] = object
+        }
+        if let video = options.video {
+            body["modalities"] = options.modalities
+            var object: [String: Any] = [
+                "size": video.size, "output_format": video.outputFormat
+            ]
+            if let prompt = video.prompt, !prompt.isEmpty { object["prompt"] = prompt }
+            if let seconds = video.seconds { object["seconds"] = seconds }
+            if let fps = video.fps { object["fps"] = fps }
+            if let numFrames = video.numFrames { object["num_frames"] = numFrames }
+            if let steps = video.steps { object["steps"] = steps }
+            if let guidance = video.guidanceScale { object["guidance_scale"] = guidance }
+            if let seed = video.seed { object["seed"] = seed }
+            body["video"] = object
         }
         return body
     }
