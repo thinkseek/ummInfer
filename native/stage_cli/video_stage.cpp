@@ -119,15 +119,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     try {
       generated = engine->generate(params, [&tracker] { return tracker(); });
     } catch (const video::RequestAborted& error) {
-      const auto elapsed =
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now() - started);
-      std::cerr << "video request aborted backend="
-                << video::video_backend_mode_name(engine->mode())
-                << " request_id=" << req_id << " boundary=\"" << error.what()
-                << "\" abort_epoch_ms=" << tracker.detected_epoch_ms()
-                << " exit_epoch_ms=" << epoch_millis()
-                << " compute_ms=" << elapsed.count() << "\n";
+      log_stage_abort("video", video::video_backend_mode_name(engine->mode()),
+                      req_id, error.what(), tracker, started);
       throw RequestAborted(error.what());
     }
 

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace umminfer::native {
@@ -12,6 +13,11 @@ namespace umminfer::native {
 // clipped to the int16 range. Any sample rate is accepted; the TTS CLI passes
 // 24000.
 std::string write_wav_pcm16_mono(const std::vector<float>& samples, uint32_t sample_rate);
+
+// Parses a RIFF PCM16 mono WAV byte buffer and rejects a sample rate other than
+// expected. Shared by file loading and Stage in-memory ref_audio decoding.
+std::vector<float> read_wav_pcm16_mono_bytes(std::string_view bytes,
+                                             uint32_t expected_sample_rate = 24000);
 
 // Reads a RIFF PCM16 mono file and rejects a sample rate other than expected.
 std::vector<float> read_wav_pcm16_mono(const std::string& path,

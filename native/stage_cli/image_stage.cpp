@@ -34,6 +34,52 @@ void require_model_paths(const std::string& model_dir, ImageBackend backend,
   }
 }
 
+struct EncodedImageOutput {
+  std::string png;
+  int width = 0;
+  int height = 0;
+  double load_ms = 0;
+  double encode_ms = 0;
+  double denoise_ms = 0;
+  double vae_ms = 0;
+};
+
+template <typename AbortEx, typename RenderFn>
+CancellableComputeFn make_image_compute_envelope(const char* backend_label,
+                                                 int gpu, int default_steps,
+                                                 RenderFn render) {
+  return [backend_label, gpu, default_steps, render = std::move(render)](
+             const Value& work, const AbortCheck& aborted) {
+    const auto started = std::chrono::steady_clock::now();
+    const std::string req_id = bound_request_id();
+    if (cudaSetDevice(gpu) != cudaSuccess) {
+      throw ProtocolError("cudaSetDevice(" + std::to_string(gpu) + ") failed");
+    }
+    AbortTracker tracker(aborted);
+    const ImageWork input = parse_image_work(work);
+    const int steps = input.steps > 0 ? input.steps : default_steps;
+    EncodedImageOutput out;
+    try {
+      out = render(input, steps, [&tracker] { return tracker(); });
+    } catch (const AbortEx& error) {
+      log_stage_abort("image", backend_label, req_id, error.what(), tracker,
+                      started);
+      throw RequestAborted(error.what());
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+    std::cerr << "image request backend=" << backend_label
+              << " request_id=" << req_id << " size=" << out.width << "x"
+              << out.height << " steps=" << steps << " seed=" << input.seed
+              << " png_bytes=" << out.png.size() << " load_ms=" << out.load_ms
+              << " encode_ms=" << out.encode_ms
+              << " denoise_ms=" << out.denoise_ms << " vae_ms=" << out.vae_ms
+              << " elapsed_ms=" << elapsed.count() << "\n";
+    return image_result(std::move(out.png), out.width, out.height, input.seed,
+                        steps, out.denoise_ms);
+  };
+}
+
 }  // namespace
 
 const char* compiled_kind() { return "image"; }
@@ -73,110 +119,58 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     auto engine =
         std::make_shared<image2::Image2Engine>(options.gpu, options.model_dir);
     const int default_steps = options.steps > 0 ? options.steps : 40;
-    return [engine, default_steps, gpu](const Value& work,
-                                        const AbortCheck& aborted) {
-      const auto started = std::chrono::steady_clock::now();
-      const std::string req_id = bound_request_id();
-      if (cudaSetDevice(gpu) != cudaSuccess) {
-        throw ProtocolError("cudaSetDevice(" + std::to_string(gpu) + ") failed");
-      }
-      AbortTracker tracker(aborted);
-      const ImageWork input = parse_image_work(work);
-      image2::GenerateParams params;
-      params.prompt = input.prompt;
-      params.seed = input.seed;
-      params.steps = input.steps > 0 ? input.steps : default_steps;
-      params.width = input.width;
-      params.height = input.height;
-
-      image2::GenerateResult generated;
-      try {
-        generated = engine->generate(params, [&tracker] { return tracker(); });
-      } catch (const image2::RequestAborted& error) {
-        const auto elapsed =
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - started);
-        std::cerr << "image request aborted backend=2.1 request_id=" << req_id
-                  << " boundary=\"" << error.what() << "\""
-                  << " abort_epoch_ms=" << tracker.detected_epoch_ms()
-                  << " exit_epoch_ms=" << epoch_millis()
-                  << " compute_ms=" << elapsed.count() << "\n";
-        throw RequestAborted(error.what());
-      }
-
-      std::string png = image2::encode_png(generated.image);
-      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - started);
-      std::cerr << "image request backend=2.1 request_id=" << req_id
-                << " size=" << generated.image.width << "x"
-                << generated.image.height
-                << " steps=" << params.steps << " seed=" << params.seed
-                << " png_bytes=" << png.size()
-                << " load_ms=" << generated.load_ms
-                << " encode_ms=" << generated.encode_ms
-                << " denoise_ms=" << generated.denoise_ms
-                << " vae_ms=" << generated.vae_ms
-                << " elapsed_ms=" << elapsed.count() << "\n";
-      return image_result(std::move(png), generated.image.width,
-                          generated.image.height, params.seed, params.steps,
-                          generated.denoise_ms);
-    };
+    return make_image_compute_envelope<image2::RequestAborted>(
+        "2.1", gpu, default_steps,
+        [engine](const ImageWork& input, int steps, const auto& abort_fn) {
+          image2::GenerateParams params;
+          params.prompt = input.prompt;
+          params.seed = input.seed;
+          params.steps = steps;
+          params.width = input.width;
+          params.height = input.height;
+          image2::GenerateResult generated = engine->generate(params, abort_fn);
+          EncodedImageOutput out;
+          out.png = image2::encode_png(generated.image);
+          out.width = generated.image.width;
+          out.height = generated.image.height;
+          out.load_ms = generated.load_ms;
+          out.encode_ms = generated.encode_ms;
+          out.denoise_ms = generated.denoise_ms;
+          out.vae_ms = generated.vae_ms;
+          return out;
+        });
   }
 
   require_model_paths(options.model_dir, backend,
                       {"tokenizer", "text_encoder", "transformer", "vae"});
   auto engine = std::make_shared<image::ImageEngine>(options.gpu, options.model_dir);
   const int default_steps = options.steps > 0 ? options.steps : 50;
-  return [engine, default_steps, gpu](const Value& work, const AbortCheck& aborted) {
-    const auto started = std::chrono::steady_clock::now();
-    const std::string req_id = bound_request_id();
-    if (cudaSetDevice(gpu) != cudaSuccess) {
-      throw ProtocolError("cudaSetDevice(" + std::to_string(gpu) + ") failed");
-    }
-    AbortTracker tracker(aborted);
-    const ImageWork input = parse_image_work(work);
-    image::GenerateParams params;
-    params.prompt = input.prompt;
-    params.negative_prompt = input.negative_prompt;
-    params.seed = input.seed;
-    params.steps = input.steps > 0 ? input.steps : default_steps;
-    params.guidance = input.guidance;
-    params.width = input.width;
-    params.height = input.height;
-
-    image::GenerateResult generated;
-    try {
-      generated = engine->generate(params, [&tracker] { return tracker(); });
-    } catch (const image::RequestAborted& error) {
-      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - started);
-      std::cerr << "image request aborted backend=2512 request_id=" << req_id
-                << " boundary=\"" << error.what() << "\""
-                << " abort_epoch_ms=" << tracker.detected_epoch_ms()
-                << " exit_epoch_ms=" << epoch_millis()
-                << " compute_ms=" << elapsed.count() << "\n";
-      throw RequestAborted(error.what());
-    }
-
-    image::RgbImage rgb(generated.width, generated.height);
-    for (size_t index = 0; index < generated.rgb_u16.size(); ++index) {
-      rgb.rgb[index] = static_cast<uint8_t>(generated.rgb_u16[index]);
-    }
-    std::string png = image::encode_png(rgb);
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - started);
-    std::cerr << "image request backend=2512 request_id=" << req_id
-              << " size=" << generated.width << "x" << generated.height
-              << " steps=" << params.steps << " seed=" << params.seed
-              << " png_bytes=" << png.size()
-              << " load_ms=" << generated.load_ms
-              << " encode_ms=" << generated.encode_ms
-              << " denoise_ms=" << generated.denoise_ms
-              << " vae_ms=" << generated.vae_ms
-              << " elapsed_ms=" << elapsed.count() << "\n";
-    return image_result(std::move(png), generated.width, generated.height,
-                        params.seed, params.steps, generated.denoise_ms);
-  };
+  return make_image_compute_envelope<image::RequestAborted>(
+      "2512", gpu, default_steps,
+      [engine](const ImageWork& input, int steps, const auto& abort_fn) {
+        image::GenerateParams params;
+        params.prompt = input.prompt;
+        params.negative_prompt = input.negative_prompt;
+        params.seed = input.seed;
+        params.steps = steps;
+        params.guidance = input.guidance;
+        params.width = input.width;
+        params.height = input.height;
+        image::GenerateResult generated = engine->generate(params, abort_fn);
+        image::RgbImage rgb(generated.width, generated.height);
+        for (size_t index = 0; index < generated.rgb_u16.size(); ++index) {
+          rgb.rgb[index] = static_cast<uint8_t>(generated.rgb_u16[index]);
+        }
+        EncodedImageOutput out;
+        out.png = image::encode_png(rgb);
+        out.width = generated.width;
+        out.height = generated.height;
+        out.load_ms = generated.load_ms;
+        out.encode_ms = generated.encode_ms;
+        out.denoise_ms = generated.denoise_ms;
+        out.vae_ms = generated.vae_ms;
+        return out;
+      });
 }
 
 }  // namespace umminfer::stage

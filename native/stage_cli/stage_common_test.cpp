@@ -95,6 +95,27 @@ void test_tts_work() {
   bad_stream["stream"] = Value("yes");
   check(throws_protocol([&] { (void)parse_tts_work(Value(bad_stream)); }),
         "tts rejects non-boolean stream");
+
+  Value::Map with_bin_ref(inputs);
+  with_bin_ref["ref_audio"] = Value::bin("RIFF0000WAVE");
+  check(parse_tts_work(Value(with_bin_ref)).ref_audio_wav == "RIFF0000WAVE",
+        "tts parses binary ref_audio");
+
+  Value::Map with_url_ref(inputs);
+  with_url_ref["ref_audio"] = Value("data:audio/wav;base64,UklGRg==");
+  check(parse_tts_work(Value(with_url_ref)).ref_audio_wav == "RIFF",
+        "tts parses data-URL ref_audio");
+
+  Value::Map bad_ref(inputs);
+  bad_ref["ref_audio"] = Value(static_cast<int64_t>(7));
+  check(throws_protocol([&] { (void)parse_tts_work(Value(bad_ref)); }),
+        "tts rejects non-binary/non-string ref_audio");
+
+  Value::Map img_edit;
+  img_edit["prompt"] = Value("a lantern");
+  img_edit["image"] = Value("data:image/png;base64,AAAA");
+  check(throws_protocol([&] { (void)umminfer::stage::parse_image_work(Value(img_edit)); }),
+        "native Qwen-Image parse_image_work rejects inputs.image editing");
 }
 
 void test_tts_result() {

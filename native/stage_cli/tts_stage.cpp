@@ -28,12 +28,21 @@ constexpr int kSampleRate = 24000;
 
 const char* compiled_kind() { return "tts"; }
 
-const char* stage_usage_flags() { return "[--max-frames N] "; }
+const char* stage_usage_flags() {
+  return "[--max-frames N] [--default-ref-audio PATH] ";
+}
 
 bool parse_stage_flag(const std::string& key, const std::string& value,
                       StageOptions& options) {
   if (key == "max-frames") {
     options.max_frames = parse_stage_int(value, "--max-frames");
+    return true;
+  }
+  if (key == "default-ref-audio") {
+    if (value.empty()) {
+      throw std::runtime_error("--default-ref-audio requires a path");
+    }
+    options.default_ref_audio = value;
     return true;
   }
   return false;
@@ -44,9 +53,20 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       options.max_frames > 0 ? options.max_frames : kDefaultMaxFrames;
   auto tokenizer = std::make_shared<native::Qwen2BpeTokenizer>(options.model_dir);
   auto engine = std::make_shared<native::TtsEngine>(options.model_dir, options.gpu);
+  const bool is_base = engine->is_base();
+  auto default_embedding = std::make_shared<std::vector<float>>();
+  if (!options.default_ref_audio.empty()) {
+    if (!is_base) {
+      throw std::runtime_error(
+          "--default-ref-audio requires a Qwen3-TTS Base checkpoint");
+    }
+    const std::vector<float> ref =
+        native::read_wav_pcm16_mono(options.default_ref_audio, kSampleRate);
+    *default_embedding = engine->extract_speaker_embedding(ref);
+  }
 
   const int gpu = options.gpu;
-  return [tokenizer, engine, max_frames, gpu](
+  return [tokenizer, engine, is_base, default_embedding, max_frames, gpu](
              const Value& work, const AbortCheck& aborted) {
     const auto started = std::chrono::steady_clock::now();
     const std::string req_id = bound_request_id();
@@ -57,16 +77,40 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     }
     AbortTracker tracker(aborted);
     const TtsWork input = parse_tts_work(work);
-    // The public "voice" field is a free label; only the two wired presets
-    // exist here. The artifact descriptor names the voice actually used.
     std::string voice = input.voice.empty() ? "vivian" : input.voice;
     int speaker = 0;
-    try {
-      speaker = native::speaker_id_from_name(voice);
-    } catch (const std::exception&) {
-      std::cerr << "tts unsupported voice '" << voice << "', falling back to vivian\n";
-      voice = "vivian";
-      speaker = native::speaker_id_from_name(voice);
+    std::vector<float> request_embedding;
+    const std::vector<float>* clone_embedding = nullptr;
+    if (is_base) {
+      if (!input.ref_audio_wav.empty()) {
+        const std::vector<float> ref =
+            native::read_wav_pcm16_mono_bytes(input.ref_audio_wav, kSampleRate);
+        request_embedding = engine->extract_speaker_embedding(ref);
+        clone_embedding = &request_embedding;
+      } else if (!default_embedding->empty()) {
+        clone_embedding = default_embedding.get();
+      } else {
+        throw ProtocolError(
+            "Base TTS checkpoint requires inputs.ref_audio (24 kHz PCM16 mono "
+            "WAV) or stage --default-ref-audio");
+      }
+      if (input.voice.empty()) voice = "clone";
+    } else {
+      if (!input.ref_audio_wav.empty()) {
+        throw ProtocolError(
+            "CustomVoice TTS checkpoint does not accept ref_audio; load a "
+            "Qwen3-TTS Base checkpoint for zero-shot voice cloning");
+      }
+      // The public "voice" field is a free label; only the wired presets exist
+      // here. The artifact descriptor names the voice actually used.
+      try {
+        speaker = native::speaker_id_from_name(voice);
+      } catch (const std::exception&) {
+        std::cerr << "tts unsupported voice '" << voice
+                  << "', falling back to vivian\n";
+        voice = "vivian";
+        speaker = native::speaker_id_from_name(voice);
+      }
     }
     const int language = text_is_mostly_cjk(input.text) ? native::kLangChinese
                                                         : native::kLangEnglish;
@@ -104,20 +148,19 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     };
     std::vector<float> samples;
     native::TtsEngine::SynthTimings timings;
+    const auto stream_sink = input.stream ? native::TtsEngine::StreamSink(sink)
+                                          : native::TtsEngine::StreamSink();
     try {
-      samples = engine->synthesize(
-          text_ids, language, speaker, max_frames,
-          [&tracker] { return tracker(); }, &timings,
-          input.stream ? native::TtsEngine::StreamSink(sink)
-                       : native::TtsEngine::StreamSink());
+      samples = is_base
+                    ? engine->synthesize_clone(text_ids, language, *clone_embedding,
+                                               max_frames,
+                                               [&tracker] { return tracker(); },
+                                               &timings, stream_sink)
+                    : engine->synthesize(text_ids, language, speaker, max_frames,
+                                         [&tracker] { return tracker(); },
+                                         &timings, stream_sink);
     } catch (const native::RequestAborted& error) {
-      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - started);
-      std::cerr << "tts request aborted request_id=" << req_id
-                << " boundary=\"" << error.what() << "\""
-                << " abort_epoch_ms=" << tracker.detected_epoch_ms()
-                << " exit_epoch_ms=" << epoch_millis()
-                << " compute_ms=" << elapsed.count() << "\n";
+      log_stage_abort("tts", nullptr, req_id, error.what(), tracker, started);
       throw RequestAborted(error.what());
     }
     if (input.stream) {

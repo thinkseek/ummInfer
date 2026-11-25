@@ -8,7 +8,9 @@
 //   TTS  inputs {"text", "voice", "format", "sample_rate"}    -> artifact map
 #pragma once
 
+#include <chrono>
 #include <functional>
+#include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,6 +41,24 @@ class AbortTracker {
   bool fired_ = false;
   long long detected_epoch_ms_ = 0;
 };
+
+// Uniform structured abort telemetry shared across stages whose abort log
+// semantics are identical.
+inline void log_stage_abort(const char* kind, const char* backend,
+                            const std::string& req_id, const char* boundary,
+                            const AbortTracker& tracker,
+                            std::chrono::steady_clock::time_point started) {
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - started);
+  std::cerr << kind << " request aborted";
+  if (backend != nullptr && backend[0] != '\0') {
+    std::cerr << " backend=" << backend;
+  }
+  std::cerr << " request_id=" << req_id << " boundary=\"" << boundary << "\""
+            << " abort_epoch_ms=" << tracker.detected_epoch_ms()
+            << " exit_epoch_ms=" << epoch_millis()
+            << " compute_ms=" << elapsed.count() << "\n";
+}
 
 // Stage hands the compute function the payload data for a chained stage, or
 // the request inputs for an entry stage. Accept an "inputs" wrapper too.
@@ -135,6 +155,8 @@ struct TtsWork {
   // Emit PCM16 chunks over the stage stream while the codec decodes, instead
   // of one WAV artifact at the end. The terminal result still carries the WAV.
   bool stream = false;
+  // Optional 24 kHz PCM16 mono RIFF/WAVE bytes for Base zero-shot cloning.
+  std::string ref_audio_wav;
 };
 
 TtsWork parse_tts_work(const Value& work);

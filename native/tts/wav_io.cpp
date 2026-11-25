@@ -22,12 +22,12 @@ void put_u32(std::string& out, uint32_t v) {
   out.push_back(static_cast<char>((v >> 24) & 0xff));
 }
 
-uint16_t get_u16(const std::string& in, size_t off) {
+uint16_t get_u16(std::string_view in, size_t off) {
   return static_cast<uint16_t>(static_cast<uint8_t>(in[off])) |
          (static_cast<uint16_t>(static_cast<uint8_t>(in[off + 1])) << 8);
 }
 
-uint32_t get_u32(const std::string& in, size_t off) {
+uint32_t get_u32(std::string_view in, size_t off) {
   return static_cast<uint32_t>(get_u16(in, off)) |
          (static_cast<uint32_t>(get_u16(in, off + 2)) << 16);
 }
@@ -61,12 +61,8 @@ std::string write_wav_pcm16_mono(const std::vector<float>& samples, uint32_t sam
   return out;
 }
 
-std::vector<float> read_wav_pcm16_mono(const std::string& path,
-                                       uint32_t expected_sample_rate) {
-  std::ifstream f(path, std::ios::binary);
-  if (!f) throw std::invalid_argument("cannot open reference WAV " + path);
-  const std::string bytes((std::istreambuf_iterator<char>(f)),
-                          std::istreambuf_iterator<char>());
+std::vector<float> read_wav_pcm16_mono_bytes(std::string_view bytes,
+                                             uint32_t expected_sample_rate) {
   if (bytes.size() < 12 || bytes.compare(0, 4, "RIFF") != 0 ||
       bytes.compare(8, 4, "WAVE") != 0)
     throw std::invalid_argument("reference WAV is not RIFF/WAVE");
@@ -111,6 +107,15 @@ std::vector<float> read_wav_pcm16_mono(const std::string& path,
     out[i] = static_cast<float>(s) / 32768.0f;
   }
   return out;
+}
+
+std::vector<float> read_wav_pcm16_mono(const std::string& path,
+                                       uint32_t expected_sample_rate) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) throw std::invalid_argument("cannot open reference WAV " + path);
+  const std::string bytes((std::istreambuf_iterator<char>(f)),
+                          std::istreambuf_iterator<char>());
+  return read_wav_pcm16_mono_bytes(bytes, expected_sample_rate);
 }
 
 WavStats pcm_stats(const std::vector<float>& samples, uint32_t sample_rate) {

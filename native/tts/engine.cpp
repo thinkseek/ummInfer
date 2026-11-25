@@ -414,6 +414,8 @@ TtsEngine::~TtsEngine() {
   if (im.stream) cudaStreamDestroy(im.stream);
 }
 
+bool TtsEngine::is_base() const { return impl_->cfg.is_base(); }
+
 std::vector<float> TtsEngine::extract_speaker_embedding(
     const std::vector<float>& ref_pcm_24k) {
   if (!impl_->cfg.is_base())

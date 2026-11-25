@@ -317,6 +317,21 @@ TtsWork parse_tts_work(const Value& work) {
     if (!stream->is_bool()) bad("TTS stream must be a boolean");
     out.stream = stream->as_bool();
   }
+  if (const Value* ref = inputs.find("ref_audio");
+      ref != nullptr && !ref->is_nil()) {
+    if (ref->is_bin()) {
+      if (ref->as_bin().empty()) bad("TTS ref_audio must be non-empty");
+      out.ref_audio_wav = ref->as_bin();
+    } else if (ref->is_str()) {
+      const std::string& raw = ref->as_str();
+      if (raw.empty()) bad("TTS ref_audio must be non-empty");
+      out.ref_audio_wav = raw.rfind("data:", 0) == 0 ? decode_data_url(raw)
+                                                     : base64_decode(raw);
+      if (out.ref_audio_wav.empty()) bad("TTS ref_audio must be non-empty");
+    } else {
+      bad("TTS ref_audio must be binary WAV bytes or base64 string");
+    }
+  }
   return out;
 }
 
@@ -412,6 +427,11 @@ ImageWork parse_image_work(const Value& work) {
     const auto [width, height] = parse_supported_image_size(size->as_str());
     out.width = width;
     out.height = height;
+  }
+  if (const Value* edit_image = inputs.find("image");
+      edit_image != nullptr && !edit_image->is_nil()) {
+    bad("native Qwen-Image stage does not support inputs.image editing; "
+        "use the flux2 image stage");
   }
   return out;
 }

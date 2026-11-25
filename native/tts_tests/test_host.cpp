@@ -284,6 +284,18 @@ static void test_wav() {
   }
   CHECK(threw);
 
+  const std::vector<float> decoded_mem = read_wav_pcm16_mono_bytes(wav);
+  CHECK(decoded_mem.size() == samples.size());
+  CHECK(decoded_mem[0] == 0.0f && decoded_mem[1] > 0.499f && decoded_mem[1] < 0.501f);
+  CHECK(decoded_mem[6] == -1.0f);
+  threw = false;
+  try {
+    (void)read_wav_pcm16_mono_bytes(wav, 16000);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+
   const std::filesystem::path path =
       std::filesystem::temp_directory_path() / "umm_tts_wav_reader.wav";
   auto write_file = [&](const std::string& bytes) {

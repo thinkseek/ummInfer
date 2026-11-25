@@ -60,6 +60,9 @@ class TtsEngine {
                                 SynthTimings* timings = nullptr,
                                 const StreamSink& on_chunk = {});
 
+  // True when the loaded checkpoint is a Base voice-cloning model (x-vector).
+  bool is_base() const;
+
   // Base x-vector-only voice cloning from 24 kHz mono FP32 PCM.
   std::vector<float> extract_speaker_embedding(const std::vector<float>& ref_pcm_24k);
   std::vector<float> synthesize_clone(const std::vector<int>& text_ids, int language_id,

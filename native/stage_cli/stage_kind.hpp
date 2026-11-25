@@ -29,6 +29,7 @@ struct StageOptions {
   int video_max_seconds = 0;  // Video only: max seconds (0 -> 10)
   int video_step_delay_ms = 0;  // Video only: optional per-step delay for abort tests
   std::string ffmpeg_bin;     // Video only: ffmpeg binary path (empty -> "ffmpeg")
+  std::string default_ref_audio;  // TTS Base only: optional default 24 kHz WAV
   // Requests decoded together. 0 or 1 keeps the single-request executor.
   int batch_size = 0;
 };
