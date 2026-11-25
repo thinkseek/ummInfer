@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <utility>
 
 #include "umminfer/audio/audio.hpp"
@@ -159,6 +160,19 @@ json unified_event_json(const UnifiedEvent& event) {
   if (!event.error.empty()) out["error"] = event.error;
   if (event.kind == UnifiedEvent::Kind::kArtifact) {
     out["artifact"] = value_to_json(event.artifact);
+  }
+  if (event.kind == UnifiedEvent::Kind::kVisualSlot) {
+    out["request_id"] = event.request_id;
+    out["slot_id"] = event.slot_id;
+    out["slot_index"] = event.slot_index;
+    out["media_type"] = event.stage_id;
+    out["prompt"] = event.prompt;
+    out["text_offset"] = event.text_offset;
+  } else if (event.slot_index >= 0 && !event.slot_id.empty()) {
+    // Slot-attributed leg_error events carry the same identity as the
+    // artifact they describe.
+    out["slot_id"] = event.slot_id;
+    out["slot_index"] = event.slot_index;
   }
   if (event.legs.type() == Value::Type::Array) {
     out["legs"] = value_to_json(event.legs);
@@ -534,6 +548,51 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
   bool image_output = false;
   bool audio_output = false;
   bool video_output = false;
+  // Optional interleaved-narrative control. Type validation happens here for
+  // every request; the modality cross-checks follow the output flags because
+  // they depend on modalities.
+  bool narrative_enabled = false;
+  std::string narrative_mode = "auto";
+  int64_t narrative_slots = 3;
+  // The contract gates narrative on the explicit `modalities` array, not on a
+  // top-level image/video object that also enables an output leg.
+  bool modalities_image = false;
+  bool modalities_video = false;
+  if (body.contains("narrative") && !body["narrative"].is_null()) {
+    const json& narrative = body["narrative"];
+    if (!narrative.is_object()) {
+      error = "narrative must be an object";
+      return false;
+    }
+    if (narrative.contains("enabled") && !narrative["enabled"].is_null()) {
+      if (!narrative["enabled"].is_boolean()) {
+        error = "narrative.enabled must be a boolean";
+        return false;
+      }
+      narrative_enabled = narrative["enabled"].get<bool>();
+    }
+    if (narrative.contains("visual_mode") && !narrative["visual_mode"].is_null()) {
+      if (!narrative["visual_mode"].is_string()) {
+        error = "narrative.visual_mode must be a string";
+        return false;
+      }
+      const std::string mode = narrative["visual_mode"].get<std::string>();
+      if (mode != "auto" && mode != "image" && mode != "video") {
+        error = "narrative.visual_mode must be auto, image or video";
+        return false;
+      }
+      narrative_mode = mode;
+    }
+    if (narrative.contains("max_slots") && !narrative["max_slots"].is_null()) {
+      if (!narrative["max_slots"].is_number_integer() ||
+          narrative["max_slots"].get<int64_t>() < 1 ||
+          narrative["max_slots"].get<int64_t>() > 6) {
+        error = "narrative.max_slots must be an integer between 1 and 6";
+        return false;
+      }
+      narrative_slots = narrative["max_slots"].get<int64_t>();
+    }
+  }
   if (body.contains("modalities") && !body["modalities"].is_null()) {
     const json& modalities = body["modalities"];
     if (!modalities.is_array() || modalities.empty()) {
@@ -547,9 +606,15 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
       }
       const std::string name = token.get<std::string>();
       if (name == "text") continue;
-      if (name == "image") image_output = true;
-      else if (name == "audio") audio_output = true;
-      else if (name == "video") video_output = true;
+      if (name == "image") {
+        image_output = true;
+        modalities_image = true;
+      } else if (name == "audio") {
+        audio_output = true;
+      } else if (name == "video") {
+        video_output = true;
+        modalities_video = true;
+      }
       else {
         error = "modalities values must be text, image, audio or video";
         return false;
@@ -563,6 +628,24 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
   if (!parse_image_options(body, image_output, image_opts, error)) return false;
   if (!parse_audio_options(body, audio_output, audio_opts, error)) return false;
   if (!parse_video_options(body, video_output, video_opts, error)) return false;
+  if (narrative_enabled) {
+    if (!body.value("stream", false)) {
+      error = "narrative.enabled=true requires stream=true";
+      return false;
+    }
+    if (!modalities_image && !modalities_video) {
+      error = "narrative requires an image or video modality";
+      return false;
+    }
+    if (narrative_mode == "image" && !modalities_image) {
+      error = "narrative.visual_mode=image requires the image modality";
+      return false;
+    }
+    if (narrative_mode == "video" && !modalities_video) {
+      error = "narrative.visual_mode=video requires the video modality";
+      return false;
+    }
+  }
   if (!image_output && !audio_output && !video_output) return true;
 
   if (image_output && !image_enabled) {
@@ -597,6 +680,13 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
   if (video_output) {
     selected.push_back(Value("video"));
     engine_inputs["video_options"] = Value(std::move(video_opts));
+  }
+  if (narrative_enabled) {
+    Value::Map narrative;
+    narrative["enabled"] = Value(true);
+    narrative["visual_mode"] = Value(narrative_mode);
+    narrative["max_slots"] = Value(narrative_slots);
+    engine_inputs["narrative"] = Value(std::move(narrative));
   }
   engine_inputs["output_modalities"] = Value(std::move(selected));
   return true;
@@ -654,4 +744,208 @@ void reject_overloaded(httplib::Response& res) {
       "application/json");
 }
 
+
 }  // namespace umminfer::openai_detail
+
+namespace umminfer {
+
+using namespace openai_detail;
+
+// POST /v1/visual/render. One direct image or video render against the stage
+// the unified engine already registered: the same Coordinator submit/abort
+// path and the same status conventions as /v1/audio/speech.
+void OpenAIApi::Impl::handle_visual_render(const httplib::Request& req,
+                                           httplib::Response& res) {
+  RouteMetric route_metric{"visual_render", &res};
+  auto reject = [&res](int status, const std::string& message,
+                       const char* type) {
+    res.status = status;
+    res.set_content(
+        json{{"error", {{"message", util::utf8_sanitized(message)},
+                        {"type", type}}}}
+            .dump(),
+        "application/json");
+  };
+  if (!config_.upstream_kind.empty()) {
+    reject(501,
+           "visual render is not supported: requests are served by a fixed upstream",
+           "unsupported_route");
+    return;
+  }
+  if (unified_engine_ == nullptr) {
+    reject(501,
+           "visual render is not implemented by this server: no visual stage is registered",
+           "unsupported_route");
+    return;
+  }
+  const json body = json::parse(req.body, nullptr, false);
+  if (body.is_discarded() || !body.is_object()) {
+    reject(400, "request body must be a JSON object", "invalid_request");
+    return;
+  }
+  static const std::set<std::string> kAllowedFields = {
+      "kind", "prompt", "size", "steps", "num_frames", "fps", "seconds",
+      "guidance_scale", "seed", "image"};
+  for (auto it = body.begin(); it != body.end(); ++it) {
+    if (!kAllowedFields.count(it.key())) {
+      reject(400, "unsupported field: " + it.key(), "invalid_request");
+      return;
+    }
+  }
+  if (!body.contains("kind") || !body["kind"].is_string() ||
+      (body["kind"].get<std::string>() != "image" &&
+       body["kind"].get<std::string>() != "video")) {
+    reject(400, "kind must be image or video", "invalid_request");
+    return;
+  }
+  const std::string kind = body["kind"].get<std::string>();
+  const bool image = kind == "image";
+  if (image ? !unified_engine_->image_enabled()
+            : !unified_engine_->video_enabled()) {
+    reject(501,
+           kind +
+               " render is not implemented by this server: no stage is registered",
+           "unsupported_route");
+    return;
+  }
+  if (!body.contains("prompt") || !body["prompt"].is_string() ||
+      body["prompt"].get_ref<const std::string&>().empty()) {
+    reject(400, "prompt must be a non-empty string", "invalid_request");
+    return;
+  }
+  Value::Map inputs;
+  inputs["prompt"] = Value(body["prompt"].get<std::string>());
+  if (body.contains("size") && !body["size"].is_null()) {
+    if (!body["size"].is_string() ||
+        body["size"].get_ref<const std::string&>().empty()) {
+      reject(400, "size must be a non-empty string", "invalid_request");
+      return;
+    }
+    inputs["size"] = Value(body["size"].get<std::string>());
+  } else {
+    inputs["size"] = Value(image ? "512x512" : "1280x720");
+  }
+  if (body.contains("steps") && !body["steps"].is_null()) {
+    if (!body["steps"].is_number_integer() ||
+        body["steps"].get<int64_t>() < 1 ||
+        body["steps"].get<int64_t>() > 100) {
+      reject(400, "steps must be an integer between 1 and 100",
+             "invalid_request");
+      return;
+    }
+    inputs["steps"] = Value(body["steps"].get<int64_t>());
+  }
+  if (body.contains("seed") && !body["seed"].is_null()) {
+    if (!body["seed"].is_number_integer() ||
+        (body["seed"].is_number_unsigned() &&
+         body["seed"].get<uint64_t>() >
+             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))) {
+      reject(400, "seed must be an integer", "invalid_request");
+      return;
+    }
+    inputs["seed"] = Value(body["seed"].get<int64_t>());
+  }
+  if (image) {
+    if (body.contains("num_frames") || body.contains("fps") ||
+        body.contains("seconds") || body.contains("guidance_scale")) {
+      reject(400, "video-only fields are not valid for kind image",
+             "invalid_request");
+      return;
+    }
+    if (body.contains("image") && !body["image"].is_null()) {
+      if (!body["image"].is_string()) {
+        reject(400, "image must be a data:image/...;base64,... string",
+               "invalid_request");
+        return;
+      }
+      const std::string& url = body["image"].get_ref<const std::string&>();
+      const size_t comma = url.find(',');
+      if (url.rfind("data:image/", 0) != 0 || comma == std::string::npos ||
+          url.substr(0, comma).find(";base64") == std::string::npos) {
+        reject(400, "image must be a data:image/...;base64,... URL",
+               "invalid_request");
+        return;
+      }
+      try {
+        const std::string decoded =
+            util::base64_decode(url.substr(comma + 1), kMaxMediaInputBytes);
+        if (decoded.empty()) {
+          reject(400, "image payload must be non-empty", "invalid_request");
+          return;
+        }
+      } catch (const std::exception& exc) {
+        reject(400, std::string("invalid image base64: ") + exc.what(),
+               "invalid_request");
+        return;
+      }
+      inputs["image"] = Value(url);
+    }
+    inputs["output_format"] = Value("png");
+  } else {
+    if (body.contains("image") && !body["image"].is_null()) {
+      reject(400, "image is only valid for kind image", "invalid_request");
+      return;
+    }
+    for (const char* key : {"num_frames", "fps", "seconds"}) {
+      if (!body.contains(key) || body[key].is_null()) continue;
+      if (!body[key].is_number_integer() || body[key].get<int64_t>() < 1) {
+        reject(400, std::string(key) + " must be a positive integer",
+               "invalid_request");
+        return;
+      }
+      inputs[key] = Value(body[key].get<int64_t>());
+    }
+    if (body.contains("guidance_scale") && !body["guidance_scale"].is_null()) {
+      const json& value = body["guidance_scale"];
+      if (!value.is_number() || !std::isfinite(value.get<double>()) ||
+          value.get<double>() < 0.0) {
+        reject(400, "guidance_scale must be a finite non-negative number",
+               "invalid_request");
+        return;
+      }
+      inputs["guidance_scale"] = Value(value.get<double>());
+    }
+    inputs["output_format"] = Value("mp4");
+  }
+
+  AdmissionGuard guard(active_http_requests_, config_.max_in_flight);
+  if (!guard.admitted()) {
+    reject_overloaded(res);
+    return;
+  }
+  StagePayload payload;
+  payload.request.inputs = Value(std::move(inputs));
+  const std::string& stage = image ? unified_engine_->image_stage_name()
+                                   : unified_engine_->video_stage_name();
+  const SyncCoordinatorResult sync = run_sync_coordinator_request(
+      coordinator_, req, std::move(payload), stage, config_.request_timeout_s);
+  if (sync.status == SyncCoordinatorResult::Status::kSubmitError) {
+    reject(503, sync.submit_error, "pipeline_error");
+    return;
+  }
+  if (sync.status == SyncCoordinatorResult::Status::kClientClosed) {
+    reject(503, "client closed the connection before the render finished",
+           "render_error");
+    return;
+  }
+  if (sync.status == SyncCoordinatorResult::Status::kTimeout) {
+    reject(504, "render timed out", "render_error");
+    return;
+  }
+  const RequestInfo& info = *sync.info;
+  if (info.state != "completed") {
+    reject(500, info.error.empty() ? "render failed" : info.error,
+           "render_error");
+    return;
+  }
+  const Value* data =
+      info.result.is_map() ? info.result.find("data") : nullptr;
+  if (data == nullptr || !data->is_bin() || data->as_bin().empty()) {
+    reject(500, "the " + kind + " stage returned no bytes", "render_error");
+    return;
+  }
+  res.set_header("X-UmmInfer-Kind", kind);
+  res.set_content(data->as_bin(), image ? "image/png" : "video/mp4");
+}
+
+}  // namespace umminfer

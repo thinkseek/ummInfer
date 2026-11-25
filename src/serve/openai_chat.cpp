@@ -291,7 +291,7 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
       "model", "messages", "stream", "temperature", "max_tokens",
       "max_completion_tokens", "top_p", "seed", "stop", "response_format",
       "stream_options", "session_id", "session_history", "modalities",
-      "image", "audio", "video"};
+      "image", "audio", "video", "narrative"};
   for (auto it = body.begin(); it != body.end(); ++it) {
     if (!kAllowedFields.count(it.key()) && !it.value().is_null()) {
       reject("unsupported field: " + it.key());
@@ -395,7 +395,8 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
   } else if ((body.contains("modalities") && !body["modalities"].is_null()) ||
              (body.contains("image") && !body["image"].is_null()) ||
              (body.contains("audio") && !body["audio"].is_null()) ||
-             (body.contains("video") && !body["video"].is_null())) {
+             (body.contains("video") && !body["video"].is_null()) ||
+             (body.contains("narrative") && !body["narrative"].is_null())) {
     reject("mixed output requires unified mode");
     return;
   }

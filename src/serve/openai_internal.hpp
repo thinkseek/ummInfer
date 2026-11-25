@@ -200,6 +200,10 @@ class OpenAIApi::Impl {
                               int64_t created);
   void handle_transcription(const httplib::Request& req, httplib::Response& res);
   void handle_speech(const httplib::Request& req, httplib::Response& res);
+  // Direct single-stage visual swap: one image or video render against the
+  // stage the unified engine already registered.
+  void handle_visual_render(const httplib::Request& req,
+                            httplib::Response& res);
   void handle_chat(const httplib::Request& req, httplib::Response& res);
 
   Coordinator& coordinator_;

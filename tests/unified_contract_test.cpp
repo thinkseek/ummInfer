@@ -39,6 +39,7 @@
 #include "umminfer/serve/realtime_api.hpp"
 #include "umminfer/util/codec.hpp"
 #include "umminfer/obs/metrics.hpp"
+#include "pipeline/narrative_parser.hpp"
 #include "serve/energy_vad.hpp"
 #include <curl/curl.h>
 #include <httplib.h>
@@ -7660,6 +7661,935 @@ void test_public_http_wave7_media_passthrough_and_tts_chunk_meta() {
   wait_until([&]() -> bool { return engine.in_flight() == 0; },
              "wave7 requests stayed in flight");
 }
+// ---- Interleaved narrative ------------------------------------------------
+
+// A VLM-only request with the narrative object attached.
+StagePayload narrative_request(bool want_image, bool want_video,
+                               bool want_audio,
+                               const std::string& visual_mode, int max_slots,
+                               bool audio_stream = false) {
+  StagePayload payload =
+      mixed_request(want_image, want_audio, "", "Tina", want_video);
+  Value::Map inputs = payload.request.inputs.as_map();
+  if (want_audio && audio_stream) {
+    Value::Map options = inputs.at("audio_options").as_map();
+    options["stream"] = Value(true);
+    inputs["audio_options"] = Value(std::move(options));
+  }
+  Value::Map narrative;
+  narrative["enabled"] = Value(true);
+  narrative["visual_mode"] = Value(visual_mode);
+  narrative["max_slots"] = Value(static_cast<int64_t>(max_slots));
+  inputs["narrative"] = Value(std::move(narrative));
+  payload.request.inputs = Value(std::move(inputs));
+  return payload;
+}
+
+size_t count_kind(EventLog& log, UnifiedEvent::Kind kind) {
+  size_t n = 0;
+  for (const UnifiedEvent& e : log.snapshot()) {
+    if (e.kind == kind) ++n;
+  }
+  return n;
+}
+
+// Parser unit contract: split tokens, stray brackets, unknown tags, UTF-8,
+// empty prompts and EOF flush.
+void test_narrative_parser_unit() {
+  {
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    std::string prose = parser.feed("Hello [[ima", out);
+    check(prose == "Hello " && out.empty(),
+          "parser did not hold a split directive prefix");
+    prose = parser.feed("ge: a red fox]] world", out);
+    check(prose == " world", "parser prose around a split directive is wrong");
+    check(out.size() == 1 && out[0].kind == "image" &&
+              out[0].prompt == "a red fox" && out[0].prose_offset == 6,
+          "split image directive was not parsed");
+  }
+  {
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    check(parser.feed("a [b] c", out) == "a [b] c",
+          "a single stray bracket changed the prose");
+    check(out.empty(), "a single bracket produced a directive");
+  }
+  {
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    const std::string prose = parser.feed("[[[image: cat]]]", out);
+    check(prose == "[]" && out.size() == 1 && out[0].prompt == "cat",
+          "overlapping nested brackets were not handled");
+  }
+  {
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    check(parser.feed("[[note: x]] done", out) == "[[note: x]] done" &&
+              out.empty(),
+          "an unknown tag was treated as a directive");
+    check(parser.feed("[[IMAGE: upper]]", out) == "" && out.size() == 1 &&
+              out[0].kind == "image" && out[0].prompt == "upper",
+          "tag case insensitivity is wrong");
+  }
+  {
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    check(parser.feed("[[image:   ]]", out).empty() && out.empty(),
+          "an empty directive prompt was not dropped");
+    check(parser.feed("[[image: unclosed", out).empty() && out.empty(),
+          "an unclosed directive leaked into prose before EOF");
+    const std::string tail = parser.flush(out);
+    check(tail == "[[image: unclosed",
+          "EOF flush did not release an unclosed candidate as prose");
+  }
+  {
+    // UTF-8 prose split inside a multibyte sequence plus English prompts.
+    const std::string chinese = "\xE4\xBD\xA0\xE5\xA5\xBD\xEF\xBC\x8C\xE4\xB8\x96\xE7\x95\x8C";  // 你好，世界
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    std::string prose = parser.feed(chinese.substr(0, 4), out);
+    prose += parser.feed(chinese.substr(4), out);
+    check(prose == chinese && out.empty(),
+          "UTF-8 prose was corrupted by the parser");
+    prose = parser.feed(" [[visual: a red fox in snow]] />", out);
+    // 15 UTF-8 bytes of Chinese prose plus the space before the directive.
+    check(prose == "  />" && out.size() == 1 && out[0].kind == "visual" &&
+              out[0].prompt == "a red fox in snow" && out[0].prose_offset == 16,
+          "visual directive after UTF-8 prose is wrong");
+  }
+  {
+    NarrativeStreamParser parser;
+    std::vector<NarrativeDirective> out;
+    const std::string prose =
+        parser.feed("A[[visual: one]]B[[video: two]][[image: three]]C", out);
+    check(prose == "ABC" && out.size() == 3 &&
+              out[0].kind == "visual" && out[1].kind == "video" &&
+              out[2].kind == "image" && out[0].prose_offset == 1 &&
+              out[1].prose_offset == 2 && out[2].prose_offset == 2,
+          "multiple directives did not keep prose order and offsets");
+    check(parser.flush(out).empty() && out.size() == 3,
+          "flush after a complete stream produced extra output");
+  }
+}
+
+// Interleaved narrative with one image and one video slot, plus global
+// streaming TTS. Prose stays clean; slots dispatch mid-stream.
+void test_narrative_interleaved_slots_and_streaming_tts() {
+  Harness h("narrativeslots");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id =
+      engine.submit(narrative_request(true, true, true, "auto", 3, true));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "narrative request did not reach the VLM");
+  if (!vlm) return;
+  {
+    StagePayload p = StagePayload::from_value(vlm->data);
+    const Value* messages = p.request.inputs.find("messages");
+    check(messages != nullptr && messages->is_array() &&
+              messages->as_array().size() >= 2 &&
+              messages->as_array().front().find("role")->as_str() == "system" &&
+              messages->as_array().front()
+                      .find("content")
+                      ->as_str()
+                      .find("[[image:") != std::string::npos,
+          "the narrative director system prompt was not prepended");
+  }
+  const std::string vlm_id = vlm->request_id;
+
+  h.stream(vlm_id, "vlm",
+           text_chunk(
+               "Lanterns rise over the lake. "
+               "[[image: a glowing red lantern over a misty lake]]",
+               false));
+  wait_until([&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 1; },
+             "the first visual slot was not emitted mid-stream");
+  auto image_slot = h.next_submit(h.image_recv);
+  check(image_slot.has_value() &&
+            image_slot->request_id == id + ":slot:0",
+        "the image slot child id is not <id>:slot:0");
+  if (image_slot) {
+    StagePayload p = StagePayload::from_value(image_slot->data);
+    check(p.request.inputs.find("prompt")->as_str() ==
+              "a glowing red lantern over a misty lake",
+          "the slot child did not carry the directive prompt");
+  }
+  check(log.terminal_for(id) == std::nullopt,
+        "a terminal appeared before the VLM completed");
+
+  h.stream(vlm_id, "vlm",
+           text_chunk(
+               "The camera pulls back. "
+               "[[video: slow camera pull back over the lake]]",
+               false));
+  wait_until([&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 2; },
+             "the second visual slot was not emitted mid-stream");
+  auto video_slot = h.next_submit(h.video_recv);
+  check(video_slot.has_value() &&
+            video_slot->request_id == id + ":slot:1",
+        "the video slot child id is not <id>:slot:1");
+
+  auto tts0 = h.next_submit(h.tts_recv);
+  auto tts1 = h.next_submit(h.tts_recv);
+  check(tts0.has_value() && tts1.has_value(),
+        "global streaming TTS did not start during the narrative");
+  std::vector<std::string> tts_ids;
+  for (auto* submit : {&tts0, &tts1}) {
+    if (!*submit) continue;
+    tts_ids.push_back((*submit)->request_id);
+    StagePayload p = StagePayload::from_value((*submit)->data);
+    const std::string text = p.request.inputs.find("text")->as_str();
+    check(text.find("[[") == std::string::npos,
+          "a narrative directive leaked into the streaming TTS text");
+  }
+
+  // A streamed PCM chunk proves voice runs concurrently with the slots.
+  if (!tts_ids.empty()) {
+    Value::Map chunk;
+    chunk["audio"] = Value::bin(std::string(16, '\x01'));
+    chunk["index"] = Value(int64_t{0});
+    chunk["sample_rate"] = Value(int64_t{48000});
+    chunk["channels"] = Value(int64_t{2});
+    h.stream(tts_ids.front(), "tts", Value(std::move(chunk)));
+    wait_until(
+        [&] {
+          for (const UnifiedEvent& e : log.snapshot()) {
+            if (e.kind == UnifiedEvent::Kind::kArtifact &&
+                e.stage_id == std::string(kTtsStageId) &&
+                e.artifact.find("mime_type") != nullptr &&
+                e.artifact.find("mime_type")->as_str() == "audio/pcm") {
+              return true;
+            }
+          }
+          return false;
+        },
+        "no streamed audio/pcm artifact was emitted during the narrative");
+  }
+
+  {
+    size_t deltas = 0;
+    size_t slots = 0;
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVlmDelta) {
+        ++deltas;
+        check(e.text.find("[[") == std::string::npos,
+              "a directive leaked into vlm_delta");
+      }
+      if (e.kind == UnifiedEvent::Kind::kVisualSlot) {
+        ++slots;
+        check(e.text_offset >= 0 && !e.prompt.empty(),
+              "a visual_slot event lacks prompt/text_offset");
+      }
+    }
+    check(deltas == 2 && slots == 2,
+          "unexpected clean delta or slot count during the narrative");
+  }
+
+  h.complete(vlm_id, "vlm", true,
+             text_result(
+                 "Lanterns rise over the lake. The camera pulls back."));
+  h.complete(id + ":slot:0", "image", true,
+             artifact_result("image", "image/png", "IMGBYTES"));
+  h.complete(id + ":slot:1", "video", true,
+             artifact_result("video", "video/mp4", "VIDBYTES"));
+  Value::Map tts_extra;
+  tts_extra["sample_rate"] = Value(int64_t{24000});
+  tts_extra["channels"] = Value(int64_t{1});
+  tts_extra["streamed"] = Value(true);
+  for (const std::string& leg_id : tts_ids) {
+    h.complete(leg_id, "tts", true,
+               artifact_result("audio", "audio/wav", std::string(8, '\x02'),
+                               tts_extra));
+  }
+  check(engine.wait(id, 5.0), "the narrative request did not complete");
+
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+            log.terminal_count(id) == 1,
+        "the narrative request did not end in one complete terminal");
+  bool image_leg = false;
+  bool video_leg = false;
+  bool tts_leg = false;
+  if (terminal && terminal->legs.is_array()) {
+    const auto& legs = terminal->legs.as_array();
+    check(legs.size() == 3,
+          "the narrative terminal legs array does not cover slots plus tts");
+    for (const Value& leg : legs) {
+      const std::string stage = leg.find("stage")->as_str();
+      if (stage == "image") {
+        image_leg = leg.find("slot_id")->as_str() == "slot-0" &&
+                    leg.find("slot_index")->as_int() == 0 &&
+                    leg.find("state")->as_str() == "completed";
+      } else if (stage == "video") {
+        video_leg = leg.find("slot_id")->as_str() == "slot-1" &&
+                    leg.find("slot_index")->as_int() == 1 &&
+                    leg.find("state")->as_str() == "completed";
+      } else if (stage == "tts") {
+        tts_leg = leg.find("state")->as_str() == "completed";
+      }
+    }
+  }
+  check(image_leg && video_leg && tts_leg,
+        "the terminal legs array lacks a slot or tts entry");
+
+  bool image_artifact_tagged = false;
+  bool video_artifact_tagged = false;
+  for (const UnifiedEvent& e : log.snapshot()) {
+    if (e.kind != UnifiedEvent::Kind::kArtifact) continue;
+    if (e.stage_id == std::string(kImageStageId)) {
+      image_artifact_tagged =
+          e.artifact.find("slot_id") != nullptr &&
+          e.artifact.find("slot_id")->as_str() == "slot-0" &&
+          e.artifact.find("slot_index")->as_int() == 0;
+    } else if (e.stage_id == std::string(kVideoStageId)) {
+      video_artifact_tagged =
+          e.artifact.find("slot_id") != nullptr &&
+          e.artifact.find("slot_id")->as_str() == "slot-1" &&
+          e.artifact.find("slot_index")->as_int() == 1;
+    }
+  }
+  check(image_artifact_tagged && video_artifact_tagged,
+        "slot artifacts do not carry slot_id and slot_index");
+
+  bool snapshot_has_slot = false;
+  for (const LegSnapshot& leg : engine.legs_snapshot(id)) {
+    if (leg.slot_id == "slot-0" && leg.stage_id == kImageStageId) {
+      snapshot_has_slot = true;
+    }
+  }
+  check(snapshot_has_slot, "legs_snapshot does not track a narrative slot leg");
+  engine.release(id);
+}
+
+// max_slots drops extra directives (still stripped from prose) and a
+// zero-marker narrative falls back to exactly one slot.
+void test_narrative_max_slots_and_zero_marker_fallback() {
+  {
+    Harness h("narrativemax");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    const std::string id =
+        engine.submit(narrative_request(true, false, false, "auto", 1));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "max_slots request did not reach the VLM");
+    if (!vlm) return;
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("A [[image: cat]] B [[image: dog]] C", false));
+    wait_until(
+        [&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 1; },
+        "the first slot beyond max_slots was not dispatched");
+    auto slot = h.next_submit(h.image_recv);
+    check(slot.has_value() && slot->request_id == id + ":slot:0",
+          "the allowed slot child id is wrong");
+    check(h.no_submit(h.image_recv),
+          "max_slots=1 still dispatched a second visual slot");
+    size_t slots = 0;
+    size_t prose_bytes = 0;
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVisualSlot) ++slots;
+      if (e.kind == UnifiedEvent::Kind::kVlmDelta) {
+        prose_bytes += e.text.size();
+        check(e.text.find("[[") == std::string::npos,
+              "a dropped directive leaked into prose");
+      }
+    }
+    check(slots == 1 && prose_bytes == std::string("A  B  C").size(),
+          "max_slots stripping or prose output is wrong");
+    h.complete(vlm->request_id, "vlm", true, text_result("A B C"));
+    h.complete(id + ":slot:0", "image", true,
+               artifact_result("image", "image/png", "X"));
+    check(engine.wait(id, 5.0), "max_slots request did not complete");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+              terminal->legs.is_array() &&
+              terminal->legs.as_array().size() == 1,
+          "max_slots terminal legs are wrong");
+    engine.release(id);
+  }
+  {
+    Harness h("narrativefallback");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    const std::string id =
+        engine.submit(narrative_request(true, false, false, "auto", 3));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "fallback request did not reach the VLM");
+    if (!vlm) return;
+    h.complete(vlm->request_id, "vlm", true,
+               text_result("A quiet harbor at dawn."));
+    auto slot = h.next_submit(h.image_recv);
+    check(slot.has_value() && slot->request_id == id + ":slot:0",
+          "the zero-marker fallback slot was not dispatched");
+    if (slot) {
+      StagePayload p = StagePayload::from_value(slot->data);
+      check(p.request.inputs.find("prompt")->as_str() ==
+                "A quiet harbor at dawn.",
+            "the fallback slot does not use the clean VLM text");
+    }
+    bool fallback_event = false;
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVisualSlot &&
+          e.slot_id == "slot-0" &&
+          e.prompt == "A quiet harbor at dawn.") {
+        fallback_event = true;
+      }
+    }
+    check(fallback_event, "the fallback visual_slot event is missing");
+    h.complete(id + ":slot:0", "image", true,
+               artifact_result("image", "image/png", "FB"));
+    check(engine.wait(id, 5.0), "fallback request did not complete");
+    engine.release(id);
+  }
+}
+
+// Cancel mid-narrative broadcasts to every slot child and to streaming TTS.
+void test_narrative_cancel_aborts_slots_and_tts() {
+  Harness h("narrativecancel");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id =
+      engine.submit(narrative_request(true, false, true, "auto", 3, true));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "cancel request did not reach the VLM");
+  if (!vlm) return;
+  h.stream(vlm->request_id, "vlm",
+           text_chunk("A lantern. [[image: a red lantern]]", false));
+  wait_until([&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 1; },
+             "cancel request never opened a slot");
+  auto slot = h.next_submit(h.image_recv);
+  auto tts = h.next_submit(h.tts_recv);
+  check(slot.has_value() && tts.has_value(),
+        "cancel request did not start its slot and tts legs");
+
+  check(engine.cancel(id), "cancel rejected an active narrative request");
+  check(h.wait_abort_on(h.image_recv, id + ":slot:0"),
+        "cancel did not abort the narrative slot child");
+  if (tts) {
+    check(h.wait_abort_on(h.tts_recv, tts->request_id),
+          "cancel did not abort the streaming TTS leg");
+    h.complete(tts->request_id, "tts", false, Value(),
+               std::string("request aborted"));
+  }
+  if (slot) {
+    h.complete(slot->request_id, "image", false, Value(),
+               std::string("request aborted"));
+  }
+  h.complete(vlm->request_id, "vlm", false, Value(),
+             std::string("request aborted"));
+  check(engine.wait(id, 5.0), "cancelled narrative request did not settle");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kCancelled &&
+            log.terminal_count(id) == 1,
+        "cancelled narrative request did not produce one cancelled terminal");
+  check(engine.in_flight() == 0,
+        "in_flight nonzero after narrative cancel");
+  engine.release(id);
+}
+
+
+// EOF release, no duplicate directive dispatch, and a clean terminal result.
+void test_narrative_eof_and_terminal_result() {
+  {
+    Harness h("narrativeeof");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    const std::string id =
+        engine.submit(narrative_request(true, false, false, "auto", 3));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "EOF request did not reach the VLM");
+    if (!vlm) return;
+    const std::string full = "The list ends here [";
+    h.stream(vlm->request_id, "vlm", text_chunk(full, false));
+    h.complete(vlm->request_id, "vlm", true, text_result(full));
+    // No directive was seen, so the contract fallback renders slot-0.
+    auto slot = h.next_submit(h.image_recv);
+    check(slot.has_value(), "the fallback slot did not start");
+    if (slot) {
+      h.complete(slot->request_id, "image", true,
+                 artifact_result("image", "image/png", "EOF"));
+    }
+    check(engine.wait(id, 5.0), "EOF request did not complete");
+    std::string emitted;
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVlmDelta) emitted += e.text;
+    }
+    check(emitted == full,
+          "the parser's held EOF suffix was dropped from the prose stream");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete,
+          "EOF request did not end complete");
+    if (terminal) {
+      check(terminal->text == full, "terminal text lost the held suffix");
+      const Value* text = terminal->result.find("text");
+      check(text != nullptr && text->is_str() && text->as_str() == full,
+            "terminal result text is not the clean prose");
+    }
+    engine.release(id);
+  }
+  {
+    Harness h("narrativedironly");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    const std::string id =
+        engine.submit(narrative_request(true, false, false, "auto", 3));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "directive-only request did not reach the VLM");
+    if (!vlm) return;
+    const std::string full = "[[image: a red fox]]";
+    h.stream(vlm->request_id, "vlm", text_chunk(full, false));
+    wait_until([&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 1; },
+               "the directive-only slot was not dispatched");
+    auto slot = h.next_submit(h.image_recv);
+    check(slot.has_value() && slot->request_id == id + ":slot:0",
+          "the directive-only slot child id is wrong");
+    h.complete(vlm->request_id, "vlm", true, text_result(full));
+    check(h.no_submit(h.image_recv),
+          "the completion re-parsed the streamed directive and dispatched twice");
+    size_t slots = count_kind(log, UnifiedEvent::Kind::kVisualSlot);
+    check(slots == 1, "the streamed directive was dispatched twice");
+    if (slot) {
+      h.complete(slot->request_id, "image", true,
+                 artifact_result("image", "image/png", "DIR"));
+    }
+    check(engine.wait(id, 5.0), "directive-only request did not complete");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete,
+          "directive-only request did not end complete");
+    if (terminal) {
+      check(terminal->text.empty(), "terminal text kept a raw directive");
+      const Value* text = terminal->result.find("text");
+      check(text != nullptr && text->is_str() &&
+                text->as_str().find("[[") == std::string::npos,
+            "terminal result leaked a raw directive to the wire");
+    }
+    engine.release(id);
+  }
+}
+
+// A VLM failure after a slot was dispatched aborts that running child.
+void test_narrative_vlm_failure_aborts_slots() {
+  Harness h("narrativevlmfail");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id =
+      engine.submit(narrative_request(true, false, false, "auto", 3));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "failure request did not reach the VLM");
+  if (!vlm) return;
+  h.stream(vlm->request_id, "vlm",
+           text_chunk("A lantern. [[image: a red lantern]]", false));
+  wait_until([&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 1; },
+             "failure request never opened a slot");
+  auto slot = h.next_submit(h.image_recv);
+  check(slot.has_value(), "failure request did not start its slot");
+  h.complete(vlm->request_id, "vlm", false, Value(), std::string("vlm down"));
+  check(h.wait_abort_on(h.image_recv, id + ":slot:0"),
+        "a VLM failure did not abort the running slot child");
+  if (slot) {
+    h.complete(slot->request_id, "image", false, Value(),
+               std::string("request aborted"));
+  }
+  check(engine.wait(id, 5.0), "failed narrative request did not settle");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kError,
+        "failed narrative request did not end in an error terminal");
+  check(engine.in_flight() == 0,
+        "in_flight nonzero after a failed narrative request");
+  engine.release(id);
+}
+
+// ---- Standalone visual render endpoint -----------------------------------
+
+std::string lower_header(const std::map<std::string, std::string>& headers,
+                         const std::string& name) {
+  for (const auto& [key, value] : headers) {
+    std::string lower = key;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) {
+                     return static_cast<char>(std::tolower(c));
+                   });
+    if (lower == name) return value;
+  }
+  return {};
+}
+
+void test_public_http_visual_render() {
+  Harness h("visualrender");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "visual render server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string base =
+      "http://127.0.0.1:" + std::to_string(api.bound_port());
+
+  auto post = [&](const nlohmann::json& body) {
+    test_http::HttpRequest request;
+    request.url = base + "/v1/visual/render";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{10000};
+    return test_http::perform(request);
+  };
+  auto status_of = [&](const nlohmann::json& body) {
+    try {
+      post(body);
+    } catch (const client::Error& exc) {
+      return exc.status();
+    }
+    return 200;
+  };
+
+  {
+    auto future = std::async(std::launch::async, [&] {
+      return post({{"kind", "image"},
+                   {"prompt", "a red fox in snow"},
+                   {"steps", 4},
+                   {"size", "512x512"}});
+    });
+    auto submit = h.next_submit(h.image_recv);
+    check(submit.has_value(), "image render did not reach the image stage");
+    if (submit) {
+      StagePayload p = StagePayload::from_value(submit->data);
+      check(p.request.inputs.find("prompt")->as_str() ==
+                "a red fox in snow" &&
+                p.request.inputs.find("steps")->as_int() == 4,
+            "image render inputs were not forwarded");
+      h.complete(submit->request_id, "image", true,
+                 artifact_result("image", "image/png", "PNGBYTES"));
+    }
+    const auto response = future.get();
+    check(response.status == 200 && response.body == "PNGBYTES",
+          "image render did not return the raw PNG bytes");
+    check(lower_header(response.headers, "content-type") == "image/png" &&
+              lower_header(response.headers, "x-umminfer-kind") == "image",
+          "image render response headers are wrong");
+  }
+  {
+    auto future = std::async(std::launch::async, [&] {
+      return post({{"kind", "video"},
+                   {"prompt", "waves at dusk"},
+                   {"num_frames", 13},
+                   {"fps", 16},
+                   {"guidance_scale", 5.0}});
+    });
+    auto submit = h.next_submit(h.video_recv);
+    check(submit.has_value(), "video render did not reach the video stage");
+    if (submit) {
+      StagePayload p = StagePayload::from_value(submit->data);
+      check(p.request.inputs.find("prompt")->as_str() == "waves at dusk" &&
+                p.request.inputs.find("num_frames")->as_int() == 13 &&
+                p.request.inputs.find("fps")->as_int() == 16 &&
+                p.request.inputs.find("guidance_scale")->as_double() == 5.0,
+            "video render inputs were not forwarded");
+      h.complete(submit->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4BYTES"));
+    }
+    const auto response = future.get();
+    check(response.status == 200 && response.body == "MP4BYTES",
+          "video render did not return the raw MP4 bytes");
+    check(lower_header(response.headers, "content-type") == "video/mp4" &&
+              lower_header(response.headers, "x-umminfer-kind") == "video",
+          "video render response headers are wrong");
+  }
+  check(status_of({{"kind", "image"}}) == 400,
+        "visual render without a prompt must return 400");
+  check(status_of({{"kind", "image"}, {"prompt", ""}}) == 400,
+        "visual render with an empty prompt must return 400");
+  check(status_of({{"kind", "audio"}, {"prompt", "x"}}) == 400,
+        "visual render with an unknown kind must return 400");
+  check(status_of({{"kind", "image"}, {"prompt", "x"}, {"nope", 1}}) == 400,
+        "visual render with an unknown field must return 400");
+  check(status_of({{"kind", "image"}, {"prompt", "x"}, {"num_frames", 13}}) ==
+            400,
+        "visual render with a video field on kind image must return 400");
+  check(status_of({{"kind", "video"}, {"prompt", "x"},
+                   {"image", "data:image/png;base64,AA"}}) == 400,
+        "visual render with an image field on kind video must return 400");
+  check(status_of({{"kind", "image"}, {"prompt", "x"}, {"steps", 0}}) == 400,
+        "visual render with steps=0 must return 400");
+  check(status_of({{"kind", "video"}, {"prompt", "x"},
+                   {"guidance_scale", -1.0}}) == 400,
+        "visual render with a negative guidance must return 400");
+
+  api.stop();
+  server_thread.join();
+
+  // No registered stage answers 501.
+  Harness h2("visualnostage");
+  ApiConfig config2;
+  config2.host = "127.0.0.1";
+  config2.port = 0;
+  config2.model = "qwen3-unified";
+  OpenAIApi api2(h2.coordinator, config2);
+  UnifiedEngine engine2(h2.coordinator, UnifiedConfig{});
+  api2.set_unified_engine(engine2, "vlm");
+  check(api2.bind(), "no-stage visual server did not bind");
+  h2.start_pump();
+  std::thread server2([&] { api2.listen(); });
+  auto status2 = [&](const nlohmann::json& body) {
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api2.bound_port()) +
+                  "/v1/visual/render";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    try {
+      test_http::perform(request);
+    } catch (const client::Error& exc) {
+      return exc.status();
+    }
+    return 200;
+  };
+  check(status2({{"kind", "image"}, {"prompt", "x"}}) == 501,
+        "image render without an image stage must return 501");
+  check(status2({{"kind", "video"}, {"prompt", "x"}}) == 501,
+        "video render without a video stage must return 501");
+  api2.stop();
+  server2.join();
+}
+
+// HTTP validation for the narrative object. Every case fails before submit.
+void test_public_http_narrative_validation() {
+  Harness h("narrativevalidate");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 5.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "narrative validation server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  auto status_of = [&](const nlohmann::json& extra) {
+    nlohmann::json body = {
+        {"model", "qwen3-unified"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"}, {"content", "hi"}}})}};
+    for (auto it = extra.begin(); it != extra.end(); ++it) {
+      body[it.key()] = it.value();
+    }
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    try {
+      test_http::perform(request);
+    } catch (const client::Error& exc) {
+      return exc.status();
+    }
+    return 200;
+  };
+  const nlohmann::json enabled = {{"enabled", true}};
+  check(status_of({{"stream", true},
+                   {"narrative", "not-an-object"}}) == 400,
+        "a non-object narrative must return 400");
+  check(status_of({{"stream", true},
+                   {"modalities", nlohmann::json::array({"text", "image"})},
+                   {"narrative", {{"enabled", "yes"}}}}) == 400,
+        "a non-boolean narrative.enabled must return 400");
+  check(status_of({{"stream", false},
+                   {"modalities", nlohmann::json::array({"text", "image"})},
+                   {"narrative", enabled}}) == 400,
+        "narrative without stream=true must return 400");
+  check(status_of({{"stream", true},
+                   {"modalities", nlohmann::json::array({"text"})},
+                   {"narrative", enabled}}) == 400,
+        "narrative without a visual modality must return 400");
+  check(status_of({{"stream", true},
+                   {"modalities", nlohmann::json::array({"text", "image"})},
+                   {"narrative", {{"enabled", true},
+                                  {"visual_mode", "video"}}}}) == 400,
+        "narrative visual_mode=video without video must return 400");
+  check(status_of({{"stream", true},
+                   {"modalities", nlohmann::json::array({"text", "image"})},
+                   {"narrative", {{"enabled", true}, {"visual_mode", "bogus"}}}}) ==
+            400,
+        "an unknown narrative.visual_mode must return 400");
+  check(status_of({{"stream", true},
+                   {"modalities", nlohmann::json::array({"text", "image"})},
+                   {"narrative", {{"enabled", true}, {"max_slots", 0}}}}) == 400,
+        "narrative.max_slots=0 must return 400");
+  check(status_of({{"stream", true},
+                   {"modalities", nlohmann::json::array({"text", "image"})},
+                   {"narrative", {{"enabled", true}, {"max_slots", 7}}}}) == 400,
+        "narrative.max_slots=7 must return 400");
+  check(status_of({{"stream", true},
+                   {"modalities", nlohmann::json::array({"text"})},
+                   {"image", {{"size", "512x512"}}},
+                   {"narrative", enabled}}) == 400,
+        "narrative must require image/video in modalities, not just an image object");
+
+  api.stop();
+  server_thread.join();
+}
+
+// HTTP SSE contract for the narrative wire format.
+void test_public_http_narrative_sse() {
+  Harness h("narrativesse");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "narrative SSE server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  nlohmann::json body = {
+      {"model", "qwen3-unified"},
+      {"messages", nlohmann::json::array(
+                       {nlohmann::json{{"role", "user"},
+                                       {"content", "tell a story"}}})},
+      {"stream", true},
+      {"modalities", nlohmann::json::array({"text", "image", "audio"})},
+      {"audio", {{"voice", "Tina"}, {"format", "wav"}, {"stream", true}}},
+      {"narrative", {{"enabled", true},
+                     {"visual_mode", "auto"},
+                     {"max_slots", 2}}}};
+  auto future = std::async(std::launch::async, [&] {
+    test_http::HttpRequest request;
+    request.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) +
+                  "/v1/chat/completions";
+    request.body = body.dump();
+    request.headers.emplace("Content-Type", "application/json");
+    request.timeout = client::Milliseconds{15000};
+    return test_http::perform(request);
+  });
+
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "narrative SSE request did not reach the VLM");
+  if (!vlm) {
+    api.stop();
+    server_thread.join();
+    return;
+  }
+  const std::string vlm_id = vlm->request_id;
+  h.stream(vlm_id, "vlm",
+           text_chunk("A hooded traveler walks north. "
+                      "[[image: a hooded traveler under a pale moon]]",
+                      false));
+  auto slot = h.next_submit(h.image_recv);
+  check(slot.has_value() && slot->request_id == vlm_id + ":slot:0",
+        "the HTTP narrative slot was not dispatched with <request>:slot:0");
+  if (slot) {
+    h.complete(slot->request_id, "image", true,
+               artifact_result("image", "image/png", "SSEIMG"));
+  }
+  auto tts = h.next_submit(h.tts_recv);
+  check(tts.has_value(), "HTTP narrative did not start streaming TTS");
+  if (tts) {
+    Value::Map chunk;
+    chunk["audio"] = Value::bin(std::string(16, '\x03'));
+    chunk["index"] = Value(int64_t{0});
+    h.stream(tts->request_id, "tts", Value(std::move(chunk)));
+    Value::Map extra;
+    extra["streamed"] = Value(true);
+    h.complete(tts->request_id, "tts", true,
+               artifact_result("audio", "audio/wav", std::string(8, '\x04'),
+                               extra));
+  }
+  h.complete(vlm_id, "vlm", true,
+             text_result("A hooded traveler walks north."));
+  const auto response = future.get();
+  api.stop();
+  server_thread.join();
+  check(response.status == 200 && occurrences(response.body, "[DONE]") == 1,
+        "narrative SSE did not end with one [DONE]");
+
+  size_t visual_slot_frames = 0;
+  size_t clean_deltas = 0;
+  bool slot_frame_ok = false;
+  bool audio_pcm = false;
+  bool image_tagged = false;
+  bool terminal_ok = false;
+  int64_t last_seq = -1;
+  for (const std::string& payload : sse_data_payloads(response.body)) {
+    const json frame = json::parse(payload);
+    if (!frame.contains("unified")) continue;
+    const json& unified = frame["unified"];
+    const int64_t seq = unified["seq"].get<int64_t>();
+    check(seq == last_seq + 1, "HTTP narrative seq is not gap-free");
+    last_seq = seq;
+    const std::string kind = unified["kind"].get<std::string>();
+    if (kind == "vlm_delta") {
+      ++clean_deltas;
+      check(unified["text"].get<std::string>().find("[[") == std::string::npos,
+            "HTTP vlm_delta leaked a directive");
+    } else if (kind == "visual_slot") {
+      ++visual_slot_frames;
+      slot_frame_ok =
+          unified["stage"].get<std::string>() == "image" &&
+          unified["slot_id"].get<std::string>() == "slot-0" &&
+          unified["slot_index"].get<int64_t>() == 0 &&
+          unified["media_type"].get<std::string>() == "image" &&
+          unified["prompt"].get<std::string>() ==
+              "a hooded traveler under a pale moon" &&
+          unified.contains("text_offset");
+    } else if (kind == "artifact") {
+      const json& artifact = unified["artifact"];
+      if (artifact.value("mime_type", std::string()) == "audio/pcm") {
+        audio_pcm = true;
+      }
+      if (artifact.value("media_type", std::string()) == "image") {
+        image_tagged = artifact.value("slot_id", std::string()) == "slot-0" &&
+                       artifact.value("slot_index", int64_t{-1}) == 0;
+      }
+    } else if (kind == "complete") {
+      terminal_ok = unified.contains("legs") &&
+                    unified["legs"].size() == 2;
+    }
+  }
+  check(visual_slot_frames == 1 && clean_deltas == 1 && slot_frame_ok,
+        "HTTP narrative visual_slot frame does not match the wire contract");
+  check(audio_pcm, "HTTP narrative did not stream audio/pcm concurrently");
+  check(image_tagged, "HTTP narrative image artifact lacks slot attribution");
+  check(terminal_ok, "HTTP narrative terminal legs array is wrong");
+  wait_until([&] { return engine.in_flight() == 0; },
+             "narrative SSE request stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -7762,6 +8692,15 @@ int main() {
   RUN(test_non_unified_null_video_field_compatible());
   RUN(test_direct_engine_video_input_modality_rejected_even_with_video_stage());
   RUN(test_mixed_artifact_aggregate_60mib_boundary());
+  RUN(test_narrative_parser_unit());
+  RUN(test_narrative_interleaved_slots_and_streaming_tts());
+  RUN(test_narrative_max_slots_and_zero_marker_fallback());
+  RUN(test_narrative_cancel_aborts_slots_and_tts());
+  RUN(test_narrative_eof_and_terminal_result());
+  RUN(test_narrative_vlm_failure_aborts_slots());
+  RUN(test_public_http_narrative_validation());
+  RUN(test_public_http_visual_render());
+  RUN(test_public_http_narrative_sse());
   RUN(test_control_message_parse_contract());
   RUN(test_energy_vad_speech_transitions());
   RUN(test_stage_submit_fallback_and_failure_completion());

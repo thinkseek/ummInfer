@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "pipeline/narrative_parser.hpp"
 #include "pipeline/unified_schema.hpp"
 #include "umminfer/obs/metrics.hpp"
 #include "umminfer/pipeline/sentence_split.hpp"
@@ -152,6 +153,7 @@ const char* to_string(UnifiedEvent::Kind kind) {
     case UnifiedEvent::Kind::kAsrPartial: return "asr_partial";
     case UnifiedEvent::Kind::kAsrFinal: return "asr_final";
     case UnifiedEvent::Kind::kVlmDelta: return "vlm_delta";
+    case UnifiedEvent::Kind::kVisualSlot: return "visual_slot";
     case UnifiedEvent::Kind::kArtifact: return "artifact";
     case UnifiedEvent::Kind::kLegError: return "leg_error";
     case UnifiedEvent::Kind::kComplete: return "complete";
@@ -220,6 +222,12 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.image_options = std::move(parsed.image_options);
   record.audio_options = std::move(parsed.audio_options);
   record.video_options = std::move(parsed.video_options);
+  record.narrative_enabled = parsed.narrative_enabled;
+  record.narrative_visual_mode = parsed.narrative_visual_mode;
+  record.narrative_max_slots = parsed.narrative_max_slots;
+  if (record.narrative_enabled) {
+    record.narrative_parser = std::make_shared<NarrativeStreamParser>();
+  }
   record.image_leg.modality = UnifiedModality::kImage;
   record.image_leg.enabled = parsed.image_output;
   record.image_leg.stage_name = config_.image_stage;
@@ -237,9 +245,11 @@ std::string UnifiedEngine::submit(StagePayload payload) {
       record.tts_voice = voice->second.as_str();
     }
     const auto stream = record.audio_options.find("stream");
+    // Global streaming voice: sentences are spoken from the first delta while
+    // the VLM generates and visual legs render. Prose is cleaned of narrative
+    // directives before it reaches the sentence pipeline.
     record.tts_stream = stream != record.audio_options.end() &&
-                        stream->second.is_bool() && stream->second.as_bool() &&
-                        !parsed.image_output && !parsed.video_output;
+                        stream->second.is_bool() && stream->second.as_bool();
   }
   for (Value::Map* metadata : {&record.vlm_metadata, &payload.request.metadata}) {
     (*metadata)["request_type"] = Value("chat");
@@ -259,6 +269,11 @@ std::string UnifiedEngine::submit(StagePayload payload) {
           session_store_.prepend_history(
               record.session_id,
               vlm_payload.request.inputs["messages"].as_array()));
+    }
+    if (record.narrative_enabled) {
+      unified_detail::prepend_narrative_instructions(
+          vlm_payload.request.inputs, record.narrative_visual_mode,
+          record.narrative_max_slots);
     }
     vlm_payload.request.params = record.vlm_params;
     vlm_payload.request.metadata = record.vlm_metadata;
@@ -304,6 +319,9 @@ UnifiedEngine::CancelStatus UnifiedEngine::cancel_for_session(
     record.for_each_single_output_leg([&](const OutputLeg& leg) {
       if (leg.submitted) active_ids.push_back(leg.child_id);
     });
+    for (const OutputLeg& leg : record.slot_legs) {
+      if (leg.submitted) active_ids.push_back(leg.child_id);
+    }
     for (const OutputLeg& leg : record.tts_legs) {
       if (leg.submitted) active_ids.push_back(leg.child_id);
     }
@@ -343,7 +361,7 @@ std::vector<LegSnapshot> UnifiedEngine::legs_snapshot_locked(
   }
   out.push_back({UnifiedModality::kText, kVlmStageId, record.vlm_state,
                  record.vlm_error});
-  if (record.image_leg.enabled) {
+  if (record.image_leg.enabled && !record.narrative_enabled) {
     out.push_back({record.image_leg.modality, record.image_leg.stage_id,
                    record.image_leg.state, record.image_leg.error});
   }
@@ -371,9 +389,13 @@ std::vector<LegSnapshot> UnifiedEngine::legs_snapshot_locked(
     out.push_back({UnifiedModality::kAudio, kTtsStageId, tts_state,
                    record.tts_failed ? record.tts_error : std::string{}});
   }
-  if (record.video_leg.enabled) {
+  if (record.video_leg.enabled && !record.narrative_enabled) {
     out.push_back({record.video_leg.modality, record.video_leg.stage_id,
                    record.video_leg.state, record.video_leg.error});
+  }
+  for (const OutputLeg& leg : record.slot_legs) {
+    out.push_back({leg.modality, leg.stage_id, leg.state, leg.error,
+                   leg.slot_id});
   }
   return out;
 }
@@ -419,6 +441,12 @@ bool UnifiedEngine::release(const std::string& request_id) {
         child_to_unified_.erase(leg.child_id);
       }
     });
+    for (const OutputLeg& leg : it->second.slot_legs) {
+      if (leg.submitted) {
+        child_ids.push_back(leg.child_id);
+        child_to_unified_.erase(leg.child_id);
+      }
+    }
     for (const OutputLeg& leg : it->second.tts_legs) {
       if (leg.submitted) {
         child_ids.push_back(leg.child_id);
@@ -469,7 +497,13 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
       const std::string& unified_id = record_it->first;
       if (msg.from_stage == config_.vlm_stage) {
         if (record.phase == Phase::kVlm) {
-          const std::string delta(unified_detail::chunk_text(msg.chunk));
+          const std::string raw(unified_detail::chunk_text(msg.chunk));
+          std::string delta = raw;
+          std::vector<NarrativeDirective> directives;
+          if (record.narrative_enabled && record.narrative_parser) {
+            record.vlm_stream_seen = true;
+            delta = record.narrative_parser->feed(raw, directives);
+          }
           record.vlm_text += delta;
           if (record.tts_stream && !record.tts_failed) {
             record.sentence_buf += delta;
@@ -490,14 +524,25 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
               dispatch_queue_.push_back(std::move(leg_error));
             }
           }
-          UnifiedEvent event;
-          event.request_id = unified_id;
-          event.session_id = record.session_id;
-          event.stage_id = kVlmStageId;
-          event.kind = UnifiedEvent::Kind::kVlmDelta;
-          event.seq = record.next_seq++;
-          event.text = delta;
-          dispatch_queue_.push_back(std::move(event));
+          if (!delta.empty() || !record.narrative_enabled) {
+            UnifiedEvent event;
+            event.request_id = unified_id;
+            event.session_id = record.session_id;
+            event.stage_id = kVlmStageId;
+            event.kind = UnifiedEvent::Kind::kVlmDelta;
+            event.seq = record.next_seq++;
+            event.text = delta;
+            dispatch_queue_.push_back(std::move(event));
+          }
+          // A directive closes after the prose that precedes it: dispatch each
+          // slot immediately, still inside the VLM stream.
+          for (const NarrativeDirective& directive : directives) {
+            const std::string kind = slot_kind_locked(record, directive.kind);
+            if (kind.empty()) continue;
+            dispatch_narrative_slot_locked(unified_id, record, kind,
+                                           directive.prompt,
+                                           directive.prose_offset);
+          }
         }
       } else if (msg.from_stage == config_.tts_stage && record.tts_enabled) {
         if (record.tts_stream) {
@@ -622,6 +667,11 @@ void UnifiedEngine::start_vlm_locked(const std::string& request_id,
             record.session_id,
             vlm_payload.request.inputs["messages"].as_array()));
   }
+  if (record.narrative_enabled) {
+    unified_detail::prepend_narrative_instructions(
+        vlm_payload.request.inputs, record.narrative_visual_mode,
+        record.narrative_max_slots);
+  }
   vlm_payload.request.params = record.vlm_params;
   vlm_payload.request.metadata = record.vlm_metadata;
   record.phase = Phase::kVlm;
@@ -629,6 +679,98 @@ void UnifiedEngine::start_vlm_locked(const std::string& request_id,
   record.public_info.current_stage = kVlmStageId;
   record.vlm_started = std::chrono::steady_clock::now();
   coordinator_.submit(vlm_payload, config_.vlm_stage);
+}
+
+std::string UnifiedEngine::slot_kind_locked(
+    const Record& record, const std::string& directive_kind) const {
+  if (record.narrative_visual_mode == "image") {
+    return record.image_leg.enabled ? std::string(kImageStageId)
+                                    : std::string{};
+  }
+  if (record.narrative_visual_mode == "video") {
+    return record.video_leg.enabled ? std::string(kVideoStageId)
+                                    : std::string{};
+  }
+  if (directive_kind == "image" && record.image_leg.enabled) {
+    return kImageStageId;
+  }
+  if (directive_kind == "video" && record.video_leg.enabled) {
+    return kVideoStageId;
+  }
+  if (record.image_leg.enabled) return kImageStageId;
+  if (record.video_leg.enabled) return kVideoStageId;
+  return {};
+}
+
+void UnifiedEngine::dispatch_narrative_slot_locked(
+    const std::string& request_id, Record& record, std::string kind,
+    const std::string& prompt, size_t prose_offset) {
+  // A cancel broadcast has already gone out; a slot created now would never
+  // be aborted and would outlive the request.
+  if (record.cancel_requested) return;
+  if (record.narrative_next_slot >= record.narrative_max_slots) return;
+  if (prompt.empty()) return;
+  const bool image = kind == kImageStageId;
+  if (!image && kind != kVideoStageId) return;
+  const int index = record.narrative_next_slot;
+  OutputLeg leg;
+  leg.modality = image ? UnifiedModality::kImage : UnifiedModality::kVideo;
+  leg.enabled = true;
+  leg.stage_name = image ? config_.image_stage : config_.video_stage;
+  leg.stage_id = image ? kImageStageId : kVideoStageId;
+  leg.slot_id = "slot-" + std::to_string(index);
+  leg.slot_index = index;
+  leg.child_id = request_id + ":slot:" + std::to_string(index);
+  Value::Map options = image ? record.image_options : record.video_options;
+  options["prompt"] = Value(prompt);
+  StagePayload payload;
+  payload.request_id = leg.child_id;
+  payload.request.inputs = Value(std::move(options));
+  payload.request.params = record.vlm_params;
+  payload.request.metadata = record.vlm_metadata;
+
+  // The slot event goes out first, at the exact point the directive closed in
+  // the prose stream, before the child is even submitted.
+  UnifiedEvent slot_event;
+  slot_event.request_id = request_id;
+  slot_event.session_id = record.session_id;
+  slot_event.stage_id = leg.stage_id;
+  slot_event.kind = UnifiedEvent::Kind::kVisualSlot;
+  slot_event.seq = record.next_seq++;
+  slot_event.slot_id = leg.slot_id;
+  slot_event.slot_index = index;
+  slot_event.prompt = prompt;
+  slot_event.text_offset = static_cast<int64_t>(prose_offset);
+  dispatch_queue_.push_back(std::move(slot_event));
+
+  ++record.narrative_next_slot;
+  leg.submitted = true;
+  leg.state = LegState::kRunning;
+  leg.started = std::chrono::steady_clock::now();
+  child_to_unified_[leg.child_id] = request_id;
+  try {
+    coordinator_.submit(payload, leg.stage_name);
+  } catch (const std::exception& error) {
+    child_to_unified_.erase(leg.child_id);
+    leg.submitted = false;
+    leg.state = LegState::kFailed;
+    leg.error = error.what();
+    const std::string slot_id = leg.slot_id;
+    record.slot_legs.push_back(std::move(leg));
+    UnifiedEvent leg_error;
+    leg_error.request_id = request_id;
+    leg_error.session_id = record.session_id;
+    leg_error.stage_id = image ? kImageStageId : kVideoStageId;
+    leg_error.kind = UnifiedEvent::Kind::kLegError;
+    leg_error.seq = record.next_seq++;
+    leg_error.error = error.what();
+    leg_error.slot_id = slot_id;
+    leg_error.slot_index = index;
+    dispatch_queue_.push_back(std::move(leg_error));
+    return;
+  }
+  record.slot_legs.push_back(std::move(leg));
+  ++record.legs_remaining;
 }
 
 void UnifiedEngine::record_session_turn_locked(const Record& record) {
@@ -673,6 +815,9 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
     }
     if (record.video_leg.enabled && record.video_leg.state == LegState::kPending) {
       record.video_leg.state = LegState::kAborted;
+    }
+    for (OutputLeg& leg : record.slot_legs) {
+      if (leg.state == LegState::kPending) leg.state = LegState::kAborted;
     }
   } else if (kind == UnifiedEvent::Kind::kError) {
     if (record.vlm_id.empty()) {
@@ -733,15 +878,25 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
     if (it != records_.end() && it->second.phase != Phase::kDone) {
       Record& record = it->second;
       const std::string& unified_id = it->first;
-      const bool image_child =
-          record.image_leg.submitted &&
-          info.request_id == record.image_leg.child_id;
-      const bool video_child =
-          record.video_leg.submitted &&
-          info.request_id == record.video_leg.child_id;
-      OutputLeg* output_leg = image_child   ? &record.image_leg
-                              : video_child ? &record.video_leg
-                                            : nullptr;
+      OutputLeg* output_leg = nullptr;
+      if (record.narrative_enabled) {
+        for (OutputLeg& leg : record.slot_legs) {
+          if (leg.submitted && leg.child_id == info.request_id) {
+            output_leg = &leg;
+            break;
+          }
+        }
+      } else {
+        const bool image_child =
+            record.image_leg.submitted &&
+            info.request_id == record.image_leg.child_id;
+        const bool video_child =
+            record.video_leg.submitted &&
+            info.request_id == record.video_leg.child_id;
+        output_leg = image_child   ? &record.image_leg
+                     : video_child ? &record.video_leg
+                                   : nullptr;
+      }
       if (output_leg == nullptr) {
         for (OutputLeg& leg : record.tts_legs) {
           if (leg.submitted && leg.child_id == info.request_id) {
@@ -825,12 +980,12 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
         }
       } else if (info.state == "aborted") {
         record_primary_leg("aborted");
-        collect_tts_aborts_locked(record, "client", deferred_aborts);
+        collect_output_aborts_locked(record, "client", deferred_aborts);
         dispatch_queue_.push_back(finish_locked(
             unified_id, record, UnifiedEvent::Kind::kCancelled, {}, {}));
       } else if (info.state == "failed") {
         record_primary_leg("failed");
-        collect_tts_aborts_locked(record, "vlm_failure", deferred_aborts);
+        collect_output_aborts_locked(record, "vlm_failure", deferred_aborts);
         dispatch_queue_.push_back(finish_locked(
             unified_id, record, UnifiedEvent::Kind::kError,
             info.error.empty() ? "stage failure" : info.error, {}));
@@ -838,7 +993,7 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
         // The stage finished before it saw the abort. The request still ends
         // aborted, so the primary leg must be counted as aborted, not dropped.
         record_primary_leg("aborted");
-        collect_tts_aborts_locked(record, "client", deferred_aborts);
+        collect_output_aborts_locked(record, "client", deferred_aborts);
         dispatch_queue_.push_back(finish_locked(
             unified_id, record, UnifiedEvent::Kind::kCancelled, {}, {}));
       } else if (record.vlm_id.empty()) {
@@ -881,7 +1036,7 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
         if (!text) {
           record.vlm_state = LegState::kFailed;
           record.vlm_error = "VLM stage returned no text";
-          collect_tts_aborts_locked(record, "vlm_failure", deferred_aborts);
+          collect_output_aborts_locked(record, "vlm_failure", deferred_aborts);
           dispatch_queue_.push_back(finish_locked(
               unified_id, record, UnifiedEvent::Kind::kError,
               "VLM stage returned no text", {}));
@@ -895,9 +1050,61 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
           if (decode >= 0) {
             obs::Metrics::instance().vlm_phase("decode", decode / 1000.0);
           }
-          if (record.vlm_text.empty()) record.vlm_text = *text;
-          record.vlm_result = info.result;
+          if (record.narrative_enabled && record.narrative_parser) {
+            std::vector<NarrativeDirective> late_directives;
+            std::string narrative_tail;
+            if (!record.vlm_stream_seen) {
+              // The VLM never streamed: parse the terminal text as one chunk.
+              narrative_tail =
+                  record.narrative_parser->feed(*text, late_directives);
+              narrative_tail +=
+                  record.narrative_parser->flush(late_directives);
+            } else {
+              // The stream already consumed the text. EOF releases only the
+              // suffix the parser withheld (a trailing '[' or an unclosed
+              // candidate); a directive can no longer close at EOF.
+              narrative_tail = record.narrative_parser->flush(late_directives);
+            }
+            if (!narrative_tail.empty()) {
+              record.vlm_text += narrative_tail;
+              if (record.tts_stream && !record.tts_failed) {
+                record.sentence_buf += narrative_tail;
+              }
+              UnifiedEvent tail_event;
+              tail_event.request_id = unified_id;
+              tail_event.session_id = record.session_id;
+              tail_event.stage_id = kVlmStageId;
+              tail_event.kind = UnifiedEvent::Kind::kVlmDelta;
+              tail_event.seq = record.next_seq++;
+              tail_event.text = narrative_tail;
+              dispatch_queue_.push_back(std::move(tail_event));
+            }
+            for (const NarrativeDirective& directive : late_directives) {
+              const std::string kind =
+                  slot_kind_locked(record, directive.kind);
+              if (kind.empty()) continue;
+              dispatch_narrative_slot_locked(unified_id, record, kind,
+                                             directive.prompt,
+                                             directive.prose_offset);
+            }
+            record.vlm_result = unified_detail::replace_result_text(
+                info.result, record.vlm_text);
+          } else {
+            if (record.vlm_text.empty()) record.vlm_text = *text;
+            record.vlm_result = info.result;
+          }
           record.vlm_done = true;
+          // Contract fallback: narrative enabled but the VLM produced no
+          // marker. Render one visual from the clean prose.
+          if (record.narrative_enabled && record.slot_legs.empty() &&
+              !record.vlm_text.empty()) {
+            const std::string kind =
+                record.narrative_visual_mode == "video"
+                    ? kVideoStageId
+                    : (record.image_leg.enabled ? kImageStageId : kVideoStageId);
+            dispatch_narrative_slot_locked(unified_id, record, kind,
+                                           record.vlm_text, 0);
+          }
           if (record.image_leg.enabled || record.tts_enabled ||
               record.video_leg.enabled) {
             try {
@@ -1029,15 +1236,21 @@ void UnifiedEngine::start_outputs_locked(const std::string& request_id,
       record.image_leg.enabled   ? kImageStageId
       : record.video_leg.enabled ? kVideoStageId
                                  : kTtsStageId;
-  if (record.image_leg.enabled) {
-    submit_single_output_leg_locked(
-        request_id, record, record.image_leg, kImageSuffix,
-        unified_detail::build_image_inputs(record.image_options, record.vlm_text));
-  }
-  if (record.video_leg.enabled) {
-    submit_single_output_leg_locked(
-        request_id, record, record.video_leg, kVideoSuffix,
-        unified_detail::build_video_inputs(record.video_options, record.vlm_text));
+  // In narrative mode visuals come from parsed slots, not from the single
+  // image/video legs; those modalities only enable the slot stages.
+  if (!record.narrative_enabled) {
+    if (record.image_leg.enabled) {
+      submit_single_output_leg_locked(
+          request_id, record, record.image_leg, kImageSuffix,
+          unified_detail::build_image_inputs(record.image_options,
+                                             record.vlm_text));
+    }
+    if (record.video_leg.enabled) {
+      submit_single_output_leg_locked(
+          request_id, record, record.video_leg, kVideoSuffix,
+          unified_detail::build_video_inputs(record.video_options,
+                                             record.vlm_text));
+    }
   }
   if (record.tts_enabled) {
     if (record.tts_stream) {
@@ -1120,6 +1333,11 @@ void UnifiedEngine::collect_output_aborts_locked(
       out.emplace_back(leg.child_id, reason);
     }
   });
+  for (const OutputLeg& leg : record.slot_legs) {
+    if (leg.submitted && leg.state == LegState::kRunning) {
+      out.emplace_back(leg.child_id, reason);
+    }
+  }
   collect_tts_aborts_locked(record, reason, out);
 }
 
@@ -1131,6 +1349,12 @@ void UnifiedEngine::emit_artifact_locked(const std::string& request_id,
       request_id, record.session_id, leg.stage_id, result,
       record.artifact_bytes_total, record.next_artifact, record.next_seq);
   for (UnifiedEvent& event : events) {
+    if (leg.slot_index >= 0 && event.artifact.is_map()) {
+      Value::Map descriptor = event.artifact.as_map();
+      descriptor["slot_id"] = Value(leg.slot_id);
+      descriptor["slot_index"] = Value(static_cast<int64_t>(leg.slot_index));
+      event.artifact = Value(std::move(descriptor));
+    }
     dispatch_queue_.push_back(std::move(event));
   }
 }
@@ -1177,6 +1401,8 @@ void UnifiedEngine::settle_output_leg_locked(
     event.kind = UnifiedEvent::Kind::kLegError;
     event.seq = record.next_seq++;
     event.error = std::move(error);
+    event.slot_id = leg.slot_id;
+    event.slot_index = leg.slot_index;
     dispatch_queue_.push_back(std::move(event));
   }
   --record.legs_remaining;
@@ -1193,9 +1419,13 @@ Value UnifiedEngine::legs_value_locked(const Record& record) const {
     item["stage"] = Value(leg.stage_id);
     item["state"] = Value(to_string(leg.state));
     if (!leg.error.empty()) item["error"] = Value(leg.error);
+    if (leg.slot_index >= 0) {
+      item["slot_id"] = Value(leg.slot_id);
+      item["slot_index"] = Value(static_cast<int64_t>(leg.slot_index));
+    }
     legs.push_back(Value(std::move(item)));
   };
-  add(record.image_leg);
+  if (!record.narrative_enabled) add(record.image_leg);
   if (record.tts_enabled) {
     Value::Map item;
     item["stage"] = Value(kTtsStageId);
@@ -1211,7 +1441,8 @@ Value UnifiedEngine::legs_value_locked(const Record& record) const {
     }
     legs.push_back(Value(std::move(item)));
   }
-  add(record.video_leg);
+  if (!record.narrative_enabled) add(record.video_leg);
+  for (const OutputLeg& leg : record.slot_legs) add(leg);
   return Value(std::move(legs));
 }
 

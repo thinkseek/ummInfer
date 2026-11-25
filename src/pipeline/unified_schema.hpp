@@ -27,6 +27,11 @@ struct ValidatedSubmission {
   Value::Map image_options;
   Value::Map audio_options;
   Value::Map video_options;
+  // Interleaved narrative. Parsed from the optional top-level "narrative"
+  // object; defaults keep every non-narrative request byte-identical.
+  bool narrative_enabled = false;
+  std::string narrative_visual_mode = "auto";
+  int narrative_max_slots = 3;
   std::string user_text;
 };
 
@@ -42,6 +47,18 @@ ValidatedSubmission validate_submission(const Value& inputs,
 
 Value build_vlm_inputs(const std::string& transcript,
                        const Value& original_inputs);
+// Director system prompt prepended to the VLM messages when narrative is
+// enabled. visual_mode is "auto", "image" or "video".
+std::string narrative_director_prompt(const std::string& visual_mode,
+                                      int max_slots);
+// Returns `result` with its assistant text replaced by the clean prose. Used
+// for narrative terminals so raw [[...]] markers never reach the wire.
+Value replace_result_text(const Value& result, const std::string& text);
+// Prepends the director system message to inputs["messages"]. No-op when the
+// messages array is absent or malformed.
+void prepend_narrative_instructions(Value& vlm_inputs,
+                                    const std::string& visual_mode,
+                                    int max_slots);
 Value build_image_inputs(const Value::Map& image_options,
                          const std::string& vlm_text);
 Value build_video_inputs(const Value::Map& video_options,

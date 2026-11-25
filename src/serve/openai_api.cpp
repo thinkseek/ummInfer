@@ -283,6 +283,11 @@ void OpenAIApi::Impl::install_routes() {
                  handle_speech(req, res);
                });
 
+  server_.Post("/v1/visual/render",
+               [this](const httplib::Request& req, httplib::Response& res) {
+                 handle_visual_render(req, res);
+               });
+
   // Opt-in static hosting for the bundled browser client. cpp-httplib's mount
   // rejects a ".." segment in the URL and any path that resolves outside the
   // directory (a symlink escape), so no request reads past web_root.
@@ -352,6 +357,7 @@ void OpenAIApi::Impl::on_unified_event(const UnifiedEvent& event) {
   if (event.kind == UnifiedEvent::Kind::kAsrPartial ||
       event.kind == UnifiedEvent::Kind::kAsrFinal ||
       event.kind == UnifiedEvent::Kind::kVlmDelta ||
+      event.kind == UnifiedEvent::Kind::kVisualSlot ||
       event.kind == UnifiedEvent::Kind::kArtifact ||
       event.kind == UnifiedEvent::Kind::kLegError) {
     if (event.kind == UnifiedEvent::Kind::kVlmDelta) {

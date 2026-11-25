@@ -171,6 +171,40 @@ ValidatedSubmission validate_submission(const Value& inputs,
     }
   }
 
+  // Optional interleaved-narrative object. Type validation happens here for
+  // every request; the modality cross-checks run after output_modalities is
+  // parsed, because they depend on it.
+  if (const Value* narrative = out.original_inputs.find("narrative");
+      narrative != nullptr && !narrative->is_nil()) {
+    if (!narrative->is_map()) {
+      throw ProtocolError("narrative must be an object");
+    }
+    if (const Value* enabled = narrative->find("enabled");
+        enabled != nullptr && !enabled->is_nil()) {
+      if (!enabled->is_bool()) {
+        throw ProtocolError("narrative.enabled must be a boolean");
+      }
+      out.narrative_enabled = enabled->as_bool();
+    }
+    if (const Value* mode = narrative->find("visual_mode");
+        mode != nullptr && !mode->is_nil()) {
+      if (!mode->is_str() || (mode->as_str() != "auto" &&
+                              mode->as_str() != "image" &&
+                              mode->as_str() != "video")) {
+        throw ProtocolError(
+            "narrative.visual_mode must be auto, image or video");
+      }
+      out.narrative_visual_mode = mode->as_str();
+    }
+    if (const Value* slots = narrative->find("max_slots");
+        slots != nullptr && !slots->is_nil()) {
+      if (!slots->is_int() || slots->as_int() < 1 || slots->as_int() > 6) {
+        throw ProtocolError("narrative.max_slots must be an integer in [1, 6]");
+      }
+      out.narrative_max_slots = static_cast<int>(slots->as_int());
+    }
+  }
+
   if (const Value* requested = out.original_inputs.find("output_modalities");
       requested != nullptr) {
     if (!requested->is_array()) {
@@ -229,6 +263,20 @@ ValidatedSubmission validate_submission(const Value& inputs,
       throw ProtocolError("audio output requires a non-empty voice");
     }
   }
+  if (out.narrative_enabled) {
+    if (!out.image_output && !out.video_output) {
+      throw ProtocolError(
+          "narrative requires image or video in output_modalities");
+    }
+    if (out.narrative_visual_mode == "image" && !out.image_output) {
+      throw ProtocolError(
+          "narrative.visual_mode image requires image output");
+    }
+    if (out.narrative_visual_mode == "video" && !out.video_output) {
+      throw ProtocolError(
+          "narrative.visual_mode video requires video output");
+    }
+  }
 
   out.has_audio = audio_part_count > 0;
   if (out.has_audio) {
@@ -264,7 +312,8 @@ Value build_vlm_inputs(const std::string& transcript,
       if (key != "messages" && key != "modalities" && key != "session_id" &&
           key != "audio" && key != "asr_partials" && key != "session_history" &&
           key != "output_modalities" && key != "image_options" &&
-          key != "audio_options" && key != "video_options") {
+          key != "audio_options" && key != "video_options" &&
+          key != "narrative") {
         out[key] = value;
       }
     }
@@ -323,6 +372,65 @@ Value build_vlm_inputs(const std::string& transcript,
   if (has_image) modalities.push_back(Value("image"));
   out["modalities"] = Value(std::move(modalities));
   return Value(std::move(out));
+}
+
+std::string narrative_director_prompt(const std::string& visual_mode,
+                                      int max_slots) {
+  std::string out =
+      "You are a film director narrating with interleaved visuals. Write "
+      "coherent, well-structured prose in the user's language. At up to " +
+      std::to_string(max_slots) +
+      " natural narrative beats, insert one standalone visual marker on its "
+      "own line; a generated visual replaces it, so never describe or mention "
+      "the marker itself.";
+  if (visual_mode == "image") {
+    out +=
+        "\n[[image: <vivid concrete visual scene description in English>]]";
+  } else if (visual_mode == "video") {
+    out +=
+        "\n[[video: <vivid concrete motion and camera description in English>]]";
+  } else {
+    out +=
+        "\n[[image: <vivid concrete visual scene description in English>]]";
+    out +=
+        "\n[[video: <vivid concrete motion and camera description in English>]]";
+  }
+  out += "\nDo not use any other bracket syntax.";
+  return out;
+}
+
+Value replace_result_text(const Value& result, const std::string& text) {
+  if (result.is_str()) return Value(text);
+  if (result.is_map()) {
+    Value::Map out = result.as_map();
+    if (const Value* existing = result.find("text");
+        existing != nullptr && existing->is_str()) {
+      out["text"] = Value(text);
+    } else if (const Value* content = result.find("content");
+               content != nullptr && content->is_str()) {
+      out["content"] = Value(text);
+    } else {
+      out["text"] = Value(text);
+    }
+    return Value(std::move(out));
+  }
+  return result;
+}
+
+void prepend_narrative_instructions(Value& vlm_inputs,
+                                    const std::string& visual_mode,
+                                    int max_slots) {
+  if (!vlm_inputs.is_map()) return;
+  const Value* messages = vlm_inputs.find("messages");
+  if (messages == nullptr || !messages->is_array()) return;
+  Value::Map system;
+  system["role"] = Value("system");
+  system["content"] = Value(narrative_director_prompt(visual_mode, max_slots));
+  Value::Array out;
+  out.reserve(messages->as_array().size() + 1);
+  out.push_back(Value(std::move(system)));
+  for (const Value& message : messages->as_array()) out.push_back(message);
+  vlm_inputs["messages"] = Value(std::move(out));
 }
 
 Value build_image_inputs(const Value::Map& image_options,

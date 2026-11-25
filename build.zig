@@ -74,6 +74,7 @@ pub fn build(b: *std.Build) void {
             "src/pipeline/pipeline.cpp",
             "src/pipeline/session_store.cpp",
             "src/pipeline/unified_schema.cpp",
+            "src/pipeline/narrative_parser.cpp",
             "src/pipeline/unified.cpp",
             "src/serve/upstream_proxy.cpp",
             "src/serve/openai_helpers.cpp",

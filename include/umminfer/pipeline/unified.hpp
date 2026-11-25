@@ -43,6 +43,8 @@
 
 namespace umminfer {
 
+class NarrativeStreamParser;
+
 // Modalities understood by the unified contract. Text, image, audio and video
 // share one modality representation and leg lifecycle in UnifiedEngine.
 enum class UnifiedModality { kAudio, kText, kImage, kVideo };
@@ -61,6 +63,8 @@ struct LegSnapshot {
   std::string stage_id;
   LegState state = LegState::kPending;
   std::string error;
+  // "slot-N" for an interleaved narrative visual slot; empty otherwise.
+  std::string slot_id;
 };
 
 // Stage ids used inside unified events. They are contract values, not
@@ -98,6 +102,7 @@ struct UnifiedEvent {
     kAsrPartial,  // streaming ASR transcript, is_final == false
     kAsrFinal,    // terminal ASR transcript, is_final == true
     kVlmDelta,    // streaming VLM token
+    kVisualSlot,  // one narrative visual marker closed mid-stream
     kArtifact,    // one generated image/audio/video chunk (see artifact fields)
     kLegError,    // an optional output leg failed; the request still completes
     kComplete,    // terminal success
@@ -115,6 +120,13 @@ struct UnifiedEvent {
   bool is_final = false;
   // ASR transcript text or one VLM delta. Empty on terminal error/cancel.
   std::string text;
+  // kVisualSlot and slot-attributed kArtifact/kLegError. slot_index is -1 when
+  // the event does not belong to a narrative slot.
+  std::string slot_id;
+  int slot_index = -1;
+  // kVisualSlot: the directive prompt and its byte offset in the clean prose.
+  std::string prompt;
+  int64_t text_offset = 0;
   // Present on kComplete: the aggregated VLM result value.
   Value result;
   // Present on kError.
@@ -245,6 +257,9 @@ class UnifiedEngine {
   // Coordinator stage name of the TTS worker, empty when none is registered.
   // The standalone /v1/audio/speech route submits to that same stage.
   const std::string& tts_stage_name() const { return config_.tts_stage; }
+  // Coordinator stage name of the image worker, empty when none is registered.
+  // The standalone /v1/visual/render route submits to that same stage.
+  const std::string& image_stage_name() const { return config_.image_stage; }
   // Coordinator stage name of the video worker, empty when none is registered.
   const std::string& video_stage_name() const { return config_.video_stage; }
 
@@ -268,6 +283,10 @@ class UnifiedEngine {
     LegState state = LegState::kPending;
     std::string error;
     std::chrono::steady_clock::time_point started;
+    // Narrative slot attribution. slot_index is -1 for the single-shot image
+    // and video legs and for every TTS leg.
+    std::string slot_id;
+    int slot_index = -1;
   };
 
   struct Record {
@@ -323,6 +342,20 @@ class UnifiedEngine {
     OutputLeg image_leg;
     OutputLeg video_leg;
     std::vector<OutputLeg> tts_legs;
+    // Interleaved narrative. The image/video legs above describe the enabled
+    // output modality, but in narrative mode visuals come from parsed
+    // directives; each dispatched directive becomes one slot leg. The parser
+    // owns the prose/directive split and is constructed only when enabled.
+    bool narrative_enabled = false;
+    std::string narrative_visual_mode = "auto";
+    int narrative_max_slots = 0;
+    std::shared_ptr<NarrativeStreamParser> narrative_parser;
+    std::vector<OutputLeg> slot_legs;
+    int narrative_next_slot = 0;
+    // A VLM delta stream was consumed. At completion the parser is only
+    // flushed, never re-fed, so directives already dispatched mid-stream are
+    // not dispatched a second time.
+    bool vlm_stream_seen = false;
     bool tts_enabled = false;
     std::string tts_voice;
     // Sentence pipeline and per-chunk audio delivery (audio_options.stream).
@@ -368,6 +401,17 @@ class UnifiedEngine {
   void submit_single_output_leg_locked(const std::string& request_id,
                                        Record& record, OutputLeg& leg,
                                        const char* suffix, Value inputs);
+  // Resolves a parsed directive to "image"/"video" for this request, or "" when
+  // no visual stage can serve it.
+  std::string slot_kind_locked(const Record& record,
+                               const std::string& directive_kind) const;
+  // Emits kVisualSlot and submits one <id>:slot:<index> child to the image or
+  // video stage. Silent once max_slots is reached.
+  void dispatch_narrative_slot_locked(const std::string& request_id,
+                                      Record& record,
+                                      std::string kind,
+                                      const std::string& prompt,
+                                      size_t prose_offset);
   // Submits one TTS leg. `first` keeps the contract child id <id>:tts for the
   // single-leg (non-streaming) request; streamed sentences use :tts:0, :tts:1.
   void start_tts_locked(const std::string& request_id, Record& record,
