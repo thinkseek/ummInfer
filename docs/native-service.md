@@ -324,6 +324,41 @@ and `--web-root`:
     Visual Form ablation (`image_only` `12.80 s`, `video_only` `9.02 s`,
     `image_then_i2v_animate` `12.78 s` + I2V `5.89 s`, 4 PNG + 4 MP4 decoded,
     `SHA256SUMS` PASS, GPUs 0/1/7 returned to `3 MiB`).
+- Wave 18 live multi-stage CUDA FlashAttention-2, Qwen3.8 52 tok/s decode, CLI voice & real GPU Joint-SFT upgrades (`9e11649`, `476ac07`, `39fd3da`, `6167954`, `a627fa8`):
+  - **GPU 6 `umm-native-stage-video`** (`9e11649` hand-crafted SM90
+    `mma.sync.aligned.m16n8k16` BF16 Tensor-Core FlashAttention-2 + fused
+    `bias+rms_norm+rope` / `bias+gelu` / `residual+bias` / single-pass
+    `layer_norm`, cutting DiT launches `77 -> 22`/block, preserving `.wave17`
+    backup): hot-swapped in `3 s` with `0` restarts on GPUs 2–5 (`-194 MiB` live
+    VRAM on GPU 6: `21,611 -> 21,417 MiB`). Measured on isolated SM90 GPU 1
+    (`704x480` 29f 15 steps `seed=42`, GPU 1 returned to `3 MiB`):
+    - Default **FA2 + Fused DiT + BF16 VAE**: **`11.14 s`** (`umt5=215 ms`,
+      `dit=7,072 ms`, `vae=3,699 ms` — **2.16x faster than Wave 14 `24.07 s`**,
+      **`PSNR=47.79 dB`** avg / `45.77 dB` min vs cuBLAS ref, **`-192 MiB` peak
+      VRAM** at `21,413 MiB`).
+    - Opt-in **FA2 + TeaCache `0.05`**: **`8.86 s`** (**2.72x faster than Wave
+      14**, `PSNR=36.47 dB`).
+    - Live `43301` Showcase Journey 1+2 (`SHOWCASE PASS [LIVE_SERVER]: 2/2`):
+      Journey 1 `TTFT=0.593 s` / `TTFA=0.803 s`; Journey 2 704x480 29f I2V
+      dropped **`17.12 s -> 14.22 s -> 12.83 s`**.
+  - **GPU 3 `umm-native-stage-qwen38`** (`a627fa8` 4x K-unrolled `__ldcs` decode
+    GEMV, fused SwiGLU dual-output GEMV, fused 4-way GDN & 3-way GQA projections,
+    fused `residual+rms_norm`, 4x parallel Gated DeltaNet, 1-pass multi-warp
+    online softmax, pre-resolved weights & pinned host staging, cutting `m=1`
+    launches `~1,235 -> ~499`, preserving `.wave16` backup): hot-swapped in
+    `13 s` with `0` restarts on GPUs 2/4/5/6. Live `43301` `temperature=0.0`
+    A/B (identical `157` chunks / `975` chars greedy parity):
+    - Decode throughput: **`38.95 -> 52.18 tok/s` (+34.0% / 1.34x)**;
+    - Turn latency: **`4,795 ms -> 3,574 ms`** (`TTFT: 763.8 -> 564.7 ms` warm);
+    - GPU 3 VRAM: **`61,441 -> 60,573 MiB` (-868 MiB)**;
+    - Live Journey 3 (3-turn video QA + multimodal prefix cache): **`4.89 -> 3.00 -> 2.94 s`** (Wave 16) improved to **`2.86 -> 2.01 -> 1.85 s`** (`SHOWCASE PASS [LIVE_SERVER]: 2/2`, Journey 4 `zero_redundant=True`).
+  - **Full-Duplex CLI `umm-infer voice`, Real SM90 Joint-SFT Gate & Controlled
+    Ablation Layer** (`476ac07`, `39fd3da`, `6167954`): landed ALSA/macOS
+    AudioQueue `umm-infer voice` + `realtime_api.cpp` handshake-close fix
+    (`12/12` `voice_client_test` + `zig build test` PASS), bounded real SM90 GPU
+    7 Joint-SFT AdamW acceptance (`Qwen2.5-0.5B` BF16 2 real steps + fresh-process
+    checkpoint resume equivalence, GPU 7 returned to `3 MiB`), and Stage C
+    controlled-measurement contract (`59/59` tests PASS).
 
 ## Validation, 2026-11-19 (historical)
 
