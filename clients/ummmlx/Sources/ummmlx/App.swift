@@ -3,6 +3,8 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import AVKit
+import UniformTypeIdentifiers
 
 @main
 struct UmmMLXApp: App {
@@ -35,6 +37,7 @@ struct RootView: View {
     @State private var automatedAppearance: String?
     @State private var automation: Automation?
     @State private var preview: GeneratedArtifact?
+    @State private var showOptions = false
     @Environment(\.colorScheme) private var colorScheme
     private let isAutomation = ProcessInfo.processInfo.arguments.contains("--automation")
 
@@ -117,44 +120,131 @@ struct RootView: View {
     }
 
     private var settings: some View {
-        HStack(alignment: .bottom, spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Base URL")
-                    .font(.system(size: theme.captionSize))
-                    .foregroundStyle(theme.secondary)
-                TextField("http://127.0.0.1:30000/v1", text: $model.endpoint)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .accessibilityLabel("Base URL")
-                    .accessibilityIdentifier("endpoint")
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Base URL")
+                        .font(.system(size: theme.captionSize))
+                        .foregroundStyle(theme.secondary)
+                    TextField("http://127.0.0.1:43301/v1", text: $model.endpoint)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Base URL")
+                        .accessibilityIdentifier("endpoint")
+                }
+                .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Model")
+                        .font(.system(size: theme.captionSize))
+                        .foregroundStyle(theme.secondary)
+                    TextField("Model served by ummInfer", text: $model.model)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Model")
+                        .accessibilityIdentifier("model")
+                }
+                .frame(width: 210)
+                HStack(spacing: 10) {
+                    Toggle("Image", isOn: $model.imageOutput)
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("image-output")
+                    Toggle("Audio", isOn: $model.audioOutput)
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("audio-output")
+                    Toggle("Video", isOn: $model.videoOutput)
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("video-output")
+                }
+                .padding(.bottom, 4)
+                Button(showOptions ? "Hide Options" : "Options") {
+                    showOptions.toggle()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .padding(.bottom, 2)
             }
-            .frame(maxWidth: .infinity)
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Model")
-                    .font(.system(size: theme.captionSize))
-                    .foregroundStyle(theme.secondary)
-                TextField("Model served by ummInfer", text: $model.model)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .accessibilityLabel("Model")
-                    .accessibilityIdentifier("model")
+            if showOptions {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        labeledField("Max tok", text: $model.maxTokensText, width: 62)
+                        labeledField("Temp", text: $model.temperatureText, width: 48)
+                        labeledField("top_p", text: $model.topPText, width: 52, placeholder: "1.0")
+                        labeledField("Seed", text: $model.seedText, width: 72, placeholder: "auto")
+                        labeledField("Voice", text: $model.audioVoice, width: 76)
+                        Button(model.refAudioURL == nil ? "Ref WAV…" : "Ref: \(model.refAudioURL!.lastPathComponent)") {
+                            if model.refAudioURL != nil {
+                                model.refAudioURL = nil
+                            } else {
+                                model.refAudioURL = pickFile(types: [.wav])
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    HStack(spacing: 10) {
+                        Picker("Img", selection: $model.imageSize) {
+                            Text("512×512").tag("512x512")
+                            Text("1024×1024").tag("1024x1024")
+                        }
+                        .frame(width: 120)
+                        labeledField("Steps", text: $model.imageStepsText, width: 46, placeholder: "4")
+                        Button(model.editImageURL == nil ? "Edit Img…" : "Edit: \(model.editImageURL!.lastPathComponent)") {
+                            if model.editImageURL != nil {
+                                model.editImageURL = nil
+                            } else {
+                                model.editImageURL = pickFile(types: [.png, .jpeg, .webP])
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        Divider().frame(height: 18)
+                        Picker("Vid", selection: $model.videoSize) {
+                            Text("480×320").tag("480x320")
+                            Text("704×480").tag("704x480")
+                            Text("1280×704").tag("1280x704")
+                        }
+                        .frame(width: 120)
+                        labeledField("Frames", text: $model.videoFramesText, width: 46)
+                        labeledField("Steps", text: $model.videoStepsText, width: 46)
+                        labeledField("CFG", text: $model.videoGuidanceText, width: 46)
+                    }
+                }
+                .padding(.top, 4)
             }
-            .frame(width: 260)
-            VStack(alignment: .leading, spacing: 3) {
-                Toggle("Image", isOn: $model.imageOutput)
-                    .toggleStyle(.checkbox)
-                    .accessibilityIdentifier("image-output")
-                Toggle("Audio", isOn: $model.audioOutput)
-                    .toggleStyle(.checkbox)
-                    .accessibilityIdentifier("audio-output")
-            }
-            .frame(width: 92, alignment: .leading)
-            .padding(.bottom, 2)
         }
         .disabled(model.isRunning)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(theme.surface)
+    }
+
+    private func labeledField(_ label: String, text: Binding<String>, width: CGFloat,
+                              placeholder: String = "") -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: theme.captionSize))
+                .foregroundStyle(theme.secondary)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: width)
+        }
+    }
+
+    private func pickFile(types: [UTType]) -> URL? {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = types
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func saveArtifact(_ artifact: GeneratedArtifact, defaultName: String) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = defaultName
+        if panel.runModal() == .OK, let url = panel.url {
+            try? artifact.data.write(to: url)
+        }
     }
 
     private var transcript: some View {
@@ -167,7 +257,7 @@ struct RootView: View {
                             .foregroundStyle(theme.accent)
                         Text("Chat with your ummInfer unified server")
                             .font(.system(size: theme.sectionSize, weight: .medium))
-                        Text("Text · image · audio · on-device voice input")
+                        Text("Text · image · audio · video · voice input")
                             .font(.system(size: theme.bodySize))
                             .foregroundStyle(theme.secondary)
                     }
@@ -258,28 +348,42 @@ struct RootView: View {
                               liveStreaming: Bool = false) -> some View {
         if artifact.mediaType == "image",
            let image = NSImage(data: artifact.data) {
-            Button {
-                preview = artifact
-            } label: {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 148, height: 148)
-                    .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
-                    .overlay(RoundedRectangle(cornerRadius: theme.cardRadius)
-                        .stroke(theme.line))
+            VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    preview = artifact
+                } label: {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 148, height: 148)
+                        .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+                        .overlay(RoundedRectangle(cornerRadius: theme.cardRadius)
+                            .stroke(theme.line))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Generated image")
+                .accessibilityIdentifier("artifact-image")
+                .help("Open the full image")
+                Button("Save PNG") { saveArtifact(artifact, defaultName: "image.png") }
+                    .buttonStyle(.link)
+                    .font(.system(size: theme.captionSize))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Generated image")
-            .accessibilityIdentifier("artifact-image")
-            .help("Open the full image")
         } else if artifact.mediaType == "audio" {
-            AudioPlayerView(
-                artifact: artifact,
-                theme: theme,
-                liveStreaming: liveStreaming,
-                onStopLiveStream: { model.stopStreamingAudio() }
-            )
+            VStack(alignment: .leading, spacing: 4) {
+                AudioPlayerView(
+                    artifact: artifact,
+                    theme: theme,
+                    liveStreaming: liveStreaming,
+                    onStopLiveStream: { model.stopStreamingAudio() }
+                )
+                Button("Save WAV") { saveArtifact(artifact, defaultName: "speech.wav") }
+                    .buttonStyle(.link)
+                    .font(.system(size: theme.captionSize))
+            }
+        } else if artifact.mediaType == "video" || artifact.mimeType == "video/mp4" {
+            VideoArtifactView(artifact: artifact, theme: theme) {
+                saveArtifact(artifact, defaultName: "video.mp4")
+            }
         } else {
             Text("Unsupported artifact \(artifact.mimeType)")
                 .font(.system(size: theme.captionSize))
@@ -342,7 +446,29 @@ struct RootView: View {
                     Spacer()
                 }
             }
+            if let attached = model.attachedImageURL {
+                HStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .foregroundStyle(theme.accent)
+                    Text("VLM image: \(attached.lastPathComponent)")
+                        .font(.system(size: theme.captionSize))
+                        .foregroundStyle(theme.secondary)
+                    Button("×") { model.attachedImageURL = nil }
+                        .buttonStyle(.plain)
+                    Spacer()
+                }
+            }
             HStack(alignment: .bottom, spacing: 10) {
+                Button {
+                    model.attachedImageURL = pickFile(types: [.png, .jpeg, .webP])
+                } label: {
+                    Image(systemName: "photo.badge.plus")
+                        .font(.system(size: 14))
+                        .frame(width: 24, height: 22)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.isRunning)
+                .help("Attach an image for VLM visual QA")
                 TextField("Write a prompt", text: $model.prompt, axis: .vertical)
                     .lineLimit(1...5)
                     .textFieldStyle(.roundedBorder)
@@ -374,7 +500,8 @@ struct RootView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(theme.ink)
                         .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  && model.attachedImageURL == nil)
                         .accessibilityIdentifier("send")
                 }
             }
@@ -497,5 +624,78 @@ struct AudioPlayerView: View {
         .background(theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
         .onAppear { player.load(artifact.data) }
+    }
+}
+
+@MainActor
+final class VideoPlayerModel: ObservableObject {
+    @Published var player: AVPlayer?
+    private var fileURL: URL?
+
+    func load(_ artifact: GeneratedArtifact) {
+        guard player == nil else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ummmlx-\(artifact.id).mp4")
+        do {
+            try artifact.data.write(to: url, options: .atomic)
+            fileURL = url
+            player = AVPlayer(url: url)
+        } catch {
+            player = nil
+        }
+    }
+
+    deinit {
+        if let fileURL {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+    }
+}
+
+struct AVPlayerViewRepresentable: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        if nsView.player !== player {
+            nsView.player = player
+        }
+    }
+}
+
+struct VideoArtifactView: View {
+    let artifact: GeneratedArtifact
+    let theme: Theme
+    let onSave: () -> Void
+    @StateObject private var model = VideoPlayerModel()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let player = model.player {
+                AVPlayerViewRepresentable(player: player)
+                    .frame(width: 320, height: 214)
+                    .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+                    .overlay(RoundedRectangle(cornerRadius: theme.cardRadius)
+                        .stroke(theme.line))
+            } else {
+                ProgressView()
+                    .frame(width: 320, height: 214)
+            }
+            HStack(spacing: 8) {
+                Text(String(format: "MP4 · %.1f KB", Double(artifact.data.count) / 1024.0))
+                    .font(.system(size: theme.captionSize))
+                    .foregroundStyle(theme.secondary)
+                Button("Save MP4", action: onSave)
+                    .buttonStyle(.link)
+                    .font(.system(size: theme.captionSize))
+            }
+        }
+        .onAppear { model.load(artifact) }
     }
 }

@@ -39,8 +39,21 @@ final class ChatModel: ObservableObject {
     @Published private(set) var sessionID = ""
     @Published var imageOutput = false
     @Published var audioOutput = false
+    @Published var videoOutput = false
+    @Published var maxTokensText = "256"
+    @Published var temperatureText = "0"
+    @Published var topPText = ""
+    @Published var seedText = ""
     @Published var imageSize = "512x512"
+    @Published var imageStepsText = ""
+    @Published var editImageURL: URL?
     @Published var audioVoice = "vivian"
+    @Published var refAudioURL: URL?
+    @Published var videoSize = "480x320"
+    @Published var videoFramesText = "13"
+    @Published var videoStepsText = "15"
+    @Published var videoGuidanceText = "5.0"
+    @Published var attachedImageURL: URL?
     @Published var partialTranscript = ""
     @Published private(set) var isListening = false
     @Published private(set) var speechStatus = ""
@@ -99,11 +112,24 @@ final class ChatModel: ObservableObject {
         return String(text.prefix(8))
     }
 
+    private static func imageMimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg": return "image/jpeg"
+        case "webp": return "image/webp"
+        default: return "image/png"
+        }
+    }
+
+    private static func dataURL(from url: URL) throws -> String {
+        let data = try Data(contentsOf: url)
+        return "data:\(imageMimeType(for: url));base64,\(data.base64EncodedString())"
+    }
+
     func send() {
         guard !isRunning else { return }
         error = nil
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
+        guard !text.isEmpty || attachedImageURL != nil else {
             error = "Enter a prompt."
             status = "Input required"
             return
@@ -119,29 +145,110 @@ final class ChatModel: ObservableObject {
             return
         }
 
+        let sentImageURL = attachedImageURL
+        var attachedImageDataURL: String?
+        var attachedImageBytes: Data?
+        if let sentImageURL {
+            do {
+                let data = try Data(contentsOf: sentImageURL)
+                attachedImageBytes = data
+                attachedImageDataURL = "data:\(Self.imageMimeType(for: sentImageURL));base64,\(data.base64EncodedString())"
+            } catch {
+                self.error = "Could not read attached image: \(error.localizedDescription)"
+                status = "Input error"
+                return
+            }
+        }
+
         if !ProcessInfo.processInfo.arguments.contains("--automation") {
             UserDefaults.standard.set(endpoint, forKey: "endpoint")
             UserDefaults.standard.set(model, forKey: "model")
         }
-        let history = Self.requestMessages(turns: turns, prompt: text)
+        var history = Self.requestMessages(turns: turns, prompt: text)
+        if let attachedImageDataURL, !history.isEmpty {
+            let last = history.removeLast()
+            history.append(ChatMessage(role: last.role, content: last.content,
+                                       imageDataURL: attachedImageDataURL))
+        }
         onRequest?(history)
 
         var options = ChatStreamOptions()
         if requestSessionID.isEmpty { requestSessionID = Self.newSessionID() }
         options.sessionID = requestSessionID
+        if let maxTok = Int(maxTokensText.trimmingCharacters(in: .whitespaces)), maxTok > 0 {
+            options.maxTokens = maxTok
+        }
+        if let temp = Double(temperatureText.trimmingCharacters(in: .whitespaces)), temp >= 0 {
+            options.temperature = temp
+        }
+        if let topP = Double(topPText.trimmingCharacters(in: .whitespaces)),
+           topP > 0, topP <= 1 {
+            options.topP = topP
+        }
+        if let seed = Int64(seedText.trimmingCharacters(in: .whitespaces)) {
+            options.seed = seed
+        }
         if imageOutput {
-            options.image = ImageOptions(size: imageSize)
+            var img = ImageOptions(size: imageSize)
+            if let steps = Int(imageStepsText.trimmingCharacters(in: .whitespaces)), steps > 0 {
+                img.steps = steps
+            }
+            if let editImageURL {
+                do {
+                    img.imageDataURL = try Self.dataURL(from: editImageURL)
+                } catch {
+                    self.error = "Could not read edit image: \(error.localizedDescription)"
+                    status = "Input error"
+                    return
+                }
+            }
+            options.image = img
         }
         if audioOutput {
-            options.audio = AudioOptions(voice: audioVoice)
+            var aud = AudioOptions(voice: audioVoice.trimmingCharacters(in: .whitespaces).isEmpty
+                                   ? "vivian" : audioVoice.trimmingCharacters(in: .whitespaces))
+            if let refAudioURL {
+                do {
+                    aud.refAudio = try Data(contentsOf: refAudioURL).base64EncodedString()
+                } catch {
+                    self.error = "Could not read reference WAV: \(error.localizedDescription)"
+                    status = "Input error"
+                    return
+                }
+            }
+            options.audio = aud
+        }
+        if videoOutput {
+            var vid = VideoOptions(size: videoSize)
+            if let frames = Int(videoFramesText.trimmingCharacters(in: .whitespaces)), frames > 0 {
+                vid.numFrames = frames
+            }
+            if let steps = Int(videoStepsText.trimmingCharacters(in: .whitespaces)), steps > 0 {
+                vid.steps = steps
+            }
+            if let cfg = Double(videoGuidanceText.trimmingCharacters(in: .whitespaces)), cfg >= 0 {
+                vid.guidanceScale = cfg
+            }
+            options.video = vid
         }
 
         stopStreamingAudio()
-        if audioOutput {
+        if audioOutput && !imageOutput && !videoOutput {
             audioStream.beginStream()
         }
 
-        turns.append(ChatTurn(role: .user, text: text, state: .complete))
+        var userTurn = ChatTurn(role: .user, text: text.isEmpty ? "[Image]" : text, state: .complete)
+        if let attachedImageBytes, let sentImageURL {
+            userTurn.artifacts.append(GeneratedArtifact(
+                id: "input-\(UUID().uuidString)",
+                mediaType: "image",
+                mimeType: Self.imageMimeType(for: sentImageURL),
+                data: attachedImageBytes,
+                sha256: ""
+            ))
+        }
+        attachedImageURL = nil
+        turns.append(userTurn)
         let assistant = ChatTurn(role: .assistant, text: "", state: .streaming)
         turns.append(assistant)
         activeTurn = assistant.id

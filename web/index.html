@@ -102,7 +102,12 @@
   }
   @keyframes blink { 50% { opacity: 0; } }
 
-  .artifacts { display: flex; flex-wrap: wrap; gap: 10px; }
+  .artifacts { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+  .artifact-card { display: flex; flex-direction: column; gap: 6px; }
+  .artifact-card a.dl {
+    font-size: var(--f-caption); color: var(--accent); text-decoration: none;
+  }
+  .artifact-card a.dl:hover { text-decoration: underline; }
   .artifacts img {
     display: block; width: 168px; height: 168px; object-fit: cover;
     border-radius: var(--r-card); border: 1px solid var(--line);
@@ -112,6 +117,18 @@
   .artifacts audio { border-radius: var(--r-control); }
   .artifacts video { max-width: 100%; border-radius: var(--r-card); border: 1px solid var(--line); }
   .legs { font-size: var(--f-caption); color: var(--danger); }
+  .asr-note { font-size: var(--f-caption); color: var(--secondary); font-style: italic; }
+  .attach-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 0 16px 8px; background: var(--surface); font-size: var(--f-caption);
+    color: var(--secondary);
+  }
+  .attach-chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
+    background: var(--hover); border: 1px solid var(--line); border-radius: 999px;
+  }
+  .attach-chip button { padding: 0 5px; border: none; background: transparent; font-size: 12px; }
+  button.recording { background: var(--danger); border-color: var(--danger); color: #fff; }
 
   .wave { display: flex; align-items: flex-end; gap: 3px; height: 20px; }
   .wave i { width: 3px; height: 4px; border-radius: 2px; background: var(--accent); opacity: .5; }
@@ -159,9 +176,11 @@
   <details id="advanced">
     <summary>Options</summary>
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;align-items:center;">
+      <label>Max tokens<input id="maxTokens" type="number" min="1" max="4096" value="256" style="width:76px"></label>
       <label>Temp<input id="temperature" type="number" step="0.1" min="0" max="2" value="0" style="width:64px"></label>
       <label>top_p<input id="topP" type="number" step="0.05" min="0.05" max="1" placeholder="1.0" style="width:68px"></label>
       <label>Seed<input id="seed" type="number" step="1" placeholder="auto" style="width:84px"></label>
+      <label>API key<input id="apiKey" type="password" placeholder="optional" style="width:120px"></label>
       <label>Img size<select id="imageSize"><option value="512x512">512x512</option><option value="1024x1024">1024x1024</option></select></label>
       <label>Img steps<input id="imageSteps" type="number" min="1" max="100" placeholder="default" style="width:72px"></label>
       <label>Edit img<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" style="max-width:170px"></label>
@@ -178,8 +197,14 @@
 <main id="transcript"></main>
 <div id="error" hidden></div>
 
+<div class="attach-bar" id="attachBar" hidden></div>
 <footer>
-  <textarea id="prompt" rows="1" placeholder="Write a prompt"></textarea>
+  <input id="askImage" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+  <input id="askAudio" type="file" accept="audio/*" hidden>
+  <button id="pickImage" type="button" title="Attach image for VLM visual QA">+ Img</button>
+  <button id="pickAudio" type="button" title="Attach audio file for ASR -> VLM">+ Audio</button>
+  <button id="mic" type="button" title="Record voice for ASR -> VLM">Mic</button>
+  <textarea id="prompt" rows="1" placeholder="Write a prompt (or attach image / record voice)"></textarea>
   <button id="send" class="primary">Send</button>
   <button id="stop" class="danger" hidden>Stop</button>
 </footer>
@@ -193,12 +218,14 @@ const $ = (id) => document.getElementById(id);
 const ui = {
   dot: $('dot'), status: $('status'), session: $('session'), theme: $('theme'),
   endpoint: $('endpoint'), model: $('model'), image: $('image'), audio: $('audio'),
-  video: $('video'), voice: $('voice'), temperature: $('temperature'),
-  topP: $('topP'), seed: $('seed'), imageSize: $('imageSize'),
-  imageSteps: $('imageSteps'), imageFile: $('imageFile'), refAudio: $('refAudio'),
-  videoSize: $('videoSize'), videoSeconds: $('videoSeconds'),
+  video: $('video'), voice: $('voice'), maxTokens: $('maxTokens'),
+  temperature: $('temperature'), topP: $('topP'), seed: $('seed'), apiKey: $('apiKey'),
+  imageSize: $('imageSize'), imageSteps: $('imageSteps'), imageFile: $('imageFile'),
+  refAudio: $('refAudio'), videoSize: $('videoSize'), videoSeconds: $('videoSeconds'),
   videoFrames: $('videoFrames'), videoSteps: $('videoSteps'),
   videoGuidance: $('videoGuidance'), transcript: $('transcript'), error: $('error'),
+  attachBar: $('attachBar'), askImage: $('askImage'), askAudio: $('askAudio'),
+  pickImage: $('pickImage'), pickAudio: $('pickAudio'), mic: $('mic'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
 };
 
@@ -224,12 +251,23 @@ applyTheme();
 
 // ---------- settings ----------
 
-const SETTINGS = ['endpoint', 'model', 'voice', 'temperature', 'topP', 'seed',
-                  'imageSize', 'imageSteps', 'videoSize', 'videoSeconds',
+const DEFAULT_ENDPOINT = 'http://127.0.0.1:30000/v1';
+const DEFAULT_MODEL = 'Qwen2.5-0.5B-Instruct-4bit';
+const SAME_ORIGIN_ENDPOINT =
+  (location.protocol === 'http:' || location.protocol === 'https:')
+    ? (location.origin + '/v1') : '';
+
+const SETTINGS = ['endpoint', 'model', 'voice', 'maxTokens', 'temperature', 'topP',
+                  'seed', 'imageSize', 'imageSteps', 'videoSize', 'videoSeconds',
                   'videoFrames', 'videoSteps', 'videoGuidance'];
 for (const key of SETTINGS) {
   const saved = localStorage.getItem('ummweb.' + key);
   if (saved !== null) ui[key].value = saved;
+}
+// When served by `umm-infer serve --web-root`, default to same-origin /v1 and
+// heal any stale default endpoint saved before the page was hosted here.
+if (SAME_ORIGIN_ENDPOINT && (!ui.endpoint.value.trim() || ui.endpoint.value.trim() === DEFAULT_ENDPOINT)) {
+  ui.endpoint.value = SAME_ORIGIN_ENDPOINT;
 }
 ui.image.checked = localStorage.getItem('ummweb.image') === '1';
 ui.audio.checked = localStorage.getItem('ummweb.audio') === '1';
@@ -241,6 +279,43 @@ const saveSettings = () => {
   localStorage.setItem('ummweb.video', ui.video.checked ? '1' : '0');
 };
 
+function apiURL(base, suffix) {
+  const url = new URL(base.trim());
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Base URL must use http or https.');
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('Use a base URL without credentials, query, or fragment.');
+  }
+  let path = url.pathname.replace(/\/+$/, '');
+  if (!path) path = '/v1';
+  url.pathname = path + suffix;
+  return url;
+}
+
+function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  const key = ui.apiKey.value.trim();
+  if (key) headers.Authorization = 'Bearer ' + key;
+  return headers;
+}
+
+async function discoverModel() {
+  try {
+    const res = await fetch(apiURL(ui.endpoint.value, '/models'), { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    const id = data?.data?.[0]?.id;
+    if (typeof id === 'string' && id &&
+        (!ui.model.value.trim() || ui.model.value.trim() === DEFAULT_MODEL)) {
+      ui.model.value = id;
+      saveSettings();
+    }
+  } catch { /* best-effort model discovery */ }
+}
+discoverModel();
+ui.endpoint.addEventListener('change', discoverModel);
+
 function readFileAsDataURL(input) {
   const file = input.files && input.files[0];
   if (!file) return Promise.resolve('');
@@ -251,6 +326,167 @@ function readFileAsDataURL(input) {
     reader.readAsDataURL(file);
   });
 }
+
+function encodeBase64(bytes) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function encodeWavPcm16Mono(samples, sampleRate) {
+  const len = samples.length;
+  const buf = new ArrayBuffer(44 + len * 2);
+  const view = new DataView(buf);
+  const str = (off, s) => { for (let i = 0; i < s.length; i += 1) view.setUint8(off + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); view.setUint32(4, 36 + len * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, 'data'); view.setUint32(40, len * 2, true);
+  for (let i = 0; i < len; i += 1) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Uint8Array(buf);
+}
+
+function resampleMono(samples, fromRate, toRate) {
+  if (fromRate === toRate) return samples;
+  const outLen = Math.max(1, Math.round(samples.length * toRate / fromRate));
+  const out = new Float32Array(outLen);
+  const ratio = fromRate / toRate;
+  for (let i = 0; i < outLen; i += 1) {
+    const pos = i * ratio;
+    const idx = Math.floor(pos);
+    const frac = pos - idx;
+    const a = samples[idx] ?? 0;
+    const b = samples[Math.min(idx + 1, samples.length - 1)] ?? a;
+    out[i] = a + (b - a) * frac;
+  }
+  return out;
+}
+
+async function decodeAudioToWav16kBase64(arrayBuffer) {
+  const ctx = new AudioContext();
+  try {
+    const audioBuf = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    const len = audioBuf.length;
+    const mono = new Float32Array(len);
+    for (let c = 0; c < audioBuf.numberOfChannels; c += 1) {
+      const ch = audioBuf.getChannelData(c);
+      for (let i = 0; i < len; i += 1) mono[i] += ch[i] / audioBuf.numberOfChannels;
+    }
+    const pcm16k = resampleMono(mono, audioBuf.sampleRate, 16000);
+    return encodeBase64(encodeWavPcm16Mono(pcm16k, 16000));
+  } finally {
+    ctx.close().catch(() => {});
+  }
+}
+
+// ---------- multimodal composer attachments ----------
+
+let attachedImage = null; // { name, dataURL }
+let attachedAudio = null; // { name, wavBase64 }
+let micState = null;      // { stream, ctx, src, proc, chunks, sampleRate }
+
+function renderAttachments() {
+  ui.attachBar.replaceChildren();
+  const addChip = (label, onRemove) => {
+    const chip = document.createElement('span');
+    chip.className = 'attach-chip';
+    chip.append(document.createTextNode(label));
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '×';
+    btn.addEventListener('click', onRemove);
+    chip.append(btn);
+    ui.attachBar.append(chip);
+  };
+  if (attachedImage) {
+    addChip(`Image: ${attachedImage.name}`, () => {
+      attachedImage = null; ui.askImage.value = ''; renderAttachments();
+    });
+  }
+  if (attachedAudio) {
+    addChip(`Audio (16k WAV): ${attachedAudio.name}`, () => {
+      attachedAudio = null; ui.askAudio.value = ''; renderAttachments();
+    });
+  }
+  ui.attachBar.hidden = !attachedImage && !attachedAudio;
+}
+
+ui.pickImage.addEventListener('click', () => ui.askImage.click());
+ui.askImage.addEventListener('change', async () => {
+  const file = ui.askImage.files?.[0];
+  if (!file) return;
+  try {
+    const dataURL = await readFileAsDataURL(ui.askImage);
+    attachedImage = { name: file.name, dataURL };
+    renderAttachments();
+  } catch (err) { showError(err.message); }
+});
+
+ui.pickAudio.addEventListener('click', () => ui.askAudio.click());
+ui.askAudio.addEventListener('change', async () => {
+  const file = ui.askAudio.files?.[0];
+  if (!file) return;
+  try {
+    setStatus('Converting audio to 16 kHz WAV…', false);
+    const wavBase64 = await decodeAudioToWav16kBase64(await file.arrayBuffer());
+    attachedAudio = { name: file.name, wavBase64 };
+    renderAttachments();
+    setStatus('Ready', false);
+  } catch (err) { showError('Audio decode failed: ' + err.message); }
+});
+
+ui.mic.addEventListener('click', async () => {
+  if (micState) {
+    const st = micState;
+    micState = null;
+    ui.mic.classList.remove('recording');
+    ui.mic.textContent = 'Mic';
+    st.proc.disconnect();
+    st.src.disconnect();
+    st.stream.getTracks().forEach((t) => t.stop());
+    const total = st.chunks.reduce((n, c) => n + c.length, 0);
+    const merged = new Float32Array(total);
+    let off = 0;
+    for (const c of st.chunks) { merged.set(c, off); off += c.length; }
+    st.ctx.close().catch(() => {});
+    if (total > 0) {
+      const pcm16k = resampleMono(merged, st.sampleRate, 16000);
+      const sec = (pcm16k.length / 16000).toFixed(1);
+      attachedAudio = { name: `mic-${sec}s.wav`, wavBase64: encodeBase64(encodeWavPcm16Mono(pcm16k, 16000)) };
+      renderAttachments();
+      setStatus(`Recorded ${sec}s`, false);
+    } else {
+      setStatus('Ready', false);
+    }
+    return;
+  }
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Microphone requires localhost/127.0.0.1 or HTTPS.');
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const chunks = [];
+    proc.onaudioprocess = (e) => { chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    src.connect(proc);
+    proc.connect(ctx.destination);
+    micState = { stream, ctx, src, proc, chunks, sampleRate: ctx.sampleRate };
+    ui.mic.classList.add('recording');
+    ui.mic.textContent = 'Stop Mic';
+    setStatus('Recording… click Stop Mic when done', true);
+  } catch (err) {
+    showError('Microphone error: ' + err.message);
+  }
+});
 
 // ---------- state ----------
 
@@ -269,17 +505,7 @@ function newSessionID() {
 
 // ChatClient.chatURL: strip trailing slashes, default /v1, append the route.
 function chatURL(base) {
-  const url = new URL(base.trim());
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Base URL must use http or https.');
-  }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error('Use a base URL without credentials, query, or fragment.');
-  }
-  let path = url.pathname.replace(/\/+$/, '');
-  if (!path) path = '/v1';
-  url.pathname = path + '/chat/completions';
-  return url;
+  return apiURL(base, '/chat/completions');
 }
 
 // ---------- view helpers ----------
@@ -310,15 +536,17 @@ function addTurn(role, text) {
   const textEl = document.createElement('div');
   textEl.className = 'text';
   textEl.textContent = text;
+  const asrEl = document.createElement('div');
+  asrEl.className = 'asr-note';
   const artifacts = document.createElement('div');
   artifacts.className = 'artifacts';
   const legs = document.createElement('div');
   legs.className = 'legs';
-  body.append(textEl, artifacts, legs);
+  body.append(asrEl, textEl, artifacts, legs);
   el.append(meta, body);
   ui.transcript.append(el);
   scrollToEnd();
-  return { el, textEl, artifacts, legs, text };
+  return { el, asrEl, textEl, artifacts, legs, text };
 }
 
 function scrollToEnd() {
@@ -492,6 +720,18 @@ function deliver(chunk, bytes) {
     return;
   }
   const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const wrapCard = (node, filename) => {
+    const card = document.createElement('div');
+    card.className = 'artifact-card';
+    card.append(node);
+    const dl = document.createElement('a');
+    dl.className = 'dl';
+    dl.href = url;
+    dl.download = filename;
+    dl.textContent = `Download ${filename} (${(bytes.length / 1024).toFixed(1)} KB)`;
+    card.append(dl);
+    turn.artifacts.append(card);
+  };
   if (chunk.media_type === 'image') {
     const link = document.createElement('a');
     link.href = url;
@@ -501,17 +741,17 @@ function deliver(chunk, bytes) {
     img.src = url;
     img.alt = 'Generated image';
     link.append(img);
-    turn.artifacts.append(link);
+    wrapCard(link, 'image.png');
   } else if (mime === 'audio/wav') {
     const audio = document.createElement('audio');
     audio.controls = true;
     audio.src = url;
-    turn.artifacts.append(audio);
+    wrapCard(audio, 'speech.wav');
   } else if (mime === 'video/mp4') {
     const video = document.createElement('video');
     video.controls = true;
     video.src = url;
-    turn.artifacts.append(video);
+    wrapCard(video, 'video.mp4');
   } else {
     const note = document.createElement('div');
     note.className = 'legs';
@@ -574,6 +814,9 @@ async function consume(payload, st) {
     if (unified.session_id) st.sessionID = unified.session_id;
     log('event', unified.kind, unified.seq, unified.stage);
     switch (unified.kind) {
+      case 'asr_final':
+        if (unified.text) turn.asrEl.textContent = `ASR: ${unified.text}`;
+        break;
       case 'artifact': await ingestArtifact(unified.artifact); break;
       case 'leg_error':
         turn.legs.textContent = `${unified.stage} output: ${unified.error || 'failed'}`;
@@ -605,10 +848,11 @@ function setBusy(busy) {
   ui.send.hidden = busy;
   ui.stop.hidden = !busy;
   for (const control of [
-    ui.endpoint, ui.model, ui.image, ui.audio, ui.video, ui.voice,
-    ui.temperature, ui.topP, ui.seed, ui.imageSize, ui.imageSteps,
+    ui.endpoint, ui.model, ui.image, ui.audio, ui.video, ui.voice, ui.maxTokens,
+    ui.temperature, ui.topP, ui.seed, ui.apiKey, ui.imageSize, ui.imageSteps,
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
-    ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.newChat]) {
+    ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
+    ui.pickAudio, ui.mic, ui.newChat]) {
     control.disabled = busy;
   }
   ui.dot.classList.toggle('busy', busy);
@@ -617,7 +861,9 @@ function setBusy(busy) {
 async function send() {
   if (running) return;
   const text = ui.prompt.value.trim();
-  if (!text) { setStatus('Input required', false); ui.prompt.focus(); return; }
+  if (!text && !attachedImage && !attachedAudio) {
+    setStatus('Input required', false); ui.prompt.focus(); return;
+  }
 
   let url;
   let model;
@@ -630,15 +876,28 @@ async function send() {
   saveSettings();
   if (!sessionID) sessionID = newSessionID();
 
+  let userContent;
+  if (attachedImage || attachedAudio) {
+    const parts = [];
+    if (text) parts.push({ type: 'text', text });
+    if (attachedImage) parts.push({ type: 'image_url', image_url: { url: attachedImage.dataURL } });
+    if (attachedAudio) parts.push({ type: 'input_audio', input_audio: { data: attachedAudio.wavBase64, format: 'wav' } });
+    userContent = parts;
+  } else {
+    userContent = text;
+  }
+
+  const maxTokVal = Number.parseInt(ui.maxTokens.value.trim(), 10);
   const tempVal = Number(ui.temperature.value);
   const body = {
     model,
-    messages: [...history, { role: 'user', content: text }],
-    max_tokens: 64,
+    messages: [{ role: 'user', content: userContent }],
+    max_tokens: Number.isInteger(maxTokVal) && maxTokVal > 0 ? maxTokVal : 256,
     temperature: Number.isFinite(tempVal) && tempVal >= 0 ? tempVal : 0,
     stream: true,
     session_id: sessionID,
   };
+  if (history.length > 0) body.session_history = true;
   if (ui.topP.value.trim() !== '') {
     const topPVal = Number(ui.topP.value);
     if (Number.isFinite(topPVal) && topPVal > 0 && topPVal <= 1) body.top_p = topPVal;
@@ -686,13 +945,29 @@ async function send() {
   }
   if (modalities.length > 1) body.modalities = modalities;
 
+  const userLabel = [
+    text,
+    attachedImage ? `[Image: ${attachedImage.name}]` : '',
+    attachedAudio ? `[Audio: ${attachedAudio.name}]` : '',
+  ].filter(Boolean).join(' ');
+  const sentImage = attachedImage;
+  attachedImage = null; ui.askImage.value = '';
+  attachedAudio = null; ui.askAudio.value = '';
+  renderAttachments();
+
   ui.prompt.value = '';
   clearError();
   stopped = false;
   inflight = new Map();
   setBusy(true);
   setStatus('Connecting…');
-  addTurn('user', text);
+  const userTurn = addTurn('user', userLabel);
+  if (sentImage) {
+    const thumb = document.createElement('img');
+    thumb.src = sentImage.dataURL;
+    thumb.alt = sentImage.name;
+    userTurn.artifacts.append(thumb);
+  }
   turn = addTurn('assistant', '');
   turn.textEl.classList.add('caret');
   waveEl = document.createElement('div');
@@ -704,15 +979,24 @@ async function send() {
 
   controller = new AbortController();
   const st = { seq: 0, terminal: 0, sawUnified: false, done: false, text: '', finish: '', sessionID };
-  log('request', url.href, JSON.stringify(body));
+  log('request', url.href, JSON.stringify({ ...body, messages: '[redacted media]' }));
 
   try {
-    const res = await fetch(url, {
+    let res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      headers: authHeaders({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }),
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+    if (res.status === 400 && body.session_history) {
+      delete body.session_history;
+      res = await fetch(url, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       throw new Error(`HTTP ${res.status}: ${limit(detail)}`);
@@ -745,7 +1029,7 @@ async function send() {
         'session ' + sessionID.replace(/^ummweb-/, '').slice(0, 8);
       ui.session.title = sessionID;
     }
-    history.push({ role: 'user', content: text });
+    history.push({ role: 'user', content: userLabel });
     history.push({ role: 'assistant', content: st.text });
     turn.textEl.classList.remove('caret');
     player.end();
@@ -761,7 +1045,11 @@ async function send() {
       if (!turn.text && !turn.artifacts.childElementCount) turn.el.remove();
     } else {
       setStatus('Error');
-      showError(err.message || String(err));
+      let msg = err.message || String(err);
+      if (/failed to fetch/i.test(msg)) {
+        msg = `Failed to fetch ${url.href} — check that Base URL matches this page's host/port (${location.origin}/v1) and the server is reachable.`;
+      }
+      showError(msg);
     }
     log('failed', err.message);
   } finally {

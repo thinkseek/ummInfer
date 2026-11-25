@@ -9,6 +9,13 @@ import Foundation
 struct ChatMessage: Codable, Equatable {
     let role: String
     let content: String
+    var imageDataURL: String? = nil
+
+    init(role: String, content: String, imageDataURL: String? = nil) {
+        self.role = role
+        self.content = content
+        self.imageDataURL = imageDataURL
+    }
 }
 
 struct ChatCompletion {
@@ -48,6 +55,7 @@ struct VideoOptions: Equatable {
 
 struct ChatStreamOptions: Equatable {
     var sessionID: String?
+    var maxTokens: Int?
     var temperature: Double?
     var topP: Double?
     var seed: Int64?
@@ -283,10 +291,21 @@ final class ChatClient {
 
     static func requestBody(model: String, messages: [ChatMessage],
                             options: ChatStreamOptions) -> [String: Any] {
+        let encodedMessages: [[String: Any]] = messages.map { message in
+            if let imageURL = message.imageDataURL, !imageURL.isEmpty {
+                var parts: [[String: Any]] = []
+                if !message.content.isEmpty {
+                    parts.append(["type": "text", "text": message.content])
+                }
+                parts.append(["type": "image_url", "image_url": ["url": imageURL]])
+                return ["role": message.role, "content": parts]
+            }
+            return ["role": message.role, "content": message.content]
+        }
         var body: [String: Any] = [
             "model": model,
-            "messages": messages.map { ["role": $0.role, "content": $0.content] },
-            "max_tokens": 64,
+            "messages": encodedMessages,
+            "max_tokens": options.maxTokens ?? 64,
             "temperature": options.temperature ?? 0,
             "stream": true
         ]
