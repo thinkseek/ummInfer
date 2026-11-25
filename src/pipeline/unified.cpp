@@ -215,6 +215,7 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.start_epoch_ms = epoch_millis();
   if (parsed.has_audio) record.asr_started = record.started;
   record.history_requested = parsed.history_requested;
+  record.realtime_playback_ack = parsed.realtime_playback_ack;
   record.original_inputs = std::move(parsed.original_inputs);
   record.vlm_params = std::move(vlm_params);
   record.vlm_metadata = std::move(vlm_metadata);
@@ -335,6 +336,59 @@ UnifiedEngine::CancelStatus UnifiedEngine::cancel_for_session(
 
 bool UnifiedEngine::cancel(const std::string& request_id, const char* source) {
   return cancel_for_session(request_id, {}, source) == CancelStatus::kCancelled;
+}
+
+UnifiedEngine::BargeInResult UnifiedEngine::cancel_realtime_barge_in(
+    const std::string& request_id, std::string_view expected_session_id,
+    size_t acknowledged_text_cursor) {
+  BargeInResult result;
+  result.acknowledged_text_cursor = acknowledged_text_cursor;
+  std::vector<std::string> active_ids;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = records_.find(request_id);
+    if (it == records_.end() || it->second.session_id != expected_session_id ||
+        !it->second.realtime_playback_ack) {
+      return result;
+    }
+    Record& record = it->second;
+    result.accepted = true;
+    if (record.phase != Phase::kDone) {
+      result.generation_cancelled = true;
+      record.cancel_requested = true;
+      if (!record.vlm_id.empty()) active_ids.push_back(record.vlm_id);
+      record.for_each_single_output_leg([&](const OutputLeg& leg) {
+        if (leg.submitted) active_ids.push_back(leg.child_id);
+      });
+      for (const OutputLeg& leg : record.slot_legs) {
+        if (leg.submitted) active_ids.push_back(leg.child_id);
+      }
+      for (const OutputLeg& leg : record.tts_legs) {
+        if (leg.submitted) active_ids.push_back(leg.child_id);
+      }
+      if (active_ids.empty()) active_ids.push_back(request_id);
+    }
+    result.history_recorded = record_realtime_history_locked(
+        record, acknowledged_text_cursor, result.assistant_prefix);
+  }
+  for (const std::string& id : active_ids) coordinator_.abort(id, "barge_in");
+  return result;
+}
+
+bool UnifiedEngine::complete_realtime_playback(
+    const std::string& request_id, std::string_view expected_session_id,
+    size_t acknowledged_text_cursor) {
+  std::lock_guard<std::mutex> lock(mu_);
+  auto it = records_.find(request_id);
+  if (it == records_.end() || it->second.session_id != expected_session_id ||
+      !it->second.realtime_playback_ack ||
+      it->second.phase != Phase::kDone ||
+      acknowledged_text_cursor != it->second.vlm_text.size()) {
+    return false;
+  }
+  std::string prefix;
+  record_realtime_history_locked(it->second, acknowledged_text_cursor, prefix);
+  return it->second.realtime_history_prefix.size() == acknowledged_text_cursor;
 }
 
 bool UnifiedEngine::wait(const std::string& request_id, double timeout_s) {
@@ -546,7 +600,8 @@ void UnifiedEngine::handle_stream(const StreamMessage& msg) {
         }
       } else if (msg.from_stage == config_.tts_stage && record.tts_enabled) {
         if (record.tts_stream) {
-          emit_tts_chunk_locked(unified_id, record, msg.chunk, deferred_aborts);
+          emit_tts_chunk_locked(unified_id, record, msg.request_id, msg.chunk,
+                                deferred_aborts);
         }
       } else if (msg.from_stage == record.image_leg.stage_name ||
                  msg.from_stage == record.video_leg.stage_name) {
@@ -777,6 +832,34 @@ void UnifiedEngine::record_session_turn_locked(const Record& record) {
   const std::string& user =
       record.transcript.empty() ? record.user_text : record.transcript;
   session_store_.record_turn(record.session_id, user, record.vlm_text);
+}
+
+bool UnifiedEngine::record_realtime_history_locked(
+    Record& record, size_t acknowledged_text_cursor,
+    std::string& assistant_prefix) {
+  if (record.realtime_history_recorded) {
+    assistant_prefix = record.realtime_history_prefix;
+    return false;
+  }
+  // Cursors originate at UTF-8-safe VLM/TTS boundaries. Reject a direct caller
+  // that tries to split a codepoint rather than writing malformed history.
+  if (acknowledged_text_cursor > record.vlm_text.size() ||
+      (acknowledged_text_cursor < record.vlm_text.size() &&
+       (static_cast<unsigned char>(
+            record.vlm_text[acknowledged_text_cursor]) &
+        0xc0) == 0x80)) {
+    return false;
+  }
+  assistant_prefix = record.vlm_text.substr(0, acknowledged_text_cursor);
+  record.realtime_history_prefix = assistant_prefix;
+  if (!record.history_requested) return false;
+  const std::string& user =
+      record.transcript.empty() ? record.user_text : record.transcript;
+  if (user.empty()) return false;
+  session_store_.record_turn(record.session_id, user, assistant_prefix);
+  record.realtime_history_recorded = true;
+  record.realtime_history_prefix = assistant_prefix;
+  return true;
 }
 
 UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
@@ -1119,7 +1202,9 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
             dispatch_queue_.push_back(finish_locked(
                 unified_id, record, UnifiedEvent::Kind::kComplete, {},
                 info.result));
-            if (record.history_requested) record_session_turn_locked(record);
+            if (record.history_requested && !record.realtime_playback_ack) {
+              record_session_turn_locked(record);
+            }
           }
         }
       }
@@ -1158,12 +1243,15 @@ void UnifiedEngine::submit_single_output_leg_locked(
 
 void UnifiedEngine::start_tts_locked(const std::string& request_id,
                                      Record& record, std::string text,
-                                     bool first) {
+                                     bool first, size_t text_begin,
+                                     size_t text_end) {
   OutputLeg leg;
   leg.modality = UnifiedModality::kAudio;
   leg.enabled = true;
   leg.stage_name = config_.tts_stage;
   leg.stage_id = kTtsStageId;
+  leg.text_begin = text_begin;
+  leg.text_end = text_end;
   leg.child_id = (!record.tts_stream && first)
                      ? request_id + kTtsSuffix
                      : request_id + kTtsSuffix + ":" +
@@ -1202,11 +1290,14 @@ void UnifiedEngine::drain_sentences_locked(const std::string& request_id,
     if (cut == 0) break;
     std::string sentence = record.sentence_buf.substr(0, cut);
     record.sentence_buf.erase(0, cut);
+    const size_t text_begin = record.tts_text_cursor;
+    record.tts_text_cursor += cut;
     const size_t begin = sentence.find_first_not_of(" \t\r\n");
     if (begin == std::string::npos) continue;
     sentence = sentence.substr(
         begin, sentence.find_last_not_of(" \t\r\n") - begin + 1);
-    start_tts_locked(request_id, record, std::move(sentence), false);
+    start_tts_locked(request_id, record, std::move(sentence), false, text_begin,
+                     record.tts_text_cursor);
   }
 }
 
@@ -1218,15 +1309,20 @@ void UnifiedEngine::flush_sentences_locked(const std::string& request_id,
   }
   std::string tail = record.sentence_buf;
   record.sentence_buf.clear();
+  size_t text_begin = record.tts_text_cursor;
+  record.tts_text_cursor += tail.size();
   const size_t begin = tail.find_first_not_of(" \t\r\n");
   if (begin == std::string::npos) {
     if (!record.tts_legs.empty()) return;
     tail = record.vlm_text;
+    text_begin = 0;
+    record.tts_text_cursor = tail.size();
   } else {
     tail = tail.substr(begin, tail.find_last_not_of(" \t\r\n") - begin + 1);
   }
   if (tail.empty()) return;
-  start_tts_locked(request_id, record, std::move(tail), record.tts_legs.empty());
+  start_tts_locked(request_id, record, std::move(tail), record.tts_legs.empty(),
+                   text_begin, record.tts_text_cursor);
 }
 
 void UnifiedEngine::start_outputs_locked(const std::string& request_id,
@@ -1256,7 +1352,8 @@ void UnifiedEngine::start_outputs_locked(const std::string& request_id,
     if (record.tts_stream) {
       flush_sentences_locked(request_id, record);
     } else {
-      start_tts_locked(request_id, record, record.vlm_text, true);
+      start_tts_locked(request_id, record, record.vlm_text, true, 0,
+                       record.vlm_text.size());
     }
   }
   trace_legs_locked(request_id, "outputs_started", record);
@@ -1264,9 +1361,20 @@ void UnifiedEngine::start_outputs_locked(const std::string& request_id,
 }
 
 void UnifiedEngine::emit_tts_chunk_locked(
-    const std::string& request_id, Record& record, const Value& chunk,
+    const std::string& request_id, Record& record,
+    const std::string& child_id, const Value& chunk,
     std::vector<std::pair<std::string, const char*>>& deferred_aborts) {
   if (record.tts_failed) return;
+  const OutputLeg* source_leg = nullptr;
+  for (const OutputLeg& leg : record.tts_legs) {
+    if (leg.submitted && leg.child_id == child_id) {
+      source_leg = &leg;
+      break;
+    }
+  }
+  // A chunk for an unknown or already replaced child must never become audio
+  // for the current response, nor lend it an acknowledgement cursor.
+  if (source_leg == nullptr) return;
   const Value* audio = chunk.find("audio");
   if (audio == nullptr || !audio->is_bin() || audio->as_bin().empty()) return;
   const size_t size = audio->as_bin().size();
@@ -1296,6 +1404,12 @@ void UnifiedEngine::emit_tts_chunk_locked(
   }
   descriptor["sample_rate"] = Value(sample_rate);
   descriptor["channels"] = Value(channels);
+  if (record.realtime_playback_ack) {
+    descriptor["text_cursor"] =
+        Value(static_cast<int64_t>(source_leg->text_begin));
+    descriptor["text_end_cursor"] =
+        Value(static_cast<int64_t>(source_leg->text_end));
+  }
   descriptor["index"] = Value(static_cast<int64_t>(0));
   descriptor["total"] = Value(static_cast<int64_t>(1));
   if (const Value* index = chunk.find("index")) {
@@ -1349,6 +1463,13 @@ void UnifiedEngine::emit_artifact_locked(const std::string& request_id,
       request_id, record.session_id, leg.stage_id, result,
       record.artifact_bytes_total, record.next_artifact, record.next_seq);
   for (UnifiedEvent& event : events) {
+    if (record.realtime_playback_ack && leg.stage_id == kTtsStageId &&
+        event.artifact.is_map()) {
+      Value::Map descriptor = event.artifact.as_map();
+      descriptor["text_cursor"] = Value(static_cast<int64_t>(leg.text_begin));
+      descriptor["text_end_cursor"] = Value(static_cast<int64_t>(leg.text_end));
+      event.artifact = Value(std::move(descriptor));
+    }
     if (leg.slot_index >= 0 && event.artifact.is_map()) {
       Value::Map descriptor = event.artifact.as_map();
       descriptor["slot_id"] = Value(leg.slot_id);
@@ -1455,7 +1576,8 @@ void UnifiedEngine::on_legs_drained_locked(const std::string& request_id,
       finish_locked(request_id, record, kind, {}, record.vlm_result);
   event.legs = legs_value_locked(record);
   dispatch_queue_.push_back(std::move(event));
-  if (kind == UnifiedEvent::Kind::kComplete && record.history_requested) {
+  if (kind == UnifiedEvent::Kind::kComplete && record.history_requested &&
+      !record.realtime_playback_ack) {
     record_session_turn_locked(record);
   }
 }

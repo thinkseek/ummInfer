@@ -10,6 +10,7 @@
 #include <cstring>
 #include <deque>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -82,12 +83,20 @@ struct RealtimeSession {
   // Spoken response. The realtime listener stays a pure ASR surface unless
   // session.update enables audio_output and a unified engine is attached.
   bool audio_output = false;
+  bool playback_ack = false;
   std::string voice = "vivian";
   std::string unified_session;
   std::string response_request_id;
   std::string response_leg_error;
   Clock::time_point response_deadline{};
   int64_t response_segment = -1;
+  // Playback acknowledgement belongs to one response id. Only cursors carried
+  // by audio.delta/audio.done are valid; response.text.delta emission is not
+  // evidence that any audio was played.
+  bool response_generation_complete = false;
+  std::string response_text;
+  std::set<size_t> response_issued_cursors{0};
+  size_t response_ack_cursor = 0;
 };
 
 std::string header(lws* wsi, lws_token_indexes token) {
@@ -148,7 +157,12 @@ json effective_session(const RealtimeSession& session) {
   json effective = {{"input_audio_format", "pcm16"},
                     {"turn_detection", turn},
                     {"max_new_tokens", session.max_tokens}};
-  if (session.audio_output) effective["audio_output"] = {{"voice", session.voice}};
+  if (session.audio_output) {
+    effective["audio_output"] = {{"voice", session.voice}};
+    if (session.playback_ack) {
+      effective["audio_output"]["playback_ack"] = true;
+    }
+  }
   return effective;
 }
 
@@ -335,17 +349,86 @@ class RealtimeApi::Impl {
     unified_owned_.erase(id);
   }
 
+  void reset_response_tracking(RealtimeSession* session) {
+    session->response_leg_error.clear();
+    session->response_generation_complete = false;
+    session->response_text.clear();
+    session->response_issued_cursors = {0};
+    session->response_ack_cursor = 0;
+  }
+
+  void drop_queued_response_events(RealtimeSession* session,
+                                   const std::string& response_id) {
+    session->outbound.erase(
+        std::remove_if(session->outbound.begin(), session->outbound.end(),
+                       [&](const std::string& frame) {
+          const json event = json::parse(frame, nullptr, false);
+          if (event.is_discarded() ||
+              event.value("response_id", "") != response_id) {
+            return false;
+          }
+          const std::string type = event.value("type", "");
+          return type == "audio.delta" || type == "audio.done" ||
+                 type == "response.text.delta" ||
+                 type == "response.playback_ack" ||
+                 type == "response.completed" || type == "response.failed";
+        }),
+        session->outbound.end());
+  }
+
   void cancel_and_release_response(RealtimeSession* session,
                                    const char* reason) {
-    session->response_leg_error.clear();
-    if (session->response_request_id.empty()) return;
+    if (session->response_request_id.empty()) {
+      reset_response_tracking(session);
+      return;
+    }
     const std::string id = std::move(session->response_request_id);
     session->response_request_id.clear();
+    drop_queued_response_events(session, id);
     if (unified_ != nullptr) {
       unified_->cancel(id, reason);
       unified_->release(id);
     }
     disown_unified_response(id);
+    reset_response_tracking(session);
+  }
+
+  // A new utterance is the only path that may retain a cancelled realtime
+  // prefix. Emission and playback completion are deliberately separate: the
+  // cursor passed here is the last client acknowledgement, never the amount of
+  // text or PCM the server happened to emit.
+  bool barge_in_response(lws* wsi, RealtimeSession* session) {
+    if (session->response_request_id.empty()) return false;
+    const std::string id = session->response_request_id;
+    const int64_t segment = session->response_segment;
+    const bool playback_ack = session->playback_ack;
+    const size_t ack_cursor = session->response_ack_cursor;
+    UnifiedEngine::BargeInResult result;
+    if (unified_ != nullptr) {
+      if (playback_ack) {
+        result = unified_->cancel_realtime_barge_in(
+            id, session->unified_session, ack_cursor);
+        if (!result.accepted) unified_->cancel(id, "barge_in");
+      } else {
+        unified_->cancel(id, "barge_in");
+      }
+      unified_->release(id);
+    }
+    drop_queued_response_events(session, id);
+    session->response_request_id.clear();
+    disown_unified_response(id);
+    json cancelled = {{"type", "response.cancelled"},
+                      {"response_id", id},
+                      {"segment_id", segment},
+                      {"reason", "barge_in"}};
+    if (playback_ack) {
+      cancelled["text_cursor"] = ack_cursor;
+      cancelled["acknowledged_text"] = result.assistant_prefix;
+      cancelled["history_recorded"] = result.history_recorded;
+    }
+    reset_response_tracking(session);
+    send(wsi, session, cancelled);
+    return true;
   }
 
   void established(lws* wsi, RealtimeSession* session) {
@@ -390,7 +473,6 @@ class RealtimeApi::Impl {
   // Stops the in-flight request at the stage's next boundary and drops its
   // record. libwebsockets thread only.
   void interrupt_request(RealtimeSession* session, const char* reason) {
-    cancel_and_release_response(session, "barge_in");
     if (session->request_id.empty()) return;
     const std::string request_id = session->request_id;
     session->last_interrupt_ms = epoch_millis();
@@ -529,6 +611,10 @@ class RealtimeApi::Impl {
 
   void on_speech_started(lws* wsi, RealtimeSession* session,
                          size_t speech_offset) {
+    // ASR final has already cleared request_id while VLM/TTS is active, so
+    // response cancellation must not be gated on an ASR request being present.
+    const std::string interrupted_response_id = session->response_request_id;
+    barge_in_response(wsi, session);
     // Barge-in: a new utterance while the previous turn still computes.
     if (!session->request_id.empty()) {
       interrupt_request(session, "barge_in");
@@ -544,8 +630,12 @@ class RealtimeApi::Impl {
       clear_preview(wsi, session);
     }
     session->speech_open = true;
-    send(wsi, session, {{"type", "input_audio_buffer.speech_started"},
-                        {"segment_id", session->segment_id}});
+    json started = {{"type", "input_audio_buffer.speech_started"},
+                    {"segment_id", session->segment_id}};
+    if (!interrupted_response_id.empty()) {
+      started["interrupted_response_id"] = interrupted_response_id;
+    }
+    send(wsi, session, started);
   }
 
   void on_speech_stopped(lws* wsi, RealtimeSession* session) {
@@ -586,8 +676,9 @@ class RealtimeApi::Impl {
   // Accepts only fields this server actually applies. Validation completes
   // before any state changes, so a rejected update leaves the session intact.
   void update_session(lws* wsi, RealtimeSession* session, const json& settings) {
-    if (!session->request_id.empty()) {
-      throw ProtocolError("session.update is not accepted after transcription.done");
+    if (!session->request_id.empty() || !session->response_request_id.empty()) {
+      throw ProtocolError(
+          "session.update is not accepted while a turn or response is active");
     }
     static const std::set<std::string> kAllowed = {
         "input_audio_format", "turn_detection", "max_new_tokens", "audio_output"};
@@ -674,19 +765,27 @@ class RealtimeApi::Impl {
     // audio_output: null disables the spoken response; an object enables it
     // and may name a voice. It is rejected when this process has no TTS stage.
     bool audio_output = session->audio_output;
+    bool playback_ack = session->playback_ack;
     std::string voice = session->voice;
     if (settings.contains("audio_output")) {
       const json& audio = settings["audio_output"];
       if (audio.is_null()) {
         audio_output = false;
+        playback_ack = false;
       } else {
         if (!audio.is_object()) {
           throw ProtocolError("audio_output must be null or an object");
         }
         for (auto it = audio.begin(); it != audio.end(); ++it) {
-          if (it.key() != "voice") {
+          if (it.key() != "voice" && it.key() != "playback_ack") {
             throw ProtocolError("unsupported audio_output field: " + it.key());
           }
+        }
+        if (audio.contains("playback_ack")) {
+          if (!audio["playback_ack"].is_boolean()) {
+            throw ProtocolError("audio_output playback_ack must be a boolean");
+          }
+          playback_ack = audio["playback_ack"].get<bool>();
         }
         if (audio.contains("voice")) {
           if (!audio["voice"].is_string() ||
@@ -709,6 +808,7 @@ class RealtimeApi::Impl {
     }
     session->max_tokens = max_tokens;
     session->audio_output = audio_output;
+    session->playback_ack = audio_output && playback_ack;
     session->voice = voice;
     if (apply_turn_detection) {
       if (vad_enabled) {
@@ -722,6 +822,54 @@ class RealtimeApi::Impl {
     send(wsi, session,
          {{"type", "transcription_session.updated"},
           {"session", effective_session(*session)}});
+  }
+
+  void acknowledge_playback(lws* wsi, RealtimeSession* session,
+                            const json& event) {
+    if (!session->playback_ack) {
+      throw ProtocolError(
+          "playback_ack requires audio_output.playback_ack=true");
+    }
+    if (!event.contains("response_id") || !event["response_id"].is_string() ||
+        !event.contains("text_cursor") ||
+        !event["text_cursor"].is_number_integer()) {
+      throw ProtocolError(
+          "playback_ack requires response_id and an integer text_cursor");
+    }
+    const std::string response_id = event["response_id"].get<std::string>();
+    const json& cursor_json = event["text_cursor"];
+    if ((!cursor_json.is_number_unsigned() && cursor_json.get<int64_t>() < 0) ||
+        cursor_json.get<uint64_t>() >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+      throw ProtocolError("playback_ack text_cursor is out of range");
+    }
+    // A late ack for a cancelled/replaced response is expected in a duplex
+    // stream. It must not mutate the new response or close the socket.
+    if (response_id != session->response_request_id) return;
+    const size_t cursor = static_cast<size_t>(cursor_json.get<uint64_t>());
+    if (cursor < session->response_ack_cursor ||
+        session->response_issued_cursors.count(cursor) == 0) {
+      return;
+    }
+    session->response_ack_cursor = cursor;
+    const bool final = session->response_generation_complete &&
+                       cursor == session->response_text.size();
+    if (final) {
+      if (unified_ == nullptr ||
+          !unified_->complete_realtime_playback(
+              response_id, session->unified_session, cursor)) {
+        return;
+      }
+      unified_->release(response_id);
+      disown_unified_response(response_id);
+      session->response_request_id.clear();
+    }
+    send(wsi, session, {{"type", "response.playback_ack"},
+                        {"response_id", response_id},
+                        {"segment_id", session->response_segment},
+                        {"text_cursor", cursor},
+                        {"final", final}});
+    if (final) reset_response_tracking(session);
   }
 
   void receive(lws* wsi, RealtimeSession* session, const void* data, size_t length) {
@@ -762,6 +910,8 @@ class RealtimeApi::Impl {
             /*require_nonempty=*/true);
         if (pcm.empty() || pcm.size() % 2 != 0) throw ProtocolError("invalid PCM16 audio append");
         append_audio(wsi, session, pcm);
+      } else if (type == "output_audio_buffer.playback_ack") {
+        acknowledge_playback(wsi, session, event);
       } else if (type == "transcription.done") {
         submit_final(wsi, session);
       } else {
@@ -780,6 +930,7 @@ class RealtimeApi::Impl {
       auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
       if (!session) continue;
       if (!session->response_request_id.empty() &&
+          !session->response_generation_complete &&
           now >= session->response_deadline) {
         const int64_t segment = session->response_segment;
         cancel_and_release_response(session, "timeout");
@@ -839,7 +990,7 @@ class RealtimeApi::Impl {
           completed["generation_metadata"] = *metadata;
         }
         send(wsi, session, completed);
-        start_response(session, text);
+        start_response(wsi, session, text);
         std::cerr << "realtime turn_done segment=" << session->segment_id
                   << " previews=" << session->partial_count
                   << " chars=" << text.size() << "\n";
@@ -858,9 +1009,11 @@ class RealtimeApi::Impl {
 
   // Starts the VLM -> TTS turn for the transcript just completed. The audio
   // arrives as audio.delta events through drain_unified().
-  void start_response(RealtimeSession* session, const std::string& text) {
+  void start_response(lws* wsi, RealtimeSession* session,
+                      const std::string& text) {
     if (unified_ == nullptr || !session->audio_output || text.empty()) return;
-    cancel_and_release_response(session, "barge_in");
+    barge_in_response(wsi, session);
+    reset_response_tracking(session);
     Value::Map inputs;
     Value::Array messages;
     Value::Map message;
@@ -880,6 +1033,7 @@ class RealtimeApi::Impl {
     if (unified_->history_enabled() && !session->unified_session.empty()) {
       inputs["session_history"] = Value(true);
     }
+    if (session->playback_ack) inputs["realtime_playback_ack"] = Value(true);
     StagePayload payload;
     payload.request.inputs = Value(std::move(inputs));
     payload.request.metadata["request_type"] = Value("chat");
@@ -895,27 +1049,34 @@ class RealtimeApi::Impl {
                 << " request=" << session->response_request_id << "\n";
     } catch (const std::exception& error) {
       session->response_request_id.clear();
-      session->response_leg_error.clear();
+      reset_response_tracking(session);
       std::cerr << "realtime response_start failed: " << error.what() << "\n";
     }
   }
 
   void emit_audio_deltas(lws* wsi, RealtimeSession* session, int64_t segment,
                          std::string_view pcm, int64_t sample_rate,
-                         int64_t channels) {
+                         int64_t channels, size_t text_cursor,
+                         size_t text_end_cursor) {
     const size_t frame_bytes = static_cast<size_t>(channels) * 2u;
     const size_t max_chunk =
         std::max(frame_bytes,
                  (kMaxRealtimeAudioDeltaPcmBytes / frame_bytes) * frame_bytes);
     for (size_t offset = 0; offset < pcm.size(); offset += max_chunk) {
       const size_t step = std::min(max_chunk, pcm.size() - offset);
-      send(wsi, session,
-           {{"type", "audio.delta"},
-            {"segment_id", segment},
-            {"format", "pcm16"},
-            {"sample_rate", sample_rate},
-            {"channels", channels},
-            {"audio", util::base64_encode(pcm.substr(offset, step))}});
+      json delta = {{"type", "audio.delta"},
+                    {"response_id", session->response_request_id},
+                    {"segment_id", segment},
+                    {"format", "pcm16"},
+                    {"sample_rate", sample_rate},
+                    {"channels", channels},
+                    {"audio", util::base64_encode(pcm.substr(offset, step))}};
+      if (session->playback_ack) {
+        delta["text_cursor"] = text_cursor;
+        delta["text_end_cursor"] = text_end_cursor;
+        session->response_issued_cursors.insert(text_cursor);
+      }
+      send(wsi, session, delta);
     }
   }
 
@@ -946,7 +1107,7 @@ class RealtimeApi::Impl {
             if (unified_ != nullptr) unified_->release(event.request_id);
             disown_unified_response(event.request_id);
             session->response_request_id.clear();
-            session->response_leg_error.clear();
+            reset_response_tracking(session);
           }
           break;
         }
@@ -955,9 +1116,17 @@ class RealtimeApi::Impl {
           case UnifiedEvent::Kind::kVlmDelta:
             session->response_deadline = Clock::now() + timeout_span;
             if (!event.text.empty()) {
-              send(wsi, session, {{"type", "response.text.delta"},
-                                  {"segment_id", segment},
-                                  {"text", event.text}});
+              session->response_text += event.text;
+              json delta = {{"type", "response.text.delta"},
+                            {"response_id", event.request_id},
+                            {"segment_id", segment},
+                            {"text", event.text}};
+              if (session->playback_ack) {
+                // Informational only: this cursor is not registered as a valid
+                // playback acknowledgement until audio carries it.
+                delta["text_cursor"] = session->response_text.size();
+              }
+              send(wsi, session, delta);
             }
             break;
           case UnifiedEvent::Kind::kArtifact: {
@@ -967,6 +1136,8 @@ class RealtimeApi::Impl {
             std::string mime_str;
             int64_t sample_rate = 24000;
             int64_t channels = 1;
+            size_t text_cursor = 0;
+            size_t text_end_cursor = 0;
             if (event.artifact.is_map()) {
               if (const Value* media = event.artifact.find("media_type");
                   media != nullptr && media->is_str() &&
@@ -988,6 +1159,14 @@ class RealtimeApi::Impl {
               if (const Value* ch = event.artifact.find("channels");
                   ch != nullptr && ch->is_int()) {
                 channels = ch->as_int();
+              }
+              if (const Value* cursor = event.artifact.find("text_cursor");
+                  cursor != nullptr && cursor->is_int() && cursor->as_int() >= 0) {
+                text_cursor = static_cast<size_t>(cursor->as_int());
+              }
+              if (const Value* cursor = event.artifact.find("text_end_cursor");
+                  cursor != nullptr && cursor->is_int() && cursor->as_int() >= 0) {
+                text_end_cursor = static_cast<size_t>(cursor->as_int());
               }
             }
             if (event.artifact_bytes == nullptr || event.artifact_length == 0) break;
@@ -1017,7 +1196,8 @@ class RealtimeApi::Impl {
                 if (!wav.pcm.empty()) {
                   emit_audio_deltas(wsi, session, segment, wav.pcm,
                                     static_cast<int64_t>(wav.sample_rate),
-                                    static_cast<int64_t>(wav.channels));
+                                    static_cast<int64_t>(wav.channels),
+                                    text_cursor, text_end_cursor);
                 }
               } catch (const std::exception& error) {
                 session->response_leg_error = error.what();
@@ -1036,7 +1216,7 @@ class RealtimeApi::Impl {
               emit_audio_deltas(
                   wsi, session, segment,
                   full_bytes.substr(event.artifact_offset, event.artifact_length),
-                  sample_rate, channels);
+                  sample_rate, channels, text_cursor, text_end_cursor);
             } else {
               session->response_leg_error =
                   "unsupported realtime audio format";
@@ -1053,6 +1233,7 @@ class RealtimeApi::Impl {
             }
             break;
           case UnifiedEvent::Kind::kComplete:
+            session->response_text = event.text;
             if (session->response_leg_error.empty() && event.legs.is_array()) {
               for (const Value& leg : event.legs.as_array()) {
                 if (!leg.is_map()) continue;
@@ -1072,32 +1253,54 @@ class RealtimeApi::Impl {
             }
             if (!session->response_leg_error.empty()) {
               send(wsi, session, {{"type", "response.failed"},
+                                  {"response_id", event.request_id},
                                   {"segment_id", segment},
                                   {"error", session->response_leg_error}});
-              session->response_leg_error.clear();
             } else {
-              send(wsi, session, {{"type", "audio.done"}, {"segment_id", segment}});
-              send(wsi, session,
-                   {{"type", "response.completed"}, {"segment_id", segment}});
+              session->response_generation_complete = true;
+              json audio_done = {{"type", "audio.done"},
+                                 {"response_id", event.request_id},
+                                 {"segment_id", segment}};
+              json completed = {{"type", "response.completed"},
+                                {"response_id", event.request_id},
+                                {"segment_id", segment}};
+              if (session->playback_ack) {
+                const size_t cursor = session->response_text.size();
+                session->response_issued_cursors.insert(cursor);
+                audio_done["text_cursor"] = cursor;
+                completed["text_cursor"] = cursor;
+              }
+              send(wsi, session, audio_done);
+              send(wsi, session, completed);
             }
-            if (unified_ != nullptr) unified_->release(event.request_id);
-            disown_unified_response(event.request_id);
-            session->response_request_id.clear();
+            // Ack mode retains the terminal record while the already emitted
+            // PCM is still playing. Its history is committed only by the final
+            // playback ack or by barge-in at the last acknowledged prefix.
+            if (!session->playback_ack ||
+                !session->response_leg_error.empty()) {
+              if (unified_ != nullptr) unified_->release(event.request_id);
+              disown_unified_response(event.request_id);
+              session->response_request_id.clear();
+              reset_response_tracking(session);
+            } else {
+              session->response_leg_error.clear();
+            }
             break;
           case UnifiedEvent::Kind::kError:
             send(wsi, session, {{"type", "response.failed"},
+                                {"response_id", event.request_id},
                                 {"segment_id", segment},
                                 {"error", event.error}});
             if (unified_ != nullptr) unified_->release(event.request_id);
             disown_unified_response(event.request_id);
             session->response_request_id.clear();
-            session->response_leg_error.clear();
+            reset_response_tracking(session);
             break;
           case UnifiedEvent::Kind::kCancelled:
             if (unified_ != nullptr) unified_->release(event.request_id);
             disown_unified_response(event.request_id);
             session->response_request_id.clear();
-            session->response_leg_error.clear();
+            reset_response_tracking(session);
             break;
           default:
             break;

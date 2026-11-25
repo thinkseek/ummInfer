@@ -268,9 +268,11 @@ class WebSocket {
   }
 
   void close() {
-    if (!closed_.exchange(true) && sock_ != CURL_SOCKET_BAD) {
-      ::shutdown(static_cast<int>(sock_), SHUT_RDWR);
-    }
+    // Do not call ::shutdown() on libcurl's CURLINFO_ACTIVESOCKET fd: libcurl
+    // owns that descriptor and may close it before ~WebSocket(), allowing the
+    // OS to hand the same fd number to another subsystem (e.g. a libzmq
+    // signaler socketpair). Setting closed_ wakes run() within its 20 ms poll.
+    closed_.store(true, std::memory_order_relaxed);
   }
 
  private:
@@ -5151,25 +5153,10 @@ void test_openai_client_nonstream_mixed_roundtrip() {
              "client non-streaming mixed request stayed in flight");
 }
 
-void test_realtime_spoken_audio_format_and_leg_error() {
-  Harness h("rtspoken");
-  ApiConfig rt_config;
-  rt_config.host = "127.0.0.1";
-  rt_config.port = 0;
-  rt_config.model = "qwen3-unified";
-  rt_config.entry_stage = "asr";
-  rt_config.request_timeout_s = 10.0;
-  UnifiedEngine engine(h.coordinator, h.mixed_config());
-  RealtimeApi realtime(h.coordinator, rt_config);
-  realtime.attach_unified(engine);
-  engine.on_event = [&](const UnifiedEvent& event) {
-    realtime.forward_event(event);
-  };
-  realtime.install_stream_sink();
-  check(realtime.bind(), "realtime server did not bind");
-  h.start_pump();
-  std::thread rt_thread([&] { realtime.listen(); });
+UnifiedConfig realtime_history_config(const Harness& h);
 
+void run_realtime_spoken_audio_format_and_leg_error_subtest(
+    Harness& h, UnifiedEngine& engine, RealtimeApi& realtime) {
   std::atomic<bool> cancel{false};
   const std::string ws_url =
       "ws://127.0.0.1:" + std::to_string(realtime.bound_port()) +
@@ -5377,10 +5364,320 @@ void test_realtime_spoken_audio_format_and_leg_error() {
   cancel.store(true, std::memory_order_relaxed);
   ws.close();
   if (ws_reader.joinable()) ws_reader.join();
-  realtime.stop();
-  rt_thread.join();
 }
 
+void run_realtime_barge_in_playback_ack_wire_subtest(
+    Harness& h, UnifiedEngine& engine, RealtimeApi& realtime) {
+
+  struct Client {
+    std::atomic<bool> cancel{false};
+    test_http::WebSocket ws;
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<json> events;
+    std::vector<json> observed;
+    std::thread reader;
+
+    explicit Client(const std::string& url)
+        : ws(url, client::Milliseconds{5000}, &cancel),
+          reader([this] {
+            try {
+              ws.run([this](std::string_view message) {
+                json event = json::parse(message, nullptr, false);
+                if (event.is_discarded()) return;
+                {
+                  std::lock_guard<std::mutex> lock(mu);
+                  events.push_back(std::move(event));
+                }
+                cv.notify_all();
+              });
+            } catch (...) {
+            }
+          }) {}
+    ~Client() {
+      cancel.store(true, std::memory_order_relaxed);
+      ws.close();
+      if (reader.joinable()) reader.join();
+    }
+    void send(const json& event) { ws.send_text(event.dump()); }
+    std::optional<json> next() {
+      std::unique_lock<std::mutex> lock(mu);
+      if (!cv.wait_for(lock, std::chrono::seconds(5),
+                       [&] { return !events.empty(); })) {
+        return std::nullopt;
+      }
+      json event = std::move(events.front());
+      events.pop_front();
+      lock.unlock();
+      observed.push_back(event);
+      return event;
+    }
+  };
+
+  auto wait_event = [](Client& client, const std::string& type,
+                       const std::function<bool(const json&)>& predicate =
+                           [](const json&) { return true; }) {
+    for (int i = 0; i < 128; ++i) {
+      auto event = client.next();
+      if (!event) return std::optional<json>{};
+      if (event->value("type", "") == type && predicate(*event)) return event;
+    }
+    return std::optional<json>{};
+  };
+
+  const std::string ws_url =
+      "ws://127.0.0.1:" + std::to_string(realtime.bound_port()) +
+      "/v1/realtime?intent=transcription&model=qwen3-unified";
+  std::string voiced(3840, '\0');
+  for (int i = 0; i < 1920; ++i) {
+    const auto sample = static_cast<int16_t>(
+        6000.0 * std::sin(2.0 * 3.14159265358979323846 * 440.0 * i / 16000.0));
+    voiced[static_cast<size_t>(i) * 2] = static_cast<char>(sample & 0xff);
+    voiced[static_cast<size_t>(i) * 2 + 1] =
+        static_cast<char>((static_cast<uint16_t>(sample) >> 8) & 0xff);
+  }
+  const std::string quiet(4800, '\0');
+  auto append = [](Client& client, const std::string& pcm) {
+    client.send({{"type", "input_audio_buffer.append"},
+                 {"audio", util::base64_encode(pcm)}});
+  };
+  auto configure = [&](Client& client) {
+    client.send({{"type", "session.update"},
+                 {"session",
+                  {{"input_audio_format", "pcm16"},
+                   {"turn_detection",
+                    {{"type", "server_vad"}, {"silence_ms", 100}}},
+                   {"audio_output",
+                    {{"voice", "vivian"}, {"playback_ack", true}}}}}});
+    auto updated = wait_event(client, "transcription_session.updated");
+    check(updated.has_value() &&
+              (*updated)["session"]["audio_output"]["playback_ack"] == true,
+          "realtime playback acknowledgement mode was not negotiated");
+  };
+  auto start_turn = [&](Client& client, const std::string& transcript)
+      -> std::optional<SubmitMessage> {
+    append(client, voiced);
+    append(client, quiet);
+    auto asr = h.next_submit(h.asr_recv);
+    check(asr.has_value(), "barge-in turn did not submit final ASR");
+    if (asr) h.complete(asr->request_id, "asr", true, text_result(transcript));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "barge-in turn did not submit VLM");
+    return vlm;
+  };
+  auto pcm_chunk = [](const std::string& bytes, int64_t index) {
+    Value::Map chunk;
+    chunk["audio"] = Value::bin(bytes);
+    chunk["index"] = Value(index);
+    chunk["sample_rate"] = Value(int64_t{24000});
+    chunk["channels"] = Value(int64_t{1});
+    chunk["format"] = Value("pcm16");
+    return Value(std::move(chunk));
+  };
+  auto ack = [](Client& client, const std::string& response_id, size_t cursor) {
+    client.send({{"type", "output_audio_buffer.playback_ack"},
+                 {"response_id", response_id},
+                 {"text_cursor", cursor}});
+  };
+
+  {
+    Client a(ws_url);
+    configure(a);
+
+    // Partial TTS: the second sentence's audio carries the end of the first
+    // sentence as its safe acknowledgement cursor. The generated suffix is
+    // deliberately longer than anything the client acknowledged.
+    auto first_vlm = start_turn(a, "first question");
+    StagePayload first_payload;
+    if (first_vlm) first_payload = StagePayload::from_value(first_vlm->data);
+    check(prompt_roles(first_payload).size() == 1,
+          "the first realtime prompt unexpectedly contained history");
+    const std::string first_id = first_vlm ? first_vlm->request_id : "";
+    const std::string answer =
+        "First sentence. Second sentence. unplayed suffix";
+    const std::string acknowledged = "First sentence.";
+    h.stream(first_id, "vlm", text_chunk(answer, false));
+    auto tts0 = h.next_submit(h.tts_recv);
+    auto tts1 = h.next_submit(h.tts_recv);
+    check(tts0.has_value() && tts1.has_value(),
+          "partial TTS did not create the first two sentence legs");
+    if (tts0) {
+      h.stream(tts0->request_id, "tts",
+               pcm_chunk(std::string("\x01\x00\x02\x00", 4), 0));
+    }
+    if (tts1) {
+      h.stream(tts1->request_id, "tts",
+               pcm_chunk(std::string("\x03\x00\x04\x00", 4), 0));
+    }
+    auto audio = wait_event(a, "audio.delta", [&](const json& event) {
+      return event.value("response_id", "") == first_id &&
+             event.value("text_cursor", size_t{0}) == acknowledged.size();
+    });
+    check(audio.has_value() &&
+              audio->value("text_end_cursor", size_t{0}) >
+                  acknowledged.size(),
+          "audio.delta did not carry a conservative playback text cursor");
+    ack(a, first_id, acknowledged.size());
+    auto acked = wait_event(a, "response.playback_ack", [&](const json& event) {
+      return event.value("response_id", "") == first_id &&
+             event.value("text_cursor", size_t{0}) == acknowledged.size() &&
+             !event.value("final", true);
+    });
+    check(acked.has_value(), "the server did not accept the playback cursor");
+
+    append(a, voiced);  // barge-in while VLM and partial TTS are active
+    auto cancelled = wait_event(a, "response.cancelled", [&](const json& event) {
+      return event.value("response_id", "") == first_id;
+    });
+    check(cancelled.has_value() &&
+              cancelled->value("acknowledged_text", "") == acknowledged &&
+              cancelled->value("text_cursor", size_t{0}) == acknowledged.size() &&
+              cancelled->value("history_recorded", false),
+          "barge-in did not report exactly the acknowledged history prefix");
+    const size_t after_cancel = a.observed.size();
+
+    // Late VLM/TTS events and a late ack belong to the released response and
+    // must not reach the next turn or change its acknowledged prefix.
+    h.stream(first_id, "vlm", text_chunk("LATE UNPLAYED", false));
+    if (tts1) {
+      h.stream(tts1->request_id, "tts",
+               pcm_chunk(std::string("\x05\x00\x06\x00", 4), 1));
+    }
+    h.complete(first_id, "vlm", false, Value{}, std::string("aborted"));
+    if (tts0) h.complete(tts0->request_id, "tts", false, Value{}, "aborted");
+    if (tts1) h.complete(tts1->request_id, "tts", false, Value{}, "aborted");
+    ack(a, first_id, answer.size());
+
+    append(a, quiet);
+    auto second_asr = h.next_submit(h.asr_recv);
+    check(second_asr.has_value(), "the turn after barge-in did not reach ASR");
+    if (second_asr) {
+      h.complete(second_asr->request_id, "asr", true, text_result("second question"));
+    }
+    auto second_vlm = h.next_submit(h.vlm_recv);
+    check(second_vlm.has_value(), "the turn after barge-in did not reach VLM");
+    StagePayload second_payload;
+    if (second_vlm) second_payload = StagePayload::from_value(second_vlm->data);
+    auto roles = prompt_roles(second_payload);
+    check(roles.size() == 3 && roles[0].second == "first question" &&
+              roles[1].second == acknowledged && roles[2].second == "second question",
+          "the next VLM prompt did not preserve exactly the acknowledged prefix");
+    check(std::none_of(roles.begin(), roles.end(), [](const auto& role) {
+            return role.second.find("Second sentence") != std::string::npos ||
+                   role.second.find("unplayed suffix") != std::string::npos ||
+                   role.second.find("LATE UNPLAYED") != std::string::npos;
+          }),
+          "the next VLM prompt leaked unplayed or late assistant text");
+    for (size_t i = after_cancel; i < a.observed.size(); ++i) {
+      const json& event = a.observed[i];
+      check(!(event.value("response_id", "") == first_id &&
+              (event.value("type", "") == "audio.delta" ||
+               event.value("type", "") == "response.text.delta" ||
+               event.value("type", "") == "audio.done" ||
+               event.value("type", "") == "response.completed")),
+            "stale response audio or text arrived after response.cancelled");
+    }
+
+    // Barge-in before any VLM delta: retain the second user turn once, with an
+    // empty assistant prefix rather than the whole or a fabricated answer.
+    const std::string second_id = second_vlm ? second_vlm->request_id : "";
+    append(a, voiced);
+    auto second_cancel = wait_event(a, "response.cancelled", [&](const json& event) {
+      return event.value("response_id", "") == second_id;
+    });
+    check(second_cancel.has_value() &&
+              second_cancel->value("acknowledged_text", "nonempty").empty() &&
+              second_cancel->value("history_recorded", false),
+          "pre-VLM barge-in did not retain an empty assistant prefix");
+    append(a, quiet);
+    auto third_asr = h.next_submit(h.asr_recv);
+    if (third_asr) {
+      h.complete(third_asr->request_id, "asr", true, text_result("third question"));
+    }
+    auto third_vlm = h.next_submit(h.vlm_recv);
+    check(third_vlm.has_value(), "the third turn did not reach VLM");
+    StagePayload third_payload;
+    if (third_vlm) third_payload = StagePayload::from_value(third_vlm->data);
+    roles = prompt_roles(third_payload);
+    check(roles.size() == 5 && roles[1].second == acknowledged &&
+              roles[2].second == "second question" && roles[3].second.empty() &&
+              roles[4].second == "third question",
+          "repeated barge-in duplicated or reordered interrupted turns");
+
+    // Complete the third response, then acknowledge its audio.done cursor.
+    // This releases the retained terminal record and commits the full answer.
+    const std::string third_id = third_vlm ? third_vlm->request_id : "";
+    const std::string third_answer = "fully played answer";
+    h.complete(third_id, "vlm", true, text_result(third_answer));
+    auto third_tts = h.next_submit(h.tts_recv);
+    check(third_tts.has_value(), "the completed response had no TTS tail");
+    Value::Map extra;
+    extra["streamed"] = Value(true);
+    if (third_tts) {
+      h.complete(third_tts->request_id, "tts", true,
+                 artifact_result("audio", "audio/wav",
+                                 audio::wav_from_pcm16(std::string(4, '\x01'), 24000),
+                                 extra));
+    }
+    auto done = wait_event(a, "audio.done", [&](const json& event) {
+      return event.value("response_id", "") == third_id;
+    });
+    check(done.has_value() &&
+              done->value("text_cursor", size_t{0}) == third_answer.size(),
+          "audio.done did not carry the final playback cursor");
+    wait_until([&] { return engine.in_flight() == 0; },
+               "generation stayed in flight after response.completed");
+    ack(a, third_id, third_answer.size());
+    auto final_ack = wait_event(a, "response.playback_ack", [&](const json& event) {
+      return event.value("response_id", "") == third_id &&
+             event.value("final", false);
+    });
+    check(final_ack.has_value(), "final playback acknowledgement did not finish");
+
+    // A separate WebSocket/session must not see either interrupted turn or the
+    // completed one, even though all requests share one UnifiedEngine store.
+    Client b(ws_url);
+    configure(b);
+    auto other_vlm = start_turn(b, "other session question");
+    StagePayload other_payload;
+    if (other_vlm) other_payload = StagePayload::from_value(other_vlm->data);
+    check(prompt_roles(other_payload).size() == 1,
+          "realtime playback history leaked across WebSocket sessions");
+    ack(b, third_id, third_answer.size());  // stale cross-session ack: ignored
+  }
+}
+
+// Runs both realtime WebSocket wire subtests (ordinary spoken-audio/leg-error
+// and opt-in playback_ack barge-in history) on one RealtimeApi/lws_context so
+// we exercise both modes side-by-side without triggering Homebrew libwebsockets
+// 4.5.7's macOS second-context teardown fd bug.
+void test_realtime_spoken_audio_format_and_leg_error() {
+  Harness h("rtspoken");
+  ApiConfig rt_config;
+  rt_config.host = "127.0.0.1";
+  rt_config.port = 0;
+  rt_config.model = "qwen3-unified";
+  rt_config.entry_stage = "asr";
+  rt_config.request_timeout_s = 10.0;
+  UnifiedEngine engine(h.coordinator, realtime_history_config(h));
+  RealtimeApi realtime(h.coordinator, rt_config);
+  realtime.attach_unified(engine);
+  engine.on_event = [&](const UnifiedEvent& event) {
+    realtime.forward_event(event);
+  };
+  realtime.install_stream_sink();
+  check(realtime.bind(), "realtime server did not bind");
+  h.start_pump();
+  std::thread rt_thread([&] { realtime.listen(); });
+
+  run_realtime_spoken_audio_format_and_leg_error_subtest(h, engine, realtime);
+  run_realtime_barge_in_playback_ack_wire_subtest(h, engine, realtime);
+
+  realtime.stop();
+  rt_thread.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "realtime wire tests ended with requests in flight");
+}
 
 void test_public_http_finish_reason_length_and_router_reset() {
   Harness h("httplength");
@@ -5695,6 +5992,170 @@ StagePayload streamed_audio_request() {
   inputs["audio_options"] = Value(std::move(options));
   payload.request.inputs = Value(std::move(inputs));
   return payload;
+}
+
+StagePayload realtime_playback_request(const std::string& session_id) {
+  StagePayload payload = streamed_audio_request();
+  Value::Map inputs = payload.request.inputs.as_map();
+  inputs["session_id"] = Value(session_id);
+  inputs["session_history"] = Value(true);
+  inputs["realtime_playback_ack"] = Value(true);
+  payload.request.inputs = Value(std::move(inputs));
+  return payload;
+}
+
+StagePayload inspect_history_probe(Harness& h, UnifiedEngine& engine,
+                                   const std::string& session_id) {
+  StagePayload request = vlm_only_request(true, false);
+  Value::Map inputs = request.request.inputs.as_map();
+  inputs["session_id"] = Value(session_id);
+  inputs["session_history"] = Value(true);
+  request.request.inputs = Value(std::move(inputs));
+  const std::string id = engine.submit(std::move(request));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "history probe did not reach the VLM");
+  StagePayload payload;
+  if (vlm) payload = StagePayload::from_value(vlm->data);
+  check(engine.cancel(id), "history probe cancellation was rejected");
+  h.complete(id, "vlm", false, Value{}, std::string("aborted"));
+  check(engine.wait(id, 5.0), "history probe did not settle");
+  engine.release(id);
+  return payload;
+}
+
+UnifiedConfig realtime_history_config(const Harness& h) {
+  UnifiedConfig config = h.mixed_config();
+  config.session_history.enabled = true;
+  return config;
+}
+
+// Barge-in before the first VLM delta keeps the interrupted user turn with an
+// empty acknowledged assistant prefix. After VLM output starts, only the exact
+// client cursor is retained; repeated cancellation cannot append or extend it.
+void test_realtime_barge_in_history_before_and_after_vlm() {
+  Harness h("rt-history-engine");
+  UnifiedEngine engine(h.coordinator, realtime_history_config(h));
+  h.start_pump();
+
+  const std::string before = engine.submit(realtime_playback_request("rt-before"));
+  check(h.next_submit(h.vlm_recv).has_value(),
+        "pre-VLM barge-in request did not reach the VLM inbox");
+  auto first = engine.cancel_realtime_barge_in(before, "rt-before", 0);
+  check(first.accepted && first.generation_cancelled && first.history_recorded &&
+            first.assistant_prefix.empty(),
+        "pre-VLM barge-in did not retain an empty acknowledged prefix");
+  auto repeated = engine.cancel_realtime_barge_in(before, "rt-before", 0);
+  check(repeated.accepted && !repeated.history_recorded,
+        "repeated pre-VLM cancellation recorded a duplicate turn");
+  h.complete(before, "vlm", false, Value{}, std::string("aborted"));
+  check(engine.wait(before, 5.0), "pre-VLM barge-in did not settle");
+  engine.release(before);
+
+  StagePayload probe = inspect_history_probe(h, engine, "rt-before");
+  auto roles = prompt_roles(probe);
+  check(roles.size() == 3 && roles[0].first == "user" &&
+            roles[0].second == "describe the scene" &&
+            roles[1].first == "assistant" && roles[1].second.empty() &&
+            roles[2].first == "user",
+        "pre-VLM barge-in history is missing, duplicated, or out of order");
+
+  const std::string after = engine.submit(realtime_playback_request("rt-after"));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "post-VLM barge-in request did not reach the VLM");
+  const std::string answer = "Played prefix. unplayed suffix";
+  const std::string acknowledged = "Played prefix. ";
+  h.stream(after, "vlm", text_chunk(answer, false));
+  check(h.next_submit(h.tts_recv).has_value(),
+        "post-VLM barge-in did not observe the streamed answer");
+  auto cancelled = engine.cancel_realtime_barge_in(
+      after, "rt-after", acknowledged.size());
+  check(cancelled.accepted && cancelled.history_recorded &&
+            cancelled.assistant_prefix == acknowledged,
+        "post-VLM barge-in did not retain the exact acknowledged prefix");
+  auto cancelled_again = engine.cancel_realtime_barge_in(
+      after, "rt-after", answer.size());
+  check(!cancelled_again.history_recorded &&
+            cancelled_again.assistant_prefix == acknowledged,
+        "repeated cancellation extended the already acknowledged prefix");
+  h.complete(after, "vlm", false, Value{}, std::string("aborted"));
+  check(engine.wait(after, 5.0), "post-VLM barge-in did not settle");
+  engine.release(after);
+
+  probe = inspect_history_probe(h, engine, "rt-after");
+  roles = prompt_roles(probe);
+  check(roles.size() == 3 && roles[0].second == "describe the scene" &&
+            roles[1].second == acknowledged && roles[2].first == "user",
+        "the next prompt does not contain exactly one acknowledged prefix");
+  check(std::none_of(roles.begin(), roles.end(), [](const auto& role) {
+          return role.second.find("unplayed suffix") != std::string::npos;
+        }),
+        "the next prompt leaked the unplayed assistant suffix");
+}
+
+// A terminal response is emitted, not necessarily played. History remains
+// deferred until the final cursor arrives; normal cancel/error and foreign
+// session cancellation keep their original exclusion behavior.
+void test_realtime_playback_completion_and_default_exclusion() {
+  Harness h("rt-playback-engine");
+  UnifiedEngine engine(h.coordinator, realtime_history_config(h));
+  h.start_pump();
+
+  const std::string id = engine.submit(realtime_playback_request("rt-complete"));
+  check(h.next_submit(h.vlm_recv).has_value(), "completion request missing VLM");
+  const std::string answer = "complete but not yet played";
+  h.complete(id, "vlm", true, text_result(answer));
+  auto tts = h.next_submit(h.tts_recv);
+  check(tts.has_value(), "completion request missing its TTS tail");
+  Value::Map extra;
+  extra["streamed"] = Value(true);
+  if (tts) {
+    h.complete(tts->request_id, "tts", true,
+               artifact_result("audio", "audio/wav",
+                               audio::wav_from_pcm16(std::string(4, '\x01'), 24000),
+                               extra));
+  }
+  check(engine.wait(id, 5.0), "completion request did not settle");
+  check(!engine.complete_realtime_playback(id, "rt-complete", 4),
+        "a partial playback cursor committed a complete answer");
+
+  StagePayload probe = inspect_history_probe(h, engine, "rt-complete");
+  check(prompt_roles(probe).size() == 1,
+        "server emission entered history before playback acknowledgement");
+  check(engine.complete_realtime_playback(id, "rt-complete", answer.size()),
+        "the final playback cursor did not commit the completed turn");
+  check(engine.complete_realtime_playback(id, "rt-complete", answer.size()),
+        "repeating a final playback ack was not idempotent");
+  engine.release(id);
+  probe = inspect_history_probe(h, engine, "rt-complete");
+  auto roles = prompt_roles(probe);
+  check(roles.size() == 3 && roles[1].second == answer,
+        "final playback acknowledgement did not record exactly one full turn");
+
+  const std::string ordinary =
+      engine.submit(realtime_playback_request("rt-default-cancel"));
+  check(h.next_submit(h.vlm_recv).has_value(), "ordinary cancel missing VLM");
+  h.stream(ordinary, "vlm", text_chunk("must not be retained", false));
+  check(engine.cancel(ordinary), "ordinary cancellation was rejected");
+  h.complete(ordinary, "vlm", false, Value{}, std::string("aborted"));
+  check(engine.wait(ordinary, 5.0), "ordinary cancellation did not settle");
+  engine.release(ordinary);
+  probe = inspect_history_probe(h, engine, "rt-default-cancel");
+  check(prompt_roles(probe).size() == 1,
+        "ordinary cancel globally enabled cancelled-request history");
+
+  const std::string foreign =
+      engine.submit(realtime_playback_request("rt-session-a"));
+  check(h.next_submit(h.vlm_recv).has_value(), "foreign-session request missing VLM");
+  auto wrong = engine.cancel_realtime_barge_in(foreign, "rt-session-b", 0);
+  check(!wrong.accepted && !wrong.history_recorded,
+        "a foreign session accepted a realtime barge-in cancellation");
+  check(engine.cancel(foreign), "cleanup cancellation failed");
+  h.complete(foreign, "vlm", false, Value{}, std::string("aborted"));
+  check(engine.wait(foreign, 5.0), "foreign-session request did not settle");
+  engine.release(foreign);
+  probe = inspect_history_probe(h, engine, "rt-session-b");
+  check(prompt_roles(probe).size() == 1,
+        "realtime history leaked across session ids");
 }
 
 // Each VLM delta that completes a sentence starts its own :tts:N leg in
@@ -7033,16 +7494,29 @@ void test_stage_submit_fallback_and_failure_completion() {
   }
   check(done.size() == 2, "the stage did not complete both submits");
   if (done.size() == 2) {
-    check(done[0].request_id == "stage-fallback" && done[0].success,
+    // The id mismatch fails on the receive thread while the valid request runs
+    // on the scheduler. Either terminal may therefore arrive first.
+    const auto fallback_done = std::find_if(
+        done.begin(), done.end(), [](const CompleteMessage& complete) {
+          return complete.request_id == "stage-fallback";
+        });
+    const auto mismatch_done = std::find_if(
+        done.begin(), done.end(), [](const CompleteMessage& complete) {
+          return complete.request_id == "stage-mismatch";
+        });
+    check(fallback_done != done.end() && fallback_done->success,
           "the fallback submit did not complete successfully");
-    const Value* probe = done[0].result.find("probe");
-    check(probe != nullptr && probe->as_str() == "inputs-fallback",
-          "a submit without payload.data did not compute on request.inputs");
+    if (fallback_done != done.end()) {
+      const Value* probe = fallback_done->result.find("probe");
+      check(probe != nullptr && probe->as_str() == "inputs-fallback",
+            "a submit without payload.data did not compute on request.inputs");
+    }
     check(work.size() == 1 && work[0].find("probe") != nullptr,
           "the scheduler received the wrong fallback input");
-    check(done[1].request_id == "stage-mismatch" && !done[1].success,
+    check(mismatch_done != done.end() && !mismatch_done->success,
           "a payload request_id mismatch did not fail its request");
-    check(done[1].error && done[1].error->find("differs") != std::string::npos,
+    check(mismatch_done != done.end() && mismatch_done->error &&
+              mismatch_done->error->find("differs") != std::string::npos,
           "the failure completion lost its reason");
   }
   stage.stop();
@@ -8833,6 +9307,8 @@ int main() {
   RUN(test_public_http_nonstream_text_only_compatible());
   RUN(test_openai_client_nonstream_mixed_roundtrip());
   RUN(test_realtime_spoken_audio_format_and_leg_error());
+  RUN(test_realtime_barge_in_history_before_and_after_vlm());
+  RUN(test_realtime_playback_completion_and_default_exclusion());
   RUN(test_public_http_finish_reason_length_and_router_reset());
   RUN(test_public_http_audio_speech());
   RUN(test_public_http_audio_speech_without_tts());

@@ -186,6 +186,13 @@ ValidatedSubmission validate_submission(const Value& inputs,
           "session_history requires engine session history to be enabled");
     }
   }
+  if (const Value* requested = out.original_inputs.find("realtime_playback_ack");
+      requested != nullptr) {
+    if (!requested->is_bool()) {
+      throw ProtocolError("realtime_playback_ack must be a boolean");
+    }
+    out.realtime_playback_ack = requested->as_bool();
+  }
 
   // Optional interleaved-narrative object. Type validation happens here for
   // every request; the modality cross-checks run after output_modalities is
@@ -279,6 +286,14 @@ ValidatedSubmission validate_submission(const Value& inputs,
       throw ProtocolError("audio output requires a non-empty voice");
     }
   }
+  if (out.realtime_playback_ack) {
+    const auto stream = out.audio_options.find("stream");
+    if (!out.audio_output || stream == out.audio_options.end() ||
+        !stream->second.is_bool() || !stream->second.as_bool()) {
+      throw ProtocolError(
+          "realtime_playback_ack requires streaming audio output");
+    }
+  }
   if (out.narrative_enabled) {
     if (!out.image_output && !out.video_output) {
       throw ProtocolError(
@@ -327,7 +342,8 @@ Value build_vlm_inputs(const std::string& transcript,
     for (const auto& [key, value] : original_inputs.as_map()) {
       if (key != "messages" && key != "modalities" && key != "session_id" &&
           key != "audio" && key != "asr_partials" && key != "session_history" &&
-          key != "output_modalities" && key != "image_options" &&
+          key != "realtime_playback_ack" && key != "output_modalities" &&
+          key != "image_options" &&
           key != "audio_options" && key != "video_options" &&
           key != "narrative") {
         out[key] = value;

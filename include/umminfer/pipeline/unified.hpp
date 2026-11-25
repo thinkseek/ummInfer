@@ -222,6 +222,30 @@ class UnifiedEngine {
 
   enum class CancelStatus { kCancelled, kNotFoundOrTerminal, kSessionMismatch };
 
+  struct BargeInResult {
+    // The id and session belonged to an active or playback-pending realtime
+    // response. Repeated calls are safe but record history at most once.
+    bool accepted = false;
+    bool generation_cancelled = false;
+    bool history_recorded = false;
+    size_t acknowledged_text_cursor = 0;
+    std::string assistant_prefix;
+  };
+
+  // Realtime-only cancellation with an explicit client playback cursor. This
+  // is the sole cancelled-request history exception: it requires the internal
+  // realtime_playback_ack submission contract and never applies to HTTP
+  // cancellation or failure. A generation-complete response can still be in
+  // playback, so this also accepts a terminal record awaiting its final ack.
+  BargeInResult cancel_realtime_barge_in(
+      const std::string& request_id, std::string_view expected_session_id,
+      size_t acknowledged_text_cursor);
+  // Commits a fully played, generation-complete realtime response. Returns
+  // false for a stale id, wrong session, partial cursor, or in-flight response.
+  bool complete_realtime_playback(const std::string& request_id,
+                                  std::string_view expected_session_id,
+                                  size_t acknowledged_text_cursor);
+
   // Cancels the request on both stages via the Coordinator abort broadcast.
   // Returns false when the request is unknown or already terminal. source
   // labels the abort metric: "client", "timeout" or "shutdown".
@@ -280,6 +304,11 @@ class UnifiedEngine {
     std::string stage_id;    // kImageStageId / kTtsStageId / kVideoStageId
     bool enabled = false;
     bool submitted = false;
+    // Byte range in Record::vlm_text spoken by this TTS leg. audio.delta
+    // acknowledgements use text_begin, a conservative prefix that excludes the
+    // current (possibly partially played) sentence; text_end is informational.
+    size_t text_begin = 0;
+    size_t text_end = 0;
     LegState state = LegState::kPending;
     std::string error;
     std::chrono::steady_clock::time_point started;
@@ -321,6 +350,12 @@ class UnifiedEngine {
     // The request opted into multi-turn history. Its turn is only recorded on
     // a successful terminal; cancelled and failed requests leave no history.
     bool history_requested = false;
+    // Internal realtime playback-ack mode defers even successful history until
+    // the client acknowledges playback. Barge-in may then retain exactly the
+    // acknowledged prefix once instead of the generated answer.
+    bool realtime_playback_ack = false;
+    bool realtime_history_recorded = false;
+    std::string realtime_history_prefix;
     std::string transcript;  // partials concatenated; final replaces them
     // The real current-turn user text. On an audio turn transcript carries the
     // ASR result; on a VLM-only turn transcript is empty and this holds the
@@ -361,6 +396,8 @@ class UnifiedEngine {
     // Sentence pipeline and per-chunk audio delivery (audio_options.stream).
     bool tts_stream = false;
     std::string sentence_buf;
+    // Raw vlm_text byte offset consumed by the ordered TTS sentence fan-out.
+    size_t tts_text_cursor = 0;
     size_t tts_bytes = 0;
     bool tts_failed = false;
     std::string tts_error;
@@ -415,7 +452,8 @@ class UnifiedEngine {
   // Submits one TTS leg. `first` keeps the contract child id <id>:tts for the
   // single-leg (non-streaming) request; streamed sentences use :tts:0, :tts:1.
   void start_tts_locked(const std::string& request_id, Record& record,
-                        std::string text, bool first);
+                        std::string text, bool first, size_t text_begin,
+                        size_t text_end);
   // Cuts every complete sentence out of sentence_buf and submits it.
   void drain_sentences_locked(const std::string& request_id, Record& record);
   // Submits the tail of sentence_buf; called at the VLM terminal.
@@ -423,7 +461,8 @@ class UnifiedEngine {
   // Turns one streamed TTS chunk into a PCM16 artifact event. Appends any
   // active TTS child ids to `deferred_aborts` if the byte limit is exceeded.
   void emit_tts_chunk_locked(
-      const std::string& request_id, Record& record, const Value& chunk,
+      const std::string& request_id, Record& record,
+      const std::string& child_id, const Value& chunk,
       std::vector<std::pair<std::string, const char*>>& deferred_aborts);
   // Collects active TTS child ids so the caller can abort them outside mu_
   // without self-deadlocking on Coordinator::abort -> on_complete -> mu_.
@@ -451,6 +490,9 @@ class UnifiedEngine {
   void trace_legs_locked(const std::string& request_id, const char* phase,
                          const Record& record) const;
   void record_session_turn_locked(const Record& record);
+  bool record_realtime_history_locked(Record& record,
+                                      size_t acknowledged_text_cursor,
+                                      std::string& assistant_prefix);
   UnifiedEvent finish_locked(const std::string& request_id, Record& record,
                              UnifiedEvent::Kind kind, std::string error,
                              Value result);

@@ -19,6 +19,9 @@ struct ValidatedSubmission {
   bool has_audio = false;
   bool asr_partials = false;
   bool history_requested = false;
+  // Internal realtime-only opt-in. Playback acknowledgement, rather than
+  // server emission, decides when this turn may enter session history.
+  bool realtime_playback_ack = false;
   bool explicit_session = false;
   std::string session_id;
   bool image_output = false;

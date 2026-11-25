@@ -199,16 +199,89 @@ VLM+TTS request for the transcript and forwards its events on the same socket:
 
 A new utterance cancels the response request through the unified engine, so
 barge-in stops both the VLM and the TTS stage at their existing checkpoints.
-Events that arrive after the cancel are dropped by the cleared request id.
+Cancellation also works after the ASR request id has been cleared and after
+generation has completed but playback is still in progress. Queued events for
+the old response id are purged and late events are dropped.
 When the server is started with `--session-history`, realtime responses opt into
-`session_history=true` for completed turns (`src/serve/realtime_api.cpp:880`);
-cancelled/barged-in partial answers are not yet committed to session history.
-The session id also keys the VLM prefill cache.
+`session_history=true`. With the default compatibility configuration, completed
+turns keep the existing history behavior and cancelled/failed turns stay
+excluded. The opt-in playback-acknowledgement contract below adds the narrow
+realtime barge-in exception. The session id also keys the VLM prefill cache.
 
 The turn buffer now drops exactly the committed turn on reset. Before this
 fix, `reset_turn` erased `turn_audio_start` bytes, which is 0 on a normal turn,
 so the audio of every turn accumulated. Multi-turn ASR then saw the whole
 session and could return empty text.
+
+### Playback acknowledgement and barge-in history (Stage B)
+
+Server emission means **delivered to the client socket**, not played through
+the client's speaker. A client that wants interrupted-turn continuity enables
+the explicit opt-in during `session.update`:
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "input_audio_format": "pcm16",
+    "turn_detection": {"type": "server_vad", "silence_ms": 400},
+    "audio_output": {"voice": "vivian", "playback_ack": true}
+  }
+}
+```
+
+The accepted `transcription_session.updated` echoes `playback_ack: true`.
+Configuration changes are rejected while a turn or response is active, so the
+mode cannot change between emission, playback acknowledgement, and cancellation.
+Leaving `playback_ack` absent or false preserves the old wire behavior: no playback ack is
+required, ordinary completed realtime turns can enter history at completion,
+and cancelled or failed turns never do. `realtime_playback_ack` is an internal
+`UnifiedEngine` submission flag set only by this WebSocket path; it is not a new
+public HTTP chat option and does not change HTTP cancellation/error exclusion.
+
+In acknowledgement mode, response events carry a `response_id`. The added
+cursor fields are UTF-8 **byte offsets** into that response's complete assistant
+text, not Unicode codepoint counts or audio durations:
+
+- `response.text.delta` has an informational `text_cursor`. Text emission alone
+  never authorizes a playback acknowledgement.
+- `audio.delta` has `text_cursor` and `text_end_cursor`. The first is the start
+  of the current TTS sentence leg and therefore a conservative, already
+  covered prefix; the second describes that leg's end. This deliberately does
+  not claim character-level alignment inside a partially played sentence.
+- After consuming the PCM through its actual playback path, the client sends
+  `{"type":"output_audio_buffer.playback_ack","response_id":"...",
+  "text_cursor":N}`. The server accepts only monotonically increasing cursors
+  it issued on `audio.delta` or `audio.done` for that same response. Late,
+  foreign, unknown, and repeated cursors are harmless and cannot extend the
+  retained prefix.
+- `response.playback_ack` echoes the accepted cursor and a `final` boolean.
+  `audio.done` and `response.completed` mean that generation/emission finished,
+  not that playback finished. Their final cursor becomes valid only after all
+  PCM is consumed; that final ack records the complete turn and releases the
+  retained terminal record.
+
+A new utterance stops current playback and emits `response.cancelled` before
+any new response events. The client must immediately stop playing that response
+and ignore any already delivered late frames with its id. The event contains
+`reason: "barge_in"` plus, in acknowledgement mode, `text_cursor`,
+`acknowledged_text`, and `history_recorded`. The server removes queued old
+`audio.delta`, text, completion, and ack frames. It retains the interrupted user
+turn and exactly the acknowledged assistant prefix once: a pre-VLM cancellation
+retains an empty assistant prefix, partial TTS never contributes its unplayed
+suffix, and repeated cancellation cannot append or lengthen the committed turn.
+History remains isolated by realtime session id.
+
+The exception is intentionally narrow. Only an eligible realtime request with
+playback acknowledgement and `session_history` can use it. Timeout, shutdown,
+ordinary `/abort`, ordinary realtime cancellation, and every failed request keep
+the default exclusion. A generation-complete response awaiting playback can be
+interrupted without upgrading its emitted full answer into history.
+
+The deterministic contract suite covers pre/post-VLM barge-in, partial TTS,
+late audio/text, stale and repeated cancellation/acknowledgement, final
+playback commit, exact next-prompt roles/content, default cancel/error
+exclusion, and two-session isolation.
 
 ### Incremental prefill
 
@@ -306,6 +379,49 @@ once with `=0`. Stage-reported numbers for the second turn:
 Prefill time reduction: **30.9%**. The cached and
 uncached answers are compared byte for byte and are equal.
 
+## Measured on SM90, 2026-11-25 (Stage B barge-in history)
+
+Environment: implementation commit `b392e34`, native Qwen3-ASR-1.7B on GPU 0,
+native Qwen3.8-27B (`qwen38`) on GPU 1, and native
+Qwen3-TTS-12Hz-1.7B-CustomVoice on GPU 7. Model revisions stayed `UNKNOWN`.
+Each selected GPU was checked immediately before the run: 3 MiB used, 0%
+utilization, and no compute process. HTTP/WebSocket ports were ephemeral and
+the resident service on 43301 and GPUs 2-6 were not touched. The gateway was
+built in an isolated directory; its SHA-256 was
+`5f494e559652fd352fc209645e6df5b8768d261954af5aef086c4fd5b71d82dc`.
+
+Command, with real paths supplied through the named environment variables:
+
+```sh
+python3 -I tests/full_duplex_barge_in_live.py \
+  --bin-dir "$UMM_BIN_DIR" --asr-model "$UMM_ASR_MODEL" \
+  --vlm-model "$UMM_VLM_MODEL" --tts-model "$UMM_TTS_MODEL" \
+  --audio "$UMM_ASR_AUDIO" --out "$UMM_OUT_DIR" --log-dir "$UMM_LOG_DIR" \
+  --gpu-asr 0 --gpu-vlm 1 --gpu-tts 7
+```
+
+The committed harness uses timed virtual PCM consumption, not a physical audio
+device: it sleeps for each chunk's actual sample duration and only then sends
+its cursor. Raw evidence is
+`$UMM_OUT_DIR/full-duplex-barge-in-evidence.json`; stage logs are under
+`$UMM_LOG_DIR`. These are uncommitted run artifacts.
+
+| Check | Result |
+| --- | --- |
+| GPU preflight and cleanup | PASS; GPUs 0/1/7 started and ended at 3 MiB, 0%; no task process remained |
+| Real ASR turns | `Uh huh. Oh yeah, yeah.` before and after barge-in |
+| Acknowledged assistant prefix | 12-byte UTF-8 prefix `Sounds like `, exactly matching the consumed cursor; the remaining generated answer was excluded |
+| First barge-in stop latency | 400.8 ms (the fixture begins with 400 ms of digital silence) |
+| Following VLM response | PASS; new response id `req-2` started after the post-barge-in transcript |
+| Repeated barge-in stop latency | 400.8 ms |
+| Late/stale old-response output | 0 events after either `response.cancelled` |
+| Final queue state | `/health` returned `{"status":"ok","in_flight":0}` |
+| Overall harness verdict | `PASS` |
+
+This validates the protocol and real model cancellation path, including a
+partially consumed multi-sentence answer. It is not a listening test and does
+not establish acoustic text alignment inside a TTS sentence.
+
 ## What L2 still needs
 
 **Incremental ASR encoding.** Preview transcription is bounded to a 15-second
@@ -314,9 +430,13 @@ previews stay O(1) on long monologues, while final commit still transcribes the
 full turn. A streaming encoder with cached state would avoid re-encoding the
 preview window altogether.
 
-**Client playback.** The server sends `audio.delta`; the bundled CLI client
-does not play it or stop playback on `speech_started` yet. A client must keep
-one socket open across turns and play PCM16 at 24 kHz.
+**Physical client playback.** The server now has the explicit cancellation and
+playback-acknowledgement cursor contract, and the live harness exercises timed
+virtual PCM playback. The bundled CLI client still does not play PCM16 through
+an audio device or stop a physical output stream on `response.cancelled`.
+Character/acoustic alignment inside one TTS sentence also remains unsolved:
+retention is conservative at sentence boundaries rather than estimating an
+unverified substring from PCM duration.
 
 **More than one cached session.** The omni stage caches one session's prefix.
 Concurrent sessions each need their own KV snapshot.
