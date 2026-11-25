@@ -1503,18 +1503,57 @@ def _arm_resources(variant, step_resources, gpu_indexes):
     gpus = {}
     for index in gpu_indexes:
         key = str(index)
-        baseline = rows[0]["whole_device_gpus"][key]["baseline_mib"]
-        finals = [row["whole_device_gpus"][key]["final_mib"] for row in rows]
+        samples = [row["whole_device_gpus"][key] for row in rows]
+        baseline = samples[0]["baseline_mib"]
         gpus[key] = {"baseline_mib": baseline,
-                     "peak_mib": max(finals + [baseline]),
-                     "final_mib": finals[-1], "sample_count": len(rows) + 1}
+                     "peak_mib": max(sample["peak_mib"] for sample in samples),
+                     "final_mib": samples[-1]["final_mib"],
+                     "sample_count": sum(sample["sample_count"] for sample in samples)}
     return {
         "coverage": "COVERED", "scope": "whole-device-used-memory",
         "source": "nvidia-smi-poll",
+        "poll_interval_ms": rows[0]["poll_interval_ms"],
         "attribution": "per-step whole-device samples include persistent model "
                        "baseline and other interleaved arms; not request-only allocation",
         "gpus": gpus,
     }
+
+
+def _first_stage_image_equivalence(all_cases, variable):
+    """Pair every I2V repetition with image-only and require exact source bytes."""
+    if variable != "visual_form":
+        return {"coverage": "NOT_APPLICABLE", "passed": True, "cases": []}
+    rows = []
+    for i2v_case in all_cases:
+        if i2v_case["visual_form"] != "image_then_i2v_animate":
+            continue
+        matches = [case for case in all_cases
+                   if case["prompt_id"] == i2v_case["prompt_id"]
+                   and case["visual_form"] == "image_only"
+                   and case.get("repetition") == i2v_case.get("repetition")]
+        image_case = matches[0] if len(matches) == 1 else None
+        image_hashes = sorted(
+            artifact["sha256"] for artifact in (image_case or {"artifacts": []})["artifacts"]
+            if artifact.get("media_type") == "image")
+        i2v_hashes = sorted(artifact["sha256"] for artifact in i2v_case["artifacts"]
+                            if artifact.get("media_type") == "image")
+        row = {
+            "prompt_id": i2v_case["prompt_id"],
+            "paired_image_case_count": len(matches),
+            "request_sha256": image_case["request_sha256"] if image_case else None,
+            "request_sha256_equal": image_case is not None and
+                image_case["request_sha256"] == i2v_case["request_sha256"],
+            "image_only_source_sha256": image_hashes,
+            "i2v_source_sha256": i2v_hashes,
+            "source_bytes_identical": bool(image_hashes) and image_hashes == i2v_hashes,
+        }
+        if "repetition" in i2v_case:
+            row["repetition"] = i2v_case["repetition"]
+        rows.append(row)
+    passed = bool(rows) and all(
+        row["paired_image_case_count"] == 1 and row["request_sha256_equal"]
+        and row["source_bytes_identical"] for row in rows)
+    return {"coverage": "COVERED", "passed": passed, "cases": rows}
 
 
 def _run_controlled_experiment(experiment, output_root, source, normalized_url, *,
@@ -1581,6 +1620,8 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
             warmup_recorders[variant] = traj.TrajectoryRecorder(
                 output_root / "warmup" / variant / "trajectory.jsonl")
         recorder = warmup_recorders[variant] if is_warmup else recorders[variant]
+        monitor = GpuResourceMonitor(gpu_indexes, sampler=sampler).start() \
+            if gpu_indexes else None
         warmup_cases = []
         for prompt in experiment.prompts:
             body = build_request(experiment, prompt, variant)
@@ -1640,14 +1681,20 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
                 break
             sleep(0.05)
         residual = None
-        if gpu_indexes:
-            final = sampler(gpu_indexes)
+        if monitor is not None:
+            observed = monitor.stop()
+            final = {index: observed["gpus"][str(index)]["final_mib"]
+                     for index in gpu_indexes}
             step_resources.append({
                 "schedule_index": step["index"], "arm": variant,
                 "phase": step["phase"], "repetition": step["repetition"],
+                "poll_interval_ms": observed["poll_interval_ms"],
                 "whole_device_gpus": {
                     str(index): {"baseline_mib": baseline[index],
-                                 "final_mib": final[index]}
+                                 "peak_mib": observed["gpus"][str(index)]["peak_mib"],
+                                 "final_mib": final[index],
+                                 "sample_count":
+                                     observed["gpus"][str(index)]["sample_count"]}
                     for index in gpu_indexes},
             })
             residual = {index: final[index] - baseline[index]
@@ -1678,9 +1725,12 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
 
     all_cases = [case for variant in variants for case in variant_data[variant][0]]
     provenance = _provenance(experiment, source, _artifact_entries(all_cases))
+    equivalence = _first_stage_image_equivalence(all_cases, variable) \
+        if variable == "visual_form" else None
     eligibility = controlled.evaluate_eligibility(
         contract, provenance=provenance, model=provenance["model"],
-        arms=arm_coverage, preconditions=preconditions, cleanups=cleanups)
+        arms=arm_coverage, preconditions=preconditions, cleanups=cleanups,
+        visual_form_equivalence=equivalence)
     evidence_class = eligibility["label"]
 
     policy_reports = []
@@ -1838,33 +1888,8 @@ def _build_combined(experiment, source, mode, evidence_class, variants,
             "artifact_manifest_sha256": report["artifact_manifest_sha256"],
         })
     overall_metrics, overall_coverage = _metric_view(all_cases, all_records, variable)
-    equivalence_rows = []
-    if variable == "visual_form":
-        for i2v_case in all_cases:
-            if i2v_case["visual_form"] != "image_then_i2v_animate":
-                continue
-            image_case = next(
-                case for case in all_cases
-                if case["prompt_id"] == i2v_case["prompt_id"]
-                and case["visual_form"] == "image_only"
-                and case.get("repetition") == i2v_case.get("repetition"))
-            image_hashes = sorted(artifact["sha256"] for artifact in image_case["artifacts"]
-                                  if artifact.get("media_type") == "image")
-            i2v_hashes = sorted(artifact["sha256"] for artifact in i2v_case["artifacts"]
-                                if artifact.get("media_type") == "image")
-            row = {
-                "prompt_id": i2v_case["prompt_id"],
-                "request_sha256": image_case["request_sha256"],
-                "request_sha256_equal": image_case["request_sha256"]
-                    == i2v_case["request_sha256"],
-                "image_only_source_sha256": image_hashes,
-                "i2v_source_sha256": i2v_hashes,
-                "source_bytes_identical": image_hashes == i2v_hashes,
-            }
-            if "repetition" in i2v_case:
-                row["repetition"] = i2v_case["repetition"]
-            equivalence_rows.append(row)
-    equivalence_passed = all(row["request_sha256_equal"] for row in equivalence_rows)
+    equivalence = _first_stage_image_equivalence(all_cases, variable)
+    equivalence_passed = equivalence["passed"]
     combined = {
         "ablation_id": experiment.config["ablation_id"],
         "mode": mode,
@@ -1878,11 +1903,7 @@ def _build_combined(experiment, source, mode, evidence_class, variants,
         "cases": all_cases,
         "metrics": overall_metrics,
         "metric_coverage": overall_coverage,
-        "first_stage_image_equivalence": {
-            "coverage": "COVERED" if variable == "visual_form" else "NOT_APPLICABLE",
-            "passed": equivalence_passed,
-            "cases": equivalence_rows,
-        },
+        "first_stage_image_equivalence": equivalence,
         "resources": {report[variable]: report["resources"] for report in policy_reports},
         "claims": _claims(mode, evidence_class),
     }

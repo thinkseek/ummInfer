@@ -107,6 +107,14 @@ hashes and the SHA-256 of each model's relative-filename Safetensors manifest.
 These manifest hashes identify the available local bytes; they are not claimed
 to be upstream revision IDs.
 
+`benchmarks/ablations/visual-form-controlled-sm90.json` is the distinct pinned
+single-H20 controlled manifest. It uses the human-labelled two-prompt dataset,
+one warmup and three measured repetitions per arm, seeded interleaving, exactly
+GPU 0 with three recorded compute PIDs, real-media decode, per-step resource
+polling, and complete language/image/video executable and available-weight
+hashes. Its PIDs intentionally bind the one recorded isolated stack; a rerun
+requires a new isolated stack and config, never an expanded allowlist.
+
 With `validation.decode_media=true`, every real PNG is CRC-checked, zlib
 decoded, and unfiltered to RGB8; every real MP4 is fully decoded by ffmpeg and
 counted by ffprobe. Dimensions and frame count must match the request. Contract
@@ -220,10 +228,11 @@ declares:
   poll `timeout_s`. `cooldown_ms` declares an optional inter-step cooldown.
 
 `benchmarks/ablations/narrative-routing-controlled-example.json` is a complete
-checked-in example. The same block can be added to `visual-form-sm90.json` for
-the scheduled live gate; request construction, single-variable overlays, media
-validation, and the I2V first-stage equivalence gate are unchanged, and every
-repetition of one (arm, prompt) sends a byte-identical request.
+checked-in example. The same block is present in
+`visual-form-controlled-sm90.json` for the scheduled live gate; request
+construction, single-variable overlays, media validation, and the I2V
+first-stage equivalence gate are unchanged, and every repetition of one
+(arm, prompt) sends a byte-identical request.
 
 Replay with a `measurement` block stays `CONTRACT_REPLAY`: the report embeds
 the validated schedule and its `schedule_sha256` with `status=NOT_RUN`, and
@@ -250,13 +259,18 @@ Aggregation reports median, nearest-rank p95, IQR, and MAD dispersion with
 explicit `sample_count`/`total_count` per prompt across repetitions and pooled
 per arm, alongside the existing per-case latency fields. Measured cases and
 trajectory metadata carry `repetition` and `schedule_index`; visual-form
-first-stage image equivalence is checked per repetition.
+first-stage image equivalence is checked per repetition. A missing pair,
+request-hash mismatch, or source-PNG byte mismatch both fails the combined run
+and revokes `CONTROLLED_LIVE`; the strict flag cannot hide that failure.
 
 Telemetry stays within existing interfaces: `/health` `in_flight` for cleanup
 and nvidia-smi whole-device used-memory for baselines, residuals, and per-arm
-resource summaries. No existing public interface exposes request-scoped native
-allocator/VRAM telemetry, so `request_scoped_telemetry.coverage` is honestly
-`NOT_COVERED` and every device number is labelled
+resource summaries. Every controlled schedule step has a 50 ms poll monitor,
+so its recorded peak is the maximum observed during that step rather than a
+maximum of end-of-step values; per-arm sample counts sum those actual polls.
+No existing public interface exposes request-scoped native allocator/VRAM
+telemetry, so `request_scoped_telemetry.coverage` is honestly `NOT_COVERED`
+and every device number is labelled
 `whole-device-used-memory`, including persistent model baselines and, under
 interleaving, other arms' activity. No serving, realtime/VAD, CLI realtime, or
 post-training file is modified by this layer, and no Wave 16 kernel, showcase,
@@ -635,6 +649,153 @@ preference labels limit this result to reproducible protocol/artifact and
 algorithmic behavior acceptance. Image-text relevance, generalized visual
 quality, learned routing, and optimizer improvement remain uncovered or unrun.
 
+## Controlled SM90 visual-form result — 2026-11-26
+
+The remaining visual-form gate ran against newest-main base
+`08fb5e9e013879ecc75d2194e61bd21534a7fc55`, focused runner commit
+`d9f645cab7b48c31c82c6d4ba38b2bdfed89cfdc`, and clean measurement source
+`23358c74ba186cd86caab9671a45200ddbd12d95`. The strict command included
+`--require-controlled` and exited 0. The combined verdict is
+**CONTROLLED_LIVE / COMPLETED** with no eligibility refusal reasons.
+
+Only explicitly idle physical GPU 0 (NVIDIA H20, 97,871 MiB) was assigned. The
+isolated stack used an ephemeral loopback endpoint, fresh IPC paths, Qwen3.8 and
+native Wan2.2 resident on GPU 0, and native Qwen-Image 2.1 with its existing
+transient per-component mode (`UMM_IMAGE_RESIDENT_CACHE=0`). Wan used
+`UMM_VAE_NO_PERSIST=1` so its VAE did not remain resident between calls. A
+no-audio echo entry served only the existing `/ready` topology requirement;
+every accepted request went directly to the real VLM and no ASR/TTS model or
+audio leg was used. GPU 1, GPU 7, GPUs 2–6, and the resident service on port
+43301 were not assigned, contacted, restarted, or used.
+
+Excluded initialization calls initialized text decode, transient image, T2V,
+and I2V before the baseline. A second post-I2V image proved steady-state
+transient operation and byte-identical PNG output. An earlier rejected
+initialization request and a discarded persistent-VAE topology attempt were
+not part of warmup, measurement, or the accepted evidence directory.
+
+The deterministic schedule hash is
+`7ac02847912006312ac4b873dbdc020d9a80512b11f035a4659d7f5578a55311`.
+Its 12 arm steps comprise three warmup steps followed by nine measured steps
+in seeded, repetition-major interleaved order. Every step executed both fixed
+human-labelled prompts. This produced 6 excluded warmup chat cases plus 2
+warmup I2V renders, and 18 measured chat cases plus 6 measured I2V renders.
+Every arm/prompt pair completed repetitions 1, 2, and 3 with a byte-identical
+request. All 12 cleanup checks reported `in_flight=0` and residual memory no
+more than 128 MiB above the initialized baseline.
+
+### Controlled latency and resource measurements
+
+The following pooled cells have six measured samples per arm; every per-prompt
+summary in the JSON has 3/3 samples. p95 is nearest-rank (therefore the maximum
+at n=3 or n=6), and IQR/MAD are milliseconds of dispersion. First-stage
+terminal latency excludes the explicitly separate I2V render. TTFA is
+`NOT_APPLICABLE` because no arm has audio.
+
+| Arm | Measured / warmup cases | TTFT median / p95 ms | TTFT IQR / MAD ms | First-stage terminal median / p95 ms | Terminal IQR / MAD ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `image_only` | 6/6 + 2/2 | 313.626 / 314.834 | 2.413 / 1.202 | 18,094.266 / 18,551.686 | 765.125 / 382.563 |
+| `video_only` | 6/6 + 2/2 | 314.346 / 315.224 | 2.092 / 0.844 | 6,356.763 / 6,400.706 | 94.521 / 40.555 |
+| `image_then_i2v_animate` | 6/6 + 2/2 | 313.458 / 314.833 | 2.140 / 1.070 | 17,871.221 / 18,562.096 | 639.257 / 319.629 |
+
+| Arm | Slot-to-artifact median / p95 ms | Slot IQR / MAD ms | I2V render median / p95 ms | I2V IQR / MAD ms |
+| --- | ---: | ---: | ---: | ---: |
+| `image_only` | 15,780.881 / 16,068.645 | 677.478 / 198.313 | N/A | N/A |
+| `video_only` | 4,221.170 / 4,302.983 | 55.861 / 26.191 | N/A | N/A |
+| `image_then_i2v_animate` | 15,655.102 / 15,900.354 | 641.947 / 206.011 | 3,426.626 / 3,473.888 | 60.583 / 28.237 |
+
+The image-bearing terminal times include transient component loading in this
+single-device topology. These are controlled observations for this exact
+binary, two-prompt diagnostic, and low-memory configuration, not a Phase 5
+baseline or a generalized latency-improvement claim.
+
+| Arm | GPU 0 baseline MiB | Observed peak MiB | Final MiB | Actual 50 ms poll count |
+| --- | ---: | ---: | ---: | ---: |
+| `image_only` | 78,064 | 92,558 | 78,106 | 1,566 |
+| `video_only` | 78,064 | 85,038 | 78,106 | 560 |
+| `image_then_i2v_animate` | 78,064 | 92,558 | 78,106 | 1,975 |
+
+These are whole-device `nvidia-smi` samples including persistent weights and
+other interleaved arms, not request-scoped allocator peaks. Request-scoped
+telemetry remains `NOT_COVERED`. The final loaded residual was 42 MiB.
+
+### Controlled artifacts, source linkage, and first-frame behavior
+
+All 18 first-stage terminal states and all 18 terminal visual legs were
+`completed`; all six measured animations returned HTTP 200 and `completed`.
+There were no leg errors, failed measured cases, or cancelled cases. Every PNG
+passed CRC, zlib, scanline, RGB8, and 512x512 checks. Every MP4 passed full
+ffmpeg/ffprobe decode as H.264, 480x320, 16 fps, and 13 frames. The six unique
+measured visual outputs were:
+
+| Arm / prompt | Artifact | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| image-only + I2V source / lantern | PNG | 101,319 | `502e44bf55c77f9b8ae296344e58ac3231a94ef1b73d9b57de30ae2307303c49` |
+| image-only + I2V source / conservation | PNG | 133,330 | `121b481be39de49e463e424dadf0c4e258ceadf1acb1e73c649407ecd68b5ae7` |
+| video-only / lantern | MP4, 13 frames | 42,019 | `00910cba59c7f76797b6792d1db9b59a71cf20cf257370ea3d9bc9c892f5b13e` |
+| video-only / conservation | MP4, 13 frames | 89,475 | `6376650b2680e6281cdfaae82270d3cf1afd767ec5ec0d4806ee8fdc752994b0` |
+| I2V animation / lantern | MP4, 13 frames | 13,755 | `1d46c84fef2efe2f5b1c1086a3a68e1ecc74c70a46615806fe4a820776cfbbd4` |
+| I2V animation / conservation | MP4, 13 frames | 14,018 | `3705a00b1b2be6f2a3e5710c6cbcff1d51626112175a442b53df92bb7019acb8` |
+
+For each prompt and each of three repetitions, image-only and I2V used the same
+first-stage request and exact source PNG. The shared request SHA-256 values are
+`3d62026b3913f20308230738640585db7714713bb83a7e4ccae5bce8c3f27028`
+(lantern) and
+`843c28c8365882ac1fd4a2f5562347da477e7663f8ec23b57987224896511cf2`
+(conservation). Every animation's `source_image_sha256` matches both its CAS
+source and the corresponding image-only source. Render-request hashes are
+`19325dd979c683c4d577a2f8a27112b29721886fd0ebaac9d75e16334371a96d`
+and `bf88731e0329affe9346b2bf71ceb04504618a12a5bfd7fdb6c4df4dbdfdb16f`,
+respectively.
+
+| I2V prompt | Repetitions | Center-crop MAE | Stretch MAE | Top-left-crop MAE | First-frame PSNR dB | Behavioral gate |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| lantern | 3/3 | 1.023207 | 11.360968 | 22.067606 | 46.076711 | PASS |
+| conservation | 3/3 | 1.253698 | 3.884264 | 7.431113 | 44.442570 | PASS |
+
+These are algorithmic center-crop/anchor behavior proxies only. Perceptual
+quality, image-text relevance, user preference, and generalized improvement
+remain unclaimed and `NOT_COVERED`.
+
+### Controlled provenance and cleanup evidence
+
+All 34 available Safetensors files were rehashed successfully: Qwen3.8 18/18,
+Qwen-Image 2.1 7/7, and Wan2.2 9/9. The manifest hashes match the tracked
+configuration. The four frozen executable SHA-256 values are:
+
+| Executable | SHA-256 |
+| --- | --- |
+| Gateway | `e7286766f6e73532425a691ade332ccae5e2a993457075eb1032073fec21f739` |
+| Qwen3.8 | `d08eddcff9f3ac5aa5c2dcecb80b97e1b3d155805add4dd983aca2ce66b185e6` |
+| Qwen-Image 2.1 | `4494b2d58b1d280b273009779f098cbdffa0c0acbc839eebec9b0dde5c2ec735` |
+| Wan2.2 | `6e13e9cda2771c230eef19fd8fe50913b7101024bb15fdb5ce5787eba359e4f8` |
+
+| Evidence item | SHA-256 |
+| --- | --- |
+| Combined `report.json` | `8eef3c02164979d235d83c4a3f4daba21a29bad7aab20d77f2385e15e01ba957` |
+| `SHA256SUMS` file | `fe534a74713860a7d6c4a7aaa2b79b7f49a3e6ce593ef1e697907d8cbf661826` |
+| Independent check JSON | `6749b951043d11ffd1a3e1d00c7c4e2c3efa4d06eef54847deffe4dfa7ca5685` |
+| Weight verification JSON | `a9d872342b2c257f1940b95d70950705b017126423651b817891c01531642e2b` |
+| Source state | `c9507778cf58d45cb967d3eda5359daa6aad8e21dd5c58d94c5dc0f55edac287` |
+| Live config bytes | `941781a33a4489ca3ffd39de13d4d3abe5593f5c089c25d8266896f55fc488d6` |
+| Labelled dataset bytes | `384457a01718b9a9121d0cf5af2289200ccd881ff764f2c5e2aef49e86ee1ba2` |
+| Fixed-request matrix | `7b00317565a823a1af6b097d683273734502dd00a1129fedf715271381c2c961` |
+| Deterministic schedule | `7ac02847912006312ac4b873dbdc020d9a80512b11f035a4659d7f5578a55311` |
+| Combined artifact manifest | `068f929c62986e01c56189edc986e61776ce57b634727fd5992495d499c00398` |
+
+An independent checker passed 78 assertions over all 18 measured cases, six
+warmup cases, six measured I2V renders, 24 measured artifact occurrences,
+source links, per-repetition equivalence, schedule/eligibility/resource rows,
+and cleanup. `sha256sum -c SHA256SUMS` separately passed all 26 covered files.
+Evidence remains on the isolated SM90 worker under
+`/root/umm-controlled-visual-26-final-live/evidence/visual-form-controlled-final/`.
+
+After only the five recorded isolated container PIDs were stopped, GPU 0
+returned to 3 MiB with no compute processes. Its six isolated IPC socket files
+were removed. The shared container reaper left those entries as zombies; they
+are not running and hold no GPU memory. No shared reaper, other GPU, or resident
+service was signalled.
+
 ## Verification
 
 ```text
@@ -658,8 +819,10 @@ reproducibility and schedule-hash tamper detection, single-variable invariance
 across arms and repetitions, latency median/p95/IQR/MAD aggregation with sample
 counts, incomplete-repetition and failed-arm refusal, terminal/leg validity,
 exclusive-device precondition failure and fail-fast abort, stuck-cleanup
-refusal, incomplete language/visual/auxiliary provenance refusal, and
-per-repetition visual-form equivalence. Loopback canned responses remain
+refusal, incomplete language/visual/auxiliary provenance refusal,
+per-repetition visual-form request/source equivalence with explicit
+`CONTROLLED_LIVE` refusal, and true polled resource peaks/sample counts.
+Loopback canned responses remain
 contract-only; decoder tests use independently generated tiny media and do not
 access a GPU, remote host, real model, optimizer, or resident service.
 Controlled loopback runs inject device/health samplers and are not real

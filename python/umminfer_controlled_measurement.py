@@ -315,7 +315,7 @@ def evaluate_cleanup(contract, *, in_flight, residual_mib=None):
 
 
 def evaluate_eligibility(contract, *, provenance, model, arms, preconditions,
-                         cleanups):
+                         cleanups, visual_form_equivalence=None):
     """CONTROLLED_LIVE only when every contract dimension is fully covered.
 
     `arms` maps arm -> {warmups_declared, warmups_executed, warmup_failures,
@@ -391,6 +391,10 @@ def evaluate_eligibility(contract, *, provenance, model, arms, preconditions,
         if not row.get("passed"):
             reasons.append(f"cleanup after schedule step {row.get('schedule_index')} "
                            "failed: " + "; ".join(row.get("problems", [])))
+    if visual_form_equivalence is not None and (
+            visual_form_equivalence.get("coverage") != "COVERED"
+            or not visual_form_equivalence.get("passed")):
+        reasons.append("visual-form first-stage request/source-PNG equivalence failed")
     return {
         "label": CONTROLLED_LIVE if not reasons else UNCONTROLLED_LIVE,
         "reasons": reasons,
@@ -399,7 +403,8 @@ def evaluate_eligibility(contract, *, provenance, model, arms, preconditions,
                   "cooldown/cleanup checks passed",
                   "source/config/data/artifact hashes pinned",
                   "language/visual/auxiliary model config, available-weights, and backend binary hashes pinned",
-                  "no failed measured requests"],
+                  "no failed measured requests",
+                  "visual-form request/source-PNG equivalence passed when applicable"],
     }
 
 

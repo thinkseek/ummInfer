@@ -30,6 +30,7 @@ import umminfer_controlled_measurement as controlled  # noqa: E402
 
 EXAMPLE = ROOT / "benchmarks" / "ablations" / "narrative-routing-controlled-example.json"
 CONTROLLED_SM90 = ROOT / "benchmarks" / "ablations" / "narrative-routing-controlled-sm90.json"
+VISUAL_CONTROLLED_SM90 = ROOT / "benchmarks" / "ablations" / "visual-form-controlled-sm90.json"
 ROUTING_REPLAY = ROOT / "benchmarks" / "ablations" / "narrative-routing-replay.json"
 VISUAL_CONFIG = ROOT / "benchmarks" / "ablations" / "visual-form.json"
 VISUAL_REPLAY = ROOT / "benchmarks" / "ablations" / "visual-form-replay.json"
@@ -220,6 +221,29 @@ class ContractValidationTests(unittest.TestCase):
             self.assertTrue(block.get("config_file_sha256")
                             or block.get("config_files_sha256"))
 
+    def test_sm90_visual_controlled_config_pins_single_device_gate(self):
+        experiment = runner.load_experiment(VISUAL_CONTROLLED_SM90)
+        contract = controlled.parse_contract(experiment.config["measurement"])
+        self.assertEqual(contract["warmup_repetitions"], 1)
+        self.assertEqual(contract["measured_repetitions"], 3)
+        self.assertEqual(contract["arm_order"], "interleaved")
+        self.assertEqual(contract["exclusive_device"]["gpu_indexes"], [0])
+        self.assertEqual(len(contract["exclusive_device"]["allowed_pids"]), 3)
+        self.assertTrue(all("expected_visual_modalities" in prompt
+                            for prompt in experiment.prompts))
+        self.assertEqual(experiment.config["visual_forms"], list(runner.VISUAL_FORMS))
+        for form in runner.VISUAL_FORMS:
+            for prompt in experiment.prompts:
+                body = runner.build_request(experiment, prompt, form)
+                self.assertNotIn("audio", body["modalities"])
+                self.assertNotIn("audio", body)
+        for block in [experiment.config["model"],
+                      *experiment.config["visual_backends"].values()]:
+            self.assertTrue(controlled.HEX_256.fullmatch(block["weights_sha256"]))
+            self.assertTrue(controlled.HEX_256.fullmatch(block["binary_sha256"]))
+            self.assertTrue(block.get("config_file_sha256")
+                            or block.get("config_files_sha256"))
+
 
 class ScheduleTests(unittest.TestCase):
     def test_schedule_is_reproducible_and_seed_bound(self):
@@ -298,10 +322,27 @@ class AggregationTests(unittest.TestCase):
         self.assertIsNone(empty["median_ms"])
         self.assertEqual(empty["total_count"], 2)
 
+    def test_arm_resources_keep_true_polled_peaks_and_sample_counts(self):
+        rows = [
+            {"arm": "a", "poll_interval_ms": 50.0, "whole_device_gpus": {
+                "0": {"baseline_mib": 100, "peak_mib": 140,
+                      "final_mib": 100, "sample_count": 3}}},
+            {"arm": "a", "poll_interval_ms": 50.0, "whole_device_gpus": {
+                "0": {"baseline_mib": 100, "peak_mib": 160,
+                      "final_mib": 100, "sample_count": 4}}},
+            {"arm": "b", "poll_interval_ms": 50.0, "whole_device_gpus": {
+                "0": {"baseline_mib": 100, "peak_mib": 900,
+                      "final_mib": 900, "sample_count": 2}}},
+        ]
+        resources = runner._arm_resources("a", rows, [0])
+        self.assertEqual(resources["gpus"]["0"]["peak_mib"], 160)
+        self.assertEqual(resources["gpus"]["0"]["sample_count"], 7)
+        self.assertEqual(resources["poll_interval_ms"], 50.0)
+
 
 class EligibilityTests(unittest.TestCase):
     def evaluate(self, *, contract=None, provenance=None, model=None, arms=None,
-                 preconditions=None, cleanups=None):
+                 preconditions=None, cleanups=None, visual_equivalence=None):
         return controlled.evaluate_eligibility(
             contract or controlled.parse_contract(good_contract()),
             provenance=provenance or good_provenance(),
@@ -310,12 +351,22 @@ class EligibilityTests(unittest.TestCase):
             preconditions=preconditions if preconditions is not None else [
                 {"check": "exclusive_device", "passed": True, "problems": []}],
             cleanups=cleanups if cleanups is not None else [
-                {"passed": True, "schedule_index": 0, "problems": []}])
+                {"passed": True, "schedule_index": 0, "problems": []}],
+            visual_form_equivalence=visual_equivalence)
 
     def test_fully_covered_run_is_controlled(self):
         verdict = self.evaluate()
         self.assertEqual(verdict["label"], "CONTROLLED_LIVE")
         self.assertEqual(verdict["reasons"], [])
+
+    def test_failed_visual_source_equivalence_refuses_controlled(self):
+        for equivalence in ({"coverage": "COVERED", "passed": False},
+                            {"coverage": "NOT_COVERED", "passed": True}):
+            with self.subTest(equivalence=equivalence):
+                verdict = self.evaluate(visual_equivalence=equivalence)
+                self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
+                self.assertTrue(any("source-PNG equivalence" in reason
+                                    for reason in verdict["reasons"]))
 
     def test_each_missing_dimension_refuses_controlled(self):
         cases = {
@@ -569,6 +620,13 @@ class ControlledLiveTests(unittest.TestCase):
             self.assertTrue(all(row["passed"] for row in measurement["cleanup_checks"]))
             self.assertEqual(len(measurement["cleanup_checks"]),
                              len(measurement["schedule"]["steps"]))
+            self.assertEqual(len(measurement["resources"]["steps"]),
+                             len(measurement["schedule"]["steps"]))
+            for row in measurement["resources"]["steps"]:
+                sample = row["whole_device_gpus"]["0"]
+                self.assertGreaterEqual(sample["sample_count"], 2)
+                self.assertGreaterEqual(sample["peak_mib"], sample["final_mib"])
+                self.assertIn("poll_interval_ms", row)
             for warmups in measurement["warmups"]:
                 self.assertTrue(all(case["terminal_state"] == "completed"
                                     for case in warmups["cases"]))
@@ -688,8 +746,25 @@ class ControlledLiveTests(unittest.TestCase):
             self.assertEqual(len(equivalence["cases"]), 4)
             for row in equivalence["cases"]:
                 self.assertIn("repetition", row)
+                self.assertEqual(row["paired_image_case_count"], 1)
                 self.assertTrue(row["request_sha256_equal"])
                 self.assertTrue(row["source_bytes_identical"])
+            broken = copy.deepcopy(report["cases"])
+            next(case for case in broken
+                 if case["visual_form"] == "image_then_i2v_animate"
+                 )["artifacts"][0]["sha256"] = "0" * 64
+            failed_equivalence = runner._first_stage_image_equivalence(
+                broken, "visual_form")
+            self.assertFalse(failed_equivalence["passed"])
+            verdict = controlled.evaluate_eligibility(
+                controlled.parse_contract(config["measurement"]),
+                provenance=good_provenance(), model=pinned_model("language"),
+                arms=good_coverage(runner.VISUAL_FORMS),
+                preconditions=[{"check": "exclusive_device", "passed": True,
+                                "problems": []}],
+                cleanups=[{"passed": True, "schedule_index": 0, "problems": []}],
+                visual_form_equivalence=failed_equivalence)
+            self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
             for case in report["cases"]:
                 if case["visual_form"] == "image_then_i2v_animate":
                     self.assertEqual(len(case["animations"]), 1)
