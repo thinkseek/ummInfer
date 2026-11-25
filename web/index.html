@@ -792,6 +792,8 @@ async function renderSlot(slot, kind) {
       body.size = ui.videoSize.value || '480x320';
       const frames = Number.parseInt(ui.videoFrames.value.trim(), 10);
       if (Number.isInteger(frames) && frames > 0) body.num_frames = frames;
+      const vsteps = Number.parseInt(ui.videoSteps.value.trim(), 10);
+      if (Number.isInteger(vsteps) && vsteps > 0) body.steps = vsteps;
       const guidance = Number(ui.videoGuidance.value);
       if (ui.videoGuidance.value.trim() !== '' && Number.isFinite(guidance) && guidance >= 0) {
         body.guidance_scale = guidance;

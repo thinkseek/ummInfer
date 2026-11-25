@@ -823,7 +823,7 @@ void OpenAIApi::Impl::handle_visual_render(const httplib::Request& req,
     }
     inputs["size"] = Value(body["size"].get<std::string>());
   } else {
-    inputs["size"] = Value(image ? "512x512" : "1280x720");
+    inputs["size"] = Value(image ? "512x512" : "480x320");
   }
   if (body.contains("steps") && !body["steps"].is_null()) {
     if (!body["steps"].is_number_integer() ||

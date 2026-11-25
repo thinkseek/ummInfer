@@ -244,7 +244,12 @@ def narrative_request(model):
             ),
         }],
         "modalities": ["text", "image", "audio", "video"],
+        "image": {"size": "512x512", "output_format": "png", "steps": 4},
         "audio": {"voice": "vivian", "format": "wav", "stream": True},
+        "video": {
+            "size": "480x320", "output_format": "mp4",
+            "num_frames": 13, "steps": 15, "guidance_scale": 5.0,
+        },
         "narrative": {"enabled": True, "visual_mode": "auto", "max_slots": 2},
     }
 
