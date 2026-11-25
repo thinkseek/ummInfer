@@ -1,0 +1,48 @@
+{
+  "ablation_id": "stage-c-narrative-routing-sm90-v1",
+  "ablation_schema_version": 1,
+  "dataset": {
+    "path": "narrative-routing-sm90-prompts.json",
+    "sha256": "384457a01718b9a9121d0cf5af2289200ccd881ff764f2c5e2aef49e86ee1ba2"
+  },
+  "fixed": {
+    "sampling": {
+      "max_tokens": 256,
+      "seed": 42,
+      "temperature": 0.0,
+      "top_p": 1.0
+    },
+    "visual": {
+      "image": {
+        "output_format": "png",
+        "seed": 42,
+        "size": "512x512",
+        "steps": 4
+      },
+      "max_slots": 2,
+      "video": {
+        "fps": 16,
+        "guidance_scale": 5.0,
+        "num_frames": 13,
+        "output_format": "mp4",
+        "seed": 42,
+        "size": "480x320",
+        "steps": 4
+      }
+    }
+  },
+  "model": {
+    "id": "qwen3-native",
+    "revision": "Qwen/Qwen3.8-27B local config.json SHA-256 191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+    "weights_sha256": "3ebc83ee545cc54cb2558d805802d4a4e9da42c316d1b248846debee545b99c9",
+    "weights_sha256_scope": "SHA-256 of the newline-terminated sha256sum manifest for 18 model-*.safetensors shards with relative filenames"
+  },
+  "routing_policies": [
+    "text_only",
+    "forced_image",
+    "forced_video",
+    "auto_tag"
+  ],
+  "trajectory_schema_version": 2,
+  "variable": "routing_policy"
+}

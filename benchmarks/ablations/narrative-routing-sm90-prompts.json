@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "dataset_id": "narrative-routing-sm90-labelled-prompts-v1",
+  "evidence_class": "human-declared-routing-labels",
+  "labels": "LABELLED",
+  "label_semantics": "Expected visual modality multiset for this two-prompt diagnostic; not a validated quality benchmark.",
+  "prompts": [
+    {
+      "id": "lantern",
+      "expected_visual_modalities": ["image", "video"],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tell a short documentary-style explanation of a red lantern drifting across a misty lake."
+        }
+      ]
+    },
+    {
+      "id": "conservation",
+      "expected_visual_modalities": ["image"],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain conservation of momentum with one concise derivation."
+        }
+      ]
+    }
+  ]
+}

@@ -26,6 +26,8 @@ import umminfer_ablation_run as runner  # noqa: E402
 
 CONFIG = ROOT / "benchmarks" / "ablations" / "narrative-routing.json"
 REPLAY = ROOT / "benchmarks" / "ablations" / "narrative-routing-replay.json"
+VISUAL_CONFIG = ROOT / "benchmarks" / "ablations" / "visual-form.json"
+VISUAL_REPLAY = ROOT / "benchmarks" / "ablations" / "visual-form-replay.json"
 
 
 def tree_bytes(root):
@@ -65,6 +67,44 @@ class ReplayHandler(BaseHTTPRequestHandler):
         raw = base64.b64decode(self.cases[(policy, prompt_id)]["response_sse_base64"])
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(raw)
+        self.close_connection = True
+
+
+class VisualFormReplayHandler(BaseHTTPRequestHandler):
+    cases = {}
+    renders = {}
+    requests = []
+    image_requests = {}
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length))
+        type(self).requests.append((self.path, body))
+        if self.path == "/v1/visual/render":
+            case = self.renders[runner._sha256(body)]
+            raw = base64.b64decode(case["response_base64"])
+            content_type = "video/mp4"
+        else:
+            prompt_id = "conservation" if "momentum" in json.dumps(body["messages"]) \
+                else "lantern"
+            if body["narrative"]["visual_mode"] == "video":
+                form = "video_only"
+            else:
+                count = self.image_requests.get(prompt_id, 0)
+                type(self).image_requests[prompt_id] = count + 1
+                form = "image_only" if count == 0 else "image_then_i2v_animate"
+            case = self.cases[(form, prompt_id)]
+            raw = base64.b64decode(case["response_sse_base64"])
+            content_type = "text/event-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Connection", "close")
         self.end_headers()
@@ -160,7 +200,7 @@ class AblationRunnerTests(unittest.TestCase):
                             "trajectory.jsonl").read_text().splitlines()]
                 self.assertTrue(all(record["schema_version"] == 2 for record in records))
 
-    def test_only_narrative_and_modalities_vary(self):
+    def test_only_routing_and_selected_option_presence_vary(self):
         experiment = runner.load_experiment(CONFIG)
         for prompt in experiment.prompts:
             bodies = [runner.build_request(experiment, prompt, policy)
@@ -180,9 +220,38 @@ class AblationRunnerTests(unittest.TestCase):
                 self.assertTrue(body["narrative"]["enabled"])
             for body in bodies:
                 self.assertEqual(body["seed"], 42)
-                self.assertEqual(body["image"], experiment.config["fixed"]["visual"]["image"])
-                self.assertEqual(body["video"], experiment.config["fixed"]["visual"]["video"])
-                self.assertEqual(body["audio"], experiment.config["fixed"]["audio"])
+                selected = set(body["modalities"])
+                self.assertEqual("audio" in body, "audio" in selected)
+                self.assertEqual("image" in body, "image" in selected)
+                self.assertEqual("video" in body, "video" in selected)
+                if "image" in body:
+                    self.assertEqual(body["image"],
+                                     experiment.config["fixed"]["visual"]["image"])
+                if "video" in body:
+                    self.assertEqual(body["video"],
+                                     experiment.config["fixed"]["visual"]["video"])
+                if "audio" in body:
+                    self.assertEqual(body["audio"], experiment.config["fixed"]["audio"])
+
+    def test_sm90_config_disables_audio_uniformly_without_changing_fixed_matrix(self):
+        experiment = runner.load_experiment(
+            ROOT / "benchmarks" / "ablations" / "narrative-routing-sm90.json")
+        self.assertNotIn("audio", experiment.config["fixed"])
+        for prompt in experiment.prompts:
+            bodies = [runner.build_request(experiment, prompt, policy)
+                      for policy in runner.POLICIES]
+            for body in bodies:
+                self.assertNotIn("audio", body)
+                self.assertNotIn("audio", body["modalities"])
+                self.assertEqual("image" in body, "image" in body["modalities"])
+                self.assertEqual("video" in body, "video" in body["modalities"])
+            projections = [runner.fixed_request(body) for body in bodies]
+            self.assertTrue(all(projection == projections[0] for projection in projections[1:]))
+            self.assertEqual(len({runner.fixed_request_sha256(body) for body in bodies}), 1)
+        default = runner.load_experiment(CONFIG)
+        self.assertIn("audio", default.config["fixed"])
+        self.assertIn("audio", runner.build_request(
+            default, default.prompts[0], "text_only")["modalities"])
 
     def test_labels_gate_f1_redundancy_and_export_only_reward(self):
         record = {"schema_version": 2, "visual_slots": [
@@ -330,6 +399,139 @@ class AblationRunnerTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_visual_form_replay_is_reproducible_and_binds_i2v_to_source_image(self):
+        with tempfile.TemporaryDirectory(prefix="umm-visual-form-replay-") as tmp:
+            first = Path(tmp) / "first"
+            second = Path(tmp) / "second"
+            for out in (first, second):
+                completed = run_cli(out, VISUAL_CONFIG)
+                self.assertEqual(completed.returncode, 0,
+                                 completed.stdout + completed.stderr)
+            self.assertEqual(tree_bytes(first), tree_bytes(second))
+            report = json.loads((first / "report.json").read_text())
+            self.assertEqual(report["run_status"], "COMPLETED")
+            self.assertEqual(report["visual_forms"], list(runner.VISUAL_FORMS))
+            self.assertEqual(len(report["cases"]), 6)
+            self.assertEqual(report["metrics"]["visual_form_completion_rate"], 1.0)
+            self.assertEqual(report["metrics"]["animation_success_rate"], 1.0)
+            self.assertIsNone(report["metrics"]["image_text_relevance"])
+            self.assertIsNone(report["metrics"]["first_frame_consistency"])
+            self.assertEqual(report["metric_coverage"]["quality"], "NOT_COVERED")
+            self.assertEqual(report["metric_coverage"]["ttfa"], "NOT_APPLICABLE")
+
+            by_prompt = {}
+            for case in report["cases"]:
+                by_prompt.setdefault(case["prompt_id"], {})[case["visual_form"]] = case
+                self.assertIsNone(case["latency"]["ttfa_ms"])
+                self.assertEqual(case["metric_coverage"]["quality"], "NOT_COVERED")
+                if case["visual_form"] == "image_then_i2v_animate":
+                    self.assertEqual(len(case["animations"]), 1)
+                    animation = case["animations"][0]
+                    self.assertEqual(animation["terminal_state"], "completed")
+                    self.assertIsNotNone(animation["latency"]["terminal_ms"])
+                    self.assertEqual(animation["artifact"]["media_type"], "video")
+                    self.assertEqual(animation["artifact"]["mime_type"], "video/mp4")
+                    source = [artifact for artifact in case["artifacts"]
+                              if artifact.get("slot_id") == animation["source_slot_id"]]
+                    self.assertEqual(len(source), 1)
+                    self.assertEqual(source[0]["sha256"],
+                                     animation["artifact"]["source_image_sha256"])
+                    self.assertTrue((first / case["visual_form"] / "artifacts" /
+                                     animation["artifact"]["ref"]).is_file())
+                else:
+                    self.assertEqual(case["animations"], [])
+            for cases in by_prompt.values():
+                self.assertEqual(len({case["fixed_request_sha256"]
+                                      for case in cases.values()}), 1)
+                self.assertEqual(cases["image_only"]["request_sha256"],
+                                 cases["image_then_i2v_animate"]["request_sha256"])
+                self.assertNotEqual(cases["image_only"]["request_sha256"],
+                                    cases["video_only"]["request_sha256"])
+
+    def test_visual_form_completion_is_not_a_quality_metric(self):
+        record = {
+            "schema_version": 2,
+            "terminal_state": "completed",
+            "visual_slots": [{"slot_id": "slot-0", "media_type": "image"}],
+            "artifacts": [{"media_type": "image", "sha256": "a" * 64}],
+            "ablation": {"visual_form": "image_then_i2v_animate", "animations": []},
+        }
+        observation = metrics.visual_form_observation(record)
+        self.assertEqual(observation["completion"], 0.0)
+        self.assertEqual(observation["expected_animation_count"], 1)
+        self.assertEqual(observation["completed_animation_count"], 0)
+        self.assertEqual(observation["quality_coverage"], "NOT_COVERED")
+        aggregate = metrics.aggregate_visual_form([record])
+        self.assertEqual(aggregate["visual_form_completion_rate"], 0.0)
+        self.assertEqual(aggregate["animation_success_rate"], 0.0)
+        self.assertFalse(runner._case_success({
+            "terminal_state": "completed", "animations": [],
+            "visual_form_metrics": {"completion": 0.0}}))
+
+    def test_visual_form_live_matches_replay_and_records_render_latency(self):
+        replay = json.loads(VISUAL_REPLAY.read_text())
+        VisualFormReplayHandler.cases = {
+            (case["visual_form"], case["prompt_id"]): case for case in replay["cases"]}
+        VisualFormReplayHandler.renders = {
+            render["request_sha256"]: render
+            for case in replay["cases"] for render in case.get("renders", [])}
+        VisualFormReplayHandler.requests = []
+        VisualFormReplayHandler.image_requests = {}
+        server = ThreadingHTTPServer(("127.0.0.1", 0), VisualFormReplayHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory(prefix="umm-visual-form-live-") as tmp:
+                replay_out = Path(tmp) / "replay"
+                live_out = Path(tmp) / "live"
+                self.assertEqual(run_cli(replay_out, VISUAL_CONFIG).returncode, 0)
+                experiment = runner.load_experiment(VISUAL_CONFIG)
+                report = runner.run_experiment(
+                    experiment, live_out, replay_only=False,
+                    base_url=f"127.0.0.1:{server.server_port}", timeout_s=5)
+                self.assertEqual(report["run_status"], "COMPLETED")
+                for form in runner.VISUAL_FORMS:
+                    self.assertEqual(
+                        (replay_out / form / "trajectory.jsonl").read_bytes(),
+                        (live_out / form / "trajectory.jsonl").read_bytes())
+                for case in report["cases"]:
+                    for animation in case["animations"]:
+                        self.assertEqual(animation["latency"]["source"], "monotonic-live")
+                        self.assertIsNotNone(animation["latency"]["terminal_ms"])
+                render_requests = [body for path, body in VisualFormReplayHandler.requests
+                                   if path == "/v1/visual/render"]
+                self.assertEqual(len(render_requests), 2)
+                for body in render_requests:
+                    self.assertEqual(body["kind"], "video")
+                    self.assertTrue(body["image"].startswith("data:image/png;base64,"))
+                    self.assertEqual(body["num_frames"], 13)
+                    self.assertEqual(body["steps"], 4)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_visual_form_render_tampering_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="umm-visual-form-tamper-") as tmp:
+            case_dir = Path(tmp) / "config"
+            shutil.copytree(VISUAL_CONFIG.parent, case_dir)
+            replay_path = case_dir / VISUAL_REPLAY.name
+            replay = json.loads(replay_path.read_text())
+            render = next(render for case in replay["cases"]
+                          for render in case.get("renders", []))
+            raw = bytearray(base64.b64decode(render["response_base64"]))
+            raw[-1] ^= 1
+            render["response_base64"] = base64.b64encode(raw).decode()
+            replay_path.write_text(json.dumps(replay, sort_keys=True) + "\n")
+            config_path = case_dir / VISUAL_CONFIG.name
+            config = json.loads(config_path.read_text())
+            config["replay"]["sha256"] = hashlib.sha256(replay_path.read_bytes()).hexdigest()
+            config_path.write_text(json.dumps(config, sort_keys=True) + "\n")
+            completed = run_cli(Path(tmp) / "out", config_path)
+            self.assertEqual(completed.returncode, 2,
+                             completed.stdout + completed.stderr)
+            self.assertIn("replay I2V response SHA-256 mismatch", completed.stderr)
 
     def test_serving_has_no_ablation_or_optimizer_dependency(self):
         for directory in (ROOT / "src", ROOT / "include"):

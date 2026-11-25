@@ -44,7 +44,7 @@
   },
   "replay": {
     "path": "narrative-routing-replay.json",
-    "sha256": "19dd78cb795624f703c4a7d514e6ff739c6a081fc40a2bfe5cbda759c3cb6c36"
+    "sha256": "cd8bbde00085c53d75135ba25966b498744d7458beb026f484bf47edf1fd270b"
   },
   "routing_policies": [
     "text_only",

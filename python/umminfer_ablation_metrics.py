@@ -114,6 +114,83 @@ def aggregate_routing(records):
     return result
 
 
+def visual_form_observation(record):
+    """Measure artifact-form completion, not perceptual visual quality."""
+    if record.get("schema_version") != 2:
+        raise ValueError("visual-form metrics require trajectory schema v2")
+    metadata = record.get("ablation")
+    if not isinstance(metadata, dict):
+        raise ValueError("visual-form record lacks ablation metadata")
+    form = metadata.get("visual_form")
+    if form not in ("image_only", "video_only", "image_then_i2v_animate"):
+        raise ValueError("unknown visual_form in ablation metadata")
+    slots = record.get("visual_slots")
+    animations = metadata.get("animations")
+    if not isinstance(slots, list) or not isinstance(animations, list):
+        raise ValueError("visual-form record lacks visual_slots or animations")
+    expected_media = "video" if form == "video_only" else "image"
+    form_matches = bool(slots) and all(
+        slot.get("media_type") == expected_media for slot in slots)
+    source_hash_by_slot = {
+        artifact.get("slot_id"): artifact.get("sha256")
+        for artifact in record.get("artifacts", [])
+        if artifact.get("media_type") == "image" and artifact.get("slot_id") is not None}
+    expected_source_slots = {slot.get("slot_id") for slot in slots}
+    animation_source_slots = [animation.get("source_slot_id") for animation in animations]
+    completed_animations = [animation for animation in animations
+                            if animation.get("terminal_state") == "completed"
+                            and animation.get("source_slot_id") in expected_source_slots
+                            and isinstance(animation.get("artifact"), dict)
+                            and animation["artifact"].get("media_type") == "video"
+                            and animation["artifact"].get("source_slot_id")
+                            == animation["source_slot_id"]
+                            and animation["artifact"].get("source_image_sha256")
+                            == source_hash_by_slot.get(animation["source_slot_id"])]
+    if form == "image_then_i2v_animate":
+        form_matches = form_matches and len(animations) == len(slots) \
+            and len(set(animation_source_slots)) == len(animation_source_slots) \
+            and set(animation_source_slots) == expected_source_slots \
+            and len(completed_animations) == len(slots)
+    else:
+        form_matches = form_matches and not animations
+    complete = record.get("terminal_state") == "completed" and form_matches
+    expected_animation_count = len(slots) if form == "image_then_i2v_animate" else 0
+    return {
+        "coverage": "COVERED",
+        "visual_form": form,
+        "completion": 1.0 if complete else 0.0,
+        "source_visual_slot_count": len(slots),
+        "source_image_count": len(source_hash_by_slot),
+        "expected_animation_count": expected_animation_count,
+        "completed_animation_count": len(completed_animations),
+        "image_text_relevance": None,
+        "first_frame_consistency": None,
+        "user_blind_preference": None,
+        "quality_coverage": "NOT_COVERED",
+    }
+
+
+def aggregate_visual_form(records):
+    observations = [visual_form_observation(record) for record in records]
+    total = len(observations)
+    expected = sum(item["expected_animation_count"] for item in observations)
+    completed = sum(item["completed_animation_count"] for item in observations)
+    return {
+        "coverage": "COVERED" if total else "NOT_COVERED",
+        "total_case_count": total,
+        "visual_form_completion_rate": (
+            sum(item["completion"] for item in observations) / total if total else None),
+        "expected_animation_count": expected,
+        "completed_animation_count": completed,
+        "animation_success_rate": completed / expected if expected else None,
+        "animation_coverage": "COVERED" if expected else "NOT_APPLICABLE",
+        "image_text_relevance": None,
+        "first_frame_consistency": None,
+        "user_blind_preference": None,
+        "quality_coverage": "NOT_COVERED",
+    }
+
+
 class NarrativeRoutingReward(Reward):
     """Diagnostic F1-minus-redundancy reward; unlabelled records stay null.
 

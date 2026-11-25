@@ -1,0 +1,50 @@
+{
+  "ablation_id": "stage-c-visual-form-v1",
+  "ablation_schema_version": 1,
+  "dataset": {
+    "path": "narrative-routing-prompts.json",
+    "sha256": "9279dda6c793d7e553d977f515415ad2c9e46fb639d49958935de7697850ba44"
+  },
+  "fixed": {
+    "sampling": {
+      "max_tokens": 256,
+      "seed": 42,
+      "temperature": 0.0,
+      "top_p": 1.0
+    },
+    "visual": {
+      "image": {
+        "output_format": "png",
+        "seed": 42,
+        "size": "512x512",
+        "steps": 4
+      },
+      "max_slots": 2,
+      "video": {
+        "fps": 16,
+        "guidance_scale": 5.0,
+        "num_frames": 13,
+        "output_format": "mp4",
+        "seed": 42,
+        "size": "480x320",
+        "steps": 4
+      }
+    }
+  },
+  "model": {
+    "id": "visual-form-contract-v1",
+    "revision": "deterministic-contract-1",
+    "weights_sha256": null
+  },
+  "replay": {
+    "path": "visual-form-replay.json",
+    "sha256": "cf7c189a32a23f81102c87270449d1941b8b301a850e647daddc4116175dc87f"
+  },
+  "trajectory_schema_version": 2,
+  "variable": "visual_form",
+  "visual_forms": [
+    "image_only",
+    "video_only",
+    "image_then_i2v_animate"
+  ]
+}
