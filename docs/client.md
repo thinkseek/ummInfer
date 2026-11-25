@@ -55,9 +55,11 @@ timeout. A retry never starts after a text delta was delivered.
 
 The route accepts an explicit allowlist of top-level chat fields: `model`,
 `messages`, `stream`, `temperature`, `max_tokens`, `max_completion_tokens`,
-`top_p`, `seed`, `stop`, `response_format` and `stream_options`. Any other
-non-null top-level field returns HTTP 400 `unsupported field: NAME`, whether or
-not this server knows the name. A null value is treated as absent. A non-empty
+`top_p`, `seed`, `stop`, `response_format`, `stream_options`, `session_id`,
+`session_history`, `modalities`, `image`, `audio`, `video`, and `narrative`.
+The mixed-output and narrative fields require unified mode. Any other non-null
+top-level field returns HTTP 400 `unsupported field: NAME`, whether or not this
+server knows the name. A null value is treated as absent. A non-empty
 `stop` is rejected, as is `response_format` other than type `text`,
 `stream_options` other than `include_usage: false`, and message content that is
 not a text string. `top_p` must be a number in `(0, 1]`; `seed` must be a signed
@@ -100,9 +102,9 @@ data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],...,
 
 A unified server can return generated image, audio and video artifacts alongside
 the text answer. The request opts in with `modalities` plus an `image`, `audio`
-and/or `video` object, and works with both `stream=true` (SSE) and `stream=false`
-(non-streaming JSON with `artifacts` and `legs`; only `audio.stream=true` with
-`stream=false` is rejected with 400).
+and/or `video` object. Non-narrative requests work with both `stream=true` (SSE)
+and `stream=false` (non-streaming JSON with `artifacts` and `legs`).
+`audio.stream=true` and enabled narrative each require HTTP `stream=true`.
 
 ```sh
 ./zig-out/bin/umm-infer chat \
@@ -129,7 +131,8 @@ and/or `video` object, and works with both `stream=true` (SSE) and `stream=false
 - `image` accepts `prompt` (absent means the full aggregated text answer is
   used), `size` (default `512x512`), optional `steps` (`1..100`), optional
   `image` (`data:image/...;base64,...`, `--image-ref PATH` in CLI) for editing,
-  integer `seed`, and `output_format` (`png` or `jpeg`).
+  integer `seed`, and optional `output_format="png"` (the default; other values
+  are rejected).
 - `audio` requires `voice`, accepts `format=wav`, `sample_rate=24000`
   (WAV, PCM16, mono), and optional `ref_audio` (base64/data-URL WAV,
   `--ref-audio PATH` in CLI) for `Qwen3-TTS-12Hz-1.7B-Base` voice cloning. The
@@ -141,6 +144,79 @@ and/or `video` object, and works with both `stream=true` (SSE) and `stream=false
   `steps` (`1..100`, `--video-steps`), `guidance_scale` (`0..30`,
   `--video-guidance`), optional non-negative `seed`, and `output_format="mp4"`;
   decoded `video/mp4` bytes are returned in `ChatResponse::artifacts`.
+
+### Interleaved narrative and global streaming voice
+
+The wire API accepts an optional top-level `narrative` object for a streaming
+mixed-output request:
+
+```json
+{
+  "model": "qwen3-native",
+  "stream": true,
+  "max_tokens": 256,
+  "messages": [{"role": "user", "content": "Tell a two-scene story about a red lantern."}],
+  "modalities": ["text", "image", "audio", "video"],
+  "audio": {"voice": "vivian", "format": "wav", "stream": true},
+  "narrative": {"enabled": true, "visual_mode": "auto", "max_slots": 2}
+}
+```
+
+- `enabled` is a boolean and defaults to `false`. `visual_mode` is `auto`
+  (default), `image`, or `video`. `max_slots` is an integer in `1..6` and
+  defaults to `3`.
+- Enabled narrative requires `stream=true` and at least one visual modality.
+  An image-only or video-only mode also requires that modality in `modalities`.
+  Invalid fields or mode/modality combinations return HTTP 400.
+- `audio.stream=true` is now allowed alongside image, video, and narrative when
+  HTTP streaming is enabled. It still requires `stream=true`. Global TTS starts
+  from the first clean-prose sentence and can overlap VLM generation and visual
+  rendering. Each sentence arrives as an independent `audio/pcm` artifact with
+  `format=pcm16`, `sample_rate`, `channels`, and `stream_index`; no final WAV is
+  appended.
+- The server strips `[[image: ...]]`, `[[video: ...]]`, and `[[visual: ...]]`
+  directives from text deltas, terminal text, history, and TTS input. A client
+  consumes the resulting prose directly and does not parse these markers.
+
+A `visual_slot` event announces a visual immediately when its directive closes,
+rather than after the VLM finishes:
+
+```json
+{
+  "id": "http-1",
+  "object": "chat.completion.chunk",
+  "choices": [{"index": 0, "delta": {}, "finish_reason": null}],
+  "unified": {
+    "seq": 42,
+    "kind": "visual_slot",
+    "request_id": "http-1",
+    "session_id": "...",
+    "stage": "image",
+    "slot_id": "slot-0",
+    "slot_index": 0,
+    "media_type": "image",
+    "prompt": "a glowing red lantern over a misty mountain lake",
+    "text_offset": 128
+  }
+}
+```
+
+Create the UI block from this event and retain both identifiers. Every chunk of
+the resulting visual `artifact` carries matching `slot_id` and `slot_index` in
+`unified.artifact`; verify the final chunk's decoded `bytes` and `sha256` after
+reassembly. A visual `leg_error` carries both fields in `unified`. Terminal
+`complete`, `cancelled`, and `error` events include each visual slot leg in
+`unified.legs[]` with `stage`, `slot_id`, `state`, and optional `error`.
+Sequence numbers remain gap-free from zero, with one terminal event and one
+`[DONE]`.
+
+Narrative slot child request ids are `<request_id>:slot:<slot_index>`.
+Cancellation and disconnect abort all active VLM, TTS, and slot children. If the
+VLM emits no directive, the server creates one fallback `slot-0` from the clean
+answer.
+
+The bundled C++ `ChatRequest` API and CLI expose no narrative controls. Use the
+JSON wire fields above when calling a server that supports them.
 
 ## Direct Speech (`POST /v1/audio/speech`)
 
@@ -177,6 +253,39 @@ writes each output through an atomic part file and refuses to overwrite an
 existing path. Session history stores text only; artifact bytes are never
 persisted in history, and logs never contain prompts, TTS text, base64 or Bin
 payloads.
+
+## Direct visual render (`POST /v1/visual/render`)
+
+This endpoint renders one image or video without a VLM turn. To swap a
+narrative slot in place, send the selected slot's prompt with the opposite
+`kind`, keep its local `slot_id`, and replace the displayed artifact with the
+response bytes. The request has no `slot_id` field.
+
+```json
+{
+  "kind": "video",
+  "prompt": "the lantern drifts across the lake",
+  "size": "480x320",
+  "steps": 4,
+  "num_frames": 13,
+  "fps": 16,
+  "seconds": 1,
+  "guidance_scale": 5.0,
+  "seed": 42
+}
+```
+
+`kind` (`image` or `video`) and a non-empty string `prompt` are required. Both
+kinds accept optional `size`, positive integer `steps`, and signed 64-bit
+integer `seed`. Video accepts positive integers `num_frames`, `fps`, `seconds`,
+and non-negative number `guidance_scale`. Image accepts an optional
+`data:image/...` URL in `image` for editing.
+
+HTTP 200 returns raw `image/png` or `video/mp4` with a matching `Content-Type`
+and `X-UmmInfer-Kind: image` or `video`. Invalid JSON, unknown or invalid fields,
+and an empty prompt return 400. An unavailable stage or fixed-upstream mode
+returns 501. Overload returns 503 with `Retry-After: 1`. The endpoint performs
+one synchronous stage request; it emits no SSE events.
 
 ## Final ASR
 
@@ -395,6 +504,26 @@ All client failures derive from `umminfer::client::Error`; `code()` and
 `retryable()` expose the failure classification.
 
 ## Verification
+
+Run the stdlib-only narrative contract check offline:
+
+```sh
+python3 -I tests/narrative_live_e2e.py --self-check
+```
+
+Run it against a real interleaved narrative server and save the visual, PCM,
+swapped visual, and JSON timing report:
+
+```sh
+python3 -I tests/narrative_live_e2e.py \
+  --url http://127.0.0.1:43301 --model qwen3-native --out-dir /tmp/narrative-live
+```
+
+Live mode reports TTFT, first PCM audio time, first visual slot versus VLM
+finish, per-slot render latency, total wall time, and the clean-prose check. An
+image-to-video swap is checked with `ffprobe` for H.264; a video-to-image swap
+is checked for a PNG header. The final `/health` check requires `in_flight=0`.
+`ffprobe` is needed only when the live swap targets video.
 
 Date-specific binary hashes, log paths and latency measurements are recorded in
 [validation.md](validation.md). They are snapshots of one run, not a contract.
