@@ -359,6 +359,36 @@ and `--web-root`:
     7 Joint-SFT AdamW acceptance (`Qwen2.5-0.5B` BF16 2 real steps + fresh-process
     checkpoint resume equivalence, GPU 7 returned to `3 MiB`), and Stage C
     controlled-measurement contract (`59/59` tests PASS).
+- Wave 19 live native TTS 7.00x realtime CUDA Graphs, per-request Fast Video TeaCache & real SM90 Joint-DPO upgrades (`77da8ac`, `08b1fdf`, `c7d42f6`):
+  - **GPU 5 `umm-native-stage-tts`** (`08b1fdf` CUDA Graph capture for 28-layer
+    Talker + 15-step Code Predictor collapsing `~2,086 -> ~8` launches/frame,
+    O(T) stateful causal Conv1d/ConvTranspose1d + rolling KV codec replacing
+    O(T^2) streaming & 256x redundant `snake`/`transpose` threads, 1-warp/row
+    4x `__ldcs` GEMV, fused QKV/SwiGLU/QK-norm+RoPE+KV-append, and 1-pass Online
+    Softmax GQA, preserving `.wave18` backup): hot-swapped in `3 s` with `0`
+    restarts on GPUs 2/3/4/6. Live `43301` `/v1/audio/speech` & Journey 1 A/B:
+    - `/v1/audio/speech` (15.7 s 24 kHz WAV): **`7.63 s (1.86x RT, RTF 0.538) ->
+      2.24 s (7.00x RT, RTF 0.143)`** (**3.76x faster**, `rms=2717.5`);
+    - GPU 5 steady VRAM: **`10,997 MiB -> 5,835 MiB`** (**-5,162 MiB / -5.04 GiB
+      saved, -47% VRAM**);
+    - Live Journey 1 (interleaved prose + FLUX.2 image + 85.8 s streaming PCM16
+      audio `4,116,480 B`): **`62.72 s -> 16.86 s`** (**3.72x faster**),
+      `vlm_finish_s: 11.53 -> 7.06 s`, `TTFT=0.875 s`, `TTFA=0.996 s` (`121 ms`
+      VLM-to-first-audio gap, `SHOWCASE PASS [LIVE_SERVER]: 1/1`).
+  - **Gateway `/bin/umm-infer`, GPU 6 `umm-native-stage-video`, Web UI & macOS
+    `ummmlx`** (`77da8ac` opt-in per-request `video.teacache_thresh` in
+    `[0.0, 0.25]` with RAII default restore, `Fast video` UI toggle, plus
+    `realtime_api.cpp` rejected-handshake close fix, preserving `.wave18`
+    backups): hot-swapped live with `0` restarts on GPUs 2/3/4/5 and rebuilt
+    Release `ummmlx.app` (`108/108` Swift tests, `0 _AVKit_SwiftUI`). Live
+    `43301` `/v1/visual/render` verified `teacache_thresh: 0.05` (`5.78 s`,
+    `ftyp=True`) vs omitted lossless default (`6.94 s`) and HTTP `400` on
+    out-of-range `0.50`.
+  - **Stage C Real SM90 Joint-DPO Gate** (`c7d42f6`, isolated GPU 7 returned to
+    `3 MiB`): `Qwen2.5-0.5B` BF16 DPO (`beta=0.1`) 2 real AdamW steps (`loss
+    0.6931 -> 0.6131`, 290/290 non-zero grad tensors, exact fresh-process
+    checkpoint resume equivalence, `25/25` Stage C tests PASS; GRPO & quality
+    remain `NOT_RUN`).
 
 ## Validation, 2026-11-19 (historical)
 
