@@ -12,9 +12,52 @@
 #include "pipeline/unified_schema.hpp"
 #include "umminfer/obs/metrics.hpp"
 #include "umminfer/pipeline/sentence_split.hpp"
+#include "umminfer/util/codec.hpp"
 
 namespace umminfer {
 namespace {
+
+constexpr size_t kMaxStyleAnchorBytes = 256;
+constexpr size_t kMaxAnchorPromptBytes = 140;
+constexpr size_t kMaxI2vAnchorImageBytes = 16u << 20;
+
+std::string trim_ascii_ws(std::string_view text) {
+  const size_t first = text.find_first_not_of(" \t\r\n");
+  if (first == std::string_view::npos) return {};
+  const size_t last = text.find_last_not_of(" \t\r\n");
+  return std::string(text.substr(first, last - first + 1));
+}
+
+// Truncates `text` to at most `max_bytes` bytes without splitting a multi-byte
+// UTF-8 codepoint.
+std::string truncate_utf8_safe(std::string_view text, size_t max_bytes) {
+  if (text.size() <= max_bytes) return std::string(text);
+  size_t len = max_bytes;
+  while (len > 0 && (static_cast<unsigned char>(text[len]) & 0xC0) == 0x80) {
+    --len;
+  }
+  return std::string(text.substr(0, len));
+}
+
+// Composes a slot's generation prompt with Stage B visual continuity context.
+// Returns `prompt` completely untouched when continuity_mode is "off".
+std::string compose_continuity_prompt(const std::string& prompt,
+                                      const std::string& continuity_mode,
+                                      const std::string& style_anchor,
+                                      const std::string& anchor_prompt,
+                                      int slot_index) {
+  if (continuity_mode.empty() || continuity_mode == "off") return prompt;
+  std::string out = prompt;
+  if (!style_anchor.empty()) {
+    out += " | Style continuity: ";
+    out += truncate_utf8_safe(style_anchor, kMaxStyleAnchorBytes);
+  }
+  if (slot_index > 0 && !anchor_prompt.empty()) {
+    out += " | Maintain character and scene continuity with opening visual: ";
+    out += truncate_utf8_safe(anchor_prompt, kMaxAnchorPromptBytes);
+  }
+  return out;
+}
 
 double ms_since(std::chrono::steady_clock::time_point started) {
   return std::chrono::duration<double, std::milli>(
@@ -186,6 +229,39 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   unified_detail::ValidatedSubmission parsed =
       unified_detail::validate_submission(payload.request.inputs, config_);
 
+  std::string narrative_continuity_mode = "off";
+  std::string narrative_style_anchor;
+  if (const Value* narrative = parsed.original_inputs.find("narrative");
+      narrative != nullptr && narrative->is_map()) {
+    bool explicit_continuity_mode = false;
+    if (const Value* cmode = narrative->find("continuity_mode");
+        cmode != nullptr && !cmode->is_nil()) {
+      if (!cmode->is_str() ||
+          (cmode->as_str() != "off" && cmode->as_str() != "prompt_anchor" &&
+           cmode->as_str() != "i2v_chain")) {
+        throw ProtocolError(
+            "narrative.continuity_mode must be 'off', 'prompt_anchor', or 'i2v_chain'");
+      }
+      narrative_continuity_mode = cmode->as_str();
+      explicit_continuity_mode = true;
+    }
+    if (const Value* anchor = narrative->find("style_anchor");
+        anchor != nullptr && !anchor->is_nil()) {
+      if (!anchor->is_str()) {
+        throw ProtocolError("narrative.style_anchor must be a string");
+      }
+      std::string trimmed = trim_ascii_ws(anchor->as_str());
+      if (trimmed.size() > kMaxStyleAnchorBytes) {
+        throw ProtocolError(
+            "narrative.style_anchor must be at most 256 UTF-8 bytes");
+      }
+      narrative_style_anchor = std::move(trimmed);
+    }
+    if (!explicit_continuity_mode && !narrative_style_anchor.empty()) {
+      narrative_continuity_mode = "prompt_anchor";
+    }
+  }
+
   auto vlm_params = payload.request.params;
   auto vlm_metadata = payload.request.metadata;
   if (parsed.has_audio) {
@@ -227,6 +303,8 @@ std::string UnifiedEngine::submit(StagePayload payload) {
   record.narrative_visual_mode = parsed.narrative_visual_mode;
   record.narrative_max_slots = parsed.narrative_max_slots;
   record.narrative_allow_text_only = parsed.narrative_allow_text_only;
+  record.narrative_continuity_mode = std::move(narrative_continuity_mode);
+  record.narrative_style_anchor = std::move(narrative_style_anchor);
   if (record.narrative_enabled) {
     record.narrative_parser = std::make_shared<NarrativeStreamParser>();
   }
@@ -769,6 +847,9 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
   const bool image = kind == kImageStageId;
   if (!image && kind != kVideoStageId) return;
   const int index = record.narrative_next_slot;
+  if (index == 0) {
+    record.narrative_anchor_prompt = prompt;
+  }
   OutputLeg leg;
   leg.modality = image ? UnifiedModality::kImage : UnifiedModality::kVideo;
   leg.enabled = true;
@@ -778,7 +859,28 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
   leg.slot_index = index;
   leg.child_id = request_id + ":slot:" + std::to_string(index);
   Value::Map options = image ? record.image_options : record.video_options;
-  options["prompt"] = Value(prompt);
+  options["prompt"] = Value(compose_continuity_prompt(
+      prompt, record.narrative_continuity_mode, record.narrative_style_anchor,
+      record.narrative_anchor_prompt, index));
+
+  int anchor_slot_index = -1;
+  bool defer_on_anchor = false;
+  if (!image && index > 0 && record.narrative_continuity_mode == "i2v_chain") {
+    for (int i = static_cast<int>(record.slot_legs.size()) - 1; i >= 0; --i) {
+      const OutputLeg& candidate = record.slot_legs[static_cast<size_t>(i)];
+      if (candidate.modality != UnifiedModality::kImage) continue;
+      if (candidate.state == LegState::kCompleted &&
+          !candidate.rendered_image_data_url.empty()) {
+        options["image"] = Value(candidate.rendered_image_data_url);
+        anchor_slot_index = candidate.slot_index;
+      } else if (candidate.state == LegState::kRunning) {
+        anchor_slot_index = candidate.slot_index;
+        defer_on_anchor = true;
+      }
+      break;
+    }
+  }
+
   StagePayload payload;
   payload.request_id = leg.child_id;
   payload.request.inputs = Value(std::move(options));
@@ -797,9 +899,22 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
   slot_event.slot_index = index;
   slot_event.prompt = prompt;
   slot_event.text_offset = static_cast<int64_t>(prose_offset);
+  if (record.narrative_continuity_mode != "off") {
+    slot_event.continuity_mode = record.narrative_continuity_mode;
+  }
+  slot_event.anchor_slot_index = anchor_slot_index;
   dispatch_queue_.push_back(std::move(slot_event));
 
   ++record.narrative_next_slot;
+  if (defer_on_anchor) {
+    leg.submitted = false;
+    leg.state = LegState::kPending;
+    leg.deferred_chain_anchor_slot = anchor_slot_index;
+    leg.deferred_payload = std::move(payload);
+    record.slot_legs.push_back(std::move(leg));
+    ++record.legs_remaining;
+    return;
+  }
   leg.submitted = true;
   leg.state = LegState::kRunning;
   leg.started = std::chrono::steady_clock::now();
@@ -827,6 +942,56 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
   }
   record.slot_legs.push_back(std::move(leg));
   ++record.legs_remaining;
+}
+
+void UnifiedEngine::release_chained_slots_locked(
+    const std::string& request_id, Record& record, int anchor_slot_index,
+    const std::string& anchor_image_data_url) {
+  for (OutputLeg& leg : record.slot_legs) {
+    if (leg.state != LegState::kPending ||
+        leg.deferred_chain_anchor_slot != anchor_slot_index) {
+      continue;
+    }
+    leg.deferred_chain_anchor_slot = -1;
+    std::optional<StagePayload> maybe_payload = std::move(leg.deferred_payload);
+    leg.deferred_payload.reset();
+    if (record.cancel_requested || record.phase == Phase::kDone ||
+        !maybe_payload) {
+      leg.state = LegState::kAborted;
+      leg.error = "request aborted";
+      --record.legs_remaining;
+      continue;
+    }
+    StagePayload payload = std::move(*maybe_payload);
+    if (!anchor_image_data_url.empty() && payload.request.inputs.is_map()) {
+      Value::Map inputs = payload.request.inputs.as_map();
+      inputs["image"] = Value(anchor_image_data_url);
+      payload.request.inputs = Value(std::move(inputs));
+    }
+    leg.submitted = true;
+    leg.state = LegState::kRunning;
+    leg.started = std::chrono::steady_clock::now();
+    child_to_unified_[leg.child_id] = request_id;
+    try {
+      coordinator_.submit(payload, leg.stage_name);
+    } catch (const std::exception& error) {
+      child_to_unified_.erase(leg.child_id);
+      leg.submitted = false;
+      leg.state = LegState::kFailed;
+      leg.error = error.what();
+      --record.legs_remaining;
+      UnifiedEvent leg_error;
+      leg_error.request_id = request_id;
+      leg_error.session_id = record.session_id;
+      leg_error.stage_id = leg.stage_id;
+      leg_error.kind = UnifiedEvent::Kind::kLegError;
+      leg_error.seq = record.next_seq++;
+      leg_error.error = error.what();
+      leg_error.slot_id = leg.slot_id;
+      leg_error.slot_index = leg.slot_index;
+      dispatch_queue_.push_back(std::move(leg_error));
+    }
+  }
 }
 
 void UnifiedEngine::record_session_turn_locked(const Record& record) {
@@ -913,6 +1078,15 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
       record.vlm_state = LegState::kFailed;
       record.vlm_error = event.error;
     }
+    for (OutputLeg& leg : record.slot_legs) {
+      if (leg.state == LegState::kPending) leg.state = LegState::kAborted;
+    }
+  }
+  for (OutputLeg& leg : record.slot_legs) {
+    leg.rendered_image_data_url.clear();
+    leg.rendered_image_data_url.shrink_to_fit();
+    leg.deferred_payload.reset();
+    leg.deferred_chain_anchor_slot = -1;
   }
   record.public_info.state = kind == UnifiedEvent::Kind::kComplete
                                  ? "completed"
@@ -1044,6 +1218,24 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
                 streamed != nullptr && streamed->is_bool() && streamed->as_bool();
             if (!was_streamed) {
               emit_artifact_locked(unified_id, record, *output_leg, info.result);
+            }
+            if (record.narrative_continuity_mode == "i2v_chain" &&
+                output_leg->modality == UnifiedModality::kImage &&
+                output_leg->slot_index >= 0 && info.result.is_map()) {
+              const Value* data = info.result.find("data");
+              if (data != nullptr && data->is_bin() &&
+                  !data->as_bin().empty() &&
+                  data->as_bin().size() <= kMaxI2vAnchorImageBytes) {
+                std::string mime = "image/png";
+                if (const Value* mime_val = info.result.find("mime_type");
+                    mime_val != nullptr && mime_val->is_str() &&
+                    !mime_val->as_str().empty()) {
+                  mime = mime_val->as_str();
+                }
+                output_leg->rendered_image_data_url =
+                    "data:" + mime + ";base64," +
+                    util::base64_encode(data->as_bin());
+              }
             }
             if (output_leg->stage_id == kTtsStageId && record.tts_failed) {
               settle_output_leg_locked(
@@ -1530,8 +1722,20 @@ void UnifiedEngine::settle_output_leg_locked(
     event.slot_index = leg.slot_index;
     dispatch_queue_.push_back(std::move(event));
   }
+  const bool is_image_slot =
+      leg.modality == UnifiedModality::kImage && leg.slot_index >= 0;
+  const int settled_slot_index = leg.slot_index;
+  const std::string anchor_image_url =
+      (is_image_slot && leg.state == LegState::kCompleted)
+          ? leg.rendered_image_data_url
+          : std::string{};
   --record.legs_remaining;
-  if (record.vlm_done && record.legs_remaining == 0) {
+  if (is_image_slot) {
+    release_chained_slots_locked(request_id, record, settled_slot_index,
+                                 anchor_image_url);
+  }
+  if (record.vlm_done && record.legs_remaining == 0 &&
+      record.phase != Phase::kDone) {
     on_legs_drained_locked(request_id, record);
   }
 }

@@ -10545,6 +10545,542 @@ void test_public_http_video_teacache_thresh() {
              "teacache HTTP requests stayed in flight");
 }
 
+// Stage B Cross-Slot Visual Continuity:
+//   - HTTP validation for narrative.continuity_mode & narrative.style_anchor
+//   - Byte-identical default ("off") behavior on prompts & SSE wire events
+//   - prompt_anchor with style_anchor + UTF-8-safe Chinese Slot 0 anchor
+//   - i2v_chain Case A (no image), Case B (completed image), Case C (slow image)
+//   - i2v_chain graceful T2V fallback on anchor failure
+//   - i2v_chain clean cancellation while video slot waits on image slot
+void test_narrative_continuity_http_and_engine() {
+  // Helper to verify valid UTF-8 (no truncated multi-byte sequences).
+  auto is_valid_utf8 = [](const std::string& s) {
+    size_t i = 0;
+    while (i < s.size()) {
+      const unsigned char c = static_cast<unsigned char>(s[i]);
+      size_t len = 0;
+      if (c < 0x80) {
+        len = 1;
+      } else if ((c & 0xE0) == 0xC0) {
+        len = 2;
+      } else if ((c & 0xF0) == 0xE0) {
+        len = 3;
+      } else if ((c & 0xF8) == 0xF0) {
+        len = 4;
+      } else {
+        return false;
+      }
+      if (i + len > s.size()) return false;
+      for (size_t j = 1; j < len; ++j) {
+        if ((static_cast<unsigned char>(s[i + j]) & 0xC0) != 0x80) return false;
+      }
+      i += len;
+    }
+    return true;
+  };
+
+  // 1. Direct UnifiedEngine: "off" leaves slot prompts untouched and omits
+  //    continuity metadata.
+  {
+    Harness h("contoff");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    StagePayload req = narrative_request(true, true, false, "auto", 3);
+    // Explicit "off" with style_anchor must still disable continuity.
+    req.request.inputs["narrative"]["continuity_mode"] = Value("off");
+    req.request.inputs["narrative"]["style_anchor"] = Value("watercolor ink");
+    const std::string id = engine.submit(std::move(req));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "continuity=off did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("One. [[image: red fox]] Two. [[video: fox leaps]]",
+                          false));
+      auto s0 = h.next_submit(h.image_recv);
+      auto s1 = h.next_submit(h.video_recv);
+      check(s0.has_value() && s1.has_value(),
+            "continuity=off did not submit both slots immediately");
+      if (s0) {
+        StagePayload p = StagePayload::from_value(s0->data);
+        check(p.request.inputs.find("prompt")->as_str() == "red fox",
+              "continuity=off altered slot 0 prompt");
+        h.complete(s0->request_id, "image", true,
+                   artifact_result("image", "image/png", "PNG0"));
+      }
+      if (s1) {
+        StagePayload p = StagePayload::from_value(s1->data);
+        check(p.request.inputs.find("prompt")->as_str() == "fox leaps",
+              "continuity=off altered slot 1 prompt");
+        check(p.request.inputs.find("image") == nullptr,
+              "continuity=off must not attach I2V image");
+        h.complete(s1->request_id, "video", true,
+                   artifact_result("video", "video/mp4", "MP41"));
+      }
+      h.complete(vlm->request_id, "vlm", true, text_result("One. Two."));
+    }
+    check(engine.wait(id, 5.0), "continuity=off request did not complete");
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVisualSlot) {
+        check(e.continuity_mode.empty() && e.anchor_slot_index == -1,
+              "continuity=off must leave event continuity fields empty/-1");
+      }
+    }
+    engine.release(id);
+  }
+
+  // 2. Direct UnifiedEngine: "prompt_anchor" injects style_anchor + UTF-8-safe
+  //    truncated Chinese Slot 0 anchor prompt into Slot 1.
+  {
+    Harness h("contprompt");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    // 50 Chinese characters = 150 UTF-8 bytes (> 140 bytes); 46 chars = 138 bytes.
+    std::string long_zh;
+    const std::string zh_char = "\xE7\x81\xAF";  // "灯" (3 UTF-8 bytes)
+    for (int i = 0; i < 50; ++i) long_zh += zh_char;
+    std::string expected_zh_trunc;
+    for (int i = 0; i < 46; ++i) expected_zh_trunc += zh_char;
+
+    StagePayload req = narrative_request(true, true, false, "auto", 3);
+    // Omitted continuity_mode + non-empty style_anchor defaults to prompt_anchor.
+    req.request.inputs["narrative"]["style_anchor"] =
+        Value("  warm Ghibli gouache  ");
+    const std::string id = engine.submit(std::move(req));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "prompt_anchor did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("Scene 1. [[image: " + long_zh +
+                              "]] Scene 2. [[video: lantern rises]]",
+                          false));
+      auto s0 = h.next_submit(h.image_recv);
+      auto s1 = h.next_submit(h.video_recv);
+      check(s0.has_value() && s1.has_value(),
+            "prompt_anchor did not dispatch both slots");
+      if (s0) {
+        StagePayload p = StagePayload::from_value(s0->data);
+        const std::string got = p.request.inputs.find("prompt")->as_str();
+        check(got == long_zh + " | Style continuity: warm Ghibli gouache",
+              "prompt_anchor slot 0 prompt mismatch");
+        h.complete(s0->request_id, "image", true,
+                   artifact_result("image", "image/png", "P0"));
+      }
+      if (s1) {
+        StagePayload p = StagePayload::from_value(s1->data);
+        const std::string got = p.request.inputs.find("prompt")->as_str();
+        const std::string expected =
+            "lantern rises | Style continuity: warm Ghibli gouache"
+            " | Maintain character and scene continuity with opening visual: " +
+            expected_zh_trunc;
+        check(is_valid_utf8(got),
+              "prompt_anchor UTF-8 truncation split a multi-byte codepoint");
+        check(got == expected,
+              "prompt_anchor slot 1 prompt did not inject style + truncated Chinese anchor");
+        check(p.request.inputs.find("image") == nullptr,
+              "prompt_anchor must not attach I2V image");
+        h.complete(s1->request_id, "video", true,
+                   artifact_result("video", "video/mp4", "V1"));
+      }
+      h.complete(vlm->request_id, "vlm", true, text_result("Scene 1. Scene 2."));
+    }
+    check(engine.wait(id, 5.0), "prompt_anchor request did not complete");
+    size_t slot_events = 0;
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVisualSlot) {
+        ++slot_events;
+        check(e.continuity_mode == "prompt_anchor" && e.anchor_slot_index == -1,
+              "prompt_anchor visual_slot continuity metadata wrong");
+      }
+    }
+    check(slot_events == 2, "prompt_anchor expected 2 visual_slot events");
+    engine.release(id);
+  }
+
+  // 3. Direct UnifiedEngine: "i2v_chain" Case C (slow image Slot 0 + video Slot 1)
+  //    and Case B (completed image Slot 0 + video Slot 2).
+  {
+    Harness h("conti2v");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    StagePayload req = narrative_request(true, true, false, "auto", 3);
+    req.request.inputs["narrative"]["continuity_mode"] = Value("i2v_chain");
+    req.request.inputs["narrative"]["style_anchor"] = Value("cinematic 35mm");
+    const std::string id = engine.submit(std::move(req));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "i2v_chain did not reach VLM");
+    const std::string fake_png = "\x89PNG\r\n\x1a\nSLOT0BYTES";
+    const std::string expected_data_url =
+        "data:image/png;base64," + util::base64_encode(fake_png);
+    if (vlm) {
+      // Emit image Slot 0 and video Slot 1 while Slot 0 is still running.
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("Opening. [[image: silver fox on snowy bridge]] "
+                          "Motion. [[video: fox trots across bridge]]",
+                          false));
+      wait_until(
+          [&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 2; },
+          "i2v_chain did not emit both visual_slot events mid-stream");
+      auto s0 = h.next_submit(h.image_recv);
+      check(s0.has_value() && s0->request_id == id + ":slot:0",
+            "i2v_chain image slot 0 did not submit");
+      // Video Slot 1 MUST wait until image Slot 0 completes!
+      check(h.no_submit(h.video_recv),
+            "i2v_chain submitted video slot 1 before anchor image slot 0 finished");
+
+      // Complete slow image Slot 0 -> video Slot 1 must now be released with
+      // exact I2V init-image data URL!
+      h.complete(id + ":slot:0", "image", true,
+                 artifact_result("image", "image/png", fake_png));
+      auto s1 = h.next_submit(h.video_recv);
+      check(s1.has_value() && s1->request_id == id + ":slot:1",
+            "i2v_chain did not release video slot 1 after image slot 0 completed");
+      if (s1) {
+        StagePayload p = StagePayload::from_value(s1->data);
+        const Value* img = p.request.inputs.find("image");
+        check(img != nullptr && img->is_str() &&
+                  img->as_str() == expected_data_url,
+              "i2v_chain video slot 1 did not receive exact Slot 0 PNG data URL");
+        const std::string prompt = p.request.inputs.find("prompt")->as_str();
+        check(prompt.find("Style continuity: cinematic 35mm") != std::string::npos &&
+                  prompt.find("silver fox on snowy bridge") != std::string::npos,
+              "i2v_chain video slot 1 missing continuity prompt");
+        h.complete(s1->request_id, "video", true,
+                   artifact_result("video", "video/mp4", "I2V1"));
+      }
+
+      // Now emit video Slot 2 while Slot 0 is ALREADY completed (Case B).
+      h.stream(vlm->request_id, "vlm",
+               text_chunk(" Finale. [[video: camera orbits the fox]]", false));
+      auto s2 = h.next_submit(h.video_recv);
+      check(s2.has_value() && s2->request_id == id + ":slot:2",
+            "i2v_chain Case B video slot 2 did not submit immediately");
+      if (s2) {
+        StagePayload p = StagePayload::from_value(s2->data);
+        const Value* img = p.request.inputs.find("image");
+        check(img != nullptr && img->is_str() &&
+                  img->as_str() == expected_data_url,
+              "i2v_chain Case B video slot 2 missing Slot 0 PNG data URL");
+        h.complete(s2->request_id, "video", true,
+                   artifact_result("video", "video/mp4", "I2V2"));
+      }
+      h.complete(vlm->request_id, "vlm", true,
+                 text_result("Opening. Motion. Finale."));
+    }
+    check(engine.wait(id, 5.0), "i2v_chain request did not complete");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete,
+          "i2v_chain did not end complete");
+    int anchored_slots = 0;
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVisualSlot) {
+        check(e.continuity_mode == "i2v_chain",
+              "i2v_chain visual_slot missing continuity_mode");
+        if (e.slot_index == 0) {
+          check(e.anchor_slot_index == -1,
+                "i2v_chain image slot 0 must have anchor_slot_index == -1");
+        } else {
+          check(e.anchor_slot_index == 0,
+                "i2v_chain chained video slot must emit anchor_slot_index == 0");
+          ++anchored_slots;
+        }
+      }
+    }
+    check(anchored_slots == 2, "i2v_chain expected 2 anchored video slots");
+    check(engine.in_flight() == 0, "i2v_chain left request in flight");
+    engine.release(id);
+  }
+
+  // 4. Direct UnifiedEngine: "i2v_chain" Case A (no earlier image slot) submits
+  //    T2V immediately with anchor_slot_index == -1.
+  {
+    Harness h("conti2vnoimg");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    StagePayload req = narrative_request(true, true, false, "auto", 2);
+    req.request.inputs["narrative"]["continuity_mode"] = Value("i2v_chain");
+    const std::string id = engine.submit(std::move(req));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "i2v_chain Case A did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("Start. [[video: waves breaking]]", false));
+      auto s0 = h.next_submit(h.video_recv);
+      check(s0.has_value() && s0->request_id == id + ":slot:0",
+            "i2v_chain Case A video slot 0 did not submit immediately");
+      if (s0) {
+        StagePayload p = StagePayload::from_value(s0->data);
+        check(p.request.inputs.find("image") == nullptr,
+              "i2v_chain Case A video slot 0 must not have image input");
+        h.complete(s0->request_id, "video", true,
+                   artifact_result("video", "video/mp4", "T2V0"));
+      }
+      h.complete(vlm->request_id, "vlm", true, text_result("Start."));
+    }
+    check(engine.wait(id, 5.0), "i2v_chain Case A did not complete");
+    for (const UnifiedEvent& e : log.snapshot()) {
+      if (e.kind == UnifiedEvent::Kind::kVisualSlot) {
+        check(e.continuity_mode == "i2v_chain" && e.anchor_slot_index == -1,
+              "i2v_chain Case A visual_slot metadata wrong");
+      }
+    }
+    engine.release(id);
+  }
+
+  // 5. Direct UnifiedEngine: "i2v_chain" when anchor image Slot 0 fails ->
+  //    video Slot 1 gracefully falls back to T2V and finishes cleanly.
+  {
+    Harness h("conti2vfail");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    StagePayload req = narrative_request(true, true, false, "auto", 2);
+    req.request.inputs["narrative"]["continuity_mode"] = Value("i2v_chain");
+    const std::string id = engine.submit(std::move(req));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "i2v_chain anchor-fail did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("A. [[image: misty valley]] B. [[video: mist drifts]]",
+                          false));
+      auto s0 = h.next_submit(h.image_recv);
+      check(s0.has_value(), "i2v_chain anchor-fail image slot 0 did not submit");
+      check(h.no_submit(h.video_recv),
+            "i2v_chain anchor-fail submitted video slot 1 before slot 0 failed");
+      h.complete(vlm->request_id, "vlm", true, text_result("A. B."));
+      // Fail image Slot 0 -> video Slot 1 must fall back to T2V!
+      h.complete(id + ":slot:0", "image", false, Value(),
+                 std::string("image OOM"));
+      auto s1 = h.next_submit(h.video_recv);
+      check(s1.has_value() && s1->request_id == id + ":slot:1",
+            "i2v_chain did not fall back to T2V when image slot 0 failed");
+      if (s1) {
+        StagePayload p = StagePayload::from_value(s1->data);
+        check(p.request.inputs.find("image") == nullptr,
+              "i2v_chain fallback T2V must not carry image key");
+        h.complete(s1->request_id, "video", true,
+                   artifact_result("video", "video/mp4", "FALLBACKMP4"));
+      }
+    }
+    check(engine.wait(id, 5.0), "i2v_chain anchor-fail request did not complete");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete,
+          "i2v_chain anchor-fail request must still complete");
+    check(engine.in_flight() == 0,
+          "i2v_chain anchor-fail left request in flight");
+    engine.release(id);
+  }
+
+  // 6. Direct UnifiedEngine: "i2v_chain" cancelled while video Slot 1 waits on
+  //    image Slot 0 (after VLM finishes): zero zombie submit, clean terminal,
+  //    in_flight == 0.
+  {
+    Harness h("conti2vcancel");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+    StagePayload req = narrative_request(true, true, false, "auto", 2);
+    req.request.inputs["narrative"]["continuity_mode"] = Value("i2v_chain");
+    const std::string id = engine.submit(std::move(req));
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "i2v_chain cancel did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("A. [[image: lantern]] B. [[video: lantern glows]]",
+                          false));
+      wait_until(
+          [&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 2; },
+          "i2v_chain cancel did not emit both slots");
+      auto s0 = h.next_submit(h.image_recv);
+      check(s0.has_value(), "i2v_chain cancel image slot 0 did not submit");
+      h.complete(vlm->request_id, "vlm", true, text_result("A. B."));
+      // Wait briefly for VLM completion to transition request into Phase::kOutputs.
+      wait_until(
+          [&] {
+            for (const LegSnapshot& leg : engine.legs_snapshot(id)) {
+              if (leg.stage_id == kVlmStageId &&
+                  leg.state == LegState::kCompleted) {
+                return true;
+              }
+            }
+            return false;
+          },
+          "i2v_chain cancel VLM leg did not reach kCompleted");
+      check(engine.cancel(id), "i2v_chain cancel rejected active request");
+      check(h.wait_abort_on(h.image_recv, id + ":slot:0"),
+            "i2v_chain cancel did not abort anchor image slot 0");
+      h.complete(id + ":slot:0", "image", false, Value(),
+                 std::string("request aborted"));
+    }
+    check(engine.wait(id, 5.0), "i2v_chain cancelled request did not settle");
+    check(h.no_submit(h.video_recv),
+          "i2v_chain cancel leaked a zombie video submit");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kCancelled &&
+              log.terminal_count(id) == 1,
+          "i2v_chain cancelled request did not end with one kCancelled terminal");
+    check(engine.in_flight() == 0,
+          "i2v_chain cancelled request left in_flight nonzero");
+    engine.release(id);
+  }
+
+  // 7. HTTP validation + SSE metadata check for narrative continuity fields.
+  {
+    Harness h("conthttp");
+    ApiConfig config;
+    config.host = "127.0.0.1";
+    config.port = 0;
+    config.model = "qwen3-unified";
+    config.request_timeout_s = 10.0;
+    OpenAIApi api(h.coordinator, config);
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    api.set_unified_engine(engine, "vlm");
+    check(api.bind(), "continuity HTTP server did not bind");
+    h.start_pump();
+    std::thread server_thread([&] { api.listen(); });
+    const std::string base =
+        "http://127.0.0.1:" + std::to_string(api.bound_port());
+
+    auto post_chat = [&](const nlohmann::json& narrative_obj) {
+      nlohmann::json body = {
+          {"model", "qwen3-unified"},
+          {"messages", nlohmann::json::array(
+                           {nlohmann::json{{"role", "user"}, {"content", "go"}}})},
+          {"stream", true},
+          {"modalities", nlohmann::json::array({"text", "image", "video"})},
+          {"narrative", narrative_obj}};
+      test_http::HttpRequest req;
+      req.url = base + "/v1/chat/completions";
+      req.body = body.dump();
+      req.headers.emplace("Content-Type", "application/json");
+      req.timeout = client::Milliseconds{10000};
+      try {
+        return test_http::perform(req);
+      } catch (const client::Error& err) {
+        test_http::HttpResponse out;
+        out.status = err.status();
+        out.body = err.what();
+        return out;
+      }
+    };
+
+    // Validation rejections -> HTTP 400 with exact contract messages.
+    {
+      const auto r1 = post_chat(
+          {{"enabled", true}, {"continuity_mode", "bogus"}});
+      check(r1.status == 400 &&
+                r1.body.find(
+                    "narrative.continuity_mode must be 'off', 'prompt_anchor', or 'i2v_chain'") !=
+                    std::string::npos,
+            "invalid narrative.continuity_mode string must return 400 with contract message");
+      const auto r2 = post_chat(
+          {{"enabled", true}, {"continuity_mode", 123}});
+      check(r2.status == 400 &&
+                r2.body.find(
+                    "narrative.continuity_mode must be 'off', 'prompt_anchor', or 'i2v_chain'") !=
+                    std::string::npos,
+            "non-string narrative.continuity_mode must return 400 with contract message");
+      const auto r3 = post_chat(
+          {{"enabled", true}, {"style_anchor", 42}});
+      check(r3.status == 400, "non-string narrative.style_anchor must return 400");
+      const auto r4 = post_chat(
+          {{"enabled", true}, {"style_anchor", std::string(257, 'a')}});
+      check(r4.status == 400,
+            "oversized narrative.style_anchor (>256B) must return 400");
+    }
+
+    // Default ("off") SSE must omit continuity_mode & anchor_slot_index.
+    {
+      auto fut = std::async(std::launch::async, [&] {
+        return post_chat({{"enabled", true}, {"max_slots", 2}});
+      });
+      auto vlm = h.next_submit(h.vlm_recv);
+      check(vlm.has_value(), "HTTP continuity default did not reach VLM");
+      if (vlm) {
+        h.stream(vlm->request_id, "vlm",
+                 text_chunk("Hi. [[image: a pine tree]]", false));
+        auto s0 = h.next_submit(h.image_recv);
+        if (s0) {
+          h.complete(s0->request_id, "image", true,
+                     artifact_result("image", "image/png", "PNGDEF"));
+        }
+        h.complete(vlm->request_id, "vlm", true, text_result("Hi."));
+      }
+      const auto res = fut.get();
+      check(res.status == 200, "HTTP continuity default SSE failed");
+      check(res.body.find("\"continuity_mode\"") == std::string::npos &&
+                res.body.find("\"anchor_slot_index\"") == std::string::npos,
+            "default continuity_mode=off must omit continuity SSE metadata");
+    }
+
+    // i2v_chain SSE must include continuity_mode & anchor_slot_index: 0 on
+    // chained video slot, and accept 256-byte style_anchor with outer spaces.
+    {
+      const std::string padded_256 = "  " + std::string(256, 'x') + "  ";
+      auto fut = std::async(std::launch::async, [&] {
+        return post_chat({{"enabled", true},
+                          {"max_slots", 2},
+                          {"continuity_mode", "i2v_chain"},
+                          {"style_anchor", padded_256}});
+      });
+      auto vlm = h.next_submit(h.vlm_recv);
+      check(vlm.has_value(), "HTTP i2v_chain did not reach VLM");
+      if (vlm) {
+        h.stream(vlm->request_id, "vlm",
+                 text_chunk("One. [[image: red boat]] Two. [[video: boat sails]]",
+                            false));
+        auto s0 = h.next_submit(h.image_recv);
+        if (s0) {
+          h.complete(s0->request_id, "image", true,
+                     artifact_result("image", "image/png", "BOATPNG"));
+        }
+        auto s1 = h.next_submit(h.video_recv);
+        if (s1) {
+          StagePayload p = StagePayload::from_value(s1->data);
+          check(p.request.inputs.find("image") != nullptr &&
+                    p.request.inputs.find("image")->as_str() ==
+                        "data:image/png;base64," + util::base64_encode("BOATPNG"),
+                "HTTP i2v_chain did not pass Slot 0 PNG data URL to video stage");
+          h.complete(s1->request_id, "video", true,
+                     artifact_result("video", "video/mp4", "BOATMP4"));
+        }
+        h.complete(vlm->request_id, "vlm", true, text_result("One. Two."));
+      }
+      const auto res = fut.get();
+      check(res.status == 200, "HTTP i2v_chain SSE failed");
+      check(res.body.find("\"continuity_mode\":\"i2v_chain\"") != std::string::npos &&
+                res.body.find("\"anchor_slot_index\":0") != std::string::npos,
+            "HTTP i2v_chain SSE missing continuity_mode or anchor_slot_index");
+    }
+
+    api.stop();
+    server_thread.join();
+    wait_until([&] { return engine.in_flight() == 0; },
+               "continuity HTTP requests stayed in flight");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -10671,5 +11207,6 @@ int main() {
   RUN(test_unified_metrics_cancel_race_and_release_gauge());
   RUN(test_public_http_wave7_media_passthrough_and_tts_chunk_meta());
   RUN(test_public_http_video_teacache_thresh());
+  RUN(test_narrative_continuity_http_and_engine());
   return g_failures == 0 ? 0 : 1;
 }

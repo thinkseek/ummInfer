@@ -127,6 +127,9 @@ struct UnifiedEvent {
   // kVisualSlot: the directive prompt and its byte offset in the clean prose.
   std::string prompt;
   int64_t text_offset = 0;
+  // kVisualSlot continuity metadata (opt-in; empty / -1 when continuity is off).
+  std::string continuity_mode;
+  int anchor_slot_index = -1;
   // Present on kComplete: the aggregated VLM result value.
   Value result;
   // Present on kError.
@@ -316,6 +319,13 @@ class UnifiedEngine {
     // and video legs and for every TTS leg.
     std::string slot_id;
     int slot_index = -1;
+    // Stage B i2v_chain continuity state. Captured on completed image slots
+    // while the request is active and cleared on request completion/cancel.
+    std::string rendered_image_data_url;
+    // Deferred video slot waiting on an earlier running image slot in
+    // i2v_chain mode.
+    int deferred_chain_anchor_slot = -1;
+    std::optional<StagePayload> deferred_payload;
   };
 
   struct Record {
@@ -385,6 +395,9 @@ class UnifiedEngine {
     std::string narrative_visual_mode = "auto";
     int narrative_max_slots = 0;
     bool narrative_allow_text_only = false;
+    std::string narrative_continuity_mode = "off";
+    std::string narrative_style_anchor;
+    std::string narrative_anchor_prompt;
     std::shared_ptr<NarrativeStreamParser> narrative_parser;
     std::vector<OutputLeg> slot_legs;
     int narrative_next_slot = 0;
@@ -450,6 +463,12 @@ class UnifiedEngine {
                                       std::string kind,
                                       const std::string& prompt,
                                       size_t prose_offset);
+  // Releases any deferred i2v_chain video slots waiting on `anchor_slot_index`.
+  // Attaches `anchor_image_data_url` when non-empty, falls back to T2V when
+  // empty, or aborts them cleanly if the request was cancelled.
+  void release_chained_slots_locked(const std::string& request_id,
+                                    Record& record, int anchor_slot_index,
+                                    const std::string& anchor_image_data_url);
   // Submits one TTS leg. `first` keeps the contract child id <id>:tts for the
   // single-leg (non-streaming) request; streamed sentences use :tts:0, :tts:1.
   void start_tts_locked(const std::string& request_id, Record& record,

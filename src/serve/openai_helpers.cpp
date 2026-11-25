@@ -168,6 +168,12 @@ json unified_event_json(const UnifiedEvent& event) {
     out["media_type"] = event.stage_id;
     out["prompt"] = event.prompt;
     out["text_offset"] = event.text_offset;
+    if (!event.continuity_mode.empty()) {
+      out["continuity_mode"] = event.continuity_mode;
+    }
+    if (event.anchor_slot_index >= 0) {
+      out["anchor_slot_index"] = event.anchor_slot_index;
+    }
   } else if (event.slot_index >= 0 && !event.slot_id.empty()) {
     // Slot-attributed leg_error events carry the same identity as the
     // artifact they describe.
@@ -691,6 +697,9 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
   std::string narrative_mode = "auto";
   int64_t narrative_slots = 3;
   bool narrative_allow_text_only = false;
+  std::string narrative_continuity_mode = "off";
+  bool explicit_continuity_mode = false;
+  std::string narrative_style_anchor;
   // The contract gates narrative on the explicit `modalities` array, not on a
   // top-level image/video object that also enables an output leg.
   bool modalities_image = false;
@@ -736,6 +745,44 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
         return false;
       }
       narrative_allow_text_only = narrative["allow_text_only"].get<bool>();
+    }
+    if (narrative.contains("continuity_mode") &&
+        !narrative["continuity_mode"].is_null()) {
+      if (!narrative["continuity_mode"].is_string()) {
+        error =
+            "narrative.continuity_mode must be 'off', 'prompt_anchor', or 'i2v_chain'";
+        return false;
+      }
+      const std::string cmode = narrative["continuity_mode"].get<std::string>();
+      if (cmode != "off" && cmode != "prompt_anchor" && cmode != "i2v_chain") {
+        error =
+            "narrative.continuity_mode must be 'off', 'prompt_anchor', or 'i2v_chain'";
+        return false;
+      }
+      narrative_continuity_mode = cmode;
+      explicit_continuity_mode = true;
+    }
+    if (narrative.contains("style_anchor") &&
+        !narrative["style_anchor"].is_null()) {
+      if (!narrative["style_anchor"].is_string()) {
+        error = "narrative.style_anchor must be a string";
+        return false;
+      }
+      const std::string& raw =
+          narrative["style_anchor"].get_ref<const std::string&>();
+      const size_t first = raw.find_first_not_of(" \t\r\n");
+      if (first != std::string::npos) {
+        const size_t last = raw.find_last_not_of(" \t\r\n");
+        std::string trimmed = raw.substr(first, last - first + 1);
+        if (trimmed.size() > 256) {
+          error = "narrative.style_anchor must be at most 256 UTF-8 bytes";
+          return false;
+        }
+        narrative_style_anchor = std::move(trimmed);
+      }
+    }
+    if (!explicit_continuity_mode && !narrative_style_anchor.empty()) {
+      narrative_continuity_mode = "prompt_anchor";
     }
   }
   if (body.contains("modalities") && !body["modalities"].is_null()) {
@@ -833,6 +880,12 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     narrative["max_slots"] = Value(narrative_slots);
     if (narrative_allow_text_only) {
       narrative["allow_text_only"] = Value(true);
+    }
+    if (narrative_continuity_mode != "off" || !narrative_style_anchor.empty()) {
+      narrative["continuity_mode"] = Value(narrative_continuity_mode);
+      if (!narrative_style_anchor.empty()) {
+        narrative["style_anchor"] = Value(narrative_style_anchor);
+      }
     }
     engine_inputs["narrative"] = Value(std::move(narrative));
   }
