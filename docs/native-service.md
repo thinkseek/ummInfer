@@ -410,7 +410,13 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
-- Wave 28 Part A Controlled SM90 Visual-Form Gate (`5890a4c`) & 70/70 Real SM90 Multimodal Coverage (`13d9274`):
+- Wave 28 Controlled SM90 Visual-Form Gate (`5890a4c`), 70/70 Real SM90 Multimodal Coverage (`13d9274`), and Live Web/macOS Showcase Presets & Telemetry HUD (`81227f1`):
+  - **Web UI `/web/index.html` & macOS `ummmlx` North-Star Showcase Presets + Live Telemetry Strip**
+    (`81227f1`): zero-restart hot-deployed `web/index.html` (`.wave27` backup)
+    onto SM90 `43301` (`id="showcasePresets"` & `formatTurnTelemetry` verified
+    live, `/health in_flight=0`) and rebuilt Release `ummmlx.app` (`8.68 s`,
+    zero `_AVKit_SwiftUI`); `web_ui_contract_test.py` `15/15 PASS`,
+    `swift test` `122/122 PASS`.
   - **Controlled Single-GPU SM90 Visual-Form Ablation (`CONTROLLED_LIVE / COMPLETED`)**
     (`5890a4c`, `benchmarks/ablations/visual-form-controlled-sm90.json`,
     `docs/narrative-routing-ablation.md`): isolated GPU 0 (`1` warmup + `3`

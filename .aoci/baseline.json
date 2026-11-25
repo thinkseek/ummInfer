@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-25T22:48:12Z",
+  "updated_at": "2026-11-25T23:03:02Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "fb18d58b48812e75e579a68003701352393178585bb54d5c495cd7844e05e3ad",
-      "size": 223509,
-      "normalized_sha256": "fb18d58b48812e75e579a68003701352393178585bb54d5c495cd7844e05e3ad"
+      "sha256": "da4bc1ab8b3f42a2439dab60d760e27997720bee840f1b4d491a28b3446a55eb",
+      "size": 224168,
+      "normalized_sha256": "da4bc1ab8b3f42a2439dab60d760e27997720bee840f1b4d491a28b3446a55eb"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -209,9 +209,9 @@
     },
     "clients/ummmlx/Sources/ummmlx/App.swift": {
       "role": "index",
-      "sha256": "e71f3dae33f653fe78dc80a0f2ec22e06aa5bb42845238d101f4876f4ec167ad",
-      "size": 43896,
-      "normalized_sha256": "e71f3dae33f653fe78dc80a0f2ec22e06aa5bb42845238d101f4876f4ec167ad"
+      "sha256": "a94a644e10e3f507e340fa1ae8b2f4fa316f87f7d7542eb5569dae672979fb89",
+      "size": 47437,
+      "normalized_sha256": "a94a644e10e3f507e340fa1ae8b2f4fa316f87f7d7542eb5569dae672979fb89"
     },
     "clients/ummmlx/Sources/ummmlx/AudioPlayback.swift": {
       "role": "index",
@@ -233,9 +233,9 @@
     },
     "clients/ummmlx/Sources/ummmlx/ChatModel.swift": {
       "role": "index",
-      "sha256": "3c78370c01e71c0055accfc6913bca5ba469dac5ac8c6cd8cfa585d97b04c4cc",
-      "size": 42607,
-      "normalized_sha256": "3c78370c01e71c0055accfc6913bca5ba469dac5ac8c6cd8cfa585d97b04c4cc"
+      "sha256": "0b904e706be5a3ca0052216ff7b9fb888c9ea80e5e3aa15c495fd85aaa91935a",
+      "size": 50944,
+      "normalized_sha256": "0b904e706be5a3ca0052216ff7b9fb888c9ea80e5e3aa15c495fd85aaa91935a"
     },
     "clients/ummmlx/Sources/ummmlx/FaultGate.swift": {
       "role": "index",
@@ -320,6 +320,12 @@
       "sha256": "053bbd9cf191ec9d6d019fa8519853a2ab9b4719348a9c3b96dfbf5eaf434bb5",
       "size": 36761,
       "normalized_sha256": "053bbd9cf191ec9d6d019fa8519853a2ab9b4719348a9c3b96dfbf5eaf434bb5"
+    },
+    "clients/ummmlx/Tests/ummmlxTests/ShowcaseTelemetryTests.swift": {
+      "role": "index",
+      "sha256": "0f9b91e1fd1a330be568c5f91da322f3b293b322c5bd931631fc2154ca25aaf1",
+      "size": 16899,
+      "normalized_sha256": "0f9b91e1fd1a330be568c5f91da322f3b293b322c5bd931631fc2154ca25aaf1"
     },
     "clients/ummmlx/Tests/ummmlxTests/SpeechControllerTests.swift": {
       "role": "index",
@@ -455,9 +461,9 @@
     },
     "docs/client.md": {
       "role": "index",
-      "sha256": "3edf2cffba174996f7d0281b2937bd08570e9f0b105fc6b11801a83305f24931",
-      "size": 35172,
-      "normalized_sha256": "3edf2cffba174996f7d0281b2937bd08570e9f0b105fc6b11801a83305f24931"
+      "sha256": "dca55c926b955c6a63d066815c84808f7ba551bf5124922c4b158a59005063b1",
+      "size": 37587,
+      "normalized_sha256": "dca55c926b955c6a63d066815c84808f7ba551bf5124922c4b158a59005063b1"
     },
     "docs/concurrency.md": {
       "role": "index",
@@ -479,9 +485,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "7f361e2b8cda0b9d78aa18a59207ff98b8f15103a35cc7dcad292980d1bbf7d2",
-      "size": 125818,
-      "normalized_sha256": "7f361e2b8cda0b9d78aa18a59207ff98b8f15103a35cc7dcad292980d1bbf7d2"
+      "sha256": "e9d279dae6c1129d600fa1393eae39bfb012bf5d991b81e90a29fa48b44cf7fd",
+      "size": 126750,
+      "normalized_sha256": "e9d279dae6c1129d600fa1393eae39bfb012bf5d991b81e90a29fa48b44cf7fd"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -551,9 +557,9 @@
     },
     "docs/native-service.md": {
       "role": "index",
-      "sha256": "f4c90a337aba99e306cd8f802351e0ba29d2d1c4f2d25183b9b0b8c0f2ab20fc",
-      "size": 42673,
-      "normalized_sha256": "f4c90a337aba99e306cd8f802351e0ba29d2d1c4f2d25183b9b0b8c0f2ab20fc"
+      "sha256": "126ee4b76591669e687dd65bd863f2673db82326e44a23e60650ac3421f492b5",
+      "size": 43167,
+      "normalized_sha256": "126ee4b76591669e687dd65bd863f2673db82326e44a23e60650ac3421f492b5"
     },
     "docs/objective-mix-ablation.md": {
       "role": "index",
@@ -2677,9 +2683,9 @@
     },
     "tests/web_ui_contract_test.py": {
       "role": "observe",
-      "sha256": "a0bffd03ad0745dba3312b5d2e743f57530517f6b8049615879edefc0924434d",
-      "size": 41278,
-      "normalized_sha256": "a0bffd03ad0745dba3312b5d2e743f57530517f6b8049615879edefc0924434d"
+      "sha256": "d2dd545559bb3542dcaae3d4e88c99d15c02c8616f257943f0ae16ffd73b78e8",
+      "size": 50757,
+      "normalized_sha256": "d2dd545559bb3542dcaae3d4e88c99d15c02c8616f257943f0ae16ffd73b78e8"
     },
     "tools/audio_analyze.py": {
       "role": "index",
@@ -2725,9 +2731,9 @@
     },
     "web/index.html": {
       "role": "index",
-      "sha256": "11805c1f4a3f28e30f619b15a87878af9f9cf1ea2aa778058be1671b53ac0eaa",
-      "size": 94820,
-      "normalized_sha256": "11805c1f4a3f28e30f619b15a87878af9f9cf1ea2aa778058be1671b53ac0eaa"
+      "sha256": "7920a5bced9b669aae28b1f73cefd0835724d91ce531303f15948455a0e697d0",
+      "size": 105868,
+      "normalized_sha256": "7920a5bced9b669aae28b1f73cefd0835724d91ce531303f15948455a0e697d0"
     }
   },
   "managed_scope": {
