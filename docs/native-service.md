@@ -240,6 +240,30 @@ and `--web-root`:
     carrying Stage B full-duplex `playback_ack` barge-in history continuity
     (real 3-GPU SM90 validation on idle GPUs 0/1/7 recorded in
     `docs/full-duplex.md`), `/ready` 200 and `/health` `in_flight=0`.
+- Wave 15 live multi-stage hot-upgrades (`68cf88b`, `ea72f96`, `2dabb35`, `7fe0227`, `a6f88ea`):
+  - **GPU 6 `umm-native-stage-video`** (`68cf88b` Tier-1 lossless DiT `kQueryTile=512` +
+    persistent GPU workspace/RoPE + 2-entry cross-attn KV cache, then `2dabb35`
+    opt-in `--teacache-thresh`, preserving `.wave14` backup): hot-swapped in
+    `2–3 s` with `0` restarts on GPUs 2–5; live `POST /v1/visual/render`
+    (`704x480` 29f 15 steps `seed=42`) sped up **`24.07 s -> 22.13 s`** steady
+    state with **bit-exact identical MP4** (`81,076 B`, `sha256=b371ed5a78a92873`,
+    `teacache_thresh=0 teacache_hits=0/30`).
+  - **GPU 3 `umm-native-stage-qwen38`** (`ea72f96` cross-turn multimodal prefix
+    KV-cache reuse with `media_hash` + `cached_pos_next` + unified `grid_t` pixel
+    H2D, preserving `.wave14` backup): hot-swapped in `13 s` with `0` restarts on
+    GPUs 2/4/5/6 (steady `60,733 MiB`).
+  - **Gateway `/bin/umm-infer` & `web/index.html`** (`a6f88ea` OpenAI multi-turn
+    multimodal `messages`, `7fe0227` Web full-duplex Realtime WS + Stage B
+    `playback_ack`, preserving `.wave14` backups): hot-swapped in `3 s` with `0`
+    restarts across all 5 GPU stages; live 3-turn OpenAI video follow-up
+    (`POST /v1/chat/completions` `[user(video_url+text), assistant, user, assistant, user]`)
+    verified chained multimodal prefix KV-cache reuse:
+    - Turn 1 (cold video): `prompt=522`, `image_tokens=468`, `vision_ms=542.2 ms`,
+      `prefill_ms=966.7 ms` (TTFT `1,508.9 ms`).
+    - Turn 2 (prefix hit): `prompt=574`, **`prefix_reused=515`**, **`vision_ms=0.0 ms`**,
+      `prefill_ms=367.1 ms` (**4.11× faster TTFT**; `8.95×` `169.1 ms` on exact-prefix repeat).
+    - Turn 3 (chained hit): `prompt=659`, **`prefix_reused=567`**, **`vision_ms=0.0 ms`**,
+      `prefill_ms=412.7 ms`, accurate visual detail recall across all 3 turns.
 
 ## Validation, 2026-11-19 (historical)
 
