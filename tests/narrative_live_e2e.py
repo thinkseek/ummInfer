@@ -11,6 +11,7 @@ require ffprobe on PATH. Live mode runs real image/video/TTS inference.
 
 import argparse
 import base64
+import binascii
 import copy
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -148,7 +149,7 @@ class MockHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length)
-            if len(raw) > 1024 * 1024:
+            if len(raw) > 24 * 1024 * 1024:
                 self.error("request too large")
                 return
             if self.path == "/v1/visual/render":
@@ -212,16 +213,25 @@ class MockHandler(BaseHTTPRequestHandler):
                                   or not -(1 << 63) <= request["seed"] < (1 << 63)):
             self.error("seed must be a signed 64-bit integer")
             return
-        if "image" in request and (not isinstance(request["image"], str)
-                                   or not request["image"].startswith("data:image/")):
-            self.error("image must be an image data URL")
-            return
+        if "image" in request:
+            image = request["image"]
+            valid_image = (isinstance(image, str)
+                           and image.startswith("data:image/")
+                           and ";base64," in image)
+            if valid_image:
+                try:
+                    decoded = base64.b64decode(
+                        image.split(";base64,", 1)[1], validate=True)
+                except (binascii.Error, ValueError):
+                    valid_image = False
+                else:
+                    valid_image = 0 < len(decoded) <= 16 * 1024 * 1024
+            if not valid_image:
+                self.error("image must be an image data URL")
+                return
         if kind == "image" and set(request) & {"num_frames", "fps", "seconds",
                                                 "guidance_scale"}:
             self.error("video fields require kind=video")
-            return
-        if kind == "video" and "image" in request:
-            self.error("image requires kind=image")
             return
         self.server.render_requests.append(request)
         if kind == "image":
@@ -653,10 +663,14 @@ def self_check():
                 "narrative request fields changed")
 
         slot_prompts = [slot["prompt"] for slot in report["slots"]]
+        slot_zero_png = next(item["bytes"] for item in visual
+                             if item["descriptor"]["slot_id"] == "slot-0")
+        slot_zero_image = ("data:image/png;base64,"
+                           + base64.b64encode(slot_zero_png).decode("ascii"))
         swapped_video = visual_render(base_url, {
             "kind": "video", "prompt": slot_prompts[0], "size": "480x320",
             "steps": 4, "num_frames": 13, "fps": 16, "seconds": 1,
-            "guidance_scale": 5.0, "seed": 42,
+            "guidance_scale": 5.0, "seed": 42, "image": slot_zero_image,
         }, timeout=10.0)
         video_report = check_render_response(swapped_video, "video", slot_prompts[0])
         require(swapped_video[2][4:8] == b"ftyp", "slot-0 PNG -> MP4 swap failed")
@@ -670,6 +684,8 @@ def self_check():
         require([(item["kind"], item["prompt"]) for item in server.render_requests]
                 == [("video", slot_prompts[0]), ("image", slot_prompts[1])],
                 "visual swaps did not reuse the selected slot prompts")
+        require(server.render_requests[0]["image"] == slot_zero_image,
+                "slot-0 PNG -> video swap did not forward the source data URL")
 
         bad_requests = [
             {"kind": "image", "prompt": ""},
@@ -677,7 +693,7 @@ def self_check():
             {"kind": "image", "prompt": "unknown field", "unknown": True},
             {"kind": "video", "prompt": "bad frames", "num_frames": 0},
             {"kind": "image", "prompt": "video option", "fps": 16},
-            {"kind": "video", "prompt": "image option", "image": "data:image/png;base64,AA=="},
+            {"kind": "video", "prompt": "bad img", "image": "not-a-data-url"},
             {"kind": "image", "prompt": "bad seed", "seed": 1 << 63},
             {"kind": "image", "prompt": "bad seed", "seed": -(1 << 63) - 1},
         ]
@@ -732,14 +748,24 @@ def live(args):
 
         selected = report["slots"][0]
         target = "video" if selected["media_type"] == "image" else "image"
+        i2v = selected["media_type"] == "image" and target == "video"
         body = {"kind": target, "prompt": selected["prompt"]}
         if target == "video":
-            body.update({"size": "480x320", "steps": 20, "num_frames": 13,
-                         "fps": 16, "seconds": 1})
+            body.update({"size": "704x480", "steps": 20, "num_frames": 29,
+                         "fps": 16, "guidance_scale": 5.0})
+            if i2v:
+                source = next(item for item in visual
+                              if item["descriptor"]["slot_id"] == selected["slot_id"])
+                require(source["descriptor"].get("mime_type") == "image/png"
+                        and source["bytes"].startswith(b"\x89PNG\r\n\x1a\n"),
+                        "I2V source slot did not render PNG bytes")
+                body["image"] = ("data:image/png;base64,"
+                                 + base64.b64encode(source["bytes"]).decode("ascii"))
         else:
             body.update({"size": "512x512", "steps": 4})
         response = visual_render(args.url, body)
         swap = check_render_response(response, target, selected["prompt"])
+        swap["i2v"] = i2v
         raw = response[2]
         if target == "video":
             swap_path = work_dir / "narrative_swap.mp4"

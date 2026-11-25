@@ -53,6 +53,9 @@ without them is byte-identical to the current text path.
   - `steps`: optional integer in `[1, 100]`.
   - `guidance_scale`: optional finite number in `[0, 30]`.
   - `seed`: optional integer.
+  - `image`: optional `data:image/...;base64,...` data URL (max 16 MiB decoded)
+    for `Wan2.2-TI2V-5B` native image-to-video (I2V). The decoded image supplies
+    the first frame to animate.
   - `output_format`: optional string, only `"mp4"` (default `"mp4"`).
 - `narrative`: optional non-null object. It enables interleaved visual slots in
   a streaming answer:
@@ -96,7 +99,7 @@ stripped before the VLM worker sees them (same mechanism as `asr_partials`):
 - `output_modalities`: array of `image` / `audio` / `video`.
 - `image_options`: map `{prompt?, size, steps?, seed?, image?, output_format}`.
 - `audio_options`: map `{voice, format, sample_rate, stream?, ref_audio?}`.
-- `video_options`: map `{prompt?, size, seconds?, fps?, num_frames?, steps?, guidance_scale?, seed?, output_format}`.
+- `video_options`: map `{prompt?, size, seconds?, fps?, num_frames?, steps?, guidance_scale?, seed?, image?, output_format}`.
 
 Leg worker inputs:
 
@@ -105,8 +108,9 @@ Leg worker inputs:
   `audio.stream=false`, `text` is the aggregated `record.vlm_text`. With
   `audio.stream=true`, each leg receives one clean-prose sentence or the final
   clean tail as soon as it is available. `ref_audio` is decoded binary WAV bytes.
-- video leg: `{prompt, size, seconds?, fps?, num_frames?, steps?, guidance_scale?, seed?, output_format}` where
-  `prompt` falls back to `record.vlm_text` when omitted.
+- video leg: `{prompt, size, seconds?, fps?, num_frames?, steps?, guidance_scale?, seed?, image?, output_format}` where
+  `prompt` falls back to `record.vlm_text` when omitted. `image` remains the
+  validated data URL and selects native I2V on `Wan2.2-TI2V-5B`.
 
 ### Narrative parsing and visual dispatch
 
@@ -256,12 +260,15 @@ Request JSON:
 
 ```json
 {
-  "kind": "image",
-  "prompt": "a red lantern over a mountain lake",
-  "size": "512x512",
-  "steps": 4,
+  "kind": "video",
+  "prompt": "the lantern drifts across the lake",
+  "size": "704x480",
+  "steps": 20,
+  "num_frames": 29,
+  "fps": 16,
+  "guidance_scale": 5.0,
   "seed": 42,
-  "image": "data:image/..."
+  "image": "data:image/png;base64,..."
 }
 ```
 
@@ -270,8 +277,10 @@ Request JSON:
 - `size` is optional. `steps` is an optional positive integer. `num_frames`,
   `fps`, and `seconds` are optional positive integers for video;
   `guidance_scale` is an optional non-negative number for video. `seed` is an
-  optional signed 64-bit integer. `image` is an optional image data URL for
-  image editing.
+  optional signed 64-bit integer. `image` is an optional
+  `data:image/...;base64,...` URL for both kinds (max 16 MiB decoded). Image
+  uses it for FLUX.2 image-to-image editing. Video uses it as the first frame
+  for `Wan2.2-TI2V-5B` native I2V.
 - HTTP 200 returns raw `image/png` or `video/mp4` bytes, matching `kind`, with
   `Content-Type` and `X-UmmInfer-Kind: image` or `video` headers.
 - Invalid JSON, unknown fields, invalid field values, or an empty prompt return

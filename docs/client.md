@@ -124,7 +124,8 @@ and `stream=false` (non-streaming JSON with `artifacts` and `legs`).
 ./zig-out/bin/umm-infer chat \
   --url http://127.0.0.1:43301/v1 --model qwen3-native --prompt 'Animate this' \
   --video-out /tmp/clip.mp4 --video-prompt 'ocean waves at sunset' \
-  --video-size 480x320 --video-fps 16 --video-frames 13 --video-steps 15 \
+  --video-image /tmp/picture.png \
+  --video-size 704x480 --video-fps 16 --video-frames 29 --video-steps 20 \
   --video-guidance 5.0 --video-seed 11
 ```
 
@@ -142,8 +143,11 @@ and `stream=false` (non-streaming JSON with `artifacts` and `legs`).
   (absent falls back to the aggregated text answer), `size` (default `1280x720`),
   optional positive `seconds`, `fps`, `num_frames` (`1..241`, `--video-frames`),
   `steps` (`1..100`, `--video-steps`), `guidance_scale` (`0..30`,
-  `--video-guidance`), optional non-negative `seed`, and `output_format="mp4"`;
-  decoded `video/mp4` bytes are returned in `ChatResponse::artifacts`.
+  `--video-guidance`), optional non-negative `seed`, and `output_format="mp4"`.
+  Optional `image` is a `data:image/...;base64,...` URL (max 16 MiB decoded);
+  `--video-image PATH` encodes a local PNG, JPEG, or WebP file as this URL.
+  `Wan2.2-TI2V-5B` uses it as the first frame for native I2V animation. Decoded
+  `video/mp4` bytes are returned in `ChatResponse::artifacts`.
 
 ### Interleaved narrative and global streaming voice
 
@@ -265,21 +269,22 @@ response bytes. The request has no `slot_id` field.
 {
   "kind": "video",
   "prompt": "the lantern drifts across the lake",
-  "size": "480x320",
-  "steps": 4,
-  "num_frames": 13,
+  "size": "704x480",
+  "steps": 20,
+  "num_frames": 29,
   "fps": 16,
-  "seconds": 1,
   "guidance_scale": 5.0,
-  "seed": 42
+  "seed": 42,
+  "image": "data:image/png;base64,..."
 }
 ```
 
 `kind` (`image` or `video`) and a non-empty string `prompt` are required. Both
-kinds accept optional `size`, positive integer `steps`, and signed 64-bit
-integer `seed`. Video accepts positive integers `num_frames`, `fps`, `seconds`,
-and non-negative number `guidance_scale`. Image accepts an optional
-`data:image/...` URL in `image` for editing.
+kinds accept optional `size`, positive integer `steps`, signed 64-bit integer
+`seed`, and an `image` data URL (max 16 MiB decoded). Image uses `image` for
+FLUX.2 image-to-image editing. Video with `kind: "video"` uses it as the first
+frame for `Wan2.2-TI2V-5B` native I2V. Video also accepts positive integers
+`num_frames`, `fps`, `seconds`, and non-negative number `guidance_scale`.
 
 HTTP 200 returns raw `image/png` or `video/mp4` with a matching `Content-Type`
 and `X-UmmInfer-Kind: image` or `video`. Invalid JSON, unknown or invalid fields,
