@@ -138,12 +138,62 @@ python3 -I python/umminfer_sft_dataset.py \
   --out path/to/pref-pack
 ```
 
+## Stage C Live-to-Training E2E Pipeline Driver (`tools/umminfer_stage_c_pipeline.py`)
+
+`tools/umminfer_stage_c_pipeline.py` bridges exported `umminfer_rl_trajectory`
+schema-v1/v2 JSONL trajectories directly through `python/umminfer_sft_dataset.py`
+and `python/umminfer_joint_trainer.py` in a single content-addressed, stdlib-only
+pass (100% decoupled from C++ serving code under `src/`):
+
+1. **Strict trajectory & CAS validation**: fails closed on malformed JSON,
+   unsupported `schema_version`, tampered text/event digests, or missing/tampered
+   content-addressed media artifacts.
+2. **Dataset packing & leakage audit**: builds `sft/`, `preference/` (DPO + GRPO
+   with pluggable `--reward`, defaulting to
+   `umminfer_rl_reward:CompositeUmmReward`), and cross-verified `joint/` packs,
+   enforcing `leakage_count == 0`.
+3. **Trainer / ablation-matrix execution**: invokes `umminfer_joint_trainer.py`
+   across a single `--config` or the full `--ablation-matrix`
+   (`configs/training/ablation_matrix.json`) in `dry_run_micro_step` (default),
+   `plan`, or `gpu_launch_script` mode, binding the freshly built pack manifests.
+4. **Content-addressed report**: writes `stage_c_e2e_report.json` and
+   `stage_c_e2e_report.json.sha256` with explicit `REAL_TRAINING: "NOT_RUN"`.
+
+Offline mode (default workflow over exported JSONL files or directories):
+
+```text
+python3 -I tools/umminfer_stage_c_pipeline.py \
+  --from-trajectories path/to/trajectories_a.jsonl path/to/export_dir \
+  --out path/to/stage-c-e2e \
+  --reward umminfer_rl_reward:CompositeUmmReward \
+  --ablation-matrix configs/training/ablation_matrix.json \
+  --execution-mode dry_run_micro_step \
+  --dry-run-steps 2
+```
+
+Opt-in live capture bridge (`--capture-live <base_url>`): sends a deterministic
+multimodal prompt suite (pure-text with `allow_text_only: true`, visual-scene
+image, visual-scene video/auto, and mixed narrative beats, 2 contrasting rollouts
+per prompt) to `POST /v1/chat/completions` (`stream: true`), parses the live SSE
+stream into verified schema-v2 JSONL records with local CAS media artifacts, and
+executes the identical SFT -> Preference -> Leakage Audit -> Joint Trainer
+pipeline end-to-end (`source_mode: "live_capture"`, `REAL_TRAINING: "NOT_RUN"`):
+
+```text
+python3 -I tools/umminfer_stage_c_pipeline.py \
+  --capture-live http://127.0.0.1:43301 \
+  --model qwen3-native \
+  --out path/to/stage-c-live-e2e \
+  --ablation-matrix configs/training/ablation_matrix.json \
+  --execution-mode dry_run_micro_step
+```
+
 ## Verification & Claim Boundary
 
 Run the offline CPU-only contract tests:
 
 ```text
-python3 -I tests/sft_dataset_test.py
+python3 -m unittest tests/stage_c_pipeline_test.py tests/sft_dataset_test.py tests/joint_trainer_test.py
 ```
 
 | Capability | Status | Notes |
@@ -152,4 +202,5 @@ python3 -I tests/sft_dataset_test.py
 | SFT interleaved beat-marker reconstruction & dedup | **COVERED** | Byte-identical across repeated runs |
 | Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")` |
 | Zero train/eval prompt leakage & manifest sidecar | **COVERED** | Verified at build time and `--audit-only` |
+| End-to-end trajectory -> pack -> ablation-matrix dry-run driver | **COVERED** | `tools/umminfer_stage_c_pipeline.py` + `tests/stage_c_pipeline_test.py` |
 | Real SFT / DPO / GRPO GPU training runs | **`NOT_RUN`** | No optimizer step or model weight update claimed |
