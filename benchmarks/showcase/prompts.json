@@ -68,7 +68,7 @@
       "title": "Autonomous Modality Routing Contrast (visual_mode=auto)",
       "shared_options": {
         "stream": true,
-        "max_tokens": 192,
+        "max_tokens": 320,
         "temperature": 0.0,
         "seed": 42,
         "modalities": ["text", "image", "video"],
