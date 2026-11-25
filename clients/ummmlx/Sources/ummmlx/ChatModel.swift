@@ -96,9 +96,9 @@ final class ChatModel: ObservableObject {
     @Published var editImageURL: URL?
     @Published var audioVoice = "vivian"
     @Published var refAudioURL: URL?
-    @Published var videoSize = "480x320"
-    @Published var videoFramesText = "13"
-    @Published var videoStepsText = "15"
+    @Published var videoSize = "704x480"
+    @Published var videoFramesText = "29"
+    @Published var videoStepsText = "25"
     @Published var videoGuidanceText = "5.0"
     @Published var attachedImageURL: URL?
     @Published var partialTranscript = ""

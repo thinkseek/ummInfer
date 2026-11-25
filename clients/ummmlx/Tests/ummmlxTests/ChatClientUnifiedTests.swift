@@ -823,7 +823,7 @@ final class ChatClientUnifiedTests: XCTestCase {
             as? [String: Any]
         XCTAssertEqual(body?["kind"] as? String, "video")
         XCTAssertEqual(body?["prompt"] as? String, slotPrompt)
-        XCTAssertEqual(body?["size"] as? String, "480x320")
+        XCTAssertEqual(body?["size"] as? String, "704x480")
 
         // The image is still cached: swapping back makes no network call.
         model.swapVisualSlot(turnID: turn.id, slotID: "slot-0", toKind: "image")

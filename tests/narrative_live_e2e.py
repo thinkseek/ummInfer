@@ -734,7 +734,7 @@ def live(args):
         target = "video" if selected["media_type"] == "image" else "image"
         body = {"kind": target, "prompt": selected["prompt"]}
         if target == "video":
-            body.update({"size": "480x320", "steps": 4, "num_frames": 13,
+            body.update({"size": "480x320", "steps": 20, "num_frames": 13,
                          "fps": 16, "seconds": 1})
         else:
             body.update({"size": "512x512", "steps": 4})
