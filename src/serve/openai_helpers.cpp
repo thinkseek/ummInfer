@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openai_internal.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 
+#include "umminfer/audio/audio.hpp"
 #include "umminfer/client/client.hpp"
 #include "umminfer/util/codec.hpp"
 
@@ -263,6 +266,268 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
   return true;
 }
 
+namespace {
+
+constexpr size_t kMaxMediaInputBytes = 16u << 20;  // 16 MiB decoded image/WAV
+
+bool parse_image_options(const json& body, bool& enabled, Value::Map& out,
+                         std::string& error) {
+  if (!body.contains("image") || body["image"].is_null()) {
+    if (!enabled) return true;
+    out["size"] = Value("512x512");
+    out["output_format"] = Value("png");
+    return true;
+  }
+  const json& image = body["image"];
+  if (!image.is_object()) {
+    error = "image must be an object";
+    return false;
+  }
+  if (image.contains("prompt") && !image["prompt"].is_null()) {
+    if (!image["prompt"].is_string() ||
+        image["prompt"].get_ref<const std::string&>().empty()) {
+      error = "image.prompt must be a non-empty string";
+      return false;
+    }
+    out["prompt"] = Value(image["prompt"].get<std::string>());
+  }
+  if (image.contains("size") && !image["size"].is_null()) {
+    if (!image["size"].is_string() || image["size"].get<std::string>().empty()) {
+      error = "image.size must be a non-empty string";
+      return false;
+    }
+    out["size"] = Value(image["size"].get<std::string>());
+  } else {
+    out["size"] = Value("512x512");
+  }
+  if (image.contains("seed") && !image["seed"].is_null()) {
+    if (!image["seed"].is_number_integer()) {
+      error = "image.seed must be an integer";
+      return false;
+    }
+    out["seed"] = Value(image["seed"].get<int64_t>());
+  }
+  if (image.contains("steps") && !image["steps"].is_null()) {
+    if (!image["steps"].is_number_integer() ||
+        image["steps"].get<int64_t>() < 1 ||
+        image["steps"].get<int64_t>() > 100) {
+      error = "image.steps must be an integer between 1 and 100";
+      return false;
+    }
+    out["steps"] = Value(image["steps"].get<int64_t>());
+  }
+  if (image.contains("image") && !image["image"].is_null()) {
+    if (!image["image"].is_string()) {
+      error = "image.image must be a non-empty data:image/...;base64,... string";
+      return false;
+    }
+    const std::string& url = image["image"].get_ref<const std::string&>();
+    const size_t comma = url.find(',');
+    if (url.rfind("data:image/", 0) != 0 || comma == std::string::npos ||
+        url.substr(0, comma).find(";base64") == std::string::npos) {
+      error = "image.image must be a data:image/...;base64,... URL";
+      return false;
+    }
+    try {
+      const std::string decoded =
+          util::base64_decode(url.substr(comma + 1), kMaxMediaInputBytes);
+      if (decoded.empty()) {
+        error = "image.image payload must be non-empty";
+        return false;
+      }
+    } catch (const std::exception& exc) {
+      error = std::string("invalid image.image base64: ") + exc.what();
+      return false;
+    }
+    out["image"] = Value(url);
+  }
+  if (image.contains("output_format") && !image["output_format"].is_null()) {
+    // The unified image leg emits PNG only.
+    if (!image["output_format"].is_string() ||
+        image["output_format"].get<std::string>() != "png") {
+      error = "image.output_format must be png: the image stage emits PNG only";
+      return false;
+    }
+  }
+  out["output_format"] = Value("png");
+  enabled = true;
+  return true;
+}
+
+bool parse_audio_options(const json& body, bool& enabled, Value::Map& out,
+                         std::string& error) {
+  if (!body.contains("audio") || body["audio"].is_null()) {
+    if (!enabled) return true;
+    error = "audio requires a non-empty voice";
+    return false;
+  }
+  const json& audio = body["audio"];
+  if (!audio.is_object() || !audio.contains("voice") ||
+      !audio["voice"].is_string() ||
+      audio["voice"].get_ref<const std::string&>().empty()) {
+    error = "audio requires a non-empty voice";
+    return false;
+  }
+  if (!audio.contains("format") || !audio["format"].is_string() ||
+      audio["format"].get<std::string>() != "wav") {
+    error = "audio.format must be wav: it is the only documented format";
+    return false;
+  }
+  if (audio.contains("sample_rate") && !audio["sample_rate"].is_null()) {
+    if (!audio["sample_rate"].is_number_integer() ||
+        audio["sample_rate"].get<int64_t>() != 24000) {
+      error = "audio.sample_rate must be 24000";
+      return false;
+    }
+  }
+  if (audio.contains("stream") && !audio["stream"].is_null() &&
+      !audio["stream"].is_boolean()) {
+    error = "audio.stream must be a boolean";
+    return false;
+  }
+  out["voice"] = Value(audio["voice"].get<std::string>());
+  out["format"] = Value("wav");
+  out["sample_rate"] = Value(int64_t{24000});
+  if (audio.value("stream", false)) out["stream"] = Value(true);
+  if (audio.contains("ref_audio") && !audio["ref_audio"].is_null()) {
+    if (!audio["ref_audio"].is_string()) {
+      error = "audio.ref_audio must be a base64 or data:audio/wav;base64,... string";
+      return false;
+    }
+    std::string wav_bytes;
+    if (!decode_wav_ref_audio(audio["ref_audio"].get_ref<const std::string&>(),
+                              wav_bytes, error)) {
+      return false;
+    }
+    out["ref_audio"] = Value::bin(std::move(wav_bytes));
+  }
+  enabled = true;
+  return true;
+}
+
+bool parse_video_options(const json& body, bool& enabled, Value::Map& out,
+                         std::string& error) {
+  if (!body.contains("video") || body["video"].is_null()) {
+    if (!enabled) return true;
+    out["size"] = Value("1280x720");
+    out["output_format"] = Value("mp4");
+    return true;
+  }
+  const json& video = body["video"];
+  if (!video.is_object()) {
+    error = "video must be an object";
+    return false;
+  }
+  if (video.contains("prompt") && !video["prompt"].is_null()) {
+    if (!video["prompt"].is_string() ||
+        video["prompt"].get_ref<const std::string&>().empty()) {
+      error = "video.prompt must be a non-empty string";
+      return false;
+    }
+    out["prompt"] = Value(video["prompt"].get<std::string>());
+  }
+  if (video.contains("size") && !video["size"].is_null()) {
+    if (!video["size"].is_string() || video["size"].get<std::string>().empty()) {
+      error = "video.size must be a non-empty string";
+      return false;
+    }
+    out["size"] = Value(video["size"].get<std::string>());
+  } else {
+    out["size"] = Value("1280x720");
+  }
+  if (video.contains("seconds") && !video["seconds"].is_null()) {
+    if (!video["seconds"].is_number_integer() ||
+        video["seconds"].get<int64_t>() < 1) {
+      error = "video.seconds must be a positive integer";
+      return false;
+    }
+    out["seconds"] = Value(video["seconds"].get<int64_t>());
+  }
+  if (video.contains("fps") && !video["fps"].is_null()) {
+    if (!video["fps"].is_number_integer() ||
+        video["fps"].get<int64_t>() < 1) {
+      error = "video.fps must be a positive integer";
+      return false;
+    }
+    out["fps"] = Value(video["fps"].get<int64_t>());
+  }
+  if (video.contains("num_frames") && !video["num_frames"].is_null()) {
+    if (!video["num_frames"].is_number_integer() ||
+        video["num_frames"].get<int64_t>() < 1) {
+      error = "video.num_frames must be a positive integer";
+      return false;
+    }
+    out["num_frames"] = Value(video["num_frames"].get<int64_t>());
+  }
+  if (video.contains("steps") && !video["steps"].is_null()) {
+    if (!video["steps"].is_number_integer() ||
+        video["steps"].get<int64_t>() < 1 ||
+        video["steps"].get<int64_t>() > 100) {
+      error = "video.steps must be an integer between 1 and 100";
+      return false;
+    }
+    out["steps"] = Value(video["steps"].get<int64_t>());
+  }
+  if (video.contains("guidance_scale") && !video["guidance_scale"].is_null()) {
+    if (!video["guidance_scale"].is_number() ||
+        !std::isfinite(video["guidance_scale"].get<double>()) ||
+        video["guidance_scale"].get<double>() < 0.0) {
+      error = "video.guidance_scale must be a finite non-negative number";
+      return false;
+    }
+    out["guidance_scale"] = Value(video["guidance_scale"].get<double>());
+  }
+  if (video.contains("seed") && !video["seed"].is_null()) {
+    if (!video["seed"].is_number_integer()) {
+      error = "video.seed must be an integer";
+      return false;
+    }
+    out["seed"] = Value(video["seed"].get<int64_t>());
+  }
+  if (video.contains("output_format") && !video["output_format"].is_null()) {
+    if (!video["output_format"].is_string() ||
+        video["output_format"].get<std::string>() != "mp4") {
+      error = "video.output_format must be mp4";
+      return false;
+    }
+  }
+  out["output_format"] = Value("mp4");
+  enabled = true;
+  return true;
+}
+
+}  // namespace
+
+bool decode_wav_ref_audio(std::string_view encoded, std::string& wav_bytes,
+                          std::string& error) {
+  if (encoded.empty()) {
+    error = "ref_audio must be non-empty";
+    return false;
+  }
+  std::string_view b64 = encoded;
+  if (encoded.rfind("data:", 0) == 0) {
+    const size_t comma = encoded.find(',');
+    if (comma == std::string_view::npos ||
+        encoded.substr(0, comma).find(";base64") == std::string_view::npos) {
+      error = "ref_audio data URL must use base64 encoding";
+      return false;
+    }
+    b64 = encoded.substr(comma + 1);
+  }
+  try {
+    wav_bytes = util::base64_decode(std::string(b64), kMaxMediaInputBytes);
+    const auto view = audio::parse_wav_pcm16(wav_bytes);
+    if (view.pcm.empty()) {
+      error = "ref_audio WAV must contain non-empty PCM16 audio";
+      return false;
+    }
+  } catch (const std::exception& exc) {
+    error = std::string("invalid ref_audio WAV: ") + exc.what();
+    return false;
+  }
+  return true;
+}
+
 bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
                         bool video_enabled, Value::Map& engine_inputs,
                         std::string& error) {
@@ -291,111 +556,15 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
       }
     }
   }
-  if (body.contains("image") && !body["image"].is_null()) {
-    const json& image = body["image"];
-    if (!image.is_object()) {
-      error = "image must be an object";
-      return false;
-    }
-    if (image.contains("prompt") && !image["prompt"].is_null()) {
-      if (!image["prompt"].is_string() ||
-          image["prompt"].get_ref<const std::string&>().empty()) {
-        error = "image.prompt must be a non-empty string";
-        return false;
-      }
-    }
-    if (image.contains("size") && !image["size"].is_null()) {
-      if (!image["size"].is_string() || image["size"].get<std::string>().empty()) {
-        error = "image.size must be a non-empty string";
-        return false;
-      }
-    }
-    if (image.contains("seed") && !image["seed"].is_null() &&
-        !image["seed"].is_number_integer()) {
-      error = "image.seed must be an integer";
-      return false;
-    }
-    if (image.contains("output_format") && !image["output_format"].is_null()) {
-      // The unified image leg is the native image stage, and it emits PNG only.
-      // Accepting jpeg here would promise bytes the stage cannot produce.
-      if (!image["output_format"].is_string() ||
-          image["output_format"].get<std::string>() != "png") {
-        error = "image.output_format must be png: the image stage emits PNG only";
-        return false;
-      }
-    }
-    image_output = true;
-  }
-  if (body.contains("audio") && !body["audio"].is_null()) {
-    const json& audio = body["audio"];
-    if (!audio.is_object() || !audio.contains("voice") ||
-        !audio["voice"].is_string() ||
-        audio["voice"].get_ref<const std::string&>().empty()) {
-      error = "audio requires a non-empty voice";
-      return false;
-    }
-    if (!audio.contains("format") || !audio["format"].is_string() ||
-        audio["format"].get<std::string>() != "wav") {
-      error = "audio.format must be wav: it is the only documented format";
-      return false;
-    }
-    if (audio.contains("sample_rate") && !audio["sample_rate"].is_null()) {
-      if (!audio["sample_rate"].is_number_integer() ||
-          audio["sample_rate"].get<int64_t>() != 24000) {
-        error = "audio.sample_rate must be 24000";
-        return false;
-      }
-    }
-    audio_output = true;
-  }
-  if (body.contains("video") && !body["video"].is_null()) {
-    const json& video = body["video"];
-    if (!video.is_object()) {
-      error = "video must be an object";
-      return false;
-    }
-    if (video.contains("prompt") && !video["prompt"].is_null()) {
-      if (!video["prompt"].is_string() ||
-          video["prompt"].get_ref<const std::string&>().empty()) {
-        error = "video.prompt must be a non-empty string";
-        return false;
-      }
-    }
-    if (video.contains("size") && !video["size"].is_null()) {
-      if (!video["size"].is_string() || video["size"].get<std::string>().empty()) {
-        error = "video.size must be a non-empty string";
-        return false;
-      }
-    }
-    if (video.contains("seconds") && !video["seconds"].is_null()) {
-      if (!video["seconds"].is_number_integer() ||
-          video["seconds"].get<int64_t>() < 1) {
-        error = "video.seconds must be a positive integer";
-        return false;
-      }
-    }
-    if (video.contains("fps") && !video["fps"].is_null()) {
-      if (!video["fps"].is_number_integer() ||
-          video["fps"].get<int64_t>() < 1) {
-        error = "video.fps must be a positive integer";
-        return false;
-      }
-    }
-    if (video.contains("seed") && !video["seed"].is_null() &&
-        !video["seed"].is_number_integer()) {
-      error = "video.seed must be an integer";
-      return false;
-    }
-    if (video.contains("output_format") && !video["output_format"].is_null()) {
-      if (!video["output_format"].is_string() ||
-          video["output_format"].get<std::string>() != "mp4") {
-        error = "video.output_format must be mp4";
-        return false;
-      }
-    }
-    video_output = true;
-  }
+
+  Value::Map image_opts;
+  Value::Map audio_opts;
+  Value::Map video_opts;
+  if (!parse_image_options(body, image_output, image_opts, error)) return false;
+  if (!parse_audio_options(body, audio_output, audio_opts, error)) return false;
+  if (!parse_video_options(body, video_output, video_opts, error)) return false;
   if (!image_output && !audio_output && !video_output) return true;
+
   if (image_output && !image_enabled) {
     error = "image output is not enabled on this server";
     return false;
@@ -409,71 +578,71 @@ bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
     return false;
   }
   // Streamed PCM chunks are SSE-only, so they cannot ride a single JSON body.
-  if (!body.value("stream", false) && audio_output &&
-      body["audio"].is_object() && body["audio"].value("stream", false)) {
+  const bool audio_stream =
+      audio_opts.count("stream") > 0 && audio_opts["stream"].as_bool();
+  if (!body.value("stream", false) && audio_output && audio_stream) {
     error = "audio.stream=true requires stream=true";
     return false;
   }
+
   Value::Array selected;
-  if (image_output) selected.push_back(Value("image"));
-  if (audio_output) selected.push_back(Value("audio"));
-  if (video_output) selected.push_back(Value("video"));
-  engine_inputs["output_modalities"] = Value(std::move(selected));
   if (image_output) {
-    Value::Map options;
-    const json empty_image = json::object();
-    const json& image = body.contains("image") && body["image"].is_object()
-                            ? body["image"]
-                            : empty_image;
-    if (image.contains("prompt") && !image["prompt"].is_null()) {
-      options["prompt"] = Value(image["prompt"].get<std::string>());
-    }
-    options["size"] = Value(image.value("size", std::string("512x512")));
-    if (image.contains("seed") && !image["seed"].is_null()) {
-      options["seed"] = Value(image["seed"].get<int64_t>());
-    }
-    options["output_format"] =
-        Value(image.value("output_format", std::string("png")));
-    engine_inputs["image_options"] = Value(std::move(options));
+    selected.push_back(Value("image"));
+    engine_inputs["image_options"] = Value(std::move(image_opts));
   }
   if (audio_output) {
-    Value::Map options;
-    const json& audio = body["audio"];
-    if (audio.contains("stream") && !audio["stream"].is_null() &&
-        !audio["stream"].is_boolean()) {
-      error = "audio.stream must be a boolean";
-      return false;
-    }
-    options["voice"] = Value(audio["voice"].get<std::string>());
-    options["format"] = Value("wav");
-    options["sample_rate"] = Value(int64_t{24000});
-    if (audio.value("stream", false)) options["stream"] = Value(true);
-    engine_inputs["audio_options"] = Value(std::move(options));
+    selected.push_back(Value("audio"));
+    engine_inputs["audio_options"] = Value(std::move(audio_opts));
   }
   if (video_output) {
-    Value::Map options;
-    const json empty_video = json::object();
-    const json& video = body.contains("video") && body["video"].is_object()
-                            ? body["video"]
-                            : empty_video;
-    if (video.contains("prompt") && !video["prompt"].is_null()) {
-      options["prompt"] = Value(video["prompt"].get<std::string>());
-    }
-    options["size"] = Value(video.value("size", std::string("1280x720")));
-    if (video.contains("seconds") && !video["seconds"].is_null()) {
-      options["seconds"] = Value(video["seconds"].get<int64_t>());
-    }
-    if (video.contains("fps") && !video["fps"].is_null()) {
-      options["fps"] = Value(video["fps"].get<int64_t>());
-    }
-    if (video.contains("seed") && !video["seed"].is_null()) {
-      options["seed"] = Value(video["seed"].get<int64_t>());
-    }
-    options["output_format"] =
-        Value(video.value("output_format", std::string("mp4")));
-    engine_inputs["video_options"] = Value(std::move(options));
+    selected.push_back(Value("video"));
+    engine_inputs["video_options"] = Value(std::move(video_opts));
   }
+  engine_inputs["output_modalities"] = Value(std::move(selected));
   return true;
+}
+
+SyncCoordinatorResult run_sync_coordinator_request(
+    Coordinator& coordinator, const httplib::Request& req, StagePayload payload,
+    const std::string& stage_name, double timeout_s,
+    const std::function<void(const std::string&)>& on_submitted) {
+  SyncCoordinatorResult out;
+  try {
+    out.request_id = coordinator.submit(std::move(payload), stage_name);
+  } catch (const std::exception& error) {
+    out.status = SyncCoordinatorResult::Status::kSubmitError;
+    out.submit_error = error.what();
+    return out;
+  }
+  if (on_submitted) on_submitted(out.request_id);
+
+  bool settled = false;
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::duration<double>(timeout_s);
+  while (!settled && !req.is_connection_closed()) {
+    const auto remaining = deadline - std::chrono::steady_clock::now();
+    if (remaining <= std::chrono::steady_clock::duration::zero()) break;
+    settled = coordinator.wait(
+        out.request_id,
+        std::min(0.1, std::chrono::duration<double>(remaining).count()));
+  }
+  if (req.is_connection_closed()) {
+    out.settled_before_close = settled;
+    coordinator.abort(out.request_id, "client");
+    coordinator.release(out.request_id);
+    out.status = SyncCoordinatorResult::Status::kClientClosed;
+    return out;
+  }
+  out.info = coordinator.info(out.request_id);
+  if (!settled || !out.info) {
+    coordinator.abort(out.request_id, "timeout");
+    coordinator.release(out.request_id);
+    out.status = SyncCoordinatorResult::Status::kTimeout;
+    return out;
+  }
+  coordinator.release(out.request_id);
+  out.status = SyncCoordinatorResult::Status::kSettled;
+  return out;
 }
 
 void reject_overloaded(httplib::Response& res) {

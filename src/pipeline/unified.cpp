@@ -301,8 +301,9 @@ UnifiedEngine::CancelStatus UnifiedEngine::cancel_for_session(
     Record& record = it->second;
     record.cancel_requested = true;
     if (!record.vlm_id.empty()) active_ids.push_back(record.vlm_id);
-    if (record.image_leg.submitted) active_ids.push_back(record.image_leg.child_id);
-    if (record.video_leg.submitted) active_ids.push_back(record.video_leg.child_id);
+    record.for_each_single_output_leg([&](const OutputLeg& leg) {
+      if (leg.submitted) active_ids.push_back(leg.child_id);
+    });
     for (const OutputLeg& leg : record.tts_legs) {
       if (leg.submitted) active_ids.push_back(leg.child_id);
     }
@@ -412,14 +413,12 @@ bool UnifiedEngine::release(const std::string& request_id) {
         child_to_unified_.erase(it->second.vlm_id);
       }
     }
-    if (it->second.image_leg.submitted) {
-      child_ids.push_back(it->second.image_leg.child_id);
-      child_to_unified_.erase(it->second.image_leg.child_id);
-    }
-    if (it->second.video_leg.submitted) {
-      child_ids.push_back(it->second.video_leg.child_id);
-      child_to_unified_.erase(it->second.video_leg.child_id);
-    }
+    it->second.for_each_single_output_leg([&](const OutputLeg& leg) {
+      if (leg.submitted) {
+        child_ids.push_back(leg.child_id);
+        child_to_unified_.erase(leg.child_id);
+      }
+    });
     for (const OutputLeg& leg : it->second.tts_legs) {
       if (leg.submitted) {
         child_ids.push_back(leg.child_id);
@@ -926,40 +925,14 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
   drain_dispatch();
 }
 
-void UnifiedEngine::start_image_locked(const std::string& request_id,
-                                       Record& record) {
-  OutputLeg& leg = record.image_leg;
-  leg.child_id = request_id + kImageSuffix;
+void UnifiedEngine::submit_single_output_leg_locked(
+    const std::string& request_id, Record& record, OutputLeg& leg,
+    const char* suffix, Value inputs) {
+  leg.child_id = request_id + suffix;
   child_to_unified_[leg.child_id] = request_id;
   StagePayload payload;
   payload.request_id = leg.child_id;
-  payload.request.inputs =
-      unified_detail::build_image_inputs(record.image_options, record.vlm_text);
-  payload.request.params = record.vlm_params;
-  payload.request.metadata = record.vlm_metadata;
-  leg.submitted = true;
-  leg.state = LegState::kRunning;
-  leg.started = std::chrono::steady_clock::now();
-  try {
-    coordinator_.submit(payload, leg.stage_name);
-  } catch (...) {
-    leg.submitted = false;
-    leg.state = LegState::kFailed;
-    child_to_unified_.erase(leg.child_id);
-    throw;
-  }
-  ++record.legs_remaining;
-}
-
-void UnifiedEngine::start_video_locked(const std::string& request_id,
-                                       Record& record) {
-  OutputLeg& leg = record.video_leg;
-  leg.child_id = request_id + kVideoSuffix;
-  child_to_unified_[leg.child_id] = request_id;
-  StagePayload payload;
-  payload.request_id = leg.child_id;
-  payload.request.inputs =
-      unified_detail::build_video_inputs(record.video_options, record.vlm_text);
+  payload.request.inputs = std::move(inputs);
   payload.request.params = record.vlm_params;
   payload.request.metadata = record.vlm_metadata;
   leg.submitted = true;
@@ -1056,8 +1029,16 @@ void UnifiedEngine::start_outputs_locked(const std::string& request_id,
       record.image_leg.enabled   ? kImageStageId
       : record.video_leg.enabled ? kVideoStageId
                                  : kTtsStageId;
-  if (record.image_leg.enabled) start_image_locked(request_id, record);
-  if (record.video_leg.enabled) start_video_locked(request_id, record);
+  if (record.image_leg.enabled) {
+    submit_single_output_leg_locked(
+        request_id, record, record.image_leg, kImageSuffix,
+        unified_detail::build_image_inputs(record.image_options, record.vlm_text));
+  }
+  if (record.video_leg.enabled) {
+    submit_single_output_leg_locked(
+        request_id, record, record.video_leg, kVideoSuffix,
+        unified_detail::build_video_inputs(record.video_options, record.vlm_text));
+  }
   if (record.tts_enabled) {
     if (record.tts_stream) {
       flush_sentences_locked(request_id, record);
@@ -1090,8 +1071,18 @@ void UnifiedEngine::emit_tts_chunk_locked(
   descriptor["media_type"] = Value("audio");
   descriptor["mime_type"] = Value("audio/pcm");
   descriptor["format"] = Value("pcm16");
-  descriptor["sample_rate"] = Value(static_cast<int64_t>(24000));
-  descriptor["channels"] = Value(static_cast<int64_t>(1));
+  int64_t sample_rate = 24000;
+  if (const Value* rate = chunk.find("sample_rate");
+      rate != nullptr && rate->is_int() && rate->as_int() > 0) {
+    sample_rate = rate->as_int();
+  }
+  int64_t channels = 1;
+  if (const Value* ch = chunk.find("channels");
+      ch != nullptr && ch->is_int() && ch->as_int() > 0) {
+    channels = ch->as_int();
+  }
+  descriptor["sample_rate"] = Value(sample_rate);
+  descriptor["channels"] = Value(channels);
   descriptor["index"] = Value(static_cast<int64_t>(0));
   descriptor["total"] = Value(static_cast<int64_t>(1));
   if (const Value* index = chunk.find("index")) {
@@ -1124,14 +1115,11 @@ void UnifiedEngine::collect_tts_aborts_locked(
 void UnifiedEngine::collect_output_aborts_locked(
     const Record& record, const char* reason,
     std::vector<std::pair<std::string, const char*>>& out) {
-  if (record.image_leg.submitted &&
-      record.image_leg.state == LegState::kRunning) {
-    out.emplace_back(record.image_leg.child_id, reason);
-  }
-  if (record.video_leg.submitted &&
-      record.video_leg.state == LegState::kRunning) {
-    out.emplace_back(record.video_leg.child_id, reason);
-  }
+  record.for_each_single_output_leg([&](const OutputLeg& leg) {
+    if (leg.submitted && leg.state == LegState::kRunning) {
+      out.emplace_back(leg.child_id, reason);
+    }
+  });
   collect_tts_aborts_locked(record, reason, out);
 }
 

@@ -137,81 +137,67 @@ void OpenAIApi::Impl::handle_transcription(const httplib::Request& req, httplib:
     reject_overloaded(res);
     return;
   }
-  std::string request_id;
-  try {
-    request_id = coordinator_.submit(std::move(payload), config_.entry_stage);
-  } catch (const std::exception& error) {
-    reject(503, error.what());
+  auto submit_done = handler_started;
+  const SyncCoordinatorResult sync = run_sync_coordinator_request(
+      coordinator_, req, std::move(payload), config_.entry_stage,
+      config_.request_timeout_s, [&](const std::string& req_id) {
+        // Submit is synchronous only in the sense that it enqueues; the split
+        // between this and the wait below separates upload from engine time.
+        submit_done = std::chrono::steady_clock::now();
+        obs::Metrics::instance().trace_start(req_id, "transcription", "asr",
+                                             request_metric.start_epoch_ms);
+        request_metric.request_id = req_id;
+        request_metric.counted = true;
+        request_metric.status = "aborted";
+      });
+  if (sync.status == SyncCoordinatorResult::Status::kSubmitError) {
+    reject(503, sync.submit_error);
     return;
   }
-  // Submit is synchronous only in the sense that it enqueues; the split
-  // between this and the wait below is what tells a slow engine from a slow
-  // client-to-server transfer.
-  const auto submit_done = std::chrono::steady_clock::now();
-  obs::Metrics::instance().trace_start(request_id, "transcription", "asr",
-                                       request_metric.start_epoch_ms);
-  request_metric.request_id = request_id;
-  request_metric.counted = true;
-  request_metric.status = "aborted";
-  bool settled = false;
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::duration<double>(config_.request_timeout_s);
-  while (!settled && !req.is_connection_closed()) {
-    const auto remaining = deadline - std::chrono::steady_clock::now();
-    if (remaining <= std::chrono::steady_clock::duration::zero()) break;
-    settled = coordinator_.wait(
-        request_id,
-        std::min(0.1, std::chrono::duration<double>(remaining).count()));
-  }
-  if (req.is_connection_closed()) {
-    std::cerr << "transcription client_closed request_id=" << request_id
+  if (sync.status == SyncCoordinatorResult::Status::kClientClosed) {
+    std::cerr << "transcription client_closed request_id=" << sync.request_id
               << " body_bytes=" << req.body.size() << " submit_ms="
               << static_cast<long>(
                      std::chrono::duration<double, std::milli>(
                          submit_done - handler_started).count())
               << " handler_ms="
               << static_cast<long>(elapsed_seconds(handler_started) * 1000.0)
-              << " settled=" << (settled ? 1 : 0) << "\n";
-    coordinator_.abort(request_id, "client");
-    coordinator_.release(request_id);
+              << " settled=" << (sync.settled_before_close ? 1 : 0) << "\n";
     // An abandoned request must not leave res.status unset: httplib fills a
     // missing status with 200, so a client that is still reading would see a
     // successful transcription with an empty body.
     reject(503, "client closed the connection before the transcription finished");
     return;
   }
-  auto info = coordinator_.info(request_id);
-  if (!settled || !info) {
-    std::cerr << "transcription timeout request_id=" << request_id
+  if (sync.status == SyncCoordinatorResult::Status::kTimeout) {
+    std::cerr << "transcription timeout request_id=" << sync.request_id
               << " handler_ms="
               << static_cast<long>(elapsed_seconds(handler_started) * 1000.0)
               << "\n";
     request_metric.status = "timeout";
-    coordinator_.abort(request_id, "timeout");
-    coordinator_.release(request_id);
     reject(504, "transcription timed out");
     return;
   }
-  coordinator_.release(request_id);
-  request_metric.status = info->state;
-  std::cerr << "transcription done request_id=" << request_id
+  const RequestInfo& info = *sync.info;
+  request_metric.status = info.state;
+  std::cerr << "transcription done request_id=" << sync.request_id
             << " body_bytes=" << req.body.size() << " handler_ms="
             << static_cast<long>(elapsed_seconds(handler_started) * 1000.0)
-            << " state=" << info->state << "\n";
-  if (info->state != "completed") {
-    reject(500, info->error);
+            << " state=" << info.state << "\n";
+  if (info.state != "completed") {
+    reject(500, info.error);
     return;
   }
   std::string text;
   try {
-    text = serve_detail::asr_result_text(info->result);
+    text = serve_detail::asr_result_text(info.result);
   } catch (const std::exception& error) {
     reject(500, error.what());
     return;
   }
   serve_detail::AsrGenerationMetadata metadata;
   const bool has_metadata =
-      serve_detail::asr_generation_metadata(info->result, metadata);
+      serve_detail::asr_generation_metadata(info.result, metadata);
   if (want_metadata && !has_metadata) {
     reject(500, "the ASR stage did not report generation metadata");
     return;
@@ -263,7 +249,7 @@ void OpenAIApi::Impl::handle_speech(const httplib::Request& req, httplib::Respon
     return;
   }
   static const std::set<std::string> kAllowedFields = {
-      "model", "input", "voice", "response_format"};
+      "model", "input", "voice", "response_format", "ref_audio"};
   for (auto it = body.begin(); it != body.end(); ++it) {
     if (!kAllowedFields.count(it.key())) {
       reject(400, "unsupported field: " + it.key(), "invalid_request");
@@ -316,6 +302,21 @@ void OpenAIApi::Impl::handle_speech(const httplib::Request& req, httplib::Respon
     return;
   }
 
+  std::string ref_audio_wav;
+  if (body.contains("ref_audio") && !body["ref_audio"].is_null()) {
+    if (!body["ref_audio"].is_string()) {
+      reject(400, "ref_audio must be a base64 or data:audio/wav;base64,... string",
+             "invalid_request");
+      return;
+    }
+    std::string decode_error;
+    if (!decode_wav_ref_audio(body["ref_audio"].get_ref<const std::string&>(),
+                              ref_audio_wav, decode_error)) {
+      reject(400, decode_error, "invalid_request");
+      return;
+    }
+  }
+
   AdmissionGuard guard(active_http_requests_, config_.max_in_flight);
   if (!guard.admitted()) {
     reject_overloaded(res);
@@ -326,47 +327,34 @@ void OpenAIApi::Impl::handle_speech(const httplib::Request& req, httplib::Respon
   inputs["text"] = Value(input);
   inputs["voice"] = Value(voice);
   inputs["format"] = Value("wav");
+  if (!ref_audio_wav.empty()) {
+    inputs["ref_audio"] = Value::bin(std::move(ref_audio_wav));
+  }
   payload.request.inputs = Value(std::move(inputs));
-  std::string request_id;
-  try {
-    request_id = coordinator_.submit(std::move(payload),
-                                     unified_engine_->tts_stage_name());
-  } catch (const std::exception& error) {
-    reject(503, error.what(), "pipeline_error");
+  const SyncCoordinatorResult sync = run_sync_coordinator_request(
+      coordinator_, req, std::move(payload), unified_engine_->tts_stage_name(),
+      config_.request_timeout_s);
+  if (sync.status == SyncCoordinatorResult::Status::kSubmitError) {
+    reject(503, sync.submit_error, "pipeline_error");
     return;
   }
-  bool settled = false;
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::duration<double>(config_.request_timeout_s);
-  while (!settled && !req.is_connection_closed()) {
-    const auto remaining = deadline - std::chrono::steady_clock::now();
-    if (remaining <= std::chrono::steady_clock::duration::zero()) break;
-    settled = coordinator_.wait(
-        request_id,
-        std::min(0.1, std::chrono::duration<double>(remaining).count()));
-  }
-  if (req.is_connection_closed()) {
-    coordinator_.abort(request_id, "client");
-    coordinator_.release(request_id);
+  if (sync.status == SyncCoordinatorResult::Status::kClientClosed) {
     reject(503, "client closed the connection before the speech finished",
            "speech_error");
     return;
   }
-  auto info = coordinator_.info(request_id);
-  if (!settled || !info) {
-    coordinator_.abort(request_id, "timeout");
-    coordinator_.release(request_id);
+  if (sync.status == SyncCoordinatorResult::Status::kTimeout) {
     reject(504, "speech timed out", "speech_error");
     return;
   }
-  coordinator_.release(request_id);
-  if (info->state != "completed") {
-    reject(500, info->error.empty() ? "speech failed" : info->error,
+  const RequestInfo& info = *sync.info;
+  if (info.state != "completed") {
+    reject(500, info.error.empty() ? "speech failed" : info.error,
            "speech_error");
     return;
   }
   const Value* data =
-      info->result.is_map() ? info->result.find("data") : nullptr;
+      info.result.is_map() ? info.result.find("data") : nullptr;
   if (data == nullptr || !data->is_bin() || data->as_bin().empty()) {
     reject(500, "the TTS stage returned no audio bytes", "speech_error");
     return;

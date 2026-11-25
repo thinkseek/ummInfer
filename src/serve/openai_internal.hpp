@@ -137,12 +137,31 @@ struct SseSink {
 };
 
 json unified_event_json(const UnifiedEvent& event);
+bool decode_wav_ref_audio(std::string_view encoded, std::string& wav_bytes,
+                          std::string& error);
 bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
                          std::string& error);
 bool valid_mixed_output(const json& body, bool image_enabled, bool tts_enabled,
                         bool video_enabled, Value::Map& engine_inputs,
                         std::string& error);
 void reject_overloaded(httplib::Response& res);
+
+// Synchronous Coordinator request outcome shared by single-stage HTTP routes
+// (/v1/audio/transcriptions and /v1/audio/speech). Guarantees abort + release
+// on disconnect and timeout, and release before returning on completion.
+struct SyncCoordinatorResult {
+  enum class Status { kSubmitError, kClientClosed, kTimeout, kSettled };
+  Status status = Status::kSubmitError;
+  std::string request_id;
+  std::string submit_error;
+  bool settled_before_close = false;
+  std::optional<RequestInfo> info;
+};
+
+SyncCoordinatorResult run_sync_coordinator_request(
+    Coordinator& coordinator, const httplib::Request& req, StagePayload payload,
+    const std::string& stage_name, double timeout_s,
+    const std::function<void(const std::string&)>& on_submitted = {});
 
 }  // namespace umminfer::openai_detail
 

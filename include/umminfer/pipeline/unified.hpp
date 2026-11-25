@@ -16,8 +16,9 @@
 // leg receives the instruction, the image part, and the final ASR transcript as
 // the last text part. A request without the binary audio input skips the ASR
 // leg and runs the VLM leg directly against the original messages, so plain
-// string text and image+text requests use the same public chat route. Video
-// has no worker and is rejected at submission.
+// string text and image+text requests use the same public chat route. Optional
+// output legs (image, audio/TTS, video) fan out in parallel after the VLM leg
+// and share one unified LegState lifecycle.
 #pragma once
 
 #include <atomic>
@@ -340,6 +341,20 @@ class UnifiedEngine {
     // of everything already delivered for this request.
     int next_artifact = 0;
     size_t artifact_bytes_total = 0;
+
+    // Single-shot optional output legs (image, video) share one lifecycle;
+    // multi-sentence streaming TTS keeps its own vector because its fan-out
+    // semantics differ.
+    template <typename Fn>
+    void for_each_single_output_leg(Fn&& fn) {
+      fn(image_leg);
+      fn(video_leg);
+    }
+    template <typename Fn>
+    void for_each_single_output_leg(Fn&& fn) const {
+      fn(image_leg);
+      fn(video_leg);
+    }
   };
 
   void handle_stream(const StreamMessage& msg);
@@ -348,8 +363,11 @@ class UnifiedEngine {
   void start_vlm_locked(const std::string& request_id, Record& record);
   // Optional output legs, submitted together at the single VLM barrier.
   void start_outputs_locked(const std::string& request_id, Record& record);
-  void start_image_locked(const std::string& request_id, Record& record);
-  void start_video_locked(const std::string& request_id, Record& record);
+  // Submits one single-shot optional output leg (image or video) with unified
+  // child_id registration, timing, state transitions, and rollback on throw.
+  void submit_single_output_leg_locked(const std::string& request_id,
+                                       Record& record, OutputLeg& leg,
+                                       const char* suffix, Value inputs);
   // Submits one TTS leg. `first` keeps the contract child id <id>:tts for the
   // single-leg (non-streaming) request; streamed sentences use :tts:0, :tts:1.
   void start_tts_locked(const std::string& request_id, Record& record,

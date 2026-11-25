@@ -7346,6 +7346,235 @@ void test_unified_metrics_cancel_race_and_release_gauge() {
   check(aborted_after == aborted_before + 1,
         "the cancel-race completion did not record the primary leg as aborted");
 }
+
+// Wave 7 HTTP last-mile passthrough + dynamic TTS chunk metadata:
+//   - image.steps & image.image data URL reach the image stage;
+//   - video.num_frames, video.steps & video.guidance_scale reach the video stage;
+//   - audio.ref_audio & /v1/audio/speech ref_audio decode WAV into binary inputs;
+//   - streamed TTS chunk sample_rate/channels propagate dynamically.
+void test_public_http_wave7_media_passthrough_and_tts_chunk_meta() {
+  Harness h("wave7media");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "wave7 server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string base =
+      "http://127.0.0.1:" + std::to_string(api.bound_port());
+
+  auto post_json = [&](const std::string& path, const nlohmann::json& body) {
+    test_http::HttpRequest req;
+    req.url = base + path;
+    req.body = body.dump();
+    req.headers.emplace("Content-Type", "application/json");
+    req.timeout = client::Milliseconds{8000};
+    try {
+      return test_http::perform(req);
+    } catch (const client::Error& err) {
+      test_http::HttpResponse out;
+      out.status = err.status();
+      out.body = err.what();
+      return out;
+    }
+  };
+
+  const std::string sample_pcm(64, '\x11');
+  const std::string sample_wav = audio::wav_from_pcm16(sample_pcm, 24000);
+  const std::string wav_b64 = util::base64_encode(sample_wav);
+  const std::string wav_data_url = "data:audio/wav;base64," + wav_b64;
+  const std::string img_data_url =
+      "data:image/png;base64," + util::base64_encode("PNGDATA");
+
+  // 1. Mixed chat with image.steps/image.image, video.num_frames/steps/guidance_scale,
+  //    and audio.ref_audio forwards every field intact.
+  {
+    nlohmann::json body = {
+        {"model", "qwen3-unified"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"},
+                                         {"content", "remix"}}})},
+        {"stream", false},
+        {"modalities", nlohmann::json::array({"text", "image", "audio", "video"})},
+        {"image",
+         {{"prompt", "lantern"},
+          {"size", "1024x1024"},
+          {"steps", 4},
+          {"seed", 42},
+          {"image", img_data_url},
+          {"output_format", "png"}}},
+        {"audio",
+         {{"voice", "clone"},
+          {"format", "wav"},
+          {"ref_audio", wav_data_url}}},
+        {"video",
+         {{"prompt", "waves"},
+          {"size", "704x480"},
+          {"seconds", 2},
+          {"fps", 16},
+          {"num_frames", 17},
+          {"steps", 15},
+          {"guidance_scale", 4.5},
+          {"seed", 7},
+          {"output_format", "mp4"}}}};
+    auto fut = std::async(std::launch::async, [&] {
+      return post_json("/v1/chat/completions", body);
+    });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "wave7 mixed request did not reach VLM");
+    if (vlm) h.complete(vlm->request_id, "vlm", true, text_result("ok"));
+
+    auto img = h.next_submit(h.image_recv);
+    check(img.has_value(), "wave7 image leg not submitted");
+    if (img) {
+      StagePayload p = StagePayload::from_value(img->data);
+      const Value& in = p.request.inputs;
+      check(in.find("steps") && in.find("steps")->as_int() == 4,
+            "image.steps did not reach image stage");
+      check(in.find("image") && in.find("image")->as_str() == img_data_url,
+            "image.image data URL did not reach image stage");
+      h.complete(img->request_id, "image", true,
+                 artifact_result("image", "image/png", "PNG1"));
+    }
+
+    auto tts = h.next_submit(h.tts_recv);
+    check(tts.has_value(), "wave7 tts leg not submitted");
+    if (tts) {
+      StagePayload p = StagePayload::from_value(tts->data);
+      const Value& in = p.request.inputs;
+      check(in.find("ref_audio") && in.find("ref_audio")->is_bin() &&
+                in.find("ref_audio")->as_bin() == sample_wav,
+            "audio.ref_audio binary WAV did not reach tts stage");
+      h.complete(tts->request_id, "tts", true,
+                 artifact_result("audio", "audio/wav", sample_wav));
+    }
+
+    auto vid = h.next_submit(h.video_recv);
+    check(vid.has_value(), "wave7 video leg not submitted");
+    if (vid) {
+      StagePayload p = StagePayload::from_value(vid->data);
+      const Value& in = p.request.inputs;
+      check(in.find("num_frames") && in.find("num_frames")->as_int() == 17,
+            "video.num_frames did not reach video stage");
+      check(in.find("steps") && in.find("steps")->as_int() == 15,
+            "video.steps did not reach video stage");
+      check(in.find("guidance_scale") &&
+                in.find("guidance_scale")->as_double() == 4.5,
+            "video.guidance_scale did not reach video stage");
+      h.complete(vid->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4DATA"));
+    }
+
+    const auto resp = fut.get();
+    check(resp.status == 200, "wave7 mixed request did not return 200");
+  }
+
+  // 2. POST /v1/audio/speech accepts ref_audio (raw base64 WAV) and rejects bad WAV.
+  {
+    const auto bad = post_json("/v1/audio/speech",
+                               {{"model", "qwen3-unified"},
+                                {"input", "hello"},
+                                {"ref_audio", util::base64_encode("not-a-wav")}});
+    check(bad.status == 400, "speech must reject invalid ref_audio WAV");
+
+    auto fut = std::async(std::launch::async, [&] {
+      return post_json("/v1/audio/speech",
+                       {{"model", "qwen3-unified"},
+                        {"input", "clone me"},
+                        {"voice", "clone"},
+                        {"ref_audio", wav_b64}});
+    });
+    auto tts = h.next_submit(h.tts_recv);
+    check(tts.has_value(), "speech ref_audio did not reach tts stage");
+    if (tts) {
+      StagePayload p = StagePayload::from_value(tts->data);
+      const Value& in = p.request.inputs;
+      check(in.find("ref_audio") && in.find("ref_audio")->is_bin() &&
+                in.find("ref_audio")->as_bin() == sample_wav,
+            "speech ref_audio binary WAV did not reach tts stage");
+      h.complete(tts->request_id, "tts", true,
+                 artifact_result("audio", "audio/wav", sample_wav));
+    }
+    const auto resp = fut.get();
+    check(resp.status == 200 && resp.body == sample_wav,
+          "speech with ref_audio did not return WAV");
+  }
+
+  // 3. Invalid image.steps / image.image / video.steps / video.guidance_scale -> 400.
+  {
+    auto bad_chat = [&](nlohmann::json patch) {
+      nlohmann::json body = {
+          {"model", "qwen3-unified"},
+          {"messages", nlohmann::json::array(
+                           {nlohmann::json{{"role", "user"}, {"content", "hi"}}})},
+          {"stream", false}};
+      for (auto it = patch.begin(); it != patch.end(); ++it) {
+        body[it.key()] = it.value();
+      }
+      return post_json("/v1/chat/completions", body).status;
+    };
+    check(bad_chat({{"image", {{"steps", 0}}}}) == 400,
+          "image.steps=0 must return 400");
+    check(bad_chat({{"image", {{"image", "http://example.com/a.png"}}}}) == 400,
+          "image.image http URL must return 400");
+    check(bad_chat({{"video", {{"num_frames", 0}}}}) == 400,
+          "video.num_frames=0 must return 400");
+    check(bad_chat({{"video", {{"steps", 101}}}}) == 400,
+          "video.steps=101 must return 400");
+    check(bad_chat({{"video", {{"guidance_scale", -1.0}}}}) == 400,
+          "negative video.guidance_scale must return 400");
+  }
+
+  // 4. Streamed TTS chunk dynamically propagates sample_rate and channels.
+  {
+    nlohmann::json body = {
+        {"model", "qwen3-unified"},
+        {"messages", nlohmann::json::array(
+                         {nlohmann::json{{"role", "user"}, {"content", "hi"}}})},
+        {"stream", true},
+        {"modalities", nlohmann::json::array({"text", "audio"})},
+        {"audio", {{"voice", "vivian"}, {"format", "wav"}, {"stream", true}}}};
+    auto fut = std::async(std::launch::async, [&] {
+      return post_json("/v1/chat/completions", body);
+    });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "streamed tts meta test did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm", text_chunk("Hello world.", false));
+      h.complete(vlm->request_id, "vlm", true, text_result("Hello world."));
+    }
+    auto tts = h.next_submit(h.tts_recv);
+    check(tts.has_value(), "streamed tts meta test did not reach TTS");
+    if (tts) {
+      Value::Map chunk;
+      chunk["audio"] = Value::bin(std::string(32, '\x01'));
+      chunk["index"] = Value(int64_t{0});
+      chunk["sample_rate"] = Value(int64_t{48000});
+      chunk["channels"] = Value(int64_t{2});
+      h.stream(tts->request_id, "tts", Value(std::move(chunk)));
+      Value::Map extra;
+      extra["streamed"] = Value(true);
+      h.complete(tts->request_id, "tts", true,
+                 artifact_result("audio", "audio/wav", sample_wav,
+                                 std::move(extra)));
+    }
+    const auto resp = fut.get();
+    check(resp.status == 200 &&
+              resp.body.find("\"sample_rate\":48000") != std::string::npos &&
+              resp.body.find("\"channels\":2") != std::string::npos,
+          "streamed TTS chunk did not propagate dynamic sample_rate/channels");
+  }
+
+  api.stop();
+  server_thread.join();
+  wait_until([&]() -> bool { return engine.in_flight() == 0; },
+             "wave7 requests stayed in flight");
+}
 }  // namespace
 
 int main() {
@@ -7454,5 +7683,6 @@ int main() {
   RUN(test_stage_heartbeat_reregisters_after_coordinator_restart());
   RUN(test_upstream_media_proxy_routes());
   RUN(test_unified_metrics_cancel_race_and_release_gauge());
+  RUN(test_public_http_wave7_media_passthrough_and_tts_chunk_meta());
   return g_failures == 0 ? 0 : 1;
 }
