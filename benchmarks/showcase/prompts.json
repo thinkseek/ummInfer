@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "suite_id": "north-star-native-multimodal-showcase-v1",
+  "description": "Deterministic North-Star native multimodal showcase scenarios covering interleaved narrative with streaming voice, in-place I2V animation, 3-turn native video understanding with prefix KV-cache reuse, and autonomous modality routing contrast.",
+  "default_model": "qwen3-native",
+  "journeys": {
+    "journey_1_interleaved_narrative": {
+      "id": "journey_1_interleaved_narrative",
+      "title": "Interleaved Narrative + Global Streaming Voice",
+      "prompt": "Explain how a supermassive black hole accretion disk produces gravitational lensing in two vivid narrative beats. Include one still visual for the glowing accretion disk schematic and one motion visual for orbiting light bending around the event horizon.",
+      "stream": true,
+      "max_tokens": 256,
+      "temperature": 0.2,
+      "seed": 42,
+      "modalities": ["text", "image", "video", "audio"],
+      "narrative": {
+        "enabled": true,
+        "visual_mode": "auto",
+        "max_slots": 2
+      },
+      "image": {
+        "size": "512x512",
+        "output_format": "png",
+        "steps": 4,
+        "seed": 42
+      },
+      "video": {
+        "size": "480x320",
+        "output_format": "mp4",
+        "num_frames": 13,
+        "steps": 15,
+        "guidance_scale": 5.0,
+        "seed": 42
+      },
+      "audio": {
+        "voice": "Chelsie",
+        "format": "wav",
+        "stream": true
+      }
+    },
+    "journey_2_i2v_animation": {
+      "id": "journey_2_i2v_animation",
+      "title": "In-Place Image-to-Video Animation",
+      "kind": "video",
+      "fallback_prompt": "Smooth cinematic camera push-in toward a glowing golden accretion disk swirling steadily around a dark event horizon with subtle relativistic light bending.",
+      "size": "704x480",
+      "num_frames": 29,
+      "fps": 16,
+      "steps": 15,
+      "guidance_scale": 5.0,
+      "seed": 42
+    },
+    "journey_3_multiturn_video_qa": {
+      "id": "journey_3_multiturn_video_qa",
+      "title": "3-Turn Multi-Turn Native Video Understanding (Prefix KV-Cache)",
+      "stream": false,
+      "temperature": 0.0,
+      "max_tokens": 128,
+      "seed": 42,
+      "turns": [
+        "Describe the primary visual subject, dominant colors, and lighting in this video clip in two concise sentences.",
+        "How does the motion or camera movement evolve from the beginning of the clip to the end?",
+        "Summarize the visual mood in one short sentence and name the two most prominent elements."
+      ]
+    },
+    "journey_4_modality_routing_contrast": {
+      "id": "journey_4_modality_routing_contrast",
+      "title": "Autonomous Modality Routing Contrast (visual_mode=auto)",
+      "shared_options": {
+        "stream": true,
+        "max_tokens": 192,
+        "temperature": 0.0,
+        "seed": 42,
+        "modalities": ["text", "image", "video"],
+        "narrative": {
+          "enabled": true,
+          "visual_mode": "auto",
+          "max_slots": 2
+        },
+        "image": {
+          "size": "512x512",
+          "output_format": "png",
+          "steps": 4,
+          "seed": 42
+        },
+        "video": {
+          "size": "480x320",
+          "output_format": "mp4",
+          "num_frames": 13,
+          "steps": 15,
+          "guidance_scale": 5.0,
+          "seed": 42
+        }
+      },
+      "pure_text_case": {
+        "id": "pure_text_reasoning",
+        "prompt": "Prove concisely in four numbered lines that the square root of 2 is irrational using integer parity. Pure symbolic math prose only; do not insert any visual illustrations.",
+        "expected_visual_slots": 0
+      },
+      "visual_scene_case": {
+        "id": "rich_visual_scene",
+        "prompt": "Narrate a two-beat documentary vignette of a sunlit coral reef transitioning into a bioluminescent night tide. Include one still frame for the sunlit reef and one motion clip for the glowing night current.",
+        "expected_min_visual_slots": 1
+      }
+    }
+  }
+}
