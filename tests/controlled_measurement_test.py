@@ -29,10 +29,19 @@ import umminfer_ablation_run as runner  # noqa: E402
 import umminfer_controlled_measurement as controlled  # noqa: E402
 
 EXAMPLE = ROOT / "benchmarks" / "ablations" / "narrative-routing-controlled-example.json"
+CONTROLLED_SM90 = ROOT / "benchmarks" / "ablations" / "narrative-routing-controlled-sm90.json"
 ROUTING_REPLAY = ROOT / "benchmarks" / "ablations" / "narrative-routing-replay.json"
 VISUAL_CONFIG = ROOT / "benchmarks" / "ablations" / "visual-form.json"
 VISUAL_REPLAY = ROOT / "benchmarks" / "ablations" / "visual-form-replay.json"
 WEIGHTS = "a" * 64
+CONFIG_HASH = "0" * 64
+BINARY_HASH = "1" * 64
+
+
+def pinned_model(model_id):
+    return {"id": model_id, "revision": "test-local-snapshot",
+            "config_file_sha256": CONFIG_HASH, "weights_sha256": WEIGHTS,
+            "binary_sha256": BINARY_HASH}
 
 
 def tree_bytes(root):
@@ -130,7 +139,9 @@ def good_coverage(arms=("a", "b")):
 def good_provenance():
     return {"source_commit": "b" * 40, "source_state_sha256": "c" * 64,
             "config_sha256": "d" * 64, "data_sha256": "e" * 64,
-            "artifact_manifest_sha256": "f" * 64}
+            "artifact_manifest_sha256": "f" * 64,
+            "visual_backends": {name: pinned_model(name)
+                                for name in ("image", "video")}}
 
 
 class ContractValidationTests(unittest.TestCase):
@@ -185,6 +196,29 @@ class ContractValidationTests(unittest.TestCase):
             path.write_text(json.dumps(config))
             with self.assertRaises(ValueError):
                 runner.load_experiment(path)
+
+
+    def test_sm90_controlled_config_pins_the_real_gate(self):
+        experiment = runner.load_experiment(CONTROLLED_SM90)
+        contract = controlled.parse_contract(experiment.config["measurement"])
+        self.assertEqual(contract["warmup_repetitions"], 1)
+        self.assertEqual(contract["measured_repetitions"], 3)
+        self.assertEqual(contract["arm_order"], "interleaved")
+        self.assertEqual(contract["exclusive_device"]["gpu_indexes"], [0, 1])
+        self.assertTrue(all("expected_visual_modalities" in prompt
+                            for prompt in experiment.prompts))
+        for policy in runner.POLICIES:
+            for prompt in experiment.prompts:
+                body = runner.build_request(experiment, prompt, policy)
+                self.assertNotIn("audio", body["modalities"])
+                self.assertNotIn("audio", body)
+        for block in [experiment.config["model"],
+                      *experiment.config["visual_backends"].values(),
+                      *experiment.config["auxiliary_backends"].values()]:
+            self.assertTrue(controlled.HEX_256.fullmatch(block["weights_sha256"]))
+            self.assertTrue(controlled.HEX_256.fullmatch(block["binary_sha256"]))
+            self.assertTrue(block.get("config_file_sha256")
+                            or block.get("config_files_sha256"))
 
 
 class ScheduleTests(unittest.TestCase):
@@ -271,7 +305,7 @@ class EligibilityTests(unittest.TestCase):
         return controlled.evaluate_eligibility(
             contract or controlled.parse_contract(good_contract()),
             provenance=provenance or good_provenance(),
-            model=model or {"weights_sha256": WEIGHTS},
+            model=model or pinned_model("language"),
             arms=arms or good_coverage(),
             preconditions=preconditions if preconditions is not None else [
                 {"check": "exclusive_device", "passed": True, "problems": []}],
@@ -302,6 +336,25 @@ class EligibilityTests(unittest.TestCase):
         for name, kwargs in cases.items():
             with self.subTest(case=name):
                 verdict = self.evaluate(**kwargs)
+                self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
+                self.assertTrue(verdict["reasons"])
+
+    def test_incomplete_backend_provenance_refuses_controlled(self):
+        cases = []
+        cases.append(({"weights_sha256": WEIGHTS}, good_provenance()))
+        missing_image = good_provenance()
+        del missing_image["visual_backends"]["image"]
+        cases.append((pinned_model("language"), missing_image))
+        no_video_weights = good_provenance()
+        no_video_weights["visual_backends"]["video"]["weights_sha256"] = None
+        cases.append((pinned_model("language"), no_video_weights))
+        no_aux_binary = good_provenance()
+        no_aux_binary["auxiliary_backends"] = {
+            "asr": dict(pinned_model("asr"), binary_sha256=None)}
+        cases.append((pinned_model("language"), no_aux_binary))
+        for index, (model, provenance) in enumerate(cases):
+            with self.subTest(case=index):
+                verdict = self.evaluate(model=model, provenance=provenance)
                 self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
                 self.assertTrue(verdict["reasons"])
 
@@ -365,6 +418,22 @@ class PreconditionAndCleanupTests(unittest.TestCase):
         telemetry = controlled.request_scoped_telemetry()
         self.assertEqual(telemetry["coverage"], "NOT_COVERED")
         self.assertEqual(telemetry["scope"], "whole-device-used-memory")
+
+
+class CaseSuccessTests(unittest.TestCase):
+    def test_terminal_and_leg_coverage_must_be_valid(self):
+        case = {"terminal_state": "completed", "latency": {"terminal_ms": 1.0},
+                "terminal_legs": [{"stage": "image", "state": "completed"}],
+                "leg_errors": [], "media_validation": [], "animations": []}
+        self.assertTrue(runner._case_success(case))
+        for mutate in (
+                lambda value: value["terminal_legs"][0].update(state="failed"),
+                lambda value: value.update(leg_errors=[{"error": "failed"}]),
+                lambda value: value["latency"].update(terminal_ms=None),
+                lambda value: value.update(terminal_state="failed")):
+            changed = copy.deepcopy(case)
+            mutate(changed)
+            self.assertFalse(runner._case_success(changed))
 
 
 class LiveHarness:
@@ -441,7 +510,10 @@ def example_config(*, weights=WEIGHTS, measured=2, cleanup_timeout=5.0):
         ROOT / "benchmarks" / "ablations" / config["dataset"]["path"])
     config["replay"]["path"] = str(
         ROOT / "benchmarks" / "ablations" / config["replay"]["path"])
-    config["model"]["weights_sha256"] = weights
+    config["model"].update(config_file_sha256=CONFIG_HASH,
+                           weights_sha256=weights, binary_sha256=BINARY_HASH)
+    config["visual_backends"] = {name: pinned_model(name)
+                                 for name in ("image", "video")}
     config["measurement"]["measured_repetitions"] = measured
     config["measurement"]["exclusive_device"]["allowed_pids"] = [4242]
     config["measurement"]["cleanup"]["timeout_s"] = cleanup_timeout
@@ -599,7 +671,10 @@ class ControlledLiveTests(unittest.TestCase):
             config["dataset"]["path"] = str(
                 ROOT / "benchmarks" / "ablations" / config["dataset"]["path"])
             config["replay"]["path"] = str(VISUAL_REPLAY)
-            config["model"]["weights_sha256"] = WEIGHTS
+            config["model"].update(config_file_sha256=CONFIG_HASH,
+                                   weights_sha256=WEIGHTS, binary_sha256=BINARY_HASH)
+            config["visual_backends"] = {name: pinned_model(name)
+                                         for name in ("image", "video")}
             config["measurement"] = good_contract(measured_repetitions=2)
             harness = LiveHarness(self, config, visual=True)
             harness.write_config(tmp)

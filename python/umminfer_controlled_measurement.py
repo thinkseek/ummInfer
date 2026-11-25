@@ -331,9 +331,38 @@ def evaluate_eligibility(contract, *, provenance, model, arms, preconditions,
     for key in ("config_sha256", "data_sha256", "artifact_manifest_sha256"):
         if not HEX_256.fullmatch(str(provenance.get(key) or "")):
             reasons.append(f"provenance hash {key} is missing")
-    if not HEX_256.fullmatch(str(model.get("weights_sha256") or "")):
-        reasons.append("model weights_sha256 is NOT_COVERED; controlled measurement "
-                       "requires a pinned model weights hash")
+    def require_complete_model(label, value):
+        if not isinstance(value, dict):
+            reasons.append(f"{label} provenance is missing")
+            return
+        if not HEX_256.fullmatch(str(value.get("weights_sha256") or "")):
+            reasons.append(f"{label} weights_sha256 is NOT_COVERED; controlled "
+                           "measurement requires a pinned available-weights hash")
+        config_files = value.get("config_files_sha256")
+        config_covered = HEX_256.fullmatch(str(value.get("config_file_sha256") or "")) \
+            or (isinstance(config_files, dict) and bool(config_files)
+                and all(HEX_256.fullmatch(str(digest) or "")
+                        for digest in config_files.values()))
+        if not config_covered:
+            reasons.append(f"{label} model config-file hash is NOT_COVERED")
+        if not HEX_256.fullmatch(str(value.get("binary_sha256") or "")):
+            reasons.append(f"{label} backend executable binary_sha256 is NOT_COVERED")
+
+    require_complete_model("model", model)
+    backends = provenance.get("visual_backends")
+    if not isinstance(backends, dict):
+        backends = {}
+    for name in ("image", "video"):
+        if name not in backends:
+            reasons.append(f"visual_backends.{name} provenance is missing")
+        else:
+            require_complete_model(f"visual_backends.{name}", backends[name])
+    auxiliary = provenance.get("auxiliary_backends", {})
+    if not isinstance(auxiliary, dict):
+        reasons.append("auxiliary_backends provenance must be an object")
+    else:
+        for name, backend in sorted(auxiliary.items()):
+            require_complete_model(f"auxiliary_backends.{name}", backend)
     if not contract["exclusive_device"]["required"]:
         reasons.append("exclusive_device.required=false; exclusivity is not declared")
     verified = [row for row in preconditions if row.get("check") == "exclusive_device"]
@@ -368,7 +397,8 @@ def evaluate_eligibility(contract, *, provenance, model, arms, preconditions,
         "rules": ["declared warmups executed", "declared measured repetitions completed",
                   "exclusive-device precondition passed",
                   "cooldown/cleanup checks passed",
-                  "source/config/data/artifact/model-weights hashes pinned",
+                  "source/config/data/artifact hashes pinned",
+                  "language/visual/auxiliary model config, available-weights, and backend binary hashes pinned",
                   "no failed measured requests"],
     }
 

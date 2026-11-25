@@ -34,6 +34,12 @@ including fallback, rather than a new forcing implementation.
   `sha256sum model-*.safetensors` manifest (18 shards, relative filenames).
   Audio is absent from every SM90 arm as a fixed condition, so its TTFA coverage
   is `NOT_APPLICABLE`; the offline routing replay retains its audio contract.
+- `benchmarks/ablations/narrative-routing-controlled-sm90.json`: the pinned
+  two-GPU controlled live manifest using that labelled dataset, one warmup and
+  three measured repetitions per arm, seeded interleaving, real-media decode,
+  and complete language/image/video/ASR provenance. Its allowed host PIDs bind
+  the one recorded isolated execution and intentionally fail on any later stack;
+  rerun by recording a new isolated stack, never by widening the allowlist.
 
 The config pins the dataset and replay byte SHA-256. Every replay case also pins
 its full request hash, fixed-request hash, and raw response hash. A config,
@@ -228,13 +234,17 @@ per-step whole-device resource rows, and the eligibility verdict.
 
 `CONTROLLED_LIVE` is refused, with explicit `eligibility.reasons`, whenever
 any dimension is missing: declared warmups not executed, measured repetitions
-incomplete, any measured request not completed, exclusivity not declared or
-the precondition failing or never executed, any cleanup check failing, or any
-source/config/data/artifact/model-weights hash not pinned. The contract model
-in the example config has `weights_sha256: null`, so its live runs always
-downgrade until a real gate pins weights. `--require-controlled` exits 2
-unless the run earns `CONTROLLED_LIVE`; a failing precondition then aborts
-before any request is sent.
+incomplete, any measured request not completed, terminal latency absent, any
+terminal leg not completed or any leg error, exclusivity not declared or the
+precondition failing or never executed, any cleanup check failing, or any
+source/config/data/artifact hash not pinned. The language model, both declared
+`visual_backends` (`image` and `video`), and every optional named
+`auxiliary_backends` entry must each pin a model config-file hash, the
+available-weights manifest hash, and the backend executable `binary_sha256`.
+The contract example intentionally lacks that real provenance and has
+`weights_sha256: null`, so its live runs always downgrade.
+`--require-controlled` exits 2 unless the run earns `CONTROLLED_LIVE`; a
+failing precondition then aborts before any request is sent.
 
 Aggregation reports median, nearest-rank p95, IQR, and MAD dispersion with
 explicit `sample_count`/`total_count` per prompt across repetitions and pooled
@@ -252,12 +262,14 @@ interleaving, other arms' activity. No serving, realtime/VAD, CLI realtime, or
 post-training file is modified by this layer, and no Wave 16 kernel, showcase,
 routing, or joint-trainer code is duplicated.
 
-Real controlled performance remains **NOT_RUN**: the only executions so far
-are deterministic replay and loopback canned-response tests with injected
-samplers. The separately scheduled exclusive live gate must:
+Before the accepted run documented below, controlled coverage consisted only of
+deterministic replay and loopback canned-response tests with injected samplers;
+those tests were never real controlled performance evidence. The real gate was
+then executed as follows, and any future rerun must use the same procedure:
 
-1. pin a real `model.weights_sha256` (and backend hashes for visual form) in a
-   copy of the example config on a clean committed tree;
+1. pin the language model, image/video backends, and any required auxiliary
+   stages with config, available-weight manifest, and executable hashes in a
+   controlled live config on a clean committed tree;
 2. start the isolated stack on declared idle GPUs, record its serving pids in
    `exclusive_device.allowed_pids`, and keep the resident service untouched;
 3. run `python3 -I python/umminfer_ablation_run.py --config <config>
@@ -331,6 +343,121 @@ optimizer improvement claim may be made from these canned fixtures. Live runs
 without a measurement contract are `UNCONTROLLED_LIVE`; `CONTROLLED_LIVE` is an
 eligibility verdict, never a flag, and the historical accepted SM90 sections
 below keep their original `UNCONTROLLED_LIVE_MEASUREMENT` wording unchanged.
+
+## Controlled SM90 narrative-routing result — 2026-11-26
+
+The remaining real Stage C routing gate ran on the integrated Wave 17 tree.
+Base `b7a3e68abaed23ec3340385a1f8645a91870c862` plus controlled integration
+`4ddf56a55a55884b873db4287b10f4dfa922c40f` produced the clean measurement
+source `9dab36391259a5663c0f2ced7d37db47eef93d5a`. The combined verdict is
+**CONTROLLED_LIVE / COMPLETED**, with no eligibility refusal reasons.
+
+Only explicitly idle physical GPUs 0 and 1 were assigned. ASR (required entry,
+but unused by every request) and Qwen3.8-27B ran on GPU 0; native Qwen-Image
+2.1 and native C++/CUDA Wan2.2 ran on GPU 1. The isolated loopback endpoint was
+port 43420. No TTS worker or audio request existed. GPU 7, GPUs 2–6, and the
+resident service on port 43301 were not assigned, contacted, restarted, or
+used. A rejected non-stream narrative initialization attempt and two successful
+non-stream image/video initialization requests were explicitly excluded from
+both warmup and measurement; they only forced lazy model/workspace allocation
+before the baseline.
+
+The schedule contained 16 arm steps: four warmup steps followed by 12 measured
+steps in seeded, repetition-major interleaved order. Each step executed both
+pinned labelled prompts. Thus every arm completed two warmup requests and six
+measured requests, for 8 excluded warmup requests and 24 measured requests
+overall. Every measured arm/prompt pair completed repetitions 1, 2, and 3 with
+a byte-identical request. All 16 cleanup checks reported `in_flight=0` and
+residual memory within 128 MiB of the fully initialized baseline.
+
+### Controlled routing and latency measurements
+
+F1 is micro-averaged over six measured cases per arm; redundancy is redundant
+slots divided by predicted visual slots. Pooled latency statistics have six
+samples per arm. p95 is nearest-rank (therefore the maximum at n=6), IQR and
+MAD are milliseconds of dispersion, and every cell below has full 6/6 coverage.
+The JSON report additionally provides each prompt separately with 3/3 samples.
+These are controlled measurements for this exact stack and two-prompt labelled
+diagnostic, not a generalized quality benchmark.
+
+| Policy | Completed | Micro F1 | Redundant-slot rate | TTFT median | TTFT p95 | TTFT IQR | TTFT MAD |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `text_only` | 6/6 | 0.000 | 0.000 | 303.937 | 306.170 | 4.243 | 2.122 |
+| `forced_image` | 6/6 | 0.800 | 0.000 | 362.441 | 365.343 | 5.323 | 2.662 |
+| `forced_video` | 6/6 | 0.400 | 0.500 | 363.461 | 366.277 | 5.590 | 2.768 |
+| `auto_tag` | 6/6 | 0.800 | 0.000 | 512.472 | 515.060 | 4.843 | 2.422 |
+
+| Policy | Terminal median ms | Terminal p95 ms | Terminal IQR ms | Terminal MAD ms | Slot-to-artifact median / p95 ms | Slot n |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `text_only` | 7,640.131 | 7,677.264 | 72.433 | 36.217 | N/A | 0 |
+| `forced_image` | 12,575.509 | 12,664.602 | 200.329 | 87.078 | 8,662.356 / 8,683.964 | 6/6 |
+| `forced_video` | 8,616.317 | 8,656.097 | 79.199 | 39.600 | 3,008.874 / 3,176.986 | 6/6 |
+| `auto_tag` | 17,110.540 | 19,792.038 | 5,314.602 | 2,657.301 | 9,363.917 / 10,128.760 | 6/6 |
+
+Auto-tag emitted one image for each prompt in every repetition: it matched the
+conservation label but missed the lantern video label, yielding F1 0.800. This
+is intentionally not reconciled with or replaced by the earlier uncontrolled
+F1 1.000 result below. Forced image missed the lantern video label; forced
+video missed its image label and emitted a redundant conservation video.
+Pooled auto-tag terminal dispersion spans the two prompts' different visual
+work; use the per-prompt 3-sample summaries before interpreting dispersion.
+TTFA is `NOT_APPLICABLE` in every arm. Learned routing and optimizer runs remain
+`NOT_RUN`; perceptual quality, generalized routing quality, and quality
+improvement remain unmeasured.
+
+### Controlled artifacts, provenance, and cleanup
+
+All terminal states were `completed`, all 18 measured visual legs were
+`completed`, and there were no terminal leg errors, failed cases, or cancelled
+cases. Text-only correctly had no visual legs. Every PNG passed full RGB8
+decode at 512x512; every MP4 passed full ffmpeg/ffprobe decode as H.264,
+480x320, 16 fps, 13 frames. The three repetitions of each visual arm/prompt
+pair produced identical artifact hashes. Six unique measured artifacts were:
+
+| Policy / prompt | Artifact | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| forced image / lantern | PNG | 98,594 | `ea3534e9e2ef358a2973123b14f9f143a06a4eb8fbe0f28a058a2e9733e9eee9` |
+| forced image / conservation | PNG | 269,919 | `5f753197ca1cbdec6cb4a68fe7a3d81d8e269a85d9a1c65adf360b8f9966d6b9` |
+| forced video / lantern | MP4 | 65,731 | `6c1def132fd7bed82fa4c99560b27b85c8a714d861d425d3e6850c5f7207bde1` |
+| forced video / conservation | MP4 | 67,410 | `a4fd62621ff0dcf66e9a608fafa7c6cde046e425ff9ce46bfaebbbb25300d864` |
+| auto-tag / lantern | PNG | 158,032 | `af53567b9db94523fd51364420dc55d43a3cc71bc4c7399dd381f2a8b0256364` |
+| auto-tag / conservation | PNG | 81,840 | `8d33f94165159efbe997fcbcc3a88f9c29515f09547c63ed2d9ef47e1ce6797d` |
+
+An independent checker revalidated the schedule hash, all repetition and
+terminal/leg coverage, no-audio request overlays, model/backend provenance, and
+all 25 files covered by `SHA256SUMS`; a separate `sha256sum -c SHA256SUMS` also
+passed 25/25. All 36 available Safetensors files across Qwen3.8 (18), image
+(7), Wan2.2 (9), and ASR (2) passed their recorded relative-path manifests.
+
+| Evidence item | SHA-256 |
+| --- | --- |
+| Combined `report.json` | `bdf7ec148124440518fc5ae7c4fd84f5f902880fa72079e7bb528c17a772bbcf` |
+| `SHA256SUMS` file | `7fbede14f21a229259711f4fac570890649d68e8219332bce2f85cf747846f51` |
+| Independent check JSON | `f10d11da4e028bde4a7b78da25e62570d80bbd1100de3e84b072b52cadf8875f` |
+| Source state | `0e226030ed6d1efd17fa101a502153b9c97338ffa2b2353b8a6417fc5d3f7c36` |
+| Live config bytes | `38515b79b9c1a14bc34d6f5ba9222377193f53ec0243c215926913e9e9a5ef37` |
+| Labelled dataset bytes | `384457a01718b9a9121d0cf5af2289200ccd881ff764f2c5e2aef49e86ee1ba2` |
+| Fixed-request matrix | `7b00317565a823a1af6b097d683273734502dd00a1129fedf715271381c2c961` |
+| Deterministic schedule | `44750294110554d58af9c8a96cc8b99731d07af022aab747d39551c5a4561d51` |
+| Combined artifact manifest | `33217b56eaaedb87bad9d44da90d9cd797a23197cedafeb7aa2e16dec0e8a846` |
+
+| Stage | Model config hash(es) | Available-weight manifest | Backend executable |
+| --- | --- | --- | --- |
+| Qwen3.8 language | `191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab` | `3ebc83ee545cc54cb2558d805802d4a4e9da42c316d1b248846debee545b99c9` | `d12fa5476ad11ea581517b67bf140cb7b180de3dc51d4ecaf97ad4daf392d459` |
+| Qwen-Image 2.1 | five values pinned in the controlled config | `f9262ab51a1781039bbb4d750fddf29caaee25ce8880a3d4e96201a1ac694f93` | `3214a2a9807c6a4808d1a3570e63a5b0a37b35a4c92e3cf65d013ee72554c039` |
+| Wan2.2 video | five values pinned in the controlled config | `9375ac1b2e4da911ddf669a30e2c4126771b785d6bbd6ca30e58acc4fca296b1` | `5cbd097e43a48b33143bfd8cb9f90ad25fa39d12a88a2acaa28010c0b256e100` |
+| Qwen3-ASR 1.7B entry | `2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f` | `4b421cb776df4ae24b72ef9ac3fe08250b4eefc0d79eb0bcbece553ff38c1590` | `37fe97358f119ea895bdda2ef53424eaff7f59f6e24a41df10f94d03561452ed` |
+| Gateway | N/A | N/A | `963a0a3dbdbad7b6e21e84807c2a6cd67b462b5682fc793245656c0f4bb7ee9a` |
+
+The full evidence is retained on the isolated SM90 worker under
+`/root/umm-controlled-routing-4ddf56a-live/evidence/narrative-routing-controlled-final/`.
+The directory name is a workspace label; the report's actual source is the
+clean `9dab363` above. After only the five recorded isolated PIDs were stopped,
+GPUs 0 and 1 each returned to 3 MiB with no compute processes. The shared
+container reaper left those five entries defunct/zombie; they are not running
+and hold no GPU memory. No shared container or resident service was signalled
+to clear them. Request-scoped allocator telemetry remains `NOT_COVERED`; the
+report's device values are whole-device samples including persistent weights.
 
 ## Measured SM90 narrative-routing result — 2026-11-26
 
@@ -529,11 +656,12 @@ contract media by the real decode gate, and serving isolation. The controlled
 measurement tests add contract/tamper validation, seeded schedule
 reproducibility and schedule-hash tamper detection, single-variable invariance
 across arms and repetitions, latency median/p95/IQR/MAD aggregation with sample
-counts, incomplete-repetition and failed-arm refusal, exclusive-device
-precondition failure and fail-fast abort, stuck-cleanup refusal, unpinned-weight
-refusal, and per-repetition visual-form equivalence. Loopback canned
-responses remain contract-only; decoder tests use independently generated tiny
-media and do not access a GPU, remote host, real model, optimizer, or resident
-service. Controlled loopback runs inject device/health samplers and are not
-real controlled performance evidence; that remains NOT_RUN until the scheduled
-exclusive live gate.
+counts, incomplete-repetition and failed-arm refusal, terminal/leg validity,
+exclusive-device precondition failure and fail-fast abort, stuck-cleanup
+refusal, incomplete language/visual/auxiliary provenance refusal, and
+per-repetition visual-form equivalence. Loopback canned responses remain
+contract-only; decoder tests use independently generated tiny media and do not
+access a GPU, remote host, real model, optimizer, or resident service.
+Controlled loopback runs inject device/health samplers and are not real
+controlled performance evidence; the separate accepted real gate is documented
+above.

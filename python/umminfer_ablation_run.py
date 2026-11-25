@@ -161,6 +161,7 @@ def _validate_optional_hash(block, key):
 def _validate_provenance_extras(block, label):
     _validate_optional_hash(block, "config_file_sha256")
     _validate_optional_hash(block, "weights_sha256")
+    _validate_optional_hash(block, "binary_sha256")
     if "weights_sha256_scope" in block and not isinstance(
             block["weights_sha256_scope"], str):
         raise ValueError(f"{label}.weights_sha256_scope must be a string")
@@ -266,6 +267,16 @@ def load_experiment(config_path):
                 or not isinstance(backend.get("revision"), str) or not backend["revision"]:
             raise ValueError("visual_backends accepts image/video id and revision objects")
         _validate_provenance_extras(backend, f"visual_backends.{name}")
+    auxiliary = config.get("auxiliary_backends", {})
+    if not isinstance(auxiliary, dict):
+        raise ValueError("auxiliary_backends must be an object")
+    for name, backend in auxiliary.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_-]+", name) \
+                or not isinstance(backend, dict) \
+                or not isinstance(backend.get("id"), str) or not backend["id"] \
+                or not isinstance(backend.get("revision"), str) or not backend["revision"]:
+            raise ValueError("auxiliary_backends accepts named id and revision objects")
+        _validate_provenance_extras(backend, f"auxiliary_backends.{name}")
     _validation_policy(Experiment(
         config_path, config_bytes, config, b"", {}, None, None))
     controlled.parse_contract(config.get("measurement"))
@@ -392,7 +403,8 @@ def _model_provenance(model):
         "weights_sha256": model.get("weights_sha256"),
         "weights_coverage": "COVERED" if model.get("weights_sha256") else "NOT_COVERED",
     }
-    for key in ("weights_sha256_scope", "config_file_sha256", "config_files_sha256"):
+    for key in ("weights_sha256_scope", "config_file_sha256", "config_files_sha256",
+                "binary_sha256"):
         if key in model:
             result[key] = copy.deepcopy(model[key])
     return result
@@ -1213,11 +1225,17 @@ def _case_report(experiment, variant, prompt, body, record, latency, animations=
 def _case_success(case):
     media_ok = all(row.get("status") in ("passed", "NOT_COVERED", "NOT_APPLICABLE")
                    for row in case.get("media_validation", []))
+    terminal_ok = case["terminal_state"] == "completed" \
+        and case.get("latency", {}).get("terminal_ms") is not None \
+        and not case.get("leg_errors") \
+        and all(leg.get("state") == "completed"
+                for leg in case.get("terminal_legs", []))
+    animations_ok = all(animation["terminal_state"] == "completed"
+                        for animation in case.get("animations", []))
     if "visual_form_metrics" in case:
-        return case["visual_form_metrics"]["completion"] == 1.0 and media_ok
-    return case["terminal_state"] == "completed" and media_ok and all(
-        animation["terminal_state"] == "completed"
-        for animation in case.get("animations", []))
+        return terminal_ok and case["visual_form_metrics"]["completion"] == 1.0 \
+            and media_ok and animations_ok
+    return terminal_ok and media_ok and animations_ok
 
 
 def _summary(values):
@@ -1291,6 +1309,10 @@ def _provenance(experiment, source, artifact_entries):
     if backends:
         result["visual_backends"] = {
             name: _model_provenance(backend) for name, backend in backends.items()}
+    auxiliary = experiment.config.get("auxiliary_backends", {})
+    if auxiliary:
+        result["auxiliary_backends"] = {
+            name: _model_provenance(backend) for name, backend in auxiliary.items()}
     return result
 
 
@@ -1577,15 +1599,23 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
             media_validation = _validate_record_media(
                 experiment, record, recorder.artifact_dir)
             if is_warmup:
+                warmup_case = {
+                    "terminal_state": record["terminal_state"],
+                    "latency": latency,
+                    "terminal_legs": record["terminal_legs"],
+                    "leg_errors": record["leg_errors"],
+                    "media_validation": media_validation,
+                    "animations": animations,
+                }
                 warmup_cases.append({
                     "prompt_id": prompt["id"],
                     "terminal_state": record["terminal_state"],
                     "error": record["error"],
+                    "terminal_legs": copy.deepcopy(record["terminal_legs"]),
+                    "leg_errors": copy.deepcopy(record["leg_errors"]),
                     "terminal_ms": latency["terminal_ms"],
                 })
-                if record["terminal_state"] != "completed" or any(
-                        animation["terminal_state"] != "completed"
-                        for animation in animations):
+                if not _case_success(warmup_case):
                     coverage["warmup_failures"] += 1
             else:
                 pending[variant].append((prompt, body, record, latency,
