@@ -9,22 +9,24 @@ container. No Python model runtime, PyTorch or SGLang is on the serving path.
 
 | Piece | Process | GPU |
 | --- | --- | --- |
-| ummInfer server | `bin/umm-infer serve` on `<container-ip>:43301` (`$UMM_NATIVE_HOST:43301`) | none |
-| ASR stage | `bin/umm-native-stage-asr` | 2 |
-| VLM stage | `bin/umm-native-stage-qwen38` (default) | 3 |
-| VLM stage, optional | `bin/umm-native-stage-omni` | 3 |
-| Image stage | `bin/umm-native-stage-image` | 4 |
-| TTS stage | `bin/umm-native-stage-tts` | 5 |
-| Supervisor, optional | `python3 -I python/umminfer_service.py --config service/native-service.json` | none |
+| ummInfer server | `bin/umm-infer serve` on `<container-ip>:43301` (`$UMM_NATIVE_HOST:43301`, with `--session-history --web-root <deploy-root>/web`) | none |
+| ASR stage | `bin/umm-native-stage-asr` (`Qwen3-ASR-1.7B`) | 2 |
+| VLM stage | `bin/umm-native-stage-qwen38` (default, `--batch-size 8`) | 3 |
+| VLM stage, optional | `bin/umm-native-stage-omni` (rollback option) | 3 |
+| Image stage | `python/umminfer_flux2_stage.py` (`FLUX.2-klein-4B`, Apache-2.0, t2i + i2i edit) | 4 |
+| Image stage, optional | `bin/umm-native-stage-image` (`Qwen-Image-2512`, rollback option) | 4 |
+| TTS stage | `bin/umm-native-stage-tts` (`Qwen3-TTS-12Hz-1.7B-CustomVoice`; `1.7B-Base` drop-in optional) | 5 |
+| Video stage | `bin/umm-native-stage-video` (`Wan2.2-TI2V-5B`, pure native C++/CUDA UniPC-BH2 + streaming 3D-VAE) | 6 |
+| Supervisor | `python3 -I python/umminfer_service.py --config <deploy-root>/config.json` | none |
 
-Exactly one VLM stage runs at a time: `vlm_stage` in `service/native-service.json`
-selects `qwen38` or `omni`, and only one of them may hold GPU 3. GPUs 0 and 1
-are not part of this service.
+Exactly one VLM stage runs at a time (`vlm_stage` selects `qwen38` or `omni` on
+GPU 3), and one image stage holds GPU 4 (`flux2` or native `image`). GPUs 0, 1,
+and 7 are not part of this resident service.
 
 Stages talk to the server over ZeroMQ and MessagePack, with payloads in POSIX
 shared memory. Endpoints live under `ipc_dir` (`/tmp/umminfer-native-ipc` by
-default): `asr`, `qwen38` or `omni`, `image`, `tts`, plus the shared
-`completion` and `abort` edges.
+default): `asr`, `qwen38` (or `omni`), `image`, `tts`, `video`, plus the shared
+`done`/`completion` and `abort` edges.
 
 ## Address and exposure
 
@@ -154,10 +156,32 @@ log.
   stack on the same host must override `UMM_NATIVE_GPU_*` and
   `UMM_NATIVE_PORT`; the config file needs the same edit.
 
-## Validation, 2026-11-19
+## Validation, 2026-11-25 (Wave 7–8 five-stage rollout)
 
-There is no offline test for the supervisor; `tests/umminfer_service_test.py`
-does not exist. Both launch paths were exercised live on GPU 6 (ASR,
+The resident SM90 service on `<container-ip>:43301` was upgraded rollback-safely
+(timestamped backups of prior `bin/`, `python/`, and `config.json`) to commit
+`c73e3e68` running the full five-stage stack across GPUs 2–6 (`asr` 1.7B,
+`qwen38` `--batch-size 8`, `flux2` `FLUX.2-klein-4B`, `tts` 1.7B-CustomVoice,
+`video` native CUDA `Wan2.2-TI2V-5B` with streaming 3D-VAE) plus `--session-history`
+and `--web-root`:
+
+- Supervisor reached `/ready` 200 with all 5 stages ready in `28 s`, 0 restarts
+  across all 6 processes (steady VRAM: GPU 2 `5,105 MiB`, GPU 3 `61,441 MiB`,
+  GPU 4 `15,617 MiB`, GPU 5 `6,417 MiB`, GPU 6 `20,861 MiB`; GPUs 0/1/7 `3 MiB`).
+- `tests/native_service_live.py` (`UMMINFER_LIVE_OPT_IN=1`): **15/15 PASS**,
+  `failures=0` (ASR->VLM, gap-free seq, live `/abort`, recovery, `in_flight=0`).
+- Live 5-modality online checks: TTS 1.7B WAV/PCM (`1.73 s`, RMS `2613.4`) ->
+  ASR 1.7B (`0.42 s`, exact transcript match); Qwen3.8-27B (`0.48 s`, `seed=42`
+  exact parity + 2-turn `session_history` codeword recall); FLUX.2 1024x1024
+  t2i (`3.21 s`, `1,523,599 B`) + 512x512 i2i edit (`1.15 s`, `l1_diff=92.06`);
+  Wan2.2 native CUDA video 480x320 13f 15 steps with streaming 3D-VAE (`7.74 s`,
+  H.264 MP4 `177,034 B`, `ffprobe` verified); Web UI `GET /` `30,476 B`;
+  `/health` `in_flight=0`.
+
+## Validation, 2026-11-19 (historical)
+
+Offline supervisor coverage now lives in `tests/umminfer_service_test.py`
+(10 tests). On 2026-11-19 both launch paths were also exercised live on GPU 6 (ASR,
 Qwen3.8-27B) and GPU 7 (image, TTS), because GPUs 2-5 are held by the resident
 43301 service.
 

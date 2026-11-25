@@ -378,12 +378,13 @@ result table are in [validation section 3a](validation.md#3a-sm90-realtime-live-
    device-tensor transfer and multi-host IPC if a use case needs them.
 3. Keep the fixed-upstream proxy independent of the local unified path.
 4. Track remaining engineering polish in
-   [architecture.md](architecture.md#4-已知技术债与治理边界): Wan2.2 3D-VAE
-   spatial/temporal tiling for 1280x704 77-frame VRAM headroom, `native/omni` /
-   `native/image` retirement readiness checks, and weight revision provenance
-   (Wave 7 resolved dynamic TTS chunk metadata, public HTTP `image.{steps,image}`
-   / `audio.ref_audio` / `video.{num_frames,steps,guidance_scale}` passthrough,
-   and three-layer control-flow/stage convergence).
+   [architecture.md](architecture.md#4-已知技术债与治理边界): extended visual
+   evaluation before retiring fallback `native/omni` / `native/image` stages
+   and external authorized `/v1/videos` upstream testing (Wave 7–8 resolved
+   three-layer control-flow/stage convergence, dynamic TTS chunk metadata,
+   public HTTP media passthrough, exact per-latent-frame causal streaming
+   Wan2.2 3D-VAE preventing 1280x704 77-frame OOM, 7-model SHA-256 provenance
+   archival, and the live 5-stage SM90 `43301` rollout).
 
 ## Explicitly unverified or unsupported
 

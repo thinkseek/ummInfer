@@ -85,7 +85,7 @@
 | **`Voxtral-Mini-4B-Realtime-2602`（原生流式 ASR）** | **估计：中**（新因果音频编码器 + Mistral 解码器，接入 `asr_stage` 真流式 `StreamMessage`） | 权重与峰值 VRAM **待原型实测** | 补充（Realtime 场景替代 200 ms 窗口重算） | Apache-2.0，目标解决全双工 L1/L2 伪流式预览的算力浪费与延迟抖动 |
 | **`google/gemma-4-26B-A4B-it` 或 `gemma-4-E4B-it`** | **估计：中–高**（新增 Gemma4 原生 stage；`26B-A4B` 为 MoE/256K/无原生音频；`E4B` 为 Dense/128K/支持原生音频） | `E4B` BF16 权重 **`14.894 GiB`**（`15,992,595,884 bytes`，峰值 VRAM 另计；若采用量化须指明格式）；`26B-A4B` 峰值 **待原型实测** | 补充（提供非 Qwen 生态与 `E4B` 原生音频理解选项） | Apache-2.0，按实际需求提供多生态备选与原生音频理解路径 |
 | **`Kokoro-82M`（超轻量本地/兜底 TTS）** | **估计：低**（可先以独立轻量 stage（CPU/Metal/CUDA）接入 `tts` 契约） | <1 GiB（82M 参数） | 补充（Mac 开发/超低延迟语音兜底） | Apache-2.0，目标补齐 Mac 端及低算力场景轻量 TTS 空白 |
-| **`Wan2.2-TI2V-5B`（商用级本地视频 Stage）** | **Python Diffusers、纯原生 C++/CUDA 与公开 HTTP 全链路均已实测通过**（`native/video/*` 已完成 M1 3D-VAE `PSNR=123.38 dB`、M2 UMT5-XXL `cosine=0.99973–0.99998`、M3 30 层 BF16 DiT 单步 `cosine=0.999879 / PSNR=55.18 dB`、Wave 6 二阶 `UniPC-BH2` `<1e-5` 与 Wave 7 公开 HTTP `video.{num_frames,steps,guidance_scale}` 透传，SM90 GPU 6 实测 480×320 `7.08 s`、704×480 29 帧 `25.64 s` 与 CFG 5/20 `/abort` 恢复） | SM90 单卡实测峰值：Diffusers **23,463 MiB**；纯原生 C++/CUDA 352×256 **20,857 MiB**，704×480 29 帧 **41,711–48,440 MiB** | 已作为首个原生零 Python 商用视频 Stage 落地（复用 `UnifiedEngine` 统一控制面） | Apache-2.0 商用无限制、单卡可跑；原生 HTTP 全链路与 `video_options` 透传已完备，后续补齐 3D-VAE 时空分块防 1280×704 77 帧 OOM，外部授权 `/v1/videos` 上游实测仍为 `NOT_RUN` |
+| **`Wan2.2-TI2V-5B`（商用级本地视频 Stage）** | **Python Diffusers、纯原生 C++/CUDA（含流式 3D-VAE）与公开 HTTP 全链路均已实测通过并上线 `43301`**（`native/video/*` 已完成 M1 3D-VAE、M2 UMT5-XXL `cosine=0.99973–0.99998`、M3 30 层 BF16 DiT 单步 `cosine=0.999879 / PSNR=55.18 dB`、Wave 6 二阶 `UniPC-BH2` `<1e-5`、Wave 7 HTTP `video.{num_frames,steps,guidance_scale}` 透传与 Wave 8 逐潜帧精确因果流式 3D-VAE：384×256 13 帧对齐 Diffusers `PSNR=128.43 dB`、1280×704 77 帧峰值仅 `14.21 GiB` 无 OOM；SM90 `43301` GPU 6 已上线实测 480×320 13 帧 `7.74 s`） | SM90 单卡实测峰值：Diffusers **23,463 MiB**；纯原生 C++/CUDA 流式 3D-VAE 384×256 13 帧 **4.28 GiB**，**1280×704 77 帧 14.21 GiB**（稳态服务驻留 **20.4 GiB**） | 已作为默认原生零 Python 商用视频 Stage 上线（复用 `UnifiedEngine` 统一控制面） | Apache-2.0 商用无限制、单卡可跑；长视频 1280×704 77 帧 OOM 已彻底解决，外部授权 `/v1/videos` 上游实测仍为 `NOT_RUN` |
 
 ### P2（研究维护 / 按需外部 Stage 或上游代理，不投入主干 C++/CUDA 引擎）
 
@@ -105,7 +105,7 @@
 | **保留并持续投入** | `Qwen3.8-27B`、`Qwen3-ASR 0.6B`（评估扩至 1.7B）、`Qwen3-TTS 0.6B`（分项评估 1.7B CustomVoice / Base 及 `/v1/audio/speech` 真实验收） | 作为主干维护，按真实门禁补齐能力缺口与自动化回归 |
 | **研究维护 / 限定范围保留（P2）** | `Qwen-Image-2.1`（仅研究/非商用兼容路径）、`MLX-LM`（仅 Mac 低资源开发） | `Qwen-Image-2.1` 降为 P2 研究维护（`qwen-research` 非商用，已有代码只降低剩余成本不证明产品优先级，配置/文档强提示非商用）；`MLX-LM` 维持现状，不加生产并发特性 |
 | **降级为兼容 / 停止新增投入** | `Qwen3-Omni Thinker` (`native/omni`)、`Qwen-Image-2512` (`native/image`)、`Qwen3.5-Omni` 规划、`MiniMax-H3*` 原生引擎规划 | 仅修阻断性缺陷，不再开发新特性或新内核 |
-| **后续可评估删除适配** | `native/omni`（前置条件：**同 revision、同 54 例及扩展图像集非劣效对照 + 多轮 PrefixCache 正确性/失效 + 流式/abort/大图边界 + TTFT/tok/s/峰值显存 + 配置迁移与回滚**；现有 54 例仅为 Omni 基准，非同集对照）、`native/image`（前置条件：`FLUX.2-klein-4B` 等商用 Apache-2.0 图像后端通过 prompt alignment / 人工质量 / 编辑能力 / 质量相当工作点延迟门禁） | 满足全部前置条件后单独立项评估移除；**本任务不执行删除** |
+| **后续可评估删除适配（退役就绪度检查）** | `native/omni`（当前 `43301` GPU 3 已由 `Qwen3.8-27B` 承载且 54 例基准/多轮 PrefixCache/连续批处理均已验，`omni` 仅保留在 `optional_stages` 作回滚备份；最终删除前剩余项：扩展图像集非劣效对照与一次 `qwen38↔omni` 热切回滚演练）、`native/image`（当前 `43301` GPU 4 已由 Apache-2.0 `FLUX.2-klein-4B` 承载且支持 1024×1024 文生图与 HTTP `image.image` 编辑，`image-2512` 仅保留在 `optional_stages` 作纯 C++ 无 Python 兜底；最终删除前剩余项：业务提示词人工视觉质量盲测确认） | 满足剩余门禁后再单独立项移除；**当前保留作回滚备份，不删除代码** |
 | **保持测试桩定位** | `TinyCTC`、`--demo` Echo Stage、`UnifiedContract` Mock、`RL Phase 2` 离线脚本 | 严禁在文档或基准中当作真实模型质量证据 |
 
 ---
@@ -126,7 +126,15 @@
 
 ## 6. 已知未知项（UNKNOWN）与风险
 
-1. **本地权重精确 Revision 缺失**：除 `Qwen3-TTS-0.6B` 记录了 `85e237c12c027371202489a0ec509ded67b5e4b5` 外，SM90 本地 `asr` / `qwen38` / `omni` / `image` / `image2` 与 Mac `MLX` 目录均无 `.git`，revision 为 `UNKNOWN`（仅部分有 `config.json`/权重 SHA-256）。后续拉取新权重须强制记录 HF commit SHA。
+1. **本地权重精确 Revision 与已归档 SHA-256 指纹（2026-11-25 核验）**：SM90 `<model-root>` 目录均无 `.git`（Git revision 为 `UNKNOWN`），Wave 8 已对全部 7 套本地权重归档关键配置 SHA-256 与分片数以便可复现审计：
+   - `qwen3.8-27b`：`51.77 GiB`（18 shards），`config.json` `191e0af232104ed8…`
+   - `Qwen3-ASR-1.7B`：`4.38 GiB`（2 shards），`config.json` `2e74a751548b8ad7…`，`configuration.json` `c57f6a580d63f746…`
+   - `FLUX.2-klein-4B`：`14.89 GiB`（4 shards），`model_index.json` `51a76cb1cf3ed374…`，`transformer/config.json` `09733c74a3da6d17…`，`vae/config.json` `0d6dfb69ae95a5e2…`
+   - `Qwen3-TTS-12Hz-1.7B-CustomVoice`：`4.21 GiB`（2 shards），`config.json` `17a07f527a1c25ea…`
+   - `Qwen3-TTS-12Hz-1.7B-Base`：`4.23 GiB`（2 shards），`config.json` `b4f01752d15a488a…`
+   - `Wan2.2-TI2V-5B-Diffusers`：`31.85 GiB`（9 shards），`model_index.json` `6a72faeb564b0e89…`，`transformer/config.json` `dc00d9866e72cf77…`，`vae/config.json` `d996c340fe9a7df5…`
+   - `qwen-image-2.1`：`40.68 GiB`（7 shards，非商用），`model_index.json` `cf1ecd104ea09085…`，`transformer/config.json` `56ae3281c4e6c2d1…`，`vae/config.json` `9785d527b278cb8b…`
+   后续拉取新权重须继续记录源仓库 commit SHA 与配置摘要。
 2. **许可证合规风险**：树内已实现的 `Qwen-Image-2.1` 使用 `qwen-research` 非商用许可；路线图中的 `MiniMax-H3` / `H3-Image` 含地域排除与社区商用限制。对外发布商用版本前必须由 Apache-2.0 模型（如 `FLUX.2-klein-4B`、`Wan2.2`）兜底。
 3. **测试套件与实测覆盖边界**：`ab51cf5` 曾移除多组历史单测与金标验证脚手架；本分支已覆盖 `native/{omni,tts,image,image2}` CPU host 单元测试、`UnifiedEngine` 文本/图像/音频/视频四模态统一契约测试与 macOS Swift 客户端测试，但 `/v1/audio/speech` 真实 TTS Stage、真实视频 Stage/上游生成及所有 SM90 真实模型/GPU 验证仍为 `NOT_RUN`（测试桩不计作真实生视频验收）。
 4. **GitHub 公开 API 限流**：本次核查中 GitHub REST API 返回 403 rate limit，故生态/维护风险辅助信号统一以 Hugging Face 官方 API（`2026-11-20`）为准，GitHub stars 记为 `UNKNOWN`。
