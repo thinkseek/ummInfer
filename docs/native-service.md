@@ -234,6 +234,12 @@ and `--web-root`:
     interleaved narrative + FLUX.2 image slot + streaming PCM16 voice
     (`ttft=1.78 s`, `ttfa=2.01 s`, `54` PCM chunks, `1` visual slot) both
     passed; `/health` `in_flight=0`.
+- Wave 14 live gateway hot-upgrade (`2625e47`):
+  - Hot-upgraded `/bin/umm-infer` in place (preserving `.wave13` backup) in
+    **`2 s`** with **`0` restarts** across all 5 GPU stages (GPUs 2–6 kept hot),
+    carrying Stage B full-duplex `playback_ack` barge-in history continuity
+    (real 3-GPU SM90 validation on idle GPUs 0/1/7 recorded in
+    `docs/full-duplex.md`), `/ready` 200 and `/health` `in_flight=0`.
 
 ## Validation, 2026-11-19 (historical)
 
