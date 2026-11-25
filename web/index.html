@@ -63,6 +63,8 @@
   }
   #settings label { display: flex; flex-direction: column; gap: 4px; font-size: var(--f-caption); color: var(--secondary); }
   #settings label.check { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 6px; }
+  #settings label.dimmed { opacity: .48; }
+  #settings input:disabled, #settings select:disabled { opacity: .5; cursor: default; }
   #settings label.grow { flex: 1 1 260px; }
   input[type=text], input:not([type]), select, textarea {
     font: inherit; color: var(--text); background: var(--bg);
@@ -317,6 +319,7 @@
     <option value="video">Video only</option>
   </select></label>
   <label>Max slots<input id="maxSlots" type="number" min="1" max="4" value="3" style="width:64px"></label>
+  <label class="check" title="In Narrative mode, allow pure-text responses for math, code, or factual prompts without redundant visuals"><input type="checkbox" id="allowTextOnly" checked> Smart text-only</label>
   <details id="advanced">
     <summary>Options</summary>
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;align-items:center;">
@@ -377,6 +380,7 @@ const ui = {
   pickAudio: $('pickAudio'), mic: $('mic'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
   narrative: $('narrative'), visualMode: $('visualMode'), maxSlots: $('maxSlots'),
+  allowTextOnly: $('allowTextOnly'),
   voiceToggle: $('voiceToggle'), voiceWave: $('voiceWave'),
   voiceStatus: $('voiceStatus'), voiceMute: $('voiceMute'), voiceStop: $('voiceStop'),
   realtimeToggle: $('realtimeToggle'), realtimeStatus: $('realtimeStatus'),
@@ -426,12 +430,14 @@ ui.image.checked = localStorage.getItem('ummweb.image') === '1';
 ui.audio.checked = localStorage.getItem('ummweb.audio') === '1';
 ui.video.checked = localStorage.getItem('ummweb.video') === '1';
 ui.narrative.checked = localStorage.getItem('ummweb.narrative') !== '0';
+ui.allowTextOnly.checked = localStorage.getItem('ummweb.allowTextOnly') !== '0';
 const saveSettings = () => {
   for (const key of SETTINGS) localStorage.setItem('ummweb.' + key, ui[key].value);
   localStorage.setItem('ummweb.image', ui.image.checked ? '1' : '0');
   localStorage.setItem('ummweb.audio', ui.audio.checked ? '1' : '0');
   localStorage.setItem('ummweb.video', ui.video.checked ? '1' : '0');
   localStorage.setItem('ummweb.narrative', ui.narrative.checked ? '1' : '0');
+  localStorage.setItem('ummweb.allowTextOnly', ui.allowTextOnly.checked ? '1' : '0');
 };
 
 function apiURL(base, suffix) {
@@ -2008,6 +2014,14 @@ async function consume(payload, st) {
 
 // ---------- send / stop ----------
 
+function syncNarrativeControls() {
+  const disabled = running || !ui.narrative.checked;
+  for (const control of [ui.visualMode, ui.maxSlots, ui.allowTextOnly]) {
+    control.disabled = disabled;
+    control.closest('label')?.classList.toggle('dimmed', disabled);
+  }
+}
+
 function setBusy(busy) {
   running = busy;
   ui.send.hidden = busy;
@@ -2017,11 +2031,18 @@ function setBusy(busy) {
     ui.temperature, ui.topP, ui.seed, ui.apiKey, ui.imageSize, ui.imageSteps,
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
-    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots]) {
+    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly]) {
     control.disabled = busy;
   }
+  syncNarrativeControls();
   ui.dot.classList.toggle('busy', busy);
 }
+ui.narrative.addEventListener('change', () => {
+  saveSettings();
+  syncNarrativeControls();
+});
+ui.allowTextOnly.addEventListener('change', saveSettings);
+syncNarrativeControls();
 
 async function imageConfig() {
   const config = { size: ui.imageSize.value || '512x512', output_format: 'png' };
@@ -2120,6 +2141,7 @@ async function send() {
       enabled: true,
       visual_mode: visualMode,
       max_slots: Number.isInteger(slotsVal) ? Math.min(6, Math.max(1, slotsVal)) : 3,
+      allow_text_only: ui.allowTextOnly.checked,
     };
   } else {
     if (ui.image.checked) {

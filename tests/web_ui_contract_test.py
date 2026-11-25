@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unittest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +52,7 @@ def check_markup(html):
                 'id="voiceToggle"', 'id="voiceWave"', 'id="voiceStatus"',
                 'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
                 'id="realtimeStatus"', 'id="narrative"',
-                'id="visualMode"', 'id="maxSlots"'):
+                'id="visualMode"', 'id="maxSlots"', 'id="allowTextOnly"'):
         require(tag in html, f"missing element: {tag}")
     used = set(re.findall(r"\$\('([^']+)'\)", html))
     declared = set(re.findall(r'id="([^"]+)"', html))
@@ -124,6 +125,14 @@ def check_wave10(script):
     require("body.narrative" in script, "the request must carry narrative")
     require("visual_mode" in script and "max_slots" in script,
             "narrative must send visual_mode and max_slots")
+    require("allow_text_only: ui.allowTextOnly.checked" in script,
+            "narrative must send allow_text_only from the allowTextOnly control")
+    require("localStorage.getItem('ummweb.allowTextOnly') !== '0'" in script,
+            "allowTextOnly must default to checked unless persisted as '0'")
+    require("localStorage.setItem('ummweb.allowTextOnly'" in script,
+            "allowTextOnly must persist to localStorage")
+    require("syncNarrativeControls()" in script and "ui.allowTextOnly" in script,
+            "allowTextOnly must be disabled alongside Narrative controls when Narrative is off or streaming")
     require("ui.narrative.checked" in script, "the Narrative toggle must gate it")
     require("modalities.add('image')" in script and "modalities.add('video')" in script,
             "narrative must auto-select visual modalities")
@@ -435,6 +444,45 @@ def check_theme_tokens(html):
     for metric in ("--r-control: 8px", "--r-card: 12px", "--f-title: 20px",
                    "--f-section: 15px", "--f-body: 13px", "--f-caption: 12px"):
         require(metric in html, f"the page must keep the metric {metric}")
+
+
+class WebUIContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.html = read_page()
+        scripts = module_scripts(cls.html)
+        require(len(scripts) == 1, f"expected exactly one module script, found {len(scripts)}")
+        cls.script = scripts[0]
+
+    def test_markup(self):
+        check_markup(self.html)
+
+    def test_syntax(self):
+        check_node(self.script)
+
+    def test_hooks(self):
+        check_hooks(self.script)
+
+    def test_wave10(self):
+        check_wave10(self.script)
+
+    def test_wave11(self):
+        check_wave11(self.script)
+
+    def test_markdown(self):
+        check_markdown(self.html, self.script)
+
+    def test_video_input(self):
+        check_video_input(self.html, self.script)
+
+    def test_realtime(self):
+        check_realtime(self.html, self.script)
+
+    def test_realtime_behavior(self):
+        check_realtime_behavior(self.script)
+
+    def test_theme(self):
+        check_theme_tokens(self.html)
 
 
 def main():

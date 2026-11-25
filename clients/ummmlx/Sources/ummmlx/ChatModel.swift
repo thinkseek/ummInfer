@@ -87,6 +87,7 @@ final class ChatModel: ObservableObject {
     /// "auto", "image" or "video".
     @Published var narrativeVisualMode = "auto"
     @Published var narrativeMaxSlots = 3
+    @Published var narrativeAllowTextOnly = true
     @Published var maxTokensText = "256"
     @Published var temperatureText = "0"
     @Published var topPText = ""
@@ -328,7 +329,8 @@ final class ChatModel: ObservableObject {
             if mode == "video" && !videoOutput { mode = "auto" }
             options.narrative = NarrativeOptions(
                 enabled: true, visualMode: mode,
-                maxSlots: min(max(narrativeMaxSlots, 1), 6))
+                maxSlots: min(max(narrativeMaxSlots, 1), 6),
+                allowTextOnly: narrativeAllowTextOnly)
         }
 
         stopStreamingAudio()

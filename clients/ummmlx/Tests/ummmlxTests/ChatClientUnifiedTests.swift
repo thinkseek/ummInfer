@@ -684,6 +684,7 @@ final class ChatClientUnifiedTests: XCTestCase {
         XCTAssertEqual(narrative?["enabled"] as? Bool, true)
         XCTAssertEqual(narrative?["visual_mode"] as? String, "auto")
         XCTAssertEqual(narrative?["max_slots"] as? Int, 3)
+        XCTAssertEqual(narrative?["allow_text_only"] as? Bool, true)
 
         // Absent unless the caller opts in: backwards compatible.
         options.narrative = nil
@@ -691,6 +692,49 @@ final class ChatClientUnifiedTests: XCTestCase {
             model: "m", messages: [ChatMessage(role: "user", content: "hi")],
             options: options)
         XCTAssertNil(plain["narrative"])
+    }
+
+    @MainActor
+    func testRequestBodyEncodesNarrativeAllowTextOnlyFlag() {
+        let defaultNarrative = NarrativeOptions()
+        XCTAssertTrue(defaultNarrative.allowTextOnly)
+
+        var defaultOpts = ChatStreamOptions()
+        defaultOpts.image = ImageOptions()
+        defaultOpts.narrative = defaultNarrative
+        let defaultBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "2+2?")],
+            options: defaultOpts)
+        let defaultNav = defaultBody["narrative"] as? [String: Any]
+        XCTAssertEqual(defaultNav?["allow_text_only"] as? Bool, true)
+
+        var optOutOpts = ChatStreamOptions()
+        optOutOpts.image = ImageOptions()
+        optOutOpts.narrative = NarrativeOptions(
+            enabled: true, visualMode: "auto", maxSlots: 2, allowTextOnly: false)
+        let optOutBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "2+2?")],
+            options: optOutOpts)
+        let optOutNav = optOutBody["narrative"] as? [String: Any]
+        XCTAssertEqual(optOutNav?["enabled"] as? Bool, true)
+        XCTAssertEqual(optOutNav?["visual_mode"] as? String, "auto")
+        XCTAssertEqual(optOutNav?["max_slots"] as? Int, 2)
+        XCTAssertEqual(optOutNav?["allow_text_only"] as? Bool, false)
+
+        var optInOpts = ChatStreamOptions()
+        optInOpts.image = ImageOptions()
+        optInOpts.narrative = NarrativeOptions(
+            enabled: true, visualMode: "auto", maxSlots: 4, allowTextOnly: true)
+        let optInBody = ChatClient.requestBody(
+            model: "m", messages: [ChatMessage(role: "user", content: "story")],
+            options: optInOpts)
+        let optInNav = optInBody["narrative"] as? [String: Any]
+        XCTAssertEqual(optInNav?["max_slots"] as? Int, 4)
+        XCTAssertEqual(optInNav?["allow_text_only"] as? Bool, true)
+
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        XCTAssertTrue(model.narrativeAllowTextOnly)
     }
 
     @MainActor

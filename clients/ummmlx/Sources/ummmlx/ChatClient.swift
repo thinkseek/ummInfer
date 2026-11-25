@@ -66,6 +66,9 @@ struct NarrativeOptions: Equatable {
     var visualMode = "auto"
     /// 1...6; the server rejects anything else.
     var maxSlots = 3
+    /// When true in auto mode, allows zero-visual-slot pure-text answers for
+    /// math, code, or factual prompts.
+    var allowTextOnly = true
 }
 
 struct ChatStreamOptions: Equatable {
@@ -404,7 +407,8 @@ final class ChatClient {
             body["narrative"] = [
                 "enabled": narrative.enabled,
                 "visual_mode": narrative.visualMode,
-                "max_slots": narrative.maxSlots
+                "max_slots": narrative.maxSlots,
+                "allow_text_only": narrative.allowTextOnly
             ]
         }
         return body

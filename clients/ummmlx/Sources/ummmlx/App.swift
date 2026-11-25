@@ -252,9 +252,16 @@ struct RootView: View {
                             Text("Video").tag("video")
                         }
                         .frame(width: 132)
+                        .disabled(!model.narrativeMode || model.isRunning || model.isLiveVoiceActive)
                         Stepper("Slots \(model.narrativeMaxSlots)",
                                 value: $model.narrativeMaxSlots, in: 1...6)
                             .fixedSize()
+                            .disabled(!model.narrativeMode || model.isRunning || model.isLiveVoiceActive)
+                        Toggle("Smart Text-Only", isOn: $model.narrativeAllowTextOnly)
+                            .toggleStyle(.checkbox)
+                            .disabled(!model.narrativeMode || model.isRunning || model.isLiveVoiceActive)
+                            .help("In Narrative mode, allow pure-text responses for math, code, or factual prompts without redundant visuals")
+                            .accessibilityIdentifier("narrativeAllowTextOnly")
                         Text("Interleaved visual beats need Image or Video enabled.")
                             .font(.system(size: theme.captionSize))
                             .foregroundStyle(theme.tertiary)
