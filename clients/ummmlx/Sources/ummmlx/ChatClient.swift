@@ -50,6 +50,8 @@ struct VideoOptions: Equatable {
     var steps: Int?
     var guidanceScale: Double?
     var seed: Int?
+    /// First-frame data URL for native image-to-video animation (Wan2.2-TI2V).
+    var imageDataURL: String?
     var outputFormat = "mp4"
 }
 
@@ -380,6 +382,9 @@ final class ChatClient {
             if let steps = video.steps { object["steps"] = steps }
             if let guidance = video.guidanceScale { object["guidance_scale"] = guidance }
             if let seed = video.seed { object["seed"] = seed }
+            if let imageDataURL = video.imageDataURL, !imageDataURL.isEmpty {
+                object["image"] = imageDataURL
+            }
             body["video"] = object
         }
         if let narrative = options.narrative {
@@ -448,7 +453,8 @@ final class ChatClient {
     func renderVisual(base: String, kind: String, prompt: String,
                       size: String? = nil, steps: Int? = nil,
                       numFrames: Int? = nil, guidanceScale: Double? = nil,
-                      seed: Int? = nil) async throws -> Data {
+                      seed: Int? = nil,
+                      imageDataURL: String? = nil) async throws -> Data {
         guard kind == "image" || kind == "video" else {
             throw ChatClientError.invalidEndpoint(
                 "A visual render kind must be image or video.")
@@ -466,6 +472,7 @@ final class ChatClient {
         if let numFrames, numFrames > 0 { body["num_frames"] = numFrames }
         if let guidanceScale { body["guidance_scale"] = guidanceScale }
         if let seed { body["seed"] = seed }
+        if let imageDataURL, !imageDataURL.isEmpty { body["image"] = imageDataURL }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)

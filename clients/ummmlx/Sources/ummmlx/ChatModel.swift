@@ -532,13 +532,20 @@ final class ChatModel: ObservableObject {
         let seed = Int(seedText.trimmingCharacters(in: .whitespaces))
         let prompt = slot.prompt
         let base = endpoint
+        // A video swap animates the slot's existing image as the first frame.
+        var imageDataURL: String?
+        if toKind == "video", let image = slot.imageArtifact {
+            imageDataURL = "data:\(image.mimeType);base64,"
+                + image.data.base64EncodedString()
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
                 let data = try await self.client.renderVisual(
                     base: base, kind: toKind, prompt: prompt, size: size,
                     steps: steps, numFrames: numFrames,
-                    guidanceScale: guidance, seed: seed)
+                    guidanceScale: guidance, seed: seed,
+                    imageDataURL: imageDataURL)
                 self.completeSwap(turnID: turnID, slotID: slotID,
                                   toKind: toKind, token: token, data: data)
             } catch {

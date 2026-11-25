@@ -442,7 +442,8 @@ struct RootView: View {
                 visualPlaceholder(loading: slot.isLoading, label: "No image")
             }
             HStack(spacing: 10) {
-                Button(slot.activeKind == "image" ? "→ Video" : "→ Image") {
+                Button(slot.activeKind == "video" ? "→ Image"
+                       : (slot.imageArtifact != nil ? "Animate → Video" : "→ Video")) {
                     model.swapVisualSlot(
                         turnID: turnID, slotID: slot.slotID,
                         toKind: slot.activeKind == "image" ? "video" : "image")

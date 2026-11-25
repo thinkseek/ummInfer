@@ -147,6 +147,19 @@ def check_wave10(script):
             "swapping back must reuse cached media")
 
 
+def check_wave11(script):
+    # In-place true image-to-video animation: the slot keeps the generated
+    # image as a data URL and forwards it when the video render runs.
+    require("slot.imageDataURL" in script,
+            "slots must retain the generated image as a data URL")
+    require("dataURLFor(" in script and ";base64," in script,
+            "image bytes must become a data:image/...;base64 URL")
+    require("body.image = slot.imageDataURL" in script,
+            "a video render must forward the slot image as body.image")
+    require("'Animate → Video'" in script,
+            "an image slot with a source frame must relabel the swap button")
+
+
 def check_theme_tokens(html):
     """The CSS palette mirrors Theme.swift; both files must agree."""
     theme = THEME.read_text(encoding="utf-8")
@@ -190,6 +203,7 @@ def main():
         ("syntax", lambda: check_node(script)),
         ("hooks", lambda: check_hooks(script)),
         ("wave10", lambda: check_wave10(script)),
+        ("wave11", lambda: check_wave11(script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0

@@ -824,6 +824,9 @@ final class ChatClientUnifiedTests: XCTestCase {
         XCTAssertEqual(body?["kind"] as? String, "video")
         XCTAssertEqual(body?["prompt"] as? String, slotPrompt)
         XCTAssertEqual(body?["size"] as? String, "704x480")
+        XCTAssertEqual(body?["image"] as? String,
+                       "data:image/png;base64," + artifactBytes.base64EncodedString(),
+                       "a video swap must animate the slot's image as the first frame")
 
         // The image is still cached: swapping back makes no network call.
         model.swapVisualSlot(turnID: turn.id, slotID: "slot-0", toKind: "image")

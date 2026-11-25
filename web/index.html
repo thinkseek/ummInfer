@@ -756,7 +756,8 @@ function setSlotMedia(slot, kind, url) {
   }
   slot.badge.className = 'badge ' + kind;
   slot.badge.textContent = kind === 'video' ? 'Video' : 'Image';
-  slot.swap.textContent = kind === 'video' ? '→ Image' : '→ Video';
+  slot.swap.textContent = kind === 'video' ? '→ Image'
+    : (slot.imageDataURL ? 'Animate → Video' : '→ Video');
   slot.dl.href = url;
   slot.dl.download = kind === 'video' ? 'slot.mp4' : 'slot.png';
   slot.dl.hidden = false;
@@ -798,6 +799,7 @@ async function renderSlot(slot, kind) {
       if (ui.videoGuidance.value.trim() !== '' && Number.isFinite(guidance) && guidance >= 0) {
         body.guidance_scale = guidance;
       }
+      if (slot.imageDataURL) body.image = slot.imageDataURL;
     }
     const res = await fetch(apiURL(ui.endpoint.value, '/visual/render'), {
       method: 'POST',
@@ -812,7 +814,11 @@ async function renderSlot(slot, kind) {
     const hinted = (res.headers.get('x-umminfer-kind') || kind).toLowerCase();
     const actual = hinted === 'video' ? 'video' : 'image';
     const blob = await res.blob();
-    setSlotMedia(slot, actual, URL.createObjectURL(new Blob([blob], { type: type || blob.type })));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (actual === 'image') {
+      slot.imageDataURL = dataURLFor(type || blob.type || 'image/png', bytes);
+    }
+    setSlotMedia(slot, actual, URL.createObjectURL(new Blob([bytes], { type: type || blob.type })));
     scrollToEnd();
   } catch (err) {
     showSlotError(slot, err.message);
@@ -972,6 +978,14 @@ function decodeBase64(text) {
   return bytes;
 }
 
+function dataURLFor(mime, bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
 async function sha256Hex(bytes) {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -1019,7 +1033,11 @@ function deliver(chunk, bytes) {
   const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
   const kindHint = chunk.media_type === 'video' || mime === 'video/mp4' ? 'video' : 'image';
   if (chunk.slot_id && turn?.slots?.has(chunk.slot_id)) {
-    setSlotMedia(turn.slots.get(chunk.slot_id), kindHint, url);
+    const slot = turn.slots.get(chunk.slot_id);
+    if (kindHint === 'image' && mime.startsWith('image/')) {
+      slot.imageDataURL = dataURLFor(mime, bytes);
+    }
+    setSlotMedia(slot, kindHint, url);
     scrollToEnd();
     return;
   }
