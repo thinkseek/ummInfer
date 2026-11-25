@@ -79,9 +79,13 @@ class WanDit {
   WanDit& operator=(const WanDit&) = delete;
 
   // latent is [1,48,F,H,W], context is [text_len,4096]. The result is [1,48,F,H,W].
+  // With first_frame_zero_timestep the Wan2.2-TI2V-5B per-token timestep
+  // conditioning applies: tokens of latent frame 0 use t=0 and every other
+  // token uses `timestep`. The default keeps the scalar T2V path unchanged.
   WanDitOutput forward(const float* latent_ncfhw, int frames, int height,
                        int width, float timestep, const float* context,
-                       int text_len);
+                       int text_len,
+                       bool first_frame_zero_timestep = false);
 
  private:
   struct Impl;

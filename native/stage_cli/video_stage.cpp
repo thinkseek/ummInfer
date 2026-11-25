@@ -114,6 +114,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     params.guidance_scale = input.guidance_scale;
     params.seed = input.seed;
     params.step_delay_ms = step_delay_ms;
+    params.init_image_bytes = input.init_image_bytes;
 
     video::GenerateResult generated;
     try {
@@ -131,6 +132,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << generated.height << " frames=" << generated.frames
               << " fps=" << generated.fps << " steps=" << generated.steps
               << " seed=" << generated.seed
+              << " i2v=" << (input.init_image_bytes.empty() ? 0 : 1)
               << " mp4_bytes=" << generated.mp4_bytes.size()
               << " denoise_ms=" << generated.denoise_ms
               << " encode_ms=" << generated.encode_ms

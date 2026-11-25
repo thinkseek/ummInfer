@@ -101,6 +101,32 @@ std::vector<std::vector<uint8_t>> to_rgb24(const umminfer::video::WanVaeOutput& 
   return rgb;
 }
 
+int run_encode(const std::unordered_map<std::string, std::string>& args) {
+  for (const char* required : {"--vae-dir", "--image-bin", "--out-f32",
+                               "--width", "--height", "--gpu"}) {
+    if (!args.contains(required)) {
+      throw std::invalid_argument(std::string("required argument: ") + required);
+    }
+  }
+  const int width = std::stoi(args.at("--width"));
+  const int height = std::stoi(args.at("--height"));
+  const int gpu = std::stoi(args.at("--gpu"));
+  const size_t count = static_cast<size_t>(3) * height * width;
+  const auto image = read_f32(args.at("--image-bin"), count);
+  const auto encoded = umminfer::video::encode_wan_vae_image_fp32(
+      args.at("--vae-dir"), image, height, width, gpu);
+  write_f32(args.at("--out-f32"), encoded.data);
+  std::cout << "output_shape=";
+  for (size_t i = 0; i < encoded.shape.size(); ++i) {
+    if (i != 0) std::cout << ',';
+    std::cout << encoded.shape[i];
+  }
+  std::cout << "\nencode_ms=" << encoded.encode_ms
+            << "\npeak_native_device_bytes="
+            << encoded.peak_native_device_bytes << '\n';
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -109,6 +135,9 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i += 2) {
       if (i + 1 >= argc) throw std::invalid_argument("missing argument value");
       args.emplace(argv[i], argv[i + 1]);
+    }
+    if (args.contains("--image-bin")) {
+      return run_encode(args);
     }
     for (const char* required :
          {"--vae-dir", "--latent-bin", "--latent-shape", "--out-f32", "--out-mp4", "--gpu"}) {

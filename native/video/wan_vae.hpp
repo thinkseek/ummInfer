@@ -64,6 +64,14 @@ struct WanVaeOutput {
   size_t peak_native_device_bytes = 0;
 };
 
+struct WanVaeEncoded {
+  // Normalized FP32 NCHW latent, always [1, z_dim, 1, height/16, width/16].
+  std::vector<int64_t> shape;
+  std::vector<float> data;
+  double encode_ms = 0.0;
+  size_t peak_native_device_bytes = 0;
+};
+
 #ifdef UMM_VIDEO_CUDA
 // Loads decoder.* and post_quant_conv.* from diffusion_pytorch_model.safetensors.
 // latent_shape must be [1, z_dim, time, height, width]. No TF32 is used.
@@ -71,6 +79,15 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
                                  const std::vector<float>& latent,
                                  const std::vector<int64_t>& latent_shape,
                                  int gpu);
+
+// Single-frame encoder, mathematically identical to Diffusers
+// AutoencoderKLWan.encode on a T=1 input: patchify -> encoder -> quant_conv ->
+// posterior mean (first z_dim channels) -> (z - latents_mean) / latents_std.
+// rgb_nchw is FP32 [1, 3, 1, height, width] in [-1, 1] and both spatial sizes
+// must be divisible by 16. No TF32 is used.
+WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
+                                        const std::vector<float>& rgb_nchw,
+                                        int height, int width, int gpu);
 #endif
 
 }  // namespace umminfer::video

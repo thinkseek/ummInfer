@@ -24,6 +24,7 @@ void test_parse_video_work_valid() {
   inputs["fps"] = Value(static_cast<int64_t>(16));
   inputs["seed"] = Value(static_cast<int64_t>(20261122));
   inputs["output_format"] = Value("mp4");
+  inputs["image"] = Value("data:image/png;base64,iVBORw0KGgo=");
 
   const stage::VideoWork w = stage::parse_video_work(Value(std::move(inputs)));
   check(w.prompt == "A paper boat floating on a calm pond", "prompt trimmed");
@@ -32,6 +33,16 @@ void test_parse_video_work_valid() {
   check(w.num_frames == 29, "num_frames aligned to 4*7+1=29");
   check(w.has_seed && w.seed == 20261122, "seed parsed");
   check(w.output_format == "mp4", "output_format == mp4");
+  check(w.init_image_bytes.size() == 8 &&
+            w.init_image_bytes.compare(0, 4, "\x89PNG") == 0,
+        "data URL image decoded to raw bytes");
+
+  Value::Map raw;
+  raw["prompt"] = Value("ok");
+  raw["image"] = Value::bin(std::string("\x89PNG\x0d\x0a", 6));
+  const stage::VideoWork raw_work = stage::parse_video_work(Value(std::move(raw)));
+  check(raw_work.init_image_bytes.size() == 6,
+        "binary image bytes forwarded unchanged");
 }
 
 void test_parse_video_work_rejects_invalid() {
@@ -68,6 +79,18 @@ void test_parse_video_work_rejects_invalid() {
     m["prompt"] = Value("ok");
     m["num_frames"] = Value(static_cast<int64_t>(14));
     expect_protocol_error(std::move(m), "non-(4k+1) num_frames rejected");
+  }
+  {
+    Value::Map m;
+    m["prompt"] = Value("ok");
+    m["image"] = Value("not-a-data-url");
+    expect_protocol_error(std::move(m), "non-data-URL image rejected");
+  }
+  {
+    Value::Map m;
+    m["prompt"] = Value("ok");
+    m["image"] = Value(static_cast<int64_t>(7));
+    expect_protocol_error(std::move(m), "non-string image rejected");
   }
 }
 

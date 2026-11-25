@@ -508,6 +508,13 @@ void test_engine_contract_stub_and_cuda_gate() {
     step_aborted = true;
   }
   check(step_aborted, "engine aborts cleanly at denoising step boundary");
+
+  // The contract stub must accept image bytes without decoding them.
+  GenerateParams image_params = params;
+  image_params.init_image_bytes = "not-a-real-image";
+  const GenerateResult image_res = stub.generate(image_params);
+  check(is_valid_mp4_header(image_res.mp4_bytes),
+        "contract stub accepts init image bytes");
 }
 
 // Reference values produced by Diffusers 0.43 UniPCMultistepScheduler loaded

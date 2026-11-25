@@ -22,8 +22,81 @@
 #include <thread>
 #include <vector>
 
+// stb_image is header-only; the single implementation lives here.
+#define STB_IMAGE_IMPLEMENTATION
+#include "common/stb_image.h"
+
 namespace umminfer::video {
 namespace {
+
+constexpr size_t kMaxInitImageBytes = 64u << 20;
+
+struct RgbImage {
+  int width = 0;
+  int height = 0;
+  std::vector<uint8_t> pixels;  // interleaved RGB
+};
+
+RgbImage decode_init_image(const std::string& bytes) {
+  if (bytes.empty() || bytes.size() > kMaxInitImageBytes) {
+    throw std::invalid_argument("init image bytes are empty or too large");
+  }
+  int width = 0;
+  int height = 0;
+  int components = 0;
+  stbi_uc* data = stbi_load_from_memory(
+      reinterpret_cast<const stbi_uc*>(bytes.data()),
+      static_cast<int>(bytes.size()), &width, &height, &components, 3);
+  if (data == nullptr || width <= 0 || height <= 0) {
+    throw std::invalid_argument(
+        std::string("failed to decode init image: ") +
+        (stbi_failure_reason() == nullptr ? "unknown error"
+                                          : stbi_failure_reason()));
+  }
+  RgbImage image;
+  image.width = width;
+  image.height = height;
+  image.pixels.assign(data, data + static_cast<size_t>(width) * height * 3);
+  stbi_image_free(data);
+  return image;
+}
+
+// Bilinear resize with half-pixel centres and clamped edges, then scaled to
+// [-1, 1] and written as [1, 3, 1, height, width].
+std::vector<float> resize_image_to_nchw(const RgbImage& image, int width,
+                                        int height) {
+  const size_t plane = static_cast<size_t>(width) * height;
+  std::vector<float> output(3 * plane);
+  const float scale_x = static_cast<float>(image.width) / width;
+  const float scale_y = static_cast<float>(image.height) / height;
+  for (int y = 0; y < height; ++y) {
+    float source_y = (static_cast<float>(y) + 0.5f) * scale_y - 0.5f;
+    source_y = std::clamp(source_y, 0.0f, static_cast<float>(image.height - 1));
+    const int y0 = static_cast<int>(source_y);
+    const int y1 = std::min(y0 + 1, image.height - 1);
+    const float wy = source_y - static_cast<float>(y0);
+    for (int x = 0; x < width; ++x) {
+      float source_x = (static_cast<float>(x) + 0.5f) * scale_x - 0.5f;
+      source_x = std::clamp(source_x, 0.0f, static_cast<float>(image.width - 1));
+      const int x0 = static_cast<int>(source_x);
+      const int x1 = std::min(x0 + 1, image.width - 1);
+      const float wx = source_x - static_cast<float>(x0);
+      const size_t base = static_cast<size_t>(y) * width + x;
+      for (int c = 0; c < 3; ++c) {
+        const auto at = [&](int sy, int sx) {
+          return static_cast<float>(
+              image.pixels[(static_cast<size_t>(sy) * image.width + sx) * 3 +
+                           c]);
+        };
+        const float top = at(y0, x0) * (1.0f - wx) + at(y0, x1) * wx;
+        const float bottom = at(y1, x0) * (1.0f - wx) + at(y1, x1) * wx;
+        const float value = (top * (1.0f - wy) + bottom * wy) / 127.5f - 1.0f;
+        output[static_cast<size_t>(c) * plane + base] = value;
+      }
+    }
+  }
+  return output;
+}
 
 std::string to_lower_copy(std::string text) {
   std::transform(text.begin(), text.end(), text.begin(),
@@ -289,12 +362,46 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
                                 static_cast<size_t>(latent_h) *
                                 static_cast<size_t>(latent_w);
 
+    // Wan2.2-TI2V-5B image conditioning: encode the init image once, then pin
+    // latent frame 0 to it before every DiT evaluation.
+    const size_t latent_plane =
+        static_cast<size_t>(latent_h) * static_cast<size_t>(latent_w);
+    const bool has_init_image = !params.init_image_bytes.empty();
+    std::vector<float> image_latent;
+    if (has_init_image) {
+      check_abort(abort, "aborted before init image encode");
+      const RgbImage image = decode_init_image(params.init_image_bytes);
+      const std::vector<float> rgb =
+          resize_image_to_nchw(image, params.width, params.height);
+      const WanVaeEncoded encoded = encode_wan_vae_image_fp32(
+          std::filesystem::path(model_dir_) / "vae", rgb, params.height,
+          params.width, gpu_);
+      update_peak_vram(encoded.peak_native_device_bytes);
+      if (encoded.shape.size() != 5 || encoded.shape[0] != 1 ||
+          encoded.shape[1] != channels || encoded.shape[2] != 1 ||
+          encoded.shape[3] != latent_h || encoded.shape[4] != latent_w) {
+        throw std::runtime_error("unexpected Wan2.2 VAE encoder output shape");
+      }
+      image_latent = encoded.data;
+    }
+    const auto pin_first_frame = [&](std::vector<float>& target) {
+      for (int c = 0; c < channels; ++c) {
+        std::copy(
+            image_latent.begin() + static_cast<std::ptrdiff_t>(c) * latent_plane,
+            image_latent.begin() +
+                static_cast<std::ptrdiff_t>(c + 1) * latent_plane,
+            target.begin() +
+                static_cast<std::ptrdiff_t>(c) * latent_t * latent_plane);
+      }
+    };
+
     std::mt19937_64 rng(params.seed);
     std::normal_distribution<float> dist(0.0f, 1.0f);
     std::vector<float> latents(latent_count);
     for (size_t i = 0; i < latent_count; ++i) {
       latents[i] = dist(rng);
     }
+    if (has_init_image) pin_first_frame(latents);
 
     // Wan2.2-TI2V-5B ships UniPCMultistepScheduler with solver_order=2,
     // solver_type="bh2", predict_x0=true, lower_order_final=true and
@@ -306,9 +413,10 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       check_abort(abort, "aborted before step " + std::to_string(step + 1) +
                              "/" + std::to_string(params.steps));
       const float t_val = schedule.timesteps[static_cast<size_t>(step)];
+      if (has_init_image) pin_first_frame(latents);
       WanDitOutput cond = wan_cuda_->dit.forward(
           latents.data(), latent_t, latent_h, latent_w, t_val,
-          pos_ctx.hidden_states.data(), pos_len);
+          pos_ctx.hidden_states.data(), pos_len, has_init_image);
       update_peak_vram(cond.stats.peak_vram_bytes);
 
       std::vector<float> velocity = std::move(cond.velocity);
@@ -317,7 +425,7 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
                                "/" + std::to_string(params.steps));
         WanDitOutput uncond = wan_cuda_->dit.forward(
             latents.data(), latent_t, latent_h, latent_w, t_val,
-            neg_hidden.data(), neg_len);
+            neg_hidden.data(), neg_len, has_init_image);
         update_peak_vram(uncond.stats.peak_vram_bytes);
         const float gs = params.guidance_scale;
         for (size_t i = 0; i < latent_count; ++i) {
@@ -326,6 +434,7 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       }
 
       solver.step(step, latents.data(), velocity.data(), latent_count);
+      if (has_init_image) pin_first_frame(latents);
       if (params.step_delay_ms > 0) {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(params.step_delay_ms));
@@ -334,6 +443,7 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
                              std::to_string(params.steps));
     }
 
+    if (has_init_image) pin_first_frame(latents);
     check_abort(abort, "aborted before VAE decode");
     const std::vector<int64_t> latent_shape = {
         1, channels, latent_t, latent_h, latent_w};

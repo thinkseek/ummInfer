@@ -968,6 +968,362 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Single-frame encoder (Diffusers AutoencoderKLWan.encode at T=1).
+//
+// At T=1 every causal feature cache is still empty, so a cache-free causal
+// convolution is bit-identical to the streaming path: left temporal padding of
+// kd-1 zeros and symmetric spatial padding. WanResample.downsample3d only runs
+// its 2D half because the temporal convolution is skipped for the first chunk.
+// ---------------------------------------------------------------------------
+namespace {
+
+// ResBlock without a causal cache. Equivalent to res_block() at T=1.
+Tensor res_block_plain(CudaContext& context, const Tensor& input,
+                       const ResBlock& block) {
+  Tensor output = rms_norm(input, block.norm1);
+  silu_inplace(output);
+  output = conv3d(context, output, block.conv1);
+  output = rms_norm(output, block.norm2);
+  silu_inplace(output);
+  output = conv3d(context, output, block.conv2);
+  if (block.has_shortcut) {
+    Tensor identity = conv3d(context, input, block.shortcut);
+    add_inplace(output, identity);
+  } else {
+    add_inplace(output, input);
+  }
+  return output;
+}
+
+// im2col for a 2D stride-2 convolution whose input was ZeroPad2d((0,1,0,1))'d,
+// which is exactly WanResample's "downsample2d" pre-processing.
+__global__ void im2col_stride2_kernel(const float* input, float* columns,
+                                      int64_t channels, int64_t height,
+                                      int64_t width, int64_t kh, int64_t kw,
+                                      int64_t out_height, int64_t out_width) {
+  const int64_t positions = out_height * out_width;
+  const int64_t n = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (n >= positions) return;
+  const int64_t ow = n % out_width;
+  const int64_t oh = n / out_width;
+  int64_t k = 0;
+  for (int64_t c = 0; c < channels; ++c) {
+    for (int64_t dy = 0; dy < kh; ++dy) {
+      const int64_t ih = oh * 2 + dy;
+      for (int64_t dx = 0; dx < kw; ++dx, ++k) {
+        const int64_t iw = ow * 2 + dx;
+        columns[k * positions + n] =
+            (ih < height && iw < width)
+                ? input[(c * height + ih) * width + iw]
+                : 0.0f;
+      }
+    }
+  }
+}
+
+// ZeroPad2d((0,1,0,1)) + Conv2d(3x3, stride 2), applied per frame. Requires T=1.
+Tensor conv2d_stride2(CudaContext& context, const Tensor& input,
+                      const Conv& conv) {
+  if (input.time != 1 || input.channels != conv.input_channels) {
+    throw std::invalid_argument("stride-2 convolution expects a single frame");
+  }
+  const int64_t out_h = (input.height + 1 - conv.kh) / 2 + 1;
+  const int64_t out_w = (input.width + 1 - conv.kw) / 2 + 1;
+  const int64_t positions = out_h * out_w;
+  const int64_t kernel_size = conv.input_channels * conv.kh * conv.kw;
+  if (positions > std::numeric_limits<int>::max() ||
+      kernel_size > std::numeric_limits<int>::max() ||
+      conv.output_channels > std::numeric_limits<int>::max()) {
+    throw std::overflow_error("stride-2 convolution exceeds cuBLAS limits");
+  }
+  DeviceBuffer columns(checked_product({kernel_size, positions}));
+  Tensor output(conv.output_channels, 1, out_h, out_w);
+  im2col_stride2_kernel<<<grid_for(positions), 256>>>(
+      input.data(), columns.data(), input.channels, input.height, input.width,
+      conv.kh, conv.kw, out_h, out_w);
+  UMM_CUDA(cudaGetLastError());
+  const float alpha = 1.0f;
+  const float beta = 0.0f;
+  UMM_CUBLAS(cublasSgemm(
+      context.handle(), CUBLAS_OP_N, CUBLAS_OP_N, static_cast<int>(positions),
+      static_cast<int>(conv.output_channels), static_cast<int>(kernel_size),
+      &alpha, columns.data(), static_cast<int>(positions), conv.weight.data(),
+      static_cast<int>(kernel_size), &beta, output.data(),
+      static_cast<int>(positions)));
+  bias_chunk_kernel<<<grid_for(positions * conv.output_channels), 256>>>(
+      output.data(), positions, 0, positions, conv.output_channels,
+      conv.bias.data());
+  UMM_CUDA(cudaGetLastError());
+  return output;
+}
+
+// AvgDown3D: zero-pad the front of the time axis, then average every
+// (factor_t, factor_s, factor_s) group of the flattened (channel, t, y, x) axis
+// into one output channel.
+__global__ void avg_down3d_kernel(const float* input, float* output,
+                                  int64_t out_channels, int64_t time,
+                                  int64_t height, int64_t width,
+                                  int64_t out_time, int64_t out_height,
+                                  int64_t out_width, int64_t factor_t,
+                                  int64_t factor_s, int64_t group_size,
+                                  int64_t pad_t) {
+  const int64_t factor = factor_t * factor_s * factor_s;
+  const size_t count = static_cast<size_t>(out_channels * out_time * out_height *
+                                           out_width);
+  const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= count) return;
+  const int64_t ow = index % out_width;
+  const int64_t oh = (index / out_width) % out_height;
+  const int64_t ot = (index / (out_width * out_height)) % out_time;
+  const int64_t oc = index / (out_width * out_height * out_time);
+  float sum = 0.0f;
+  for (int64_t g = 0; g < group_size; ++g) {
+    const int64_t p = oc * group_size + g;
+    const int64_t c = p / factor;
+    const int64_t remainder = p % factor;
+    const int64_t it = remainder / (factor_s * factor_s);
+    const int64_t ih = (remainder / factor_s) % factor_s;
+    const int64_t iw = remainder % factor_s;
+    const int64_t src_t = ot * factor_t + it - pad_t;
+    if (src_t < 0) continue;  // front zero padding
+    sum += input[((c * time + src_t) * height + oh * factor_s + ih) * width +
+                 ow * factor_s + iw];
+  }
+  output[index] = sum / static_cast<float>(group_size);
+}
+
+Tensor avg_down3d(const Tensor& input, int64_t out_channels, int64_t factor_t,
+                  int64_t factor_s) {
+  const int64_t factor = factor_t * factor_s * factor_s;
+  const int64_t numerator = input.channels * factor;
+  if (numerator % out_channels != 0) {
+    throw std::invalid_argument("AvgDown3D channel ratio is not integral");
+  }
+  const int64_t group_size = numerator / out_channels;
+  const int64_t pad_t = (factor_t - input.time % factor_t) % factor_t;
+  const int64_t out_time = (input.time + pad_t) / factor_t;
+  const int64_t out_height = input.height / factor_s;
+  const int64_t out_width = input.width / factor_s;
+  Tensor output(out_channels, out_time, out_height, out_width);
+  avg_down3d_kernel<<<grid_for(output.numel()), 256>>>(
+      input.data(), output.data(), out_channels, input.time, input.height,
+      input.width, out_time, out_height, out_width, factor_t, factor_s,
+      group_size, pad_t);
+  UMM_CUDA(cudaGetLastError());
+  return output;
+}
+
+struct EncoderDownBlock {
+  std::vector<ResBlock> resnets;
+  bool has_downsample = false;
+  bool temporal = false;
+  int64_t factor_t = 1;
+  int64_t factor_s = 1;
+  int64_t in_channels = 0;
+  int64_t out_channels = 0;
+  Conv resample_conv;
+};
+
+struct Encoder {
+  Conv conv_in;
+  std::vector<EncoderDownBlock> down_blocks;
+  ResBlock mid_res0;
+  ResBlock mid_res1;
+  Norm mid_norm;
+  Conv mid_qkv;
+  Conv mid_proj;
+  Norm norm_out;
+  Conv conv_out;
+  int64_t latent_channels = 0;
+};
+
+Encoder load_encoder(const SafetensorsMmap& file, const WanVaeConfig& config) {
+  Encoder encoder;
+  encoder.conv_in = load_conv(file, "encoder.conv_in");
+
+  std::vector<int64_t> dims;
+  dims.push_back(config.dim);
+  for (const int multiplier : config.dim_mult) {
+    dims.push_back(static_cast<int64_t>(config.dim) * multiplier);
+  }
+  const int64_t blocks = static_cast<int64_t>(config.dim_mult.size());
+  for (int64_t i = 0; i < blocks; ++i) {
+    EncoderDownBlock block;
+    block.in_channels = dims[static_cast<size_t>(i)];
+    block.out_channels = dims[static_cast<size_t>(i + 1)];
+    const bool last = i == blocks - 1;
+    // WanEncoder3d passes temperal_downsample[i] only for non-final blocks.
+    block.temporal =
+        !last && config.temperal_downsample[static_cast<size_t>(i)];
+    block.factor_t = block.temporal ? 2 : 1;
+    block.factor_s = last ? 1 : 2;
+    for (int64_t j = 0; j < config.num_res_blocks; ++j) {
+      block.resnets.push_back(load_res_block(
+          file, "encoder.down_blocks." + std::to_string(i) + ".resnets." +
+                    std::to_string(j)));
+    }
+    if (!last) {
+      block.has_downsample = true;
+      block.resample_conv = load_conv(
+          file, "encoder.down_blocks." + std::to_string(i) +
+                    ".downsampler.resample.1");
+      if (block.temporal &&
+          !file.contains("encoder.down_blocks." + std::to_string(i) +
+                         ".downsampler.time_conv.weight")) {
+        throw std::invalid_argument("encoder temporal downsampler is missing");
+      }
+    }
+    encoder.down_blocks.push_back(std::move(block));
+  }
+
+  encoder.mid_res0 = load_res_block(file, "encoder.mid_block.resnets.0");
+  encoder.mid_res1 = load_res_block(file, "encoder.mid_block.resnets.1");
+  const int64_t mid_channels = encoder.mid_res0.conv1.output_channels;
+  encoder.mid_norm =
+      load_norm(file, "encoder.mid_block.attentions.0.norm", mid_channels);
+  encoder.mid_qkv = load_conv(file, "encoder.mid_block.attentions.0.to_qkv");
+  encoder.mid_proj = load_conv(file, "encoder.mid_block.attentions.0.proj");
+  encoder.norm_out = load_norm(file, "encoder.norm_out", mid_channels);
+  encoder.conv_out = load_conv(file, "encoder.conv_out");
+  encoder.latent_channels = encoder.conv_out.output_channels;
+  if (encoder.conv_out.input_channels != mid_channels ||
+      encoder.latent_channels != 2 * config.z_dim) {
+    throw std::invalid_argument("encoder output channels must be 2 * z_dim");
+  }
+  return encoder;
+}
+
+// Diffusers patchify(p=2) for [C, 1, H, W]: channel index is
+// (c, x-patch, y-patch) with the x patch index outer.
+std::vector<float> patchify_image(const std::vector<float>& rgb, int channels,
+                                  int height, int width, int patch) {
+  const int out_h = height / patch;
+  const int out_w = width / patch;
+  std::vector<float> output(static_cast<size_t>(channels) * patch * patch *
+                            out_h * out_w);
+  const size_t plane = static_cast<size_t>(height) * width;
+  for (int c = 0; c < channels; ++c) {
+    for (int py = 0; py < patch; ++py) {
+      for (int px = 0; px < patch; ++px) {
+        const size_t out_channel =
+            static_cast<size_t>(c) * patch * patch + px * patch + py;
+        float* dst = output.data() + out_channel * out_h * out_w;
+        for (int y = 0; y < out_h; ++y) {
+          for (int x = 0; x < out_w; ++x) {
+            dst[static_cast<size_t>(y) * out_w + x] =
+                rgb[static_cast<size_t>(c) * plane +
+                    static_cast<size_t>(y * patch + py) * width +
+                    (x * patch + px)];
+          }
+        }
+      }
+    }
+  }
+  return output;
+}
+
+}  // namespace
+
+WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
+                                        const std::vector<float>& rgb_nchw,
+                                        int height, int width, int gpu) {
+  if (height <= 0 || width <= 0 || height % 16 != 0 || width % 16 != 0) {
+    throw std::invalid_argument("encoder input size must be divisible by 16");
+  }
+  const WanVaeConfig config = load_wan_vae_config(vae_dir);
+  if (!config.is_residual || config.patch_size <= 0) {
+    throw std::invalid_argument("only the Wan2.2 residual encoder is supported");
+  }
+  const int64_t patch = config.patch_size;
+  if (height % patch != 0 || width % patch != 0) {
+    throw std::invalid_argument("encoder input size must be divisible by patch_size");
+  }
+  const size_t expected = checked_product({3, 1, height, width});
+  if (rgb_nchw.size() != expected) {
+    throw std::invalid_argument("encoder RGB buffer size does not match its size");
+  }
+
+  g_peak_device_bytes = 0;
+  CudaContext context(gpu);
+  SafetensorsMmap file(vae_dir / "diffusion_pytorch_model.safetensors");
+  Encoder encoder = load_encoder(file, config);
+  if (file.tensor("quant_conv.weight").shape[0] != encoder.latent_channels) {
+    throw std::invalid_argument("quant_conv does not match the encoder output");
+  }
+  Conv quant_conv = load_conv(file, "quant_conv");
+
+  const auto begin = std::chrono::steady_clock::now();
+
+  const auto patchified =
+      patchify_image(rgb_nchw, 3, height, width, static_cast<int>(patch));
+  Tensor x(static_cast<int64_t>(encoder.conv_in.input_channels), 1,
+           height / patch, width / patch);
+  UMM_CUDA(cudaMemcpy(x.data(), patchified.data(),
+                      patchified.size() * sizeof(float),
+                      cudaMemcpyHostToDevice));
+
+  x = conv3d(context, x, encoder.conv_in);
+  for (const EncoderDownBlock& block : encoder.down_blocks) {
+    Tensor shortcut_input = clone_tensor(x);
+    for (const ResBlock& resnet : block.resnets) {
+      x = res_block_plain(context, x, resnet);
+    }
+    if (block.has_downsample) {
+      x = conv2d_stride2(context, x, block.resample_conv);
+    }
+    Tensor shortcut =
+        avg_down3d(shortcut_input, block.out_channels, block.factor_t,
+                   block.factor_s);
+    if (shortcut.channels != x.channels || shortcut.time != x.time ||
+        shortcut.height != x.height || shortcut.width != x.width) {
+      throw std::runtime_error("AvgDown3D shortcut shape mismatch");
+    }
+    add_inplace(x, shortcut);
+  }
+
+  x = res_block_plain(context, x, encoder.mid_res0);
+  x = attention(context, x, encoder.mid_norm, encoder.mid_qkv,
+                encoder.mid_proj);
+  x = res_block_plain(context, x, encoder.mid_res1);
+  x = rms_norm(x, encoder.norm_out);
+  silu_inplace(x);
+  x = conv3d(context, x, encoder.conv_out);
+  x = conv3d(context, x, quant_conv);
+
+  const int64_t latent_h = height / 16;
+  const int64_t latent_w = width / 16;
+  if (x.channels != 2 * config.z_dim || x.time != 1 || x.height != latent_h ||
+      x.width != latent_w) {
+    throw std::runtime_error("unexpected Wan2.2 VAE encoder output shape");
+  }
+
+  // posterior mean = first z_dim channels of the 2 * z_dim statistics.
+  const size_t plane = static_cast<size_t>(latent_h * latent_w);
+  std::vector<float> raw(static_cast<size_t>(config.z_dim) * plane);
+  UMM_CUDA(cudaMemcpy(raw.data(), x.data(), raw.size() * sizeof(float),
+                      cudaMemcpyDeviceToHost));
+  UMM_CUDA(cudaDeviceSynchronize());
+
+  WanVaeEncoded output;
+  output.shape = {1, config.z_dim, 1, latent_h, latent_w};
+  output.data.resize(raw.size());
+  for (int c = 0; c < config.z_dim; ++c) {
+    const float mean_value = config.latents_mean[static_cast<size_t>(c)];
+    const float std_value = config.latents_std[static_cast<size_t>(c)];
+    const float* src = raw.data() + static_cast<size_t>(c) * plane;
+    float* dst = output.data.data() + static_cast<size_t>(c) * plane;
+    for (size_t i = 0; i < plane; ++i) {
+      dst[i] = (src[i] - mean_value) / std_value;
+    }
+  }
+  output.encode_ms = std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - begin)
+                         .count();
+  output.peak_native_device_bytes = g_peak_device_bytes;
+  return output;
+}
+
 }  // namespace umminfer::video
 
 #endif  // UMM_VIDEO_CUDA

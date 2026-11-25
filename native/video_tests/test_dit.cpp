@@ -102,8 +102,10 @@ int run_parity(const std::unordered_map<std::string, std::string>& args) {
   const auto expected = read_f32(args.at("--expected-bin"), latent_count);
 
   umminfer::video::WanDit dit(args.at("--model-dir"), gpu);
-  const auto output = dit.forward(latent.data(), frames, height, width, timestep,
-                                  context.data(), text_len);
+  const bool first_frame_zero = args.contains("--first-frame-zero");
+  const auto output = dit.forward(latent.data(), frames, height, width,
+                                  timestep, context.data(), text_len,
+                                  first_frame_zero);
   write_f32(args.at("--output-bin"), output.velocity);
   const Metrics metrics = compare(output.velocity, expected);
   std::cout << std::fixed << std::setprecision(9)
@@ -145,6 +147,12 @@ int run_e2e(const std::unordered_map<std::string, std::string>& args) {
   params.guidance_scale =
       args.contains("--guidance-scale") ? std::stof(args.at("--guidance-scale")) : 5.0f;
   params.seed = args.contains("--seed") ? std::stoull(args.at("--seed")) : 42ULL;
+  if (args.contains("--init-image")) {
+    std::ifstream image(args.at("--init-image"), std::ios::binary);
+    if (!image) throw std::runtime_error("failed to open init image");
+    params.init_image_bytes.assign(std::istreambuf_iterator<char>(image),
+                                   std::istreambuf_iterator<char>());
+  }
 
   umminfer::video::VideoEngine engine(
       gpu, args.at("--model-dir"), umminfer::video::VideoBackendMode::kCuda);
@@ -163,6 +171,7 @@ int run_e2e(const std::unordered_map<std::string, std::string>& args) {
             << "frames=" << result.frames << '\n'
             << "fps=" << result.fps << '\n'
             << "steps=" << result.steps << '\n'
+            << "i2v=" << (params.init_image_bytes.empty() ? 0 : 1) << '\n'
             << "seed=" << result.seed << '\n'
             << "denoise_ms=" << result.denoise_ms << '\n'
             << "encode_ms=" << result.encode_ms << '\n'
@@ -179,8 +188,8 @@ int main(int argc, char** argv) {
     std::unordered_map<std::string, std::string> args;
     for (int i = 1; i < argc; ) {
       const std::string key = argv[i];
-      if (key == "--e2e") {
-        args.emplace("--e2e", "1");
+      if (key == "--e2e" || key == "--first-frame-zero") {
+        args.emplace(key, "1");
         i += 1;
         continue;
       }

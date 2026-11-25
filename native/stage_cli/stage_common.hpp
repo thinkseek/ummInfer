@@ -199,6 +199,9 @@ struct VideoWork {
   float guidance_scale = 5.0f;
   uint64_t seed = 0;
   bool has_seed = false;
+  // Optional encoded image for Wan2.2-TI2V-5B first-frame conditioning.
+  // A data: URL is base64-decoded; binary bytes are passed through.
+  std::string init_image_bytes;
 };
 
 // Parses UnifiedEngine video leg inputs ({prompt, size?, seconds?, fps?,

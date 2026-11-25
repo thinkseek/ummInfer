@@ -391,6 +391,84 @@ __global__ void output_modulation_kernel(const float* table, const Bf16* temb,
   if (i < 2 * kDim) output[i] = table[i] + to_float(temb[i % kDim]);
 }
 
+
+// Wan2.2-TI2V-5B expand_timesteps conditioning: tokens below
+// `first_frame_tokens` belong to latent frame 0 and carry timestep 0, all other
+// tokens carry the current step timestep. Two embedding groups are therefore
+// enough, and these kernels select the group per token exactly like Diffusers'
+// per-token `scale_shift_table + temb` broadcast.
+__global__ void modulation_pair_kernel(const float* table,
+                                       const Bf16* time_proj, float* output,
+                                       int group_stride) {
+  const size_t count = static_cast<size_t>(2) * group_stride;
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= count) return;
+  output[i] = table[i % group_stride] + to_float(time_proj[i]);
+}
+
+__global__ void output_modulation_pair_kernel(const float* table,
+                                              const Bf16* temb, float* output) {
+  const size_t count = static_cast<size_t>(2) * 2 * kDim;
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= count) return;
+  const size_t group = i / (2 * kDim);
+  const size_t offset = i % (2 * kDim);
+  output[i] = table[offset] + to_float(temb[group * kDim + offset % kDim]);
+}
+
+__global__ void layer_norm_pair_kernel(const Bf16* input, Bf16* output,
+                                       const float* gamma, const float* beta,
+                                       const float* modulation, int rows,
+                                       int scale_row, int shift_row, int tokens,
+                                       float eps, int first_frame_tokens) {
+  const int token = blockIdx.x;
+  if (token >= tokens) return;
+  const int group = token < first_frame_tokens ? 0 : 1;
+  const float* mod = modulation + static_cast<size_t>(group) * rows * kDim;
+  const float* scale = mod + scale_row * kDim;
+  const float* shift = mod + shift_row * kDim;
+  const size_t base = static_cast<size_t>(token) * kDim;
+  __shared__ float reduction[kThreads];
+  float local = 0.0f;
+  for (int d = threadIdx.x; d < kDim; d += kThreads) {
+    local += to_float(input[base + d]);
+  }
+  reduction[threadIdx.x] = local;
+  __syncthreads();
+  reduce_sum(reduction);
+  const float mean = reduction[0] / kDim;
+  __syncthreads();
+  local = 0.0f;
+  for (int d = threadIdx.x; d < kDim; d += kThreads) {
+    const float centered = to_float(input[base + d]) - mean;
+    local += centered * centered;
+  }
+  reduction[threadIdx.x] = local;
+  __syncthreads();
+  reduce_sum(reduction);
+  const float inverse = rsqrtf(reduction[0] / kDim + eps);
+  for (int d = threadIdx.x; d < kDim; d += kThreads) {
+    float value = (to_float(input[base + d]) - mean) * inverse;
+    if (gamma != nullptr) value = value * gamma[d] + beta[d];
+    value = value * (1.0f + scale[d]) + shift[d];
+    output[base + d] = to_bf16(value);
+  }
+}
+
+__global__ void residual_pair_kernel(Bf16* hidden, const Bf16* update,
+                                     const float* modulation, int rows,
+                                     int gate_row, size_t count,
+                                     int first_frame_tokens) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= count) return;
+  const int token = static_cast<int>(i / kDim);
+  const int group = token < first_frame_tokens ? 0 : 1;
+  const float multiplier =
+      modulation[static_cast<size_t>(group) * rows * kDim + gate_row * kDim +
+                 (i % kDim)];
+  hidden[i] = to_bf16(to_float(hidden[i]) + to_float(update[i]) * multiplier);
+}
+
 }  // namespace
 
 struct WanDit::Impl {
@@ -586,7 +664,8 @@ struct WanDit::Impl {
   }
 
   WanDitOutput forward(const float* latent, int frames, int height, int width,
-                       float timestep, const float* context, int text_len) {
+                       float timestep, const float* context, int text_len,
+                       bool first_frame_zero_timestep) {
     if (latent == nullptr || context == nullptr || frames <= 0 || height <= 0 ||
         width <= 0 || height % 2 != 0 || width % 2 != 0 || text_len <= 0 ||
         text_len > 512 || !std::isfinite(timestep)) {
@@ -596,22 +675,37 @@ struct WanDit::Impl {
     tracker_.peak = tracker_.current;
     UMM_DIT_CUDA(cudaSetDevice(gpu_));
     const int tokens = frames * (height / 2) * (width / 2);
+    // Wan2.2-TI2V-5B expand_timesteps: latent frame 0 tokens get t=0.
+    const bool per_frame = first_frame_zero_timestep;
+    const int temb_rows = per_frame ? 2 : 1;
+    const size_t time_rows = static_cast<size_t>(temb_rows);
+    const int first_frame_tokens = (height / 2) * (width / 2);
     const size_t model_count = static_cast<size_t>(tokens) * kDim;
     const size_t kv_count = static_cast<size_t>(std::max(tokens, text_len)) * kDim;
     const size_t text_count = static_cast<size_t>(text_len) * kDim;
     const size_t latent_count = static_cast<size_t>(kChannels) * frames * height * width;
     const int attention_keys = std::max(tokens, text_len);
 
-    const auto time_embedding = wan_sinusoidal_timestep_embedding(timestep, kFreqDim);
+    std::vector<float> time_embedding;
+    if (per_frame) {
+      const auto zero = wan_sinusoidal_timestep_embedding(0.0f, kFreqDim);
+      const auto step = wan_sinusoidal_timestep_embedding(timestep, kFreqDim);
+      time_embedding.resize(static_cast<size_t>(2) * kFreqDim);
+      std::copy(zero.begin(), zero.end(), time_embedding.begin());
+      std::copy(step.begin(), step.end(), time_embedding.begin() + kFreqDim);
+    } else {
+      time_embedding = wan_sinusoidal_timestep_embedding(timestep, kFreqDim);
+    }
     const auto rope = wan_build_rope_3d(frames, height, width, kHeadDim);
     const auto patch = wan_patchify_host(latent, kChannels, frames, height, width);
 
-    DeviceBuffer time_input(checked_bytes(kFreqDim, 4), tracker_);
-    DeviceBuffer time_a(checked_bytes(kDim, 4), tracker_);
-    DeviceBuffer time_b(checked_bytes(kDim, 4), tracker_);
-    DeviceBuffer temb(checked_bytes(kDim, 2), tracker_);
-    DeviceBuffer time_proj(checked_bytes(6 * kDim, 2), tracker_);
-    DeviceBuffer modulation(checked_bytes(6 * kDim, 4), tracker_);
+    DeviceBuffer time_input(checked_bytes(kFreqDim * time_rows, 4), tracker_);
+    DeviceBuffer time_a(checked_bytes(kDim * time_rows, 4), tracker_);
+    DeviceBuffer time_b(checked_bytes(kDim * time_rows, 4), tracker_);
+    DeviceBuffer temb(checked_bytes(kDim * time_rows, 2), tracker_);
+    DeviceBuffer temb_act(checked_bytes(kDim * time_rows, 2), tracker_);
+    DeviceBuffer time_proj(checked_bytes(6 * kDim * time_rows, 2), tracker_);
+    DeviceBuffer modulation(checked_bytes(6 * kDim * time_rows, 4), tracker_);
     DeviceBuffer text_input(checked_bytes(static_cast<size_t>(text_len) * kTextDim, 2), tracker_);
     DeviceBuffer text_a(checked_bytes(text_count, 2), tracker_);
     DeviceBuffer text_projected(checked_bytes(text_count, 2), tracker_);
@@ -629,22 +723,38 @@ struct WanDit::Impl {
     DeviceBuffer probabilities(checked_bytes(static_cast<size_t>(kHeads) * kQueryTile * attention_keys, 2), tracker_);
     DeviceBuffer output_tiles(checked_bytes(static_cast<size_t>(kQueryTile) * kDim, 4), tracker_);
 
-    UMM_DIT_CUDA(cudaMemcpy(time_input.data(), time_embedding.data(),
-                            checked_bytes(kFreqDim, 4), cudaMemcpyHostToDevice));
-    linear("condition_embedder.time_embedder.linear_1", kFreqDim, kDim, 1,
-           time_input.data(), time_a.data());
-    silu_f32_kernel<<<grid_for(kDim), kThreads>>>(time_a.as<float>(), kDim);
+    UMM_DIT_CUDA(cudaMemcpy(
+        time_input.data(), time_embedding.data(),
+        checked_bytes(kFreqDim * time_rows, 4), cudaMemcpyHostToDevice));
+    linear("condition_embedder.time_embedder.linear_1", kFreqDim, kDim,
+           temb_rows, time_input.data(), time_a.data());
+    silu_f32_kernel<<<grid_for(kDim * time_rows), kThreads>>>(
+        time_a.as<float>(), kDim * time_rows);
     UMM_DIT_CUDA(cudaGetLastError());
-    linear("condition_embedder.time_embedder.linear_2", kDim, kDim, 1,
-           time_a.data(), time_b.data());
-    float_to_bf16_kernel<<<grid_for(kDim), kThreads>>>(time_b.as<float>(), temb.as<Bf16>(), kDim);
+    linear("condition_embedder.time_embedder.linear_2", kDim, kDim,
+           temb_rows, time_a.data(), time_b.data());
+    float_to_bf16_kernel<<<grid_for(kDim * time_rows), kThreads>>>(
+        time_b.as<float>(), temb.as<Bf16>(), kDim * time_rows);
     UMM_DIT_CUDA(cudaGetLastError());
-    silu_bf16_kernel<<<grid_for(kDim), kThreads>>>(temb.as<Bf16>(), kDim);
-    UMM_DIT_CUDA(cudaGetLastError());
-    linear("condition_embedder.time_proj", kDim, 6 * kDim, 1, temb.data(), time_proj.data());
-    // The output norm uses the unactivated time embedding, so restore temb after time_proj.
-    float_to_bf16_kernel<<<grid_for(kDim), kThreads>>>(time_b.as<float>(), temb.as<Bf16>(), kDim);
-    UMM_DIT_CUDA(cudaGetLastError());
+    if (per_frame) {
+      // time_proj consumes the activated embedding; the output norm keeps
+      // the unactivated one, so the activated copy gets its own buffer.
+      UMM_DIT_CUDA(cudaMemcpy(temb_act.data(), temb.data(),
+                              checked_bytes(kDim * time_rows, 2),
+                              cudaMemcpyDeviceToDevice));
+      silu_bf16_kernel<<<grid_for(kDim * time_rows), kThreads>>>(
+          temb_act.as<Bf16>(), kDim * time_rows);
+      UMM_DIT_CUDA(cudaGetLastError());
+      linear("condition_embedder.time_proj", kDim, 6 * kDim, temb_rows,
+             temb_act.data(), time_proj.data());
+    } else {
+      silu_bf16_kernel<<<grid_for(kDim), kThreads>>>(temb.as<Bf16>(), kDim);
+      UMM_DIT_CUDA(cudaGetLastError());
+      linear("condition_embedder.time_proj", kDim, 6 * kDim, 1, temb.data(), time_proj.data());
+      // The output norm uses the unactivated time embedding, so restore temb after time_proj.
+      float_to_bf16_kernel<<<grid_for(kDim), kThreads>>>(time_b.as<float>(), temb.as<Bf16>(), kDim);
+      UMM_DIT_CUDA(cudaGetLastError());
+    }
 
     {
       std::vector<float> context_f32(context, context + static_cast<size_t>(text_len) * kTextDim);
@@ -677,18 +787,50 @@ struct WanDit::Impl {
     linear("patch_embedding", kChannels * kPatchVolume, kDim, tokens,
            patch_tokens.data(), x.data());
 
+    // Per-token modulation differs only between latent frame 0 and the
+    // remaining frames, so two embedding groups drive the pair kernels.
+    const auto apply_norm = [&](const Bf16* input, Bf16* output,
+                                const float* gamma, const float* beta,
+                                int shift_row, int scale_row, int rows) {
+      if (per_frame) {
+        layer_norm_pair_kernel<<<tokens, kThreads>>>(
+            input, output, gamma, beta, modulation.as<float>(), rows, scale_row,
+            shift_row, tokens, config_.eps, first_frame_tokens);
+      } else {
+        const float* mod = modulation.as<float>();
+        layer_norm_kernel<<<tokens, kThreads>>>(
+            input, output, gamma, beta, mod + shift_row * kDim,
+            mod + scale_row * kDim, tokens, config_.eps);
+      }
+      UMM_DIT_CUDA(cudaGetLastError());
+    };
+    const auto apply_residual = [&](const Bf16* update, int gate_row) {
+      if (per_frame) {
+        residual_pair_kernel<<<grid_for(model_count), kThreads>>>(
+            x.as<Bf16>(), update, modulation.as<float>(), 6, gate_row,
+            model_count, first_frame_tokens);
+      } else {
+        residual_kernel<<<grid_for(model_count), kThreads>>>(
+            x.as<Bf16>(), update, modulation.as<float>() + gate_row * kDim,
+            model_count);
+      }
+      UMM_DIT_CUDA(cudaGetLastError());
+    };
+
     for (int layer = 0; layer < kLayers; ++layer) {
       const std::string prefix = "blocks." + std::to_string(layer) + ".";
       const auto& table = tensor(prefix + "scale_shift_table");
-      modulation_kernel<<<grid_for(6 * kDim), kThreads>>>(
-          static_cast<const float*>(table.data), time_proj.as<Bf16>(),
-          modulation.as<float>(), 6);
+      if (per_frame) {
+        modulation_pair_kernel<<<grid_for(2 * 6 * kDim), kThreads>>>(
+            static_cast<const float*>(table.data), time_proj.as<Bf16>(),
+            modulation.as<float>(), 6 * kDim);
+      } else {
+        modulation_kernel<<<grid_for(6 * kDim), kThreads>>>(
+            static_cast<const float*>(table.data), time_proj.as<Bf16>(),
+            modulation.as<float>(), 6);
+      }
       UMM_DIT_CUDA(cudaGetLastError());
-      const float* mod = modulation.as<float>();
-      layer_norm_kernel<<<tokens, kThreads>>>(
-          x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr, mod, mod + kDim,
-          tokens, config_.eps);
-      UMM_DIT_CUDA(cudaGetLastError());
+      apply_norm(x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr, 0, 1, 6);
       linear(prefix + "attn1.to_q", kDim, kDim, tokens, normed.data(), q.data());
       linear(prefix + "attn1.to_k", kDim, kDim, tokens, normed.data(), k.data());
       linear(prefix + "attn1.to_v", kDim, kDim, tokens, normed.data(), v.data());
@@ -707,9 +849,7 @@ struct WanDit::Impl {
       attention(q.as<Bf16>(), k.as<Bf16>(), v.as<Bf16>(), tokens, tokens,
                 attended.as<Bf16>(), scores, probabilities, output_tiles);
       linear(prefix + "attn1.to_out.0", kDim, kDim, tokens, attended.data(), q.data());
-      residual_kernel<<<grid_for(model_count), kThreads>>>(
-          x.as<Bf16>(), q.as<Bf16>(), mod + 2 * kDim, model_count);
-      UMM_DIT_CUDA(cudaGetLastError());
+      apply_residual(q.as<Bf16>(), 2);
 
       layer_norm_kernel<<<tokens, kThreads>>>(
           x.as<Bf16>(), normed.as<Bf16>(),
@@ -734,27 +874,34 @@ struct WanDit::Impl {
           x.as<Bf16>(), q.as<Bf16>(), nullptr, model_count);
       UMM_DIT_CUDA(cudaGetLastError());
 
-      layer_norm_kernel<<<tokens, kThreads>>>(
-          x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr,
-          mod + 3 * kDim, mod + 4 * kDim, tokens, config_.eps);
-      UMM_DIT_CUDA(cudaGetLastError());
+      apply_norm(x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr, 3, 4, 6);
       linear(prefix + "ffn.net.0.proj", kDim, kFf, tokens, normed.data(), ff.data());
       gelu_tanh_kernel<<<grid_for(static_cast<size_t>(tokens) * kFf), kThreads>>>(
           ff.as<Bf16>(), static_cast<size_t>(tokens) * kFf);
       UMM_DIT_CUDA(cudaGetLastError());
       linear(prefix + "ffn.net.2", kFf, kDim, tokens, ff.data(), q.data());
-      residual_kernel<<<grid_for(model_count), kThreads>>>(
-          x.as<Bf16>(), q.as<Bf16>(), mod + 5 * kDim, model_count);
-      UMM_DIT_CUDA(cudaGetLastError());
+      apply_residual(q.as<Bf16>(), 5);
     }
 
-    output_modulation_kernel<<<grid_for(2 * kDim), kThreads>>>(
-        static_cast<const float*>(tensor("scale_shift_table").data), temb.as<Bf16>(),
-        modulation.as<float>());
-    UMM_DIT_CUDA(cudaGetLastError());
-    layer_norm_kernel<<<tokens, kThreads>>>(
-        x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr,
-        modulation.as<float>(), modulation.as<float>() + kDim, tokens, config_.eps);
+    if (per_frame) {
+      output_modulation_pair_kernel<<<grid_for(4 * kDim), kThreads>>>(
+          static_cast<const float*>(tensor("scale_shift_table").data),
+          temb.as<Bf16>(), modulation.as<float>());
+      UMM_DIT_CUDA(cudaGetLastError());
+      layer_norm_pair_kernel<<<tokens, kThreads>>>(
+          x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr,
+          modulation.as<float>(), 2, 1, 0, tokens, config_.eps,
+          first_frame_tokens);
+    } else {
+      output_modulation_kernel<<<grid_for(2 * kDim), kThreads>>>(
+          static_cast<const float*>(tensor("scale_shift_table").data),
+          temb.as<Bf16>(), modulation.as<float>());
+      UMM_DIT_CUDA(cudaGetLastError());
+      layer_norm_kernel<<<tokens, kThreads>>>(
+          x.as<Bf16>(), normed.as<Bf16>(), nullptr, nullptr,
+          modulation.as<float>(), modulation.as<float>() + kDim, tokens,
+          config_.eps);
+    }
     UMM_DIT_CUDA(cudaGetLastError());
     linear("proj_out", kDim, kProjection, tokens, normed.data(), q.data());
 
@@ -793,8 +940,9 @@ WanDit::WanDit(const std::filesystem::path& model_dir, int gpu)
 WanDit::~WanDit() = default;
 WanDitOutput WanDit::forward(const float* latent, int frames, int height,
                              int width, float timestep, const float* context,
-                             int text_len) {
-  return impl_->forward(latent, frames, height, width, timestep, context, text_len);
+                             int text_len, bool first_frame_zero_timestep) {
+  return impl_->forward(latent, frames, height, width, timestep, context,
+                        text_len, first_frame_zero_timestep);
 }
 
 }  // namespace umminfer::video

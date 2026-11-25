@@ -40,6 +40,10 @@ struct GenerateParams {
   float guidance_scale = 5.0f;
   uint64_t seed = 0;
   int step_delay_ms = 0;  // Optional per-step delay for deterministic abort tests.
+  // Optional PNG/JPEG/WebP bytes for Wan2.2-TI2V-5B image-to-video. When set,
+  // the image is VAE-encoded and latent frame 0 is pinned to it for every
+  // DiT evaluation.
+  std::string init_image_bytes;
 };
 
 struct GenerateResult {

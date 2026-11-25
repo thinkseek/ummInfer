@@ -598,6 +598,24 @@ VideoWork parse_video_work(const Value& work, int default_width,
     out.has_seed = true;
   }
 
+  // Wan2.2-TI2V-5B first-frame image. A string must be a data: URL; binary
+  // values are treated as raw PNG/JPEG bytes. The HTTP boundary already caps
+  // decoded payloads at 16 MiB, so the stage rejects anything larger.
+  if (const Value* image = inputs.find("image");
+      image != nullptr && !image->is_nil()) {
+    if (image->is_str()) {
+      out.init_image_bytes = load_image_bytes(image->as_str());
+    } else if (image->is_bin()) {
+      out.init_image_bytes = image->as_bin();
+    } else {
+      bad("video.image must be a data: URL string or binary bytes");
+    }
+    if (out.init_image_bytes.empty()) bad("video.image must not be empty");
+    if (out.init_image_bytes.size() > (16u << 20)) {
+      bad("video.image exceeds 16 MiB");
+    }
+  }
+
   return out;
 }
 
