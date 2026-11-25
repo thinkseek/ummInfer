@@ -21,8 +21,9 @@ model internals.
 
 The architecture figure lives in [README](../README.md#architecture), and the
 code-anchored implemented-versus-unverified/planned split lives in
-[feature-map.md](feature-map.md). This file holds the phases, their
-gates, the model plan, and the verification split.
+[feature-map.md](feature-map.md). The North-Star end-to-end UMM vision and joint
+training/ablation blueprint live in [vision.md](vision.md); this file holds the
+phases, their gates, the model plan, and the verification split.
 
 ## Phases
 
