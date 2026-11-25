@@ -174,10 +174,11 @@ semantic end-of-turn model (that is L3).
 
 The unified engine submits one TTS child leg per cut, `<id>:tts:0`,
 `<id>:tts:1`, ... in answer order. A non-streaming request keeps the frozen
-single `<id>:tts` leg and the one-shot artifact. A request that asks for image
-and audio together keeps one leg too, because the frozen contract orders image
-artifacts before audio. The request completes only when the VLM leg is
-terminal and every output leg is terminal.
+single `<id>:tts` leg and the one-shot artifact. When `audio.stream=true` is
+requested alongside image/video or interleaved narrative output (Wave 10+),
+sentence-level PCM16 streaming runs concurrently with visual legs; non-streaming
+mixed requests keep the single post-VLM WAV leg. The request completes only when
+the VLM leg is terminal and every output leg is terminal.
 
 Each streamed chunk becomes one `artifact` event with `media_type: "audio"`,
 `format: "pcm16"`, `mime_type: "audio/pcm"`, `sample_rate: 24000`,
@@ -199,9 +200,10 @@ VLM+TTS request for the transcript and forwards its events on the same socket:
 A new utterance cancels the response request through the unified engine, so
 barge-in stops both the VLM and the TTS stage at their existing checkpoints.
 Events that arrive after the cancel are dropped by the cleared request id.
-The spoken path does not opt into session history: the prompt would grow with
-every answer and first-audio latency with it. The session id still keys the
-VLM prefill cache.
+When the server is started with `--session-history`, realtime responses opt into
+`session_history=true` for completed turns (`src/serve/realtime_api.cpp:880`);
+cancelled/barged-in partial answers are not yet committed to session history.
+The session id also keys the VLM prefill cache.
 
 The turn buffer now drops exactly the committed turn on reset. Before this
 fix, `reset_turn` erased `turn_audio_start` bytes, which is 0 on a normal turn,
@@ -306,10 +308,11 @@ uncached answers are compared byte for byte and are equal.
 
 ## What L2 still needs
 
-**Incremental ASR encoding.** The realtime path still re-encodes the whole turn
-for each preview and each final, so ASR cost grows with the square of turn
-length. An encoder with cached state would remove that, and a replacement
-policy would keep the work of an in-flight request instead of aborting it.
+**Incremental ASR encoding.** Preview transcription is bounded to a 15-second
+sliding window (`kMaxPreviewSpanBytes` in `src/serve/realtime_api.cpp`) so
+previews stay O(1) on long monologues, while final commit still transcribes the
+full turn. A streaming encoder with cached state would avoid re-encoding the
+preview window altogether.
 
 **Client playback.** The server sends `audio.delta`; the bundled CLI client
 does not play it or stop playback on `speech_started` yet. A client must keep

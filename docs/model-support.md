@@ -120,7 +120,7 @@
 | **ASR** (`Qwen3-ASR-1.7B` / `Voxtral-Realtime`) | SM90 单卡 BF16 | 1) 目标语种/方言/噪声/专名成对回归（与 0.6B 同集对照）；2) `/v1/audio/transcriptions` 与 `/v1/realtime` + `server_vad` 打断恢复；3) 非法采样率/超长音频拒绝 | 区分权重体积与峰值 VRAM；按目标语种/方言/噪声/专名分组报告 WER/CER（避免只看单集而掩盖如 TED-LIUM 类退化）；Realtime 首字延迟 <1 s；记录音频与输出 SHA-256 |
 | **TTS** (`Qwen3-TTS-1.7B CustomVoice / Base` / `Kokoro-82M`) | SM90（Kokoro 另测 Mac CPU/Metal） | 1) `/v1/audio/speech` 非流式 WAV/PCM 与统一链路流式 PCM16；2) 分语种合成（CustomVoice）及参考音频+参考文本零样本克隆（Base）；3) 合成 WAV 经 ASR 回环转写 + speaker similarity + 人工听评；4) 中途 `/abort` | 校验 WAV 头/采样率/非静音比例/RMS/SHA-256 与 `stream_check identical=1`；必录**分语种 WER**、**speaker similarity** 与**人工听评**（明确：**ASR 回环仅证明内容可懂度，不能证明自然度与音色保真度**） |
 | **Image** (`FLUX.2-klein-4B` 商用候选 / `Qwen-Image-2.1` P2 研究) | SM90 单卡 BF16 | 1) 经 `umm-native-stage-image` 的中/英多提示词文生图与图像编辑（含目标分辨率）；2) 固定 seed 两次复现 SHA-256 一致；3) 去噪中途 `/abort` 退出；4) 优化前后消融对比 | 真实 PNG 解码校验宽高/通道/非纯色/SHA-256、权重体积与峰值 VRAM；默认替代 `2512` 前必过 **prompt alignment**、**人工质量**、**编辑能力** 与 **质量相当工作点延迟** 门禁（禁止将不同步数/工作点的墙钟比当作同质量加速比） |
-| **Video** (`Wan2.2-TI2V-5B` 或首个外部视频 Stage) | SM90 单卡 BF16（或真实外部上游） | 1) 经 `UnifiedEngine`（`POST /v1/chat/completions` `modalities=["text","video"]` + `--video-entry`）生成 MP4 并校验 SSE 分片重组与 SHA-256；2) 同会话取消 `/abort`（含跨会话 403）与显存/资源回收；3) 兼容校验 `/v1/videos*` 代理（若启用） | 真实解码器校验帧数/分辨率/FPS/时长与文件 SHA-256；无进程与显存泄漏；**测试 Stage 桩仅验控制面契约，严禁计作真实生视频验收（当前真实生视频 `NOT_RUN`）** |
+| **Video** (`Wan2.2-TI2V-5B` 或首个外部视频 Stage) | SM90 单卡 BF16（或真实外部上游） | 1) 经 `UnifiedEngine`（`POST /v1/chat/completions` `modalities=["text","video"]` + `--video-entry`）及 `POST /v1/visual/render`（T2V/I2V）生成 MP4 并校验 SSE 分片重组与 SHA-256；2) 同会话取消 `/abort`（含跨会话 403）与显存/资源回收；3) 兼容校验 `/v1/videos*` 代理（若启用） | 真实解码器校验帧数/分辨率/FPS/时长与文件 SHA-256；无进程与显存泄漏；**本机 SM90 原生 C++/CUDA Wan2.2 T2V/I2V 已实测上线（卡 6）；外部授权 `/v1/videos` 上游代理仍为 `NOT_RUN`** |
 
 ---
 
@@ -136,5 +136,5 @@
    - `qwen-image-2.1`：`40.68 GiB`（7 shards，非商用），`model_index.json` `cf1ecd104ea09085…`，`transformer/config.json` `56ae3281c4e6c2d1…`，`vae/config.json` `9785d527b278cb8b…`
    后续拉取新权重须继续记录源仓库 commit SHA 与配置摘要。
 2. **许可证合规风险**：树内已实现的 `Qwen-Image-2.1` 使用 `qwen-research` 非商用许可；路线图中的 `MiniMax-H3` / `H3-Image` 含地域排除与社区商用限制。对外发布商用版本前必须由 Apache-2.0 模型（如 `FLUX.2-klein-4B`、`Wan2.2`）兜底。
-3. **测试套件与实测覆盖边界**：`ab51cf5` 曾移除多组历史单测与金标验证脚手架；本分支已覆盖 `native/{omni,tts,image,image2}` CPU host 单元测试、`UnifiedEngine` 文本/图像/音频/视频四模态统一契约测试与 macOS Swift 客户端测试，但 `/v1/audio/speech` 真实 TTS Stage、真实视频 Stage/上游生成及所有 SM90 真实模型/GPU 验证仍为 `NOT_RUN`（测试桩不计作真实生视频验收）。
+3. **测试套件与实测覆盖边界**：`ab51cf5` 曾移除多组历史单测与金标验证脚手架；当前主干已覆盖 `native/{omni,tts,image,image2,video}` CPU host 单元测试、`UnifiedEngine` 文本/图像/音频/视频四模态统一契约测试、macOS Swift 客户端测试与 SM90 五卡原生真模型实测（ASR/VLM/FLUX.2/TTS/Wan2.2 T2V&I2V，详见 [feature-map.md](feature-map.md) 与 [native-service.md](native-service.md)）；外部授权 `/v1/videos` 上游代理与真模型负载下的 CUDA IPC 零拷贝仍为 `NOT_RUN` / `NOT_COVERED`。
 4. **GitHub 公开 API 限流**：本次核查中 GitHub REST API 返回 403 rate limit，故生态/维护风险辅助信号统一以 Hugging Face 官方 API（`2026-11-20`）为准，GitHub stars 记为 `UNKNOWN`。

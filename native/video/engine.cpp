@@ -61,41 +61,12 @@ RgbImage decode_init_image(const std::string& bytes) {
   return image;
 }
 
-// Bilinear resize with half-pixel centres and clamped edges, then scaled to
-// [-1, 1] and written as [1, 3, 1, height, width].
+// Aspect-preserving center-crop (cover) + bilinear resize with half-pixel
+// centres and clamped edges, then scaled to [-1, 1] as [1, 3, 1, dst_h, dst_w].
 std::vector<float> resize_image_to_nchw(const RgbImage& image, int width,
                                         int height) {
-  const size_t plane = static_cast<size_t>(width) * height;
-  std::vector<float> output(3 * plane);
-  const float scale_x = static_cast<float>(image.width) / width;
-  const float scale_y = static_cast<float>(image.height) / height;
-  for (int y = 0; y < height; ++y) {
-    float source_y = (static_cast<float>(y) + 0.5f) * scale_y - 0.5f;
-    source_y = std::clamp(source_y, 0.0f, static_cast<float>(image.height - 1));
-    const int y0 = static_cast<int>(source_y);
-    const int y1 = std::min(y0 + 1, image.height - 1);
-    const float wy = source_y - static_cast<float>(y0);
-    for (int x = 0; x < width; ++x) {
-      float source_x = (static_cast<float>(x) + 0.5f) * scale_x - 0.5f;
-      source_x = std::clamp(source_x, 0.0f, static_cast<float>(image.width - 1));
-      const int x0 = static_cast<int>(source_x);
-      const int x1 = std::min(x0 + 1, image.width - 1);
-      const float wx = source_x - static_cast<float>(x0);
-      const size_t base = static_cast<size_t>(y) * width + x;
-      for (int c = 0; c < 3; ++c) {
-        const auto at = [&](int sy, int sx) {
-          return static_cast<float>(
-              image.pixels[(static_cast<size_t>(sy) * image.width + sx) * 3 +
-                           c]);
-        };
-        const float top = at(y0, x0) * (1.0f - wx) + at(y0, x1) * wx;
-        const float bottom = at(y1, x0) * (1.0f - wx) + at(y1, x1) * wx;
-        const float value = (top * (1.0f - wy) + bottom * wy) / 127.5f - 1.0f;
-        output[static_cast<size_t>(c) * plane + base] = value;
-      }
-    }
-  }
-  return output;
+  return resize_center_crop_rgb_to_nchw(image.pixels.data(), image.width,
+                                        image.height, width, height);
 }
 
 std::string to_lower_copy(std::string text) {
@@ -193,6 +164,53 @@ struct CudaStreamGuard {
 #endif
 
 }  // namespace
+
+std::vector<float> resize_center_crop_rgb_to_nchw(const uint8_t* rgb,
+                                                  int src_width, int src_height,
+                                                  int dst_width, int dst_height) {
+  if (rgb == nullptr || src_width <= 0 || src_height <= 0 || dst_width <= 0 ||
+      dst_height <= 0) {
+    throw std::invalid_argument("invalid dimensions for I2V image resize");
+  }
+  const size_t plane = static_cast<size_t>(dst_width) * dst_height;
+  std::vector<float> output(3 * plane);
+  // Uniform cover scale preserves natural aspect ratio (e.g. 512x512 -> 704x480
+  // crops equal top/bottom margins instead of stretching horizontally).
+  const float scale_x = static_cast<float>(src_width) / dst_width;
+  const float scale_y = static_cast<float>(src_height) / dst_height;
+  const float scale = std::min(scale_x, scale_y);
+  const float crop_w = scale * static_cast<float>(dst_width);
+  const float crop_h = scale * static_cast<float>(dst_height);
+  const float offset_x = (static_cast<float>(src_width) - crop_w) * 0.5f;
+  const float offset_y = (static_cast<float>(src_height) - crop_h) * 0.5f;
+
+  for (int y = 0; y < dst_height; ++y) {
+    float source_y = offset_y + (static_cast<float>(y) + 0.5f) * scale - 0.5f;
+    source_y = std::clamp(source_y, 0.0f, static_cast<float>(src_height - 1));
+    const int y0 = static_cast<int>(source_y);
+    const int y1 = std::min(y0 + 1, src_height - 1);
+    const float wy = source_y - static_cast<float>(y0);
+    for (int x = 0; x < dst_width; ++x) {
+      float source_x = offset_x + (static_cast<float>(x) + 0.5f) * scale - 0.5f;
+      source_x = std::clamp(source_x, 0.0f, static_cast<float>(src_width - 1));
+      const int x0 = static_cast<int>(source_x);
+      const int x1 = std::min(x0 + 1, src_width - 1);
+      const float wx = source_x - static_cast<float>(x0);
+      const size_t base = static_cast<size_t>(y) * dst_width + x;
+      for (int c = 0; c < 3; ++c) {
+        const auto at = [&](int sy, int sx) {
+          return static_cast<float>(
+              rgb[(static_cast<size_t>(sy) * src_width + sx) * 3 + c]);
+        };
+        const float top = at(y0, x0) * (1.0f - wx) + at(y0, x1) * wx;
+        const float bottom = at(y1, x0) * (1.0f - wx) + at(y1, x1) * wx;
+        const float value = (top * (1.0f - wy) + bottom * wy) / 127.5f - 1.0f;
+        output[static_cast<size_t>(c) * plane + base] = value;
+      }
+    }
+  }
+  return output;
+}
 
 VideoBackendMode parse_video_backend_mode(const std::string& value) {
   const std::string norm = to_lower_copy(value);

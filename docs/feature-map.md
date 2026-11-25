@@ -258,4 +258,4 @@
 | 多卡模型切分与多 stage 动态批处理 | 当前单 stage 绑定单 GPU；仅 `qwen38` 支持 `--batch-size N` 连续批处理 | [README.md](../README.md#known-limitations) / [docs/batching.md](batching.md) | 计划中 |
 | 真实模型负载下的 CUDA IPC、零拷贝设备张量与多机 IPC | 当前 CUDA IPC 承载宿主序列化字节，仅通过独立基准与 sanitizer，真模型负载下 `NOT_COVERED` | [docs/cuda-ipc.md](cuda-ipc.md) / [docs/roadmap.md](roadmap.md#explicitly-unverified-or-unsupported) | 计划中 |
 
-共 151 行代码映射条目 + 6 项计划中条目。
+共 155 行代码映射条目 + 6 项计划中条目。

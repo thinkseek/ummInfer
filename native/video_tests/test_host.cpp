@@ -639,6 +639,55 @@ void test_wan_vae_causal_chunk_schedule() {
   check(total == 77, "20 latent chunks sum cleanly to 77 frames");
 }
 
+void test_i2v_center_crop_preserves_aspect_ratio() {
+  using namespace umminfer::video;
+  // 1. Square 64x64 image with red top/bottom 16-px bands and pure green middle
+  // 32-px band -> resized to 64x32 (2:1). Center-crop must discard the red
+  // bands and keep pure green (R=-1, G=+1, B=-1) with zero vertical squash.
+  std::vector<uint8_t> sq(64 * 64 * 3, 0);
+  for (int y = 0; y < 64; ++y) {
+    const bool middle = (y >= 16 && y < 48);
+    for (int x = 0; x < 64; ++x) {
+      const size_t idx = (static_cast<size_t>(y) * 64 + x) * 3;
+      sq[idx + 0] = middle ? 0 : 255;
+      sq[idx + 1] = middle ? 255 : 0;
+      sq[idx + 2] = 0;
+    }
+  }
+  const std::vector<float> wide =
+      resize_center_crop_rgb_to_nchw(sq.data(), 64, 64, 64, 32);
+  const size_t wide_plane = 64 * 32;
+  check(wide.size() == 3 * wide_plane, "wide center-crop output size");
+  for (size_t i = 0; i < wide_plane; ++i) {
+    check(wide[0 * wide_plane + i] < -0.99f &&
+              wide[1 * wide_plane + i] > 0.99f &&
+              wide[2 * wide_plane + i] < -0.99f,
+          "square->landscape center-crop discards top/bottom bands cleanly");
+  }
+
+  // 2. Landscape 64x32 image with blue left/right 16-px margins and white
+  // center 32x32 -> resized to 32x32 (1:1). Must discard left/right blue bars.
+  std::vector<uint8_t> land(64 * 32 * 3, 0);
+  for (int y = 0; y < 32; ++y) {
+    for (int x = 0; x < 64; ++x) {
+      const bool center = (x >= 16 && x < 48);
+      const size_t idx = (static_cast<size_t>(y) * 64 + x) * 3;
+      land[idx + 0] = center ? 255 : 0;
+      land[idx + 1] = center ? 255 : 0;
+      land[idx + 2] = 255;
+    }
+  }
+  const std::vector<float> cropped_sq =
+      resize_center_crop_rgb_to_nchw(land.data(), 64, 32, 32, 32);
+  const size_t sq_plane = 32 * 32;
+  for (size_t i = 0; i < sq_plane; ++i) {
+    check(cropped_sq[0 * sq_plane + i] > 0.99f &&
+              cropped_sq[1 * sq_plane + i] > 0.99f &&
+              cropped_sq[2 * sq_plane + i] > 0.99f,
+          "landscape->square center-crop discards side margins cleanly");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -654,6 +703,8 @@ int main() {
       {"wan_dit_host_helpers", test_wan_dit_host_helpers},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"unipc_bh2_matches_diffusers", test_unipc_bh2_matches_diffusers},
+      {"i2v_center_crop_preserves_aspect_ratio",
+       test_i2v_center_crop_preserves_aspect_ratio},
       {"mp4_encode_and_abort", test_mp4_encode_and_abort},
       {"engine_contract_stub_and_cuda_gate", test_engine_contract_stub_and_cuda_gate},
   };

@@ -7,11 +7,20 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "config.hpp"
 #include "mp4_encoder.hpp"
 
 namespace umminfer::video {
+
+// Aspect-preserving center-crop (cover) + half-pixel bilinear resize of
+// interleaved RGB8 pixels into [-1, 1] NCHW layout [1, 3, 1, dst_h, dst_w].
+// When src and dst share the same aspect ratio, this maps border-to-border
+// identically to plain bilinear scaling with zero distortion.
+std::vector<float> resize_center_crop_rgb_to_nchw(const uint8_t* rgb,
+                                                  int src_width, int src_height,
+                                                  int dst_width, int dst_height);
 
 enum class VideoBackendMode {
   // Default: real native Wan2.2 C++/CUDA pipeline (UMT5-XXL + DiT + 3D VAE + MP4).
