@@ -328,6 +328,39 @@ answer.
 The bundled C++ `ChatRequest` API and CLI expose no narrative controls. Use the
 JSON wire fields above when calling a server that supports them.
 
+#### Showcase starter presets and live per-turn telemetry (Web UI and macOS ummmlx)
+
+Both the Web UI (`web/index.html`) and the native macOS client (`clients/ummmlx`)
+display three curated North-Star starter preset cards in the empty conversation
+state and hide them automatically once the conversation contains any turns:
+
+| Preset ID | Title | Subtitle | Applied Controls |
+| --- | --- | --- | --- |
+| `documentary` | **Live Documentary** | Interleaved prose, diagram & voice | Narrative `auto`, `allow_text_only=true`, continuity `off`, empty `style_anchor`, Fast Video on, Voice/audio output on |
+| `storyboard_i2v` | **Storyboard I2V Chain** | Slot 0 keyframe -> Slot 1 anchored I2V | Narrative `auto`, `allow_text_only=false`, continuity `i2v_chain`, `style_anchor="cinematic 35mm film grain, warm lantern twilight, smooth camera motion"`, Fast Video on, Voice/audio output on |
+| `smart_text_only` | **Smart Text-Only** | Autonomous zero-visual abstention | Narrative `auto`, `allow_text_only=true`, continuity `off`, empty `style_anchor`, Fast Video off, Voice/audio output off |
+
+Clicking a preset card updates the reactive client controls, populates the
+composer prompt, and focuses the prompt input without auto-sending a network
+request so the user can inspect or edit before sending. Existing default control
+values are untouched when no preset is selected.
+
+During streaming, each assistant turn tracks real client-observed timings
+(`performance.now()` in Web UI; `ContinuousClock` in `ummmlx`) and renders a
+compact pill strip beneath the turn bubble (`formatTurnTelemetry` /
+`TurnTelemetry.formattedPills`). Unobserved fields are omitted rather than
+estimated, and the strip stays hidden until at least one real metric arrives:
+
+- `TTFT <dur>`: elapsed time from request send to the first non-empty text delta.
+- `TTFA <dur>`: elapsed time from request send to the first audio chunk or WAV artifact.
+- `<N> visual(s) (<dur>)`: count of settled visual slots/artifacts plus elapsed time to the first settled visual.
+- `I2V`: shown when any `visual_slot` carries `anchor_slot_index` I2V continuity metadata.
+- `Total <dur>`: elapsed time from request send to stream completion or stop.
+
+Sub-second durations format as `<N> ms` (e.g. `265 ms`) and values at or above
+`1000 ms` format as `<X.XX> s` (e.g. `1.42 s`). Both clients adapt the cards and
+telemetry pills cleanly across light and dark themes.
+
 ## Direct Speech (`POST /v1/audio/speech`)
 
 `OpenAIClient::speech(const SpeechRequest&)` and the `umm-infer speech`

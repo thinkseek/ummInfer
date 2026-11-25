@@ -38,6 +38,7 @@ struct RootView: View {
     @State private var automation: Automation?
     @State private var preview: GeneratedArtifact?
     @State private var showOptions = false
+    @FocusState private var promptFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
     private let isAutomation = ProcessInfo.processInfo.arguments.contains("--automation")
 
@@ -349,18 +350,23 @@ struct RootView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 if model.turns.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "text.bubble")
-                            .font(.system(size: 30, weight: .light))
-                            .foregroundStyle(theme.accent)
-                        Text("Chat with your ummInfer unified server")
-                            .font(.system(size: theme.sectionSize, weight: .medium))
-                        Text("Text · image · audio · video · voice input")
-                            .font(.system(size: theme.bodySize))
-                            .foregroundStyle(theme.secondary)
+                    VStack(spacing: 20) {
+                        VStack(spacing: 10) {
+                            Image(systemName: "text.bubble")
+                                .font(.system(size: 30, weight: .light))
+                                .foregroundStyle(theme.accent)
+                            Text("Chat with your ummInfer unified server")
+                                .font(.system(size: theme.sectionSize, weight: .medium))
+                            Text("Text · image · audio · video · voice input")
+                                .font(.system(size: theme.bodySize))
+                                .foregroundStyle(theme.secondary)
+                        }
+                        showcasePresetsView
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.top, 110)
+                    .padding(.top, 72)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
                 } else {
                     LazyVStack(spacing: 16) {
                         ForEach(model.turns) { turn in
@@ -442,12 +448,77 @@ struct RootView: View {
                         .font(.system(size: theme.captionSize))
                         .foregroundStyle(theme.danger)
                 }
+                let telemetryPills = turn.role == .assistant ? turn.telemetry.formattedPills : []
+                if !telemetryPills.isEmpty {
+                    telemetryStrip(telemetryPills)
+                }
             }
             .frame(maxWidth: 660, alignment: .leading)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(turn.role == .user ? "user-message" : "assistant-message")
             if turn.role == .assistant { Spacer(minLength: 40) }
         }
+    }
+
+    private var showcasePresetsView: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ForEach(ShowcasePreset.allCases) { preset in
+                Button {
+                    model.applyShowcasePreset(preset)
+                    promptFocused = true
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Image(systemName: preset.iconName)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(theme.accent)
+                                .accessibilityHidden(true)
+                            Text(preset.title)
+                                .font(.system(size: theme.bodySize, weight: .semibold))
+                                .foregroundStyle(theme.text)
+                                .lineLimit(1)
+                        }
+                        Text(preset.subtitle)
+                            .font(.system(size: theme.captionSize))
+                            .foregroundStyle(theme.secondary)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: theme.cardRadius))
+                    .overlay(RoundedRectangle(cornerRadius: theme.cardRadius).stroke(theme.line))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isRunning || model.isLiveVoiceActive)
+                .accessibilityIdentifier("showcase-preset-\(preset.rawValue)")
+            }
+        }
+        .frame(maxWidth: 740)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("showcase-presets")
+    }
+
+    private func telemetryStrip(_ pills: [TurnTelemetry.Pill]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(pills) { pill in
+                let isAccent = pill.kind == .i2v
+                Text(pill.label)
+                    .font(.system(size: 11, weight: isAccent ? .semibold : .regular, design: .monospaced))
+                    .foregroundStyle(isAccent ? theme.accent : theme.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(isAccent ? theme.accent.opacity(0.12) : theme.surface)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(isAccent ? theme.accent.opacity(0.4) : theme.line))
+                    .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("telemetry-pill-\(pill.kind.rawValue)")
+            }
+        }
+        .padding(.top, 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("turn-telemetry")
     }
 
     @ViewBuilder
@@ -757,6 +828,7 @@ struct RootView: View {
                     .lineLimit(1...5)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: theme.bodySize))
+                    .focused($promptFocused)
                     .onSubmit { model.send() }
                     .disabled(model.isLiveVoiceActive)
                     .accessibilityLabel("Prompt")

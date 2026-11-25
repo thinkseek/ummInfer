@@ -56,6 +56,153 @@ enum TurnBlock: Identifiable {
     }
 }
 
+/// Curated North-Star starter presets shown in the empty conversation state.
+/// Mirrors `SHOWCASE_PRESETS` in `web/index.html`.
+enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
+    case documentary = "documentary"
+    case storyboardI2V = "storyboard_i2v"
+    case smartTextOnly = "smart_text_only"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .documentary: return "Live Documentary"
+        case .storyboardI2V: return "Storyboard I2V Chain"
+        case .smartTextOnly: return "Smart Text-Only"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .documentary: return "Interleaved prose, diagram & voice"
+        case .storyboardI2V: return "Slot 0 keyframe -> Slot 1 anchored I2V"
+        case .smartTextOnly: return "Autonomous zero-visual abstention"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .documentary: return "waveform.and.magnifyingglass"
+        case .storyboardI2V: return "film.stack"
+        case .smartTextOnly: return "function"
+        }
+    }
+
+    var narrativeVisualMode: String { "auto" }
+
+    var allowTextOnly: Bool {
+        switch self {
+        case .documentary: return true
+        case .storyboardI2V: return false
+        case .smartTextOnly: return true
+        }
+    }
+
+    var continuityMode: NarrativeContinuityMode {
+        switch self {
+        case .documentary: return .off
+        case .storyboardI2V: return .i2vChain
+        case .smartTextOnly: return .off
+        }
+    }
+
+    var styleAnchor: String {
+        switch self {
+        case .documentary: return ""
+        case .storyboardI2V:
+            return "cinematic 35mm film grain, warm lantern twilight, smooth camera motion"
+        case .smartTextOnly: return ""
+        }
+    }
+
+    var fastVideo: Bool {
+        switch self {
+        case .documentary: return true
+        case .storyboardI2V: return true
+        case .smartTextOnly: return false
+        }
+    }
+
+    var enableAudio: Bool {
+        switch self {
+        case .documentary: return true
+        case .storyboardI2V: return true
+        case .smartTextOnly: return false
+        }
+    }
+
+    var prompt: String {
+        switch self {
+        case .documentary:
+            return "Explain how a black hole accretion disk produces relativistic jets and gravitational lensing. Speak clearly like a live documentary narrator, include one crisp diagram of the spacetime curvature, and one short motion clip of plasma spiraling into the event horizon."
+        case .storyboardI2V:
+            return "Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe, then animate the river breeze and water reflections in motion."
+        case .smartTextOnly:
+            return "Prove concisely why the square root of 2 is irrational and explain the key step in two sentences."
+        }
+    }
+}
+
+/// Real client-observed timing and visual telemetry for one assistant turn.
+/// Values remain nil unless the corresponding SSE event was actually observed.
+struct TurnTelemetry: Equatable {
+    struct Pill: Equatable, Identifiable {
+        enum Kind: String, Equatable {
+            case ttft
+            case ttfa
+            case visual
+            case i2v
+            case total
+        }
+        let kind: Kind
+        let label: String
+        var id: String { kind.rawValue }
+    }
+
+    var ttftMs: Double? = nil
+    var ttfaMs: Double? = nil
+    var visualSettledCount: Int = 0
+    var firstVisualMs: Double? = nil
+    var hasI2VChain: Bool = false
+    var totalMs: Double? = nil
+
+    static func formatDuration(_ ms: Double) -> String? {
+        guard ms.isFinite, ms >= 0 else { return nil }
+        let rounded = Int(ms.rounded())
+        if rounded < 1000 {
+            return "\(rounded) ms"
+        }
+        return String(format: "%.2f s", ms / 1000.0)
+    }
+
+    var formattedPills: [Pill] {
+        var pills: [Pill] = []
+        if let ttftMs, let formatted = Self.formatDuration(ttftMs) {
+            pills.append(Pill(kind: .ttft, label: "TTFT \(formatted)"))
+        }
+        if let ttfaMs, let formatted = Self.formatDuration(ttfaMs) {
+            pills.append(Pill(kind: .ttfa, label: "TTFA \(formatted)"))
+        }
+        if visualSettledCount > 0 {
+            let countLabel = visualSettledCount == 1
+                ? "1 visual" : "\(visualSettledCount) visuals"
+            if let firstVisualMs, let formatted = Self.formatDuration(firstVisualMs) {
+                pills.append(Pill(kind: .visual, label: "\(countLabel) (\(formatted))"))
+            } else {
+                pills.append(Pill(kind: .visual, label: countLabel))
+            }
+        }
+        if hasI2VChain {
+            pills.append(Pill(kind: .i2v, label: "I2V"))
+        }
+        if let totalMs, let formatted = Self.formatDuration(totalMs) {
+            pills.append(Pill(kind: .total, label: "Total \(formatted)"))
+        }
+        return pills
+    }
+}
+
 struct ChatTurn: Identifiable {
     enum Role: String {
         case user
@@ -81,6 +228,8 @@ struct ChatTurn: Identifiable {
     /// Interleaved render order. `text` and `artifacts` stay populated for
     /// history replay and code that predates blocks.
     var blocks: [TurnBlock] = []
+    /// Real client-observed streaming telemetry for assistant turns.
+    var telemetry = TurnTelemetry()
 }
 
 @MainActor
@@ -143,6 +292,7 @@ final class ChatModel: ObservableObject {
     private let client: ChatClient
     private var requestTask: Task<Void, Never>?
     private var activeTurn: UUID?
+    private var activeSettledVisualKeys: Set<String> = []
     private var stopping = false
     private var receivedDelta = false
     private var requestSessionID = ""
@@ -209,6 +359,30 @@ final class ChatModel: ObservableObject {
     }
 
     private static let maxAttachedVideoBytes = 32 * 1024 * 1024
+
+    private static func elapsedMilliseconds(since start: ContinuousClock.Instant) -> Double {
+        let duration = start.duration(to: .now)
+        let components = duration.components
+        let ms = Double(components.seconds) * 1000.0 + Double(components.attoseconds) / 1e15
+        return max(0, ms)
+    }
+
+    /// Applies a curated North-Star showcase preset to controls and composer
+    /// prompt without firing a network request.
+    func applyShowcasePreset(_ preset: ShowcasePreset) {
+        guard !isRunning, !isLiveVoiceActive else { return }
+        narrativeMode = true
+        narrativeVisualMode = preset.narrativeVisualMode
+        imageOutput = true
+        videoOutput = true
+        narrativeAllowTextOnly = preset.allowTextOnly
+        narrativeContinuityMode = preset.continuityMode
+        narrativeStyleAnchor = preset.styleAnchor
+        fastVideoMode = preset.fastVideo
+        audioOutput = preset.enableAudio
+        prompt = preset.prompt
+        error = nil
+    }
 
     private static func dataURL(from url: URL) throws -> String {
         let data = try Data(contentsOf: url)
@@ -412,11 +586,13 @@ final class ChatModel: ObservableObject {
         let assistant = ChatTurn(role: .assistant, text: "", state: .streaming)
         turns.append(assistant)
         activeTurn = assistant.id
+        activeSettledVisualKeys = []
         prompt = ""
         isRunning = true
         stopping = false
         receivedDelta = false
         status = "Connecting…"
+        let requestStart = ContinuousClock.now
 
         requestTask = Task { [weak self] in
             guard let self else { return }
@@ -428,6 +604,9 @@ final class ChatModel: ObservableObject {
                     guard self.activeTurn == assistant.id,
                           let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
                         return
+                    }
+                    if !delta.isEmpty && self.turns[index].telemetry.ttftMs == nil {
+                        self.turns[index].telemetry.ttftMs = Self.elapsedMilliseconds(since: requestStart)
                     }
                     self.appendTextDelta(delta, to: index)
                     if !self.receivedDelta {
@@ -448,6 +627,9 @@ final class ChatModel: ObservableObject {
                         let slotID = event.slotID ?? "slot-\(slotIndex)"
                         let isVideo = event.mediaType == "video"
                             || (event.mediaType.isEmpty && event.stage == "video")
+                        if let anchor = event.anchorSlotIndex, anchor >= 0 {
+                            self.turns[index].telemetry.hasI2VChain = true
+                        }
                         let known = self.turns[index].blocks.contains {
                             $0.visualSlot?.slotID == slotID
                         }
@@ -481,12 +663,29 @@ final class ChatModel: ObservableObject {
                         return
                     }
                     self.turns[index].artifacts.append(artifact)
+                    if artifact.mediaType == "audio" {
+                        if self.turns[index].telemetry.ttfaMs == nil {
+                            self.turns[index].telemetry.ttfaMs = Self.elapsedMilliseconds(since: requestStart)
+                        }
+                    } else if artifact.mediaType == "image" || artifact.mediaType == "video" {
+                        let visualKey = artifact.slotID ?? artifact.id
+                        if self.activeSettledVisualKeys.insert(visualKey).inserted {
+                            self.turns[index].telemetry.visualSettledCount = self.activeSettledVisualKeys.count
+                            if self.turns[index].telemetry.firstVisualMs == nil {
+                                self.turns[index].telemetry.firstVisualMs = Self.elapsedMilliseconds(since: requestStart)
+                            }
+                        }
+                    }
                     if let slotID = artifact.slotID {
                         self.attachVisualArtifact(artifact, slotID: slotID,
                                                   turnIndex: index)
                     }
                 } onAudioChunk: { chunk in
                     guard self.activeTurn == assistant.id else { return }
+                    if let index = self.turns.firstIndex(where: { $0.id == assistant.id }),
+                       self.turns[index].telemetry.ttfaMs == nil {
+                        self.turns[index].telemetry.ttfaMs = Self.elapsedMilliseconds(since: requestStart)
+                    }
                     self.streamingAudioTurnID = assistant.id
                     self.audioStream.enqueue(chunk)
                 }
@@ -497,6 +696,9 @@ final class ChatModel: ObservableObject {
                 self.audioStream.finishStream()
                 self.turns[index].text = result.text
                 self.settleVisualSlots(at: index)
+                if self.turns[index].telemetry.totalMs == nil {
+                    self.turns[index].telemetry.totalMs = Self.elapsedMilliseconds(since: requestStart)
+                }
                 self.turns[index].state = .complete
                 if !result.sessionID.isEmpty { self.sessionID = result.sessionID }
                 self.status = result.finishReason.isEmpty
@@ -514,6 +716,9 @@ final class ChatModel: ObservableObject {
                         && self.turns[index].blocks.isEmpty {
                         self.turns.remove(at: index)
                     } else {
+                        if cancelled, self.turns[index].telemetry.totalMs == nil {
+                            self.turns[index].telemetry.totalMs = Self.elapsedMilliseconds(since: requestStart)
+                        }
                         self.turns[index].state = cancelled ? .stopped : .failed
                     }
                 }
@@ -1018,6 +1223,7 @@ final class ChatModel: ObservableObject {
         requestTask?.cancel()
         requestTask = nil
         activeTurn = nil
+        activeSettledVisualKeys.removeAll()
         turns.removeAll()
         isRunning = false
         stopping = false

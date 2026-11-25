@@ -48,7 +48,10 @@ def module_scripts(html):
 
 
 def check_markup(html):
-    for tag in ('<main id="transcript">', 'id="prompt"', 'id="send"', 'id="stop"',
+    for tag in ('<main id="transcript">', 'id="emptyState"', 'id="showcasePresets"',
+                'data-preset="documentary"', 'data-preset="storyboard_i2v"',
+                'data-preset="smart_text_only"',
+                'id="prompt"', 'id="send"', 'id="stop"',
                 'id="voiceToggle"', 'id="voiceWave"', 'id="voiceStatus"',
                 'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
                 'id="realtimeStatus"', 'id="narrative"',
@@ -709,6 +712,205 @@ console.log('realtime playback behavior passed');
             "realtime behavior harness did not reach its success assertion")
 
 
+def check_showcase_and_telemetry(html, script):
+    """North-Star showcase starter presets and live per-turn telemetry hooks."""
+    for snippet in (
+        'id="emptyState"',
+        'id="showcasePresets"',
+        'data-preset="documentary"',
+        'Live Documentary',
+        'Interleaved prose, diagram &amp; voice',
+        'data-preset="storyboard_i2v"',
+        'Storyboard I2V Chain',
+        'Slot 0 keyframe -&gt; Slot 1 anchored I2V',
+        'data-preset="smart_text_only"',
+        'Smart Text-Only',
+        'Autonomous zero-visual abstention',
+        '.telemetry-strip',
+        '.telemetry-pill',
+    ):
+        require(snippet in html, f"missing showcase/telemetry markup or CSS: {snippet}")
+    for hook in (
+        'SHOWCASE_PRESETS',
+        'applyShowcasePresetToControls(',
+        'updateEmptyStateVisibility(',
+        'formatTurnTelemetry(',
+        'renderTurnTelemetry(',
+        'recordTurnTotal(',
+        'recordVisualSettled(',
+        'recordFirstAudio(',
+        'performance.now()',
+        'telemetry-strip',
+        'telemetry-pill',
+    ):
+        require(hook in script, f"missing showcase/telemetry script hook: {hook}")
+
+
+def check_showcase_and_telemetry_behavior(script):
+    """Execute showcase presets and turn telemetry formatters in Node."""
+    node = shutil.which("node")
+    if not node:
+        print("skip showcase/telemetry behavior: node is not installed", flush=True)
+        return
+    require("// SHOWCASE_PRESETS_BEGIN" in script
+            and "// SHOWCASE_PRESETS_END" in script,
+            "missing showcase presets behavior-test markers")
+    require("// TURN_TELEMETRY_BEGIN" in script
+            and "// TURN_TELEMETRY_END" in script,
+            "missing turn telemetry behavior-test markers")
+    presets_src = script.split("// SHOWCASE_PRESETS_BEGIN", 1)[1].split(
+        "// SHOWCASE_PRESETS_END", 1)[0]
+    telemetry_src = script.split("// TURN_TELEMETRY_BEGIN", 1)[1].split(
+        "// TURN_TELEMETRY_END", 1)[0]
+    harness = presets_src + "\n" + telemetry_src + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+
+// 1. Showcase preset application across all 3 curated presets.
+let focusCount = 0;
+let syncCount = 0;
+let saveCount = 0;
+let audioState = false;
+const controls = {
+  narrative: { checked: false },
+  visualMode: { value: 'image' },
+  allowTextOnly: { checked: false },
+  narrativeContinuity: { value: 'prompt_anchor' },
+  styleAnchor: { value: 'stale' },
+  fastVideo: { checked: false },
+  prompt: { value: '', focus() { focusCount += 1; } },
+};
+const hooks = {
+  setAudioEnabled(v) { audioState = v; },
+  syncNarrativeControls() { syncCount += 1; },
+  saveSettings() { saveCount += 1; },
+};
+
+const doc = applyShowcasePresetToControls('documentary', controls, hooks);
+assert(doc && doc.title === 'Live Documentary' &&
+       doc.subtitle === 'Interleaved prose, diagram & voice',
+       'documentary metadata mismatch');
+assert(controls.narrative.checked === true &&
+       controls.visualMode.value === 'auto' &&
+       controls.allowTextOnly.checked === true &&
+       controls.narrativeContinuity.value === 'off' &&
+       controls.styleAnchor.value === '' &&
+       controls.fastVideo.checked === true &&
+       audioState === true &&
+       controls.prompt.value === 'Explain how a black hole accretion disk produces relativistic jets and gravitational lensing. Speak clearly like a live documentary narrator, include one crisp diagram of the spacetime curvature, and one short motion clip of plasma spiraling into the event horizon.',
+       'documentary preset control mutations mismatch');
+assert(focusCount === 1 && syncCount === 1 && saveCount === 1,
+       'documentary preset did not focus/sync/save');
+
+const story = applyShowcasePresetToControls('storyboard_i2v', controls, hooks);
+assert(story && story.title === 'Storyboard I2V Chain' &&
+       story.subtitle === 'Slot 0 keyframe -> Slot 1 anchored I2V',
+       'storyboard_i2v metadata mismatch');
+assert(controls.narrative.checked === true &&
+       controls.visualMode.value === 'auto' &&
+       controls.allowTextOnly.checked === false &&
+       controls.narrativeContinuity.value === 'i2v_chain' &&
+       controls.styleAnchor.value === 'cinematic 35mm film grain, warm lantern twilight, smooth camera motion' &&
+       controls.fastVideo.checked === true &&
+       audioState === true &&
+       controls.prompt.value === 'Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe, then animate the river breeze and water reflections in motion.',
+       'storyboard_i2v preset control mutations mismatch');
+assert(focusCount === 2, 'storyboard_i2v preset did not focus prompt');
+
+const smart = applyShowcasePresetToControls('smart_text_only', controls, hooks);
+assert(smart && smart.title === 'Smart Text-Only' &&
+       smart.subtitle === 'Autonomous zero-visual abstention',
+       'smart_text_only metadata mismatch');
+assert(controls.narrative.checked === true &&
+       controls.visualMode.value === 'auto' &&
+       controls.allowTextOnly.checked === true &&
+       controls.narrativeContinuity.value === 'off' &&
+       controls.styleAnchor.value === '' &&
+       controls.fastVideo.checked === false &&
+       audioState === false &&
+       controls.prompt.value === 'Prove concisely why the square root of 2 is irrational and explain the key step in two sentences.',
+       'smart_text_only preset control mutations mismatch');
+assert(focusCount === 3, 'smart_text_only preset did not focus prompt');
+
+// Unknown preset is a safe no-op.
+assert(applyShowcasePresetToControls('unknown', controls, hooks) === null,
+       'unknown preset should return null');
+
+// Empty state visibility toggles cleanly with message count.
+const emptyEl = { hidden: false };
+updateEmptyStateVisibility(emptyEl, 0);
+assert(emptyEl.hidden === false, 'empty state must be visible when messageCount is 0');
+updateEmptyStateVisibility(emptyEl, 2);
+assert(emptyEl.hidden === true, 'empty state must hide when messageCount > 0');
+updateEmptyStateVisibility(emptyEl, 0);
+assert(emptyEl.hidden === false, 'empty state must reappear after New chat');
+
+// 2. formatTurnTelemetry pure formatting and zero-fabrication guarantees.
+assert(formatTurnTelemetry(null).length === 0, 'null telemetry must yield empty pills');
+assert(formatTurnTelemetry({}).length === 0, 'empty telemetry must yield empty pills');
+assert(formatTurnTelemetry({
+  ttftMs: null, ttfaMs: undefined, visualSettledCount: 0,
+  firstVisualMs: null, hasI2VChain: false, totalMs: null,
+}).length === 0, 'unrecorded telemetry must yield zero pills');
+
+// Invalid / negative / non-finite values must be omitted, never fabricated.
+assert(formatTurnTelemetry({
+  ttftMs: -5, ttfaMs: Number.NaN, visualSettledCount: 0,
+  firstVisualMs: Number.POSITIVE_INFINITY, hasI2VChain: false, totalMs: -1,
+}).length === 0, 'invalid numeric timings must be omitted');
+
+// Full multimodal I2V turn: sub-second ms and >= 1s formatting.
+const fullPills = formatTurnTelemetry({
+  ttftMs: 265,
+  ttfaMs: 380,
+  visualSettledCount: 2,
+  firstVisualMs: 4120,
+  hasI2VChain: true,
+  totalMs: 8790,
+});
+assert(JSON.stringify(fullPills.map((p) => p.label)) ===
+  '["TTFT 265 ms","TTFA 380 ms","2 visuals (4.12 s)","I2V","Total 8.79 s"]',
+  'full telemetry pill formatting mismatch: ' + JSON.stringify(fullPills));
+
+// Text-only turn omits TTFA, visuals, and I2V.
+const textOnlyPills = formatTurnTelemetry({
+  ttftMs: 999.6,
+  ttfaMs: null,
+  visualSettledCount: 0,
+  firstVisualMs: null,
+  hasI2VChain: false,
+  totalMs: 1420,
+});
+assert(JSON.stringify(textOnlyPills.map((p) => p.label)) ===
+  '["TTFT 1.00 s","Total 1.42 s"]',
+  'text-only / boundary telemetry mismatch: ' + JSON.stringify(textOnlyPills));
+
+// Singular visual without total (still streaming) and sub-second 0 ms bound.
+const streamingVisualPills = formatTurnTelemetry({
+  ttftMs: 0,
+  visualSettledCount: 1,
+  firstVisualMs: 850,
+  hasI2VChain: false,
+  totalMs: null,
+});
+assert(JSON.stringify(streamingVisualPills.map((p) => p.label)) ===
+  '["TTFT 0 ms","1 visual (850 ms)"]',
+  'streaming visual telemetry mismatch: ' + JSON.stringify(streamingVisualPills));
+
+console.log('showcase and telemetry behavior passed');
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "showcase-telemetry.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"showcase/telemetry behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
+    require("showcase and telemetry behavior passed" in result.stdout,
+            "showcase/telemetry harness did not reach its success assertion")
+
+
 def check_theme_tokens(html):
     """The CSS palette mirrors Theme.swift; both files must agree."""
     theme = THEME.read_text(encoding="utf-8")
@@ -786,6 +988,12 @@ class WebUIContractTest(unittest.TestCase):
     def test_realtime_behavior(self):
         check_realtime_behavior(self.script)
 
+    def test_showcase_and_telemetry(self):
+        check_showcase_and_telemetry(self.html, self.script)
+
+    def test_showcase_and_telemetry_behavior(self):
+        check_showcase_and_telemetry_behavior(self.script)
+
     def test_theme(self):
         check_theme_tokens(self.html)
 
@@ -808,6 +1016,8 @@ def main():
         ("narrative_continuity_behavior", lambda: check_narrative_continuity_behavior(script)),
         ("realtime", lambda: check_realtime(html, script)),
         ("realtime_behavior", lambda: check_realtime_behavior(script)),
+        ("showcase_and_telemetry", lambda: check_showcase_and_telemetry(html, script)),
+        ("showcase_and_telemetry_behavior", lambda: check_showcase_and_telemetry_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0

@@ -92,10 +92,62 @@
   button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 
   #transcript { flex: 1; overflow-y: auto; padding: 20px; }
-  #transcript:empty::after {
-    content: "Chat with your ummInfer unified server";
-    display: block; text-align: center; color: var(--tertiary);
-    font-size: var(--f-section); padding-top: 18vh;
+  .empty-state {
+    max-width: 760px; margin: 10vh auto 0; padding: 0 4px;
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+    text-align: center;
+  }
+  .empty-state h2 {
+    margin: 0; font-size: var(--f-section); font-weight: 600; color: var(--text);
+  }
+  .empty-state .empty-sub {
+    margin: -8px 0 0; font-size: var(--f-caption); color: var(--secondary);
+  }
+  .preset-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 10px; width: 100%;
+  }
+  .preset-card {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+    text-align: left; padding: 13px 14px;
+    border: 1px solid var(--line); border-radius: var(--r-card);
+    background: var(--surface); color: var(--text);
+    transition: border-color .15s, background .15s, transform .08s;
+  }
+  .preset-card:hover {
+    background: var(--hover);
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  }
+  .preset-title {
+    font-size: var(--f-body); font-weight: 600; color: var(--text);
+  }
+  .preset-subtitle {
+    font-size: var(--f-caption); color: var(--secondary); line-height: 1.4;
+  }
+  .preset-tags {
+    display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px;
+  }
+  .preset-tag {
+    font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 2px 6px; border-radius: 999px;
+    background: var(--bg); border: 1px solid var(--line); color: var(--secondary);
+  }
+  .telemetry-strip {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin-top: 2px;
+  }
+  .telemetry-pill {
+    display: inline-flex; align-items: center;
+    font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--secondary); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 2px 8px;
+  }
+  .telemetry-pill.accent {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    font-weight: 600;
   }
   .turn { display: flex; flex-direction: column; gap: 6px; max-width: 720px; margin: 0 0 18px; }
   .turn.user { margin-left: auto; align-items: flex-end; }
@@ -365,7 +417,29 @@
   </details>
 </section>
 
-<main id="transcript"></main>
+<main id="transcript">
+  <section id="emptyState" class="empty-state" aria-label="Showcase starter presets">
+    <h2>Chat with your ummInfer unified server</h2>
+    <p class="empty-sub">Text · image · audio · video · interleaved narrative · voice input</p>
+    <div class="preset-grid" id="showcasePresets">
+      <button type="button" class="preset-card" data-preset="documentary">
+        <span class="preset-title">Live Documentary</span>
+        <span class="preset-subtitle">Interleaved prose, diagram &amp; voice</span>
+        <span class="preset-tags"><span class="preset-tag">Auto</span><span class="preset-tag">Fast video</span><span class="preset-tag">Voice</span></span>
+      </button>
+      <button type="button" class="preset-card" data-preset="storyboard_i2v">
+        <span class="preset-title">Storyboard I2V Chain</span>
+        <span class="preset-subtitle">Slot 0 keyframe -&gt; Slot 1 anchored I2V</span>
+        <span class="preset-tags"><span class="preset-tag">I2V chain</span><span class="preset-tag">Style anchor</span><span class="preset-tag">Voice</span></span>
+      </button>
+      <button type="button" class="preset-card" data-preset="smart_text_only">
+        <span class="preset-title">Smart Text-Only</span>
+        <span class="preset-subtitle">Autonomous zero-visual abstention</span>
+        <span class="preset-tags"><span class="preset-tag">Auto</span><span class="preset-tag">Smart text-only</span></span>
+      </button>
+    </div>
+  </section>
+</main>
 <div id="error" hidden></div>
 
 <div class="attach-bar" id="attachBar" hidden></div>
@@ -399,7 +473,8 @@ const ui = {
   videoFrames: $('videoFrames'), videoSteps: $('videoSteps'),
   videoGuidance: $('videoGuidance'), videoFramePolicy: $('videoFramePolicy'),
   videoMotionThreshold: $('videoMotionThreshold'), videoSceneThreshold: $('videoSceneThreshold'),
-  transcript: $('transcript'), error: $('error'),
+  transcript: $('transcript'), emptyState: $('emptyState'), showcasePresets: $('showcasePresets'),
+  error: $('error'),
   attachBar: $('attachBar'), askImage: $('askImage'), askVideo: $('askVideo'),
   askAudio: $('askAudio'), pickImage: $('pickImage'), pickVideo: $('pickVideo'),
   pickAudio: $('pickAudio'), mic: $('mic'),
@@ -754,6 +829,141 @@ function clearError() {
   ui.error.textContent = '';
 }
 
+// SHOWCASE_PRESETS_BEGIN
+const SHOWCASE_PRESETS = Object.freeze({
+  documentary: Object.freeze({
+    id: 'documentary',
+    title: 'Live Documentary',
+    subtitle: 'Interleaved prose, diagram & voice',
+    narrativeMode: 'auto',
+    allowTextOnly: true,
+    continuityMode: 'off',
+    styleAnchor: '',
+    fastVideo: true,
+    enableAudio: true,
+    prompt: 'Explain how a black hole accretion disk produces relativistic jets and gravitational lensing. Speak clearly like a live documentary narrator, include one crisp diagram of the spacetime curvature, and one short motion clip of plasma spiraling into the event horizon.',
+  }),
+  storyboard_i2v: Object.freeze({
+    id: 'storyboard_i2v',
+    title: 'Storyboard I2V Chain',
+    subtitle: 'Slot 0 keyframe -> Slot 1 anchored I2V',
+    narrativeMode: 'auto',
+    allowTextOnly: false,
+    continuityMode: 'i2v_chain',
+    styleAnchor: 'cinematic 35mm film grain, warm lantern twilight, smooth camera motion',
+    fastVideo: true,
+    enableAudio: true,
+    prompt: 'Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe, then animate the river breeze and water reflections in motion.',
+  }),
+  smart_text_only: Object.freeze({
+    id: 'smart_text_only',
+    title: 'Smart Text-Only',
+    subtitle: 'Autonomous zero-visual abstention',
+    narrativeMode: 'auto',
+    allowTextOnly: true,
+    continuityMode: 'off',
+    styleAnchor: '',
+    fastVideo: false,
+    enableAudio: false,
+    prompt: 'Prove concisely why the square root of 2 is irrational and explain the key step in two sentences.',
+  }),
+});
+
+function applyShowcasePresetToControls(presetId, controls, hooks = {}) {
+  const preset = SHOWCASE_PRESETS[presetId];
+  if (!preset) return null;
+  controls.narrative.checked = true;
+  controls.visualMode.value = preset.narrativeMode;
+  controls.allowTextOnly.checked = preset.allowTextOnly;
+  controls.narrativeContinuity.value = preset.continuityMode;
+  controls.styleAnchor.value = preset.styleAnchor;
+  controls.fastVideo.checked = preset.fastVideo;
+  if (typeof hooks.setAudioEnabled === 'function') {
+    hooks.setAudioEnabled(preset.enableAudio);
+  }
+  controls.prompt.value = preset.prompt;
+  if (typeof hooks.syncNarrativeControls === 'function') hooks.syncNarrativeControls();
+  if (typeof hooks.saveSettings === 'function') hooks.saveSettings();
+  if (typeof controls.prompt.focus === 'function') controls.prompt.focus();
+  return preset;
+}
+
+function updateEmptyStateVisibility(emptyEl, messageCount) {
+  if (!emptyEl) return;
+  emptyEl.hidden = messageCount > 0;
+}
+// SHOWCASE_PRESETS_END
+
+// TURN_TELEMETRY_BEGIN
+function formatTelemetryDuration(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return null;
+  const rounded = Math.round(ms);
+  if (rounded < 1000) return `${rounded} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function formatTurnTelemetry(telemetry) {
+  if (!telemetry || typeof telemetry !== 'object') return [];
+  const pills = [];
+  const ttft = formatTelemetryDuration(telemetry.ttftMs);
+  if (ttft !== null) pills.push({ kind: 'ttft', label: `TTFT ${ttft}` });
+  const ttfa = formatTelemetryDuration(telemetry.ttfaMs);
+  if (ttfa !== null) pills.push({ kind: 'ttfa', label: `TTFA ${ttfa}` });
+  const visualCount = Number.isInteger(telemetry.visualSettledCount)
+    ? telemetry.visualSettledCount : 0;
+  if (visualCount > 0) {
+    const countLabel = visualCount === 1 ? '1 visual' : `${visualCount} visuals`;
+    const firstVisual = formatTelemetryDuration(telemetry.firstVisualMs);
+    pills.push({
+      kind: 'visual',
+      label: firstVisual !== null ? `${countLabel} (${firstVisual})` : countLabel,
+    });
+  }
+  if (telemetry.hasI2VChain === true) {
+    pills.push({ kind: 'i2v', label: 'I2V' });
+  }
+  const total = formatTelemetryDuration(telemetry.totalMs);
+  if (total !== null) pills.push({ kind: 'total', label: `Total ${total}` });
+  return pills;
+}
+// TURN_TELEMETRY_END
+
+function syncEmptyState() {
+  const turnCount = ui.transcript.querySelectorAll('.turn').length;
+  updateEmptyStateVisibility(ui.emptyState, turnCount);
+}
+
+function elapsedTelemetryMs(targetTurn) {
+  if (!targetTurn?.telemetry || typeof targetTurn.telemetry.startedAt !== 'number') return null;
+  return Math.max(0, performance.now() - targetTurn.telemetry.startedAt);
+}
+
+function renderTurnTelemetry(targetTurn) {
+  if (!targetTurn?.telemetryEl) return;
+  const pills = formatTurnTelemetry(targetTurn.telemetry);
+  if (!pills.length) {
+    targetTurn.telemetryEl.replaceChildren();
+    targetTurn.telemetryEl.hidden = true;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const pill of pills) {
+    const span = document.createElement('span');
+    span.className = 'telemetry-pill' + (pill.kind === 'i2v' ? ' accent' : '');
+    span.dataset.metric = pill.kind;
+    span.textContent = pill.label;
+    frag.append(span);
+  }
+  targetTurn.telemetryEl.replaceChildren(frag);
+  targetTurn.telemetryEl.hidden = false;
+}
+
+function recordTurnTotal(targetTurn) {
+  if (!targetTurn?.telemetry || targetTurn.telemetry.totalMs !== null) return;
+  targetTurn.telemetry.totalMs = elapsedTelemetryMs(targetTurn);
+  renderTurnTelemetry(targetTurn);
+}
+
 function addTurn(role, text) {
   const el = document.createElement('div');
   el.className = 'turn ' + role;
@@ -770,9 +980,13 @@ function addTurn(role, text) {
   artifacts.className = 'artifacts';
   const legs = document.createElement('div');
   legs.className = 'legs';
-  body.append(asrEl, flow, artifacts, legs);
+  const telemetryEl = document.createElement('div');
+  telemetryEl.className = 'telemetry-strip';
+  telemetryEl.hidden = true;
+  body.append(asrEl, flow, artifacts, legs, telemetryEl);
   el.append(meta, body);
   ui.transcript.append(el);
+  syncEmptyState();
   if (role === 'user' && text) {
     const textEl = document.createElement('div');
     textEl.className = 'block text';
@@ -780,7 +994,10 @@ function addTurn(role, text) {
     flow.append(textEl);
   }
   scrollToEnd();
-  return { el, asrEl, flow, artifacts, legs, text, tailText: null, slots: new Map() };
+  return {
+    el, asrEl, flow, artifacts, legs, telemetryEl, text,
+    tailText: null, slots: new Map(), telemetry: null,
+  };
 }
 
 function scrollToEnd() {
@@ -1164,6 +1381,10 @@ function onVisualSlot(unified) {
   const kind = (unified.media_type || unified.stage) === 'video' ? 'video' : 'image';
   const slotId = unified.slot_id || `slot-${turn.slots.size}`;
   const continuity = visualSlotContinuityBadge(unified);
+  if (turn.telemetry && Number.isInteger(unified?.anchor_slot_index) && unified.anchor_slot_index >= 0) {
+    turn.telemetry.hasI2VChain = true;
+    renderTurnTelemetry(turn);
+  }
   const slot = createSlot(slotId, unified.prompt || '', kind, continuity);
   turn.slots.set(slotId, slot);
   turn.flow.append(slot.el);
@@ -1908,10 +2129,28 @@ async function ingestArtifact(chunk) {
   deliver(chunk, bytes);
 }
 
+function recordVisualSettled(key) {
+  if (!turn?.telemetry || !key) return;
+  if (turn.telemetry.settledSlotIds.has(key)) return;
+  turn.telemetry.settledSlotIds.add(key);
+  turn.telemetry.visualSettledCount = turn.telemetry.settledSlotIds.size;
+  if (turn.telemetry.firstVisualMs === null) {
+    turn.telemetry.firstVisualMs = elapsedTelemetryMs(turn);
+  }
+  renderTurnTelemetry(turn);
+}
+
+function recordFirstAudio() {
+  if (!turn?.telemetry || turn.telemetry.ttfaMs !== null) return;
+  turn.telemetry.ttfaMs = elapsedTelemetryMs(turn);
+  renderTurnTelemetry(turn);
+}
+
 function deliver(chunk, bytes) {
   const mime = chunk.mime_type;
   log('artifact', chunk.artifact_id, mime, bytes.length + ' bytes');
   if (mime === 'audio/pcm') {
+    recordFirstAudio();
     player.push(bytes, chunk.sample_rate ?? 24000, chunk.channels ?? 1);
     return;
   }
@@ -1923,6 +2162,7 @@ function deliver(chunk, bytes) {
       slot.imageDataURL = dataURLFor(mime, bytes);
     }
     setSlotMedia(slot, kindHint, url);
+    recordVisualSettled(chunk.slot_id);
     scrollToEnd();
     return;
   }
@@ -1948,7 +2188,9 @@ function deliver(chunk, bytes) {
     img.alt = 'Generated image';
     link.append(img);
     wrapCard(link, 'image.png');
+    recordVisualSettled(chunk.artifact_id || `image-${turn.telemetry?.settledSlotIds?.size ?? 0}`);
   } else if (mime === 'audio/wav') {
+    recordFirstAudio();
     const audio = document.createElement('audio');
     audio.controls = true;
     audio.src = url;
@@ -1958,6 +2200,7 @@ function deliver(chunk, bytes) {
     video.controls = true;
     video.src = url;
     wrapCard(video, 'video.mp4');
+    recordVisualSettled(chunk.artifact_id || `video-${turn.telemetry?.settledSlotIds?.size ?? 0}`);
   } else {
     const note = document.createElement('div');
     note.className = 'legs';
@@ -2032,10 +2275,11 @@ async function consume(payload, st) {
           turn.legs.textContent = `${unified.stage} output: ${unified.error || 'failed'}`;
         }
         break;
-      case 'complete': st.terminal = 1; break;
+      case 'complete': st.terminal = 1; recordTurnTotal(turn); break;
       case 'error': st.terminal = 1; throw new Error(unified.error || 'The request failed.');
       case 'cancelled': {
         st.terminal = 1;
+        recordTurnTotal(turn);
         const err = new Error('The server cancelled the request.');
         err.cancelled = true;
         throw err;
@@ -2046,6 +2290,10 @@ async function consume(payload, st) {
 
   const choice = Array.isArray(root.choices) ? root.choices[0] : null;
   if (choice?.delta && typeof choice.delta.content === 'string' && choice.delta.content) {
+    if (turn?.telemetry && turn.telemetry.ttftMs === null) {
+      turn.telemetry.ttftMs = elapsedTelemetryMs(turn);
+      renderTurnTelemetry(turn);
+    }
     st.text += choice.delta.content;
     appendText(choice.delta.content);
   }
@@ -2378,6 +2626,16 @@ async function send() {
     userTurn.artifacts.append(preview);
   }
   turn = addTurn('assistant', '');
+  turn.telemetry = {
+    startedAt: performance.now(),
+    ttftMs: null,
+    ttfaMs: null,
+    visualSettledCount: 0,
+    settledSlotIds: new Set(),
+    firstVisualMs: null,
+    hasI2VChain: false,
+    totalMs: null,
+  };
   if (body.audio?.stream) player.begin(ui.voiceWave);
 
   controller = new AbortController();
@@ -2434,6 +2692,7 @@ async function send() {
     }
     history.push({ role: 'user', content: userLabel });
     history.push({ role: 'assistant', content: st.text });
+    recordTurnTotal(turn);
     turn.tailText?.classList.remove('caret');
     player.end();
     setStatus(st.finish ? `Completed · ${st.finish}` : 'Completed');
@@ -2447,6 +2706,9 @@ async function send() {
       setStatus('Stopped');
       if (!turn.text && !turn.flow.querySelector('.slot') && !turn.artifacts.childElementCount) {
         turn.el.remove();
+        syncEmptyState();
+      } else {
+        recordTurnTotal(turn);
       }
     } else {
       setStatus('Error');
@@ -2482,12 +2744,34 @@ ui.prompt.addEventListener('keydown', (event) => {
     send();
   }
 });
+function applyShowcasePreset(presetId) {
+  if (running) return;
+  applyShowcasePresetToControls(presetId, ui, {
+    setAudioEnabled(enabled) {
+      voiceOn = Boolean(enabled);
+      if (!voiceOn) ui.audio.checked = false;
+      localStorage.setItem(GLOBAL_VOICE_KEY, voiceOn ? '1' : '0');
+      applyVoice();
+    },
+    syncNarrativeControls,
+    saveSettings,
+  });
+}
+
+ui.showcasePresets?.addEventListener('click', (event) => {
+  const card = event.target.closest('[data-preset]');
+  if (!card) return;
+  applyShowcasePreset(card.dataset.preset);
+});
+syncEmptyState();
+
 ui.newChat.addEventListener('click', () => {
   if (running) return;
   stopRealtime();
   player.stop();
   history.length = 0;
-  ui.transcript.replaceChildren();
+  ui.transcript.replaceChildren(ui.emptyState);
+  syncEmptyState();
   sessionID = '';
   ui.session.hidden = true;
   clearError();
