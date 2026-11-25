@@ -56,6 +56,8 @@ struct ContentPart {
 
   Kind kind = Kind::kText;
   std::string text;                  // kText
+  // kVideoUrl accepts data:video/...;base64,... up to 32 MiB decoded.
+  // Image and video inputs are mutually exclusive within one chat request.
   std::string url;                   // kImageUrl, kVideoUrl
   std::string audio;                 // kInputAudio, base64
   std::string audio_format;          // kInputAudio, e.g. wav or mp3

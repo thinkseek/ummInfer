@@ -96,7 +96,8 @@ void usage(const std::string& command, std::ostream& out) {
            "[--model M] [--system TEXT] [--stream] [--max-tokens N] [--temperature X] "
            "[--top-p X] [--seed N] [--timeout-ms N] [--first-token-ms N] [--stall-ms N] "
            "[--max-attempts N]\n"
-           "       [--image-url URL ...] [--video-url URL ...] [--audio PATH]\n"
+           "       [--image-url URL ... | --video-input PATH] [--video-url URL ...]\n"
+           "       [--audio PATH]  --video-input accepts .mp4/.webm/.mov up to 32 MiB\n"
            "       [--audio-out PATH --voice NAME [--ref-audio PATH]]  speech output\n"
            "       [--image-out PATH [--image-prompt TEXT] [--image-size WxH]\n"
            "        [--image-steps N] [--image-ref PATH] [--image-seed N]\n"
@@ -342,6 +343,14 @@ std::string image_content_type(const std::string& path) {
   return "application/octet-stream";
 }
 
+std::string video_content_type(const std::string& path) {
+  const std::string extension = extension_of(path);
+  if (extension == "mp4") return "video/mp4";
+  if (extension == "webm") return "video/webm";
+  if (extension == "mov") return "video/quicktime";
+  throw UsageError("--video-input must be a .mp4, .webm, or .mov file");
+}
+
 std::string input_audio_format(const std::string& path) {
   const std::string extension = extension_of(path);
   if (extension == "wav" || extension == "mp3") return extension;
@@ -396,6 +405,7 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
                   {"url", "model", "prompt", "system", "max-tokens", "temperature",
                    "top-p", "seed", "timeout-ms", "first-token-ms", "stall-ms",
                    "max-attempts", "audio", "audio-out", "voice", "ref-audio",
+                   "video-input",
                    "image-out", "image-prompt", "image-size", "image-steps",
                    "image-ref", "image-seed", "image-format", "video-out",
                    "video-prompt", "video-size", "video-seconds", "video-fps",
@@ -424,8 +434,15 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
 
   const std::vector<std::string> image_urls = options.all("image-url");
   const std::vector<std::string> video_urls = options.all("video-url");
+  const bool video_input = options.has("video-input");
+  if (video_input && !image_urls.empty()) {
+    throw UsageError("--video-input and --image-url are mutually exclusive");
+  }
+  if (video_input && !video_urls.empty()) {
+    throw UsageError("--video-input and --video-url are mutually exclusive");
+  }
   const bool input_audio = options.has("audio");
-  if (image_urls.empty() && video_urls.empty() && !input_audio) {
+  if (image_urls.empty() && video_urls.empty() && !video_input && !input_audio) {
     request.messages.push_back({"user", std::move(prompt)});
   } else {
     Message message;
@@ -446,6 +463,16 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
       ContentPart part;
       part.kind = ContentPart::Kind::kVideoUrl;
       part.url = url;
+      message.parts.push_back(std::move(part));
+    }
+    if (video_input) {
+      const std::string path = options.get("video-input");
+      const std::string bytes = read_limited(path, 32u << 20, "video-input");
+      if (bytes.empty()) throw Error(ErrorCode::kBadRequest, "video-input is empty");
+      ContentPart part;
+      part.kind = ContentPart::Kind::kVideoUrl;
+      part.url = "data:" + video_content_type(path) + ";base64," +
+                 detail::base64_encode(bytes);
       message.parts.push_back(std::move(part));
     }
     if (input_audio) {

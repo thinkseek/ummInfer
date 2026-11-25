@@ -8,7 +8,7 @@ or transformers, and no second inference engine exists.
 | File | Responsibility |
 | --- | --- |
 | `python/umminfer_rl_trajectory.py` | Out-of-process recording, narrative normalization, media verification, CAS export |
-| `python/umminfer_rl_reward.py` | Export-only reward interface and plugin loader |
+| `python/umminfer_rl_reward.py` | Export-only reward interface, deterministic composite UMM reward, and plugin loader |
 | `python/umminfer_rl_worker.py` | Independent v1/v2 validation, NDJSON worker protocol, checkpoint hash chain |
 | `tests/narrative_rl_fixtures.py` | Deterministic interleaved narrative, failed-leg, and cancelled-response fixtures |
 | `tests/rl_architecture_test.py` | Deterministic schema-v2 recorder/validator/reward contracts |
@@ -21,7 +21,10 @@ The Stage C single-variable narrative-routing runner builds on this export
 boundary. Its four existing policy overlays, fixed-request fingerprints,
 label-gated metrics, deterministic contract replay, and explicit non-claims are
 specified in [narrative-routing-ablation.md](narrative-routing-ablation.md).
-Latency observations and ablation labels remain outside trajectory schema v2.
+The raw recorder adds no latency observations or ablation labels to trajectory
+schema v2. Offline analysis may enrich the exported JSON object with the
+optional `ablation` metadata documented below; the existing narrative-routing
+runner continues to keep its own latency observations outside its trajectories.
 
 ## Compatibility decision
 
@@ -169,6 +172,58 @@ and terminal state directly from the export. `NullReward` continues to write
 `score: null`, preserving the distinction between missing and zero reward.
 `train_step` requires a finite numeric JSON score and rejects bools, strings,
 NaN, Infinity, and non-finite/oversized numbers before importing the trainer.
+
+### Composite multi-objective UMM reward
+
+`CompositeUmmReward` is a deterministic experiment signal computed only from
+one exported schema-v2 JSON object. It requires labels and at least one latency
+observation inside that same object:
+
+```json
+"ablation": {
+  "expected_visual_modalities": ["image", "video"],
+  "latency": {"ttft_ms": 500, "ttfa_ms": 900, "terminal_ms": 15000}
+}
+```
+
+These fields are offline analysis metadata, not new serving response fields and
+not measurements invented by the reward. Latency keys are `ttft_ms`, `ttfa_ms`,
+`terminal_ms`, and `barge_in_ms`; values must be finite and non-negative. The
+raw recorder remains timestamp-free, so an enrichment step must copy recorded
+observations into the JSONL before scoring. Missing labels or latency coverage
+produce `score: null`. Schema v1, malformed labels, malformed events, and
+invalid observations are rejected rather than silently scored.
+
+The default formula is:
+
+```text
+0.4 * routing_f1
++ 0.3 * prose_visual_balance
++ 0.3 * barge_in_stability
+- 0.2 * latency_penalty
+```
+
+- `routing_f1` is the image/video set F1 between `visual_slots` and the labels.
+- `prose_visual_balance` is the harmonic mean of non-empty `clean_text`
+  presence and `min(predicted_slots, expected_slots) /
+  max(predicted_slots, expected_slots)`, with 0/0 visual counts defined as a
+  perfect count match. It penalizes missing prose and under/over-generation.
+- `latency_penalty` is the mean of observed `latency / budget` ratios, each
+  clamped to 1. Default budgets are 1000 ms TTFT, 1500 ms TTFA, 30000 ms
+  terminal, and 250 ms barge-in. Constructor arguments can override weights
+  and budgets; all values are validated and emitted with the components.
+- Without a speech-start event, `barge_in_stability` is 1 for a completed turn
+  and 0 for a failed or unexplained cancelled turn. With an observed
+  `input_audio_buffer.speech_started`/`speech_started`, it is 1 only when the
+  exported terminal state is cancelled with no error event or failed leg.
+  This checks recorded cancellation consistency, not unrecorded playback
+  acknowledgment or audio quality.
+
+`apply_reward` writes the component values, observed latency, budgets, and
+weights under `reward.components`, making every score independently
+recomputable from the JSONL. Reapplying the same reward is byte-deterministic.
+This is an ablation/training signal, not evidence of model-quality improvement,
+an optimizer run, or real full-duplex performance.
 
 ## Worker and optimizer status
 

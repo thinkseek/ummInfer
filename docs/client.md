@@ -69,6 +69,29 @@ the request when the caller omits them. A field with the wrong JSON type returns
 It never adds `stream_options`, and it never drops a caller field and retries: an
 unsupported field is reported as an error.
 
+### Native video input
+
+`--video-input PATH` attaches a local MP4, WebM, or QuickTime video to a unified
+chat turn as a `video_url` content part:
+
+```sh
+./zig-out/bin/umm-infer chat \
+  --url http://127.0.0.1:43301/v1 --model qwen3-native \
+  --prompt 'Describe the camera motion and key events' \
+  --video-input /tmp/input.mp4
+```
+
+The CLI reads at most 32 MiB, rejects an empty file, and sends
+`data:video/mp4;base64,...`, `data:video/webm;base64,...`, or
+`data:video/quicktime;base64,...` according to the filename extension. Video
+input is mutually exclusive with `--image-url` and `--video-url`; generated
+image/video output options are independent. `ContentPart::Kind::kVideoUrl`
+provides the same library wire representation. The C++ client validates native
+data URLs, including their decoded 32 MiB limit, and rejects any chat request
+that combines image and video inputs before sending it. The existing remote
+`--video-url` option remains available for compatible OpenAI endpoints; unified
+ummInfer requires a native data URL.
+
 ### Token usage in a stream
 
 The last `chat.completion.chunk` of a streaming chat response, the one that

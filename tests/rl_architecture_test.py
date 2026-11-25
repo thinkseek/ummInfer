@@ -352,5 +352,102 @@ class TrajectoryV2Tests(unittest.TestCase):
         self.assertNotIn("transformers", sys.modules)
 
 
+class CompositeUmmRewardTests(unittest.TestCase):
+    def test_export_only_components_and_byte_determinism(self):
+        with tempfile.TemporaryDirectory(prefix="umm-rl-composite-") as tmp:
+            recorder, record = record_response(tmp, fixture.narrative_events())
+            record["ablation"] = {
+                "expected_visual_modalities": ["image", "video"],
+                "latency": {"ttft_ms": 500, "terminal_ms": 15000},
+            }
+            recorder.jsonl_path.write_text(
+                json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
+            reward = reward_mod.CompositeUmmReward()
+            exported = json.loads(recorder.jsonl_path.read_text())
+            score, components = reward.evaluate(exported)
+            self.assertEqual(components["routing_f1"], 1.0)
+            self.assertAlmostEqual(components["prose_visual_balance"], 0.8)
+            self.assertEqual(components["latency_penalty"], 0.5)
+            self.assertEqual(components["barge_in_stability"], 1.0)
+            self.assertFalse(components["barge_in_observed"])
+            self.assertAlmostEqual(score, 0.84)
+
+            reward_mod.apply_reward(recorder.jsonl_path, reward)
+            first_bytes = recorder.jsonl_path.read_bytes()
+            scored = worker.validate_trajectory(recorder.jsonl_path)[0]
+            self.assertAlmostEqual(scored["reward"]["score"], 0.84)
+            self.assertEqual(scored["reward"]["components"], components)
+            reward_mod.apply_reward(recorder.jsonl_path, reward)
+            self.assertEqual(recorder.jsonl_path.read_bytes(), first_bytes)
+
+            # Scoring needs no CAS, live server, model, or external observation.
+            hidden_artifacts = Path(tmp) / "hidden-artifacts"
+            recorder.artifact_dir.rename(hidden_artifacts)
+            reward_mod.apply_reward(recorder.jsonl_path, reward)
+            self.assertEqual(recorder.jsonl_path.read_bytes(), first_bytes)
+            hidden_artifacts.rename(recorder.artifact_dir)
+            worker.validate_trajectory(recorder.jsonl_path)
+
+    def test_missing_coverage_and_invalid_observations(self):
+        with tempfile.TemporaryDirectory(prefix="umm-rl-composite-coverage-") as tmp:
+            _, record = record_response(tmp, fixture.narrative_events())
+            reward = reward_mod.CompositeUmmReward()
+            self.assertIsNone(reward.score(record))
+            record["ablation"] = {"expected_visual_modalities": ["image", "video"]}
+            self.assertIsNone(reward.score(record))
+            record["ablation"]["latency"] = {}
+            self.assertIsNone(reward.score(record))
+            for value in (-1, True, "1", float("nan"), float("inf")):
+                with self.subTest(value=value):
+                    bad = copy.deepcopy(record)
+                    bad["ablation"]["latency"] = {"terminal_ms": value}
+                    with self.assertRaises(ValueError):
+                        reward.score(bad)
+            with self.assertRaisesRegex(ValueError, "unknown observation"):
+                reward.score(dict(record, ablation={
+                    "expected_visual_modalities": [],
+                    "latency": {"terminal": 1},
+                }))
+            with self.assertRaisesRegex(ValueError, "schema v2"):
+                reward.score(dict(record, schema_version=1))
+            with self.assertRaises(ValueError):
+                reward_mod.CompositeUmmReward(weights={"unknown": 1})
+            with self.assertRaises(ValueError):
+                reward_mod.CompositeUmmReward(weights={"routing_f1": -1})
+            with self.assertRaises(ValueError):
+                reward_mod.CompositeUmmReward(latency_budget_ms={"terminal_ms": 0})
+
+    def test_barge_in_stability_comes_from_realtime_events(self):
+        with tempfile.TemporaryDirectory(prefix="umm-rl-composite-barge-") as tmp:
+            recorder = traj.TrajectoryRecorder(Path(tmp) / "realtime.jsonl")
+            stable = traj.record_realtime(
+                recorder, "duplex", "stable", [
+                    {"direction": "outbound",
+                     "type": "input_audio_buffer.speech_started"},
+                    {"direction": "outbound", "type": "response.cancelled"},
+                ], terminal_state="cancelled")
+            stable["ablation"] = {
+                "expected_visual_modalities": [],
+                "latency": {"barge_in_ms": 125},
+            }
+            _, stable_components = reward_mod.CompositeUmmReward().evaluate(stable)
+            self.assertTrue(stable_components["barge_in_observed"])
+            self.assertEqual(stable_components["barge_in_stability"], 1.0)
+            self.assertEqual(stable_components["latency_penalty"], 0.5)
+
+            unstable = traj.record_realtime(
+                recorder, "duplex", "unstable", [
+                    {"direction": "outbound",
+                     "type": "input_audio_buffer.speech_started"},
+                    {"direction": "outbound", "type": "transcription.completed",
+                     "text": "continued after interruption", "is_final": True},
+                ])
+            unstable["ablation"] = copy.deepcopy(stable["ablation"])
+            _, unstable_components = reward_mod.CompositeUmmReward().evaluate(unstable)
+            self.assertTrue(unstable_components["barge_in_observed"])
+            self.assertEqual(unstable_components["barge_in_stability"], 0.0)
+            worker.validate_trajectory(recorder.jsonl_path)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

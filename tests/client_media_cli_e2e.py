@@ -428,6 +428,72 @@ def test_chat_wave9_multimodal_flags(binary, base, workdir):
     require(vid_out.read_bytes() == MP4, "chat --video-out mismatch")
 
 
+def test_chat_video_input(binary, base, workdir):
+    clip = workdir / "input.mp4"
+    clip.write_bytes(MP4)
+    result = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "describe the motion", "--video-input", str(clip),
+    ])
+    require(result.returncode == 0, f"chat --video-input failed: {result.stderr}")
+    [entry] = take()
+    request = json.loads(entry["body"])
+    parts = request["messages"][0]["content"]
+    require([part["type"] for part in parts] == ["text", "video_url"],
+            f"video input content parts: {parts}")
+    url = parts[1]["video_url"]["url"]
+    require(url.startswith("data:video/mp4;base64,"), f"video data URL: {url[:80]}")
+    require(base64.b64decode(url.split(",", 1)[1]) == MP4,
+            "--video-input must preserve the exact file bytes")
+
+    rejected = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "mixed",
+        "--video-input", str(clip), "--image-url", "https://example.com/frame.png",
+    ])
+    require(rejected.returncode == 2 and "mutually exclusive" in rejected.stderr,
+            f"image/video input conflict: {rejected.returncode} {rejected.stderr}")
+    require(not take(), "image/video conflict must be rejected before HTTP")
+
+    remote_mix = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "mixed",
+        "--image-url", "https://example.com/frame.png",
+        "--video-url", "https://example.com/clip.mp4",
+    ])
+    require(remote_mix.returncode != 0 and "cannot combine" in remote_mix.stderr,
+            f"library image/video input conflict: {remote_mix.stderr}")
+    require(not take(), "library image/video conflict must be rejected before HTTP")
+
+    oversized = workdir / "oversized.mp4"
+    oversized.write_bytes(b"V" * (32 * 1024 * 1024 + 1))
+    too_large = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "large",
+        "--video-input", str(oversized),
+    ])
+    require(too_large.returncode != 0 and "too large" in too_large.stderr,
+            f"32 MiB cap: {too_large.stderr}")
+    require(not take(), "oversized video must be rejected before HTTP")
+
+    empty = workdir / "empty.mp4"
+    empty.write_bytes(b"")
+    empty_result = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "empty",
+        "--video-input", str(empty),
+    ])
+    require(empty_result.returncode != 0 and "empty" in empty_result.stderr,
+            f"empty video: {empty_result.stderr}")
+    require(not take(), "empty video must be rejected before HTTP")
+
+    wrong_extension = workdir / "clip.avi"
+    wrong_extension.write_bytes(MP4)
+    wrong_type = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "type",
+        "--video-input", str(wrong_extension),
+    ])
+    require(wrong_type.returncode == 2 and ".mp4, .webm, or .mov" in wrong_type.stderr,
+            f"video extension check: {wrong_type.stderr}")
+    require(not take(), "unsupported video type must be rejected before HTTP")
+
+
 def main():
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_BIN
     if not binary.exists():
@@ -444,6 +510,7 @@ def main():
         test_video_rejects_a_bad_id,
         test_speech_subcommand,
         test_chat_wave9_multimodal_flags,
+        test_chat_video_input,
     ]
     failures = 0
     try:

@@ -29,6 +29,7 @@ constexpr size_t kMaxImageBytes = 64u << 20;
 constexpr size_t kMaxImageTotalBytes = 256u << 20;
 constexpr size_t kMaxAudioBytes = 128u << 20;
 constexpr size_t kMaxVideoBytes = 512u << 20;
+constexpr size_t kMaxVideoInputBytes = 32u << 20;
 // Mixed-output chat mirrors the server's frozen decoded-byte contract.
 constexpr size_t kMixedMaxImageBytes = 48u << 20;
 constexpr size_t kMixedMaxAudioBytes = 48u << 20;
@@ -180,14 +181,34 @@ void validate_message_parts(const Message& message, size_t index) {
           if (url.empty()) throw Error(ErrorCode::kConfig, where + " has an empty video url");
         }
         break;
-      case ContentPart::Kind::kVideoUrl:
+      case ContentPart::Kind::kVideoUrl: {
         if (part.url.empty()) {
           throw Error(ErrorCode::kConfig, where + " has a video_url part without a url");
         }
         if (part.fps && (!std::isfinite(*part.fps) || *part.fps < 0.1 || *part.fps > 10)) {
           throw Error(ErrorCode::kConfig, where + " video fps must be between 0.1 and 10");
         }
+        if (part.url.rfind("data:", 0) == 0) {
+          const size_t comma = part.url.find(',');
+          if (part.url.rfind("data:video/", 0) != 0 || comma == std::string::npos ||
+              part.url.substr(0, comma).find(";base64") == std::string::npos) {
+            throw Error(ErrorCode::kConfig,
+                        where + " video_url must be a data:video/...;base64,... URL");
+          }
+          try {
+            const std::string decoded = detail::base64_decode(
+                part.url.substr(comma + 1), kMaxVideoInputBytes);
+            if (decoded.empty()) {
+              throw Error(ErrorCode::kConfig, where + " video_url payload must be non-empty");
+            }
+          } catch (const Error& error) {
+            if (error.code() == ErrorCode::kConfig) throw;
+            throw Error(ErrorCode::kConfig,
+                        where + " has invalid or oversized video_url data: " + error.what());
+          }
+        }
         break;
+      }
     }
   }
 }
@@ -377,11 +398,21 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
   const std::string& model = request.model.empty() ? config_.model : request.model;
   if (blank(model)) throw Error(ErrorCode::kConfig, "model is required");
   if (request.messages.empty()) throw Error(ErrorCode::kConfig, "messages are required");
+  bool image_input = false;
+  bool video_input = false;
   for (size_t i = 0; i < request.messages.size(); ++i) {
     if (blank(request.messages[i].role)) {
       throw Error(ErrorCode::kConfig, "message " + std::to_string(i) + " has no role");
     }
     validate_message_parts(request.messages[i], i);
+    for (const auto& part : request.messages[i].parts) {
+      image_input = image_input || part.kind == ContentPart::Kind::kImageUrl;
+      video_input = video_input || part.kind == ContentPart::Kind::kVideoUrl ||
+                    part.kind == ContentPart::Kind::kVideo;
+    }
+  }
+  if (image_input && video_input) {
+    throw Error(ErrorCode::kConfig, "chat cannot combine image and video inputs");
   }
   if (request.max_tokens < 0) throw Error(ErrorCode::kConfig, "max_tokens must not be negative");
   if (request.temperature &&
