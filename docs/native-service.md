@@ -192,6 +192,17 @@ and `--web-root`:
     + streaming 3D-VAE + H.264 MP4) via `umm-infer serve` + `umm-native-stage-video`
     + `umm-infer chat --video-out` on free GPU 7: `92.66 s` (`270,505 B` H.264
     MP4, `ffprobe` verified), GPU 7 returned to `3 MiB`.
+- Wave 10 live interleaved narrative, global streaming voice, and visual swap (`f0519cc3`):
+  - Hot-upgraded `/bin/umm-infer` in place (`umm-infer.wave9` backup preserved)
+    and updated `web/index.html`: `/ready` returned 200 in **`3 s`** with **`0`
+    stage restarts** across all 5 GPU stages (GPUs 2–6 stayed hot across back-to-back
+    Wave 9 and Wave 10 gateway upgrades).
+  - `tests/narrative_live_e2e.py --url http://127.0.0.1:43301 --model qwen3-native`:
+    TTFT `0.58 s`, global streaming PCM16 TTFA **`0.78 s`** (159 chunks, `4.10 MB`),
+    `slot-0` FLUX.2 PNG (`287,400 B`) dispatched mid-stream at `4.05 s` (`2.80 s`
+    before VLM finished) and delivered in `1.46 s`, `slot-1` Wan2.2 H.264 MP4
+    (`100,541 B`) in `7.96 s`, `clean_prose=true`, live `POST /v1/visual/render`
+    PNG -> H.264 MP4 swap (`51,368 B`, `ffprobe` PASS), `/health` `in_flight=0`.
 
 ## Validation, 2026-11-19 (historical)
 
