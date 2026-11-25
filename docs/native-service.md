@@ -410,6 +410,31 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 23 live Persistent GPU-Resident Wan2.2 3D-VAE + Fused GPU RGB8 Decode (`776d153`):
+  - **GPU 6 `umm-native-stage-video`** (`776d153` persistent `WanVae` preloaded
+    decoder + pre-converted BF16/FP16 weights + persistent `cublasHandle_t` /
+    `BufferPool` / pinned staging + lazy cached I2V encoder + fused
+    `unpatchify_clamp_rgb8_kernel` 4x smaller D2H, with `UMM_VAE_NO_PERSIST=1`
+    fallback, preserving `.wave21` backup): hot-swapped live via supervisor
+    respawn (`load_ms=12,190`, `28,323 MiB` steady after lazy I2V encoder cache,
+    `0` restarts on GPUs 2–5). Measured live on SM90 GPU 6 (`704x480` 29f 15
+    steps `seed=42`):
+    - T2V lossless (`teacache_thresh=0.0`): `vae_ms` **`3,792 -> 1,993 ms`**
+      (**`-47.4%`**), total **`10.66 -> 8.79 s`** (**`2.74×` faster than Wave 14
+      `24.07 s`**), `PSNR=55.58 dB` avg (`max=inf`) vs Wave 21, bit-exact repeat
+      outputs (`sha=e09287236a2867c1`, `310,732 B`).
+    - T2V Fast (`teacache_thresh=0.05`, `10/30` hits): `vae_ms=1,983 ms`, total
+      **`6.62 s`** (**`3.64×` faster than Wave 14**; `7.05 s` end-to-end HTTP).
+    - I2V Fast (`i2v=1, teacache_thresh=0.05`, Journey 5 warm): `vae_ms`
+      **`4,486 -> 2,024 ms`** (**`-54.9%`**), total **`9.21 -> 6.69 s`**
+      (**`3.60×` faster than Wave 14**), bit-exact repeat outputs (`162,532 B`).
+  - **Full 5/5 North-Star Showcase live on Wave 23 SM90 stack (`tools/umminfer_showcase.py --url http://127.0.0.1:43301 --journey all`)**:
+    passed **5/5 journeys** (`9/9 SHA256SUMS`): Journey 1 `TTFT=0.877 s` /
+    **`TTFA=0.996 s`** (FLUX.2 `0.652 s`), Journey 2 lossless `704x480` 29f I2V
+    HTTP **`17.12 -> 9.713 s`** (sub-10s!), Journey 3 3-turn video QA
+    **`2.38 -> 1.61 -> 1.56 s`**, Journey 4 `zero_redundant=True`, Journey 5
+    `storyboard_i2v_chain` (`TTFT=0.873 s`, `TTFA=1.024 s`, `anchor_slot_index=0`).
+
 - Wave 22 live Web/macOS Temporal Video UI, Journey 5 `storyboard_i2v_chain` Showcase & Stage C Voice Collaboration Ablation (`ea59116`, `b7c30ee`):
   - **Web UI `/web/index.html` & macOS `ummmlx`** (`ea59116`): exposed
     Uniform/Temporal video frame selection and motion/scene thresholds
