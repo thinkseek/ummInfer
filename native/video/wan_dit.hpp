@@ -132,6 +132,19 @@ UMM_DIT_HD inline constexpr int wan_dit_batched_per_frame_group(
   return (batched_token % tokens_per_batch) < first_frame_tokens ? 0 : 1;
 }
 
+// Fused self-attention QKV projection layout [total_tokens, 3 * inner_dim]:
+// component 0 = Q, 1 = K, 2 = V.
+UMM_DIT_HD inline constexpr size_t wan_dit_qkv_row_offset(
+    int token, int inner_dim, int component) noexcept {
+  return (static_cast<size_t>(token) * 3u + static_cast<size_t>(component)) *
+         static_cast<size_t>(inner_dim);
+}
+
+UMM_DIT_HD inline constexpr bool wan_dit_qkv_fits_in_ffn(
+    int inner_dim, int ffn_dim) noexcept {
+  return inner_dim > 0 && ffn_dim >= 3 * inner_dim;
+}
+
 #undef UMM_DIT_HD
 
 // Attention query tile size used by the CUDA Wan DiT reference attention loop.
@@ -210,6 +223,51 @@ inline bool wan_dit_use_flash_attn(const char* ref_env) noexcept {
 inline bool wan_dit_use_batch_cfg(const char* disable_env) noexcept {
   return wan_dit_use_flash_attn(disable_env);
 }
+
+// Selects lazy CUDA Graph capture/replay for the 30-layer DiT transformer
+// block loop (default: true). Disabled when UMM_DIT_NO_GRAPH is set to a
+// truthy value ("1", "true", "yes", or "on", case-insensitive).
+inline bool wan_dit_use_cuda_graph(const char* disable_env) noexcept {
+  return wan_dit_use_flash_attn(disable_env);
+}
+
+inline constexpr size_t kWanDitBlockGraphCacheSlots = 2;
+
+// Cache key identifying all fixed device pointers and static shapes baked into
+// a captured 30-layer DiT transformer block CUDA Graph.
+struct WanDitBlockGraphKey {
+  const void* x_ptr = nullptr;
+  int tokens = 0;
+  int batch_size = 0;
+  int first_frame_tokens = 0;
+  bool per_frame = false;
+  const void* pos_kv_ptr = nullptr;
+  const void* pos_v_ptr = nullptr;
+  int pos_len = 0;
+  const void* neg_kv_ptr = nullptr;
+  const void* neg_v_ptr = nullptr;
+  int neg_len = 0;
+  const void* rope_cos_ptr = nullptr;
+  const void* rope_sin_ptr = nullptr;
+  const void* ws_x_ptr = nullptr;
+  const void* ws_ff_ptr = nullptr;
+
+  bool operator==(const WanDitBlockGraphKey& other) const noexcept {
+    return x_ptr == other.x_ptr && tokens == other.tokens &&
+           batch_size == other.batch_size &&
+           first_frame_tokens == other.first_frame_tokens &&
+           per_frame == other.per_frame && pos_kv_ptr == other.pos_kv_ptr &&
+           pos_v_ptr == other.pos_v_ptr && pos_len == other.pos_len &&
+           neg_kv_ptr == other.neg_kv_ptr && neg_v_ptr == other.neg_v_ptr &&
+           neg_len == other.neg_len && rope_cos_ptr == other.rope_cos_ptr &&
+           rope_sin_ptr == other.rope_sin_ptr && ws_x_ptr == other.ws_x_ptr &&
+           ws_ff_ptr == other.ws_ff_ptr;
+  }
+
+  bool operator!=(const WanDitBlockGraphKey& other) const noexcept {
+    return !(*this == other);
+  }
+};
 
 struct WanTextEmbedCacheKey {
   uint64_t hash = 0;

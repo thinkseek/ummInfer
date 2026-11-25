@@ -886,6 +886,150 @@ void test_wan_dit_batch_cfg_policy_and_layout() {
   }
 }
 
+void test_wan_dit_graph_policy_and_qkv_split() {
+  using namespace umminfer::video;
+
+  // 1. UMM_DIT_NO_GRAPH env parser: default ON, truthy values disable.
+  check(wan_dit_use_cuda_graph(nullptr),
+        "null UMM_DIT_NO_GRAPH enables CUDA graph capture");
+  check(wan_dit_use_cuda_graph(""),
+        "empty UMM_DIT_NO_GRAPH enables CUDA graph capture");
+  check(wan_dit_use_cuda_graph("   "),
+        "whitespace UMM_DIT_NO_GRAPH enables CUDA graph capture");
+  check(wan_dit_use_cuda_graph("0"), "0 enables CUDA graph capture");
+  check(wan_dit_use_cuda_graph("false"), "false enables CUDA graph capture");
+  check(wan_dit_use_cuda_graph("FALSE"), "FALSE enables CUDA graph capture");
+  check(wan_dit_use_cuda_graph("off"), "off enables CUDA graph capture");
+  check(wan_dit_use_cuda_graph("no"), "no enables CUDA graph capture");
+  check(wan_dit_use_cuda_graph("unknown"),
+        "unknown value falls back to CUDA graph capture");
+  for (const char* off_val :
+       {"1", " 1 ", "true", "TRUE", "True", "yes", "YES", "\tyes\n", "on", "ON"}) {
+    check(!wan_dit_use_cuda_graph(off_val),
+          std::string("UMM_DIT_NO_GRAPH='") + off_val +
+              "' disables CUDA graph capture");
+  }
+
+  // 2. Fused self-attention QKV split offsets and zero-extra-VRAM ws_.ff alias.
+  constexpr int kDim = 3072;
+  constexpr int kFf = 14336;
+  check(wan_dit_qkv_fits_in_ffn(kDim, kFf),
+        "3 * kDim (9216) fits inside ws_.ff (14336) with zero extra activation VRAM");
+  check(!wan_dit_qkv_fits_in_ffn(kDim, 3 * kDim - 1),
+        "insufficient ffn_dim rejected for fused QKV alias");
+  check(!wan_dit_qkv_fits_in_ffn(0, kFf), "zero inner_dim rejected");
+
+  for (int total_tokens : {1, 16, 2640, 5280}) {
+    check(wan_dit_qkv_row_offset(0, kDim, 0) == 0, "token 0 Q starts at 0");
+    check(wan_dit_qkv_row_offset(0, kDim, 1) == static_cast<size_t>(kDim),
+          "token 0 K starts at kDim");
+    check(wan_dit_qkv_row_offset(0, kDim, 2) == static_cast<size_t>(2 * kDim),
+          "token 0 V starts at 2*kDim");
+    const size_t last_q = wan_dit_qkv_row_offset(total_tokens - 1, kDim, 0);
+    const size_t last_k = wan_dit_qkv_row_offset(total_tokens - 1, kDim, 1);
+    const size_t last_v = wan_dit_qkv_row_offset(total_tokens - 1, kDim, 2);
+    check(last_k == last_q + kDim && last_v == last_q + 2 * kDim,
+          "Q/K/V slices are contiguous within every token row");
+    check(last_v + kDim == static_cast<size_t>(total_tokens) * 3 * kDim,
+          "fused QKV span covers [total_tokens, 3*kDim] contiguously");
+    check(last_v + kDim <= static_cast<size_t>(total_tokens) * kFf,
+          "fused QKV output stays within ws_.ff bounds");
+  }
+
+  // Synthetic host equivalence: stacked [W_q; W_k; W_v] GEMM split by
+  // wan_dit_qkv_row_offset matches separate Q, K, V GEMMs element-for-element.
+  {
+    constexpr int kT = 3;
+    constexpr int kD = 4;
+    std::vector<float> x(kT * kD);
+    std::vector<float> wq(kD * kD), wk(kD * kD), wv(kD * kD);
+    for (size_t i = 0; i < x.size(); ++i) x[i] = static_cast<float>(i + 1) * 0.25f;
+    for (size_t i = 0; i < kD * kD; ++i) {
+      wq[i] = static_cast<float>(i % 7) * 0.1f - 0.3f;
+      wk[i] = static_cast<float>((i * 3) % 11) * 0.1f - 0.5f;
+      wv[i] = static_cast<float>((i * 5) % 13) * 0.1f - 0.6f;
+    }
+    std::vector<float> wqkv;
+    wqkv.insert(wqkv.end(), wq.begin(), wq.end());
+    wqkv.insert(wqkv.end(), wk.begin(), wk.end());
+    wqkv.insert(wqkv.end(), wv.begin(), wv.end());
+
+    std::vector<float> fused_out(kT * 3 * kD, 0.0f);
+    for (int t = 0; t < kT; ++t) {
+      for (int o = 0; o < 3 * kD; ++o) {
+        float acc = 0.0f;
+        for (int k = 0; k < kD; ++k) acc += x[t * kD + k] * wqkv[o * kD + k];
+        fused_out[t * 3 * kD + o] = acc;
+      }
+    }
+    const std::vector<float>* mats[3] = {&wq, &wk, &wv};
+    for (int t = 0; t < kT; ++t) {
+      for (int comp = 0; comp < 3; ++comp) {
+        const size_t base = wan_dit_qkv_row_offset(t, kD, comp);
+        for (int o = 0; o < kD; ++o) {
+          float expected = 0.0f;
+          for (int k = 0; k < kD; ++k) {
+            expected += x[t * kD + k] * (*mats[comp])[o * kD + k];
+          }
+          check(std::fabs(fused_out[base + o] - expected) < 1e-6f,
+                "fused QKV split element matches separate Q/K/V projection");
+        }
+      }
+    }
+  }
+
+  // 3. WanDitBlockGraphKey equality and per-field invalidation checks.
+  check(kWanDitBlockGraphCacheSlots == 2,
+        "2-slot block graph cache avoids B=2 / B=1 thrashing");
+  const auto ptr = [](uintptr_t v) -> const void* {
+    return reinterpret_cast<const void*>(v);
+  };
+  const WanDitBlockGraphKey base{
+      ptr(0x1000),  // x_ptr
+      2640,         // tokens
+      2,            // batch_size
+      330,          // first_frame_tokens
+      true,         // per_frame
+      ptr(0x2000),  // pos_kv_ptr
+      ptr(0x2100),  // pos_v_ptr
+      512,          // pos_len
+      ptr(0x3000),  // neg_kv_ptr
+      ptr(0x3100),  // neg_v_ptr
+      512,          // neg_len
+      ptr(0x4000),  // rope_cos_ptr
+      ptr(0x4100),  // rope_sin_ptr
+      ptr(0x1000),  // ws_x_ptr
+      ptr(0x5000),  // ws_ff_ptr
+  };
+  const WanDitBlockGraphKey copy = base;
+  check(base == copy && !(base != copy),
+        "identical WanDitBlockGraphKey compares equal");
+
+  const auto check_mutates = [&](const char* field,
+                                 auto mutator) {
+    WanDitBlockGraphKey mutated = base;
+    mutator(mutated);
+    check(mutated != base && !(mutated == base),
+          std::string("changing WanDitBlockGraphKey::") + field +
+              " invalidates cached graph");
+  };
+  check_mutates("x_ptr", [&](auto& k) { k.x_ptr = ptr(0x1800); });
+  check_mutates("tokens", [&](auto& k) { k.tokens = 1320; });
+  check_mutates("batch_size", [&](auto& k) { k.batch_size = 1; });
+  check_mutates("first_frame_tokens", [&](auto& k) { k.first_frame_tokens = 256; });
+  check_mutates("per_frame", [&](auto& k) { k.per_frame = false; });
+  check_mutates("pos_kv_ptr", [&](auto& k) { k.pos_kv_ptr = ptr(0x2200); });
+  check_mutates("pos_v_ptr", [&](auto& k) { k.pos_v_ptr = ptr(0x2300); });
+  check_mutates("pos_len", [&](auto& k) { k.pos_len = 256; });
+  check_mutates("neg_kv_ptr", [&](auto& k) { k.neg_kv_ptr = ptr(0x3200); });
+  check_mutates("neg_v_ptr", [&](auto& k) { k.neg_v_ptr = ptr(0x3300); });
+  check_mutates("neg_len", [&](auto& k) { k.neg_len = 128; });
+  check_mutates("rope_cos_ptr", [&](auto& k) { k.rope_cos_ptr = ptr(0x4200); });
+  check_mutates("rope_sin_ptr", [&](auto& k) { k.rope_sin_ptr = ptr(0x4300); });
+  check_mutates("ws_x_ptr", [&](auto& k) { k.ws_x_ptr = ptr(0x1900); });
+  check_mutates("ws_ff_ptr", [&](auto& k) { k.ws_ff_ptr = ptr(0x5200); });
+}
+
 void test_flow_match_schedule_and_euler() {
   using namespace umminfer::video;
   FlowMatchConfig cfg;
@@ -1521,6 +1665,8 @@ int main() {
       {"wan_dit_teacache_controller", test_wan_dit_teacache_controller},
       {"wan_dit_batch_cfg_policy_and_layout",
        test_wan_dit_batch_cfg_policy_and_layout},
+      {"wan_dit_graph_policy_and_qkv_split",
+       test_wan_dit_graph_policy_and_qkv_split},
       {"flow_match_schedule_and_euler", test_flow_match_schedule_and_euler},
       {"unipc_bh2_matches_diffusers", test_unipc_bh2_matches_diffusers},
       {"i2v_center_crop_preserves_aspect_ratio",

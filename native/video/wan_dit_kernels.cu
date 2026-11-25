@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -44,8 +45,11 @@ constexpr int kProjection = kChannels * kPatchVolume;
 constexpr int kThreads = 256;
 constexpr int kQueryTile = kWanDitQueryTile;
 constexpr size_t kCrossKvCacheSlots = 2;
+constexpr size_t kCublasWorkspaceBytes = size_t{32} << 20;  // 32 MiB
 
 static_assert(kDim == kThreads * 12, "Wan DiT norm kernels assume kDim == 12 * kThreads");
+static_assert(wan_dit_qkv_fits_in_ffn(kDim, kFf),
+              "Wan DiT ws_.ff must fit fused QKV projection [total_tokens, 3 * kDim]");
 static_assert(kHeadDim == kWanDitFlashHeadDim, "Wan DiT FlashAttention assumes head_dim == 128");
 static_assert(kWanDitFlashBr == 64 && kWanDitFlashBc == 64 && kWanDitFlashThreads == 128,
               "Wan DiT FlashAttention assumes 64x64 tiles with 4 warps (128 threads)");
@@ -204,18 +208,23 @@ class PinnedHostBuffer {
 
 class CudaContext {
  public:
-  explicit CudaContext(int gpu) {
+  CudaContext(int gpu, AllocationTracker& tracker) {
     UMM_DIT_CUDA(cudaSetDevice(gpu));
     UMM_DIT_CUDA(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
     try {
       UMM_DIT_CUBLAS(cublasCreate(&handle_));
       UMM_DIT_CUBLAS(cublasSetMathMode(handle_, CUBLAS_DEFAULT_MATH));
       UMM_DIT_CUBLAS(cublasSetStream(handle_, stream_));
+      cublas_workspace_.allocate(kCublasWorkspaceBytes, tracker);
+      UMM_DIT_CUBLAS(cublasSetWorkspace(handle_, cublas_workspace_.data(),
+                                        cublas_workspace_.bytes()));
     } catch (...) {
       if (handle_ != nullptr) {
+        (void)cublasSetWorkspace(handle_, nullptr, 0);
         cublasDestroy(handle_);
         handle_ = nullptr;
       }
+      cublas_workspace_.reset();
       if (stream_ != nullptr) {
         (void)cudaStreamDestroy(stream_);
         stream_ = nullptr;
@@ -224,7 +233,11 @@ class CudaContext {
     }
   }
   ~CudaContext() {
-    if (handle_ != nullptr) cublasDestroy(handle_);
+    if (handle_ != nullptr) {
+      (void)cublasSetWorkspace(handle_, nullptr, 0);
+      cublasDestroy(handle_);
+    }
+    cublas_workspace_.reset();
     if (stream_ != nullptr) (void)cudaStreamDestroy(stream_);
   }
   cublasHandle_t get() const { return handle_; }
@@ -233,6 +246,7 @@ class CudaContext {
  private:
   cublasHandle_t handle_ = nullptr;
   cudaStream_t stream_ = nullptr;
+  DeviceBuffer cublas_workspace_;
 };
 
 struct DeviceTensor {
@@ -247,6 +261,7 @@ struct LoadSpec {
   size_t offset = 0;
   bool fp32 = false;
   bool reorder_patch = false;
+  bool pack_no_align = false;
 };
 
 bool keep_fp32(const std::string& name) {
@@ -618,6 +633,125 @@ __global__ void rms_norm_bias_kernel(Bf16* __restrict__ data,
     } else {
       data_pairs[p] = scaled_bf;
     }
+  }
+}
+
+// Fused QKV split + bias + RMSNorm (Q, K) + 3D RoPE (Q, K) + bias (V).
+// Reads contiguous [total_tokens, 3 * kDim] BF16 GEMM output (aliased in ws_.ff)
+// and writes normalized/rotated Q, K and biased V into [total_tokens, kDim]
+// outputs in a single launch (1 block per token, 256 threads * 6 pairs == 3072).
+// Preserves exact FP32 RMSNorm, BF16 rounding, and 3D RoPE math of
+// rms_norm_bias_kernel<true> and bias_bf16_vec2_kernel.
+__global__ void qkv_split_bias_norm_rope_kernel(
+    const Bf16* __restrict__ qkv, const float* __restrict__ q_bias,
+    const float* __restrict__ k_bias, const float* __restrict__ v_bias,
+    const float* __restrict__ q_norm_w, const float* __restrict__ k_norm_w,
+    const float* __restrict__ cosine, const float* __restrict__ sine,
+    Bf16* __restrict__ q_out, Bf16* __restrict__ k_out,
+    Bf16* __restrict__ v_out, int total_tokens, int rope_tokens, float eps) {
+  const int token = blockIdx.x;
+  if (token >= total_tokens) return;
+
+  const size_t out_row_offset = static_cast<size_t>(token) * kDim;
+  const Bf16x2* q_in_pairs = reinterpret_cast<const Bf16x2*>(
+      qkv + wan_dit_qkv_row_offset(token, kDim, 0));
+  const Bf16x2* k_in_pairs = reinterpret_cast<const Bf16x2*>(
+      qkv + wan_dit_qkv_row_offset(token, kDim, 1));
+  const Bf16x2* v_in_pairs = reinterpret_cast<const Bf16x2*>(
+      qkv + wan_dit_qkv_row_offset(token, kDim, 2));
+  Bf16x2* q_out_pairs = reinterpret_cast<Bf16x2*>(q_out + out_row_offset);
+  Bf16x2* k_out_pairs = reinterpret_cast<Bf16x2*>(k_out + out_row_offset);
+  Bf16x2* v_out_pairs = reinterpret_cast<Bf16x2*>(v_out + out_row_offset);
+
+  const float2* q_bias2 = reinterpret_cast<const float2*>(q_bias);
+  const float2* k_bias2 = reinterpret_cast<const float2*>(k_bias);
+  const float2* v_bias2 = reinterpret_cast<const float2*>(v_bias);
+  const float2* q_weight2 = reinterpret_cast<const float2*>(q_norm_w);
+  const float2* k_weight2 = reinterpret_cast<const float2*>(k_norm_w);
+
+  const int rp = threadIdx.x & ((kHeadDim / 2) - 1);
+  const int rope_token = wan_dit_batched_token_in_batch(token, rope_tokens);
+  const size_t rope_idx = static_cast<size_t>(rope_token) * kHeadDim + rp * 2;
+  const float c = cosine[rope_idx];
+  const float s = sine[rope_idx + 1];
+  const float eps_bf16 = to_float(to_bf16(eps));
+
+  __shared__ float smem[9];
+  float vals[12];
+
+  // 1. Q: bias + RMSNorm + 3D RoPE -> q_out.
+  {
+    float local_sq = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 6; ++j) {
+      const int p = threadIdx.x + j * kThreads;
+      const float2 raw = __bfloat1622float2(q_in_pairs[p]);
+      const float2 b = q_bias2[p];
+      const float2 biased =
+          __bfloat1622float2(__floats2bfloat162_rn(raw.x + b.x, raw.y + b.y));
+      vals[j * 2] = biased.x;
+      vals[j * 2 + 1] = biased.y;
+      local_sq += biased.x * biased.x + biased.y * biased.y;
+    }
+    const float inverse =
+        rsqrtf(block_reduce_sum(local_sq, smem) / static_cast<float>(kDim) +
+               eps_bf16);
+    #pragma unroll
+    for (int j = 0; j < 6; ++j) {
+      const int p = threadIdx.x + j * kThreads;
+      const float2 w = q_weight2[p];
+      const float2 norm = __bfloat1622float2(__floats2bfloat162_rn(
+          vals[j * 2] * inverse, vals[j * 2 + 1] * inverse));
+      const float2 scaled =
+          __bfloat1622float2(__floats2bfloat162_rn(norm.x * w.x, norm.y * w.y));
+      const float re =
+          __fsub_rn(__fmul_rn(scaled.x, c), __fmul_rn(scaled.y, s));
+      const float ro =
+          __fadd_rn(__fmul_rn(scaled.x, s), __fmul_rn(scaled.y, c));
+      q_out_pairs[p] = __floats2bfloat162_rn(re, ro);
+    }
+  }
+
+  // 2. K: bias + RMSNorm + 3D RoPE -> k_out.
+  {
+    float local_sq = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 6; ++j) {
+      const int p = threadIdx.x + j * kThreads;
+      const float2 raw = __bfloat1622float2(k_in_pairs[p]);
+      const float2 b = k_bias2[p];
+      const float2 biased =
+          __bfloat1622float2(__floats2bfloat162_rn(raw.x + b.x, raw.y + b.y));
+      vals[j * 2] = biased.x;
+      vals[j * 2 + 1] = biased.y;
+      local_sq += biased.x * biased.x + biased.y * biased.y;
+    }
+    const float inverse =
+        rsqrtf(block_reduce_sum(local_sq, smem) / static_cast<float>(kDim) +
+               eps_bf16);
+    #pragma unroll
+    for (int j = 0; j < 6; ++j) {
+      const int p = threadIdx.x + j * kThreads;
+      const float2 w = k_weight2[p];
+      const float2 norm = __bfloat1622float2(__floats2bfloat162_rn(
+          vals[j * 2] * inverse, vals[j * 2 + 1] * inverse));
+      const float2 scaled =
+          __bfloat1622float2(__floats2bfloat162_rn(norm.x * w.x, norm.y * w.y));
+      const float re =
+          __fsub_rn(__fmul_rn(scaled.x, c), __fmul_rn(scaled.y, s));
+      const float ro =
+          __fadd_rn(__fmul_rn(scaled.x, s), __fmul_rn(scaled.y, c));
+      k_out_pairs[p] = __floats2bfloat162_rn(re, ro);
+    }
+  }
+
+  // 3. V: bias -> v_out.
+  #pragma unroll
+  for (int j = 0; j < 6; ++j) {
+    const int p = threadIdx.x + j * kThreads;
+    const float2 raw = __bfloat1622float2(v_in_pairs[p]);
+    const float2 b = v_bias2[p];
+    v_out_pairs[p] = __floats2bfloat162_rn(raw.x + b.x, raw.y + b.y);
   }
 }
 
@@ -1217,13 +1351,31 @@ struct WanDit::Impl {
     DeviceBuffer v_all;
   };
 
+  struct DitBlockGraph {
+    WanDitBlockGraphKey key{};
+    bool valid = false;
+    bool warmed = false;
+    uint64_t last_used = 0;
+    cudaGraphExec_t exec = nullptr;
+
+    void reset() noexcept {
+      if (exec != nullptr) {
+        (void)cudaGraphExecDestroy(exec);
+        exec = nullptr;
+      }
+      key = WanDitBlockGraphKey{};
+      valid = false;
+      warmed = false;
+      last_used = 0;
+    }
+  };
+
   struct LayerWeights {
     const float* scale_shift_table = nullptr;
-    const Bf16* attn1_q_w = nullptr;
+    // Contiguous [3 * kDim, kDim] BF16 weight packed from [to_q; to_k; to_v].
+    const Bf16* attn1_qkv_w = nullptr;
     const float* attn1_q_b = nullptr;
-    const Bf16* attn1_k_w = nullptr;
     const float* attn1_k_b = nullptr;
-    const Bf16* attn1_v_w = nullptr;
     const float* attn1_v_b = nullptr;
     const float* attn1_norm_q_w = nullptr;
     const float* attn1_norm_k_w = nullptr;
@@ -1250,9 +1402,10 @@ struct WanDit::Impl {
   };
 
   Impl(const std::filesystem::path& model_dir, int gpu)
-      : context_(gpu),
+      : context_(gpu, tracker_),
         gpu_(gpu),
-        use_flash_attn_(wan_dit_use_flash_attn(std::getenv("UMM_DIT_ATTN_REF"))) {
+        use_flash_attn_(wan_dit_use_flash_attn(std::getenv("UMM_DIT_ATTN_REF"))),
+        use_cuda_graph_(wan_dit_use_cuda_graph(std::getenv("UMM_DIT_NO_GRAPH"))) {
     config_ = load_wan_dit_config(model_dir.string());
     const auto started = std::chrono::steady_clock::now();
     load_weights(model_dir / "transformer");
@@ -1263,11 +1416,12 @@ struct WanDit::Impl {
   ~Impl() {
     (void)cudaSetDevice(gpu_);
     (void)cudaStreamSynchronize(context_.stream());
+    invalidate_block_graphs(/*sync_stream=*/false);
   }
 
   void add_spec(std::vector<LoadSpec>& specs, const std::string& name,
                 std::vector<int64_t> shape) {
-    specs.push_back({name, std::move(shape), 0, keep_fp32(name), false});
+    specs.push_back({name, std::move(shape), 0, keep_fp32(name), false, false});
   }
 
   void load_weights(const std::filesystem::path& directory) {
@@ -1290,8 +1444,25 @@ struct WanDit::Impl {
     add("condition_embedder.text_embedder.linear_2.bias", {kDim});
     for (int layer = 0; layer < kLayers; ++layer) {
       const std::string prefix = "blocks." + std::to_string(layer) + ".";
-      for (const char* attention : {"attn1", "attn2"}) {
-        const std::string a = prefix + attention + ".";
+      {
+        const std::string a = prefix + "attn1.";
+        // Pack self-attention Q/K/V weights contiguously as [3 * kDim, kDim]
+        // BF16 in bf16_weights_ with zero extra weight VRAM.
+        add(a + "to_q.weight", {kDim, kDim});
+        add(a + "to_k.weight", {kDim, kDim});
+        specs.back().pack_no_align = true;
+        add(a + "to_v.weight", {kDim, kDim});
+        specs.back().pack_no_align = true;
+        add(a + "to_q.bias", {kDim});
+        add(a + "to_k.bias", {kDim});
+        add(a + "to_v.bias", {kDim});
+        add(a + "to_out.0.weight", {kDim, kDim});
+        add(a + "to_out.0.bias", {kDim});
+        add(a + "norm_q.weight", {kDim});
+        add(a + "norm_k.weight", {kDim});
+      }
+      {
+        const std::string a = prefix + "attn2.";
         for (const char* projection : {"to_q", "to_k", "to_v", "to_out.0"}) {
           add(a + projection + ".weight", {kDim, kDim});
           add(a + projection + ".bias", {kDim});
@@ -1325,11 +1496,15 @@ struct WanDit::Impl {
       spec.fp32 = spec.fp32 || !matrix;
       size_t& total = spec.fp32 ? f32_total : bf16_total;
       const size_t element_size = spec.fp32 ? sizeof(float) : sizeof(Bf16);
-      if (total > std::numeric_limits<size_t>::max() - 255) {
-        throw std::overflow_error("Wan DiT weight offset overflow");
+      if (spec.pack_no_align) {
+        spec.offset = total;
+      } else {
+        if (total > std::numeric_limits<size_t>::max() - 255) {
+          throw std::overflow_error("Wan DiT weight offset overflow");
+        }
+        spec.offset = (total + 255) & ~size_t{255};
+        total = spec.offset;
       }
-      spec.offset = (total + 255) & ~size_t{255};
-      total = spec.offset;
       const size_t bytes = checked_bytes(view.numel(), element_size);
       if (bytes > std::numeric_limits<size_t>::max() - total) {
         throw std::overflow_error("Wan DiT weight arena overflow");
@@ -1387,11 +1562,16 @@ struct WanDit::Impl {
       const std::string p = "blocks." + std::to_string(layer) + ".";
       auto& lw = layers_[static_cast<size_t>(layer)];
       lw.scale_shift_table = static_cast<const float*>(tensor(p + "scale_shift_table").data);
-      lw.attn1_q_w = static_cast<const Bf16*>(tensor(p + "attn1.to_q.weight").data);
+      const auto* q_w = static_cast<const Bf16*>(tensor(p + "attn1.to_q.weight").data);
+      const auto* k_w = static_cast<const Bf16*>(tensor(p + "attn1.to_k.weight").data);
+      const auto* v_w = static_cast<const Bf16*>(tensor(p + "attn1.to_v.weight").data);
+      constexpr size_t kQkvWeightElems = static_cast<size_t>(kDim) * kDim;
+      if (k_w != q_w + kQkvWeightElems || v_w != q_w + 2 * kQkvWeightElems) {
+        throw std::logic_error("Wan DiT fused attn1 QKV weights are not contiguous");
+      }
+      lw.attn1_qkv_w = q_w;
       lw.attn1_q_b = static_cast<const float*>(tensor(p + "attn1.to_q.bias").data);
-      lw.attn1_k_w = static_cast<const Bf16*>(tensor(p + "attn1.to_k.weight").data);
       lw.attn1_k_b = static_cast<const float*>(tensor(p + "attn1.to_k.bias").data);
-      lw.attn1_v_w = static_cast<const Bf16*>(tensor(p + "attn1.to_v.weight").data);
       lw.attn1_v_b = static_cast<const float*>(tensor(p + "attn1.to_v.bias").data);
       lw.attn1_norm_q_w = static_cast<const float*>(tensor(p + "attn1.norm_q.weight").data);
       lw.attn1_norm_k_w = static_cast<const float*>(tensor(p + "attn1.norm_k.weight").data);
@@ -1532,6 +1712,7 @@ struct WanDit::Impl {
         ws_.text_len >= text_len && ws_.batch_capacity >= batch_size) {
       return;
     }
+    invalidate_block_graphs();
     const bool same_shape =
         (ws_.frames == frames && ws_.height == height && ws_.width == width);
     const int alloc_text_len =
@@ -1609,6 +1790,7 @@ struct WanDit::Impl {
     if (rope_.frames == frames && rope_.height == height && rope_.width == width) {
       return;
     }
+    invalidate_block_graphs();
     rope_.frames = 0;
     rope_.height = 0;
     rope_.width = 0;
@@ -1658,8 +1840,13 @@ struct WanDit::Impl {
     const size_t text_count = static_cast<size_t>(text_len) * kDim;
     const size_t all_layers_bytes =
         checked_bytes(static_cast<size_t>(kLayers) * text_count, sizeof(Bf16));
+    const void* old_k = entry.k_all.data();
+    const void* old_v = entry.v_all.data();
     entry.k_all.resize(all_layers_bytes, tracker_);
     entry.v_all.resize(all_layers_bytes, tracker_);
+    if (entry.k_all.data() != old_k || entry.v_all.data() != old_v) {
+      invalidate_block_graphs();
+    }
 
     const cudaStream_t stream = context_.stream();
     UMM_DIT_CUDA(cudaMemcpyAsync(ws_.context_fp32.data(), context,
@@ -1873,24 +2060,19 @@ struct WanDit::Impl {
       }
       UMM_DIT_CUDA(cudaGetLastError());
 
-      // Self-attention: fused bias + RMSNorm + 3D RoPE on Q/K, FlashAttention-2
-      // across all batch slices in one launch, and fused bias + gated residual.
+      // Self-attention: fused QKV projection [total_tokens, 3*kDim] reusing
+      // ws_.ff (zero extra activation VRAM), single-launch QKV split + bias +
+      // RMSNorm + 3D RoPE, FlashAttention-2 across all batch slices in one
+      // launch, and fused bias + gated residual.
       apply_norm(x_buf, ws_.normed.as<Bf16>(), nullptr, nullptr, 0, 1, 6);
-      gemm_bf16(lw.attn1_q_w, kDim, kDim, total_tokens, ws_.normed.data(),
-                ws_.q.data());
-      rms_norm_bias_kernel<true><<<total_tokens, kThreads, 0, stream>>>(
-          ws_.q.as<Bf16>(), lw.attn1_q_b, lw.attn1_norm_q_w,
-          rope_.cos.as<float>(), rope_.sin.as<float>(), total_tokens, tokens,
-          config_.eps);
-      gemm_bf16(lw.attn1_k_w, kDim, kDim, total_tokens, ws_.normed.data(),
-                ws_.k.data());
-      rms_norm_bias_kernel<true><<<total_tokens, kThreads, 0, stream>>>(
-          ws_.k.as<Bf16>(), lw.attn1_k_b, lw.attn1_norm_k_w,
-          rope_.cos.as<float>(), rope_.sin.as<float>(), total_tokens, tokens,
-          config_.eps);
+      gemm_bf16(lw.attn1_qkv_w, kDim, 3 * kDim, total_tokens, ws_.normed.data(),
+                ws_.ff.data());
+      qkv_split_bias_norm_rope_kernel<<<total_tokens, kThreads, 0, stream>>>(
+          ws_.ff.as<Bf16>(), lw.attn1_q_b, lw.attn1_k_b, lw.attn1_v_b,
+          lw.attn1_norm_q_w, lw.attn1_norm_k_w, rope_.cos.as<float>(),
+          rope_.sin.as<float>(), ws_.q.as<Bf16>(), ws_.k.as<Bf16>(),
+          ws_.v.as<Bf16>(), total_tokens, tokens, config_.eps);
       UMM_DIT_CUDA(cudaGetLastError());
-      linear_bf16(lw.attn1_v_w, lw.attn1_v_b, kDim, kDim, total_tokens,
-                  ws_.normed.data(), ws_.v.data());
       attention(ws_.q.as<Bf16>(), ws_.k.as<Bf16>(), ws_.v.as<Bf16>(), tokens,
                 tokens, batch_size, ws_.attended.as<Bf16>(), ws_.scores,
                 ws_.probabilities, ws_.output_tiles);
@@ -1943,6 +2125,160 @@ struct WanDit::Impl {
       gemm_bf16(lw.ff2_w, kFf, kDim, total_tokens, ws_.ff.data(), ws_.q.data());
       apply_residual_bias(ws_.q.as<Bf16>(), lw.ff2_b, 5);
     }
+  }
+
+  void invalidate_block_graphs(bool sync_stream = true) noexcept {
+    bool any_exec = false;
+    for (const auto& slot : block_graphs_) {
+      if (slot.exec != nullptr) {
+        any_exec = true;
+        break;
+      }
+    }
+    if (sync_stream && any_exec) {
+      (void)cudaStreamSynchronize(context_.stream());
+    }
+    for (auto& slot : block_graphs_) {
+      slot.reset();
+    }
+  }
+
+  void disable_block_graphs(const char* reason) noexcept {
+    if (!graph_fallback_logged_) {
+      std::fprintf(
+          stderr,
+          "WanDit: CUDA graph capture disabled (%s); falling back to eager blocks\n",
+          reason != nullptr ? reason : "unknown error");
+      graph_fallback_logged_ = true;
+    }
+    use_cuda_graph_ = false;
+    invalidate_block_graphs(/*sync_stream=*/false);
+  }
+
+  void run_transformer_blocks_maybe_graphed(
+      Bf16* x_buf, int tokens, int batch_size, int first_frame_tokens,
+      bool per_frame, const CrossAttnKvEntry& kv0, int len0,
+      const CrossAttnKvEntry* kv1, int len1) {
+    if (!use_cuda_graph_) {
+      run_transformer_blocks(x_buf, tokens, batch_size, first_frame_tokens,
+                             per_frame, kv0, len0, kv1, len1);
+      return;
+    }
+
+    const cudaStream_t stream = context_.stream();
+    const bool has_kv1 = (batch_size == 2 && kv1 != nullptr);
+    const WanDitBlockGraphKey key{
+        x_buf,
+        tokens,
+        batch_size,
+        first_frame_tokens,
+        per_frame,
+        kv0.k_all.data(),
+        kv0.v_all.data(),
+        len0,
+        has_kv1 ? kv1->k_all.data() : nullptr,
+        has_kv1 ? kv1->v_all.data() : nullptr,
+        has_kv1 ? len1 : 0,
+        rope_.cos.data(),
+        rope_.sin.data(),
+        ws_.x.data(),
+        ws_.ff.data(),
+    };
+
+    // 1. Check 2-slot cache for an exact key match.
+    for (auto& slot : block_graphs_) {
+      if (!slot.valid || slot.key != key) continue;
+      if (slot.exec != nullptr) {
+        slot.last_used = ++block_graph_clock_;
+        UMM_DIT_CUDA(cudaGraphLaunch(slot.exec, stream));
+        return;
+      }
+
+      // 2nd identical call: the 1st call warmed up cuBLAS lazy heuristics.
+      // Synchronize prior stream work once, capture all 30 transformer blocks
+      // on the dedicated non-blocking stream, instantiate, and replay.
+      UMM_DIT_CUDA(cudaStreamSynchronize(stream));
+      const cudaError_t begin_err =
+          cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+      if (begin_err != cudaSuccess) {
+        (void)cudaGetLastError();
+        disable_block_graphs(cudaGetErrorString(begin_err));
+        run_transformer_blocks(x_buf, tokens, batch_size, first_frame_tokens,
+                               per_frame, kv0, len0, kv1, len1);
+        return;
+      }
+
+      cudaGraph_t graph = nullptr;
+      bool capture_threw = false;
+      std::string capture_error;
+      try {
+        run_transformer_blocks(x_buf, tokens, batch_size, first_frame_tokens,
+                               per_frame, kv0, len0, kv1, len1);
+      } catch (const std::exception& ex) {
+        capture_threw = true;
+        capture_error = ex.what();
+      } catch (...) {
+        capture_threw = true;
+        capture_error = "exception during stream capture";
+      }
+
+      const cudaError_t end_err = cudaStreamEndCapture(stream, &graph);
+      if (capture_threw || end_err != cudaSuccess || graph == nullptr) {
+        if (graph != nullptr) (void)cudaGraphDestroy(graph);
+        (void)cudaGetLastError();
+        disable_block_graphs(capture_threw ? capture_error.c_str()
+                                           : cudaGetErrorString(end_err));
+        run_transformer_blocks(x_buf, tokens, batch_size, first_frame_tokens,
+                               per_frame, kv0, len0, kv1, len1);
+        return;
+      }
+
+      cudaGraphExec_t exec = nullptr;
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 12000
+      const cudaError_t inst_err = cudaGraphInstantiate(&exec, graph, 0);
+#else
+      const cudaError_t inst_err =
+          cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+#endif
+      (void)cudaGraphDestroy(graph);
+      if (inst_err != cudaSuccess || exec == nullptr) {
+        (void)cudaGetLastError();
+        disable_block_graphs(cudaGetErrorString(inst_err));
+        run_transformer_blocks(x_buf, tokens, batch_size, first_frame_tokens,
+                               per_frame, kv0, len0, kv1, len1);
+        return;
+      }
+
+      slot.exec = exec;
+      slot.last_used = ++block_graph_clock_;
+      UMM_DIT_CUDA(cudaGraphLaunch(slot.exec, stream));
+      return;
+    }
+
+    // 2. Cold key: select an unused or LRU slot and run one eager warmup pass
+    // so cuBLAS initializes lazy kernel heuristics before capture on next call.
+    size_t victim = 0;
+    for (size_t i = 0; i < kWanDitBlockGraphCacheSlots; ++i) {
+      if (!block_graphs_[i].valid) {
+        victim = i;
+        break;
+      }
+      if (block_graphs_[i].last_used < block_graphs_[victim].last_used) {
+        victim = i;
+      }
+    }
+    if (block_graphs_[victim].exec != nullptr) {
+      UMM_DIT_CUDA(cudaStreamSynchronize(stream));
+    }
+    block_graphs_[victim].reset();
+
+    run_transformer_blocks(x_buf, tokens, batch_size, first_frame_tokens,
+                           per_frame, kv0, len0, kv1, len1);
+
+    block_graphs_[victim].key = key;
+    block_graphs_[victim].valid = true;
+    block_graphs_[victim].warmed = true;
+    block_graphs_[victim].last_used = ++block_graph_clock_;
   }
 
   void run_output_projection(int tokens, int batch_size, int first_frame_tokens,
@@ -2048,9 +2384,10 @@ struct WanDit::Impl {
                                      residual_bytes, cudaMemcpyDeviceToDevice,
                                      stream));
       }
-      run_transformer_blocks(ws_.x.as<Bf16>(), tokens, /*batch_size=*/1,
-                             first_frame_tokens, per_frame, cross_kv, text_len,
-                             nullptr, 0);
+      run_transformer_blocks_maybe_graphed(ws_.x.as<Bf16>(), tokens,
+                                           /*batch_size=*/1, first_frame_tokens,
+                                           per_frame, cross_kv, text_len,
+                                           nullptr, 0);
       if (tc_decision.save_residual) {
         sub_residual_bf16_kernel<<<grid_for((model_count + 1) / 2), kThreads, 0, stream>>>(
             residual_slot->as<Bf16>(), ws_.x.as<Bf16>(), model_count);
@@ -2189,9 +2526,10 @@ struct WanDit::Impl {
             x_cond, cond_hint.branch, tc_plan.cond.save_residual);
         DeviceBuffer* uncond_slot = prepare_save_slot(
             x_uncond, uncond_hint.branch, tc_plan.uncond.save_residual);
-        run_transformer_blocks(ws_.x.as<Bf16>(), tokens, /*batch_size=*/2,
-                               first_frame_tokens, per_frame, pos_kv, pos_len,
-                               &neg_kv, neg_len);
+        run_transformer_blocks_maybe_graphed(ws_.x.as<Bf16>(), tokens,
+                                             /*batch_size=*/2,
+                                             first_frame_tokens, per_frame,
+                                             pos_kv, pos_len, &neg_kv, neg_len);
         finalize_save_slot(cond_slot, x_cond);
         finalize_save_slot(uncond_slot, x_uncond);
         break;
@@ -2207,9 +2545,9 @@ struct WanDit::Impl {
             get_or_build_cross_kv(pos_context, pos_len);
         DeviceBuffer* cond_slot = prepare_save_slot(
             x_cond, cond_hint.branch, tc_plan.cond.save_residual);
-        run_transformer_blocks(x_cond, tokens, /*batch_size=*/1,
-                               first_frame_tokens, per_frame, pos_kv, pos_len,
-                               nullptr, 0);
+        run_transformer_blocks_maybe_graphed(x_cond, tokens, /*batch_size=*/1,
+                                             first_frame_tokens, per_frame,
+                                             pos_kv, pos_len, nullptr, 0);
         finalize_save_slot(cond_slot, x_cond);
         break;
       }
@@ -2219,9 +2557,9 @@ struct WanDit::Impl {
             get_or_build_cross_kv(neg_context, neg_len);
         DeviceBuffer* uncond_slot = prepare_save_slot(
             x_uncond, uncond_hint.branch, tc_plan.uncond.save_residual);
-        run_transformer_blocks(x_uncond, tokens, /*batch_size=*/1,
-                               first_frame_tokens, per_frame, neg_kv, neg_len,
-                               nullptr, 0);
+        run_transformer_blocks_maybe_graphed(x_uncond, tokens, /*batch_size=*/1,
+                                             first_frame_tokens, per_frame,
+                                             neg_kv, neg_len, nullptr, 0);
         finalize_save_slot(uncond_slot, x_uncond);
         break;
       }
@@ -2260,17 +2598,21 @@ struct WanDit::Impl {
     return result;
   }
 
+  AllocationTracker tracker_;
   CudaContext context_;
   int gpu_ = 0;
   bool use_flash_attn_ = true;
+  bool use_cuda_graph_ = true;
+  bool graph_fallback_logged_ = false;
   WanDitConfig config_;
-  AllocationTracker tracker_;
   DeviceBuffer bf16_weights_;
   DeviceBuffer f32_weights_;
   WorkspaceBuffers ws_;
   RopeCache rope_;
   std::array<CrossAttnKvEntry, kCrossKvCacheSlots> cross_kv_cache_{};
   uint64_t cross_kv_clock_ = 0;
+  std::array<DitBlockGraph, kWanDitBlockGraphCacheSlots> block_graphs_{};
+  uint64_t block_graph_clock_ = 0;
   TeaCacheController teacache_;
   std::array<DeviceBuffer, kWanTeaCacheBranches> teacache_residuals_{};
   PinnedHostBuffer h_time_pinned_;
