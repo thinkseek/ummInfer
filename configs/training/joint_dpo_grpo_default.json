@@ -1,0 +1,123 @@
+{
+  "config_schema_version": 1,
+  "config_type": "joint_preference",
+  "description": "Stage C decoupled preference post-training (DPO + GRPO) default configuration.",
+  "ablation_profile": "joint_full",
+  "model": {
+    "base_model_placeholder": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "reference_policy_placeholder": "${SFT_CHECKPOINT_DIR:-./checkpoints/sft_latest}",
+    "dtype": "bfloat16",
+    "attn_implementation": "sdpa",
+    "gradient_checkpointing": true,
+    "trust_remote_code": false
+  },
+  "peft": {
+    "method": "lora",
+    "r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "bias": "none",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "span_loss_weights": {
+    "narrative_prose": 1.0,
+    "visual_route_tag": 1.5,
+    "visual_prompt_body": 1.0,
+    "spoken_style": 1.0,
+    "image_form_multiplier": 1.0,
+    "video_form_multiplier": 1.0
+  },
+  "dpo": {
+    "beta": 0.1,
+    "loss_type": "sigmoid",
+    "label_smoothing": 0.0,
+    "max_prompt_length": 2048,
+    "max_length": 4096
+  },
+  "grpo": {
+    "clip_eps": 0.2,
+    "kl_coef": 0.04,
+    "advantage_eps": 1e-08,
+    "group_size": 4,
+    "zero_std_policy": "zero_advantage"
+  },
+  "reward": {
+    "spec": "umminfer_ablation_metrics:NarrativeRoutingReward",
+    "export_only": true,
+    "description": "Export-only modality routing F1 minus redundant slot rate; never touches serving memory."
+  },
+  "optimization": {
+    "learning_rate": 5e-06,
+    "lr_scheduler": "cosine",
+    "warmup_ratio": 0.1,
+    "weight_decay": 0.0,
+    "max_grad_norm": 1.0,
+    "per_device_train_batch_size": 2,
+    "gradient_accumulation_steps": 8,
+    "num_train_epochs": 1,
+    "max_seq_len": 4096,
+    "seed": "umminfer-stage-c-pref-v1"
+  },
+  "micro_step_reference": {
+    "sft_learning_rate": 0.15,
+    "dpo_learning_rate": 0.25,
+    "grpo_learning_rate": 0.15,
+    "grad_clip": 5.0,
+    "vocab_buckets": 32,
+    "feature_dim": 32
+  },
+  "ablation_overrides": {
+    "joint_full": {
+      "enable_sft": true,
+      "enable_dpo": true,
+      "enable_grpo": true
+    },
+    "ablate_visual_routing": {
+      "span_weight_overrides": {
+        "visual_route_tag": 0.0
+      }
+    },
+    "ablate_visual_prompt": {
+      "span_weight_overrides": {
+        "visual_prompt_body": 0.0
+      }
+    },
+    "ablate_video_form": {
+      "span_weight_overrides": {
+        "video_form_multiplier": 0.0
+      }
+    },
+    "ablate_spoken_style": {
+      "span_weight_overrides": {
+        "spoken_style": 0.0
+      }
+    },
+    "sft_only": {
+      "enable_sft": true,
+      "enable_dpo": false,
+      "enable_grpo": false
+    },
+    "sft_plus_dpo": {
+      "enable_sft": true,
+      "enable_dpo": true,
+      "enable_grpo": false
+    },
+    "sft_plus_grpo": {
+      "enable_sft": true,
+      "enable_dpo": false,
+      "enable_grpo": true
+    }
+  },
+  "isolation": {
+    "decoupled_from_cpp_serving": true,
+    "real_training_requires_gpu_launch": true
+  }
+}

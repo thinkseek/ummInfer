@@ -1,0 +1,61 @@
+{
+  "config_schema_version": 1,
+  "config_type": "joint_sft",
+  "description": "Stage C decoupled joint interleaved SFT default configuration (pure-JSON, serving-isolated).",
+  "ablation_profile": "joint_full",
+  "model": {
+    "base_model_placeholder": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "dtype": "bfloat16",
+    "attn_implementation": "sdpa",
+    "gradient_checkpointing": true,
+    "trust_remote_code": false
+  },
+  "peft": {
+    "method": "lora",
+    "r": 32,
+    "lora_alpha": 64,
+    "lora_dropout": 0.05,
+    "bias": "none",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "span_loss_weights": {
+    "narrative_prose": 1.0,
+    "visual_route_tag": 1.5,
+    "visual_prompt_body": 1.0,
+    "spoken_style": 1.0,
+    "image_form_multiplier": 1.0,
+    "video_form_multiplier": 1.0
+  },
+  "optimization": {
+    "learning_rate": 2e-05,
+    "lr_scheduler": "cosine",
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01,
+    "max_grad_norm": 1.0,
+    "per_device_train_batch_size": 2,
+    "gradient_accumulation_steps": 8,
+    "num_train_epochs": 2,
+    "max_seq_len": 4096,
+    "seed": "umminfer-stage-c-sft-v1"
+  },
+  "micro_step_reference": {
+    "sft_learning_rate": 0.15,
+    "dpo_learning_rate": 0.25,
+    "grpo_learning_rate": 0.15,
+    "grad_clip": 5.0,
+    "vocab_buckets": 32,
+    "feature_dim": 32
+  },
+  "isolation": {
+    "decoupled_from_cpp_serving": true,
+    "real_training_requires_gpu_launch": true
+  }
+}

@@ -1,0 +1,177 @@
+{
+  "config_schema_version": 1,
+  "config_type": "ablation_matrix",
+  "matrix_name": "stage-c-joint-training-ablation-matrix-v1",
+  "baseline_arm": "joint_full",
+  "single_variable_policy": "Each non-baseline arm toggles exactly one span-masking or post-training stage variable while holding dataset pack SHA-256, split assignment, base model, LoRA topology, and deterministic seed constant.",
+  "control_variables": [
+    "dataset_manifest_sha256",
+    "train_eval_split_seed",
+    "base_model_placeholder",
+    "peft_lora_topology",
+    "optimizer_schedule_family",
+    "evaluation_harness"
+  ],
+  "arms": {
+    "joint_full": {
+      "arm_id": "joint_full",
+      "ablation_profile": "joint_full",
+      "recommended_mode": "joint",
+      "changed_variable": "none (baseline)",
+      "span_weight_overrides": {},
+      "stage_overrides": {
+        "enable_sft": true,
+        "enable_dpo": true,
+        "enable_grpo": true
+      },
+      "hypothesis": "Full joint SFT + preference post-training with all multimodal span losses active establishes the Pareto-optimal baseline across modality routing F1, visual prompt fidelity, voice alignment, and redundancy restraint.",
+      "expected_metric_movement": {
+        "modality_routing_f1": "baseline (highest)",
+        "redundant_slot_rate": "baseline (lowest)",
+        "visual_prompt_alignment": "baseline (highest)",
+        "video_vs_image_routing_accuracy": "baseline (highest)",
+        "spoken_leg_naturalness": "baseline (highest)",
+        "p95_end_to_end_latency": "baseline"
+      }
+    },
+    "ablate_visual_routing": {
+      "arm_id": "ablate_visual_routing",
+      "ablation_profile": "ablate_visual_routing",
+      "recommended_mode": "joint",
+      "changed_variable": "span_loss_weights.visual_route_tag = 0.0",
+      "span_weight_overrides": {
+        "visual_route_tag": 0.0
+      },
+      "stage_overrides": {
+        "enable_sft": true,
+        "enable_dpo": true,
+        "enable_grpo": true
+      },
+      "hypothesis": "Zeroing loss on [[image:/[[video: routing header and closing ]] tokens removes explicit modality-decision supervision, proving whether autonomous modality selection depends on direct route-tag training.",
+      "expected_metric_movement": {
+        "modality_routing_f1": "decrease",
+        "redundant_slot_rate": "increase",
+        "malformed_marker_rate": "increase",
+        "narrative_prose_perplexity": "unchanged"
+      }
+    },
+    "ablate_visual_prompt": {
+      "arm_id": "ablate_visual_prompt",
+      "ablation_profile": "ablate_visual_prompt",
+      "recommended_mode": "joint",
+      "changed_variable": "span_loss_weights.visual_prompt_body = 0.0",
+      "span_weight_overrides": {
+        "visual_prompt_body": 0.0
+      },
+      "stage_overrides": {
+        "enable_sft": true,
+        "enable_dpo": true,
+        "enable_grpo": true
+      },
+      "hypothesis": "Masking loss inside visual prompt bodies isolates whether joint training improves rendered image/video semantic fidelity independently of slot placement frequency.",
+      "expected_metric_movement": {
+        "modality_routing_f1": "unchanged_or_minor_decrease",
+        "visual_prompt_alignment": "decrease",
+        "cross_slot_style_consistency": "decrease",
+        "narrative_prose_perplexity": "unchanged"
+      }
+    },
+    "ablate_video_form": {
+      "arm_id": "ablate_video_form",
+      "ablation_profile": "ablate_video_form",
+      "recommended_mode": "joint",
+      "changed_variable": "span_loss_weights.video_form_multiplier = 0.0",
+      "span_weight_overrides": {
+        "video_form_multiplier": 0.0
+      },
+      "stage_overrides": {
+        "enable_sft": true,
+        "enable_dpo": true,
+        "enable_grpo": true
+      },
+      "hypothesis": "Down-weighting [[video: ...]] beats to zero while preserving [[image: ...]] beats isolates the value of dynamic video form selection versus static-image-only visual routing.",
+      "expected_metric_movement": {
+        "video_vs_image_routing_accuracy": "decrease",
+        "video_slot_recall": "decrease",
+        "image_slot_precision": "unchanged_or_slight_increase",
+        "p95_end_to_end_latency": "decrease"
+      }
+    },
+    "ablate_spoken_style": {
+      "arm_id": "ablate_spoken_style",
+      "ablation_profile": "ablate_spoken_style",
+      "recommended_mode": "joint",
+      "changed_variable": "span_loss_weights.spoken_style = 0.0",
+      "span_weight_overrides": {
+        "spoken_style": 0.0
+      },
+      "stage_overrides": {
+        "enable_sft": true,
+        "enable_dpo": true,
+        "enable_grpo": true
+      },
+      "hypothesis": "Zeroing <spoken> segment loss removes voice-leg prosody and cadence alignment weighting while holding visual routing constant.",
+      "expected_metric_movement": {
+        "spoken_leg_naturalness": "decrease",
+        "ttfa_streaming_smoothness": "decrease",
+        "modality_routing_f1": "unchanged",
+        "visual_prompt_alignment": "unchanged"
+      }
+    },
+    "sft_only": {
+      "arm_id": "sft_only",
+      "ablation_profile": "sft_only",
+      "recommended_mode": "joint",
+      "changed_variable": "preference_stages = disabled (SFT only)",
+      "span_weight_overrides": {},
+      "stage_overrides": {
+        "enable_sft": true,
+        "enable_dpo": false,
+        "enable_grpo": false
+      },
+      "hypothesis": "Removing all preference post-training (DPO and GRPO) isolates cold-start interleaved SFT performance from reward-driven modality restraint.",
+      "expected_metric_movement": {
+        "modality_routing_f1": "decrease",
+        "redundant_slot_rate": "increase",
+        "preference_win_rate": "decrease",
+        "training_compute_cost": "decrease"
+      }
+    },
+    "sft_plus_dpo": {
+      "arm_id": "sft_plus_dpo",
+      "ablation_profile": "sft_plus_dpo",
+      "recommended_mode": "joint",
+      "changed_variable": "preference_stage = DPO only (GRPO disabled)",
+      "span_weight_overrides": {},
+      "stage_overrides": {
+        "enable_sft": true,
+        "enable_dpo": true,
+        "enable_grpo": false
+      },
+      "hypothesis": "Comparing offline pairwise DPO alone against joint DPO+GRPO measures whether static chosen/rejected pairs suffice to suppress redundant visual slots without group-relative online RL.",
+      "expected_metric_movement": {
+        "modality_routing_f1": "increase_vs_sft_only",
+        "redundant_slot_rate": "decrease_vs_sft_only",
+        "out_of_distribution_routing_generalization": "slightly_below_joint_full"
+      }
+    },
+    "sft_plus_grpo": {
+      "arm_id": "sft_plus_grpo",
+      "ablation_profile": "sft_plus_grpo",
+      "recommended_mode": "joint",
+      "changed_variable": "preference_stage = GRPO only (DPO disabled)",
+      "span_weight_overrides": {},
+      "stage_overrides": {
+        "enable_sft": true,
+        "enable_dpo": false,
+        "enable_grpo": true
+      },
+      "hypothesis": "Comparing group-relative clipped GRPO with KL regularization alone against pairwise DPO measures the gain from full multi-rollout group advantage normalization.",
+      "expected_metric_movement": {
+        "modality_routing_f1": "increase_vs_sft_only",
+        "redundant_slot_rate": "decrease_vs_sft_only",
+        "policy_kl_stability": "controlled_by_kl_coef"
+      }
+    }
+  }
+}
