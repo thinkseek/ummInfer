@@ -81,6 +81,9 @@ struct GenerateResult {
   std::string model;
   std::string revision;
   std::string backend;
+  double umt5_ms = 0.0;
+  double dit_ms = 0.0;
+  double vae_ms = 0.0;
   double denoise_ms = 0.0;
   double encode_ms = 0.0;
   size_t peak_gpu_bytes = 0;

@@ -2,9 +2,12 @@
 // Wan2.2 AutoencoderKLWan decoder configuration and native FP32 CUDA entry point.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -55,6 +58,90 @@ inline int64_t wan_vae_chunk_frame_offset(int64_t latent_index,
   if (latent_index <= 0 || temporal_factor <= 0) return 0;
   return 1 + (latent_index - 1) * temporal_factor;
 }
+
+// Returns true when a 3D convolution is strictly 1x1x1 pointwise, in which
+// case its [C, T*H*W] input is already identical to the im2col column matrix
+// and can be passed directly to cuBLAS SGEMM without allocating `columns`.
+inline constexpr bool wan_conv3d_is_pointwise(int64_t kd, int64_t kh,
+                                              int64_t kw) {
+  return kd == 1 && kh == 1 && kw == 1;
+}
+
+// Default cap on idle cached blocks in the Wan2.2 3D-VAE GPU scratch pool.
+inline constexpr size_t kWanVaePoolDefaultMaxCachedBytes = 1536ULL << 20;
+
+// Deterministic best-fit reuse and bounded-cap eviction policy for Wan2.2
+// 3D-VAE GPU scratch allocations. Shared between CUDA runtime and host tests.
+struct WanVaePoolPolicy {
+  size_t max_cached_bytes = kWanVaePoolDefaultMaxCachedBytes;
+  size_t max_oversize_num = 5;  // 1.25x upper bound (5 / 4)
+  size_t max_oversize_den = 4;
+
+  // Overflow-safe upper bound floor(requested_bytes * num / den), clamped to
+  // at least requested_bytes when requested_bytes > 0.
+  size_t max_reusable_bytes(size_t requested_bytes) const {
+    if (requested_bytes == 0 || max_oversize_den == 0) return 0;
+    if (max_oversize_num <= max_oversize_den) return requested_bytes;
+    const size_t max_sz = std::numeric_limits<size_t>::max();
+    const size_t q = requested_bytes / max_oversize_den;
+    const size_t r = requested_bytes % max_oversize_den;
+    if (q > max_sz / max_oversize_num) return max_sz;
+    const size_t high = q * max_oversize_num;
+    if (r > max_sz / max_oversize_num) return max_sz;
+    const size_t low = (r * max_oversize_num) / max_oversize_den;
+    if (high > max_sz - low) return max_sz;
+    return high + low;
+  }
+
+  bool can_reuse(size_t requested_bytes, size_t block_bytes) const {
+    if (requested_bytes == 0) return false;
+    return block_bytes >= requested_bytes &&
+           block_bytes <= max_reusable_bytes(requested_bytes);
+  }
+
+  // Picks the smallest idle block within [requested_bytes, 1.25 * requested].
+  // Ties prefer the earliest index.
+  std::optional<size_t> select_best_fit(
+      const std::vector<size_t>& idle_block_bytes,
+      size_t requested_bytes) const {
+    if (requested_bytes == 0) return std::nullopt;
+    std::optional<size_t> best;
+    size_t best_bytes = std::numeric_limits<size_t>::max();
+    for (size_t i = 0; i < idle_block_bytes.size(); ++i) {
+      const size_t candidate = idle_block_bytes[i];
+      if (can_reuse(requested_bytes, candidate) && candidate < best_bytes) {
+        best = i;
+        best_bytes = candidate;
+      }
+    }
+    return best;
+  }
+
+  struct ReleasePlan {
+    bool cache_incoming = false;
+    size_t evict_prefix_count = 0;
+  };
+
+  // Plans whether to cache a freed block of `incoming_bytes` and how many
+  // oldest idle blocks (leading prefix) to evict so cached bytes <= cap.
+  ReleasePlan plan_release(const std::vector<size_t>& idle_block_bytes,
+                           size_t current_cached_bytes,
+                           size_t incoming_bytes) const {
+    ReleasePlan plan;
+    if (incoming_bytes == 0 || incoming_bytes > max_cached_bytes) {
+      return plan;
+    }
+    plan.cache_incoming = true;
+    size_t projected = current_cached_bytes;
+    while (plan.evict_prefix_count < idle_block_bytes.size() &&
+           projected > max_cached_bytes - incoming_bytes) {
+      const size_t evicted = idle_block_bytes[plan.evict_prefix_count];
+      projected = evicted >= projected ? 0 : (projected - evicted);
+      ++plan.evict_prefix_count;
+    }
+    return plan;
+  }
+};
 
 struct WanVaeOutput {
   // FP32 NCHW video with one batch item, ordered channel, time, height, width.

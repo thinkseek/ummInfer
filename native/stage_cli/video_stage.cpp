@@ -147,6 +147,9 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " teacache_hits=" << generated.teacache_hits << "/"
               << generated.teacache_total_calls
               << " mp4_bytes=" << generated.mp4_bytes.size()
+              << " umt5_ms=" << generated.umt5_ms
+              << " dit_ms=" << generated.dit_ms
+              << " vae_ms=" << generated.vae_ms
               << " denoise_ms=" << generated.denoise_ms
               << " encode_ms=" << generated.encode_ms
               << " elapsed_ms=" << elapsed.count() << "\n";

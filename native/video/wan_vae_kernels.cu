@@ -73,6 +73,116 @@ unsigned grid_for(size_t count) {
   return static_cast<unsigned>(std::max<size_t>(blocks, 1));
 }
 
+dim3 im2col_grid(size_t positions, int64_t channels) {
+  const unsigned gx = grid_for(positions);
+  const unsigned gy = static_cast<unsigned>(
+      std::max<int64_t>(1, std::min<int64_t>(channels, 65535)));
+  return dim3(gx, gy, 1);
+}
+
+// Context-scoped GPU scratch buffer pool. Eliminates synchronous per-layer
+// cudaMalloc/cudaFree stalls while bounding idle memory with WanVaePoolPolicy
+// and releasing 100% of allocations in ~BufferPool() / on OOM.
+class BufferPool {
+ public:
+  explicit BufferPool(WanVaePoolPolicy policy = {}) : policy_(policy) {}
+  ~BufferPool() { clear(); }
+  BufferPool(const BufferPool&) = delete;
+  BufferPool& operator=(const BufferPool&) = delete;
+
+  struct Allocation {
+    float* ptr = nullptr;
+    size_t capacity_bytes = 0;
+  };
+
+  Allocation acquire(size_t requested_bytes) {
+    if (requested_bytes == 0) return {};
+    if (const auto idx = policy_.select_best_fit(idle_sizes_, requested_bytes);
+        idx.has_value()) {
+      const size_t i = *idx;
+      float* ptr = idle_ptrs_[i];
+      const size_t cap = idle_sizes_[i];
+      idle_ptrs_.erase(idle_ptrs_.begin() + static_cast<std::ptrdiff_t>(i));
+      idle_sizes_.erase(idle_sizes_.begin() + static_cast<std::ptrdiff_t>(i));
+      cached_bytes_ -= cap;
+      return {ptr, cap};
+    }
+    return {allocate_device_bytes(requested_bytes), requested_bytes};
+  }
+
+  void release(float* ptr, size_t capacity_bytes) noexcept {
+    if (ptr == nullptr || capacity_bytes == 0) return;
+    const auto plan =
+        policy_.plan_release(idle_sizes_, cached_bytes_, capacity_bytes);
+    if (!plan.cache_incoming) {
+      free_device_bytes(ptr, capacity_bytes);
+      return;
+    }
+    if (plan.evict_prefix_count > 0) {
+      for (size_t i = 0; i < plan.evict_prefix_count; ++i) {
+        free_device_bytes(idle_ptrs_[i], idle_sizes_[i]);
+        cached_bytes_ -= idle_sizes_[i];
+      }
+      idle_ptrs_.erase(
+          idle_ptrs_.begin(),
+          idle_ptrs_.begin() +
+              static_cast<std::ptrdiff_t>(plan.evict_prefix_count));
+      idle_sizes_.erase(
+          idle_sizes_.begin(),
+          idle_sizes_.begin() +
+              static_cast<std::ptrdiff_t>(plan.evict_prefix_count));
+    }
+    try {
+      idle_ptrs_.push_back(ptr);
+      idle_sizes_.push_back(capacity_bytes);
+      cached_bytes_ += capacity_bytes;
+    } catch (...) {
+      if (idle_ptrs_.size() > idle_sizes_.size()) idle_ptrs_.pop_back();
+      free_device_bytes(ptr, capacity_bytes);
+    }
+  }
+
+  float* allocate_raw_with_oom_flush(size_t bytes) {
+    return allocate_device_bytes(bytes);
+  }
+
+  void clear() noexcept {
+    for (size_t i = 0; i < idle_ptrs_.size(); ++i) {
+      free_device_bytes(idle_ptrs_[i], idle_sizes_[i]);
+    }
+    idle_ptrs_.clear();
+    idle_sizes_.clear();
+    cached_bytes_ = 0;
+  }
+
+ private:
+  float* allocate_device_bytes(size_t bytes) {
+    float* ptr = nullptr;
+    cudaError_t status = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
+    if (status == cudaErrorMemoryAllocation && !idle_ptrs_.empty()) {
+      (void)cudaGetLastError();
+      clear();
+      status = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
+    }
+    UMM_CUDA(status);
+    g_device_bytes += bytes;
+    g_peak_device_bytes = std::max(g_peak_device_bytes, g_device_bytes);
+    return ptr;
+  }
+
+  static void free_device_bytes(float* ptr, size_t bytes) noexcept {
+    if (ptr != nullptr) {
+      (void)cudaFree(ptr);
+      g_device_bytes -= bytes;
+    }
+  }
+
+  WanVaePoolPolicy policy_;
+  std::vector<float*> idle_ptrs_;
+  std::vector<size_t> idle_sizes_;
+  size_t cached_bytes_ = 0;
+};
+
 class DeviceBuffer {
  public:
   DeviceBuffer() = default;
@@ -81,25 +191,57 @@ class DeviceBuffer {
     if (elements > std::numeric_limits<size_t>::max() / sizeof(float)) {
       throw std::overflow_error("device allocation size overflow");
     }
-    UMM_CUDA(cudaMalloc(reinterpret_cast<void**>(&data_), elements * sizeof(float)));
-    g_device_bytes += elements * sizeof(float);
+    const size_t bytes = elements * sizeof(float);
+    UMM_CUDA(cudaMalloc(reinterpret_cast<void**>(&data_), bytes));
+    capacity_bytes_ = bytes;
+    g_device_bytes += bytes;
     g_peak_device_bytes = std::max(g_peak_device_bytes, g_device_bytes);
+  }
+  DeviceBuffer(BufferPool& pool, size_t elements)
+      : elements_(elements), pool_(&pool) {
+    if (elements == 0) {
+      pool_ = nullptr;
+      return;
+    }
+    if (elements > std::numeric_limits<size_t>::max() / sizeof(float)) {
+      throw std::overflow_error("device allocation size overflow");
+    }
+    const auto alloc = pool.acquire(elements * sizeof(float));
+    data_ = alloc.ptr;
+    capacity_bytes_ = alloc.capacity_bytes;
+  }
+  static DeviceBuffer adopt_raw(float* ptr, size_t elements,
+                                size_t capacity_bytes) noexcept {
+    DeviceBuffer buffer;
+    buffer.data_ = ptr;
+    buffer.elements_ = elements;
+    buffer.capacity_bytes_ = capacity_bytes;
+    return buffer;
   }
   ~DeviceBuffer() { release(); }
   DeviceBuffer(const DeviceBuffer&) = delete;
   DeviceBuffer& operator=(const DeviceBuffer&) = delete;
   DeviceBuffer(DeviceBuffer&& other) noexcept
-      : data_(other.data_), elements_(other.elements_) {
+      : data_(other.data_),
+        elements_(other.elements_),
+        capacity_bytes_(other.capacity_bytes_),
+        pool_(other.pool_) {
     other.data_ = nullptr;
     other.elements_ = 0;
+    other.capacity_bytes_ = 0;
+    other.pool_ = nullptr;
   }
   DeviceBuffer& operator=(DeviceBuffer&& other) noexcept {
     if (this != &other) {
       release();
       data_ = other.data_;
       elements_ = other.elements_;
+      capacity_bytes_ = other.capacity_bytes_;
+      pool_ = other.pool_;
       other.data_ = nullptr;
       other.elements_ = 0;
+      other.capacity_bytes_ = 0;
+      other.pool_ = nullptr;
     }
     return *this;
   }
@@ -107,16 +249,24 @@ class DeviceBuffer {
   size_t size() const { return elements_; }
 
  private:
-  void release() {
+  void release() noexcept {
     if (data_ != nullptr) {
-      cudaFree(data_);
-      g_device_bytes -= elements_ * sizeof(float);
+      if (pool_ != nullptr) {
+        pool_->release(data_, capacity_bytes_);
+      } else {
+        (void)cudaFree(data_);
+        g_device_bytes -= capacity_bytes_;
+      }
       data_ = nullptr;
       elements_ = 0;
+      capacity_bytes_ = 0;
+      pool_ = nullptr;
     }
   }
   float* data_ = nullptr;
   size_t elements_ = 0;
+  size_t capacity_bytes_ = 0;
+  BufferPool* pool_ = nullptr;
 };
 
 DeviceBuffer upload(const std::vector<float>& values) {
@@ -128,6 +278,51 @@ DeviceBuffer upload(const std::vector<float>& values) {
   return result;
 }
 
+class CudaContext {
+ public:
+  explicit CudaContext(int gpu) {
+    UMM_CUDA(cudaSetDevice(gpu));
+    UMM_CUBLAS(cublasCreate(&handle_));
+    const char* pedantic = std::getenv("UMM_VAE_PEDANTIC_FP32");
+    const bool use_pedantic =
+        pedantic != nullptr && pedantic[0] != '\0' && pedantic[0] != '0';
+    UMM_CUBLAS(cublasSetMathMode(
+        handle_,
+        use_pedantic ? CUBLAS_PEDANTIC_MATH : CUBLAS_TF32_TENSOR_OP_MATH));
+  }
+  ~CudaContext() {
+    columns_ = DeviceBuffer{};
+    pool_.clear();
+    if (handle_ != nullptr) cublasDestroy(handle_);
+  }
+  CudaContext(const CudaContext&) = delete;
+  CudaContext& operator=(const CudaContext&) = delete;
+
+  cublasHandle_t handle() const { return handle_; }
+  BufferPool& pool() { return pool_; }
+
+  // Persistent high-water-mark im2col buffer reused across all conv3d /
+  // conv2d_stride2 calls without repeated up-to-1 GiB cudaMalloc/cudaFree.
+  float* acquire_columns(size_t elements) {
+    if (elements == 0) return nullptr;
+    if (elements > std::numeric_limits<size_t>::max() / sizeof(float)) {
+      throw std::overflow_error("im2col columns allocation size overflow");
+    }
+    if (elements > columns_.size()) {
+      columns_ = DeviceBuffer{};
+      const size_t bytes = elements * sizeof(float);
+      float* ptr = pool_.allocate_raw_with_oom_flush(bytes);
+      columns_ = DeviceBuffer::adopt_raw(ptr, elements, bytes);
+    }
+    return columns_.data();
+  }
+
+ private:
+  cublasHandle_t handle_ = nullptr;
+  BufferPool pool_;
+  DeviceBuffer columns_;
+};
+
 struct Tensor {
   int64_t channels = 0;
   int64_t time = 0;
@@ -136,9 +331,9 @@ struct Tensor {
   DeviceBuffer storage;
 
   Tensor() = default;
-  Tensor(int64_t c, int64_t t, int64_t h, int64_t w)
+  Tensor(CudaContext& context, int64_t c, int64_t t, int64_t h, int64_t w)
       : channels(c), time(t), height(h), width(w),
-        storage(checked_product({c, t, h, w})) {}
+        storage(context.pool(), checked_product({c, t, h, w})) {}
   Tensor(Tensor&&) = default;
   Tensor& operator=(Tensor&&) = default;
   int64_t positions() const { return time * height * width; }
@@ -146,8 +341,9 @@ struct Tensor {
   float* data() const { return storage.data(); }
 };
 
-Tensor clone_tensor(const Tensor& source) {
-  Tensor copy(source.channels, source.time, source.height, source.width);
+Tensor clone_tensor(CudaContext& context, const Tensor& source) {
+  Tensor copy(context, source.channels, source.time, source.height,
+              source.width);
   UMM_CUDA(cudaMemcpy(copy.data(), source.data(), source.numel() * sizeof(float),
                       cudaMemcpyDeviceToDevice));
   return copy;
@@ -215,7 +411,9 @@ __global__ void denormalize_kernel(float* x, size_t positions, int64_t channels,
 // im2col for a causal 3D convolution: left temporal padding of kd-1 (reading
 // from `cache` when provided, otherwise zeros) and symmetric spatial padding
 // of kh/2 and kw/2. Output matrix is [K, positions] row-major with
-// K = channels * kd * kh * kw.
+// K = channels * kd * kh * kw. Parallelized across both positions (grid.x) and
+// channels (grid.y) so small spatial maps still saturate all SMs with
+// coalesced stride-1 reads and writes.
 __global__ void im2col_causal_kernel(const float* input, const float* cache,
                                      int64_t cache_time, float* columns,
                                      int64_t channels, int64_t time, int64_t height,
@@ -223,31 +421,44 @@ __global__ void im2col_causal_kernel(const float* input, const float* cache,
                                      int64_t kw, int64_t position_begin,
                                      int64_t chunk_positions) {
   const int64_t spatial = height * width;
-  const int64_t local = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t local = static_cast<int64_t>(blockIdx.x) *
+                            static_cast<int64_t>(blockDim.x) +
+                        static_cast<int64_t>(threadIdx.x);
   if (local >= chunk_positions) return;
   const int64_t n = position_begin + local;
   const int64_t ow = n % width;
   const int64_t oh = (n / width) % height;
   const int64_t ot = n / spatial;
-  int64_t k = 0;
-  for (int64_t c = 0; c < channels; ++c) {
+  const int64_t k_per_channel = kd * kh * kw;
+  const int64_t kh_half = kh / 2;
+  const int64_t kw_half = kw / 2;
+  for (int64_t c = static_cast<int64_t>(blockIdx.y); c < channels;
+       c += static_cast<int64_t>(gridDim.y)) {
+    const float* input_c = input + c * time * spatial;
+    const float* cache_c =
+        cache != nullptr ? (cache + c * cache_time * spatial) : nullptr;
+    int64_t k = c * k_per_channel;
     for (int64_t dt = 0; dt < kd; ++dt) {
       const int64_t it = ot + dt - (kd - 1);
+      const float* frame_ptr = nullptr;
+      if (it >= 0 && it < time) {
+        frame_ptr = input_c + it * spatial;
+      } else if (it < 0 && cache_c != nullptr) {
+        const int64_t ct = cache_time + it;
+        if (ct >= 0 && ct < cache_time) {
+          frame_ptr = cache_c + ct * spatial;
+        }
+      }
       for (int64_t dy = 0; dy < kh; ++dy) {
-        const int64_t ih = oh + dy - kh / 2;
+        const int64_t ih = oh + dy - kh_half;
+        const float* row_ptr = (frame_ptr != nullptr && ih >= 0 && ih < height)
+                                   ? (frame_ptr + ih * width)
+                                   : nullptr;
         for (int64_t dx = 0; dx < kw; ++dx, ++k) {
-          const int64_t iw = ow + dx - kw / 2;
-          float value = 0.0f;
-          if (ih >= 0 && ih < height && iw >= 0 && iw < width) {
-            if (it >= 0 && it < time) {
-              value = input[((c * time + it) * height + ih) * width + iw];
-            } else if (it < 0 && cache != nullptr) {
-              const int64_t ct = cache_time + it;
-              if (ct >= 0 && ct < cache_time) {
-                value = cache[((c * cache_time + ct) * height + ih) * width + iw];
-              }
-            }
-          }
+          const int64_t iw = ow + dx - kw_half;
+          const float value = (row_ptr != nullptr && iw >= 0 && iw < width)
+                                  ? row_ptr[iw]
+                                  : 0.0f;
           columns[k * chunk_positions + local] = value;
         }
       }
@@ -288,32 +499,12 @@ __global__ void bias_chunk_kernel(float* x, int64_t positions,
   x[channel * positions + position_begin + local] += bias[channel];
 }
 
-class CudaContext {
- public:
-  explicit CudaContext(int gpu) {
-    UMM_CUDA(cudaSetDevice(gpu));
-    UMM_CUBLAS(cublasCreate(&handle_));
-    const char* pedantic = std::getenv("UMM_VAE_PEDANTIC_FP32");
-    const bool use_pedantic =
-        pedantic != nullptr && pedantic[0] != '\0' && pedantic[0] != '0';
-    UMM_CUBLAS(cublasSetMathMode(
-        handle_,
-        use_pedantic ? CUBLAS_PEDANTIC_MATH : CUBLAS_TF32_TENSOR_OP_MATH));
-  }
-  ~CudaContext() {
-    if (handle_ != nullptr) cublasDestroy(handle_);
-  }
-  cublasHandle_t handle() const { return handle_; }
-
- private:
-  cublasHandle_t handle_ = nullptr;
-};
-
 // out[o, n] = sum_k weight[o, k] * columns[k, n]. Position chunks cap the
 // temporary im2col allocation at 1 GiB; the output keeps full NCTHW strides.
-// When `cache` is provided for a kd > 1 convolution, the left temporal context
-// is read from cache->frames and cache->frames is updated to the trailing kd-1
-// input frames.
+// Pointwise 1x1x1 convolutions bypass im2col completely and feed input directly
+// to cuBLAS. When `cache` is provided for a kd > 1 convolution, the left
+// temporal context is read from cache->frames and cache->frames is updated to
+// the trailing kd-1 input frames.
 Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv,
               CausalCache* cache = nullptr) {
   if (input.channels != conv.input_channels) {
@@ -326,10 +517,31 @@ Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv,
       conv.output_channels > std::numeric_limits<int>::max()) {
     throw std::overflow_error("convolution dimensions exceed cuBLAS limits");
   }
+  Tensor output(context, conv.output_channels, input.time, input.height,
+                input.width);
+  const float alpha = 1.0f;
+  const float beta = 0.0f;
+  if (wan_conv3d_is_pointwise(conv.kd, conv.kh, conv.kw)) {
+    UMM_CUBLAS(cublasSgemm(
+        context.handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+        static_cast<int>(positions), static_cast<int>(conv.output_channels),
+        static_cast<int>(kernel_size), &alpha, input.data(),
+        static_cast<int>(positions), conv.weight.data(),
+        static_cast<int>(kernel_size), &beta, output.data(),
+        static_cast<int>(positions)));
+    bias_chunk_kernel<<<grid_for(static_cast<size_t>(positions) *
+                                 static_cast<size_t>(conv.output_channels)),
+                        256>>>(output.data(), positions, 0, positions,
+                               conv.output_channels, conv.bias.data());
+    UMM_CUDA(cudaGetLastError());
+    return output;
+  }
+
   const bool use_cache = cache != nullptr && conv.kd > 1;
   const int64_t cache_time = use_cache ? (conv.kd - 1) : 0;
   if (use_cache && cache->frames.numel() == 0) {
-    cache->frames = Tensor(input.channels, cache_time, input.height, input.width);
+    cache->frames =
+        Tensor(context, input.channels, cache_time, input.height, input.width);
     UMM_CUDA(cudaMemset(cache->frames.data(), 0,
                         cache->frames.numel() * sizeof(float)));
   }
@@ -338,42 +550,53 @@ Tensor conv3d(CudaContext& context, const Tensor& input, const Conv& conv,
   constexpr int64_t kMaxColumnElements = 1LL << 28;
   const int64_t chunk_capacity =
       std::max<int64_t>(1, std::min(positions, kMaxColumnElements / kernel_size));
-  DeviceBuffer columns(checked_product({kernel_size, chunk_capacity}));
-  Tensor output(conv.output_channels, input.time, input.height, input.width);
-  const float alpha = 1.0f;
-  const float beta = 0.0f;
+  float* columns =
+      context.acquire_columns(checked_product({kernel_size, chunk_capacity}));
   for (int64_t begin = 0; begin < positions; begin += chunk_capacity) {
     const int64_t chunk = std::min(chunk_capacity, positions - begin);
-    im2col_causal_kernel<<<grid_for(chunk), 256>>>(
-        input.data(), cache_ptr, cache_time, columns.data(), input.channels,
+    im2col_causal_kernel<<<im2col_grid(static_cast<size_t>(chunk), input.channels),
+                           256>>>(
+        input.data(), cache_ptr, cache_time, columns, input.channels,
         input.time, input.height, input.width, conv.kd, conv.kh, conv.kw, begin,
         chunk);
     UMM_CUDA(cudaGetLastError());
     UMM_CUBLAS(cublasSgemm(
         context.handle(), CUBLAS_OP_N, CUBLAS_OP_N, static_cast<int>(chunk),
         static_cast<int>(conv.output_channels), static_cast<int>(kernel_size), &alpha,
-        columns.data(), static_cast<int>(chunk), conv.weight.data(),
+        columns, static_cast<int>(chunk), conv.weight.data(),
         static_cast<int>(kernel_size), &beta, output.data() + begin,
         static_cast<int>(positions)));
-    bias_chunk_kernel<<<grid_for(chunk * conv.output_channels), 256>>>(
+    bias_chunk_kernel<<<grid_for(static_cast<size_t>(chunk) *
+                                 static_cast<size_t>(conv.output_channels)),
+                        256>>>(
         output.data(), positions, begin, chunk, conv.output_channels,
         conv.bias.data());
     UMM_CUDA(cudaGetLastError());
   }
   if (use_cache) {
-    Tensor next_cache(input.channels, cache_time, input.height, input.width);
-    update_causal_cache_kernel<<<grid_for(next_cache.numel()), 256>>>(
-        cache->frames.data(), input.data(), next_cache.data(), input.channels,
-        cache_time, input.time, input.height * input.width);
-    UMM_CUDA(cudaGetLastError());
-    cache->frames = std::move(next_cache);
+    if (input.time >= cache_time) {
+      // Every output slot reads exclusively from `input`, so cache->frames can
+      // be updated in-place without allocating a temporary cache tensor.
+      update_causal_cache_kernel<<<grid_for(cache->frames.numel()), 256>>>(
+          nullptr, input.data(), cache->frames.data(), input.channels,
+          cache_time, input.time, input.height * input.width);
+      UMM_CUDA(cudaGetLastError());
+    } else {
+      Tensor next_cache(context, input.channels, cache_time, input.height,
+                        input.width);
+      update_causal_cache_kernel<<<grid_for(next_cache.numel()), 256>>>(
+          cache->frames.data(), input.data(), next_cache.data(), input.channels,
+          cache_time, input.time, input.height * input.width);
+      UMM_CUDA(cudaGetLastError());
+      cache->frames = std::move(next_cache);
+    }
   }
   return output;
 }
 
 __global__ void rms_norm_kernel(const float* input, float* output,
                                 const float* gamma, int64_t channels,
-                                size_t positions) {
+                                size_t positions, bool apply_silu) {
   const size_t n = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (n >= positions) return;
   float sum = 0.0f;
@@ -385,32 +608,25 @@ __global__ void rms_norm_kernel(const float* input, float* output,
   const float scale = sqrtf(static_cast<float>(channels)) / denominator;
   for (int64_t c = 0; c < channels; ++c) {
     const size_t index = static_cast<size_t>(c) * positions + n;
-    output[index] = input[index] * scale * gamma[c];
+    float value = input[index] * scale * gamma[c];
+    if (apply_silu) {
+      value = value / (1.0f + expf(-value));
+    }
+    output[index] = value;
   }
 }
 
-Tensor rms_norm(const Tensor& input, const Norm& norm) {
+Tensor rms_norm(CudaContext& context, const Tensor& input, const Norm& norm,
+                bool apply_silu = false) {
   if (input.channels != norm.channels) {
     throw std::invalid_argument("RMSNorm channel mismatch");
   }
-  Tensor output(input.channels, input.time, input.height, input.width);
-  rms_norm_kernel<<<grid_for(input.positions()), 256>>>(
+  Tensor output(context, input.channels, input.time, input.height, input.width);
+  rms_norm_kernel<<<grid_for(static_cast<size_t>(input.positions())), 256>>>(
       input.data(), output.data(), norm.gamma.data(), input.channels,
-      input.positions());
+      static_cast<size_t>(input.positions()), apply_silu);
   UMM_CUDA(cudaGetLastError());
   return output;
-}
-
-__global__ void silu_kernel(float* x, size_t count) {
-  const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (index >= count) return;
-  const float value = x[index];
-  x[index] = value / (1.0f + expf(-value));
-}
-
-void silu_inplace(Tensor& tensor) {
-  silu_kernel<<<grid_for(tensor.numel()), 256>>>(tensor.data(), tensor.numel());
-  UMM_CUDA(cudaGetLastError());
 }
 
 __global__ void add_kernel(float* x, const float* residual, size_t count) {
@@ -443,8 +659,9 @@ __global__ void nearest_spatial_kernel(const float* input, float* output,
   output[index] = input[((c * time + t) * height + oh / 2) * width + ow / 2];
 }
 
-Tensor nearest_spatial(const Tensor& input) {
-  Tensor output(input.channels, input.time, input.height * 2, input.width * 2);
+Tensor nearest_spatial(CudaContext& context, const Tensor& input) {
+  Tensor output(context, input.channels, input.time, input.height * 2,
+                input.width * 2);
   nearest_spatial_kernel<<<grid_for(output.numel()), 256>>>(
       input.data(), output.data(), input.channels, input.time, input.height,
       input.width);
@@ -481,10 +698,11 @@ Tensor temporal_upsample(CudaContext& context, const Tensor& input,
     throw std::invalid_argument("time convolution must be C -> 2C with a 3x1x1 kernel");
   }
   if (first_chunk) {
-    return clone_tensor(input);
+    return clone_tensor(context, input);
   }
   Tensor convolved = conv3d(context, input, time_conv, &time_cache);
-  Tensor expanded(input.channels, input.time * 2, input.height, input.width);
+  Tensor expanded(context, input.channels, input.time * 2, input.height,
+                  input.width);
   temporal_interleave_chunk_kernel<<<grid_for(expanded.numel()), 256>>>(
       convolved.data(), expanded.data(), input.channels, input.time,
       input.height * input.width);
@@ -522,8 +740,8 @@ __global__ void dup_up_kernel(const float* input, float* output, int64_t out_cha
       input[((source_channel * in_time + st) * height + h) * width + w];
 }
 
-Tensor dup_up3d(const Tensor& input, int64_t out_channels, int64_t factor_t,
-                int64_t factor_s, bool first_chunk) {
+Tensor dup_up3d(CudaContext& context, const Tensor& input, int64_t out_channels,
+                int64_t factor_t, int64_t factor_s, bool first_chunk) {
   const int64_t factor = factor_t * factor_s * factor_s;
   const int64_t numerator = out_channels * factor;
   if (numerator % input.channels != 0) {
@@ -532,7 +750,7 @@ Tensor dup_up3d(const Tensor& input, int64_t out_channels, int64_t factor_t,
   const int64_t repeats = numerator / input.channels;
   const int64_t drop_first = first_chunk ? (factor_t - 1) : 0;
   const int64_t out_time = factor_t * input.time - drop_first;
-  Tensor output(out_channels, out_time, input.height * factor_s,
+  Tensor output(context, out_channels, out_time, input.height * factor_s,
                 input.width * factor_s);
   dup_up_kernel<<<grid_for(output.numel()), 256>>>(
       input.data(), output.data(), out_channels, input.time, out_time,
@@ -583,8 +801,9 @@ __global__ void softmax_key_kernel(float* scores, int64_t spatial) {
 // major as [positions, channels] per frame with leading dimension positions.
 Tensor attention(CudaContext& context, const Tensor& input, const Norm& norm,
                  const Conv& qkv, const Conv& projection) {
-  Tensor normalized = rms_norm(input, norm);
+  Tensor normalized = rms_norm(context, input, norm, /*apply_silu=*/false);
   Tensor packed = conv3d(context, normalized, qkv);
+  normalized = Tensor{};
   const int64_t channels = input.channels;
   const int64_t spatial = input.height * input.width;
   const int64_t positions = input.positions();
@@ -602,7 +821,7 @@ Tensor attention(CudaContext& context, const Tensor& input, const Norm& norm,
   const float* query = packed.data();
   const float* key = query + channels * positions;
   const float* value = key + channels * positions;
-  DeviceBuffer scores(checked_product({frames, spatial, spatial}));
+  DeviceBuffer scores(context.pool(), checked_product({frames, spatial, spatial}));
   const float scale = 1.0f / sqrtf(static_cast<float>(channels));
   const float alpha = 1.0f;
   const float beta = 0.0f;
@@ -618,7 +837,7 @@ Tensor attention(CudaContext& context, const Tensor& input, const Norm& norm,
                        256 * sizeof(float)>>>(scores.data(), spatial);
   UMM_CUDA(cudaGetLastError());
 
-  Tensor attended(channels, input.time, input.height, input.width);
+  Tensor attended(context, channels, input.time, input.height, input.width);
   UMM_CUBLAS(cublasSgemmStridedBatched(
       context.handle(), CUBLAS_OP_N, CUBLAS_OP_N, static_cast<int>(spatial),
       static_cast<int>(channels), static_cast<int>(spatial), &alpha, scores.data(),
@@ -626,7 +845,10 @@ Tensor attention(CudaContext& context, const Tensor& input, const Norm& norm,
       static_cast<int>(positions), static_cast<int>(spatial), &beta, attended.data(),
       static_cast<int>(positions), static_cast<int>(spatial),
       static_cast<int>(frames)));
+  scores = DeviceBuffer{};
+  packed = Tensor{};
   Tensor output = conv3d(context, attended, projection);
+  attended = Tensor{};
   add_inplace(output, input);
   return output;
 }
@@ -671,11 +893,9 @@ ResBlock load_res_block(const SafetensorsMmap& file, const std::string& prefix) 
 
 Tensor res_block(CudaContext& context, const Tensor& input, const ResBlock& block,
                  ResBlockCache& cache) {
-  Tensor output = rms_norm(input, block.norm1);
-  silu_inplace(output);
+  Tensor output = rms_norm(context, input, block.norm1, /*apply_silu=*/true);
   output = conv3d(context, output, block.conv1, &cache.conv1);
-  output = rms_norm(output, block.norm2);
-  silu_inplace(output);
+  output = rms_norm(context, output, block.norm2, /*apply_silu=*/true);
   output = conv3d(context, output, block.conv2, &cache.conv2);
   if (block.has_shortcut) {
     Tensor identity = conv3d(context, input, block.shortcut);
@@ -811,11 +1031,12 @@ __global__ void unpatchify_clamp_kernel(const float* input, float* output,
   output[index] = value < -1.0f ? -1.0f : (value > 1.0f ? 1.0f : value);
 }
 
-Tensor unpatchify_clamp(const Tensor& input, int64_t output_channels, int64_t patch) {
+Tensor unpatchify_clamp(CudaContext& context, const Tensor& input,
+                        int64_t output_channels, int64_t patch) {
   if (input.channels != output_channels * patch * patch) {
     throw std::invalid_argument("unpatchify channel mismatch");
   }
-  Tensor output(output_channels, input.time, input.height * patch,
+  Tensor output(context, output_channels, input.time, input.height * patch,
                 input.width * patch);
   unpatchify_clamp_kernel<<<grid_for(output.numel()), 256>>>(
       input.data(), output.data(), output_channels, input.time, input.height,
@@ -838,15 +1059,18 @@ Tensor upsample_block(CudaContext& context, const Tensor& input,
     if (block.temporal) {
       Tensor expanded = temporal_upsample(context, current, block.time_conv,
                                           cache.time_conv, first_chunk);
-      Tensor spatial = nearest_spatial(expanded);
+      current = Tensor{};
+      Tensor spatial = nearest_spatial(context, expanded);
+      expanded = Tensor{};
       current = conv3d(context, spatial, block.resample_conv, &cache.resample_conv);
     } else {
-      Tensor spatial = nearest_spatial(current);
+      Tensor spatial = nearest_spatial(context, current);
+      current = Tensor{};
       current = conv3d(context, spatial, block.resample_conv, &cache.resample_conv);
     }
     // DupUp3D shortcut reads the block input, before any residual block ran.
-    Tensor shortcut = dup_up3d(input, block.output_channels, block.factor_t, 2,
-                               first_chunk);
+    Tensor shortcut = dup_up3d(context, input, block.output_channels,
+                               block.factor_t, 2, first_chunk);
     add_inplace(current, shortcut);
   }
   return current;
@@ -925,15 +1149,17 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
       std::copy(src, src + latent_spatial, dst);
     }
 
-    Tensor input(latent_c, 1, latent_h, latent_w);
+    Tensor input(context, latent_c, 1, latent_h, latent_w);
     UMM_CUDA(cudaMemcpy(input.data(), frame_host.data(),
                         frame_host.size() * sizeof(float), cudaMemcpyHostToDevice));
     denormalize_kernel<<<grid_for(input.numel()), 256>>>(
-        input.data(), input.positions(), input.channels, mean.data(), stddev.data());
+        input.data(), static_cast<size_t>(input.positions()), input.channels,
+        mean.data(), stddev.data());
     UMM_CUDA(cudaGetLastError());
 
     const bool first_chunk = (t == 0);
     Tensor current = conv3d(context, input, post_quant);
+    input = Tensor{};
     current = conv3d(context, current, decoder.conv_in, &cache.conv_in);
     current = res_block(context, current, decoder.mid_res0, cache.mid_res0);
     current = attention(context, current, decoder.mid_norm, decoder.mid_qkv,
@@ -943,10 +1169,10 @@ WanVaeOutput decode_wan_vae_fp32(const std::filesystem::path& vae_dir,
       current = upsample_block(context, current, decoder.up_blocks[i],
                                cache.up_blocks[i], first_chunk);
     }
-    current = rms_norm(current, decoder.norm_out);
-    silu_inplace(current);
+    current = rms_norm(context, current, decoder.norm_out, /*apply_silu=*/true);
     current = conv3d(context, current, decoder.conv_out, &cache.conv_out);
-    current = unpatchify_clamp(current, output_channels, config.patch_size);
+    current = unpatchify_clamp(context, current, output_channels,
+                               config.patch_size);
 
     const int64_t expected_chunk_t = wan_vae_chunk_frame_count(t, temporal_factor);
     const int64_t out_t_offset = wan_vae_chunk_frame_offset(t, temporal_factor);
@@ -987,11 +1213,9 @@ namespace {
 // ResBlock without a causal cache. Equivalent to res_block() at T=1.
 Tensor res_block_plain(CudaContext& context, const Tensor& input,
                        const ResBlock& block) {
-  Tensor output = rms_norm(input, block.norm1);
-  silu_inplace(output);
+  Tensor output = rms_norm(context, input, block.norm1, /*apply_silu=*/true);
   output = conv3d(context, output, block.conv1);
-  output = rms_norm(output, block.norm2);
-  silu_inplace(output);
+  output = rms_norm(context, output, block.norm2, /*apply_silu=*/true);
   output = conv3d(context, output, block.conv2);
   if (block.has_shortcut) {
     Tensor identity = conv3d(context, input, block.shortcut);
@@ -1009,20 +1233,25 @@ __global__ void im2col_stride2_kernel(const float* input, float* columns,
                                       int64_t width, int64_t kh, int64_t kw,
                                       int64_t out_height, int64_t out_width) {
   const int64_t positions = out_height * out_width;
-  const int64_t n = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t n = static_cast<int64_t>(blockIdx.x) *
+                        static_cast<int64_t>(blockDim.x) +
+                    static_cast<int64_t>(threadIdx.x);
   if (n >= positions) return;
   const int64_t ow = n % out_width;
   const int64_t oh = n / out_width;
-  int64_t k = 0;
-  for (int64_t c = 0; c < channels; ++c) {
+  const int64_t k_per_channel = kh * kw;
+  const int64_t in_spatial = height * width;
+  for (int64_t c = static_cast<int64_t>(blockIdx.y); c < channels;
+       c += static_cast<int64_t>(gridDim.y)) {
+    const float* input_c = input + c * in_spatial;
+    int64_t k = c * k_per_channel;
     for (int64_t dy = 0; dy < kh; ++dy) {
       const int64_t ih = oh * 2 + dy;
+      const float* row_ptr = (ih < height) ? (input_c + ih * width) : nullptr;
       for (int64_t dx = 0; dx < kw; ++dx, ++k) {
         const int64_t iw = ow * 2 + dx;
         columns[k * positions + n] =
-            (ih < height && iw < width)
-                ? input[(c * height + ih) * width + iw]
-                : 0.0f;
+            (row_ptr != nullptr && iw < width) ? row_ptr[iw] : 0.0f;
       }
     }
   }
@@ -1043,10 +1272,13 @@ Tensor conv2d_stride2(CudaContext& context, const Tensor& input,
       conv.output_channels > std::numeric_limits<int>::max()) {
     throw std::overflow_error("stride-2 convolution exceeds cuBLAS limits");
   }
-  DeviceBuffer columns(checked_product({kernel_size, positions}));
-  Tensor output(conv.output_channels, 1, out_h, out_w);
-  im2col_stride2_kernel<<<grid_for(positions), 256>>>(
-      input.data(), columns.data(), input.channels, input.height, input.width,
+  float* columns =
+      context.acquire_columns(checked_product({kernel_size, positions}));
+  Tensor output(context, conv.output_channels, 1, out_h, out_w);
+  im2col_stride2_kernel<<<im2col_grid(static_cast<size_t>(positions),
+                                      input.channels),
+                          256>>>(
+      input.data(), columns, input.channels, input.height, input.width,
       conv.kh, conv.kw, out_h, out_w);
   UMM_CUDA(cudaGetLastError());
   const float alpha = 1.0f;
@@ -1054,10 +1286,12 @@ Tensor conv2d_stride2(CudaContext& context, const Tensor& input,
   UMM_CUBLAS(cublasSgemm(
       context.handle(), CUBLAS_OP_N, CUBLAS_OP_N, static_cast<int>(positions),
       static_cast<int>(conv.output_channels), static_cast<int>(kernel_size),
-      &alpha, columns.data(), static_cast<int>(positions), conv.weight.data(),
+      &alpha, columns, static_cast<int>(positions), conv.weight.data(),
       static_cast<int>(kernel_size), &beta, output.data(),
       static_cast<int>(positions)));
-  bias_chunk_kernel<<<grid_for(positions * conv.output_channels), 256>>>(
+  bias_chunk_kernel<<<grid_for(static_cast<size_t>(positions) *
+                               static_cast<size_t>(conv.output_channels)),
+                      256>>>(
       output.data(), positions, 0, positions, conv.output_channels,
       conv.bias.data());
   UMM_CUDA(cudaGetLastError());
@@ -1099,8 +1333,8 @@ __global__ void avg_down3d_kernel(const float* input, float* output,
   output[index] = sum / static_cast<float>(group_size);
 }
 
-Tensor avg_down3d(const Tensor& input, int64_t out_channels, int64_t factor_t,
-                  int64_t factor_s) {
+Tensor avg_down3d(CudaContext& context, const Tensor& input,
+                  int64_t out_channels, int64_t factor_t, int64_t factor_s) {
   const int64_t factor = factor_t * factor_s * factor_s;
   const int64_t numerator = input.channels * factor;
   if (numerator % out_channels != 0) {
@@ -1111,7 +1345,7 @@ Tensor avg_down3d(const Tensor& input, int64_t out_channels, int64_t factor_t,
   const int64_t out_time = (input.time + pad_t) / factor_t;
   const int64_t out_height = input.height / factor_s;
   const int64_t out_width = input.width / factor_s;
-  Tensor output(out_channels, out_time, out_height, out_width);
+  Tensor output(context, out_channels, out_time, out_height, out_width);
   avg_down3d_kernel<<<grid_for(output.numel()), 256>>>(
       input.data(), output.data(), out_channels, input.time, input.height,
       input.width, out_time, out_height, out_width, factor_t, factor_s,
@@ -1263,7 +1497,7 @@ WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
 
   const auto patchified =
       patchify_image(rgb_nchw, 3, height, width, static_cast<int>(patch));
-  Tensor x(static_cast<int64_t>(encoder.conv_in.input_channels), 1,
+  Tensor x(context, static_cast<int64_t>(encoder.conv_in.input_channels), 1,
            height / patch, width / patch);
   UMM_CUDA(cudaMemcpy(x.data(), patchified.data(),
                       patchified.size() * sizeof(float),
@@ -1271,7 +1505,7 @@ WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
 
   x = conv3d(context, x, encoder.conv_in);
   for (const EncoderDownBlock& block : encoder.down_blocks) {
-    Tensor shortcut_input = clone_tensor(x);
+    Tensor shortcut_input = clone_tensor(context, x);
     for (const ResBlock& resnet : block.resnets) {
       x = res_block_plain(context, x, resnet);
     }
@@ -1279,8 +1513,9 @@ WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
       x = conv2d_stride2(context, x, block.resample_conv);
     }
     Tensor shortcut =
-        avg_down3d(shortcut_input, block.out_channels, block.factor_t,
+        avg_down3d(context, shortcut_input, block.out_channels, block.factor_t,
                    block.factor_s);
+    shortcut_input = Tensor{};
     if (shortcut.channels != x.channels || shortcut.time != x.time ||
         shortcut.height != x.height || shortcut.width != x.width) {
       throw std::runtime_error("AvgDown3D shortcut shape mismatch");
@@ -1292,8 +1527,7 @@ WanVaeEncoded encode_wan_vae_image_fp32(const std::filesystem::path& vae_dir,
   x = attention(context, x, encoder.mid_norm, encoder.mid_qkv,
                 encoder.mid_proj);
   x = res_block_plain(context, x, encoder.mid_res1);
-  x = rms_norm(x, encoder.norm_out);
-  silu_inplace(x);
+  x = rms_norm(context, x, encoder.norm_out, /*apply_silu=*/true);
   x = conv3d(context, x, encoder.conv_out);
   x = conv3d(context, x, quant_conv);
 

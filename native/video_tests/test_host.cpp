@@ -735,6 +735,8 @@ void test_engine_contract_stub_and_cuda_gate() {
   check(res.width == 160 && res.height == 128, "result dimensions match");
   check(res.frames == 5 && res.fps == 8, "result frames and fps match");
   check(res.backend == "native-cpp-contract-stub", "explicit stub backend tag");
+  check(res.umt5_ms == 0.0 && res.dit_ms == 0.0 && res.vae_ms == 0.0,
+        "contract stub reports zeroed phase timings");
 
   // Step-level abort check.
   std::atomic<int> calls{0};
@@ -905,6 +907,84 @@ void test_wan_vae_causal_chunk_schedule() {
   check(total == 77, "20 latent chunks sum cleanly to 77 frames");
 }
 
+void test_wan_vae_pool_policy_and_pointwise() {
+  using namespace umminfer::video;
+
+  // 1. Pointwise 1x1x1 convolution fast-path predicate.
+  check(wan_conv3d_is_pointwise(1, 1, 1), "1x1x1 is pointwise");
+  check(!wan_conv3d_is_pointwise(3, 3, 3), "3x3x3 is not pointwise");
+  check(!wan_conv3d_is_pointwise(3, 1, 1), "3x1x1 temporal conv is not pointwise");
+  check(!wan_conv3d_is_pointwise(1, 3, 3), "1x3x3 spatial conv is not pointwise");
+  check(!wan_conv3d_is_pointwise(1, 1, 3), "1x1x3 is not pointwise");
+  check(!wan_conv3d_is_pointwise(1, 3, 1), "1x3x1 is not pointwise");
+  check(!wan_conv3d_is_pointwise(0, 1, 1), "degenerate kd=0 is not pointwise");
+
+  // 2. Default policy upper bound (1.25x) and overflow safety.
+  WanVaePoolPolicy policy;
+  check(policy.max_cached_bytes == (1536ULL << 20),
+        "default VAE pool cache cap is 1.5 GiB");
+  check(policy.max_reusable_bytes(0) == 0, "0-byte request has 0 upper bound");
+  check(policy.max_reusable_bytes(1000) == 1250,
+        "1000 bytes -> exact 1250 byte 1.25x upper bound");
+  check(policy.max_reusable_bytes(std::numeric_limits<size_t>::max()) ==
+            std::numeric_limits<size_t>::max(),
+        "overflow-safe upper bound saturates at size_t::max");
+
+  // 3. Best-fit selection within [req, 1.25 * req].
+  {
+    const std::vector<size_t> idle = {999, 1251, 1250, 1100, 1000, 1100};
+    const auto exact = policy.select_best_fit(idle, 1000);
+    check(exact.has_value() && *exact == 4,
+          "best-fit prefers exact 1000B match over 1100B/1250B");
+
+    const auto tight = policy.select_best_fit(idle, 1001);
+    check(tight.has_value() && *tight == 3,
+          "best-fit picks smallest qualifying block (1100B) and earliest tie");
+
+    const auto boundary = policy.select_best_fit({999, 1251, 1250}, 1000);
+    check(boundary.has_value() && *boundary == 2,
+          "exact 1.25x boundary (1250B for 1000B) is accepted");
+
+    const auto oversized = policy.select_best_fit({999, 1251, 2000}, 1000);
+    check(!oversized.has_value(),
+          "blocks < req or > 1.25x req are rejected");
+
+    check(!policy.select_best_fit(idle, 0).has_value(),
+          "zero-byte request never selects a cached block");
+  }
+
+  // 4. Bounded cache byte cap eviction (oldest-first prefix).
+  {
+    WanVaePoolPolicy capped;
+    capped.max_cached_bytes = 1000;
+
+    // Fits comfortably under cap -> cache with 0 evictions.
+    const auto fit = capped.plan_release({300, 200}, 500, 400);
+    check(fit.cache_incoming && fit.evict_prefix_count == 0,
+          "release fitting within cap evicts 0 blocks");
+
+    // 500 + 600 = 1100 > 1000 -> evict oldest 300 -> 200 + 600 = 800 <= 1000.
+    const auto evict_one = capped.plan_release({300, 200}, 500, 600);
+    check(evict_one.cache_incoming && evict_one.evict_prefix_count == 1,
+          "evicting oldest block brings total back within cap");
+
+    // 900 + 800 = 1700 > 1000 -> evict 300, then 400 -> 200 + 800 = 1000 <= 1000.
+    const auto evict_two = capped.plan_release({300, 400, 200}, 900, 800);
+    check(evict_two.cache_incoming && evict_two.evict_prefix_count == 2,
+          "evicts exact prefix count needed to fit incoming block");
+
+    // Incoming block alone exceeds cap -> do not cache, evict 0 existing blocks.
+    const auto too_big = capped.plan_release({300, 200}, 500, 1001);
+    check(!too_big.cache_incoming && too_big.evict_prefix_count == 0,
+          "oversized single block bypasses cache without thrashing idle pool");
+
+    // Zero-byte block is never cached.
+    const auto zero = capped.plan_release({300}, 300, 0);
+    check(!zero.cache_incoming && zero.evict_prefix_count == 0,
+          "zero-byte release is ignored");
+  }
+}
+
 void test_i2v_center_crop_preserves_aspect_ratio() {
   using namespace umminfer::video;
   // 1. Square 64x64 image with red top/bottom 16-px bands and pure green middle
@@ -962,6 +1042,7 @@ int main() {
       {"wan_config_loading", test_wan_config_loading},
       {"wan_vae_config_loading", test_wan_vae_config_loading},
       {"wan_vae_causal_chunk_schedule", test_wan_vae_causal_chunk_schedule},
+      {"wan_vae_pool_policy_and_pointwise", test_wan_vae_pool_policy_and_pointwise},
       {"safetensors_mmap", test_safetensors_mmap},
       {"sharded_safetensors_mmap", test_sharded_safetensors_mmap},
       {"umt5_tokenizer", test_umt5_tokenizer},

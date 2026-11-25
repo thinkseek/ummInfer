@@ -355,6 +355,9 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
   size_t peak_gpu_bytes = 0;
   int teacache_hits = 0;
   int teacache_total_calls = 0;
+  double umt5_ms = 0.0;
+  double dit_ms = 0.0;
+  double vae_ms = 0.0;
 
   if (mode_ == VideoBackendMode::kCuda) {
 #if !defined(UMM_VIDEO_CUDA) || !defined(UMM_VIDEO_WAN_FULL)
@@ -372,6 +375,7 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       }
     };
 
+    const auto umt5_started = std::chrono::steady_clock::now();
     check_abort(abort, "aborted before text encoding");
     const Umt5TokenBatch pos_tokens =
         wan_cuda_->tokenizer.encode(params.prompt, 512, true);
@@ -391,6 +395,9 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       neg_len = static_cast<int>(neg_tokens.ids.size());
     }
     const int pos_len = static_cast<int>(pos_tokens.ids.size());
+    umt5_ms = std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - umt5_started)
+                  .count();
 
     const int channels = std::max(1, config_.latent_channels);
     const int latent_t =
@@ -410,12 +417,16 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     std::vector<float> image_latent;
     if (has_init_image) {
       check_abort(abort, "aborted before init image encode");
+      const auto vae_enc_started = std::chrono::steady_clock::now();
       const RgbImage image = decode_init_image(params.init_image_bytes);
       const std::vector<float> rgb =
           resize_image_to_nchw(image, params.width, params.height);
       const WanVaeEncoded encoded = encode_wan_vae_image_fp32(
           std::filesystem::path(model_dir_) / "vae", rgb, params.height,
           params.width, gpu_);
+      vae_ms += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - vae_enc_started)
+                    .count();
       update_peak_vram(encoded.peak_native_device_bytes);
       if (encoded.shape.size() != 5 || encoded.shape[0] != 1 ||
           encoded.shape[1] != channels || encoded.shape[2] != 1 ||
@@ -452,6 +463,7 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     wan_cuda_->dit.set_teacache_thresh(effective_teacache);
     wan_cuda_->dit.reset_teacache();
 
+    const auto dit_started = std::chrono::steady_clock::now();
     for (int step = 0; step < params.steps; ++step) {
       check_abort(abort, "aborted before step " + std::to_string(step + 1) +
                              "/" + std::to_string(params.steps));
@@ -487,6 +499,9 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       check_abort(abort, "aborted at step " + std::to_string(step + 1) + "/" +
                              std::to_string(params.steps));
     }
+    dit_ms = std::chrono::duration<double, std::milli>(
+                 std::chrono::steady_clock::now() - dit_started)
+                 .count();
     teacache_hits = wan_cuda_->dit.teacache_hits();
     teacache_total_calls = wan_cuda_->dit.teacache_total_calls();
 
@@ -494,8 +509,12 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     check_abort(abort, "aborted before VAE decode");
     const std::vector<int64_t> latent_shape = {
         1, channels, latent_t, latent_h, latent_w};
+    const auto vae_dec_started = std::chrono::steady_clock::now();
     const WanVaeOutput decoded = decode_wan_vae_fp32(
         std::filesystem::path(model_dir_) / "vae", latents, latent_shape, gpu_);
+    vae_ms += std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - vae_dec_started)
+                  .count();
     update_peak_vram(decoded.peak_native_device_bytes);
     if (decoded.shape.size() != 5 || decoded.shape[0] != 1 ||
         decoded.shape[1] != 3 || decoded.shape[2] != params.num_frames ||
@@ -687,6 +706,9 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
   result.model = config_.model_id;
   result.revision = config_.revision;
   result.backend = video_backend_mode_name(mode_);
+  result.umt5_ms = umt5_ms;
+  result.dit_ms = dit_ms;
+  result.vae_ms = vae_ms;
   result.denoise_ms = denoise_ms;
   result.encode_ms = encode_ms;
   result.peak_gpu_bytes = peak_gpu_bytes;
