@@ -121,7 +121,8 @@ void test_analysis_and_temporal_timestamps() {
   const std::vector<double> timestamps{0.0, 0.8, 0.2, 0.9, 0.1};
   const std::vector<uint8_t> values{0, 0, 255, 250, 0};
   for (size_t i = 0; i < values.size(); ++i) {
-    candidates.push_back({solid(kSize, kSize, values[i]), timestamps[i]});
+    candidates.push_back({solid(kSize, kSize, values[i]), timestamps[i],
+                          static_cast<int64_t>(100 + i * 3)});
   }
   const auto scores = umminfer::qwen38::analyze_temporal_frames(candidates, kSize, kSize);
   check(scores[1].motion == 0.0 && scores[1].scene == 0.0,
@@ -136,8 +137,15 @@ void test_analysis_and_temporal_timestamps() {
   check(std::is_sorted(out.selected_frame_indices.begin(),
                        out.selected_frame_indices.end()),
         "selected frames preserve decode chronology");
-  check(out.selected_frame_timestamps.size() == out.selected_frame_indices.size(),
-        "selected timestamps retain one-to-one source mapping");
+  check(out.selected_frame_timestamps.size() == out.selected_frame_indices.size() &&
+            out.selected_source_frame_indices.size() == out.selected_frame_indices.size(),
+        "selected timestamps and source indices retain one-to-one source mapping");
+  bool source_indices_match = true;
+  for (size_t i = 0; i < out.selected_frame_indices.size(); ++i) {
+    source_indices_match &= out.selected_source_frame_indices[i] ==
+                            static_cast<int64_t>(100 + out.selected_frame_indices[i] * 3);
+  }
+  check(source_indices_match, "selected diagnostics retain exact source frame indices");
   bool timestamps_match = true;
   bool nonmonotonic_preserved = false;
   for (size_t i = 0; i < out.selected_frame_indices.size(); ++i) {
@@ -325,8 +333,11 @@ void test_ffmpeg_default_equivalence_and_temporal_budget() {
   check(std::is_sorted(selected.selected_frame_indices.begin(),
                        selected.selected_frame_indices.end()) &&
             selected.selected_frame_timestamps.size() ==
-                selected.selected_frame_indices.size(),
-        "FFmpeg temporal output retains chronological source timestamp mapping");
+                selected.selected_frame_indices.size() &&
+            selected.selected_source_frame_indices == std::vector<int64_t>(
+                selected.selected_frame_indices.begin(), selected.selected_frame_indices.end()) &&
+            selected.source_indices_exact && !selected.has_nominal_timestamps,
+        "FFmpeg temporal output retains exact chronological source index/PTS mapping");
   const auto boundary = std::find(selected.selected_frame_indices.begin(),
                                   selected.selected_frame_indices.end(), 3);
   check(boundary != selected.selected_frame_indices.end(),

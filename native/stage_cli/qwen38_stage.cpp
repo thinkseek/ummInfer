@@ -10,12 +10,16 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 // Same subset the accepted image_preprocess.cpp compiles in, so the decoder
 // declarations match its implementation.
@@ -27,6 +31,7 @@
 
 #include "qwen38/engine.hpp"
 #include "qwen38/image_preprocess.hpp"
+#include "qwen38/prefix_cache.hpp"
 #include "qwen38/tokenizer.hpp"
 #include "qwen38/video_input.hpp"
 #include "stage_common.hpp"
@@ -66,6 +71,29 @@ qwen38::PreprocessedImage decode_image(const std::string& url) {
   std::vector<uint8_t> rgb(pixels, pixels + static_cast<size_t>(width) * height * 3);
   stbi_image_free(pixels);
   return qwen38::preprocess_rgb(rgb.data(), height, width, kMinPixels, kMaxPixels);
+}
+
+std::string hex_u64(uint64_t value) {
+  char buffer[17];
+  std::snprintf(buffer, sizeof(buffer), "%016llx",
+                static_cast<unsigned long long>(value));
+  return buffer;
+}
+
+// Non-cryptographic diagnostic digest of the exact position vectors passed to
+// the same host helper used by serial and batched engine prefill.
+std::string mrope_digest(const qwen38::MRoPEPositions& positions) {
+  uint64_t hash = 0xcbf29ce484222325ULL;
+  auto absorb = [&hash](int value) {
+    hash ^= static_cast<uint32_t>(value);
+    hash *= 0x100000001b3ULL;
+  };
+  for (size_t i = 0; i < positions.t.size(); ++i) {
+    absorb(positions.t[i]);
+    absorb(positions.h[i]);
+    absorb(positions.w[i]);
+  }
+  return hex_u64(hash);
 }
 
 }  // namespace
@@ -117,12 +145,14 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     }
     AbortTracker tracker(aborted);
     const OmniWork input = parse_qwen38_work(work);
+    const std::string req_id = bound_request_id();
     const int req_max_new_tokens =
         resolve_max_new_tokens(bound_request_params(), max_new_tokens, max_seq);
     const qwen38::SamplingParams sampling =
         parse_sampling(bound_request_params());
 
     std::unique_ptr<qwen38::PreprocessedImage> image;
+    std::unique_ptr<qwen38::DecodedVideo> decoded_video;
     std::vector<double> video_timestamps;
     bool is_video = false;
     int image_tokens = 0;
@@ -139,20 +169,15 @@ CancellableComputeFn make_compute(const StageOptions& options) {
                              : qwen38::VideoFramePolicy::kUniform;
       selection.motion_threshold = input.frame_selection.motion_threshold;
       selection.scene_threshold = input.frame_selection.scene_threshold;
-      qwen38::DecodedVideo decoded;
       try {
-        decoded = qwen38::decode_video_bytes(load_video_bytes(input.video_url), selection);
+        decoded_video = std::make_unique<qwen38::DecodedVideo>(
+            qwen38::decode_video_bytes(load_video_bytes(input.video_url), selection));
       } catch (const std::exception& error) {
         throw ProtocolError(std::string("video decode failed: ") + error.what());
       }
-      if (selection.policy == qwen38::VideoFramePolicy::kTemporal) {
-        std::cerr << "qwen38 video_selection=temporal candidates="
-                  << decoded.decoded_frame_count << " selected="
-                  << decoded.selected_frame_indices.size() << "\n";
-      }
-      video_timestamps = std::move(decoded.timestamps);
+      video_timestamps = decoded_video->timestamps;
       image = std::make_unique<qwen38::PreprocessedImage>(
-          std::move(decoded.preprocessed));
+          std::move(decoded_video->preprocessed));
       is_video = true;
       image_tokens = (image->grid_h * image->grid_w) / 4;
     }
@@ -226,6 +251,43 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       cache_prefix_len = static_cast<int>(prefix_ids.size());
     }
 
+    if (decoded_video != nullptr) {
+      // One bounded, request-keyed record makes the actual selected source
+      // frames, temporal-2 packing and serial/batched MRoPE inputs auditable
+      // without adding anything to the public response schema.
+      const qwen38::MRoPEPositions mrope = qwen38::build_mrope_positions(
+          ids, image->grid_t, image->grid_h, image->grid_w, true);
+      nlohmann::json evidence = {
+          {"request_id", req_id},
+          {"policy", input.frame_selection.temporal ? "temporal" : "uniform"},
+          {"decoded_frame_count", decoded_video->decoded_frame_count},
+          {"selected_frame_count", decoded_video->selected_frame_indices.size()},
+          {"selected_candidate_indices", decoded_video->selected_frame_indices},
+          {"selected_source_frame_indices",
+           decoded_video->selected_source_frame_indices},
+          {"source_indices_exact", decoded_video->source_indices_exact},
+          {"selected_frame_timestamps", decoded_video->selected_frame_timestamps},
+          {"has_nominal_timestamps", decoded_video->has_nominal_timestamps},
+          {"temporal2_pair_first_timestamps", video_timestamps},
+          {"max_frames", qwen38::kVideoFrameBudget},
+          {"max_candidate_frames", qwen38::kVideoCandidateFrameBudget},
+          {"motion_threshold", input.frame_selection.motion_threshold},
+          {"scene_threshold", input.frame_selection.scene_threshold},
+          {"grid_t", image->grid_t},
+          {"grid_h", image->grid_h},
+          {"grid_w", image->grid_w},
+          {"premerge_patch_rows", image->rows()},
+          {"merged_tokens_per_slice", image_tokens},
+          {"video_token_count", image_tokens * image->grid_t},
+          {"prompt_token_count", ids.size()},
+          {"media_hash", hex_u64(qwen38::compute_media_hash(image.get()))},
+          {"mrope_next", mrope.next},
+          {"mrope_fnv1a64", mrope_digest(mrope)},
+          {"engine_path", engine->batch_capacity() > 1 ? "batched" : "serial"},
+      };
+      std::cerr << ("qwen38_video_evidence " + evidence.dump() + "\n");
+    }
+
     // Byte-level BPE decode is additive per token: buffer only incomplete
     // trailing UTF-8 bytes so streaming stays O(1) per token instead of O(T^2).
     std::string pending_utf8;
@@ -233,7 +295,6 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     // callback fires on the engine's batch thread, where the scheduler's
     // thread-locals are not bound.
     const StreamFn stream = bound_stream_fn();
-    const std::string req_id = bound_request_id();
     auto emit_token = [&tokenizer, &pending_utf8, stream, req_id](int id) {
       pending_utf8 += tokenizer->decode({id});
       const size_t safe = utf8_complete_prefix(pending_utf8);
@@ -269,11 +330,13 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     } catch (const qwen38::GenerationAborted& error) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);
-      std::cerr << "qwen38 request aborted request_id=" << req_id
-                << " boundary=\"" << error.what() << "\""
-                << " abort_epoch_ms=" << tracker.detected_epoch_ms()
-                << " exit_epoch_ms=" << epoch_millis()
-                << " compute_ms=" << elapsed.count() << "\n";
+      std::ostringstream log;
+      log << "qwen38 request aborted request_id=" << req_id
+          << " boundary=\"" << error.what() << "\""
+          << " abort_epoch_ms=" << tracker.detected_epoch_ms()
+          << " exit_epoch_ms=" << epoch_millis()
+          << " compute_ms=" << elapsed.count() << "\n";
+      std::cerr << log.str();
       throw RequestAborted(error.what());
     }
     const std::string text = tokenizer->decode(result.ids);
@@ -283,23 +346,25 @@ CancellableComputeFn make_compute(const StageOptions& options) {
                                     ? result.decode_steps * 1000.0 / result.decode_ms
                                     : 0.0;
     const char* finish_reason = result.stopped_by_eos ? "stop" : "length";
-    std::cerr << "qwen38 request request_id=" << req_id
-              << " prompt_tokens=" << result.prompt_tokens
-              << " prefill_tokens=" << result.prefill_tokens
-              << " prefix_reused=" << result.reused_tokens
-              << " image_tokens=" << result.image_tokens
-              << " generated_tokens=" << result.ids.size()
-              << " finish_reason=" << finish_reason
-              << " chars=" << text.size()
-              << " vision_ms=" << std::fixed << std::setprecision(1)
-              << result.vision_ms
-              << " prefill_ms=" << std::fixed << std::setprecision(1)
-              << result.prefill_ms
-              << " decode_ms=" << std::fixed << std::setprecision(1)
-              << result.decode_ms
-              << " decode_tok_per_s=" << std::fixed << std::setprecision(1)
-              << decode_tok_s
-              << " elapsed_ms=" << elapsed.count() << "\n";
+    std::ostringstream log;
+    log << "qwen38 request request_id=" << req_id
+        << " prompt_tokens=" << result.prompt_tokens
+        << " prefill_tokens=" << result.prefill_tokens
+        << " prefix_reused=" << result.reused_tokens
+        << " image_tokens=" << result.image_tokens
+        << " generated_tokens=" << result.ids.size()
+        << " finish_reason=" << finish_reason
+        << " chars=" << text.size()
+        << " vision_ms=" << std::fixed << std::setprecision(1)
+        << result.vision_ms
+        << " prefill_ms=" << std::fixed << std::setprecision(1)
+        << result.prefill_ms
+        << " decode_ms=" << std::fixed << std::setprecision(1)
+        << result.decode_ms
+        << " decode_tok_per_s=" << std::fixed << std::setprecision(1)
+        << decode_tok_s
+        << " elapsed_ms=" << elapsed.count() << "\n";
+    std::cerr << log.str();
     return omni_result(text, static_cast<int>(result.ids.size()),
                        result.prefill_ms, result.decode_ms, finish_reason);
   };

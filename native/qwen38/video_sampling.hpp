@@ -34,6 +34,9 @@ struct VideoCandidate {
   // Original presentation timestamp in seconds. Decode order, not this value,
   // defines chronology. Non-monotonic finite timestamps are preserved.
   double timestamp_seconds = 0.0;
+  // Zero-based source frame number when container metadata makes the exact
+  // select(n) mapping known; -1 for the nominal-timestamp fallback.
+  int64_t source_frame_index = -1;
 };
 
 struct TemporalFrameScore {

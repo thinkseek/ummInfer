@@ -16,10 +16,15 @@ struct DecodedVideo {
   // One timestamp per native temporal-2 slice: the first selected source frame
   // in that pair. This feeds the existing video prompt and 3D MRoPE path.
   std::vector<double> timestamps;
-  // Host-test/live diagnostics. Indices refer to the bounded decoder output,
-  // not to timestamps sorted in time.
+  // Host-test/live diagnostics. Candidate indices refer to the bounded decoder
+  // output, not to timestamps sorted in time. Source indices are exact only
+  // when source_indices_exact is true; otherwise they are candidate positions
+  // accompanying nominal timestamps.
   std::vector<size_t> selected_frame_indices;
+  std::vector<int64_t> selected_source_frame_indices;
   std::vector<double> selected_frame_timestamps;
+  bool source_indices_exact = false;
+  bool has_nominal_timestamps = true;
   size_t decoded_frame_count = 0;
 };
 

@@ -240,9 +240,14 @@ DecodedVideo decode_uniform(const std::filesystem::path& path,
       kVideoMaxTotalPatches);
   out.decoded_frame_count = frames.size();
   out.selected_frame_indices.reserve(frames.size());
+  out.selected_source_frame_indices.reserve(frames.size());
   out.selected_frame_timestamps.reserve(frames.size());
   for (size_t i = 0; i < frames.size(); ++i) {
     out.selected_frame_indices.push_back(i);
+    // The historical fps filter does not expose source n/PTS without changing
+    // its decode command. Keep its exact pixels and report honest nominal
+    // positions rather than pretending these are source frame numbers.
+    out.selected_source_frame_indices.push_back(static_cast<int64_t>(i));
     out.selected_frame_timestamps.push_back(
         probe.duration * static_cast<double>(i) / static_cast<double>(frames.size()));
   }
@@ -271,6 +276,7 @@ DecodedVideo decode_temporal(const std::filesystem::path& path,
     }
   }
   const bool preserve_source_pts = source_frames > 0;
+  int64_t source_stride = 0;
   std::string vf;
   if (preserve_source_pts) {
     // select+n refers to decoded source order and does not rewrite PTS. A
@@ -279,6 +285,7 @@ DecodedVideo decode_temporal(const std::filesystem::path& path,
     const int64_t limit = options.max_candidate_frames;
     const int64_t stride = std::max<int64_t>(1, source_frames / limit +
                                                    (source_frames % limit != 0));
+    source_stride = stride;
     vf = "select='not(mod(n," + std::to_string(stride) +
          "))',scale=" + std::to_string(dst_w) + ":" + std::to_string(dst_h) +
          ":flags=bicubic,showinfo";
@@ -312,18 +319,27 @@ DecodedVideo decode_temporal(const std::filesystem::path& path,
 
   std::vector<VideoCandidate> candidates;
   candidates.reserve(frames.size());
+  bool has_nominal_timestamps = false;
   for (size_t i = 0; i < frames.size(); ++i) {
     double timestamp = probe.duration * static_cast<double>(i) /
                        static_cast<double>(frames.size());
     if (i < source_timestamps.size() && std::isfinite(source_timestamps[i])) {
       timestamp = source_timestamps[i];
+    } else {
+      has_nominal_timestamps = true;
     }
     // A short decode or missing showinfo rows is a decode gap, not permission
     // to allocate more frames or synthesize extra content. Keep valid frames
     // and use deterministic nominal timestamps only for missing/non-finite PTS.
-    candidates.push_back(VideoCandidate{std::move(frames[i]), timestamp});
+    const int64_t source_index = preserve_source_pts
+                                     ? static_cast<int64_t>(i) * source_stride
+                                     : -1;
+    candidates.push_back(VideoCandidate{std::move(frames[i]), timestamp, source_index});
   }
-  return preprocess_temporal_candidates(candidates, dst_h, dst_w, options);
+  DecodedVideo out = preprocess_temporal_candidates(candidates, dst_h, dst_w, options);
+  out.source_indices_exact = preserve_source_pts;
+  out.has_nominal_timestamps = has_nominal_timestamps;
+  return out;
 }
 
 }  // namespace
@@ -353,9 +369,14 @@ DecodedVideo preprocess_temporal_candidates(
   DecodedVideo out;
   out.decoded_frame_count = candidates.size();
   out.selected_frame_indices = selected;
+  out.selected_source_frame_indices.reserve(selected.size());
   out.selected_frame_timestamps.reserve(selected.size());
   for (size_t index : selected) {
     frames.push_back(candidates[index].rgb);
+    out.selected_source_frame_indices.push_back(
+        candidates[index].source_frame_index >= 0
+            ? candidates[index].source_frame_index
+            : static_cast<int64_t>(index));
     out.selected_frame_timestamps.push_back(candidates[index].timestamp_seconds);
   }
   out.preprocessed = preprocess_video_frames(
