@@ -291,6 +291,39 @@ and `--web-root`:
     returned cleanly to `3 MiB`): `8/8` cases completed (`SHA256SUMS` verified),
     `auto_tag` achieved `F1=1.000` / `redundant=0.000` vs `forced_image`
     (`0.800`) and `forced_video` (`0.400`, `0.500` redundant).
+- Wave 17 live multi-stage performance, full-duplex VAD, UI & Stage C upgrades (`aeaf7e4`, `256c5a5`, `90e59c3`, `9525a7b`, `982e950`, `9db9a63`):
+  - **GPU 6 `umm-native-stage-video`** (`982e950` + `9db9a63` selectable
+    `UMM_VAE_GEMM_PREC=bf16|tf32|fp16|fp32` defaulting to BF16 Tensor Core GEMM
+    with lazy cached low-precision weights, fused `im2col`->BF16/FP16,
+    specialized `1x3x3`/`3x3x3` kernels, fused ResBlock/upsample kernels, and
+    pinned host D2H staging, preserving `.wave16` backup): hot-swapped in `3 s`
+    with `0` restarts on GPUs 2–5. Measured on isolated SM90 GPU 7 (`704x480`
+    29f 15 steps `seed=42`, GPU 7 returned to `3 MiB`):
+    - Default **BF16 VAE** (`teacache_thresh=0.0`): **`12.61 s`** (`umt5=221 ms`,
+      `dit=8,548 ms`, **`vae=3,689 ms`** — **-44.7% vs Wave 16**, **1.91x faster
+      than Wave 14 `24.07 s`**, **`PSNR=52.77 dB`** avg / `51.39 dB` min vs TF32,
+      **`+0 MiB` peak VRAM** at `21,605 MiB`).
+    - Opt-in **BF16 VAE + `--teacache-thresh 0.05`** (`10/30` hits): **`9.85 s`**
+      (sub-10s 704x480 29f, **2.44x faster than Wave 14**, `PSNR=38.05 dB`).
+    - Live `43301` Journey 2 end-to-end 704x480 29f I2V HTTP render dropped from
+      `17.12 s` -> **`14.22 s`** (`SHOWCASE PASS [LIVE_SERVER]: 2/2`, `in_flight=0`).
+  - **Gateway `/bin/umm-infer`** (`9525a7b` bounded per-session server-side
+    echo-robust & double-talk VAD in `src/serve/echo_robust_vad.hpp`, preserving
+    `.wave16` backup): hot-swapped in `1 s` with `0` GPU stage restarts
+    (`echo_only_false_barge_ins=0/50`, `echo_only_false_starts=0/100`,
+    `delay_jitter_false_starts=0/1000`, `double_talk_cancel=PASS`).
+  - **Web UI `/web/index.html` & macOS `ummmlx`** (`aeaf7e4`): exposed
+    `narrative.allow_text_only` (`Smart text-only`) default-on toggle;
+    zero-restart hot-deployed to `43301` Web UI and rebuilt Release `ummmlx.app`
+    (`107/107` Swift tests PASS, `0` `_AVKit_SwiftUI`).
+  - **Stage C Live-to-Training E2E & SM90 Visual-Form Ablation** (`256c5a5`,
+    `90e59c3`): `tools/umminfer_stage_c_pipeline.py --capture-live http://127.0.0.1:43301`
+    verified `8/8` live SM90 trajectories -> CAS SHA-256 -> SFT (`6/2`) +
+    DPO/GRPO (`4` pairs / `4` groups) -> `0` leakage -> `8/8` ablation-matrix
+    CPU reference micro-steps (`REAL_TRAINING: NOT_RUN`); isolated SM90 3-GPU
+    Visual Form ablation (`image_only` `12.80 s`, `video_only` `9.02 s`,
+    `image_then_i2v_animate` `12.78 s` + I2V `5.89 s`, 4 PNG + 4 MP4 decoded,
+    `SHA256SUMS` PASS, GPUs 0/1/7 returned to `3 MiB`).
 
 ## Validation, 2026-11-19 (historical)
 
