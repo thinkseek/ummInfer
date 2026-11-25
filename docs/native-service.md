@@ -410,6 +410,22 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 25 live Web/macOS Narrative Continuity UI & Real SM90 Uniform vs Temporal Video A/B Gate (`15eee86`, `34b3bae`):
+  - **Web UI `/web/index.html` & macOS `ummmlx`** (`15eee86`): exposed
+    `narrative.continuity_mode` (`off`/`prompt_anchor`/`i2v_chain`),
+    `narrative.style_anchor` (UTF-8 `<=256B` pre-flight check), and inline
+    `I2V <- Slot #` / `Anchor` slot attribution badges
+    (`web_ui_contract_test.py` 13/13 PASS, macOS `swift test` 116/116 PASS);
+    zero-restart hot-deployed to SM90 Web UI (`.wave22` backup) and rebuilt
+    Release `ummmlx.app` (`8.18 s`, zero `_AVKit_SwiftUI`).
+  - **Real SM90 Uniform vs Temporal Video Keyframe A/B Gate** (`34b3bae`):
+    isolated GPU 0 cold-prefix (`UMM_QWEN38_PREFIX_CACHE=0`, `prefix_reused=0`)
+    24/24 measured requests (12 serial + 12 batch-4) passed with 4/4 expected
+    answers per arm across rise/drain/static/scene-cut clips, retaining exact
+    scene-cut frame 24 (`3.0 s`) under temporal mode (`docs/video-temporal-live.md`);
+    added atomic batched request logging and `qwen38_video_evidence` diagnostics
+    in `native/stage_cli/qwen38_stage.cpp` (hot-swapped onto GPU 3).
+
 - Wave 24 live Wan2.2 DiT Fused-QKV (`+0 B` VRAM) & 30-Layer CUDA Graph (`7588455`):
   - **GPU 6 `umm-native-stage-video`** (`7588455` contiguous `attn1_qkv_w`
     packing in `bf16_weights_`, `ws_.ff` output reuse, fused
