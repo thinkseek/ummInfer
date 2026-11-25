@@ -389,6 +389,26 @@ and `--web-root`:
     0.6931 -> 0.6131`, 290/290 non-zero grad tensors, exact fresh-process
     checkpoint resume equivalence, `25/25` Stage C tests PASS; GRPO & quality
     remain `NOT_RUN`).
+- Wave 20 live native ASR 99.3x realtime CUDA Graph & temporal video keyframe selection upgrades (`47db3b2`, `038d544`):
+  - **GPU 2 `umm-native-stage-asr`** (`038d544` hand-crafted SM90 64x64x64 BF16
+    Tensor-Core `mma.sync` GEMM + Implicit-GEMM Conv2d 3x3s2p1+GELU, 4x `__ldcs`
+    GEMV, fused 3-way QKV / dual-output SwiGLU / `qk_norm+rope+kv_append`,
+    1-pass Online Softmax GQA, full 28-layer decode CUDA Graph, pre-resolved
+    weights, pinned host staging, and bit-exact trailing-zero STFT skip,
+    preserving `.wave19` backup): hot-swapped in `9 s` with `0` restarts on
+    GPUs 3–6. Live `43301` `/v1/audio/transcriptions` on `15.69 s` 16 kHz speech
+    (identical 37-token / 167-char transcript):
+    - Tunnel E2E latency dropped **`2,918 ms -> 1,682 ms`** (`~1,521 ms` upload
+      RTT);
+    - Server-side GPU 2 stage log (`asr.log`): **`elapsed_ms = 158 ms`**
+      (**`99.3x` realtime, `RTF = 0.010`** — ~`8.8x` server speedup, completing
+      our 5-for-5 SM90 native GPU optimization sweep).
+  - **Gateway `/bin/umm-infer` & GPU 3 `umm-native-stage-qwen38`** (`47db3b2`
+    opt-in `video_url.frame_selection` bounded temporal motion/scene-boundary
+    keyframe selection, preserving `.wave19` backups): hot-swapped live with
+    `0` restarts on GPUs 2/4/5/6 and verified live on `43301` with
+    `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
+    returning accurate motion understanding (`in_flight=0`).
 
 - Wave 18 CPU-only native video temporal keyframe selection:
   - Added opt-in `video_url.frame_selection.policy=temporal` with bounded
