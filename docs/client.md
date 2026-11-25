@@ -143,6 +143,38 @@ For a later real-model A/B run, `python3 -I tests/video_temporal_live.py
 records answers, TTFT, and total latency for both policies. CPU/offline runs
 report `REAL_MODEL_QUALITY: NOT_RUN` and `LIVE_LATENCY: NOT_RUN`.
 
+#### Web UI and macOS ummmlx
+
+Both graphical clients expose **Input frames** under their existing Options
+panel. **Uniform** is the default and omits `frame_selection`, preserving the
+exact legacy `video_url` request object. Selecting **Temporal** enables Motion
+and Scene threshold fields (defaults `0.02` and `0.25`) and sends:
+
+```json
+{
+  "type": "video_url",
+  "video_url": {
+    "url": "data:video/mp4;base64,...",
+    "frame_selection": {
+      "policy": "temporal",
+      "motion_threshold": 0.02,
+      "scene_threshold": 0.25
+    }
+  }
+}
+```
+
+Both clients require the two thresholds to be finite numbers in the inclusive
+range `[0,1]` before starting transport. Empty, malformed, non-finite, and
+out-of-range values leave the attachment intact and produce no HTTP request.
+Returning to Uniform removes the field again, including after a new chat or
+reconnect. These controls apply only to attached video understanding; the
+existing generated-video size/frame/step/CFG controls and opt-in **Fast video**
+(`video.teacache_thresh`) remain independent, and image/video input exclusivity,
+the 32 MiB upload budget, model selection, chat history, and realtime voice are
+unchanged. Physical browser/macOS layout and real temporal-model quality remain
+`NOT_RUN` on a CPU-only host.
+
 ### Token usage in a stream
 
 The last `chat.completion.chunk` of a streaming chat response, the one that

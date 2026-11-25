@@ -53,10 +53,16 @@ def check_markup(html):
                 'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
                 'id="realtimeStatus"', 'id="narrative"',
                 'id="visualMode"', 'id="maxSlots"', 'id="allowTextOnly"',
-                'id="fastVideo"'):
+                'id="fastVideo"', 'id="videoFramePolicy"',
+                'id="videoMotionThreshold"', 'id="videoSceneThreshold"'):
         require(tag in html, f"missing element: {tag}")
     require('<input type="checkbox" id="fastVideo">' in html,
             "fastVideo checkbox must default to unchecked")
+    require('<option value="uniform" selected>Uniform</option>' in html,
+            "video frame selection must default to Uniform")
+    for control in ('videoMotionThreshold', 'videoSceneThreshold'):
+        require(re.search(rf'id="{control}"[^>]*\bdisabled\b', html) is not None,
+                f"{control} must be disabled in default Uniform mode")
     used = set(re.findall(r"\$\('([^']+)'\)", html))
     declared = set(re.findall(r'id="([^"]+)"', html))
     missing = sorted(used - declared)
@@ -211,6 +217,123 @@ def check_video_input(html, script):
             "composer must serialize attached videos as video_url content parts")
     require("attachedVideo" in script,
             "composer must track attachedVideo state")
+    require("videoURLPart(attachedVideo.dataURL, frameSelection)" in script,
+            "attached video must use the shared frame-selection serializer")
+    require("parseVideoFrameSelection(ui.videoFramePolicy.value" in script,
+            "temporal settings must be validated while building the request")
+    require("video.frame_selection = {" in script
+            and "motion_threshold: frameSelection.motion_threshold" in script
+            and "scene_threshold: frameSelection.scene_threshold" in script,
+            "temporal mode must emit the accepted video_url.frame_selection schema")
+    require("if (policy === 'uniform') return undefined;" in script,
+            "Uniform must omit frame_selection to preserve legacy request bytes")
+    for key in ('videoFramePolicy', 'videoMotionThreshold', 'videoSceneThreshold'):
+        require(f"'{key}'" in script, f"{key} must persist with existing settings")
+        require(f"ui.{key}" in script.split("function setBusy(busy)", 1)[1].split("])", 1)[0],
+                f"{key} must be disabled while a request is running")
+    require("syncVideoFrameControls()" in script,
+            "threshold controls must synchronize with Uniform/Temporal and busy state")
+
+
+def check_video_frame_selection_behavior(script):
+    """Execute the exact request serializer without a browser or a server."""
+    node = shutil.which("node")
+    if not node:
+        print("skip video frame-selection behavior: node is not installed", flush=True)
+        return
+    require("// VIDEO_FRAME_SELECTION_BEGIN" in script
+            and "// VIDEO_FRAME_SELECTION_END" in script,
+            "missing video frame-selection behavior-test markers")
+    helpers = script.split("// VIDEO_FRAME_SELECTION_BEGIN", 1)[1].split(
+        "// VIDEO_FRAME_SELECTION_END", 1)[0]
+    video_config = re.search(r"function videoConfig\(\) \{.*?\n\}", script, re.S)
+    require(video_config is not None, "could not extract videoConfig for interaction checks")
+    harness = "const ui = {\n" + r"""
+  videoSize: { value: '704x480' }, videoSeconds: { value: '2' },
+  videoFrames: { value: '29' }, videoSteps: { value: '25' },
+  videoGuidance: { value: '5.0' }, fastVideo: { checked: false },
+};
+""" + video_config.group(0) + helpers + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+const dataURL = 'data:video/mp4;base64,AAAA';
+const legacy = '{"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAA"}}';
+
+// Default and reset-to-Uniform are byte-identical to the pre-feature part.
+assert(JSON.stringify(videoURLPart(dataURL, undefined)) === legacy,
+       'default video_url bytes changed');
+assert(parseVideoFrameSelection('uniform', 'not-a-number', '') === undefined,
+       'Uniform must ignore disabled temporal fields');
+assert(JSON.stringify(videoURLPart(
+  dataURL, parseVideoFrameSelection('uniform', '0.02', '0.25'))) === legacy,
+       'reset to Uniform did not restore the legacy request');
+
+// Temporal opt-in emits exactly the accepted schema, including 0/1 bounds.
+const temporal = parseVideoFrameSelection('temporal', '0.02', '0.25');
+assert(JSON.stringify(videoURLPart(dataURL, temporal)) ===
+  '{"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAA","frame_selection":{"policy":"temporal","motion_threshold":0.02,"scene_threshold":0.25}}}',
+  'temporal wire schema mismatch');
+const boundaries = videoURLPart(
+  dataURL, parseVideoFrameSelection('temporal', '0', '1'));
+assert(boundaries.video_url.frame_selection.motion_threshold === 0 &&
+       boundaries.video_url.frame_selection.scene_threshold === 1,
+       'inclusive 0/1 boundaries were rejected');
+
+// Every malformed, non-finite, or out-of-range temporal value fails before fetch.
+const invalid = ['', ' ', 'abc', '0.2x', 'NaN', 'Infinity', '-Infinity',
+                 '-0.0001', '1.0001', '-1', '2'];
+for (const value of invalid) {
+  for (const field of ['motion', 'scene']) {
+    const motion = field === 'motion' ? value : '0.02';
+    const scene = field === 'scene' ? value : '0.25';
+    let rejected = false;
+    try { parseVideoFrameSelection('temporal', motion, scene); }
+    catch (error) {
+      rejected = /finite number in \[0,1\]/.test(error.message);
+    }
+    assert(rejected, `invalid ${field} threshold was accepted: ${value}`);
+  }
+}
+let badPolicyRejected = false;
+try { parseVideoFrameSelection('scene-only', '0.02', '0.25'); }
+catch { badPolicyRejected = true; }
+assert(badPolicyRejected, 'unknown frame policy was accepted');
+
+// A reconnect reads fresh values; no failed or previous request state leaks.
+let reconnectRejected = false;
+try { parseVideoFrameSelection('temporal', 'oops', '0.25'); }
+catch { reconnectRejected = true; }
+assert(reconnectRejected, 'invalid pre-reconnect value was not rejected');
+const reconnected = parseVideoFrameSelection('temporal', '1', '0');
+assert(reconnected.motion_threshold === 1 && reconnected.scene_threshold === 0 &&
+       temporal.motion_threshold === 0.02 && temporal.scene_threshold === 0.25,
+       'reconnect reused or mutated stale temporal settings');
+
+// Existing generated-video controls and opt-in Fast Video stay independent.
+const normalGeneration = videoConfig();
+assert(normalGeneration.size === '704x480' && normalGeneration.num_frames === 29 &&
+       normalGeneration.steps === 25 && normalGeneration.guidance_scale === 5 &&
+       normalGeneration.teacache_thresh === undefined,
+       'existing generated-video defaults changed');
+ui.fastVideo.checked = true;
+const fastGeneration = videoConfig();
+assert(fastGeneration.teacache_thresh === 0.05 &&
+       fastGeneration.num_frames === 29 && fastGeneration.steps === 25,
+       'Fast Video interaction regressed');
+assert(videoURLPart(dataURL, reconnected).video_url.frame_selection.policy === 'temporal',
+       'Fast Video altered video_url.frame_selection');
+console.log('video frame-selection behavior passed');
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "video-frame-selection.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"video frame-selection behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
+    require("video frame-selection behavior passed" in result.stdout,
+            "video frame-selection harness did not reach its success assertion")
 
 
 def check_realtime(html, script):
@@ -490,6 +613,9 @@ class WebUIContractTest(unittest.TestCase):
     def test_video_input(self):
         check_video_input(self.html, self.script)
 
+    def test_video_frame_selection_behavior(self):
+        check_video_frame_selection_behavior(self.script)
+
     def test_realtime(self):
         check_realtime(self.html, self.script)
 
@@ -513,6 +639,7 @@ def main():
         ("wave11", lambda: check_wave11(script)),
         ("markdown", lambda: check_markdown(html, script)),
         ("video_input", lambda: check_video_input(html, script)),
+        ("video_frame_selection_behavior", lambda: check_video_frame_selection_behavior(script)),
         ("realtime", lambda: check_realtime(html, script)),
         ("realtime_behavior", lambda: check_realtime_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),

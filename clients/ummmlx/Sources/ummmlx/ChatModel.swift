@@ -101,6 +101,10 @@ final class ChatModel: ObservableObject {
     @Published var videoFramesText = "29"
     @Published var videoStepsText = "25"
     @Published var videoGuidanceText = "5.0"
+    /// Attached-video understanding controls, independent of Fast Video output.
+    @Published var videoFramePolicy = "uniform"
+    @Published var videoMotionThresholdText = "0.02"
+    @Published var videoSceneThresholdText = "0.25"
     @Published var fastVideoMode = false
     @Published var attachedImageURL: URL?
     @Published var attachedVideoURL: URL?
@@ -216,6 +220,17 @@ final class ChatModel: ObservableObject {
 
         let sentImageURL = attachedImageURL
         let sentVideoURL = attachedImageURL == nil ? attachedVideoURL : nil
+        let videoFrameSelection: VideoFrameSelectionOptions?
+        do {
+            videoFrameSelection = sentVideoURL == nil ? nil : try VideoFrameSelectionOptions.parse(
+                policy: videoFramePolicy,
+                motionText: videoMotionThresholdText,
+                sceneText: videoSceneThresholdText)
+        } catch {
+            self.error = error.localizedDescription
+            status = "Configuration error"
+            return
+        }
         var attachedImageDataURL: String?
         var attachedImageBytes: Data?
         var attachedVideoDataURL: String?
@@ -266,6 +281,7 @@ final class ChatModel: ObservableObject {
         var options = ChatStreamOptions()
         if requestSessionID.isEmpty { requestSessionID = Self.newSessionID() }
         options.sessionID = requestSessionID
+        options.videoFrameSelection = videoFrameSelection
         if let maxTok = Int(maxTokensText.trimmingCharacters(in: .whitespaces)), maxTok > 0 {
             options.maxTokens = maxTok
         }

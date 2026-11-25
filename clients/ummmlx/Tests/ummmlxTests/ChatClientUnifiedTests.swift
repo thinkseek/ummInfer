@@ -150,6 +150,36 @@ private final class VisualRenderProtocol: URLProtocol {
 
 /// Canned unified streams, keyed by host.
 private final class UnifiedSSEProtocol: URLProtocol {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var requestBodies: [Data] = []
+
+    static func resetBodies() {
+        lock.lock()
+        requestBodies = []
+        lock.unlock()
+    }
+
+    static func bodies() -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestBodies
+    }
+
+    private func body(_ request: URLRequest) -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+
     static let responses: [String: Data] = [
         "10.1.2.1": sse([
             frame(kind: "vlm_delta", seq: 0, text: "Hel"),
@@ -219,6 +249,10 @@ private final class UnifiedSSEProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        let sent = body(request)
+        Self.lock.lock()
+        Self.requestBodies.append(sent)
+        Self.lock.unlock()
         guard let url = request.url, let host = url.host,
               let data = Self.responses[host],
               let response = HTTPURLResponse(
@@ -753,6 +787,179 @@ final class ChatClientUnifiedTests: XCTestCase {
         XCTAssertEqual(parts?[1]["type"] as? String, "video_url")
         let videoObj = parts?[1]["video_url"] as? [String: Any]
         XCTAssertEqual(videoObj?["url"] as? String, vidURL)
+    }
+
+    @MainActor
+    func testVideoFrameSelectionDefaultsAndTemporalWireSchema() throws {
+        let videoURL = "data:video/mp4;base64,AAAAIGZ0eXBpc29t"
+        let message = ChatMessage(role: "user", content: "describe motion",
+                                  videoDataURL: videoURL)
+        let defaultOptions = ChatStreamOptions()
+        XCTAssertNil(defaultOptions.videoFrameSelection)
+        let defaultBody = ChatClient.requestBody(
+            model: "qwen3-native", messages: [message], options: defaultOptions)
+        let defaultMessages = try XCTUnwrap(defaultBody["messages"] as? [[String: Any]])
+        let defaultParts = try XCTUnwrap(defaultMessages.first?["content"] as? [[String: Any]])
+        let defaultVideo = try XCTUnwrap(defaultParts[1]["video_url"] as? [String: Any])
+        XCTAssertEqual(defaultVideo.count, 1)
+        XCTAssertEqual(defaultVideo["url"] as? String, videoURL)
+        XCTAssertNil(defaultVideo["frame_selection"],
+                     "Uniform default must preserve the legacy video_url object")
+        XCTAssertNil(try VideoFrameSelectionOptions.parse(
+            policy: "uniform", motionText: "ignored", sceneText: ""))
+
+        let temporal = try XCTUnwrap(VideoFrameSelectionOptions.parse(
+            policy: "temporal", motionText: "0.02", sceneText: "0.25"))
+        var options = ChatStreamOptions()
+        options.videoFrameSelection = temporal
+        options.video = VideoOptions(size: "704x480", numFrames: 29, steps: 25)
+        options.videoTeaCacheThresh = 0.05
+        let body = ChatClient.requestBody(
+            model: "qwen3-native", messages: [message], options: options)
+        let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        let parts = try XCTUnwrap(messages.first?["content"] as? [[String: Any]])
+        let video = try XCTUnwrap(parts[1]["video_url"] as? [String: Any])
+        XCTAssertEqual(video["url"] as? String, videoURL)
+        let selection = try XCTUnwrap(video["frame_selection"] as? [String: Any])
+        XCTAssertEqual(selection.count, 3)
+        XCTAssertEqual(selection["policy"] as? String, "temporal")
+        XCTAssertEqual(try XCTUnwrap(selection["motion_threshold"] as? Double),
+                       0.02, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(selection["scene_threshold"] as? Double),
+                       0.25, accuracy: 1e-12)
+
+        // Input temporal selection and generated-video Fast Video coexist in
+        // their separate accepted locations; neither rewrites the other.
+        let generated = try XCTUnwrap(body["video"] as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(generated["teacache_thresh"] as? Double),
+                       0.05, accuracy: 1e-12)
+        XCTAssertEqual(generated["num_frames"] as? Int, 29)
+        XCTAssertEqual(generated["steps"] as? Int, 25)
+        XCTAssertEqual(body["modalities"] as? [String], ["text", "video"])
+    }
+
+    @MainActor
+    func testVideoFrameSelectionThresholdBoundariesAndInvalidInput() throws {
+        let boundaries = try XCTUnwrap(VideoFrameSelectionOptions.parse(
+            policy: "temporal", motionText: "0", sceneText: "1"))
+        XCTAssertEqual(boundaries.motionThreshold, 0)
+        XCTAssertEqual(boundaries.sceneThreshold, 1)
+        try boundaries.validate()
+
+        let invalid = ["", " ", "abc", "0.2x", "NaN", "inf", "-inf",
+                       "-0.0001", "1.0001", "-1", "2"]
+        for value in invalid {
+            XCTAssertThrowsError(try VideoFrameSelectionOptions.parse(
+                policy: "temporal", motionText: value, sceneText: "0.25"),
+                "invalid motion threshold was accepted: \(value)")
+            XCTAssertThrowsError(try VideoFrameSelectionOptions.parse(
+                policy: "temporal", motionText: "0.02", sceneText: value),
+                "invalid scene threshold was accepted: \(value)")
+        }
+        XCTAssertThrowsError(try VideoFrameSelectionOptions.parse(
+            policy: "scene-only", motionText: "0.02", sceneText: "0.25"))
+        XCTAssertThrowsError(try VideoFrameSelectionOptions(
+            motionThreshold: Double.nan, sceneThreshold: 0.25).validate())
+        XCTAssertThrowsError(try VideoFrameSelectionOptions(
+            motionThreshold: 0.02, sceneThreshold: Double.infinity).validate())
+    }
+
+    @MainActor
+    func testClientRejectsNonFiniteTemporalSelectionBeforeTransport() async {
+        UnifiedSSEProtocol.resetBodies()
+        var options = ChatStreamOptions()
+        options.videoFrameSelection = VideoFrameSelectionOptions(
+            motionThreshold: 0.02, sceneThreshold: Double.nan)
+        do {
+            _ = try await makeClient().stream(
+                base: "http://10.1.2.1/v1", model: "m",
+                messages: [ChatMessage(role: "user", content: "video",
+                                       videoDataURL: "data:video/mp4;base64,AAAA")],
+                options: options) { _ in }
+            XCTFail("a non-finite threshold must fail before transport")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("[0,1]"))
+        }
+        XCTAssertTrue(UnifiedSSEProtocol.bodies().isEmpty)
+    }
+
+    @MainActor
+    func testChatModelTemporalValidationResetAndReconnect() async throws {
+        UnifiedSSEProtocol.resetBodies()
+        let videoURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+        try Data([0, 1, 2, 3]).write(to: videoURL)
+        defer { try? FileManager.default.removeItem(at: videoURL) }
+
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        model.endpoint = "http://10.1.2.1/v1"
+        model.model = "m"
+        model.videoFramePolicy = "temporal"
+        model.videoMotionThresholdText = "-0.01"
+        model.videoSceneThresholdText = "0.25"
+        model.attachedVideoURL = videoURL
+        model.prompt = "describe motion"
+        model.send()
+        XCTAssertFalse(model.isRunning)
+        XCTAssertEqual(model.status, "Configuration error")
+        XCTAssertTrue(model.error?.contains("[0,1]") == true)
+        XCTAssertEqual(model.attachedVideoURL, videoURL,
+                       "validation failure must not discard the attachment")
+        XCTAssertTrue(model.turns.isEmpty)
+        XCTAssertTrue(UnifiedSSEProtocol.bodies().isEmpty,
+                      "invalid temporal values must not reach URLSession")
+
+        // Correcting the values and reconnecting uses fresh options and accepts
+        // both inclusive boundaries on the exact video_url wire object.
+        model.videoMotionThresholdText = "0"
+        model.videoSceneThresholdText = "1"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(model.status, "Completed · stop")
+        XCTAssertEqual(UnifiedSSEProtocol.bodies().count, 1)
+        let temporalBody = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: UnifiedSSEProtocol.bodies()[0]) as? [String: Any])
+        let temporalMessages = try XCTUnwrap(temporalBody["messages"] as? [[String: Any]])
+        let temporalParts = try XCTUnwrap(
+            temporalMessages.first?["content"] as? [[String: Any]])
+        let temporalVideo = try XCTUnwrap(temporalParts[1]["video_url"] as? [String: Any])
+        let temporalSelection = try XCTUnwrap(
+            temporalVideo["frame_selection"] as? [String: Any])
+        XCTAssertEqual(temporalSelection["policy"] as? String, "temporal")
+        XCTAssertEqual(temporalSelection["motion_threshold"] as? Double, 0)
+        XCTAssertEqual(temporalSelection["scene_threshold"] as? Double, 1)
+
+        // New chat + reset to Uniform restores legacy bytes. Fast Video still
+        // controls only generated video and malformed disabled fields are inert.
+        model.newChat()
+        model.videoFramePolicy = "uniform"
+        model.videoMotionThresholdText = "not-a-number"
+        model.videoSceneThresholdText = ""
+        model.videoOutput = true
+        model.fastVideoMode = true
+        model.attachedVideoURL = videoURL
+        model.prompt = "describe and animate"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(model.status, "Completed · stop")
+        XCTAssertEqual(UnifiedSSEProtocol.bodies().count, 2)
+        let resetBody = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: UnifiedSSEProtocol.bodies()[1]) as? [String: Any])
+        let resetMessages = try XCTUnwrap(resetBody["messages"] as? [[String: Any]])
+        let resetParts = try XCTUnwrap(resetMessages.first?["content"] as? [[String: Any]])
+        let resetVideo = try XCTUnwrap(resetParts[1]["video_url"] as? [String: Any])
+        XCTAssertEqual(resetVideo.count, 1)
+        XCTAssertNil(resetVideo["frame_selection"])
+        let generated = try XCTUnwrap(resetBody["video"] as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(generated["teacache_thresh"] as? Double),
+                       0.05, accuracy: 1e-12)
+        XCTAssertEqual(generated["num_frames"] as? Int, 29)
+        XCTAssertEqual(generated["steps"] as? Int, 25)
     }
 
     @MainActor

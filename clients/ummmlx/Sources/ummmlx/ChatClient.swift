@@ -60,6 +60,48 @@ struct VideoOptions: Equatable {
     var teaCacheThresh: Double? = nil
 }
 
+enum VideoFramePolicy: String, Equatable {
+    case uniform
+    case temporal
+}
+
+/// Opt-in temporal keyframe selection for a native video_url input. Uniform is
+/// represented by nil, so legacy requests do not grow a frame_selection field.
+struct VideoFrameSelectionOptions: Equatable {
+    let policy = VideoFramePolicy.temporal
+    var motionThreshold: Double
+    var sceneThreshold: Double
+
+    func validate() throws {
+        guard motionThreshold.isFinite, (0...1).contains(motionThreshold) else {
+            throw ChatClientError.invalidEndpoint(
+                "Motion threshold must be a finite number in [0,1].")
+        }
+        guard sceneThreshold.isFinite, (0...1).contains(sceneThreshold) else {
+            throw ChatClientError.invalidEndpoint(
+                "Scene threshold must be a finite number in [0,1].")
+        }
+    }
+
+    static func parse(policy: String, motionText: String,
+                      sceneText: String) throws -> VideoFrameSelectionOptions? {
+        if policy == VideoFramePolicy.uniform.rawValue { return nil }
+        guard policy == VideoFramePolicy.temporal.rawValue else {
+            throw ChatClientError.invalidEndpoint(
+                "Input frame policy must be Uniform or Temporal.")
+        }
+        guard let motion = Double(motionText.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scene = Double(sceneText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw ChatClientError.invalidEndpoint(
+                "Temporal thresholds must be finite numbers in [0,1].")
+        }
+        let selection = VideoFrameSelectionOptions(
+            motionThreshold: motion, sceneThreshold: scene)
+        try selection.validate()
+        return selection
+    }
+}
+
 /// Interleaved narrative mode: the server's VLM director inserts visual beats
 /// into the prose and emits a `visual_slot` event for each one.
 struct NarrativeOptions: Equatable {
@@ -82,6 +124,8 @@ struct ChatStreamOptions: Equatable {
     var image: ImageOptions?
     var audio: AudioOptions?
     var video: VideoOptions?
+    /// Native video_url input selection; nil is the legacy Uniform behavior.
+    var videoFrameSelection: VideoFrameSelectionOptions?
     /// Optional per-request Wan2.2 TeaCache threshold in [0.0, 0.25] (e.g. 0.05 for Fast Video).
     var videoTeaCacheThresh: Double? = nil
     var narrative: NarrativeOptions?
@@ -344,7 +388,15 @@ final class ChatClient {
                 if !message.content.isEmpty {
                     parts.append(["type": "text", "text": message.content])
                 }
-                parts.append(["type": "video_url", "video_url": ["url": videoURL]])
+                var videoObject: [String: Any] = ["url": videoURL]
+                if let selection = options.videoFrameSelection {
+                    videoObject["frame_selection"] = [
+                        "policy": selection.policy.rawValue,
+                        "motion_threshold": selection.motionThreshold,
+                        "scene_threshold": selection.sceneThreshold
+                    ]
+                }
+                parts.append(["type": "video_url", "video_url": videoObject])
                 return ["role": message.role, "content": parts]
             }
             return ["role": message.role, "content": message.content]
@@ -520,6 +572,7 @@ final class ChatClient {
                          onEvent: ((UnifiedEvent) -> Void)?,
                          onArtifact: ((GeneratedArtifact) -> Void)?,
                          onAudioChunk: ((AudioStreamChunk) -> Void)?) async throws -> ChatCompletion {
+        try options.videoFrameSelection?.validate()
         let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw ChatClientError.modelRequired }
         let url = try Self.chatURL(base: base)

@@ -247,6 +247,26 @@ struct RootView: View {
                         labeledField("CFG", text: $model.videoGuidanceText, width: 46)
                     }
                     HStack(spacing: 10) {
+                        Picker("Input frames", selection: $model.videoFramePolicy) {
+                            Text("Uniform").tag("uniform")
+                            Text("Temporal").tag("temporal")
+                        }
+                        .frame(width: 190)
+                        .help("Frame selection for attached video understanding, not generated-video Fast Video")
+                        .accessibilityIdentifier("videoFramePolicy")
+                        labeledField("Motion ≥", text: $model.videoMotionThresholdText,
+                                     width: 52, placeholder: "0.02")
+                            .disabled(model.videoFramePolicy != "temporal")
+                            .accessibilityIdentifier("videoMotionThreshold")
+                        labeledField("Scene ≥", text: $model.videoSceneThresholdText,
+                                     width: 52, placeholder: "0.25")
+                            .disabled(model.videoFramePolicy != "temporal")
+                            .accessibilityIdentifier("videoSceneThreshold")
+                        Text("Temporal thresholds are finite values in [0,1].")
+                            .font(.system(size: theme.captionSize))
+                            .foregroundStyle(theme.tertiary)
+                    }
+                    HStack(spacing: 10) {
                         Toggle("Narrative", isOn: $model.narrativeMode)
                             .toggleStyle(.checkbox)
                             .accessibilityIdentifier("narrative")

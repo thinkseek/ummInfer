@@ -23,7 +23,30 @@ No third-party runtime dependencies.
 - Multi-turn history: the client replays complete exchanges. When a unified
   server rejects replayed text ("at most one text part"), it retries once with
   the last user message plus `session_history: true`.
+- Native video input uses bounded Uniform sampling by default. Options > Input
+  frames > Temporal opts into motion/scene keyframe selection with validated
+  thresholds, independently of generated-video Fast Video.
 - Light, dark, and system appearance.
+
+## Native video input
+
+Attach an MP4, WebM, or QuickTime video with **+ Vid**. Image and video inputs
+remain mutually exclusive and video uploads retain the 32 MiB limit. The default
+**Input frames: Uniform** setting omits `video_url.frame_selection`, so existing
+request bodies are unchanged. **Temporal** enables Motion and Scene fields and
+sends `frame_selection` with `policy: "temporal"` and numeric
+`motion_threshold`/`scene_threshold` values. Both are required, finite, and in
+`[0,1]`; invalid input is reported before any request and does not discard the
+attachment. Returning to Uniform removes the object again after reset or
+reconnect.
+
+Temporal input selection is unrelated to generated-video **Fast Video**, which
+continues to send only `video.teacache_thresh: 0.05` when enabled. Existing
+frames, steps, CFG, model, narrative, and realtime settings are independent.
+Swift tests cover default omission, exact opt-in serialization, inclusive 0/1
+bounds, invalid input, reset/reconnect, and Fast Video interaction. Physical
+macOS UI validation and real video-quality/latency runs are `NOT_RUN` on a
+CPU-only Linux host.
 
 ## Local speech input
 
@@ -176,7 +199,8 @@ license and NOTICE files are retained.
 
 ## NOT_COVERED
 
-- Realtime WebSocket, streaming ASR from the server, video, and tools.
+- Tools.
+- Physical platform UI checks and real-model video temporal quality/latency.
 - Model downloads, accounts, cloud provider presets, and HTTPS E2E.
 - Persistent history across launches, multiple saved sessions, and retries.
 - Immediate cancellation inside a model call on the server.
