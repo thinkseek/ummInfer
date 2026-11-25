@@ -33,7 +33,7 @@ acceptance criteria name is measured from real tensors and real processes.
 | `python/umminfer_rl_worker.py` | Adds the `train_step` verb; phase-1 `train` is unchanged |
 | `python/umminfer_rl_eval.py` | Separate-process greedy evaluation, with or without checkpoint weights |
 | `python/umminfer_rl_run.py` | End-to-end orchestrator; itself imports no torch |
-| `tests/rl_phase2_test.py` | REMOVED in `ab51cf5`; the deterministic suite no longer exists |
+| `tests/rl_phase2_test.py` | Restored deterministic worker, rejection-gate, NDJSON, and checkpoint-chain contracts (CPU-only) |
 
 ## Algorithm
 
@@ -64,9 +64,9 @@ sampled.
 The trajectory export stores completion **text**, while the trainer
 re-tokenizes that text to recompute log probabilities. Token boundaries at the
 prompt/completion join can differ from the sampled token ids by at most one
-token. The export format has no token-id field in phase 1; adding one is a
-schema change recorded as future work. The limit affects one boundary token
-per rollout, not the reward or the optimizer mechanics.
+token. Schema v2 retains this rule; it adds narrative/media records but no
+token-id field. The limit affects one boundary token per rollout, not the
+reward or the optimizer mechanics.
 
 ## Worker protocol additions
 
@@ -90,7 +90,10 @@ Rules:
   `hyperparameters` and `metrics` slots are now filled. The phase-1 hash
   chain (`base_checkpoint_sha256` plus `.sha256` sidecars) is unchanged, and
   reopening the directory still re-verifies every link.
-- The phase-1 `train` verb keeps writing null algorithm/weights slots.
+- The phase-1 `train` verb keeps writing null algorithm/weights slots and now
+  explicitly writes `optimizer_status: "NOT_RUN"`. A successful real
+  `train_step` writes `optimizer_status: "EXECUTED"`; rejected requests consume
+  no sequence and do not import the trainer.
 
 ## Reproducibility
 
@@ -146,9 +149,23 @@ python3 -I python/umminfer_rl_run.py \
 a contiguous slice is used. The manifest records every selected index, so the
 split is reproducible either way.
 
-Deterministic local tests need no model, but `tests/rl_phase2_test.py` and
-`tests/rl_architecture_test.py` were removed in `ab51cf5`. No automated
-phase-2 test remains.
+## Deterministic local tests
+
+```text
+python3 -I tests/rl_architecture_test.py
+python3 -I tests/rl_phase2_test.py
+```
+
+The restored suites need no model, GPU, torch, or transformers. They validate
+schema v1/v2 reads, narrative/media integrity, rejection before trainer import,
+protocol behavior, and checkpoint-chain tamper detection. They do not issue a
+valid `train_step`, do not simulate an optimizer success, and print
+`REAL OPTIMIZER: NOT_RUN` plus `REAL MODEL QUALITY RESULT: NOT_RUN`.
+
+The measured run below remains the only real optimizer evidence in this
+document. It used the historical schema-v1 export, which the current worker
+still accepts. The current recorder emits schema v2; no SM90 optimizer rerun
+was performed for the schema-v2 change.
 
 ## Measured SM90 run (2026-11-14)
 

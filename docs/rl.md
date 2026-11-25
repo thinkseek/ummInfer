@@ -1,276 +1,210 @@
-# RL architecture — phase 1: rollout, reward interface, training worker
+# RL architecture — multimodal trajectory schema v2
 
-Phase 1 builds the architecture only. No training runs, no model weights are
-produced, and no RL result is claimed. The pieces delivered are:
-
-1. Rollout recording through the existing public HTTP/SSE exit, in a process
-   separate from the server.
-2. A complete multimodal trajectory export (JSONL) with ordered ASR/VLM
-   events, terminal state, cancellation and error records, and content
-   hashes.
-3. A pluggable reward interface with no business reward implemented.
-4. A training worker that runs as a separate process behind a versioned
-   stdio protocol and writes versioned checkpoint metadata.
-
-The serving process is not modified. No second inference engine exists. The
-new code files are:
+The RL boundary remains outside serving. The recorder is a normal public
+HTTP/SSE client; the reward reader and training worker are separate offline
+concerns. No C++ serving file imports the recorder, trainer, optimizer, torch,
+or transformers, and no second inference engine exists.
 
 | File | Responsibility |
 | --- | --- |
-| `python/umminfer_rl_trajectory.py` | Out-of-process recorder, SSE parsing, input references, JSONL export |
-| `python/umminfer_rl_reward.py` | Reward abstract class, null reward, plugin loader |
-| `python/umminfer_rl_worker.py` | Worker process, NDJSON protocol, checkpoint store with hash chain |
-| `tests/rl_architecture_test.py` | REMOVED in `ab51cf5`; the deterministic suite no longer exists |
+| `python/umminfer_rl_trajectory.py` | Out-of-process recording, narrative normalization, media verification, CAS export |
+| `python/umminfer_rl_reward.py` | Export-only reward interface and plugin loader |
+| `python/umminfer_rl_worker.py` | Independent v1/v2 validation, NDJSON worker protocol, checkpoint hash chain |
+| `tests/narrative_rl_fixtures.py` | Deterministic interleaved narrative, failed-leg, and cancelled-response fixtures |
+| `tests/rl_architecture_test.py` | Deterministic schema-v2 recorder/validator/reward contracts |
+| `tests/rl_phase2_test.py` | Worker/checkpoint/protocol contracts; does not execute an optimizer |
 
-## Why the recorder is a client, not a server hook
+The recorder captures only traffic driven through it. A passive sidecar that
+captures other clients is not implemented.
 
-The recorder calls the public endpoint exactly like any other client. The
-alternative, attaching to the C++ `Coordinator` sink seam, requires changing
-the serving startup path and puts recording logic inside the serving
-process. The phase-1 constraint is the opposite boundary: training-adjacent
-code stays out of serving, and the Python stage workers are not touched.
+## Compatibility decision
 
-Consequence: only traffic driven through the recorder is captured. A
-passive bump-in-the-wire tap that captures all server traffic is future work
-and would be a separate sidecar process. It is not built in phase 1.
+New recordings have `schema_version: 2`. The worker accepts both schema 1 and
+schema 2, including a mixed-version JSONL export. This is backward-compatible
+read support, not an up-conversion: v1 records keep their original fields and
+validation semantics, and the reader does not invent empty narrative fields for
+them. Unsupported, missing, boolean, or non-integer versions are rejected.
 
-## Trajectory export
+V2 retains the phase-1 keys used by the GSM8K trainer (`output_text`,
+`output_sha256`, `events`, `request_params`, `inputs`, `terminal_state`, reward
+blocks, and the later `messages`/`prompt_id` enrichment). The phase-2 REINFORCE
+consumer therefore reads either version. Token ids are still absent; the
+boundary-token limitation in [rl-phase2.md](rl-phase2.md) is unchanged.
 
-One JSON object per line, one line per terminal request (one turn). Every
-record has `schema_version: 1`.
+## V2 record
+
+One compact JSON object per line represents one terminal request. A shortened
+record looks like:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "session_id": "sess-1",
   "request_id": "http-1",
   "turn_index": 0,
   "endpoint": "/v1/chat/completions",
-  "inputs": [
-    {"kind": "text", "ref": null, "media_type": null,
-     "sha256": "…", "text": "transcribe this"},
-    {"kind": "audio", "ref": "<sha256>.wav", "media_type": "audio/wav",
-     "sha256": "…"},
-    {"kind": "image", "ref": "<sha256>.png", "media_type": "image/png",
-     "sha256": "…"},
-    {"kind": "image", "ref": "https://example.test/pic.png",
-     "media_type": null, "sha256": null}
-  ],
-  "request_params": {"model": "…", "stream": true},
+  "inputs": [{"kind":"text","ref":null,"media_type":null,"sha256":"…","text":"explain"}],
+  "request_params": {"model":"…","stream":true},
+  "clean_text": "At dawn, a lantern rises.",
+  "clean_text_sha256": "…",
+  "output_text": "At dawn, a lantern rises.",
+  "output_sha256": "…",
+  "visual_slots": [{"seq":1,"server_seq":1,"slot_id":"slot-0","slot_index":0,
+                    "stage":"image","media_type":"image","prompt":"a lantern",
+                    "text_offset":9}],
   "events": [
-    {"seq": 0, "type": "asr_partial", "server_seq": 0, "stage": "asr",
-     "is_final": false, "text": "…"},
-    {"seq": 1, "type": "asr_final", "server_seq": 1, "stage": "asr",
-     "is_final": true, "text": "…"},
-    {"seq": 2, "type": "vlm_delta", "server_seq": 2, "stage": "vlm",
-     "is_final": false, "text": "…"},
-    {"seq": 3, "type": "finish", "finish_reason": "stop"}
+    {"seq":0,"server_seq":0,"type":"vlm_delta","text":"At dawn, "},
+    {"seq":1,"server_seq":1,"type":"visual_slot","slot_id":"slot-0","slot_index":0},
+    {"seq":2,"server_seq":2,"type":"artifact","artifact":{
+      "artifact_id":"art-0","index":0,"total":1,"chunk_bytes":123,
+      "chunk_sha256":"…","bytes":123,"sha256":"…","ref":"<sha256>.png"}},
+    {"seq":3,"server_seq":3,"type":"complete","text":"At dawn, a lantern rises.","legs":[]}
   ],
+  "artifacts": [{"artifact_id":"art-0","media_type":"image","mime_type":"image/png",
+                 "ref":"<sha256>.png","sha256":"…","bytes":123,
+                 "chunk_count":1,"chunks_sha256":"…"}],
+  "leg_errors": [],
   "terminal_state": "completed",
-  "error": null,
-  "output_text": "…",
-  "output_sha256": "…"
+  "terminal_event_seq": 3,
+  "terminal_legs": [],
+  "error": null
 }
 ```
 
-### Input references
+`clean_text` is the concatenation of clean VLM/OpenAI deltas, excluding ASR
+transcripts, visual markers, terminal duplicate text, and media. For a
+non-streaming assistant response it is `message.content`. `output_text` keeps
+the v1 meaning: final ASR text plus VLM/OpenAI deltas, or the non-streaming
+assistant content. Each has its own SHA-256.
 
-Input bytes never enter the JSONL.
+`visual_slots` and `leg_errors` are projections of their corresponding events;
+the worker recomputes and compares them. `terminal_event_seq` identifies exactly
+one final `complete`, `error`, or `cancelled` event, and `terminal_legs` must
+match that event's `legs` exactly. A plain OpenAI stream gets a normalized
+synthetic `complete` event after `[DONE]`, so v2 consumers have one terminal
+contract across plain and unified responses.
 
-- Text parts are inlined and hashed over their UTF-8 bytes.
-- WAV audio and `data:` image bytes are decoded and written to the artifact
-  directory under `<sha256>.<ext>`. Identical media is stored once. The
-  record keeps the relative file name and the SHA-256 of the decoded bytes.
-- Remote `image_url` values stay URL references with `sha256: null`. The
-  recorder does not fetch them. Reproducibility of those records depends on
-  the URL continuing to serve the same bytes; that is the documented cost of
-  referencing instead of inlining.
+## Media and content-addressed storage
 
-### Events and terminal states
+JSONL contains no embedded image, audio, or video bytes.
 
-- Recorder `seq` is gap-free from 0 in arrival order. Unified events also
-  keep the server-assigned sequence under `server_seq` for cross-checking;
-  the recorder sequence is the ordering authority.
-- Event types come from the server vocabulary: `asr_partial`, `asr_final`,
-  `vlm_delta`, `complete`, `error`, `cancelled`, plus `output_delta` and
-  `finish` for plain OpenAI chunks.
-- `output_text` concatenates the final ASR transcript and VLM deltas.
-  Provisional `asr_partial` text is excluded because the final event
-  replaces it. `output_sha256` hashes that exact string.
-- Terminal states: `completed`, `failed`, `cancelled`.
-  - A clean stream ends with `[DONE]` and no error frame.
-  - An error frame, an HTTP error body, or EOF without `[DONE]` is `failed`.
-    The EOF message is `stream ended before [DONE]`, matching the retired
-    `tests/unified_benchmark.py` (removed in `e45b591`).
-  - A transport failure (refused connection, dropped socket, undecodable
-    response bytes) is also `failed` with a `transport error:` message. Every
-    attempted turn stays in the export rather than escaping the recorder.
-  - `cancelled` is client-attributed. The supported path is the
-    `on_request_id` callback on `record_chat_completion()`: when the first
-    chunk reveals the server request id, the caller invokes `POST /abort`
-    from another thread. The server answers 200 when the coordinator accepts
-    the abort (fixed-upstream deployments answer 501 `unsupported_route`,
-    in which case the abort is not backend-confirmed and the turn must not
-    be labelled cancelled), then emits a final chunk whose `unified.kind` is
-    `cancelled` followed by `[DONE]`. The parser maps that terminal to
-    `cancelled`. Even a 200 is acceptance, not proof that the model forward
-    already stopped.
+- Text inputs are inlined and hashed over UTF-8.
+- Message WAV/image bytes are decoded and stored under `<sha256>.<ext>`.
+- Inline `image.image`, `video.image`, and `audio.ref_audio` request options are
+  also replaced by reference objects and added to `inputs`; leaving those data
+  URLs in `request_params` would bypass the no-media rule.
+- Remote image URLs remain unfetched references with `sha256: null`. Their
+  reproducibility still depends on the URL serving unchanged bytes.
+- The default artifact directory is `artifacts/` beside the JSONL file. A custom
+  recorder directory must also be supplied as the worker request's
+  `artifact_dir`, or directly to `validate_trajectory(..., artifact_dir=...)`.
+- Existing CAS files are re-hashed before reuse. New files are verified before
+  atomic publication. Refs are relative basenames bound to their SHA-256.
 
-### Realtime WebSocket exit
+For each SSE artifact chunk, the event retains `index`, `total`, `chunk_bytes`,
+and `chunk_sha256`, but not `data`. Chunks may be interleaved across artifact
+ids. The recorder requires stable descriptor metadata, rejects duplicate or
+invalid indices, reassembles by index, and checks total byte count and final
+SHA-256 before CAS storage. `artifacts[]` contains only complete verified
+outputs with `ref`, `bytes`, `sha256`, `chunk_count`, and `chunks_sha256` (a
+digest over the ordered chunk hashes).
 
-`record_realtime()` takes a list of events observed by a WebSocket client.
-Each event carries `direction: inbound|outbound`, because the realtime
-protocol has error events in both directions. A `transcription.completed`
-outbound event completes the turn, an outbound error fails it, and neither
-appearing means a client-observed cancellation. Input references are passed
-in explicitly through the same shape as `input_references()`; the rule for
-concatenating and hashing inbound PCM16 appends is deferred with the live
-adapter rather than guessed in phase 1.
+A completed turn with a missing chunk is a failed recording and publishes no
+partial output for that artifact. A cancelled or failed turn may retain
+incomplete chunk metadata, but partial bytes are not published. Complete groups
+in such turns are still verified and exported. A failed visual leg need not
+produce an artifact; its `leg_error` and terminal failed leg remain available.
 
-The live websockets adapter is **NOT_COVERED** in phase 1: no model or server
-binary is available to the deterministic tests, so only the event-list entry
-point is tested. A live `/v1/realtime` recording run must be added when a
-real environment is available.
+The worker independently validates event and server sequences, slot/index
+uniqueness, slot/artifact/leg binding, chunk completeness and hash binding,
+text hashes, terminal consistency, output ordering, and every referenced CAS
+byte string. Embedding media or changing a slot, hash, terminal, or chunk field
+is rejected rather than silently repaired.
+
+Non-streaming mixed `artifacts[]` responses are treated as one-chunk artifacts
+and verified by the same path. Full visual-slot decisions require the server's
+`visual_slot` events; a non-streaming response that omits those events cannot
+supply decisions that were not observed.
+
+## Cancellation and realtime
+
+`record_chat_completion(..., on_request_id=...)` exposes the server request id
+so another thread can call `POST /abort`. HTTP 200 means the coordinator
+accepted the abort, not that a model forward had already stopped. Only a final
+unified `cancelled` event makes the record cancelled. Completed and failed legs
+remain in `terminal_legs`; interrupted visual/audio groups follow the partial
+chunk rule above.
+
+`record_realtime()` still accepts explicitly observed inbound/outbound events
+without importing a WebSocket stack. A live realtime adapter is `NOT_COVERED`.
+Transport failures and EOF without `[DONE]` remain failed records; the EOF text
+is `stream ended before [DONE]`. A previously observed unified terminal keeps
+its authoritative state.
 
 ## Determinism
 
-- The three modules import nothing time- or randomness-based. There are no
-  timestamps, uuids, or host names in any record or checkpoint.
-- All hashes use `json.dumps(..., sort_keys=True, separators=(",", ":"),
-  allow_nan=False)` over UTF-8 bytes. `allow_nan=False` rejects NaN and
-  Infinity, which are not valid JSON.
-- Turn indexes count from 0 per session inside one recorder process. A
-  trajectory JSONL file has one writer; multiple recorder processes must not
-  append to the same path.
-- The same request bodies and the same canned response bytes produce
-  byte-identical records across runs, which the tests assert.
+There are no timestamps, UUIDs, host names, or random ids. JSON is key-sorted,
+compact UTF-8 with `allow_nan=False`. Turn indexes start at zero per recorder
+and session. One JSONL file has one writer. Two recordings of the same request
+and canned response bytes are asserted byte-identical, including the CAS file
+names and bytes.
 
-## Reward interface
+The export stores normalized events, not raw SSE bytes. Byte-level raw-stream
+replay therefore remains unimplemented, and the roadmap Replay gate is not
+claimed. Per-event timestamps also remain absent because wall-clock values
+would break byte determinism.
 
-`umminfer_rl_reward.Reward` has one method, `score(record)`, returning a
-float or `None`. A reward reads only the trajectory record. It has no access
-to serving memory.
+## Rewards
 
-`NullReward` is the default and returns `None`. The score is stored as
-JSON null, never as zero, so "reward missing" and "reward is zero" stay
-distinguishable. A concrete reward is loaded from an external module with
-`load_reward("module:attr")`; the business reward does not live in this
-repository's serving code.
+`Reward.score(record)` reads only the exported JSON object. It needs no serving
+memory, worker memory, model process, or optimizer state. The architecture test
+computes a narrative reward from clean text, slot decisions, output descriptors,
+and terminal state directly from the export. `NullReward` continues to write
+`score: null`, preserving the distinction between missing and zero reward.
+`train_step` requires a finite numeric JSON score and rejects bools, strings,
+NaN, Infinity, and non-finite/oversized numbers before importing the trainer.
 
-## Training worker and protocol
+## Worker and optimizer status
 
-The worker is a separate operating-system process:
-
-```
+```text
 python3 -I python/umminfer_rl_worker.py --state-dir <dir>
 ```
 
-It speaks one JSON object per line on stdin/stdout.
+The NDJSON protocol remains version 1. Unknown optional fields are ignored.
 
-| Request | Response |
+| Request | Result |
 | --- | --- |
-| `{"type": "ping"}` | `{"type": "pong", "worker_protocol_version": 1}` |
-| `{"type": "train", "task_id": "…", "trajectory_path": "…"}` | `{"type": "train_result", ...}` or `{"type": "error", ...}` |
-| Any other `type` | `{"type": "error", "error": "unknown request type: …"}` |
+| `{"type":"ping"}` | `pong` |
+| `{"type":"train","task_id":"…","trajectory_path":"…","artifact_dir":"…"}` | Metadata-only `train_result`, `optimizer_status: "NOT_RUN"` |
+| `{"type":"train_step","task_id":"…","trajectory_path":"…","model_path":"…","hyperparameters":{...}}` | Real optimizer result only after execution, `optimizer_status: "EXECUTED"` |
 
-Unknown fields on known messages are ignored so optional fields can be added
-without a protocol version bump.
+`artifact_dir` is optional when the default sibling directory is used. Invalid
+exports and unscored `train_step` requests consume no checkpoint sequence and
+do not import torch. Metadata-only checkpoints cannot claim an algorithm or
+weights. A real `train_step` fills those fields only after the trainer ran and
+weights were saved. If execution completed but a later file operation failed,
+the error response reports `EXECUTED`, not `NOT_RUN`.
 
-A `train` request does not train. It parses the trajectory export and
-rejects it on any semantic defect: missing integer `schema_version`,
-unknown terminal state, an event `seq` gap, or an `output_sha256` that does
-not recompute. A rejected request consumes no checkpoint sequence.
+Checkpoint files remain `checkpoints/ckpt-<sequence:08d>.json` plus `.sha256`.
+Sequence and filename must agree, every sidecar is recomputed on open, and
+`base_checkpoint_sha256` links each manifest to its parent. The phase-2
+REINFORCE verb, residency rule, and real historical evidence are documented in
+[rl-phase2.md](rl-phase2.md). PPO, DPO, value-head/KL GRPO, and business reward
+functions remain unbuilt.
 
-### Checkpoint metadata and hash chain
+## Tests and current limits
 
-Checkpoints are written to `<state-dir>/checkpoints/` as
-`ckpt-<sequence:08d>.json` plus a `.sha256` sidecar. Sequence starts at 0
-and is strictly monotonic. There is no mutable state file: on startup the
-worker scans the directory, verifies every sidecar, and walks the
-`base_checkpoint_sha256` chain. A tampered manifest fails verification
-before any new checkpoint is written.
-
-```json
-{
-  "checkpoint_schema_version": 1,
-  "worker_protocol_version": 1,
-  "sequence": 1,
-  "algorithm": null,
-  "weights_ref": null,
-  "reward": {"name": "constant-one"},
-  "source": {"trajectory_path": "…", "record_count": 2,
-             "trajectory_sha256": "…"},
-  "base_checkpoint_sha256": "<sha256 of ckpt-00000000.json>"
-}
+```text
+python3 -I tests/rl_architecture_test.py
+python3 -I tests/rl_phase2_test.py
+python3 -I tests/narrative_live_e2e.py --self-check
+python3 -I tests/multimodal_benchmark_test.py
 ```
 
-`algorithm` and `weights_ref` are explicit empty slots. One checkpoint
-directory has one worker writer; concurrent writers are a deployment error
-surfaced as a sequence conflict, not a supported mode. An export that mixes
-two different non-null reward names, or carries a non-object reward block,
-is rejected rather than attributed ambiguously.
-
-## How PPO/DPO/GRPO plug in later
-
-The phase-1 shapes already contain the slots an algorithm fills. In phase 1 no
-algorithm code existed; phase 2 realized item 2 for REINFORCE (`rl-phase2.md`),
-while PPO/DPO/GRPO remain unbuilt.
-
-1. Implement `Reward` in an external module and load it through
-   `load_reward`.
-2. Add a worker request verb (for example `train_step`) carrying an
-   `algorithm` name and a config object. Fill `algorithm` and `weights_ref`
-   in the manifest and point `weights_ref` at the produced weights. Bump
-   `checkpoint_schema_version` if the manifest shape changes incompatibly,
-   and document the migration here. Hyperparameters have no phase-1 slot;
-   they arrive with the first real algorithm rather than as a reserved
-   empty field. Phase 2 added this verb without a schema bump.
-3. PPO consumes `events` plus per-turn reward scores; DPO consumes paired
-   records distinguished by session/request ids; GRPO groups records by
-   `session_id`. The export already carries those keys. Nothing in this list
-   is implemented ahead of a defined objective.
-
-## Phase-1 open decisions (historical)
-
-Phase 2 (`rl-phase2.md`) resolved these for the architecture validation with
-one concrete choice each: group-relative REINFORCE, a small real GSM8K slice,
-an exact-match reward, and a GPU-4-pinned separate worker. Business-scale
-versions of the same four decisions (PPO/DPO/GRPO in production, the full
-dataset, a business reward, production compute) remain open and are not
-claimed. The text below is the phase-1 record.
-
-These are user inputs. Phase 1 deliberately does not invent defaults.
-
-1. **Training objective.** PPO, DPO, GRPO or another algorithm is not
-   chosen.
-2. **Dataset.** Which recorded sessions become training data, and any
-   held-out split, is undefined.
-3. **Reward function.** No business reward exists. `NullReward` records the
-   missing-score shape only.
-4. **Compute.** Where the worker runs, GPU allocation, and the optimizer and
-   its state are undefined. In phase 1 the worker writes metadata only; phase 2
-   adds the real optimizer step (`rl-phase2.md`).
-
-Two roadmap items are deferred and recorded here rather than silently
-dropped:
-
-5. **Per-event timestamps** are listed in `docs/roadmap.md` phase 6. The
-   phase-1 export has no time fields at all, because wall-clock values break
-   byte-level determinism. Adding them requires a decision on a stable
-   clock source and on whether timestamps participate in hashes.
-6. **The Replay acceptance gate** is not met. The export stores normalized
-   events, not the raw SSE payload bytes, so byte-level replay/diff is not
-   possible. A future raw-payload blob store would close this; it has no
-   consumer in phase 1 and is not built.
-
-The roadmap Isolation gate (training load versus serving latency) could not be
-measured in phase 1, before real training existed. Phase 2 measured training in
-a separate GPU-4-pinned worker and never started the serving engine
-(`rl-phase2.md`, Isolation). No RL capability beyond recording and metadata was
-claimed in phase 1.
-
-## Tests
-
-The deterministic suite `tests/rl_architecture_test.py` was removed in
-`ab51cf5`. No automated RL test remains; the RL modules are exercised only by
-the recorded SM90 runs in this document and `rl-phase2.md`.
+The first two suites are deterministic and CPU-only. They use canned contract
+fixtures, never real-model evidence. They cover byte reproducibility, CAS
+reassembly and verification, no-media JSONL, leg errors, terminal legs,
+cancellation, tamper rejection, v1 reads, export-only rewards, NDJSON,
+checkpoint reopen/tamper checks, and the no-optimizer gate. The phase-2 suite
+prints `REAL OPTIMIZER: NOT_RUN`; no new real optimizer or model-quality result
+is claimed by this schema work.
