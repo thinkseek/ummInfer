@@ -410,7 +410,26 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
-- Wave 27 Stage C Ablation #3 Controlled SM90 Voice-Strategy Gate (`f31e2ed`):
+- Wave 27 Stage C Controlled Voice-Strategy (`f31e2ed`), Row-5 Objective-Mix Pareto SM90 Gate (`281f3b4`), and Upgraded 3-Way CUDA-Graph Full-Duplex Barge-in Verification:
+  - **Stage C Ablation #5 Post-Training Objective-Mix & Quality-vs-Latency Pareto SM90 Gate**
+    (`281f3b4`, `python/umminfer_objective_mix_ablation.py`,
+    `configs/training/objective_mix_ablation.json`, `docs/objective-mix-ablation.md`):
+    executed all 4 single-variable objective-mix arms from bit-identical initial
+    `Qwen2.5-0.5B-Instruct` BF16 weights (`4699d9ff...`) on isolated SM90 GPU 7
+    (`26.9 s`, `torch_memory_allocated=0`, `torch_memory_reserved=0`, post-exit
+    GPU 7 `3 MiB`, `5/5 SHA256SUMS OK`, `all_arms_distinct_final_parameters=true`):
+    - `sft_plus_consistency` (`q=0.9365`, `p95=27,915.0 ms`) and
+      `sft_plus_full_latency_pareto` (`q=0.9362`, `p95=27,813.0 ms`, `-425.4 ms`
+      vs baseline, `+0.4150` optimal-fast `Δp_policy`) form a 2-arm non-dominated
+      Pareto frontier strictly dominating `sft_only` (`0.6768 / 28,240.1 ms`) and
+      `sft_plus_routing` (`0.8754 / 28,361.0 ms`).
+  - **Upgraded 3-Way CUDA-Graph Full-Duplex Stage B Barge-in Regression**
+    (`tests/full_duplex_barge_in_live.py`): executed on isolated GPUs 0/1/7
+    (`99.3×` Qwen3-ASR-1.7B + `53.6 tok/s` Qwen3.8-27B + `7.00×` Qwen3-TTS-12Hz-1.7B;
+    resident GPUs 2–6 untouched): `PASS` (`first=400.7 ms`, `second=400.8 ms`
+    including 400 ms leading fixture silence -> `0.7–0.8 ms` server interrupt
+    latency, exact 12 B acknowledged prefix, `0` stale events, `in_flight=0`,
+    GPUs 0/1/7 returned to `3 MiB`).
   - **Controlled SM90 Voice-Strategy Ablation (`CONTROLLED_LIVE / COMPLETED`)**
     (`f31e2ed`, `docs/voice-strategy-ablation.md`,
     `benchmarks/ablations/voice-strategy-controlled-sm90.json`): executed on
