@@ -410,6 +410,25 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 22 live Web/macOS Temporal Video UI, Journey 5 `storyboard_i2v_chain` Showcase & Stage C Voice Collaboration Ablation (`ea59116`, `b7c30ee`):
+  - **Web UI `/web/index.html` & macOS `ummmlx`** (`ea59116`): exposed
+    Uniform/Temporal video frame selection and motion/scene thresholds
+    (`web_ui_contract_test.py` 11/11 PASS, macOS `swift test` 112/112 PASS);
+    zero-restart hot-deployed to live SM90 Web UI (preserving `.wave21` backup)
+    and rebuilt Release `ummmlx.app` (`8.92 s`, zero `_AVKit_SwiftUI`).
+  - **North-Star Showcase Journey 5 (`storyboard_i2v_chain`)** (`b7c30ee`):
+    live SM90 `43301` run passed (`1/1`, `5/5 SHA256SUMS`): `TTFT=0.874 s`,
+    `TTFA=1.026 s`, `20.4 s` streaming WAV (`979,244 B`), Slot 0 FLUX.2 PNG
+    (`426,002 B`) automatically anchoring Slot 1 Wan2.2 `704x480` 29f I2V MP4
+    (`anchor_slot_index=0`, `162,460 B`).
+  - **Stage C Ablation #3 (`voice_strategy`, `UNCONTROLLED_LIVE`)** (`b7c30ee`):
+    live SM90 `43301` run (`3/3` cases/arm, `SHA256SUMS` 3/3 OK) measured
+    `sentence_streaming_tts` median TTFA **`825.0 ms`** (**`112.8 ms`**
+    post-TTFT, `p95` inter-chunk gap `212.3 ms`, **`0/229` stalls**) vs
+    `full_response_tts` `6,261.0 ms` (**`7.59×` TTFA speedup**, **`49.15×`**
+    post-TTFT audio onset speedup; isolated `CONTROLLED_LIVE` and perceptual
+    quality remain `NOT_RUN` / `NOT_COVERED`).
+
 - Wave 21 live Qwen3.8 CUDA Graph, Wan2.2 Batched-CFG, native `i2v_chain` continuity & Stage C controlled/GRPO gates (`2f331bd`, `bb4c471`, `f2fa842`, `eb30eba`, `39412ff`):
   - **GPU 3 `umm-native-stage-qwen38`** (`bb4c471` lazy per-slot `m=1` 64-layer
     decode CUDA Graph with device-side mRoPE and separate `kv_pos`/`rope_pos`,
