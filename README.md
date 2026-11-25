@@ -246,18 +246,19 @@ zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/hom
 - Qwen3.8-27B accepts one still image per request and `max_seq` 8192.
 - Native `umm-native-stage-image` outputs 512x512 PNG (`--image-backend 2512|2.1`);
   an optional Apache-2.0 `python/umminfer_flux2_stage.py` (`FLUX.2-klein-4B`)
-  supports 512x512/1024x1024 generation and `inputs.image` editing over the
-  stage protocol. Native `umm-native-stage-video` (`Wan2.2-TI2V-5B`, UniPC-BH2)
-  and optional `python/umminfer_video_stage.py` provide MP4 video generation.
+  supports 512x512/1024x1024 generation and HTTP `image.image` data-URL editing
+  with configurable `image.steps`. Native `umm-native-stage-video`
+  (`Wan2.2-TI2V-5B`, UniPC-BH2) and optional `python/umminfer_video_stage.py`
+  provide MP4 video generation with HTTP `video.num_frames`/`steps`/`guidance_scale`.
 - TTS supports `Qwen3-TTS-12Hz-0.6B` and `1.7B-CustomVoice` (`vivian`, `ryan`,
-  Chinese/English) plus `1.7B-Base` zero-shot voice cloning via `--ref-audio` in
-  `umm-tts-native` (native C++ ECAPA-TDNN). Repeated runs differ by sub-LSB
+  Chinese/English) plus `1.7B-Base` zero-shot voice cloning via CLI `--ref-audio`,
+  stage `--default-ref-audio`, and HTTP `audio.ref_audio` / `/v1/audio/speech`
+  `ref_audio` (native C++ ECAPA-TDNN). Repeated runs differ by sub-LSB
   PCM16 amounts; waveforms are not bit-exact across runs.
 - Non-streaming mixed output (`stream=false` with `image`/`audio`/`video`
   modalities) is supported and returns `artifacts` + `legs`; `audio.stream=true`
-  with `stream=false` is rejected with HTTP 400. Public HTTP `image_options`
-  does not yet forward `steps`/`image`, and `video_options` does not yet forward
-  `num_frames`/`steps`/`guidance_scale`.
+  with `stream=false` is rejected with HTTP 400. Streamed TTS chunks propagate
+  `sample_rate` and `channels` dynamically from the stage.
 - The image stage loads its weights on the first request after start (about
   9.5 s, +11 GiB), so the first render is slower than steady state.
 - Model revisions are `UNKNOWN`; the local model directories carry no `.git`.

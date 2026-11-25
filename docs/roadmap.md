@@ -377,14 +377,13 @@ result table are in [validation section 3a](validation.md#3a-sm90-realtime-live-
 2. Repeat the SM90 CUDA window under real model load, and add zero-copy
    device-tensor transfer and multi-host IPC if a use case needs them.
 3. Keep the fixed-upstream proxy independent of the local unified path.
-4. Track remaining control-plane polish in
-   [architecture.md](architecture.md#4-已知技术债与治理边界): propagate TTS
-   chunk sample-rate/channel metadata dynamically when multi-rate backends are
-   added, and forward optional `steps`/`image` (`image_options`) and
-   `num_frames`/`steps`/`guidance_scale` (`video_options`) across the public
-   HTTP surface (earlier `RealtimeApi::drain_unified` ownership, `unified_schema`
-   alignment, `SimpleScheduler` tests, and `cancel_for_session` debt are now
-   resolved).
+4. Track remaining engineering polish in
+   [architecture.md](architecture.md#4-已知技术债与治理边界): Wan2.2 3D-VAE
+   spatial/temporal tiling for 1280x704 77-frame VRAM headroom, `native/omni` /
+   `native/image` retirement readiness checks, and weight revision provenance
+   (Wave 7 resolved dynamic TTS chunk metadata, public HTTP `image.{steps,image}`
+   / `audio.ref_audio` / `video.{num_frames,steps,guidance_scale}` passthrough,
+   and three-layer control-flow/stage convergence).
 
 ## Explicitly unverified or unsupported
 

@@ -17,18 +17,22 @@ without them is byte-identical to the current text path.
 - `image`: object, optional.
   - `prompt`: optional non-empty string. When absent the image prompt is the
     full aggregated VLM answer. Never a transcript or a streaming delta.
-  - `size`: string, default `"512x512"` (matching the native `umm-native-stage-image` `--image-backend 2512|2.1` stages).
+  - `size`: string, default `"512x512"` (matching the native `umm-native-stage-image` `--image-backend 2512|2.1` stages; `FLUX.2` supports e.g. `"1024x1024"`).
+  - `steps`: optional integer in `[1, 100]`.
   - `seed`: optional integer.
+  - `image`: optional `data:image/...;base64,...` data URL (max 16 MiB decoded) for image-to-image editing (supported by `flux2`; native `2512`/`2.1` stages reject it explicitly).
   - `output_format`: only `"png"` (default). The image stage emits PNG only,
     so any other value is rejected.
 - `audio`: object, required when `modalities` includes `audio`.
   - `voice`: non-empty string.
   - `format`: only `"wav"`.
   - `sample_rate`: integer, default and contract value `24000`.
+  - `ref_audio`: optional base64 or `data:audio/wav;base64,...` PCM16 WAV (max 16 MiB decoded) for `Qwen3-TTS-12Hz-1.7B-Base` zero-shot voice cloning (also accepted on `POST /v1/audio/speech`).
   - `stream`: optional boolean, default `false`. When `true`, the TTS leg
     synthesizes sentence by sentence and each finished sentence is delivered
     immediately as an `artifact` event with `mime_type: "audio/pcm"`,
-    `format: "pcm16"`, `sample_rate: 24000`, `channels: 1`, and a
+    `format: "pcm16"`, `sample_rate` and `channels` propagated dynamically from
+    the stage chunk (defaulting to `24000` / `1`), and a
     `stream_index` that counts the sentence. The stage marks its result
     `"streamed": true`, so the engine does not append the whole WAV afterwards:
     a streamed request yields only `audio/pcm` artifacts. When `false`, the
@@ -40,6 +44,9 @@ without them is byte-identical to the current text path.
   - `size`: optional non-empty string, default `"1280x720"`.
   - `seconds`: optional positive integer.
   - `fps`: optional positive integer.
+  - `num_frames`: optional positive integer in `[1, 241]`.
+  - `steps`: optional integer in `[1, 100]`.
+  - `guidance_scale`: optional finite number in `[0, 30]`.
   - `seed`: optional integer.
   - `output_format`: optional string, only `"mp4"` (default `"mp4"`).
 - Any request with `image`, `audio` or `video` output works with `stream=true`
@@ -59,16 +66,16 @@ The HTTP boundary translates the public keys into engine-only inputs that are
 stripped before the VLM worker sees them (same mechanism as `asr_partials`):
 
 - `output_modalities`: array of `image` / `audio` / `video`.
-- `image_options`: map `{prompt?, size, seed?, output_format}`.
-- `audio_options`: map `{voice, format, sample_rate}`.
-- `video_options`: map `{prompt?, size, seconds?, fps?, seed?, output_format}`.
+- `image_options`: map `{prompt?, size, steps?, seed?, image?, output_format}`.
+- `audio_options`: map `{voice, format, sample_rate, stream?, ref_audio?}`.
+- `video_options`: map `{prompt?, size, seconds?, fps?, num_frames?, steps?, guidance_scale?, seed?, output_format}`.
 
 Leg worker inputs:
 
-- image leg: `{prompt, size, seed?, output_format}`.
-- tts leg: `{text, voice, format, sample_rate}` where `text` is always the
-  aggregated `record.vlm_text`.
-- video leg: `{prompt, size, seconds?, fps?, seed?, output_format}` where
+- image leg: `{prompt, size, steps?, seed?, image?, output_format}`.
+- tts leg: `{text, voice, format, sample_rate, stream?, ref_audio?}` where `text` is always the
+  aggregated `record.vlm_text` and `ref_audio` is decoded binary WAV bytes.
+- video leg: `{prompt, size, seconds?, fps?, num_frames?, steps?, guidance_scale?, seed?, output_format}` where
   `prompt` falls back to `record.vlm_text` when omitted.
 
 ## Child ids, stages and unified leg lifecycle
