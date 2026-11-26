@@ -410,6 +410,21 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 32 Web UI & macOS `ummmlx` Server-Side `echo_suppression` Toggle & Live Barge-In Status (`f18834d`):
+  - **Web UI `/web/index.html` & macOS `ummmlx`** (`f18834d`): exposed Wave 31's
+    `turn_detection.echo_suppression` control (default ON omitted on wire to
+    preserve backward compatibility, opt-out `false` at connect, and narrow
+    `turn_detection`-only active mid-session/mid-response toggle) alongside
+    server-confirmed status (`Echo suppression: On` / `Off (A/B)`) and real
+    observed `Barge-ins: N` (`response.cancelled` count, zero fabricated values):
+    - `web_ui_contract_test.py`: **16/16 PASS** (including Node behavioral check
+      `realtime_echo_suppression_behavior`).
+    - macOS `ummmlx`: `swift test` **130/130 PASS**; Release `ummmlx.app` rebuilt
+      (`9.00 s`, zero `_AVKit_SwiftUI`).
+    - Zero-restart hot-deployed `web/index.html` (`.wave31` backup) live onto
+      SM90 `43301` (`id="realtimeEchoSuppression"` &
+      `buildRealtimeEchoSuppressionUpdate` verified live, `/health in_flight=0`).
+
 - Wave 31 Live Gateway Echo-Suppression Rollout (`8ac1777`) & Exact-Byte Raw SSE Replay (`207ddb5`):
   - **Gateway `/bin/umm-infer` hot-swap (`EchoRobustVad` + active `echo_suppression` A/B toggle)**
     (`8ac1777`, `src/serve/realtime_api.cpp`, `tests/full_duplex_echo_live.py`,
