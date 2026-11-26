@@ -568,6 +568,21 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 51 Stage C Opt-In Exported-Token Joint-DPO Data/Preflight Path & Fresh-Process Bundle Verifier (`8122604`):
+  - Harvested accepted Task #43 (`revisions=0`, CPU-only DPO data/preflight
+    contract): landed `--token-source legacy|token_export`, `--preflight-only`,
+    fresh-process `--token-export-verify`, all-or-nothing chosen/rejected v1/v2
+    validation, Torch-isolated exact-local-tokenizer preflight, and pair/prompt/
+    export/reference-bound resume identity in `python/umminfer_joint_dpo_live.py`,
+    additive DPO side `token_export`/`token_export_source` support in
+    `python/umminfer_sft_dataset.py` (unexported legacy DPO train SHA-256
+    `2e7e15b5...` unchanged), `tests/joint_dpo_live_test.py` (10/10 PASS),
+    `tests/joint_trainer_test.py` (6/6 PASS), `docs/exported-token-dpo-preflight.md`,
+    and updated `docs/joint-training.md`, `docs/rl.md`, `docs/roadmap.md`.
+  - Verified all 8 Stage C Python suites PASS locally; real-local-tokenizer DPO
+    preflight, real export-driven DPO optimizer, and model quality remain
+    explicitly `NOT_RUN`.
+
 - Wave 50 Isolated SM90 2-GPU 6-Session Live Full-Duplex Realtime WebSocket Gate & Independent Wire Verifier (`dd753b3`):
   - Harvested accepted Task #41 (`revisions=0`, isolated SM90 GPU 0 ASR + GPU 1
     Qwen3.8 & TTS live public `WS /v1/realtime` gate): landed
