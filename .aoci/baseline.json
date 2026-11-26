@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T13:06:52Z",
+  "updated_at": "2026-11-26T15:04:05Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c9f8ba9cec4c0a635f2dbdcca160c428ea6a530d1a070940d40890ca1c857817",
-      "size": 274131,
-      "normalized_sha256": "c9f8ba9cec4c0a635f2dbdcca160c428ea6a530d1a070940d40890ca1c857817"
+      "sha256": "3ae26bad8126bd98eae94850e4792b444fd439766085195ed88f7629c80da599",
+      "size": 276348,
+      "normalized_sha256": "3ae26bad8126bd98eae94850e4792b444fd439766085195ed88f7629c80da599"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -176,6 +176,12 @@
       "sha256": "599963a3851d5ce02d740b8b06c423726bae5c9c1e07d1931708074c83caa9a3",
       "size": 72619,
       "normalized_sha256": "599963a3851d5ce02d740b8b06c423726bae5c9c1e07d1931708074c83caa9a3"
+    },
+    "benchmarks/realtime-first-audio/preregistration.json": {
+      "role": "index",
+      "sha256": "a70d2696f1ad2affbcce9cbc77a39a9d1f80147a5e37c0a7019c36d1ab41bcdc",
+      "size": 6719,
+      "normalized_sha256": "a70d2696f1ad2affbcce9cbc77a39a9d1f80147a5e37c0a7019c36d1ab41bcdc"
     },
     "benchmarks/showcase/prompts.json": {
       "role": "index",
@@ -831,6 +837,12 @@
       "size": 25207,
       "normalized_sha256": "f6711062a8d50205b219d260eda58ea56417cb0d2b71a6ae9e1964d968878e78"
     },
+    "docs/evidence/realtime-first-audio-r4-diagnostic.json": {
+      "role": "index",
+      "sha256": "885c03e01bf04872c9a063415ab1844405cd38d4eccdacc3853792cf37369902",
+      "size": 6229,
+      "normalized_sha256": "885c03e01bf04872c9a063415ab1844405cd38d4eccdacc3853792cf37369902"
+    },
     "docs/evidence/sse-replay-live-sm90.json": {
       "role": "index",
       "sha256": "a95a4240a57a1df8a8d4d37366931473f2e5cf8d9ecd8a70ad4f072315f01028",
@@ -857,15 +869,15 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "2b35ecfcfb0d487e2ba5647d997375875451d1e21a2551a9240fcc7ace0a786e",
-      "size": 155486,
-      "normalized_sha256": "2b35ecfcfb0d487e2ba5647d997375875451d1e21a2551a9240fcc7ace0a786e"
+      "sha256": "5038fe52f249dc1ce9564b091a8fe0a090641761d1e07c2224630261141f7d32",
+      "size": 156634,
+      "normalized_sha256": "5038fe52f249dc1ce9564b091a8fe0a090641761d1e07c2224630261141f7d32"
     },
     "docs/full-duplex.md": {
       "role": "index",
-      "sha256": "fec32f4c0d3cfb5b2a92838770fe11f964522c0ec3cd8057e21459e37a1d1ddc",
-      "size": 49568,
-      "normalized_sha256": "fec32f4c0d3cfb5b2a92838770fe11f964522c0ec3cd8057e21459e37a1d1ddc"
+      "sha256": "416aa71bac062c54a0b328783f5afc9bd27beb1530bbef4b381d205522ceeee9",
+      "size": 49799,
+      "normalized_sha256": "416aa71bac062c54a0b328783f5afc9bd27beb1530bbef4b381d205522ceeee9"
     },
     "docs/gpu-utilization.md": {
       "role": "index",
@@ -974,6 +986,12 @@
       "sha256": "b33a4a67c8f9f7266b10f5335a58f8ae039c4b82109f47237415a437138d592f",
       "size": 11055,
       "normalized_sha256": "b33a4a67c8f9f7266b10f5335a58f8ae039c4b82109f47237415a437138d592f"
+    },
+    "docs/realtime-first-audio.md": {
+      "role": "index",
+      "sha256": "ce8d885831b4ab59ec96b8c914c4c997730d985fd4129dde993be226cadab6c8",
+      "size": 24996,
+      "normalized_sha256": "ce8d885831b4ab59ec96b8c914c4c997730d985fd4129dde993be226cadab6c8"
     },
     "docs/realtime-latency-audit.md": {
       "role": "index",
@@ -2569,6 +2587,12 @@
       "size": 45096,
       "normalized_sha256": "21713261010366719ecdd125de49e3756c68d56cf9eef81d075b6243f5b7f510"
     },
+    "python/umminfer_realtime_first_audio.py": {
+      "role": "index",
+      "sha256": "96a3fd8c00ace5f2ab58c388b0bb54aa350f6937d693d3b7058b1ae98218a972",
+      "size": 53120,
+      "normalized_sha256": "96a3fd8c00ace5f2ab58c388b0bb54aa350f6937d693d3b7058b1ae98218a972"
+    },
     "python/umminfer_realtime_latency_audit.py": {
       "role": "index",
       "sha256": "5be00b638ec34bd7f83cdbd1de8ecb8972ae5392cae95316c8d19c9c42f53c4d",
@@ -2991,9 +3015,9 @@
     },
     "src/serve/realtime_api.cpp": {
       "role": "index",
-      "sha256": "7c1a886cd15d8a4233234be6a6e91ee2c133764925c60cfcb0a8520c41b2c55c",
-      "size": 64995,
-      "normalized_sha256": "7c1a886cd15d8a4233234be6a6e91ee2c133764925c60cfcb0a8520c41b2c55c"
+      "sha256": "c683b9486af2bfabbb77cda47b50b154cddd4fb7a58eafbc8422e0fead279ac6",
+      "size": 65334,
+      "normalized_sha256": "c683b9486af2bfabbb77cda47b50b154cddd4fb7a58eafbc8422e0fead279ac6"
     },
     "src/serve/upstream_proxy.cpp": {
       "role": "index",
@@ -3300,6 +3324,30 @@
       "sha256": "205a02bc551f1ec06e1fe19d4dd02292184a73c12f6585dd881c3ee55745984b",
       "size": 28356,
       "normalized_sha256": "205a02bc551f1ec06e1fe19d4dd02292184a73c12f6585dd881c3ee55745984b"
+    },
+    "tests/realtime_first_audio_compare.py": {
+      "role": "observe",
+      "sha256": "15f510ce62b3d77acf5d8b0dbd7aca3ffff677be79034a47187f26462436886b",
+      "size": 1736,
+      "normalized_sha256": "15f510ce62b3d77acf5d8b0dbd7aca3ffff677be79034a47187f26462436886b"
+    },
+    "tests/realtime_first_audio_live.py": {
+      "role": "observe",
+      "sha256": "7f73a05acd5c16bf3d196705d7fa4eea664b4a732ed264ddf4bcd3702f19afc7",
+      "size": 21657,
+      "normalized_sha256": "7f73a05acd5c16bf3d196705d7fa4eea664b4a732ed264ddf4bcd3702f19afc7"
+    },
+    "tests/realtime_first_audio_test.py": {
+      "role": "observe",
+      "sha256": "0c791959bf52181806ff8377a03d70681d259ca88953235ad1ba86326732666a",
+      "size": 18001,
+      "normalized_sha256": "0c791959bf52181806ff8377a03d70681d259ca88953235ad1ba86326732666a"
+    },
+    "tests/realtime_first_audio_verify.py": {
+      "role": "observe",
+      "sha256": "a40ca7fd2530f8c602a499f45ff990ee65ce1053eb6894e7ba0c11442c13044b",
+      "size": 2200,
+      "normalized_sha256": "a40ca7fd2530f8c602a499f45ff990ee65ce1053eb6894e7ba0c11442c13044b"
     },
     "tests/realtime_latency_audit_test.py": {
       "role": "observe",
