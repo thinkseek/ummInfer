@@ -482,11 +482,17 @@ def validate_online_record(record, item, plan, schedule_sha, artifact_dir, *,
             raise ValueError("raw SSE contains stale or mixed request/model frames")
         unified = chunk.get("unified")
         if isinstance(unified, dict) and (
-                unified.get("request_id") != request_id
+                (unified.get("request_id") is not None
+                 and unified.get("request_id") != request_id)
                 or unified.get("session_id") != item["session_id"]):
             raise ValueError("raw SSE inner request/session identity is stale or mixed")
     behavior = _behavior_evidence(
         record, response["behavior_evidence"], artifact_dir, chunks=chunks)
+    if require_completed and item["body"].get("behavior", {}).get("logprobs") is True \
+            and behavior["status"] != "COVERED":
+        raise ValueError(
+            "behavior.logprobs=true response was not exposed; "
+            "default/truncated/unsupported output cannot enter a GRPO group")
     if provenance.get("behavior") != behavior:
         raise ValueError("behavior evidence differs from its exact raw SSE block")
     return record
@@ -566,6 +572,13 @@ def execute_plan(plan, endpoint, output_dir, *, clock_factory=None):
                     raise ValueError("completed online rollout requires raw HTTP 200 SSE")
                 provenance["behavior"] = _behavior_evidence(
                     record, response["behavior_evidence"], attempt_recorder.artifact_dir)
+                behavior_requested = item["body"].get("behavior", {}).get(
+                    "logprobs") is True
+                if behavior_requested and provenance["behavior"]["status"] != "COVERED":
+                    _write_jsonl(attempt_recorder.jsonl_path, attempts)
+                    raise ValueError(
+                        "behavior.logprobs=true response was not exposed; "
+                        "default/truncated/unsupported output cannot enter a GRPO group")
                 validate_online_record(
                     record, item, plan, schedule_sha, attempt_recorder.artifact_dir)
                 if record["request_id"] in request_ids:

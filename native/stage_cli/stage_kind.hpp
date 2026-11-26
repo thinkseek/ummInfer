@@ -35,6 +35,11 @@ struct StageOptions {
   std::string default_ref_audio;  // TTS Base only: optional default 24 kHz WAV
   // Requests decoded together. 0 or 1 keeps the single-request executor.
   int batch_size = 0;
+  // Opt-in post-load evidence for real online rollout. All three fields are
+  // required together and are currently accepted only by the qwen38 executable.
+  std::string identity_out;
+  std::string model_id;
+  std::string model_revision;
 };
 
 // The kind this executable was built for: "asr", "omni", "qwen38", "tts",

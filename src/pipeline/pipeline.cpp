@@ -229,7 +229,8 @@ void Stage::start() {
     }
   });
   if (config_.announce_ready) {
-    control_plane_->send_ready(StageReadyMessage{config_.name});
+    control_plane_->send_ready(
+        StageReadyMessage{config_.name, config_.native_identity_sha256});
   }
 }
 
@@ -256,7 +257,8 @@ void Stage::run() {
       // Idempotent re-registration: a Coordinator restarted on the same
       // endpoints rebuilds its ready set from this heartbeat. A transient send
       // failure is swallowed so a dead gateway never stops the stage.
-      control_plane_->send_ready(StageReadyMessage{config_.name});
+      control_plane_->send_ready(
+        StageReadyMessage{config_.name, config_.native_identity_sha256});
     } catch (const std::exception&) {
     }
   }
@@ -689,6 +691,17 @@ bool Coordinator::stage_ready(const std::string& name) const {
   return ready_stages_.count(name) != 0;
 }
 
+std::optional<std::string> Coordinator::stage_native_identity(
+    const std::string& name) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (ready_stages_.count(name) == 0) return std::nullopt;
+  const auto found = ready_native_identities_.find(name);
+  if (found == ready_native_identities_.end() || found->second.empty()) {
+    return std::nullopt;
+  }
+  return found->second;
+}
+
 void Coordinator::start() {
   if (control_plane_) return;
   control_plane_ = std::make_unique<CoordinatorControlPlane>(completion_endpoint_,
@@ -889,6 +902,11 @@ void Coordinator::handle_event(const Message& msg) {
       // Only the not-ready -> ready transition may announce peers or take the
       // ready-set insert cost; a duplicate still drains queued submits.
       const bool became_ready = ready_stages_.insert(ready->from_stage).second;
+      if (ready->native_identity_sha256.empty()) {
+        ready_native_identities_.erase(ready->from_stage);
+      } else {
+        ready_native_identities_[ready->from_stage] = ready->native_identity_sha256;
+      }
       const bool restarted = !ever_ready_stages_.insert(ready->from_stage).second;
       if (became_ready && restarted) {
         for (const auto& [peer_name, peer_ep] : endpoints_) {
@@ -1050,6 +1068,7 @@ void Coordinator::stage_down(const std::string& stage) {
   {
     std::lock_guard<std::mutex> lock(mu_);
     ready_stages_.erase(stage);
+    ready_native_identities_.erase(stage);
     // Requests still queued for this stage never reached it.
     const auto queued = pending_submits_.find(stage);
     if (queued != pending_submits_.end()) {

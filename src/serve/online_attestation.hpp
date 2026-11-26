@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -17,9 +18,9 @@ namespace umminfer::openai_detail {
 
 using OnlineJson = nlohmann::json;
 
-// Exact public response-header names for the online-rollout attestation
-// contract. attestation_sha256 is deliberately not a wire header in the
-// accepted contract: the trainer recomputes it using the observed HTTP status.
+// Exact public response-header names shared with the trainer-side online client.
+// attestation_sha256 is deliberately not a wire header in the accepted contract:
+// the trainer recomputes it using the observed HTTP status.
 const std::map<std::string, std::string>& online_response_headers();
 
 // Canonical compact, key-sorted, unescaped-Unicode UTF-8 JSON used by the
@@ -72,6 +73,7 @@ class OnlineRolloutServer {
   // atomically consumes its (rollout_id, attempt) slot. No identity is copied
   // from the request into the returned binding.
   bool bind_request(const httplib::Request& req, const OnlineJson& body,
+                    const std::optional<std::string>& attached_native_identity,
                     OnlineRequestBinding& binding, std::string& error,
                     int& http_status);
 
@@ -89,6 +91,13 @@ class OnlineRolloutServer {
   std::string model_config_sha256_;
   std::string sampling_sha256_;
   std::string native_stage_name_;
+  std::string native_identity_sha256_;
+  bool requires_process_binding_ = false;
+  int64_t loaded_at_epoch_ms_ = 0;
+  int64_t max_identity_age_ms_ = 0;
+  int native_pid_ = -1;
+  int64_t native_process_start_time_ticks_ = 0;
+  std::string native_executable_path_;
   int max_attempts_ = 1;
   std::mutex attempts_mu_;
   std::set<std::pair<std::string, int>> consumed_attempts_;

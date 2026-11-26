@@ -8,12 +8,13 @@ HTTP/SSE responses to a trusted plan, a unique scheduled attempt, exact canonica
 request JSON, behavior-policy and sampling hashes, and independently verified
 native-model identity evidence.
 
-This is a **CPU-only transport/configuration implementation**. The tests use
-small fake weight files and deterministic generic IPC stages. They are not model
-inference evidence. Real native Qwen loaded-model verification, real online
-rollout generation, online optimization, sampled behavior token/logprob
-correctness, and model-quality outcomes remain **NOT_RUN**. Behavior evidence is
-always `not_exposed`; no logprobs, masks, or token ids are invented.
+The v1 tests are **CPU-only transport/configuration tests**. They use small fake
+weight files and deterministic generic IPC stages, not model inference evidence.
+The v2 implementation additionally binds a real native post-load document to the
+live process and its `stage_ready` registration. Real rollout evidence is recorded
+separately; no online optimization or model-quality claim is made. Behavior
+coverage is `exposed` only for a complete validated final five-field block, and
+default/truncated/cancelled/unsupported responses remain `not_exposed`.
 
 The trainer contract remains defined by
 `python/umminfer_online_rollout.py::RESPONSE_HEADERS` and
@@ -44,10 +45,14 @@ using the observed HTTP status.
 6. Local model paths are evidence inputs only. They never enter canonical
    request bytes or response headers. Evidence files must be regular non-symlink
    files; model-file paths are normalized relative paths beneath `model_root`.
-7. Startup validation does not prove continuing liveness of a native process or
-   cryptographically authenticate its manifest. Restart and re-pin configuration
-   after a model/stage reload. The future real-stage gate below must prove the
-   producer-to-process binding.
+7. With server schema v2, the native Qwen process itself hashes the model config,
+   every available `.safetensors` file, and its executable only after the real
+   engine load returns. It writes a new identity document atomically and carries
+   that exact document's SHA-256 in every `stage_ready` heartbeat. The gateway
+   independently rehashes the same files, checks pid/start-time/executable and
+   freshness, and requires the attached VLM's current ready digest to match on
+   every scheduled request. A generic or stale ready frame cannot retain an old
+   identity. Restart and re-pin configuration after a model/stage reload.
 
 Unmarked requests do not enter the attestation path and receive no attestation
 headers. Marked requests on an unconfigured server fail without proof. A valid
@@ -60,9 +65,13 @@ are not attested and are incompatible with the accepted rollout client.
 
 ## Exact server config schema
 
-All fields are required; unknown fields are rejected. Paths in this document are
-relative to the config file. `plan_sha256` and `native_identity_sha256` cover the
-**exact file bytes**, including any trailing newline, not canonicalized JSON.
+All fields are required; unknown fields are rejected. Schema
+`umminfer-online-rollout-server-v1` retains the deterministic generic-stage
+contract tests. Schema `umminfer-online-rollout-server-v2` requires the v2 native
+identity below, a serial Qwen stage, and the live ready-digest match. Paths in
+this document are relative to the config file (absolute local evidence paths are
+also accepted). `plan_sha256` and `native_identity_sha256` cover the **exact file
+bytes**, including any trailing newline, not canonicalized JSON.
 
 ```json
 {
@@ -123,6 +132,39 @@ this identity, and the model id must equal `--model` (or the configured served
 model name). `state` must be exactly `loaded`; a readiness-only declaration is
 not sufficient.
 
+## Process-bound native identity v2
+
+The real stage is started with `--identity-out`, `--model-id`, and
+`--model-revision` together. Its schema is
+`umminfer-native-stage-identity-v2`; it contains every v1 field plus:
+
+```json
+{
+  "process": {
+    "pid": 12345,
+    "start_time_ticks": 678901234,
+    "executable_path": "/local/build/umm-native-stage-qwen38",
+    "executable_sha256": "<64-lowercase-hex>",
+    "executable_bytes": 3609224
+  },
+  "stage_config": {
+    "kind": "qwen38",
+    "gpu": 7,
+    "batch_size": 1,
+    "max_new_tokens": 512,
+    "max_seq": 8192
+  }
+}
+```
+
+The document is written only after tokenizer and engine construction completes,
+with no existing-file overwrite. The server schema must be
+`umminfer-online-rollout-server-v2`. The process must remain the same pid/start
+instance and executable, the identity must remain within `max_identity_age_ms`,
+and the coordinator's currently ready VLM must advertise the exact identity
+document digest. Missing, mismatched, generic, stale, or disconnected identity
+fails before a `(rollout_id, attempt)` slot is consumed.
+
 ## Canonical request JSON
 
 The hash is over semantic JSON, not the HTTP byte framing: compact UTF-8, sorted
@@ -152,6 +194,9 @@ python3 -I tests/online_attestation_test.py zig-out/bin/umm-infer
 python3 -I tests/online_rollout_test.py
 zig build online-attestation-test \
   -Ddeps-prefix=/path/to/deps -Dcurl-prefix=/path/to/curl
+cmake -S native/stage_cli -B <host-build> -DCMAKE_PREFIX_PATH=<deps>
+cmake --build <host-build> --target native_identity_test
+<host-build>/native_identity_test
 umm-test-local
 ```
 
@@ -160,20 +205,23 @@ stages. It verifies 200, attested 400, overload/retry behavior through the C++
 fake-stage suite, cancellation, duplicate 409, fresh-process response identity,
 and default error-body byte parity. It also launches failing server processes
 for missing/stale/future/mismatched/unloaded identities and model-byte drift.
-No test contacts a live service or uses a GPU.
+The unified C++ suite separately proves that missing/mismatched live ready
+digests reject without client-echoed proof and a matching digest admits the same
+not-yet-consumed attempt. `native_identity_test` checks exact document/file/process
+hashes and no-overwrite behavior on tiny CPU fixtures. No CPU test contacts a live
+service or uses a GPU.
 
-## Future real native-stage requirements
+## Real native-stage verification boundary
 
-A real gate must make the native stage write identity evidence only after the
-model and all weights have loaded successfully; bind that evidence to the exact
-stage process and a fresh gateway configuration; independently re-hash the actual
-loaded model config and every weight file; and prove that the attached unified
-VLM stage is that same process. It must then run the accepted rollout client
-against isolated real generation, including 200/error/retry/cancel paths and
-fresh-process replay, while keeping the resident service untouched.
+`tests/online_rollout_live.py` drives the real isolated stack through the actual
+trainer client, a frozen two-group by three-seed plan, real overload retry,
+separate default/truncated/cancelled/unsupported cases, and byte-identical fresh
+replay. `tests/online_rollout_live_verify.py` independently rehashes every model
+file and repeats the accepted-bundle replay. Fresh native processes recompute
+sampled ids, full log-probabilities, and clean-target masks; this is distinct from
+the offline source-span validator.
 
-That gate must separately prove output/model identity and raw-SSE binding. Before
-any `exposed` behavior claim, it must also produce and validate the accepted final
-behavior block and prove tokenizer, sampled token-id, logprob, and mask alignment
-against the behavior model. This task does not implement or claim any of those
-real-stage results; all remain **NOT_RUN**.
+The real visual artifact is a CPU contract fixture, not generated-image or
+perceptual-quality evidence. No online optimizer or model-quality evaluation is
+part of this contract. Exact run outcomes, hashes, failed attempts, and cleanup
+are recorded separately in [the live evidence document](online-rollout-live.md).

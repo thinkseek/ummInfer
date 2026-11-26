@@ -247,6 +247,9 @@ struct AbortMessage {
 
 struct StageReadyMessage {
   std::string from_stage;
+  // Empty preserves the historical stage_ready wire shape. A real native stage
+  // sets this to its freshly written post-load identity document SHA-256.
+  std::string native_identity_sha256;
   Value to_value() const;
   static StageReadyMessage from_value(const Value& v);
 };

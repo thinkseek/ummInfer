@@ -18,20 +18,64 @@ namespace {
 
 class ChatResponseBinding {
  public:
+  explicit ChatResponseBinding(const httplib::Request& req,
+                               bool server_validated = false)
+      : server_validated_(server_validated) {
+    static constexpr const char* kHeaders[] = {
+        "x-umminfer-online-rollout-contract",
+        "x-umminfer-rollout-generation",
+        "x-umminfer-rollout-batch-id",
+        "x-umminfer-rollout-group-id",
+        "x-umminfer-rollout-id",
+        "x-umminfer-rollout-index",
+        "x-umminfer-rollout-attempt",
+        "x-umminfer-request-sha256",
+        "x-umminfer-behavior-policy-sha256",
+        "x-umminfer-behavior-policy-revision",
+        "x-umminfer-behavior-model-id",
+        "x-umminfer-behavior-model-revision",
+        "x-umminfer-behavior-model-sha256",
+        "x-umminfer-behavior-model-config-sha256",
+        "x-umminfer-sampling-sha256",
+    };
+    online_ = !req.get_header_value(kHeaders[0]).empty();
+    if (!online_) return;
+    for (const char* name : kHeaders) {
+      headers_.emplace_back(name, req.get_header_value(name));
+    }
+  }
+
   void set_behavior_requested(bool value) { behavior_requested_ = value; }
+  void mark_attested() { attested_ = true; }
+  void suppress() { applied_ = true; }
 
   void apply(httplib::Response& res, const char* coverage) {
     if (applied_) return;
-    if (behavior_requested_) {
-      res.headers.erase("x-umminfer-behavior-evidence");
+    // A configured server derives proof from its trusted plan. Never echo an
+    // unbound client header; only the pre-Task-46 behavior-only path uses the
+    // legacy request-binding echo retained for its existing contract tests.
+    if (server_validated_ && online_ && !attested_) {
+      applied_ = true;
+      return;
+    }
+    if (online_ && !server_validated_) {
+      for (const auto& [name, value] : headers_) {
+        if (!value.empty()) res.set_header(name, value);
+      }
+    }
+    if (online_ || behavior_requested_) {
       res.set_header("x-umminfer-behavior-evidence", coverage);
     }
     applied_ = true;
   }
 
  private:
+  bool online_ = false;
+  bool server_validated_ = false;
+  bool attested_ = false;
   bool behavior_requested_ = false;
   bool applied_ = false;
+  std::vector<std::pair<std::string, std::string>> headers_;
 };
 
 }  // namespace
@@ -379,22 +423,13 @@ void OpenAIApi::Impl::handle_behavior_stream(
 
 void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response& res) {
   RouteMetric route_metric{"chat", &res};
-  const bool rollout_marked = OnlineRolloutServer::request_marked(req);
-  if (rollout_marked && !online_rollout_) {
-    res.status = 400;
-    res.set_content(
-        json{{"error",
-              {{"message", "online rollout attestation is not enabled on this server"},
-               {"type", "online_rollout_attestation_error"}}}}
-            .dump(),
-        "application/json");
-    return;
-  }
-  auto response_binding = std::make_shared<ChatResponseBinding>();
+  auto response_binding = std::make_shared<ChatResponseBinding>(
+      req, online_rollout_ != nullptr);
   const auto binding_cleanup = std::shared_ptr<void>(
       nullptr, [response_binding, &res](void*) {
         response_binding->apply(res, "not_exposed");
       });
+  const bool rollout_marked = OnlineRolloutServer::request_marked(req);
   const json body = json::parse(req.body, nullptr, false);
   auto reject = [&res](const std::string& message) {
     res.status = 400;
@@ -419,14 +454,16 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
       return;
     }
   }
-  if (rollout_marked) {
+  if (rollout_marked && online_rollout_) {
     OnlineRequestBinding candidate;
     std::string attestation_error;
     int attestation_status = 400;
     bool accepted = false;
     try {
       accepted = online_rollout_->bind_request(
-          req, body, candidate, attestation_error, attestation_status);
+          req, body, coordinator_.stage_native_identity(
+                         online_rollout_->native_stage_name()),
+          candidate, attestation_error, attestation_status);
     } catch (const std::exception&) {
       attestation_status = 400;
       attestation_error = "canonical online rollout request was rejected";
@@ -434,6 +471,7 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
     if (!candidate.entry.rollout_id.empty()) {
       online_rollout_->write_response_headers(res, candidate);
     }
+    if (accepted) response_binding->mark_attested();
     if (!accepted) {
       res.status = attestation_status;
       res.set_content(
@@ -624,6 +662,20 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
     }
   }
   response_binding->set_behavior_requested(behavior_requested);
+  if (rollout_marked && !online_rollout_ && !behavior_requested) {
+    // The pre-attestation behavior-only endpoint retains its established echo
+    // contract only for an explicit behavior.logprobs request. An ordinary
+    // online-rollout request cannot obtain proof from an unconfigured server.
+    response_binding->suppress();
+    res.status = 400;
+    res.set_content(
+        json{{"error",
+              {{"message", "online rollout attestation is not enabled on this server"},
+               {"type", "online_rollout_attestation_error"}}}}
+            .dump(),
+        "application/json");
+    return;
+  }
   bool behavior_capture_supported = true;
   const json* token_limit = nullptr;
   for (const char* key : {"max_tokens", "max_completion_tokens"}) {

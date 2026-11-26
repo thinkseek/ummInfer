@@ -63,6 +63,7 @@ endif()
 
 add_library(umm_stage_common STATIC
   stage_common.cpp
+  native_identity.cpp
   request_telemetry_stage.cpp
   ${NATIVE_DIR}/umm_asr_native/wav.cpp
 )
@@ -96,6 +97,12 @@ add_executable(stage_common_test
 )
 target_link_libraries(stage_common_test PRIVATE umm_stage_common)
 add_test(NAME stage_common_test COMMAND stage_common_test)
+
+add_executable(native_identity_test
+  native_identity_test.cpp
+)
+target_link_libraries(native_identity_test PRIVATE umm_stage_common)
+add_test(NAME native_identity_test COMMAND native_identity_test)
 
 # Stage CLI hooks. Links video_stage.cpp, so the checks run against the same
 # parse_stage_flag the executable uses, on a host with no CUDA.

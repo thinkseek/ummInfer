@@ -25,10 +25,15 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <sys/sysctl.h>
+#endif
 #include <variant>
 #include <vector>
 
@@ -7837,6 +7842,17 @@ void test_control_message_parse_contract() {
           "stage_ready did not parse");
     check(std::get<StageReadyMessage>(msg).from_stage == "tts",
           "stage_ready lost its stage name");
+    check(!std::get<StageReadyMessage>(msg).to_value().find(
+              "native_identity_sha256"),
+          "default stage_ready gained an identity field");
+  }
+  {
+    StageReadyMessage ready{"vlm", std::string(64, 'a')};
+    const Message msg = parse(ready.to_value().as_map());
+    check(std::holds_alternative<StageReadyMessage>(msg) &&
+              std::get<StageReadyMessage>(msg).native_identity_sha256 ==
+                  std::string(64, 'a'),
+          "stage_ready lost its native identity digest");
   }
   {
     Value::Map operation;
@@ -12493,25 +12509,19 @@ void test_public_http_behavior_logprobs() {
   };
 
   httplib::Client raw_client("127.0.0.1", api.bound_port());
-  {
-    httplib::Headers forged;
-    for (const auto& [key, value] : attestation) forged.emplace(key, value);
-    auto response = raw_client.Post("/v1/chat/completions", forged, base.dump(),
-                                    "application/json");
-    check(response && response->status == 400 &&
-              response->body.find("online_rollout_attestation_error") !=
-                  std::string::npos &&
-              response->get_header_value("x-umminfer-online-rollout-contract").empty(),
-          "unconfigured server must reject marked rollout requests without echoing headers");
-  }
   for (const json& behavior : {json{{"logprobs", "yes"}},
                                json{{"unknown", true}}, json::array()}) {
     json bad = base;
     bad["behavior"] = behavior;
-    auto response = raw_client.Post("/v1/chat/completions", bad.dump(),
+    httplib::Headers headers;
+    for (const auto& [key, value] : attestation) headers.emplace(key, value);
+    auto response = raw_client.Post("/v1/chat/completions", headers, bad.dump(),
                                     "application/json");
-    check(response && response->status == 400,
-          "malformed behavior opt-in failed closed");
+    check(response && response->status == 400 &&
+              response->get_header_value("x-umminfer-behavior-evidence") ==
+                  "not_exposed" &&
+              response->get_header_value("x-umminfer-online-rollout-contract") == "1",
+          "malformed behavior opt-in failed closed with attestation");
   }
   json nonstream = base;
   nonstream["stream"] = false;
@@ -12523,7 +12533,7 @@ void test_public_http_behavior_logprobs() {
 
   json covered_body = base;
   covered_body["behavior"] = json{{"logprobs", true}};
-  auto covered_future = post(covered_body);
+  auto covered_future = post(covered_body, attestation);
   auto covered_submit = h.next_submit(h.vlm_recv);
   check(covered_submit.has_value(), "covered behavior request did not reach VLM");
   if (covered_submit) {
@@ -12538,8 +12548,12 @@ void test_public_http_behavior_logprobs() {
   const auto covered = covered_future.get();
   check(covered.status == 200 &&
             behavior_response_header(covered, "x-umminfer-behavior-evidence") ==
-                "exposed",
-        "covered response exposed exact behavior evidence header");
+                "exposed" &&
+            behavior_response_header(covered, "x-umminfer-rollout-id") ==
+                "rollout-42" &&
+            behavior_response_header(covered, "x-umminfer-sampling-sha256") ==
+                std::string(64, '5'),
+        "covered response preserved exact online attestation headers");
   const auto covered_frames = sse_data_payloads(covered.body);
   size_t behavior_blocks = 0;
   for (size_t i = 0; i < covered_frames.size(); ++i) {
@@ -12988,6 +13002,79 @@ OnlineCppFixture make_online_cpp_fixture() {
   return fixture;
 }
 
+OnlineCppFixture make_online_cpp_process_fixture() {
+  auto fixture = make_online_cpp_fixture();
+  namespace fs = std::filesystem;
+#if defined(__APPLE__)
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, ::getpid()};
+  struct kinfo_proc proc_info {};
+  size_t info_size = sizeof(proc_info);
+  check(::sysctl(mib, 4, &proc_info, &info_size, nullptr, 0) == 0 &&
+            info_size >= sizeof(proc_info),
+        "could not read own process start time");
+  const int64_t start_ticks =
+      static_cast<int64_t>(proc_info.kp_proc.p_starttime.tv_sec) * 1000000LL +
+      static_cast<int64_t>(proc_info.kp_proc.p_starttime.tv_usec);
+  char exe_path[PROC_PIDPATHINFO_MAXSIZE];
+  const int exe_size = ::proc_pidpath(::getpid(), exe_path, sizeof(exe_path));
+  check(exe_size > 0, "could not resolve own executable");
+  const std::string executable(exe_path, static_cast<size_t>(exe_size));
+#else
+  std::ifstream stat_input("/proc/self/stat");
+  std::string stat;
+  std::getline(stat_input, stat);
+  const size_t close = stat.rfind(')');
+  check(close != std::string::npos, "could not parse own process stat");
+  std::istringstream fields(stat.substr(close + 1));
+  std::vector<std::string> values;
+  for (std::string value; fields >> value;) values.push_back(value);
+  check(values.size() > 19, "own process stat lacks starttime");
+  const int64_t start_ticks = std::stoll(values[19]);
+  char exe_path[4096];
+  const ssize_t exe_size = ::readlink("/proc/self/exe", exe_path,
+                                      sizeof(exe_path) - 1);
+  check(exe_size > 0, "could not resolve own executable");
+  const std::string executable(exe_path, static_cast<size_t>(exe_size));
+#endif
+  std::ifstream exe_input(executable, std::ios::binary);
+  const std::string exe_bytes((std::istreambuf_iterator<char>(exe_input)),
+                              std::istreambuf_iterator<char>());
+  json identity;
+  {
+    std::ifstream input(fixture.root / "identity.json", std::ios::binary);
+    input >> identity;
+  }
+  identity["schema"] = "umminfer-native-stage-identity-v2";
+  identity["process"] = {
+      {"pid", static_cast<int64_t>(getpid())},
+      {"start_time_ticks", start_ticks},
+      {"executable_path", executable},
+      {"executable_sha256", util::sha256_hex(exe_bytes)},
+      {"executable_bytes", static_cast<int64_t>(exe_bytes.size())},
+  };
+  identity["stage_config"] = {
+      {"kind", "qwen38"}, {"gpu", 7}, {"batch_size", 1},
+      {"max_new_tokens", 512}, {"max_seq", 8192},
+  };
+  json server;
+  {
+    std::ifstream input(fixture.root / "server.json", std::ios::binary);
+    input >> server;
+  }
+  server["schema"] = "umminfer-online-rollout-server-v2";
+  const auto write_document = [&](const fs::path& path, const json& value) {
+    const std::string bytes = openai_detail::online_canonical_json(value) + "\n";
+    std::ofstream out(path, std::ios::binary);
+    out.write(bytes.data(), bytes.size());
+    out.close();
+    return util::sha256_hex(bytes);
+  };
+  server["native_identity_sha256"] = write_document(
+      fixture.root / "identity.json", identity);
+  (void)write_document(fixture.root / "server.json", server);
+  return fixture;
+}
+
 std::string online_test_value(const std::string& key,
                               const openai_detail::OnlineScheduleEntry& entry,
                               int attempt) {
@@ -13145,6 +13232,76 @@ void test_public_http_online_attestation_retry_cancel() {
              "online attestation requests stayed in flight");
 }
 
+void test_public_http_process_bound_stage_identity() {
+  auto fixture = make_online_cpp_process_fixture();
+  Harness h("onlineprocessidentity");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 5.0;
+  config.online_rollout_config = fixture.config_path;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, UnifiedConfig{});
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "process-bound attestation server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const auto& entry = fixture.schedule[0];
+  json server;
+  {
+    std::ifstream input(fixture.root / "server.json", std::ios::binary);
+    input >> server;
+  }
+  const std::string identity_sha = server["native_identity_sha256"];
+  const auto no_proof = [](const test_http::HttpResponse& response) {
+    for (const auto& [key, header] : openai_detail::online_response_headers()) {
+      (void)key;
+      check(response.headers.find(header) == response.headers.end(),
+            "missing/mismatched live identity produced client-echoed proof");
+    }
+  };
+
+  const auto missing = test_http::perform(
+      online_test_request(api.bound_port(), entry, 0));
+  check(missing.status == 503, "missing live stage identity was accepted");
+  no_proof(missing);
+  h.event_push.send(Message{StageReadyMessage{"vlm", std::string(64, '0')}});
+  wait_until([&] {
+    return h.coordinator.stage_native_identity("vlm") ==
+           std::optional<std::string>(std::string(64, '0'));
+  }, "incorrect test stage identity was not registered");
+  const auto mismatched = test_http::perform(
+      online_test_request(api.bound_port(), entry, 0));
+  check(mismatched.status == 503, "mismatched live stage identity was accepted");
+  no_proof(mismatched);
+
+  h.event_push.send(Message{StageReadyMessage{"vlm", identity_sha}});
+  wait_until([&] {
+    return h.coordinator.stage_native_identity("vlm") ==
+           std::optional<std::string>(identity_sha);
+  }, "matching test stage identity was not registered");
+  auto accepted = std::async(std::launch::async, [&] {
+    return test_http::perform(online_test_request(api.bound_port(), entry, 0));
+  });
+  auto submit = h.next_submit(h.vlm_recv);
+  check(submit.has_value(),
+        "matching native/gateway/live identity did not admit the scheduled request");
+  if (submit) {
+    auto result = text_result("process bound answer");
+    result["finish_reason"] = Value("stop");
+    h.complete(submit->request_id, "vlm", true, std::move(result));
+  }
+  const auto response = accepted.get();
+  check(response.status == 200, "matching process-bound request did not complete");
+  check_online_test_headers(response, entry, 0);
+
+  api.stop();
+  server_thread.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "process-bound identity requests stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -13282,5 +13439,7 @@ int main() {
   RUN(test_openai_client_behavior_logprobs());
   RUN(test_online_attestation_python_canonical_fixtures());
   RUN(test_public_http_online_attestation_retry_cancel());
+  RUN(test_public_http_process_bound_stage_identity());
+  RUN(test_public_http_behavior_logprobs());
   return g_failures == 0 ? 0 : 1;
 }

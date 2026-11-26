@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "umminfer/proto/messages.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -734,11 +735,26 @@ Value StageReadyMessage::to_value() const {
   Value::Map m;
   m["type"] = Value("stage_ready");
   m["from_stage"] = Value(from_stage);
+  if (!native_identity_sha256.empty()) {
+    m["native_identity_sha256"] = Value(native_identity_sha256);
+  }
   return Value(std::move(m));
 }
 
 StageReadyMessage StageReadyMessage::from_value(const Value& v) {
-  return StageReadyMessage{require_str(v, "from_stage")};
+  StageReadyMessage msg{require_str(v, "from_stage")};
+  if (const Value* identity = v.find("native_identity_sha256");
+      identity != nullptr) {
+    if (!identity->is_str() || identity->as_str().size() != 64 ||
+        !std::all_of(identity->as_str().begin(), identity->as_str().end(),
+                     [](unsigned char c) {
+                       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                     })) {
+      throw ProtocolError("StageReadyMessage.native_identity_sha256 must be SHA-256");
+    }
+    msg.native_identity_sha256 = identity->as_str();
+  }
+  return msg;
 }
 
 Value CompleteMessage::to_value() const {

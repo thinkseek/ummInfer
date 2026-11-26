@@ -58,6 +58,9 @@ class Stage {
     // Announces stage_ready after the control plane and abort subscription start.
     // Embedded users that do not gate Submit can leave this disabled.
     bool announce_ready = false;
+    // Optional post-load native identity document digest. Empty keeps the
+    // default stage_ready bytes and generic embedded stages unchanged.
+    std::string native_identity_sha256;
     // Re-sends stage_ready from run() at this interval. A restarted Coordinator
     // rebuilds its ready set from these heartbeats, so a gateway restart never
     // forces a GPU stage restart. 0 keeps announce_ready one-shot.
@@ -148,6 +151,9 @@ class Coordinator {
   // True after that stage sent stage_ready. False before, and false for a
   // stage that was not registered with require_ready.
   bool stage_ready(const std::string& name) const;
+  // Present only while the named ready stage has supplied a post-load native
+  // identity digest. Disconnect clears it together with readiness.
+  std::optional<std::string> stage_native_identity(const std::string& name) const;
   void start();
   void run();  // blocks; pumps completions and stream chunks
   void stop();
@@ -196,6 +202,7 @@ class Coordinator {
   std::map<std::string, std::string> endpoints_;
   std::set<std::string> stages_requiring_ready_;
   std::set<std::string> ready_stages_;
+  std::map<std::string, std::string> ready_native_identities_;
   std::set<std::string> ever_ready_stages_;
   std::map<std::string, std::deque<SubmitMessage>> pending_submits_;
 

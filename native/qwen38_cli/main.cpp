@@ -34,6 +34,7 @@ struct Args {
   bool thinking = false;
   bool behavior = false;
   bool narrative_image = false;
+  bool narrative_auto = false;
   float temperature = 0.0f;
   float top_p = 1.0f;
   uint64_t seed = 0;
@@ -43,7 +44,7 @@ struct Args {
 void usage() {
   std::cerr << "usage: umm-qwen38-native --model DIR --prompt TEXT [--image PATH] "
                "[--gpu N] [--max-new-tokens M] [--thinking] [--dump-dir DIR] "
-               "[--behavior-evidence] [--narrative-image] [--temperature T] "
+               "[--behavior-evidence] [--narrative-image|--narrative-auto] [--temperature T] "
                "[--top-p P] [--seed N]\n";
 }
 
@@ -81,6 +82,8 @@ int main(int argc, char** argv) {
       args.behavior = true;
     else if (flag == "--narrative-image")
       args.narrative_image = true;
+    else if (flag == "--narrative-auto")
+      args.narrative_auto = true;
     else if (flag == "--temperature")
       args.temperature = std::stof(need("--temperature"));
     else if (flag == "--top-p")
@@ -94,7 +97,8 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  if (args.model_dir.empty() || args.prompt.empty()) {
+  if (args.model_dir.empty() || args.prompt.empty() ||
+      (args.narrative_image && args.narrative_auto)) {
     usage();
     return 2;
   }
@@ -122,11 +126,11 @@ int main(int argc, char** argv) {
     }
 
     std::string rendered;
-    if (args.narrative_image) {
+    if (args.narrative_image || args.narrative_auto) {
       std::vector<umminfer::qwen38::ChatTurn> turns;
       turns.push_back(umminfer::qwen38::ChatTurn{
           "system", umminfer::unified_detail::narrative_director_prompt(
-                        "image", 1, "off"),
+                        args.narrative_auto ? "auto" : "image", 1, "off"),
           false, 0, {}});
       turns.push_back(umminfer::qwen38::ChatTurn{
           "user", args.prompt, image != nullptr, 0, {}});
@@ -159,7 +163,7 @@ int main(int argc, char** argv) {
       }
       std::vector<int64_t> behavior_ids(result.ids.begin(), result.ids.end());
       std::optional<std::vector<int64_t>> narrative_mask;
-      if (args.narrative_image) {
+      if (args.narrative_image || args.narrative_auto) {
         narrative_mask = umminfer::narrative_behavior_masks(
             result.ids, [&tokenizer](int id) { return tokenizer.decode({id}); });
         if (!narrative_mask) {

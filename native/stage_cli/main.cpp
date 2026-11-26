@@ -18,6 +18,7 @@
 #include <thread>
 
 #include "stage_kind.hpp"
+#include "native_identity.hpp"
 #include "request_telemetry_stage.hpp"
 #include "umminfer/pipeline/pipeline.hpp"
 
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
   // the stage and is parsed by its *_stage.cpp.
   static const std::set<std::string> kTransportFlags = {
       "kind", "model", "name", "gpu", "recv-endpoint", "coordinator-endpoint",
-      "abort-endpoint"};
+      "abort-endpoint", "identity-out", "model-id", "model-revision"};
   Flags flags;
   Repeats repeats;
   umminfer::stage::StageOptions options;
@@ -115,6 +116,22 @@ int main(int argc, char** argv) {
     }
 
     options.model_dir = model;
+    options.identity_out = flags.count("identity-out") ? flags["identity-out"] : "";
+    options.model_id = flags.count("model-id") ? flags["model-id"] : "";
+    options.model_revision = flags.count("model-revision") ? flags["model-revision"] : "";
+    if (kind != "qwen38" &&
+        (!options.identity_out.empty() || !options.model_id.empty() ||
+         !options.model_revision.empty())) {
+      throw std::runtime_error("native identity emission is supported only by qwen38");
+    }
+    const bool identity_requested = !options.identity_out.empty() ||
+                                    !options.model_id.empty() ||
+                                    !options.model_revision.empty();
+    if (identity_requested && (options.identity_out.empty() || options.model_id.empty() ||
+                               options.model_revision.empty())) {
+      throw std::runtime_error(
+          "--identity-out, --model-id, and --model-revision are required together");
+    }
     options.gpu = flags.count("gpu")
                       ? umminfer::stage::parse_stage_int(flags["gpu"], "--gpu")
                       : 0;
@@ -162,6 +179,14 @@ int main(int argc, char** argv) {
     std::cout << "native stage model loaded kind=" << kind << " model=" << model
               << " gpu=" << options.gpu << " load_ms=" << load_ms.count() << std::endl;
 
+    if (!options.identity_out.empty()) {
+      // make_compute returned only after the tokenizer, config, every weight
+      // shard, and CUDA engine were loaded. Evidence cannot be pre-fabricated by
+      // a client: this process hashes the files and its own executable now.
+      config.native_identity_sha256 =
+          umminfer::stage::write_native_qwen_identity(options, config.name)
+              .document_sha256;
+    }
     umminfer::Stage stage(config, std::move(compute));
     stage.start();
     std::cout << "native stage " << config.name << " ready kind=" << kind << std::endl;

@@ -14,6 +14,10 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <sys/sysctl.h>
+#endif
 
 #include "umminfer/util/codec.hpp"
 
@@ -283,6 +287,58 @@ OnlineJson parse_document(const std::string& bytes, const std::string& label) {
   const auto value = OnlineJson::parse(bytes, nullptr, false);
   require(!value.is_discarded(), label + " is not valid JSON");
   return value;
+}
+
+int64_t process_start_time_ticks(int pid) {
+  require(pid > 0, "native process id must be positive");
+#if defined(__APPLE__)
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+  struct kinfo_proc info {};
+  size_t size = sizeof(info);
+  require(::sysctl(mib, 4, &info, &size, nullptr, 0) == 0 && size >= sizeof(info),
+          "native process starttime is unavailable");
+  const int64_t sec = static_cast<int64_t>(info.kp_proc.p_starttime.tv_sec);
+  const int64_t usec = static_cast<int64_t>(info.kp_proc.p_starttime.tv_usec);
+  require(sec >= 0 && usec >= 0, "native process starttime is invalid");
+  return sec * 1000000LL + usec;
+#else
+  const std::string stat = read_document(
+      "/proc/" + std::to_string(pid) + "/stat");
+  const size_t close = stat.rfind(')');
+  require(close != std::string::npos, "native process stat is malformed");
+  std::vector<std::string> fields;
+  size_t offset = close + 1;
+  while (offset < stat.size()) {
+    while (offset < stat.size() && stat[offset] == ' ') ++offset;
+    if (offset >= stat.size()) break;
+    const size_t end = stat.find(' ', offset);
+    fields.push_back(stat.substr(offset, end - offset));
+    offset = end == std::string::npos ? stat.size() : end + 1;
+  }
+  require(fields.size() > 19, "native process stat lacks starttime");
+  int64_t parsed = 0;
+  const std::string& text = fields[19];
+  const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
+  require(result.ec == std::errc() && result.ptr == text.data() + text.size() &&
+              parsed >= 0,
+          "native process starttime is invalid");
+  return parsed;
+#endif
+}
+
+std::string process_executable_path(int pid) {
+#if defined(__APPLE__)
+  std::array<char, PROC_PIDPATHINFO_MAXSIZE> buffer{};
+  const int size = ::proc_pidpath(pid, buffer.data(), buffer.size());
+  require(size > 0, "native process executable is unavailable");
+  return std::string(buffer.data(), static_cast<size_t>(size));
+#else
+  std::array<char, 4096> buffer{};
+  const std::string path = "/proc/" + std::to_string(pid) + "/exe";
+  const ssize_t size = ::readlink(path.c_str(), buffer.data(), buffer.size() - 1);
+  require(size > 0, "native process executable is unavailable");
+  return std::string(buffer.data(), static_cast<size_t>(size));
+#endif
 }
 
 fs::path resolve_document_path(const fs::path& config_dir,
@@ -562,7 +618,9 @@ std::unique_ptr<OnlineRolloutServer> OnlineRolloutServer::load(
              {"schema", "plan_path", "plan_sha256", "native_identity_path",
               "native_identity_sha256", "native_stage_name", "max_identity_age_ms"},
              "server config");
-  require(config["schema"] == "umminfer-online-rollout-server-v1",
+  const bool process_binding =
+      config["schema"] == "umminfer-online-rollout-server-v2";
+  require(config["schema"] == "umminfer-online-rollout-server-v1" || process_binding,
           "server config schema is unsupported");
   validate_sha(config["plan_sha256"], "plan_sha256");
   validate_sha(config["native_identity_sha256"], "native_identity_sha256");
@@ -586,13 +644,23 @@ std::unique_ptr<OnlineRolloutServer> OnlineRolloutServer::load(
               config["native_identity_sha256"].get<std::string>(),
           "native identity exact-byte SHA-256 mismatch");
   const OnlineJson identity = parse_document(identity_bytes, "native identity");
-  exact_keys(identity,
-             {"schema", "stage_name", "state", "loaded_at_epoch_ms", "model_id",
-              "model_revision", "model_root", "config", "weight_files",
-              "model_sha256"},
-             "native identity");
-  require(identity["schema"] == "umminfer-native-stage-identity-v1",
-          "native identity schema is unsupported");
+  if (process_binding) {
+    exact_keys(identity,
+               {"schema", "stage_name", "state", "loaded_at_epoch_ms", "model_id",
+                "model_revision", "model_root", "config", "weight_files",
+                "model_sha256", "process", "stage_config"},
+               "native identity");
+  } else {
+    exact_keys(identity,
+               {"schema", "stage_name", "state", "loaded_at_epoch_ms", "model_id",
+                "model_revision", "model_root", "config", "weight_files",
+                "model_sha256"},
+               "native identity");
+  }
+  require(identity["schema"] == (process_binding
+                                     ? "umminfer-native-stage-identity-v2"
+                                     : "umminfer-native-stage-identity-v1"),
+          "native identity schema does not match the server trust level");
   require(identity["stage_name"] == config["native_stage_name"],
           "native identity stage name mismatch");
   require(identity["state"] == "loaded",
@@ -638,9 +706,60 @@ std::unique_ptr<OnlineRolloutServer> OnlineRolloutServer::load(
   require(computed_weights_sha == identity["model_sha256"].get<std::string>(),
           "native identity weight-set SHA-256 mismatch");
 
+  int64_t native_pid_value = -1;
+  int64_t process_start = 0;
+  std::string executable_path;
+  if (process_binding) {
+    const auto& process = identity["process"];
+    exact_keys(process,
+               {"pid", "start_time_ticks", "executable_path",
+                "executable_sha256", "executable_bytes"},
+               "native identity.process");
+    require(integer_value(process["pid"], native_pid_value) && native_pid_value > 0 &&
+                native_pid_value <= std::numeric_limits<int>::max(),
+            "native identity.process.pid must be a positive int");
+    const int native_pid = static_cast<int>(native_pid_value);
+    require(process_start_time_ticks(native_pid) >= 0,
+            "native process is not alive");
+    require(integer_value(process["start_time_ticks"], process_start) &&
+                process_start > 0 &&
+                process_start_time_ticks(native_pid) == process_start,
+            "native process start time is stale or mismatched");
+    require(process["executable_path"].is_string() &&
+                !process["executable_path"].get_ref<const std::string&>().empty(),
+            "native identity executable_path must be non-empty");
+    executable_path = process_executable_path(native_pid);
+    require(executable_path == process["executable_path"].get<std::string>(),
+            "native process executable path differs from its identity");
+    verify_file(executable_path,
+                OnlineJson{{"sha256", process["executable_sha256"]},
+                           {"bytes", process["executable_bytes"]}},
+                "native process executable");
+
+    exact_keys(identity["stage_config"],
+               {"kind", "gpu", "batch_size", "max_new_tokens", "max_seq"},
+               "native identity.stage_config");
+    require(identity["stage_config"]["kind"] == "qwen38",
+            "process-bound identity is supported only for qwen38");
+    for (const char* key : {"gpu", "batch_size", "max_new_tokens", "max_seq"}) {
+      int64_t setting = 0;
+      require(integer_value(identity["stage_config"][key], setting) && setting >= 0,
+              std::string("native stage config ") + key + " must be non-negative");
+    }
+    require(identity["stage_config"]["batch_size"] == 1,
+            "process-bound online behavior evidence requires a serial stage");
+  }
+
   auto server = std::unique_ptr<OnlineRolloutServer>(new OnlineRolloutServer());
   server->schedule_ = online_derive_schedule(plan);
   server->native_stage_name_ = config["native_stage_name"].get<std::string>();
+  server->native_identity_sha256_ = config["native_identity_sha256"].get<std::string>();
+  server->requires_process_binding_ = process_binding;
+  server->loaded_at_epoch_ms_ = loaded_at;
+  server->max_identity_age_ms_ = max_identity_age;
+  server->native_pid_ = static_cast<int>(native_pid_value);
+  server->native_process_start_time_ticks_ = process_start;
+  server->native_executable_path_ = executable_path;
   int64_t max_attempts = 0;
   require(integer_value(plan["transport"]["max_attempts"], max_attempts),
           "invalid max_attempts");
@@ -680,10 +799,26 @@ bool OnlineRolloutServer::request_marked(const httplib::Request& req) {
   return false;
 }
 
-bool OnlineRolloutServer::bind_request(const httplib::Request& req,
-                                       const OnlineJson& body,
-                                       OnlineRequestBinding& binding,
-                                       std::string& error, int& http_status) {
+bool OnlineRolloutServer::bind_request(
+    const httplib::Request& req, const OnlineJson& body,
+    const std::optional<std::string>& attached_native_identity,
+    OnlineRequestBinding& binding, std::string& error, int& http_status) {
+  if (requires_process_binding_) {
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (now < loaded_at_epoch_ms_ ||
+        now - loaded_at_epoch_ms_ > max_identity_age_ms_ ||
+        process_start_time_ticks(native_pid_) != native_process_start_time_ticks_ ||
+        process_executable_path(native_pid_) != native_executable_path_) {
+      return reject_request(error, http_status, 503,
+                            "native process identity is stale or no longer live");
+    }
+    if (!attached_native_identity ||
+        *attached_native_identity != native_identity_sha256_) {
+      return reject_request(error, http_status, 503,
+                            "attached unified VLM stage identity is missing or mismatched");
+    }
+  }
   for (const auto& [key, header] : online_response_headers()) {
     const size_t expected_count = key == "behavior_evidence" ? 0 : 1;
     if (req.get_header_value_count(header) != expected_count) {

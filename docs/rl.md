@@ -507,12 +507,7 @@ Only completed raw-SSE-backed responses with finite export-derived rewards enter
 online GRPO groups. Cancelled and malformed responses never become zero-reward
 or empty candidates.
 
-The explicit `--online-rollout-config` server opt-in validates trusted plan and
-native-stage identity evidence, independently re-hashes model files, derives
-schedule/policy/sampling/request bindings without echoing client proof, and
-emits the accepted attestation headers on bound responses (CPU-only schemas,
-tests, and real-stage limits are in [online-attestation.md](online-attestation.md)).
-Separately, the native unified Qwen3.8 endpoint provides an explicit
+The native unified Qwen3.8 endpoint now has an explicit
 `behavior.logprobs=true` streaming opt-in for actual sampled ids, full native
 log-softmax values, exact clean-target masks, and the required online
 attestation headers. Other endpoints and every incomplete capture remain
@@ -526,6 +521,19 @@ source trajectories, even when an ordinary pack is rebuilt without row markers;
 online optimizer execution and model-quality outcomes remain `NOT_RUN`. The
 isolated SM90 native producer/recomputation result and exact evidence hashes are
 in [behavior-logprobs-live.md](behavior-logprobs-live.md).
+
+The first real isolated online generation gate has now passed on SM90 GPU 7.
+The native v2 identity binds the post-load process, exact config and all 18
+weights to the attached ready stage; the gateway independently rehashes those
+files. Two frozen groups of three seeds produced six exposed rollouts through
+the actual online client. Two real overload 503 attempts preceded six successful
+attempts, and 192/192 sampled ids/masks matched fresh native forward computation
+with maximum absolute score difference `0.0`. Accepted 17-file replay and the
+independent 108-file evidence audit were byte-identical. Behavior-opted-in
+`not_exposed` responses are now rejected before group export and replay; optional
+inner request ids are checked when present without confusing the public unified
+SSE shape with stale identity. See [online-rollout-live](online-rollout-live.md)
+for exact evidence. No online optimizer or model-quality evaluation ran.
 
 The independent CPU alignment gate binds those sampled blocks to token_export
 v1/v2 raw-target ids, source spans, and masks without importing the online
@@ -544,8 +552,8 @@ packed-id/label/mask, objective-fixture, split, and checkpoint hashes into onlin
 run identity. Fresh-process reconstruction is byte-identical and tamper rejects
 without output. Frozen-offline GRPO and legacy packs are unchanged. See
 [online-grpo-preflight.md](online-grpo-preflight.md) for commands, exact hashes,
-and future acceptance gates. Real generation, forwards, optimizer, GPU, serving,
-and quality remain `NOT_RUN`.
+and future acceptance gates. Online optimizer, current/reference forwards, GPU
+training, and model-quality outcomes remain `NOT_RUN`.
 
 ## Rewards
 

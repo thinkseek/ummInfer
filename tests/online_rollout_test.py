@@ -94,11 +94,15 @@ def response_events(group_index, rollout_index):
     return events
 
 
-def response_bytes(events, item, request_id, behavior=None, *, inner_drift=False):
+def response_bytes(events, item, request_id, behavior=None, *, inner_drift=False,
+                   inner_optional=False):
     frames = []
     for index, original in enumerate(events):
         unified = copy.deepcopy(original)
-        unified["request_id"] = "stale-inner-request" if inner_drift else request_id
+        if not inner_optional or unified["kind"] == "visual_slot" or inner_drift:
+            unified["request_id"] = "stale-inner-request" if inner_drift else request_id
+        else:
+            unified.pop("request_id", None)
         unified["session_id"] = "stale-inner-session" if inner_drift else item["session_id"]
         chunk = {
             "id": request_id, "object": "chat.completion.chunk", "created": 0,
@@ -129,6 +133,7 @@ class FakeState:
         self.malformed = set()
         self.malformed_status = {}
         self.inner_drift = set()
+        self.inner_optional = False
         self.header_overrides = {}
         self.dropped_headers = set()
         self.behavior_mode = "not_exposed"
@@ -232,7 +237,8 @@ class FakeHandler(BaseHTTPRequestHandler):
             else response_events(item["group_index"], item["rollout_index"])
         raw = response_bytes(
             events, item, request_id, state.behavior_block(),
-            inner_drift=rollout_id in state.inner_drift)
+            inner_drift=rollout_id in state.inner_drift,
+            inner_optional=state.inner_optional)
         self._send(200, raw, "text/event-stream", item, attempt, request_id)
 
 
@@ -388,6 +394,20 @@ class OnlineRolloutContractTests(unittest.TestCase):
                         tampered, item, state.plan, state.schedule_sha,
                         Path(tmp) / "bundle/artifacts")
 
+    def test_behavior_opt_in_rejects_not_exposed_before_group_export(self):
+        with tempfile.TemporaryDirectory(prefix="umm-online-required-behavior-") as tmp:
+            plan = fixture_plan()
+            plan["request_template"]["behavior"] = {"logprobs": True}
+            state = FakeState(plan)
+            state.behavior_mode = "not_exposed"
+            with self.assertRaisesRegex(ValueError, "cannot enter a GRPO group"):
+                execute(tmp, state)
+            bundle = Path(tmp) / "bundle"
+            self.assertEqual(len(read_jsonl(bundle / "attempts.jsonl")), 1)
+            self.assertFalse((bundle / "trajectories.jsonl").exists())
+            self.assertFalse((bundle / "pack").exists())
+            self.assertFalse((bundle / "rollout_manifest.json").exists())
+
     def test_behavior_raw_chunking_and_malformed_blocks_fail_closed(self):
         state = FakeState()
         item = state.schedule[0]
@@ -520,6 +540,29 @@ class OnlineRolloutContractTests(unittest.TestCase):
                 self.assertEqual(records[0]["rollout_provenance"]["attempt"], 1)
                 self.assertEqual(records[0]["request_id"],
                                  f"request-{state.schedule[0]['rollout_id']}-1")
+
+    def test_optional_inner_request_id_matches_real_unified_sse_shape(self):
+        with tempfile.TemporaryDirectory(prefix="umm-online-inner-optional-") as tmp:
+            plan = fixture_plan()
+            plan["request_template"]["behavior"] = {"logprobs": True}
+            state = FakeState(plan)
+            state.inner_optional = True
+            state.behavior_mode = "exposed"
+            result = execute(tmp, state)
+            self.assertEqual(result["behavior_logprobs"], "COVERED")
+            for record in read_jsonl(Path(tmp) / "bundle/trajectories.jsonl"):
+                raw = state.raw_by_request_id[record["request_id"]]
+                chunks = [json.loads(payload) for _, payload in
+                          RawSSECapture.from_metadata(
+                              record["sse_replay"], raw).payload_frames
+                          if payload != "[DONE]"]
+                for chunk in chunks:
+                    unified = chunk["unified"]
+                    if unified["kind"] == "visual_slot":
+                        self.assertEqual(unified["request_id"], record["request_id"])
+                    else:
+                        self.assertNotIn("request_id", unified)
+                    self.assertEqual(unified["session_id"], record["session_id"])
 
     def test_drift_missing_stale_cross_group_and_malformed_responses_fail(self):
         cases = (
