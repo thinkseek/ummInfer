@@ -251,7 +251,9 @@ and `stream=false` (non-streaming JSON with `artifacts` and `legs`).
   (absent falls back to the aggregated text answer), `size` (default `1280x720`),
   optional positive `seconds`, `fps`, `num_frames` (`1..241`, `--video-frames`),
   `steps` (`1..100`, `--video-steps`), `guidance_scale` (`0..30`,
-  `--video-guidance`), optional non-negative `seed`, and `output_format="mp4"`.
+  `--video-guidance`), optional finite `teacache_thresh` (`0.0..0.25`,
+  `--video-teacache-thresh`, omitted by default for lossless `0.0` parity),
+  optional non-negative `seed`, and `output_format="mp4"`.
   Optional `image` is a `data:image/...;base64,...` URL (max 16 MiB decoded);
   `--video-image PATH` encodes a local PNG, JPEG, or WebP file as this URL.
   `Wan2.2-TI2V-5B` uses it as the first frame for native I2V animation. Decoded
@@ -276,7 +278,10 @@ mixed-output request:
 
 - `enabled` is a boolean and defaults to `false`. `visual_mode` is `auto`
   (default), `image`, or `video`. `max_slots` is an integer in `1..6` and
-  defaults to `3`.
+  defaults to `3`. Optional `allow_text_only` is a boolean allowing autonomous
+  zero-visual abstention. Optional `continuity_mode` is `off`, `prompt_anchor`,
+  or `i2v_chain`, and optional `style_anchor` is a trimmed UTF-8 string of at
+  most 256 bytes.
 - Enabled narrative requires `stream=true` and at least one visual modality.
   An image-only or video-only mode also requires that modality in `modalities`.
   Invalid fields or mode/modality combinations return HTTP 400.
@@ -327,8 +332,34 @@ Cancellation and disconnect abort all active VLM, TTS, and slot children. If the
 VLM emits no directive, the server creates one fallback `slot-0` from the clean
 answer.
 
-The bundled C++ `ChatRequest` API and CLI expose no narrative controls. Use the
-JSON wire fields above when calling a server that supports them.
+The C++ `ChatRequest` API (`NarrativeOptions` in
+`include/umminfer/client/client.hpp`, plus `VideoOutput::teacache_thresh`) and
+`umm-infer chat` expose matching opt-in controls:
+
+```sh
+./zig-out/bin/umm-infer chat \
+  --url http://127.0.0.1:43301/v1 --model qwen3-native \
+  --prompt 'Tell a two-scene story about a red lantern.' \
+  --narrative --narrative-visual-mode auto --narrative-no-allow-text-only \
+  --narrative-continuity i2v_chain \
+  --narrative-style-anchor 'cinematic 35mm film grain' \
+  --video-teacache-thresh 0.05
+```
+
+- Default behavior is unchanged: omitting `--narrative` (`!ChatRequest::narrative`)
+  omits `narrative` completely on the wire, and omitting `--video-teacache-thresh`
+  (`!VideoOutput::teacache_thresh`) omits `teacache_thresh`.
+- `--narrative` enables `narrative.enabled=true`, forces `stream=true`, defaults
+  `narrative.allow_text_only=true`, and adds the matching visual `modalities`
+  (`image` and `video` for `auto`, `image` for `image`, `video` for `video`).
+- `--narrative-visual-mode <auto|image|video>`, `--narrative-no-allow-text-only`
+  (sets `allow_text_only=false`), `--narrative-continuity <off|prompt_anchor|i2v_chain>`,
+  and `--narrative-style-anchor <TEXT>` (non-empty trimmed UTF-8, max 256 bytes)
+  all require `--narrative` and fail closed before HTTP if passed without it.
+- `--video-teacache-thresh <FLOAT>` validates a finite number in `[0.0, 0.25]`
+  and requires `--video-out` or `--narrative` with a video-capable visual mode
+  (`auto` or `video`); combining it with `--narrative-visual-mode image` without
+  `--video-out` is rejected before HTTP.
 
 #### Showcase starter presets and live per-turn telemetry (Web UI and macOS ummmlx)
 

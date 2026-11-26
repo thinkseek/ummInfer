@@ -12188,6 +12188,234 @@ void test_public_http_request_native_allocator_telemetry() {
   server_thread.join();
 }
 
+void test_openai_client_teacache_and_narrative() {
+  Harness h("clientparity");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "client parity server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  client::OpenAIConfig cfg;
+  cfg.base_url = "http://127.0.0.1:" + std::to_string(api.bound_port()) + "/v1";
+  cfg.model = "qwen3-unified";
+  cfg.timeout = client::Milliseconds{8000};
+  client::OpenAIClient cli(cfg);
+
+  auto expect_config_error = [&](const client::ChatRequest& req,
+                                 const char* label) {
+    bool caught = false;
+    try {
+      (void)cli.chat(req);
+    } catch (const client::Error& err) {
+      caught = err.code() == client::ErrorCode::kConfig;
+    }
+    check(caught, label);
+  };
+
+  // 1. Fail-closed client-side validation for video.teacache_thresh and narrative.
+  for (double bad_thresh :
+       {-0.01, 0.251, std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity()}) {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "bad thresh"});
+    req.modalities = {"text", "video"};
+    client::VideoOutput vo;
+    vo.teacache_thresh = bad_thresh;
+    req.video = vo;
+    expect_config_error(req, "OpenAIClient accepted invalid video.teacache_thresh");
+  }
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "bad visual_mode"});
+    req.stream = true;
+    req.modalities = {"text", "image"};
+    client::NarrativeOptions n;
+    n.enabled = true;
+    n.visual_mode = "audio";
+    req.narrative = n;
+    expect_config_error(req, "OpenAIClient accepted invalid narrative.visual_mode");
+  }
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "bad continuity"});
+    req.stream = true;
+    req.modalities = {"text", "image"};
+    client::NarrativeOptions n;
+    n.enabled = true;
+    n.continuity_mode = "chain";
+    req.narrative = n;
+    expect_config_error(req, "OpenAIClient accepted invalid narrative.continuity_mode");
+  }
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "bad max_slots"});
+    req.stream = true;
+    req.modalities = {"text", "image"};
+    client::NarrativeOptions n;
+    n.enabled = true;
+    n.max_slots = 7;
+    req.narrative = n;
+    expect_config_error(req, "OpenAIClient accepted out-of-range narrative.max_slots");
+  }
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "oversized style_anchor"});
+    req.stream = true;
+    req.modalities = {"text", "image"};
+    client::NarrativeOptions n;
+    n.enabled = true;
+    n.style_anchor = std::string(257, 'x');
+    req.narrative = n;
+    expect_config_error(req, "OpenAIClient accepted >256-byte narrative.style_anchor");
+  }
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "nonstream narrative"});
+    req.stream = false;
+    req.modalities = {"text", "image"};
+    client::NarrativeOptions n;
+    n.enabled = true;
+    req.narrative = n;
+    expect_config_error(req, "OpenAIClient accepted narrative without stream=true");
+  }
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "no visual modality"});
+    req.stream = true;
+    req.modalities = {"text"};
+    client::NarrativeOptions n;
+    n.enabled = true;
+    req.narrative = n;
+    expect_config_error(req, "OpenAIClient accepted narrative without visual modality");
+  }
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "mismatched mode"});
+    req.stream = true;
+    req.modalities = {"text", "image"};
+    client::NarrativeOptions n;
+    n.enabled = true;
+    n.visual_mode = "video";
+    req.narrative = n;
+    expect_config_error(req, "OpenAIClient accepted narrative.visual_mode=video without video modality");
+  }
+
+  // 2. VideoOutput without teacache_thresh omits it; with teacache_thresh forwards it.
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "default video"});
+    req.modalities = {"text", "video"};
+    req.video = client::VideoOutput{};
+    auto fut = std::async(std::launch::async, [&] { return cli.chat(req); });
+    if (auto vlm = h.next_submit(h.vlm_recv)) {
+      h.complete(vlm->request_id, "vlm", true, text_result("ok"));
+    }
+    if (auto vid = h.next_submit(h.video_recv)) {
+      StagePayload p = StagePayload::from_value(vid->data);
+      check(p.request.inputs.find("teacache_thresh") == nullptr,
+            "OpenAIClient injected teacache_thresh when unset");
+      h.complete(vid->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4DEF"));
+    }
+    check(fut.get().artifacts.size() == 1,
+          "OpenAIClient default video roundtrip failed");
+  }
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "fast video"});
+    req.modalities = {"text", "video"};
+    client::VideoOutput vo;
+    vo.teacache_thresh = 0.05;
+    req.video = vo;
+    auto fut = std::async(std::launch::async, [&] { return cli.chat(req); });
+    if (auto vlm = h.next_submit(h.vlm_recv)) {
+      h.complete(vlm->request_id, "vlm", true, text_result("fast"));
+    }
+    if (auto vid = h.next_submit(h.video_recv)) {
+      StagePayload p = StagePayload::from_value(vid->data);
+      const Value* thresh = p.request.inputs.find("teacache_thresh");
+      check(thresh != nullptr && std::abs(thresh->as_double() - 0.05) < 1e-9,
+            "OpenAIClient did not forward video.teacache_thresh=0.05");
+      h.complete(vid->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "MP4FAST"));
+    }
+    check(fut.get().artifacts.size() == 1,
+          "OpenAIClient fast video roundtrip failed");
+  }
+
+  // 3. Streaming narrative with continuity_mode, style_anchor, allow_text_only,
+  //    and video.teacache_thresh roundtrips end-to-end through UnifiedEngine.
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "tell a story"});
+    req.stream = true;
+    req.modalities = {"text", "image", "video"};
+    client::VideoOutput vo;
+    vo.teacache_thresh = 0.05;
+    req.video = vo;
+    client::NarrativeOptions n;
+    n.enabled = true;
+    n.visual_mode = "auto";
+    n.allow_text_only = false;
+    n.continuity_mode = "i2v_chain";
+    n.style_anchor = "  35mm film grain  ";
+    req.narrative = n;
+
+    auto fut = std::async(std::launch::async, [&] { return cli.chat(req); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "OpenAIClient narrative request did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("Scene one. [[image: warm lantern]] Scene two. [[video: drifting boat]]",
+                          false));
+      auto img = h.next_submit(h.image_recv);
+      check(img.has_value(), "OpenAIClient narrative slot 0 image missing");
+      if (img) {
+        StagePayload p = StagePayload::from_value(img->data);
+        check(p.request.inputs.find("prompt")->as_str().find("35mm film grain") !=
+                  std::string::npos,
+              "OpenAIClient narrative style_anchor did not reach slot 0");
+        h.complete(img->request_id, "image", true,
+                   artifact_result("image", "image/png", "PNG_KEYFRAME"));
+      }
+      auto vid = h.next_submit(h.video_recv);
+      check(vid.has_value(), "OpenAIClient narrative slot 1 video missing");
+      if (vid) {
+        StagePayload p = StagePayload::from_value(vid->data);
+        const Value* thresh = p.request.inputs.find("teacache_thresh");
+        check(thresh != nullptr && std::abs(thresh->as_double() - 0.05) < 1e-9,
+              "OpenAIClient narrative video slot missing teacache_thresh=0.05");
+        check(p.request.inputs.find("image") != nullptr &&
+                  p.request.inputs.find("image")->as_str().rfind(
+                      "data:image/png;base64,", 0) == 0,
+              "OpenAIClient narrative i2v_chain did not attach slot 0 image");
+        h.complete(vid->request_id, "video", true,
+                   artifact_result("video", "video/mp4", "MP4_CHAIN"));
+      }
+      h.complete(vlm->request_id, "vlm", true, text_result("Scene one. Scene two."));
+    }
+    const client::ChatResponse resp = fut.get();
+    check(resp.text == "Scene one.  Scene two. " &&
+              resp.text.find("[[") == std::string::npos,
+          ("OpenAIClient narrative clean prose mismatch: '" + resp.text + "'")
+              .c_str());
+    check(resp.artifacts.size() == 2,
+          "OpenAIClient narrative expected 2 artifacts");
+  }
+
+  api.stop();
+  server_thread.join();
+  wait_until([&]() -> bool { return engine.in_flight() == 0; },
+             "client parity requests stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -12320,5 +12548,6 @@ int main() {
   RUN(test_explicit_anchor_failure_cancel_and_validation());
   RUN(test_explicit_anchor_http_wire());
   RUN(test_public_http_request_native_allocator_telemetry());
+  RUN(test_openai_client_teacache_and_narrative());
   return g_failures == 0 ? 0 : 1;
 }

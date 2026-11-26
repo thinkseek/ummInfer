@@ -132,10 +132,28 @@ struct VideoOutput {
   std::optional<int64_t> num_frames;
   std::optional<int64_t> steps;
   std::optional<double> guidance_scale;
+  // Optional per-request Wan2.2 TeaCache threshold in [0.0, 0.25]. Omitted on
+  // the wire when unset (lossless default 0.0).
+  std::optional<double> teacache_thresh;
   std::optional<int64_t> seed;
   std::string output_format = "mp4";
   // Optional data:image/...;base64,... first frame for native I2V.
   std::string image;
+};
+
+// Opt-in interleaved narrative control for streaming mixed-output chat.
+struct NarrativeOptions {
+  bool enabled = false;
+  // Optional "auto", "image", or "video".
+  std::optional<std::string> visual_mode;
+  // Optional 1..6 visual slot cap.
+  std::optional<int64_t> max_slots;
+  // Optional autonomous text-only abstention toggle.
+  std::optional<bool> allow_text_only;
+  // Optional "off", "prompt_anchor", or "i2v_chain".
+  std::optional<std::string> continuity_mode;
+  // Optional trimmed style cue (max 256 UTF-8 bytes).
+  std::optional<std::string> style_anchor;
 };
 
 // One delivered generated artifact, fully decoded and checksum-verified.
@@ -157,6 +175,8 @@ struct ChatRequest {
   std::optional<AudioOutput> audio;
   std::optional<ImageOutput> image;
   std::optional<VideoOutput> video;
+  // Opt-in interleaved narrative control. Omitted from the wire body when unset.
+  std::optional<NarrativeOptions> narrative;
   std::optional<double> temperature;
   std::optional<double> top_p;
   int max_tokens = 0;

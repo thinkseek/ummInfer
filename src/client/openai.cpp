@@ -45,6 +45,13 @@ bool blank(std::string_view text) {
   return std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isspace(c); });
 }
 
+std::string trim_ascii(std::string_view text) {
+  const size_t first = text.find_first_not_of(" \t\r\n");
+  if (first == std::string_view::npos) return {};
+  const size_t last = text.find_last_not_of(" \t\r\n");
+  return std::string(text.substr(first, last - first + 1));
+}
+
 std::string lower(std::string_view text) {
   std::string out(text);
   std::transform(out.begin(), out.end(), out.begin(),
@@ -575,6 +582,13 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
          *request.video->guidance_scale > 30.0)) {
       throw Error(ErrorCode::kConfig, "video.guidance_scale must be between 0 and 30");
     }
+    if (request.video->teacache_thresh &&
+        (!std::isfinite(*request.video->teacache_thresh) ||
+         *request.video->teacache_thresh < 0.0 ||
+         *request.video->teacache_thresh > 0.25)) {
+      throw Error(ErrorCode::kConfig,
+                  "video.teacache_thresh must be a finite number between 0.0 and 0.25");
+    }
     if (request.video->seed && *request.video->seed < 0) {
       throw Error(ErrorCode::kConfig, "video.seed must not be negative");
     }
@@ -585,6 +599,55 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
           request.video->image.substr(0, comma).find(";base64") == std::string::npos) {
         throw Error(ErrorCode::kConfig,
                     "video.image must be a data:image/...;base64,... URL");
+      }
+    }
+  }
+  std::optional<std::string> trimmed_style_anchor;
+  if (request.narrative) {
+    const auto& narrative = *request.narrative;
+    if (narrative.visual_mode && *narrative.visual_mode != "auto" &&
+        *narrative.visual_mode != "image" && *narrative.visual_mode != "video") {
+      throw Error(ErrorCode::kConfig,
+                  "narrative.visual_mode must be auto, image or video");
+    }
+    if (narrative.max_slots &&
+        (*narrative.max_slots < 1 || *narrative.max_slots > 6)) {
+      throw Error(ErrorCode::kConfig,
+                  "narrative.max_slots must be an integer between 1 and 6");
+    }
+    if (narrative.continuity_mode && *narrative.continuity_mode != "off" &&
+        *narrative.continuity_mode != "prompt_anchor" &&
+        *narrative.continuity_mode != "i2v_chain") {
+      throw Error(
+          ErrorCode::kConfig,
+          "narrative.continuity_mode must be 'off', 'prompt_anchor', or 'i2v_chain'");
+    }
+    if (narrative.style_anchor) {
+      std::string trimmed = trim_ascii(*narrative.style_anchor);
+      if (trimmed.size() > 256) {
+        throw Error(ErrorCode::kConfig,
+                    "narrative.style_anchor must be at most 256 UTF-8 bytes");
+      }
+      if (!trimmed.empty()) {
+        trimmed_style_anchor = std::move(trimmed);
+      }
+    }
+    if (narrative.enabled) {
+      if (!stream) {
+        throw Error(ErrorCode::kConfig, "narrative.enabled=true requires stream=true");
+      }
+      if (!image_output && !video_output) {
+        throw Error(ErrorCode::kConfig,
+                    "narrative requires modalities to include image or video");
+      }
+      const std::string mode = narrative.visual_mode.value_or("auto");
+      if (mode == "image" && !image_output) {
+        throw Error(ErrorCode::kConfig,
+                    "narrative.visual_mode=image requires modalities to include image");
+      }
+      if (mode == "video" && !video_output) {
+        throw Error(ErrorCode::kConfig,
+                    "narrative.visual_mode=video requires modalities to include video");
       }
     }
   }
@@ -640,9 +703,31 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
       if (request.video->guidance_scale) {
         video["guidance_scale"] = *request.video->guidance_scale;
       }
+      if (request.video->teacache_thresh) {
+        video["teacache_thresh"] = *request.video->teacache_thresh;
+      }
       if (request.video->seed) video["seed"] = *request.video->seed;
       if (!request.video->image.empty()) video["image"] = request.video->image;
       body["video"] = std::move(video);
+    }
+    if (request.narrative) {
+      json narrative = {{"enabled", request.narrative->enabled}};
+      if (request.narrative->visual_mode) {
+        narrative["visual_mode"] = *request.narrative->visual_mode;
+      }
+      if (request.narrative->max_slots) {
+        narrative["max_slots"] = *request.narrative->max_slots;
+      }
+      if (request.narrative->allow_text_only) {
+        narrative["allow_text_only"] = *request.narrative->allow_text_only;
+      }
+      if (request.narrative->continuity_mode) {
+        narrative["continuity_mode"] = *request.narrative->continuity_mode;
+      }
+      if (trimmed_style_anchor) {
+        narrative["style_anchor"] = *trimmed_style_anchor;
+      }
+      body["narrative"] = std::move(narrative);
     }
     if (request.temperature) body["temperature"] = *request.temperature;
     if (request.top_p) body["top_p"] = *request.top_p;

@@ -116,8 +116,12 @@ void usage(const std::string& command, std::ostream& out) {
            "        [--image-format png|jpeg]]  generated/edited image\n"
            "       [--video-out PATH [--video-prompt TEXT] [--video-size WxH]\n"
            "        [--video-seconds N] [--video-fps N] [--video-frames N]\n"
-           "        [--video-steps N] [--video-guidance X] [--video-seed N]\n"
-           "        [--video-image PATH]]  generated video\n";
+           "        [--video-steps N] [--video-guidance X] [--video-teacache-thresh X]\n"
+           "        [--video-seed N] [--video-image PATH]]  generated video\n"
+           "       [--narrative [--narrative-visual-mode auto|image|video]\n"
+           "        [--narrative-no-allow-text-only]\n"
+           "        [--narrative-continuity off|prompt_anchor|i2v_chain]\n"
+           "        [--narrative-style-anchor TEXT] [--video-teacache-thresh X]]\n";
   } else if (command == "speech") {
     out << "usage: umm-infer speech --url URL --model M --text TEXT --out PATH "
            "[--voice NAME] [--format wav|pcm] [--ref-audio PATH] [--timeout-ms N]\n";
@@ -514,9 +518,13 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
                    "image-out", "image-prompt", "image-size", "image-steps",
                    "image-ref", "image-seed", "image-format", "video-out",
                    "video-prompt", "video-size", "video-seconds", "video-fps",
-                   "video-frames", "video-steps", "video-guidance", "video-seed",
-                   "video-image"},
-                  {"stream", "native-allocator-telemetry"}, {"image-url", "video-url"});
+                   "video-frames", "video-steps", "video-guidance",
+                   "video-teacache-thresh", "video-seed", "video-image",
+                   "narrative-visual-mode", "narrative-continuity",
+                   "narrative-style-anchor"},
+                  {"stream", "native-allocator-telemetry", "narrative",
+                   "narrative-no-allow-text-only"},
+                  {"image-url", "video-url"});
   if (options.help) {
     usage("chat", std::cout);
     return 0;
@@ -636,7 +644,10 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
 
   auto add_modality = [&](const char* mod) {
     if (request.modalities.empty()) request.modalities.push_back("text");
-    request.modalities.push_back(mod);
+    if (std::find(request.modalities.begin(), request.modalities.end(), mod) ==
+        request.modalities.end()) {
+      request.modalities.push_back(mod);
+    }
   };
 
   const std::string audio_out = options.get("audio-out");
@@ -721,6 +732,10 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
     if (options.has("video-guidance")) {
       output.guidance_scale = number(options, "video-guidance", 0, 0, 30);
     }
+    if (options.has("video-teacache-thresh")) {
+      output.teacache_thresh =
+          number(options, "video-teacache-thresh", 0.0, 0.0, 0.25);
+    }
     if (options.has("video-seed")) {
       output.seed = integer(options, "video-seed", 0, 0,
                             std::numeric_limits<int64_t>::max());
@@ -743,6 +758,69 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
              options.has("video-guidance") || options.has("video-seed") ||
              options.has("video-image")) {
     throw UsageError("video options require --video-out");
+  }
+
+  const bool has_narrative_suboption =
+      options.has("narrative-visual-mode") ||
+      options.has("narrative-no-allow-text-only") ||
+      options.has("narrative-continuity") ||
+      options.has("narrative-style-anchor");
+  if (!options.has("narrative") && has_narrative_suboption) {
+    throw UsageError("narrative options require --narrative");
+  }
+  if (options.has("narrative")) {
+    NarrativeOptions narrative;
+    narrative.enabled = true;
+    narrative.allow_text_only = !options.has("narrative-no-allow-text-only");
+    if (options.has("narrative-visual-mode")) {
+      const std::string mode = options.get("narrative-visual-mode");
+      if (mode != "auto" && mode != "image" && mode != "video") {
+        throw UsageError("--narrative-visual-mode must be auto, image, or video");
+      }
+      narrative.visual_mode = mode;
+    }
+    if (options.has("narrative-continuity")) {
+      const std::string cmode = options.get("narrative-continuity");
+      if (cmode != "off" && cmode != "prompt_anchor" && cmode != "i2v_chain") {
+        throw UsageError(
+            "--narrative-continuity must be off, prompt_anchor, or i2v_chain");
+      }
+      narrative.continuity_mode = cmode;
+    }
+    if (options.has("narrative-style-anchor")) {
+      const std::string raw = options.get("narrative-style-anchor");
+      const size_t first = raw.find_first_not_of(" \t\r\n");
+      if (first == std::string::npos) {
+        throw UsageError("--narrative-style-anchor must not be empty");
+      }
+      const size_t last = raw.find_last_not_of(" \t\r\n");
+      const std::string trimmed = raw.substr(first, last - first + 1);
+      if (trimmed.size() > 256) {
+        throw UsageError(
+            "--narrative-style-anchor must be at most 256 UTF-8 bytes");
+      }
+      narrative.style_anchor = trimmed;
+    }
+    const std::string effective_mode = narrative.visual_mode.value_or("auto");
+    if (effective_mode != "video") add_modality("image");
+    if (effective_mode != "image") add_modality("video");
+    request.stream = true;
+    request.narrative = std::move(narrative);
+  }
+  if (video_out.empty() && options.has("video-teacache-thresh")) {
+    if (!request.narrative || !request.narrative->enabled) {
+      throw UsageError(
+          "--video-teacache-thresh requires --video-out or --narrative");
+    }
+    if (request.narrative->visual_mode.value_or("auto") == "image") {
+      throw UsageError(
+          "--video-teacache-thresh cannot be used with --narrative-visual-mode "
+          "image without --video-out");
+    }
+    VideoOutput output;
+    output.teacache_thresh =
+        number(options, "video-teacache-thresh", 0.0, 0.0, 0.25);
+    request.video = std::move(output);
   }
 
   if (request.stream) {

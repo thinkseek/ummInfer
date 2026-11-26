@@ -696,6 +696,175 @@ def test_chat_native_allocator_telemetry(binary, base, _workdir):
             f"boolean peak must never fabricate 0 B: {malformed_res.stderr!r}")
 
 
+def test_chat_video_teacache_thresh(binary, base, workdir):
+    # (a) Default --video-out without --video-teacache-thresh omits teacache_thresh.
+    default_out = workdir / "vid-default.mp4"
+    default_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "ocean waves", "--video-out", str(default_out),
+    ])
+    require(default_res.returncode == 0, f"default video failed: {default_res.stderr}")
+    [default_entry] = take()
+    default_req = json.loads(default_entry["body"])
+    require("teacache_thresh" not in default_req["video"],
+            f"default video must omit teacache_thresh: {default_req['video']}")
+    require(default_out.read_bytes() == MP4, "default video output bytes mismatch")
+
+    # (b) Valid boundaries 0.0, 0.05, 0.25 forward exact video.teacache_thresh.
+    for idx, thresh_str in enumerate(["0.0", "0.05", "0.25"]):
+        out_path = workdir / f"vid-fast-{idx}.mp4"
+        res = run_cli(binary, [
+            "chat", "--url", base, "--model", "qwen3-native",
+            "--prompt", "fast ocean waves", "--video-out", str(out_path),
+            "--video-teacache-thresh", thresh_str,
+        ])
+        require(res.returncode == 0,
+                f"video teacache {thresh_str} failed: {res.stderr}")
+        [entry] = take()
+        req = json.loads(entry["body"])
+        require(req["video"]["teacache_thresh"] == float(thresh_str),
+                f"expected teacache_thresh={thresh_str}: {req['video']}")
+        require(out_path.read_bytes() == MP4, "fast video output bytes mismatch")
+
+    # (c) Out-of-range / non-finite / malformed values rejected before HTTP.
+    for bad in ["-0.01", "0.26", "nan", "inf", "abc", ""]:
+        bad_out = workdir / "vid-bad.mp4"
+        res = run_cli(binary, [
+            "chat", "--url", base, "--model", "qwen3-native",
+            "--prompt", "bad", "--video-out", str(bad_out),
+            "--video-teacache-thresh", bad,
+        ])
+        require(res.returncode == 2,
+                f"bad teacache {bad!r} must exit 2: {res.returncode} {res.stderr}")
+        require(not bad_out.exists(), "bad teacache must not write output file")
+        require(not take(), f"bad teacache {bad!r} must not reach server")
+
+    # (d) --video-teacache-thresh without --video-out or --narrative rejected.
+    orphan = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "orphan", "--video-teacache-thresh", "0.05",
+    ])
+    require(orphan.returncode == 2 and
+            "requires --video-out or --narrative" in orphan.stderr,
+            f"orphan teacache: {orphan.returncode} {orphan.stderr}")
+    require(not take(), "orphan teacache must not reach server")
+
+
+def test_chat_narrative_controls(binary, base, _workdir):
+    # (a) Default chat omits narrative completely on the wire.
+    plain_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "plain",
+    ])
+    require(plain_res.returncode == 0, f"plain chat failed: {plain_res.stderr}")
+    [plain_entry] = take()
+    plain_req = json.loads(plain_entry["body"])
+    require("narrative" not in plain_req,
+            f"default chat must omit narrative: {plain_req}")
+
+    # (b) --narrative enables streaming, image+video modalities, allow_text_only=true.
+    basic_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "tell a story", "--narrative",
+    ])
+    require(basic_res.returncode == 0, f"basic narrative failed: {basic_res.stderr}")
+    [basic_entry] = take()
+    basic_req = json.loads(basic_entry["body"])
+    require(basic_req.get("stream") is True, f"narrative must stream: {basic_req}")
+    require(set(basic_req.get("modalities", [])) == {"text", "image", "video"},
+            f"narrative default modalities: {basic_req.get('modalities')}")
+    require(basic_req.get("narrative") == {"enabled": True, "allow_text_only": True},
+            f"basic narrative wire JSON: {basic_req.get('narrative')}")
+    require("video" not in basic_req,
+            f"basic narrative without teacache must omit video object: {basic_req}")
+    require(basic_res.stdout == "hello world\n",
+            f"narrative stdout: {basic_res.stdout!r}")
+
+    # (c) Full narrative flags + --video-teacache-thresh 0.05.
+    full_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "storyboard", "--narrative",
+        "--narrative-visual-mode", "auto",
+        "--narrative-no-allow-text-only",
+        "--narrative-continuity", "i2v_chain",
+        "--narrative-style-anchor", "  cinematic 35mm film  ",
+        "--video-teacache-thresh", "0.05",
+    ])
+    require(full_res.returncode == 0, f"full narrative failed: {full_res.stderr}")
+    [full_entry] = take()
+    full_req = json.loads(full_entry["body"])
+    require(full_req.get("stream") is True, f"full narrative must stream: {full_req}")
+    require(set(full_req.get("modalities", [])) == {"text", "image", "video"},
+            f"full narrative modalities: {full_req.get('modalities')}")
+    require(full_req.get("narrative") == {
+        "enabled": True,
+        "visual_mode": "auto",
+        "allow_text_only": False,
+        "continuity_mode": "i2v_chain",
+        "style_anchor": "cinematic 35mm film",
+    }, f"full narrative wire JSON: {full_req.get('narrative')}")
+    require(full_req.get("video") == {
+        "size": "1280x720",
+        "output_format": "mp4",
+        "teacache_thresh": 0.05,
+    }, f"narrative fast video wire JSON: {full_req.get('video')}")
+
+    # (d) visual_mode=image / video narrow modalities + explicit continuity=off.
+    img_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "illustrate", "--narrative",
+        "--narrative-visual-mode", "image",
+        "--narrative-continuity", "off",
+        "--narrative-style-anchor", "a" * 256,
+    ])
+    require(img_res.returncode == 0, f"image narrative failed: {img_res.stderr}")
+    [img_entry] = take()
+    img_req = json.loads(img_entry["body"])
+    require(set(img_req.get("modalities", [])) == {"text", "image"},
+            f"image narrative modalities: {img_req.get('modalities')}")
+    require(img_req["narrative"]["continuity_mode"] == "off" and
+            len(img_req["narrative"]["style_anchor"].encode("utf-8")) == 256,
+            f"image narrative fields: {img_req['narrative']}")
+
+    vid_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "animate", "--narrative",
+        "--narrative-visual-mode", "video",
+        "--video-teacache-thresh", "0.05",
+    ])
+    require(vid_res.returncode == 0, f"video narrative failed: {vid_res.stderr}")
+    [vid_entry] = take()
+    vid_req = json.loads(vid_entry["body"])
+    require(set(vid_req.get("modalities", [])) == {"text", "video"},
+            f"video narrative modalities: {vid_req.get('modalities')}")
+    require(vid_req["video"]["teacache_thresh"] == 0.05,
+            f"video narrative teacache: {vid_req['video']}")
+
+    # (e) Fail-closed UsageError rejections before HTTP.
+    invalid_cases = [
+        (["--narrative-visual-mode", "auto"], "require --narrative"),
+        (["--narrative-no-allow-text-only"], "require --narrative"),
+        (["--narrative-continuity", "i2v_chain"], "require --narrative"),
+        (["--narrative-style-anchor", "film"], "require --narrative"),
+        (["--narrative", "--narrative-visual-mode", "audio"], "auto, image, or video"),
+        (["--narrative", "--narrative-continuity", "bogus"], "off, prompt_anchor, or i2v_chain"),
+        (["--narrative", "--narrative-style-anchor", ""], "must not be empty"),
+        (["--narrative", "--narrative-style-anchor", "   "], "must not be empty"),
+        (["--narrative", "--narrative-style-anchor", "a" * 257], "256 UTF-8 bytes"),
+        (["--narrative", "--narrative-style-anchor", "\u4e2d" * 86], "256 UTF-8 bytes"),
+        (["--narrative", "--narrative-visual-mode", "image",
+          "--video-teacache-thresh", "0.05"], "cannot be used with --narrative-visual-mode image"),
+        (["--narrative", "--video-teacache-thresh", "0.3"], "invalid --video-teacache-thresh"),
+    ]
+    for extra_args, expected_err in invalid_cases:
+        res = run_cli(binary, [
+            "chat", "--url", base, "--model", "qwen3-native",
+            "--prompt", "bad", *extra_args,
+        ])
+        require(res.returncode == 2 and expected_err in res.stderr,
+                f"args={extra_args}: expected exit 2 + {expected_err!r}, got {res.returncode} {res.stderr!r}")
+        require(not take(), f"invalid args {extra_args} must not reach server")
+
+
 def main():
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_BIN
     if not binary.exists():
@@ -714,6 +883,8 @@ def main():
         test_chat_wave9_multimodal_flags,
         test_chat_video_input,
         test_chat_native_allocator_telemetry,
+        test_chat_video_teacache_thresh,
+        test_chat_narrative_controls,
     ]
     failures = 0
     try:
