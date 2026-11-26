@@ -1629,6 +1629,112 @@ final class SessionExportTests: XCTestCase {
         XCTAssertEqual(reimported.turnCount, 3)
         XCTAssertEqual(reimported.turns.count, 6)
         XCTAssertEqual(reimported.turns[5].text, imported.turns[5].text)
+        XCTAssertNil(reimported.videoFrameSelection)
+    }
+
+    func testShowcaseJourney3VideoFrameSelectionImportAndRoundTrip() throws {
+        // Showcase-exported journey_3.session.json with uniform frame budget (max_frames=4).
+        let uniformBudgetJSON = """
+        {
+          "client": "umminfer-showcase",
+          "exported_at": "2025-11-24T16:00:00.000Z",
+          "model": "qwen3-native",
+          "schema": "umminfer-session-export-v1",
+          "session_id": "showcase-journey_3",
+          "turn_count": 1,
+          "turns": [
+            {
+              "asr_text": null,
+              "index": 1,
+              "interrupted": false,
+              "prompt": "Describe the primary subject, setting, and lighting visible in this video clip.",
+              "response": "A glowing golden accretion ring orbits a dark core under dramatic lighting.",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": null,
+                "first_visual_ms": null,
+                "i2v_count": 0,
+                "native_allocator": null,
+                "total_ms": 42.5,
+                "ttfa_ms": null,
+                "ttft_ms": null,
+                "visual_slots": 0
+              },
+              "visual_slots": []
+            }
+          ],
+          "video_frame_selection": {
+            "max_frames": 4,
+            "policy": "uniform"
+          }
+        }
+        """
+
+        let importedUniform = try SessionExporter.importJSONString(uniformBudgetJSON)
+        XCTAssertEqual(importedUniform.sessionID, "showcase-journey_3")
+        XCTAssertEqual(
+            importedUniform.videoFrameSelection,
+            VideoFrameSelectionOptions(policy: .uniform, maxFrames: 4)
+        )
+        let uniformReexported = SessionExporter.buildJSONData(
+            sessionID: importedUniform.sessionID ?? "",
+            model: importedUniform.model ?? "",
+            turns: importedUniform.turns,
+            exportedAt: fixedDate,
+            videoFrameSelection: importedUniform.videoFrameSelection
+        )
+        let uniformReimported = try SessionExporter.importJSON(uniformReexported)
+        XCTAssertEqual(
+            uniformReimported.videoFrameSelection,
+            VideoFrameSelectionOptions(policy: .uniform, maxFrames: 4)
+        )
+
+        // Showcase-exported journey_3.session.json with temporal policy, thresholds, and budget=16.
+        let temporalJSON = uniformBudgetJSON.replacingOccurrences(
+            of: """
+              "video_frame_selection": {
+                "max_frames": 4,
+                "policy": "uniform"
+              }
+            """,
+            with: """
+              "video_frame_selection": {
+                "max_frames": 16,
+                "motion_threshold": 0.2,
+                "policy": "temporal",
+                "scene_threshold": 0.35
+              }
+            """
+        )
+
+        let importedTemporal = try SessionExporter.importJSONString(temporalJSON)
+        XCTAssertEqual(
+            importedTemporal.videoFrameSelection,
+            VideoFrameSelectionOptions(
+                policy: .temporal,
+                motionThreshold: 0.2,
+                sceneThreshold: 0.35,
+                maxFrames: 16
+            )
+        )
+        let temporalReexported = SessionExporter.buildJSONData(
+            sessionID: importedTemporal.sessionID ?? "",
+            model: importedTemporal.model ?? "",
+            turns: importedTemporal.turns,
+            exportedAt: fixedDate,
+            videoFrameSelection: importedTemporal.videoFrameSelection
+        )
+        let temporalReimported = try SessionExporter.importJSON(temporalReexported)
+        XCTAssertEqual(
+            temporalReimported.videoFrameSelection,
+            VideoFrameSelectionOptions(
+                policy: .temporal,
+                motionThreshold: 0.2,
+                sceneThreshold: 0.35,
+                maxFrames: 16
+            )
+        )
     }
 
     func testShowcaseJourney4AbstentionBehaviorLogprobsAndNotCoveredVRAMImportAndRoundTrip() throws {

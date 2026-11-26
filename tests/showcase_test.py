@@ -1600,6 +1600,30 @@ class ShowcaseSuiteTest(unittest.TestCase):
         self.assertNotIn("messages", doc)
         self.assertIsInstance(doc["turns"], list)
         self.assertEqual(doc["turn_count"], len(doc["turns"]))
+        if "video_frame_selection" in doc:
+            vfs = doc["video_frame_selection"]
+            self.assertIsInstance(vfs, dict)
+            self.assertTrue(
+                set(vfs.keys()).issubset(
+                    {"policy", "motion_threshold", "scene_threshold", "max_frames"}
+                )
+            )
+            policy = vfs.get("policy")
+            self.assertIn(policy, ("uniform", "temporal"))
+            if "max_frames" in vfs:
+                self.assertTrue(showcase.is_int(vfs["max_frames"]))
+                self.assertIn(vfs["max_frames"], (4, 8, 16))
+            if policy == "uniform":
+                self.assertNotIn("motion_threshold", vfs)
+                self.assertNotIn("scene_threshold", vfs)
+                self.assertIn("max_frames", vfs)
+            else:
+                for thresh_key in ("motion_threshold", "scene_threshold"):
+                    self.assertIn(thresh_key, vfs)
+                    val = vfs[thresh_key]
+                    self.assertFalse(isinstance(val, bool))
+                    self.assertIsInstance(val, (int, float))
+                    self.assertTrue(math.isfinite(val) and 0.0 <= float(val) <= 1.0)
         sha_re = re.compile(r"^[0-9a-f]{64}$")
 
         for idx, turn in enumerate(doc["turns"]):
@@ -1686,6 +1710,7 @@ class ShowcaseSuiteTest(unittest.TestCase):
         blocks = []
         for begin_marker, end_marker in (
             ("// TURN_TELEMETRY_BEGIN", "// TURN_TELEMETRY_END"),
+            ("// VIDEO_FRAME_SELECTION_BEGIN", "// VIDEO_FRAME_SELECTION_END"),
             ("// NARRATIVE_CONTINUITY_BEGIN", "// NARRATIVE_CONTINUITY_END"),
             ("// REALTIME_AUDIO_METER_BEGIN", "// REALTIME_AUDIO_METER_END"),
             ("// SESSION_EXPORT_BEGIN", "// SESSION_EXPORT_END"),
@@ -1706,11 +1731,18 @@ const summaries = [];
 for (const filePath of paths) {
   const raw = fs.readFileSync(filePath, 'utf8');
   const parsed = parseImportedSessionJson(raw);
+  const controls = {
+    videoFramePolicy: { value: 'temporal' },
+    videoMotionThreshold: { value: '0.9' },
+    videoSceneThreshold: { value: '0.9' },
+    videoFrameBudget: { value: '16' },
+  };
   const state = { turns: [], history: [], sessionID: '', status: '', chip: null };
   const ctx = {
     isBusy: () => false,
     stopActiveAudio() {},
     resetState(nextId) { state.sessionID = nextId; state.turns = []; state.history = []; },
+    applyVideoFrameSelection(selection) { applyVideoFrameSelectionToControls(controls, selection); },
     clearTranscript() {},
     clearError() {},
     addTurn(role, text) {
@@ -1733,6 +1765,13 @@ for (const filePath of paths) {
     turn_count: applied.turnCount,
     slot_counts: state.turns.map((t) => (t.a ? t.a.slots.length : 0)),
     pills: state.turns.map((t) => (t.a ? t.a.pills : [])),
+    video_frame_selection: parsed.video_frame_selection ?? null,
+    controls: {
+      videoFramePolicy: controls.videoFramePolicy.value,
+      videoMotionThreshold: controls.videoMotionThreshold.value,
+      videoSceneThreshold: controls.videoSceneThreshold.value,
+      videoFrameBudget: controls.videoFrameBudget.value,
+    },
   });
 }
 process.stdout.write(JSON.stringify(summaries));
@@ -1868,6 +1907,14 @@ process.stdout.write(JSON.stringify(summaries));
             self.assertIsNone(j2_turn["telemetry"]["native_allocator"])
             self.assertIsNone(j2_turn["telemetry"]["behavior_logprobs"])
 
+            # Default run omits video_frame_selection on all 5 journeys (strict Wave 75 invariance)
+            for jid, jdoc in docs_by_id.items():
+                self.assertNotIn(
+                    "video_frame_selection",
+                    jdoc,
+                    f"default {jid}.session.json must omit video_frame_selection",
+                )
+
             # Journey 3: 3-turn video QA -> 3 turns, zero base64, honest null ttft/ttfa
             j3_doc = docs_by_id["journey_3"]
             self.assertEqual(j3_doc["turn_count"], 3)
@@ -1909,6 +1956,17 @@ process.stdout.write(JSON.stringify(summaries));
             self.assertEqual(len(web_results), 5)
             self.assertEqual([r["turn_count"] for r in web_results], [1, 1, 3, 2, 1])
             self.assertEqual([r["slot_counts"] for r in web_results], [[2], [1], [0, 0, 0], [0, 2], [2]])
+            for res in web_results:
+                self.assertIsNone(res["video_frame_selection"])
+                self.assertEqual(
+                    res["controls"],
+                    {
+                        "videoFramePolicy": "uniform",
+                        "videoMotionThreshold": "0.02",
+                        "videoSceneThreshold": "0.25",
+                        "videoFrameBudget": "",
+                    },
+                )
 
         # 2. Combined --export-gui-sessions + --native-allocator-telemetry + --behavior-logprobs
         with tempfile.TemporaryDirectory(prefix="showcase-gui-full-") as tmp:
@@ -2270,13 +2328,233 @@ process.stdout.write(JSON.stringify(summaries));
                 16,
             )
             session_paths = [out_dir / item["path"] for item in report["gui_sessions"]]
-            for sp in session_paths:
+            session_docs = {}
+            for item, sp in zip(report["gui_sessions"], session_paths):
                 doc = json.loads(sp.read_text(encoding="utf-8"))
                 self._assert_macos_session_export_invariants(doc)
                 self.assertNotIn(";base64,", sp.read_text(encoding="utf-8").lower())
+                session_docs[item["journey_id"]] = doc
+            self.assertEqual(
+                session_docs["journey_3"]["video_frame_selection"],
+                {
+                    "policy": "temporal",
+                    "motion_threshold": 0.2,
+                    "scene_threshold": 0.35,
+                    "max_frames": 16,
+                },
+            )
+            for other_id in ("journey_1", "journey_2", "journey_4", "journey_5"):
+                self.assertNotIn("video_frame_selection", session_docs[other_id])
             web_results = self._validate_sessions_with_web_ui_node(session_paths)
             self.assertEqual(len(web_results), 5)
             self.assertEqual(web_results[2]["turn_count"], 3)
+            self.assertEqual(
+                web_results[2]["video_frame_selection"],
+                {
+                    "policy": "temporal",
+                    "motion_threshold": 0.2,
+                    "scene_threshold": 0.35,
+                    "max_frames": 16,
+                },
+            )
+            self.assertEqual(
+                web_results[2]["controls"],
+                {
+                    "videoFramePolicy": "temporal",
+                    "videoMotionThreshold": "0.2",
+                    "videoSceneThreshold": "0.35",
+                    "videoFrameBudget": "16",
+                },
+            )
+            for idx in (0, 1, 3, 4):
+                self.assertIsNone(web_results[idx]["video_frame_selection"])
+                self.assertEqual(web_results[idx]["controls"]["videoFramePolicy"], "uniform")
+                self.assertEqual(web_results[idx]["controls"]["videoFrameBudget"], "")
+
+    def test_gui_session_export_journey_3_video_frame_selection_cross_client(self) -> None:
+        # 1. --video-frame-budget 4 (uniform + budget) -> exports {"max_frames": 4, "policy": "uniform"}
+        #    on journey_3.session.json only, and restores videoFrameBudget="4" in web/index.html via Node.
+        with tempfile.TemporaryDirectory(prefix="showcase-gui-vfs-u4-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--export-gui-sessions",
+                    "--video-frame-budget",
+                    "4",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            self.assertGreaterEqual(showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS"), 16)
+            session_paths = [out_dir / item["path"] for item in report["gui_sessions"]]
+            docs_by_id = {
+                item["journey_id"]: json.loads((out_dir / item["path"]).read_text(encoding="utf-8"))
+                for item in report["gui_sessions"]
+            }
+            for doc in docs_by_id.values():
+                self._assert_macos_session_export_invariants(doc)
+            self.assertEqual(
+                docs_by_id["journey_3"]["video_frame_selection"],
+                {"max_frames": 4, "policy": "uniform"},
+            )
+            for other_id in ("journey_1", "journey_2", "journey_4", "journey_5"):
+                self.assertNotIn("video_frame_selection", docs_by_id[other_id])
+
+            web_results = self._validate_sessions_with_web_ui_node(session_paths)
+            self.assertEqual(len(web_results), 5)
+            self.assertEqual(
+                web_results[2]["video_frame_selection"],
+                {"policy": "uniform", "max_frames": 4},
+            )
+            self.assertEqual(
+                web_results[2]["controls"],
+                {
+                    "videoFramePolicy": "uniform",
+                    "videoMotionThreshold": "0.02",
+                    "videoSceneThreshold": "0.25",
+                    "videoFrameBudget": "4",
+                },
+            )
+            for idx in (0, 1, 3, 4):
+                self.assertIsNone(web_results[idx]["video_frame_selection"])
+                self.assertEqual(web_results[idx]["controls"]["videoFrameBudget"], "")
+
+        # 2. --video-frame-policy uniform without budget -> canonically omits video_frame_selection
+        #    in journey_3.session.json (matches Web UI and macOS default export).
+        with tempfile.TemporaryDirectory(prefix="showcase-gui-vfs-u-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--journey",
+                    "3",
+                    "--export-gui-sessions",
+                    "--video-frame-policy",
+                    "uniform",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            j3_path = out_dir / "gui_sessions" / "journey_3.session.json"
+            j3_doc = json.loads(j3_path.read_text(encoding="utf-8"))
+            self._assert_macos_session_export_invariants(j3_doc)
+            self.assertNotIn("video_frame_selection", j3_doc)
+            web_res = self._validate_sessions_with_web_ui_node([j3_path])[0]
+            self.assertIsNone(web_res["video_frame_selection"])
+            self.assertEqual(web_res["controls"]["videoFramePolicy"], "uniform")
+            self.assertEqual(web_res["controls"]["videoFrameBudget"], "")
+
+        # 3. --video-frame-policy temporal without explicit thresholds -> fills canonical
+        #    0.02 / 0.25 thresholds so both Web UI and macOS SessionExporter.importJSON accept it.
+        with tempfile.TemporaryDirectory(prefix="showcase-gui-vfs-tdefault-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--journey",
+                    "3",
+                    "--export-gui-sessions",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-frame-budget",
+                    "8",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            j3_path = out_dir / "gui_sessions" / "journey_3.session.json"
+            j3_doc = json.loads(j3_path.read_text(encoding="utf-8"))
+            self._assert_macos_session_export_invariants(j3_doc)
+            self.assertEqual(
+                j3_doc["video_frame_selection"],
+                {
+                    "policy": "temporal",
+                    "motion_threshold": 0.02,
+                    "scene_threshold": 0.25,
+                    "max_frames": 8,
+                },
+            )
+            web_res = self._validate_sessions_with_web_ui_node([j3_path])[0]
+            self.assertEqual(
+                web_res["controls"],
+                {
+                    "videoFramePolicy": "temporal",
+                    "videoMotionThreshold": "0.02",
+                    "videoSceneThreshold": "0.25",
+                    "videoFrameBudget": "8",
+                },
+            )
+
+        # 4. Unit checks: zero boundary threshold preserved, fail-closed on malformed selection,
+        #    and non-Journey-3 exports never emit video_frame_selection.
+        base_j3 = {
+            "passed": True,
+            "turns": [{"turn": 1, "question": "Q", "answer": "A", "latency_s": 0.05}],
+        }
+        doc_zero = showcase.build_gui_session_export(
+            {
+                **base_j3,
+                "video_frame_selection": {
+                    "policy": "temporal",
+                    "motion_threshold": 0.0,
+                    "scene_threshold": 1.0,
+                },
+            },
+            model="qwen3-native",
+            exported_at="2026-11-26T12:00:00.000Z",
+        )
+        self._assert_macos_session_export_invariants(doc_zero)
+        self.assertEqual(
+            doc_zero["video_frame_selection"],
+            {"policy": "temporal", "motion_threshold": 0.0, "scene_threshold": 1.0},
+        )
+        self.assertNotIn("max_frames", doc_zero["video_frame_selection"])
+
+        with self.assertRaises(ValueError):
+            showcase.build_gui_session_export(
+                {**base_j3, "video_frame_selection": {"policy": "uniform", "max_frames": 6}},
+                model="qwen3-native",
+                exported_at="2026-11-26T12:00:00.000Z",
+            )
+
+        j1_with_stray = {
+            "passed": True,
+            "prose": "Narrative text.",
+            "slots": [],
+            "video_frame_selection": {"policy": "uniform", "max_frames": 4},
+        }
+        j1_doc = showcase.build_gui_session_export(
+            j1_with_stray,
+            model="qwen3-native",
+            exported_at="2026-11-26T12:00:00.000Z",
+        )
+        self.assertNotIn("video_frame_selection", j1_doc)
 
     def test_video_frame_budget_fail_closed_before_transport_and_output_creation(self) -> None:
         # 1. Unit fail-closed checks for build_video_frame_selection and validate_video_frame_selection

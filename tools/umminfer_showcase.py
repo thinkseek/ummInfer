@@ -66,6 +66,8 @@ TERMINAL_KINDS = {"complete", "error", "cancelled"}
 ALL_JOURNEYS = (1, 2, 3, 4, 5)
 VIDEO_FRAME_POLICIES = ("uniform", "temporal")
 VIDEO_FRAME_BUDGETS = (4, 8, 16)
+DEFAULT_VIDEO_MOTION_THRESHOLD = 0.02
+DEFAULT_VIDEO_SCENE_THRESHOLD = 0.25
 NATIVE_ALLOCATOR_SCOPE = "request-native-allocator"
 TELEMETRY_STAGE_COVERAGES = ("COVERED", "NOT_COVERED")
 TELEMETRY_ENVELOPE_COVERAGES = ("COVERED", "PARTIAL", "NOT_COVERED")
@@ -2645,6 +2647,28 @@ def _build_gui_turn(
     }
 
 
+def _build_gui_video_frame_selection(raw_selection: object) -> dict | None:
+    """Normalize Journey 3 video_frame_selection for Web UI and macOS ummmlx import parity."""
+    if raw_selection is None:
+        return None
+    validated = validate_video_frame_selection(raw_selection)
+    if validated["policy"] == "uniform":
+        if "max_frames" not in validated:
+            return None
+        return {
+            "policy": "uniform",
+            "max_frames": validated["max_frames"],
+        }
+    out: dict = {
+        "policy": "temporal",
+        "motion_threshold": validated.get("motion_threshold", DEFAULT_VIDEO_MOTION_THRESHOLD),
+        "scene_threshold": validated.get("scene_threshold", DEFAULT_VIDEO_SCENE_THRESHOLD),
+    }
+    if "max_frames" in validated:
+        out["max_frames"] = validated["max_frames"]
+    return out
+
+
 def build_gui_session_export(
     journey_result: dict,
     *,
@@ -2666,10 +2690,14 @@ def build_gui_session_export(
 
     model_str = model.strip() if isinstance(model, str) else ""
     turns: list[dict] = []
+    gui_video_frame_selection: dict | None = None
 
     if isinstance(journey_result.get("turns"), list):
         # Journey 3: multi-turn video QA (video was input; zero base64 payload exported)
         inferred_id = journey_id or journey_result.get("journey_id") or "journey_3"
+        gui_video_frame_selection = _build_gui_video_frame_selection(
+            journey_result.get("video_frame_selection")
+        )
         for idx, raw_turn in enumerate(journey_result["turns"], start=1):
             if not isinstance(raw_turn, dict):
                 raise ValueError(f"journey_result.turns[{idx - 1}] must be a dict")
@@ -2803,7 +2831,7 @@ def build_gui_session_export(
         raise ValueError("unsupported showcase journey_result structure for GUI session export")
 
     safe_journey_id = _sanitize_gui_session_id(inferred_id, fallback="journey")
-    return {
+    doc: dict = {
         "schema": GUI_SESSION_EXPORT_SCHEMA,
         "exported_at": resolved_exported_at,
         "client": GUI_SESSION_EXPORT_CLIENT,
@@ -2812,6 +2840,9 @@ def build_gui_session_export(
         "turn_count": len(turns),
         "turns": turns,
     }
+    if gui_video_frame_selection is not None:
+        doc["video_frame_selection"] = gui_video_frame_selection
+    return doc
 
 
 def _write_gui_session_exports(
