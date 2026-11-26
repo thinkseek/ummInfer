@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T05:09:10Z",
+  "updated_at": "2026-11-26T05:24:35Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "1709e024856bab092e8eb6db7935e71e0ddc2bdc4b859e34de4e031cf0e72e4b",
-      "size": 240416,
-      "normalized_sha256": "1709e024856bab092e8eb6db7935e71e0ddc2bdc4b859e34de4e031cf0e72e4b"
+      "sha256": "7a5f6a124cdd42511ce8b8ad61e52cc2142f22c55c0ce6144d44a33d84317785",
+      "size": 241013,
+      "normalized_sha256": "7a5f6a124cdd42511ce8b8ad61e52cc2142f22c55c0ce6144d44a33d84317785"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -555,6 +555,12 @@
       "size": 4889,
       "normalized_sha256": "f3be5756e9dc382bae3e482b7806fcda31a64e060d8d0b7f9f1c2016b5853c0a"
     },
+    "docs/evidence/exported-token-dpo-real-tokenizer-e400cae.json": {
+      "role": "index",
+      "sha256": "379b1ed624fe0239af70c3d4a4508ec76f64413a841c5d9d3abf60c5d45711d4",
+      "size": 5575,
+      "normalized_sha256": "379b1ed624fe0239af70c3d4a4508ec76f64413a841c5d9d3abf60c5d45711d4"
+    },
     "docs/evidence/sse-replay-live-sm90.json": {
       "role": "index",
       "sha256": "a95a4240a57a1df8a8d4d37366931473f2e5cf8d9ecd8a70ad4f072315f01028",
@@ -563,9 +569,9 @@
     },
     "docs/exported-token-dpo-preflight.md": {
       "role": "index",
-      "sha256": "915e92eae3d3ea7a05e44c358a4e8087c9399dc4a8e31a8678275620d1910a19",
-      "size": 9199,
-      "normalized_sha256": "915e92eae3d3ea7a05e44c358a4e8087c9399dc4a8e31a8678275620d1910a19"
+      "sha256": "1d611a6d93c375a0cc1736342bfdf9d6b8f3d3e15af0603afc5a307b7e9d70db",
+      "size": 13222,
+      "normalized_sha256": "1d611a6d93c375a0cc1736342bfdf9d6b8f3d3e15af0603afc5a307b7e9d70db"
     },
     "docs/exported-token-sft-live.md": {
       "role": "index",
@@ -581,9 +587,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "a30eca45cb1cbb8aee8eddf0e99be9e2d8ba1dcafc2993708044b3b21ec95b7a",
-      "size": 138543,
-      "normalized_sha256": "a30eca45cb1cbb8aee8eddf0e99be9e2d8ba1dcafc2993708044b3b21ec95b7a"
+      "sha256": "31c68c22e87e152691c2362f4e06c9c8756c39c0b359b0e6988dd06c764f98db",
+      "size": 138861,
+      "normalized_sha256": "31c68c22e87e152691c2362f4e06c9c8756c39c0b359b0e6988dd06c764f98db"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -611,9 +617,9 @@
     },
     "docs/joint-training.md": {
       "role": "index",
-      "sha256": "0bd42bae9923001e000a13ed1a94483108a56bd1c5e7a7e381bdb700c6fd3fac",
-      "size": 56117,
-      "normalized_sha256": "0bd42bae9923001e000a13ed1a94483108a56bd1c5e7a7e381bdb700c6fd3fac"
+      "sha256": "402c10423cd75153b2534415f3b484cf21ba3ae331d77e47dbe45361a65fbfb6",
+      "size": 56294,
+      "normalized_sha256": "402c10423cd75153b2534415f3b484cf21ba3ae331d77e47dbe45361a65fbfb6"
     },
     "docs/mac-unified.md": {
       "role": "index",
@@ -689,15 +695,15 @@
     },
     "docs/rl.md": {
       "role": "index",
-      "sha256": "85fbe3e0499d423eb5cd31698ba1706758e1a337e08fad9bec148d4f84523080",
-      "size": 36027,
-      "normalized_sha256": "85fbe3e0499d423eb5cd31698ba1706758e1a337e08fad9bec148d4f84523080"
+      "sha256": "fd9faa7535c939def1121fb8ba396fc4839d468511fbbb8c5e3dbf11ba0e7722",
+      "size": 36180,
+      "normalized_sha256": "fd9faa7535c939def1121fb8ba396fc4839d468511fbbb8c5e3dbf11ba0e7722"
     },
     "docs/roadmap.md": {
       "role": "index",
-      "sha256": "1e8e0e6437970f5b1ff3a9749f676d2a62980d62a9d4fc0f7293699ffb17a189",
-      "size": 28614,
-      "normalized_sha256": "1e8e0e6437970f5b1ff3a9749f676d2a62980d62a9d4fc0f7293699ffb17a189"
+      "sha256": "2ebecc91b6a62b1bd695cdfc4555c5175b060b89cca1f8b88913d96f6daaad98",
+      "size": 28797,
+      "normalized_sha256": "2ebecc91b6a62b1bd695cdfc4555c5175b060b89cca1f8b88913d96f6daaad98"
     },
     "docs/showcase.md": {
       "role": "index",
@@ -2689,9 +2695,9 @@
     },
     "tests/joint_dpo_live_test.py": {
       "role": "observe",
-      "sha256": "b10264560d44fddb7b551204f5502b3b52a5dbc0937665767010f29d2069c3c0",
-      "size": 48321,
-      "normalized_sha256": "b10264560d44fddb7b551204f5502b3b52a5dbc0937665767010f29d2069c3c0"
+      "sha256": "32eabf6b2d1b8fa2521c30385ac71e2a8b3bfb8e4ab7c3dcbf84f42e653da5bb",
+      "size": 62650,
+      "normalized_sha256": "32eabf6b2d1b8fa2521c30385ac71e2a8b3bfb8e4ab7c3dcbf84f42e653da5bb"
     },
     "tests/joint_grpo_live_test.py": {
       "role": "observe",
