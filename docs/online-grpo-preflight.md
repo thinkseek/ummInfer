@@ -6,6 +6,17 @@ planning and identity boundary, not an optimizer. It never calls the online HTTP
 executor, imports Torch/Transformers/NumPy/MLX, performs a policy/reference
 forward, writes model weights, or contacts a serving process.
 
+> **Independent Wave 64 audit and focused identity fix (Task #52):** the
+> integrated alignment source fingerprint changes the original Task #50 run id.
+> Independent checkpoint reconstruction also found empty completed/remaining
+> export lists at every cursor because dataset and schedule group-id namespaces
+> were compared. Commit `ea9155d` changes only those two filters to dataset
+> `group_id`; the new regression is red before and green after, and fresh v1/v2
+> producer and independent bundles now match with zero disagreements. Before and
+> after evidence remains separate. See
+> [online-evidence-audit](online-evidence-audit.md#failed-checkpoint-finding).
+> Online optimization remains `NOT_RUN`.
+
 The accepted frozen-offline adapter `python/umminfer_joint_grpo_live.py` and the
 online rollout producer remain separate. The frozen adapter still rejects online
 provenance; legacy/offline dataset and pack serialization is unchanged. This
@@ -199,23 +210,31 @@ The v1 three-group/nine-member fixture record includes:
 | Source trajectories | `d84554a3f22c915d0f1ee9ba08b7afc86d397e4133d50c07d5eb263ee6a897e7` |
 | Source pack manifest | `467e92a541115c87ae4e8d953de86c21318a9f4a1aa0bb7f8999ce80bf98650f` |
 | Accepted source file-set identity | `de31842ba422edea7662dc29572a1d081fef39b93d29a5f727585c783a36ae31` |
-| Online preflight run id | `43d4bd01c7ed6736313af3aa71aae638bef9964c79e6ff5fbdba245371a84a21` |
-| `run_identity.json` | `7e9e229308c2b7ee22e467b7c762073d76b4a44291a1fd3abef2ef058eb55277` |
-| `schedule.json` | `5673567fc9bd75010e20ef430098964cfef40df8ae15207d0d1a2cf2ebbc6dd1` |
-| `objective_fixtures.json` | `337b69484cd9b4473e7255fcb0e69c40516d6482d9b62f6175140e54a2adffe2` |
-| `manifest.json` | `7f67d81b0232ac1dbd002d1e7f7800a96d7d04a9342400e2ed2e7a3985d386cd` |
-| `SHA256SUMS` | `276b21f4523a3ae4a6b83a1a6be1f67bf4b0a8ed892fa6ddcef36f29409a23a4` |
+| Post-fix online preflight run id | `86a7803e675c9fa813fa1aacf18bf383e788597de61524315c1efd3a534a145c` |
+| `run_identity.json` | `52fb50b4d9a56e74d7b3fc42de67753c0a5672525bb9d7947323fbcc2487e7ea` |
+| `schedule.json` | `6f58962a24fcf739fddc180d43775632bba64053d57bb4595b10d15b86cf839e` |
+| `objective_fixtures.json` | `e7ead49850b82179468b2facac656569c8f6f2a61add7388b5f2e30f2142d2b8` |
+| `manifest.json` | `bc6f40cdbe3a651235ae245c02bebc3b7e6f08e1301bcc20d7820f9fe4b86510` |
+| `SHA256SUMS` | `21b7d79b4c48c08e3d415982c83b4fa8a914f688e7bd4cb1bb33bffd335ea57e` |
 
-Fresh-process reconstruction: seven files, `BYTE_IDENTICAL`, Torch not imported.
+Fresh-process producer reconstruction remains seven files and `BYTE_IDENTICAL`,
+with Torch not imported. Independent v1/v2 reconstruction is now byte-identical
+to the producer with zero checkpoint disagreements. The pre-fix independent
+schedule/manifest/checksum values and the original Task #50 identities remain in
+the sealed before report and the summary's `independent_audit` section; they were
+not normalized into the new run identity.
+
 The zero-variance group has mean `1.0`, std `0.0`, three zero advantages, and a
 finite KL-only fixture loss `7.273936252207847e-06`. The complete per-group
-losses, policy identities, source-code hashes, and claims are in the evidence
-JSON. These are deterministic contract hashes, not model-output or training
-quality evidence.
+losses, policy identities, source-code hashes, correction, and claims are in the
+evidence JSON. These are deterministic contract hashes, not model-output or
+training quality evidence. The former checkpoint failure and focused fix are both
+preserved; only the post-fix independent verdict is PASS.
 
 ## Tests and explicit boundaries
 
 ```text
+python3 -I tests/online_evidence_audit_test.py
 python3 -I tests/online_grpo_preflight_test.py
 python3 -I tests/online_rollout_test.py
 python3 -I tests/behavior_token_alignment_test.py
@@ -229,7 +248,10 @@ real-tokenizer skip, raw-SSE replay 9/9, dataset 8/8, planner 6/6, SFT 6/6,
 DPO 10/10, and RL architecture 16/16. `umm-test-local` passed, including its C++
 contract, realtime, voice, and online-attestation coverage. Real tokenizer strong
 alignment remains `NOT_RUN` unless its explicit local gate is supplied. No GPU
-was used.
+was used. Task #52's independent audit suite passes 9/9; the producer preflight
+suite passes 6/6, including the new red-before/green-after dataset-group-id
+regression. The sealed before verdict has 16 binding disagreements; both post-fix
+independent reports have zero.
 
 A future **real online-generation + optimizer** acceptance gate must additionally:
 

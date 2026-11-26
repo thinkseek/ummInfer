@@ -432,7 +432,7 @@ sampled behavior evidence, exact ordered rewards/advantages, fresh raw-SSE/CAS,
 and independent token_export alignment when supervision is present. It binds
 current/behavior/reference identities, packed ids/labels/masks, separate-reference
 clipped-GRPO/Schulman-KL arithmetic fixtures, plan/group/member hashes, and every
-split/checkpoint cursor into run `43d4bd01c7ed6736313af3aa71aae638bef9964c79e6ff5fbdba245371a84a21`.
+split/checkpoint cursor into post-fix run `86a7803e675c9fa813fa1aacf18bf383e788597de61524315c1efd3a534a145c` (Task #50, pre-fix Wave 64, and fixed identities remain distinct).
 Explicit `--preflight-only` and fresh-process verification produced seven
 byte-identical files and rejected stale and consistently rehashed tampering with
 no output or ML imports. The frozen-offline adapter and legacy pack bytes remain
@@ -441,6 +441,25 @@ acceptance requirements are in
 [online-grpo-preflight](online-grpo-preflight.md). Real online generation,
 current/reference forwards, optimizer execution, GPU, serving, and model quality
 remain `NOT_RUN`.
+
+**Phase 6 independent online-evidence audit (2026-11-26).** A stdlib-only,
+fresh-process auditor now independently reconstructs accepted plans, schedules,
+requests, raw SSE/CAS, sampled ids/logprobs/masks, token-export v1/v2 source
+spans, rewards/advantages, policy packing, ratio/KL fixtures, and run/checkpoint
+identities without importing rollout, alignment, preflight, scoring, or objective
+implementations. Retained real Task #42 text/visual captures pass structural
+audit (61 sampled tokens, 49 supervised, 12 zero directive masks); deterministic
+v1/v2 rollout sources, packs, run identity, and objectives rebuild byte-exactly.
+The audit found a checkpoint defect: all producer cursors hashed empty
+completed/remaining group-export lists because dataset `group_id` was compared to
+`schedule_group_id`. A focused regression captured the failure, and commit
+`ea9155d` changed only those two filters to dataset `group_id`. Before evidence
+retains 16 explicit `CHECKPOINT_GROUP_EXPORT_BINDING` disagreements; fresh v1/v2
+producer and independent post-fix bundles are byte-identical with zero
+disagreements. Source-fingerprint/run-id changes are documented without aliasing.
+Serving/trainer isolation and default legacy pack hashes pass. Exact commands,
+before/after hashes, and `NOT_RUN`/unretained boundaries are in
+[online-evidence-audit](online-evidence-audit.md).
 
 ## Model support plan
 

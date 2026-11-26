@@ -588,9 +588,15 @@ all split/checkpoint cursors. Current/reference values are deterministic
 synthetic arithmetic inputs, never model outputs. `--verify-bundle` replays the
 source and requires seven byte-identical reconstructed files, rejecting both
 stale-hash and consistently rehashed tampering. Deterministic multilingual,
-NFC/emoji, visual, explicit-anchor, and zero-variance fixtures pass, with run id
-`43d4bd01c7ed6736313af3aa71aae638bef9964c79e6ff5fbdba245371a84a21`.
-Frozen-offline GRPO and legacy pack serialization are unchanged.
+NFC/emoji, visual, explicit-anchor, and zero-variance fixtures pass their producer
+contracts, with post-fix run id
+`86a7803e675c9fa813fa1aacf18bf383e788597de61524315c1efd3a534a145c` after the
+explicit source-fingerprint and dataset-group-id corrections. Frozen-offline GRPO
+and legacy pack serialization are unchanged. Task #52 found
+`CHECKPOINT_GROUP_EXPORT_BINDING` failures at every producer cursor; commit
+`ea9155d` fixes only the two namespace filters, and independent v1/v2 post-fix
+verdicts are PASS with zero disagreements. See
+[online-evidence-audit.md](online-evidence-audit.md#failed-checkpoint-finding).
 
 Commands, exact source/document hashes, all rejection classes, and future real
 online-generation/optimizer acceptance requirements are in

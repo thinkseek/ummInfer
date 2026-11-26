@@ -11,6 +11,7 @@ or transformers, and no second inference engine exists.
 | `python/umminfer_sse_replay.py` | Exact raw-SSE/chunk capture, tick provenance, replay validation CLI, byte-identical offline replay |
 | `python/umminfer_token_export.py` | Optional tokenizer-backed token ids, UTF-8/source spans, SFT masks, and independent validation |
 | `python/umminfer_online_rollout.py` | Trainer-side online GRPO schedule, attested endpoint client, fail-closed group export, and byte-identical bundle replay |
+| `python/umminfer_online_evidence_audit.py` | Independent stdlib-only reconstruction of online rollout, sampled token alignment, objective arithmetic, and checkpoint identities; reports accepted-evidence disagreements |
 | `python/umminfer_rl_reward.py` | Export-only reward interface, deterministic composite UMM reward, and plugin loader |
 | `python/umminfer_rl_worker.py` | Independent v1/v2 validation, NDJSON worker protocol, checkpoint hash chain |
 | `tests/narrative_rl_fixtures.py` | Deterministic interleaved narrative, explicit-slot, failed-leg, and cancelled-response fixtures |
@@ -19,6 +20,7 @@ or transformers, and no second inference engine exists.
 | `docs/sse-replay-live.md` | SM90 live hashes, contract-media boundary, replay evidence, and cleanup record |
 | `tests/token_export_test.py` | Multilingual/UTF-8, visual-anchor, cancellation, mask-equivalence, malformed-input, and optional real-tokenizer contracts |
 | `tests/online_rollout_test.py` | Deterministic fake-endpoint online GRPO, cancellation/retry/drift/malformed-group, behavior-evidence, and fresh-process replay contracts |
+| `tests/online_evidence_audit_test.py` | Fresh-process producer-independent valid/negative audits, retained Task #42, checkpoint defect, isolation, and legacy hash contracts |
 | `tests/narrative_slot_reference_live.py` | Explicit `source=slot-N` offline self-check and deferred real-model gate |
 | `tests/rl_architecture_test.py` | Deterministic schema-v2 recorder/validator/reward contracts |
 | `tests/rl_phase2_test.py` | Worker/checkpoint/protocol contracts; does not execute an optimizer |
@@ -550,7 +552,11 @@ It invokes the independent alignment validator when supervision exports exist,
 keeps current/behavior/reference inputs distinct, and binds exact group/member,
 packed-id/label/mask, objective-fixture, split, and checkpoint hashes into online
 run identity. Fresh-process reconstruction is byte-identical and tamper rejects
-without output. Frozen-offline GRPO and legacy packs are unchanged. See
+without output. Frozen-offline GRPO and legacy packs are unchanged. Task #52's
+producer-independent audit found a systematic checkpoint group-export binding
+failure, preserved the failed verdict, and verified the focused dataset-group-id
+fix with zero post-fix v1/v2 disagreements. See
+[online-evidence-audit.md](online-evidence-audit.md#failed-checkpoint-finding) and
 [online-grpo-preflight.md](online-grpo-preflight.md) for commands, exact hashes,
 and future acceptance gates. Online optimizer, current/reference forwards, GPU
 training, and model-quality outcomes remain `NOT_RUN`.

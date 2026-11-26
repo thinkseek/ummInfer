@@ -982,6 +982,7 @@ class SftDatasetBuilderTests(unittest.TestCase):
             "umminfer_joint_grpo_live.py",
             "umminfer_online_rollout.py",
             "umminfer_online_grpo_preflight.py",
+            "umminfer_online_evidence_audit.py",
         }
         for path in (ROOT / "python").glob("*.py"):
             if path.name in offline_dataset_consumers:

@@ -553,6 +553,24 @@ class OnlineGrpoPreflightTests(unittest.TestCase):
                 tokenizer_dir=truncated_tokenizer)
         self.assertFalse((self.root / "truncated-output").exists())
 
+    def test_checkpoint_group_export_hashes_bind_dataset_group_ids(self):
+        bundle, tokenizer, config, output, _ = self.prepare("checkpoint-identity", exports=False)
+        schedule = json.loads((output / "schedule.json").read_text(encoding="utf-8"))
+        run = json.loads((output / "run_identity.json").read_text(encoding="utf-8"))
+        groups = run["identity"]["groups"]
+        for checkpoint in schedule["checkpoints"]:
+            for field, id_field in (
+                    ("completed_group_exports_sha256", "completed_group_ids"),
+                    ("remaining_group_exports_sha256", "remaining_group_ids")):
+                selected = set(checkpoint[id_field])
+                expected = hashlib.sha256(canonical([
+                    group["group_export_sha256"] for group in groups
+                    if group["group_id"] in selected
+                ])).hexdigest()
+                self.assertEqual(
+                    checkpoint[field], expected,
+                    f"{field} must bind dataset group_id, not schedule_group_id")
+
     def test_split_resume_and_policy_revision_identities(self):
         bundle, tokenizer, config, output, _ = self.prepare("identity", exports=False)
         schedule = json.loads((output / "schedule.json").read_text(encoding="utf-8"))

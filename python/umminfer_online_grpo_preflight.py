@@ -430,10 +430,10 @@ def _checkpoint(run_id, steps, groups, packed_order_sha, policy_shas, cursor):
         "completed_group_ids": completed_groups, "remaining_group_ids": remaining_groups,
         "completed_group_exports_sha256": _hash([
             group["group_export_sha256"] for group in groups
-            if group["schedule_group_id"] in completed_groups]),
+            if group["group_id"] in completed_groups]),
         "remaining_group_exports_sha256": _hash([
             group["group_export_sha256"] for group in groups
-            if group["schedule_group_id"] in remaining_groups]),
+            if group["group_id"] in remaining_groups]),
         "packed_input_order_sha256": packed_order_sha,
         "behavior_policy_sha256": policy_shas["behavior"],
         "current_policy_sha256": policy_shas["current"],
