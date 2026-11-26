@@ -532,6 +532,19 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 41 Tokenizer-Backed Trajectory Token-ID & Span Export (`python/umminfer_token_export.py`):
+  - Harvested accepted Task #34 (`f098749` + `f847a5a`, `revisions=0`): added
+    optional additive `token_export` format v1 with explicit tokenizer file
+    SHA-256 binding, exact half-open UTF-8 byte offsets, source event/raw-SSE
+    frame attribution, and SFT `joint_full` mask equivalence across
+    `python/umminfer_token_export.py`, `python/umminfer_rl_worker.py`,
+    `python/umminfer_sft_dataset.py`, `tests/token_export_test.py`, `docs/rl.md`,
+    and `docs/joint-training.md` (6-suite Python regression PASS:
+    `token_export_test.py` 5/5 + explicit `REAL_TOKENIZER_FIXTURE: NOT_RUN` skip,
+    `sft_dataset_test.py` 8/8, `rl_architecture_test.py` 16/16,
+    `rl_phase2_test.py` 6/6, `sse_replay_test.py` 9/9,
+    `stage_c_pipeline_test.py` 6/6).
+
 - Wave 40 Native C++ CLI `umm-infer chat --native-allocator-telemetry` (3-Client Parity):
   - Completed 3-client parity (Web UI + macOS `ummmlx` + native C++ CLI
     `umm-infer`) for Wave 37's `telemetry.native_allocator=true`: added
