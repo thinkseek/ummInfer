@@ -568,6 +568,23 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 46 SM90 Gateway Hot-Swap to `4ef23de` & North-Star 5-Journey Showcase `--native-allocator-telemetry` Live Regression (`5bff589`):
+  - Rebuilt Linux `ReleaseFast` `umm-infer` gateway (`ed291d57...`, preserving
+    `.wave31` backup `830ec93d...`) and hot-swapped ONLY the supervised gateway
+    on port `43301` with **`0` restarts across all 5 resident GPU stages
+    (GPUs 2–6)**; live CLI verification confirmed byte-identical default-off
+    responses (`OK`, zero telemetry) and honest opt-in `--native-allocator-telemetry`
+    reporting (`[telemetry] VRAM: N/C (stage_terminal_snapshot_missing)` for
+    the resident batched GPU 3 stage, never fabricating `0`).
+  - Added opt-in `--native-allocator-telemetry` to `tools/umminfer_showcase.py`
+    and `tests/showcase_test.py` (14/14 PASS; default OFF byte-compatible; opt-in
+    validates `COVERED`/`PARTIAL`/`NOT_COVERED` envelopes fail-closed on chat
+    journeys 1/3/4/5 while leaving Journey 2 `/v1/visual/render` untouched).
+  - Live 5/5 North-Star Showcase regression with `--native-allocator-telemetry`
+    against upgraded SM90 `43301`: **5/5 journeys PASS, 9/9 `SHA256SUMS` OK**,
+    all 41 stage invocations validated honestly as `N/C
+    (stage_terminal_snapshot_missing)`, `/health` returned `in_flight=0`.
+
 - Wave 45 Real `Qwen/Qwen3.8-27B` Fast-Tokenizer Gate & `token_export` Format v2 (`4685125`):
   - Harvested accepted Task #37 (`revisions=0`, CPU-only real fast-tokenizer
     gate): preserved v1 byte-for-byte (golden canonical record SHA-256
