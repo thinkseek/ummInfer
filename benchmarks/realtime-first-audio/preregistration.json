@@ -1,0 +1,76 @@
+{
+  "schema": "umminfer-realtime-first-audio-preregistration/v1",
+  "base_commit": "22d34659a51f1c91216c2748387521b4f0f5ac6d",
+  "seed": 5630241,
+  "primary_question": "Does continuation-first FIFO admission on the serial native TTS stage delay another response's first audio under concurrent full-duplex sessions?",
+  "topology": {
+    "public_path": "raw loopback WebSocket /v1/realtime",
+    "asr": {"physical_gpu": 0, "model_manifest_sha256": "a16807fc65e05f36687484bdfb8cb9f103c3fb59f6787d1f904f3ffebf8a3005"},
+    "vlm": {"physical_gpu": 1, "model_manifest_sha256": "fb2a8751df1dfbcdf556988acd8e2ac7c6f7180c609797d5e9b3a8e3e40a1c7e", "max_new_tokens": 96, "sampling": "native deterministic defaults; no request sampling override"},
+    "tts": {"physical_gpu": 1, "model_manifest_sha256": "92db72616c9578462add19ed81720b7abf1c1e9c3f4d225877a1cd6104d2fb27", "max_frames": 192, "stream": true, "voice": "vivian"},
+    "session_history": true,
+    "playback_ack": true,
+    "vad": {"type": "server_vad", "silence_ms": 400},
+    "observer_boundaries": ["asr-submit", "vlm-submit", "tts-submit", "native-completion"],
+    "observer_rule": "byte-preserving multipart forwarding; record original monotonic_ns before and after forwarding",
+    "forbidden_resources": "Do not use GPU 7, any other resident GPU, or the resident service; bind only ephemeral loopback ports."
+  },
+  "fixtures": {
+    "short": {
+      "file": "near-end-user.wav",
+      "sha256": "64fbd9f7ecafc160ba457595570f4a8b338f10e16acc0933be30aedc7eedf86d",
+      "source": "accepted Task 41 R3 retained recorded microphone WAV",
+      "retained_cold_transcript": "Uh huh. Oh yeah, yeah. He.",
+      "retained_first_audio_end_cursor_bytes": 10
+    },
+    "long": {
+      "file": "en_16.wav",
+      "sha256": "9fe58914522a29ac7afde36af931f83b028f6540f23b29bb06d48ae1f98a1d4a",
+      "source": "existing 16 kHz mono PCM16 English ASR recording used by the native validation gate",
+      "purpose": "exercise a different prompt and measure actual first-segment length; the R1 zh_16 candidate was rejected prospectively after an empty repeated-turn ASR final"
+    }
+  },
+  "input_schedule": {
+    "chunk_bytes": 3200,
+    "tail_silence_ms": 600,
+    "speech_prefix_bytes_per_turn": 64000,
+    "start_jitter_ms_modulus": 17,
+    "interleaving": "SplitMix64 seed derives a fresh session start permutation and jitter for every measured round",
+    "serial_rule": "the next turn starts only after the previous response completes and its final playback ACK is accepted",
+    "concurrent_rule": "all sessions in a round have active sockets and start in the seeded order; no failed or slow response is dropped"
+  },
+  "arms": [
+    {"name": "serial-cold-short", "sessions": 1, "rounds": 3, "prefix_cache": false, "warmup_rounds": 0, "fixture": "short", "read_pause_after_first_audio_ms": 0, "final_ack_delay_ms": 5},
+    {"name": "serial-warm-short", "sessions": 1, "rounds": 3, "prefix_cache": true, "warmup_rounds": 1, "fixture": "short", "read_pause_after_first_audio_ms": 0, "final_ack_delay_ms": 5},
+    {"name": "concurrent-cold-short", "sessions": 6, "rounds": 3, "prefix_cache": false, "warmup_rounds": 0, "fixture": "short", "read_pause_after_first_audio_ms": 0, "final_ack_delay_ms": 5},
+    {"name": "concurrent-warm-short", "sessions": 6, "rounds": 3, "prefix_cache": true, "warmup_rounds": 1, "fixture": "short", "read_pause_after_first_audio_ms": 0, "final_ack_delay_ms": 5},
+    {"name": "serial-cold-long", "sessions": 1, "rounds": 3, "prefix_cache": false, "warmup_rounds": 0, "fixture": "long", "read_pause_after_first_audio_ms": 0, "final_ack_delay_ms": 5},
+    {"name": "concurrent-cold-long", "sessions": 6, "rounds": 3, "prefix_cache": false, "warmup_rounds": 0, "fixture": "long", "read_pause_after_first_audio_ms": 0, "final_ack_delay_ms": 5},
+    {"name": "concurrent-cold-short-backpressure", "sessions": 6, "rounds": 3, "prefix_cache": false, "warmup_rounds": 0, "fixture": "short", "read_pause_after_first_audio_ms": 2000, "final_ack_delay_ms": 250}
+  ],
+  "required_observations": [
+    "ASR audio submit, native final completion, public ASR final and speech-stop timestamps",
+    "VLM submit, first/last native text, native prefill/decode/elapsed, prefix reuse and public text arrival",
+    "actual first TTS text, first-segment availability, TTS submit, first native PCM and first public WS audio",
+    "TTS native compute-to-first-PCM and per-leg stream/terminal waveform identity",
+    "raw PCM bytes and hashes, raw WS bytes and arrival timestamps, all terminal and ACK events",
+    "median, p95, q1, q3, IQR, MAD, min, max and every Tukey outlier for every stage metric",
+    "cold prefix_reused=0 for every cold request; warm measured reuse is reported exactly and is not fabricated",
+    "source, harness, observer, binary, model and fixture SHA-256 identities",
+    "final /health in_flight=0, owned-process exit and assigned-GPU idle restoration"
+  ],
+  "protocol_regressions": {
+    "after_measured_arms": ["delayed barge-in after a positive acknowledged cursor", "echo-only protected/disabled A/B", "simultaneous double-talk in both echo modes"],
+    "required": ["exact acknowledged UTF-8 prefix history", "no stale old-response events", "session/connection isolation", "monotonic issued ACK cursors", "one terminal callback kind per response", "PCM16 24 kHz mono non-empty audio"],
+    "physical_playback_wan_and_perceptual_listening": "NOT_COVERED"
+  },
+  "ab_acceptance": {
+    "pairing": "arm, fixture, measured repetition and logical session; warmups and deliberate cancellations are excluded from primary latency pairs but retained",
+    "quality": "paired ASR transcript, full response text and concatenated PCM SHA-256 must be identical; any mismatch is a no-quality-equivalence result, not a silent pass",
+    "primary": "concurrent-cold-short ASR-final-to-first-WS-audio median and p95",
+    "candidate_improvement": "primary median decreases by at least 20 percent with no hidden samples",
+    "guardrails": "serial-cold-short median regression no more than 5 percent; concurrent-cold-short p95 regression no more than 5 percent; no protocol or quality regression in any arm",
+    "stability": "Use population standard deviation / arithmetic mean. Both serial-cold-short arms require CV <= 0.10 or the quiet window repeats. Concurrent CV is reported but not gated because seeded admission order intentionally creates heterogeneous queue positions; every concurrent sample remains visible.",
+    "no_fix_path": "If byte-preserving observation does not reproduce continuation-ahead-of-first-audio queueing, or the candidate violates a guardrail, retain precise evidence and make no latency runtime change."
+  }
+}

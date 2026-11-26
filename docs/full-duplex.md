@@ -581,7 +581,10 @@ response IDs and 30 actual server responses, matching all 30 native VLM prompts.
 The independent CPU timing audit re-decodes and reconciles this distinction,
 all exact timings, ACK/cancel schedules, PCM hashes, prompts, history, resource
 samples, and outliers without changing the runtime; see
-[realtime-latency-audit.md](realtime-latency-audit.md).
+[realtime-latency-audit.md](realtime-latency-audit.md). The follow-up Task #55
+retained-stage decomposition, native-boundary observer gate, TTS first-audio
+fair-drain regression and controlled A/B evidence are documented separately in
+[realtime-first-audio.md](realtime-first-audio.md).
 
 Each scenario occurred three times: full final ACK, immediate barge-in, delayed
 barge-in after an acknowledged sentence prefix, reconnect during playback,

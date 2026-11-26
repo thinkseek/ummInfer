@@ -1,0 +1,179 @@
+{
+  "binaries": {
+    "baseline_policy_diff_sha256": "70ce8c986cdb93c4c030b541cb0e908605cfad17543d7f707101df11fe7f99cc",
+    "common_asr_sha256": "21c0dc097b0c958523496ae8e9c9f0c865eb436b8f15e7f121e24688baa568a5",
+    "common_qwen_sha256": "a958db362ab0df68aeabe6ee258c0d4f0840a13a7657b03c59b0bda074aef474",
+    "common_server_sha256": "91863dbda8de6480d232f863c542b6854818597fa06ea68219b7366b3e0e432d",
+    "fifo_tts_sha256": "26e123d3562b5ade9217427015fb1740e3daaaea1905f74daae92bbe194b91c8",
+    "priority_tts_sha256": "ca36c5c68a15904ffaf425404351d3fa5b35936e014d65224f2946c19570bbc7"
+  },
+  "cleanup": {
+    "diagnostic_checksums": "PASS",
+    "gpu_0": {
+      "compute_processes": [],
+      "memory_mib": 3,
+      "utilization_percent": 0
+    },
+    "gpu_1": {
+      "compute_processes": [],
+      "memory_mib": 3,
+      "utilization_percent": 0
+    },
+    "health_in_flight": 0,
+    "owned_processes_exited": true
+  },
+  "coverage": {
+    "cold_prefix_reuse_max": 0,
+    "files_per_run": 235,
+    "genuinely_long_opening": "NOT_COVERED; en_16.wav produced Hello!",
+    "measured_responses_per_run": 81,
+    "perceptual_listening": "NOT_COVERED",
+    "physical_playback": "NOT_COVERED",
+    "total_server_responses_per_run": 96,
+    "wan": "NOT_COVERED",
+    "warm_prefix_reuse_max": 244
+  },
+  "diagnostic_manifests": {
+    "failed_r1": "212ea9fa5c93a463e7d34c48eb8862a6df3c3744afc2fb9b98fad88facb1177e",
+    "failed_r2": "95ed7e44ed66d3506ddadfdce35eba69b2d335e337678d716777d1353404a9a0",
+    "fresh_tts_control": "368d4e948962b802893519628b5fda204f2749abefd477fe5c30e1b3f610b86c",
+    "invalid_r4_model_path": "03922f1695870edc6c56d8ea22d881e4b2b4c39a9622be478553ab9f4e8cb861",
+    "partial_first_candidate": "c082f0b443b60b00c18d096ce4269dd24102561d8b344b9ac4492ba2bb0d24a4",
+    "reused_long_control": "fa92f07fc26231cebceb737a0ec8f8d6d160fe58ee4bec5dc6475e5ec6d48164",
+    "reused_short_control": "6224f6c30899d70d15a118bbd78364ebfcc4ace2cdc53e28704ac8ec08098727"
+  },
+  "primary": {
+    "baseline_ms": {
+      "count": 18,
+      "cv": 0.5647325168987274,
+      "iqr": 14287.4773945,
+      "mad": 7145.024252,
+      "max": 30094.288831,
+      "median": 18180.004602,
+      "min": 381.476776,
+      "p95": 30086.814359400003,
+      "q1": 11035.27622175,
+      "q3": 25322.75361625
+    },
+    "candidate_ms": {
+      "count": 18,
+      "cv": 0.46423848935907924,
+      "iqr": 3766.226906,
+      "mad": 1830.99115,
+      "max": 11943.425583,
+      "median": 9696.0896,
+      "min": 381.684699,
+      "p95": 11930.03009215,
+      "q1": 7521.868063,
+      "q3": 11288.094969
+    },
+    "median_reduction_fraction": 0.46666187318053143,
+    "p95_reduction_fraction": 0.6034797852095395,
+    "same_candidate_repeat_ms": {
+      "count": 18,
+      "cv": 0.461131233156609,
+      "iqr": 3853.119085,
+      "mad": 1858.5267705,
+      "max": 11944.620954,
+      "median": 9788.175663,
+      "min": 381.634784,
+      "p95": 11936.0078207,
+      "q1": 7496.40789075,
+      "q3": 11349.52697575
+    }
+  },
+  "primary_tts_submit_to_first_native_pcm": {
+    "baseline_ms": {
+      "count": 18,
+      "cv": 0.53847130654163,
+      "iqr": 9150.5540805,
+      "mad": 4576.545845,
+      "max": 21364.323858,
+      "median": 13704.608957,
+      "min": 186.495906,
+      "p95": 21357.930073,
+      "q1": 9149.92345425,
+      "q3": 18300.47753475
+    },
+    "candidate_ms": {
+      "count": 18,
+      "cv": 0.47272481144714984,
+      "iqr": 1998.84568975,
+      "mad": 869.60898,
+      "max": 5653.444721,
+      "median": 4589.928783,
+      "min": 186.204551,
+      "p95": 5636.41237255,
+      "q1": 3229.542019,
+      "q3": 5228.38770875
+    }
+  },
+  "quality": {
+    "aa_first_leg_pcm_mismatches": 0,
+    "aa_pcm_mismatch_pairs": 18,
+    "aa_text_mismatch_pairs": 0,
+    "ab_first_leg_pcm_mismatches": 0,
+    "ab_pcm_mismatch_pairs": 17,
+    "ab_text_mismatch_pairs": 0,
+    "candidate_attributable_quality_regression": "NOT_ESTABLISHED; full-workload continuation synthesis also varies in same-candidate A/A",
+    "exact_full_pcm_identity": false,
+    "native_public_pcm_exact_all_sides": true,
+    "perceptual_listening": "NOT_COVERED"
+  },
+  "repeatability_controls": {
+    "fresh_process_identical_wav_sha256": "8a78dd86aa96e4d906a0832ba4fa34855768344dc6a78d044481f50bb5ea1037",
+    "reused_long_pcm_sha256": "3eaa2791bba77428558a314086e2264e3279123b03d89a4998f24a3cce11773d",
+    "reused_short_and_long_identical": true
+  },
+  "reports": {
+    "baseline": {
+      "file": "realtime-first-audio-r4-baseline.json",
+      "manifest_sha256": "6e7d4cf6c37de8565bfb9bf03b0bf6c5ea1b25ad03e8bc240fab6cdfaafe277c",
+      "sha256": "9fcabf44eeb29c38cab3187c15f03c796755d96389735fad7c2e7bb152d3f511"
+    },
+    "candidate": {
+      "file": "realtime-first-audio-r4-candidate.json",
+      "manifest_sha256": "95f4ed139eb03114aff9bbf732ea49ebade65a9da59bce356f4398833d98b61f",
+      "sha256": "cb8920590983126dd4d9fa6d6356680df2b5344de61b108b6160608505076a2d"
+    },
+    "same_candidate_repeat": {
+      "file": "realtime-first-audio-r4-candidate-aa2.json",
+      "manifest_sha256": "004564c38a82fcc8716a8de75afb1ff56ee22e97d9e8d0fdd054646612a58c6e",
+      "sha256": "aa06c989979902f9df082cb741551fd423c74b606c1532f29b9b14ffcfb452a2"
+    }
+  },
+  "schema": "umminfer-realtime-first-audio-r4-diagnostic/v1",
+  "serial_guardrail": {
+    "baseline_ms": {
+      "count": 3,
+      "cv": 0.0002629273854014194,
+      "iqr": 0.120883,
+      "mad": 0.082572,
+      "max": 381.757034,
+      "median": 381.59784,
+      "min": 381.515268,
+      "p95": 381.7411146,
+      "q1": 381.556554,
+      "q3": 381.677437
+    },
+    "candidate_ms": {
+      "count": 3,
+      "cv": 0.012522607662070107,
+      "iqr": 5.1641505,
+      "mad": 0.208318,
+      "max": 391.756449,
+      "median": 381.636466,
+      "min": 381.428148,
+      "p95": 390.7444507,
+      "q1": 381.532307,
+      "q3": 386.6964575
+    },
+    "median_change_fraction": 0.00010122174695736952
+  },
+  "source": {
+    "candidate_harness": "e123fa69492dc566f285e58fdc6d800985e21706",
+    "integration_merge": "bab21ee7fbe021220da6cc80260750f12ca7fbc8",
+    "official_second_parent": "bb1ecaa6f38526434066df2eaf945076a72a8ac8"
+  },
+  "status": "FAIL_EXACT_FULL_PCM_IDENTITY__LATENCY_DIAGNOSTIC_ONLY"
+}

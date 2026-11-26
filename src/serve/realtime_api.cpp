@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <iostream>
@@ -326,6 +327,7 @@ class RealtimeApi::Impl {
 
   void stop() {
     running_ = false;
+    unified_cv_.notify_all();
     if (context_) lws_cancel_service(context_);
   }
 
@@ -1159,6 +1161,7 @@ class RealtimeApi::Impl {
       std::lock_guard<std::mutex> lock(unified_mu_);
       batch.swap(unified_queue_);
     }
+    unified_cv_.notify_all();
     const auto timeout_span = std::chrono::duration_cast<Clock::duration>(
         std::chrono::duration<double>(config_.request_timeout_s));
     for (const UnifiedEvent& event : batch) {
@@ -1397,11 +1400,17 @@ class RealtimeApi::Impl {
                               event.kind == UnifiedEvent::Kind::kError ||
                               event.kind == UnifiedEvent::Kind::kCancelled ||
                               event.kind == UnifiedEvent::Kind::kLegError;
-    std::lock_guard<std::mutex> lock(unified_mu_);
-    // Drop only incremental frames under extreme backpressure; terminal and
-    // leg-failure events must always be delivered so UnifiedEngine records are
-    // released cleanly and audio failures are never hidden.
-    if (!must_deliver && unified_queue_.size() >= 4096) return;
+    std::unique_lock<std::mutex> lock(unified_mu_);
+    if (!must_deliver) {
+      // Preserve every VLM/PCM event under saturation. Blocking this Coordinator
+      // callback applies bounded backpressure to native producers; the lws thread
+      // swaps at most 4096 queued events plus one bounded batch. Terminal events
+      // still bypass the wait, and shutdown always releases a blocked producer.
+      unified_cv_.wait(lock, [&] {
+        return !running_ || unified_queue_.size() < 4096;
+      });
+      if (!running_) return;
+    }
     unified_queue_.push_back(event);
   }
 
@@ -1425,6 +1434,7 @@ class RealtimeApi::Impl {
   uint64_t next_session_no_ = 0;
   UnifiedEngine* unified_ = nullptr;
   std::mutex unified_mu_;
+  std::condition_variable unified_cv_;
   std::deque<UnifiedEvent> unified_queue_;
   std::set<std::string> unified_owned_;
   int bound_port_ = -1;
