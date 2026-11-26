@@ -9,6 +9,8 @@ from http.server import ThreadingHTTPServer
 import json
 import math
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1555,6 +1557,499 @@ class ShowcaseSuiteTest(unittest.TestCase):
                 self.assertEqual(status, 400, f"expected HTTP 400 for {bad_body!r}, got {status}: {raw!r}")
         finally:
             self._stop_mock_server(server, thread)
+
+    def _assert_macos_session_export_invariants(self, doc: dict) -> None:
+        """Mirror clients/ummmlx/Sources/ummmlx/SessionExport.swift importJSON strict checks."""
+        self.assertEqual(doc["schema"], "umminfer-session-export-v1")
+        self.assertEqual(doc["client"], "umminfer-showcase")
+        self.assertIsInstance(doc["exported_at"], str)
+        self.assertTrue(doc["exported_at"].strip())
+        self.assertIsInstance(doc["session_id"], str)
+        self.assertTrue(doc["session_id"].strip())
+        self.assertNotIn("messages", doc)
+        self.assertIsInstance(doc["turns"], list)
+        self.assertEqual(doc["turn_count"], len(doc["turns"]))
+        sha_re = re.compile(r"^[0-9a-f]{64}$")
+
+        for idx, turn in enumerate(doc["turns"]):
+            self.assertEqual(turn["index"], idx + 1)
+            self.assertIn(turn.get("role"), (None, "turn", "user", "assistant"))
+            self.assertIsInstance(turn["prompt"], str)
+            self.assertIsInstance(turn["response"], str)
+            self.assertTrue(turn["asr_text"] is None or isinstance(turn["asr_text"], str))
+            self.assertIsInstance(turn["interrupted"], bool)
+            self.assertTrue(
+                turn["spoken_bytes"] is None
+                or (showcase.is_int(turn["spoken_bytes"]) and turn["spoken_bytes"] >= 0)
+            )
+            self.assertIsInstance(turn["visual_slots"], list)
+            for slot in turn["visual_slots"]:
+                self.assertIsInstance(slot["id"], str)
+                self.assertTrue(slot["id"].strip())
+                self.assertEqual(slot["slot_id"], slot["id"])
+                self.assertTrue(showcase.is_int(slot["slot_index"]) and slot["slot_index"] >= 0)
+                self.assertIn(slot["kind"], ("image", "video"))
+                if slot.get("bytes") is not None:
+                    self.assertTrue(showcase.is_int(slot["bytes"]) and slot["bytes"] >= 0)
+                if slot.get("sha256") is not None:
+                    self.assertRegex(slot["sha256"], sha_re)
+                if "continuity_mode" in slot:
+                    self.assertIn(slot["continuity_mode"], ("prompt_anchor", "i2v_chain"))
+                if "anchor_slot_index" in slot:
+                    self.assertTrue(
+                        showcase.is_int(slot["anchor_slot_index"]) and slot["anchor_slot_index"] >= 0
+                    )
+                if "anchor_explicit" in slot:
+                    self.assertIsInstance(slot["anchor_explicit"], bool)
+                if "anchor_sha256" in slot:
+                    self.assertRegex(slot["anchor_sha256"], sha_re)
+
+            tel = turn["telemetry"]
+            self.assertIsInstance(tel, dict)
+            for ms_key in ("ttft_ms", "ttfa_ms", "first_visual_ms", "total_ms"):
+                val = tel[ms_key]
+                if val is not None:
+                    self.assertFalse(isinstance(val, bool))
+                    self.assertIsInstance(val, (int, float))
+                    self.assertTrue(math.isfinite(val) and val >= 0.0)
+            self.assertTrue(showcase.is_int(tel["visual_slots"]) and tel["visual_slots"] >= 0)
+            self.assertTrue(showcase.is_int(tel["i2v_count"]) and tel["i2v_count"] >= 0)
+
+            na = tel["native_allocator"]
+            if na is not None:
+                self.assertIn(na["coverage"], ("COVERED", "PARTIAL", "NOT_COVERED"))
+                self.assertIsInstance(na["covered"], bool)
+                self.assertTrue(showcase.is_int(na["covered_stage_count"]))
+                self.assertTrue(showcase.is_int(na["total_stage_count"]))
+                self.assertLessEqual(na["covered_stage_count"], na["total_stage_count"])
+                if na["covered"]:
+                    self.assertNotEqual(na["coverage"], "NOT_COVERED")
+                    self.assertTrue(showcase.is_int(na["peak_bytes"]) and na["peak_bytes"] >= 0)
+                else:
+                    self.assertEqual(na["coverage"], "NOT_COVERED")
+                    self.assertIsNone(na["peak_bytes"])
+                self.assertIsInstance(na["label"], str)
+                self.assertIsInstance(na["details"], list)
+                for line in na["details"]:
+                    self.assertIsInstance(line, str)
+
+            beh = tel["behavior_logprobs"]
+            if beh is not None:
+                self.assertIn(beh["status"], ("exposed", "not_exposed", "absent"))
+                self.assertIsInstance(beh["label"], str)
+                if beh["status"] == "exposed":
+                    self.assertTrue(showcase.is_int(beh["token_count"]) and beh["token_count"] >= 0)
+                    self.assertTrue(
+                        showcase.is_int(beh["supervised_count"])
+                        and 0 <= beh["supervised_count"] <= beh["token_count"]
+                    )
+                else:
+                    self.assertIsNone(beh["token_count"])
+                    self.assertIsNone(beh["supervised_count"])
+
+    def _validate_sessions_with_web_ui_node(self, session_paths: list[Path]) -> list[dict]:
+        """Validate exported JSON files directly against web/index.html parseImportedSessionJson."""
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "node is required to validate GUI sessions against web/index.html")
+        web_html = (REPO_ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        blocks = []
+        for begin_marker, end_marker in (
+            ("// TURN_TELEMETRY_BEGIN", "// TURN_TELEMETRY_END"),
+            ("// NARRATIVE_CONTINUITY_BEGIN", "// NARRATIVE_CONTINUITY_END"),
+            ("// REALTIME_AUDIO_METER_BEGIN", "// REALTIME_AUDIO_METER_END"),
+            ("// SESSION_EXPORT_BEGIN", "// SESSION_EXPORT_END"),
+            ("// SESSION_IMPORT_BEGIN", "// SESSION_IMPORT_END"),
+        ):
+            self.assertIn(begin_marker, web_html)
+            self.assertIn(end_marker, web_html)
+            blocks.append(web_html.split(begin_marker, 1)[1].split(end_marker, 1)[0])
+
+        harness = "\n".join(blocks) + r"""
+const fs = require('fs');
+globalThis.fetch = () => { throw new Error('unexpected fetch during session import'); };
+globalThis.WebSocket = class ForbiddenWebSocket {
+  constructor() { throw new Error('unexpected WebSocket during session import'); }
+};
+const paths = JSON.parse(process.argv[1]);
+const summaries = [];
+for (const filePath of paths) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const parsed = parseImportedSessionJson(raw);
+  const state = { turns: [], history: [], sessionID: '', status: '', chip: null };
+  const ctx = {
+    isBusy: () => false,
+    stopActiveAudio() {},
+    resetState(nextId) { state.sessionID = nextId; state.turns = []; state.history = []; },
+    clearTranscript() {},
+    clearError() {},
+    addTurn(role, text) {
+      return { role, text, asrText: '', asrEl: { textContent: '' }, slots: [], telemetry: null, pills: [] };
+    },
+    renderAssistantText(a, text) { a.renderedText = text; },
+    addImportedVisualSlot(a, slotMeta) { a.slots.push(slotMeta); },
+    attachInterruptedBadge() {},
+    renderTelemetry(a) { a.pills = formatTurnTelemetry(a.telemetry).map((p) => p.label); },
+    recordTurn(u, a, p, r) { state.turns.push({ u, a }); if (p) state.history.push(p); if (r) state.history.push(r); },
+    setSessionChip(chip) { state.chip = chip; },
+    syncUI() {},
+    setStatus(msg) { state.status = msg; },
+  };
+  const applied = applyImportedSessionWithContext(parsed, ctx);
+  summaries.push({
+    file: filePath,
+    schema: applied.schema,
+    session_id: applied.sessionId,
+    turn_count: applied.turnCount,
+    slot_counts: state.turns.map((t) => (t.a ? t.a.slots.length : 0)),
+    pills: state.turns.map((t) => (t.a ? t.a.pills : [])),
+  });
+}
+process.stdout.write(JSON.stringify(summaries));
+"""
+        proc = subprocess.run(
+            [node, "-e", harness, json.dumps([str(p) for p in session_paths])],
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+            check=False,
+        )
+        self.assertEqual(
+            proc.returncode,
+            0,
+            f"web/index.html parseImportedSessionJson rejected exported session(s):\n"
+            f"stderr={proc.stderr}\nstdout={proc.stdout}",
+        )
+        return json.loads(proc.stdout)
+
+    def test_gui_session_export_default_off_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="showcase-gui-off-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [sys.executable, "-I", str(SCRIPT_PATH), "--self-check", "--out-dir", str(out_dir)],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertFalse((out_dir / "gui_sessions").exists())
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            sums_text = (out_dir / "SHA256SUMS").read_text(encoding="utf-8")
+            self.assertNotIn("gui_sessions", report)
+            self.assertNotIn("## GUI Session Exports", md_text)
+            self.assertNotIn("gui_sessions/", sums_text)
+
+    def test_gui_session_export_cli_self_check_and_cross_client_validation(self) -> None:
+        forbidden = [
+            "h" + "20b",
+            "/" + "Users/",
+            "/" + "home/",
+            "byte" + "dance",
+            ";base64,",
+            "data:image/",
+            "data:video/",
+            "data:audio/",
+        ]
+
+        # 1. Baseline --self-check --export-gui-sessions (all 5 journeys)
+        with tempfile.TemporaryDirectory(prefix="showcase-gui-base-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--export-gui-sessions",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("SELF-CHECK PASS", proc.stdout)
+
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            sums_path = out_dir / "SHA256SUMS"
+            verified = showcase.verify_sha256sums_file(out_dir, sums_path)
+            self.assertGreaterEqual(verified, 16)
+
+            gui_meta = report["gui_sessions"]
+            self.assertEqual(
+                [item["journey_id"] for item in gui_meta],
+                ["journey_1", "journey_2", "journey_3", "journey_4", "journey_5"],
+            )
+            self.assertEqual([item["turn_count"] for item in gui_meta], [1, 1, 3, 2, 1])
+            self.assertIn("## GUI Session Exports", md_text)
+
+            sums_text = sums_path.read_text(encoding="utf-8")
+            session_paths: list[Path] = []
+            docs_by_id: dict[str, dict] = {}
+            for item in gui_meta:
+                rel_path = item["path"]
+                self.assertEqual(rel_path, f"gui_sessions/{item['journey_id']}.session.json")
+                self.assertIn(f"  {rel_path}", sums_text)
+                self.assertIn(f"`{rel_path}`", md_text)
+                file_path = out_dir / rel_path
+                self.assertTrue(file_path.is_file())
+                raw_bytes = file_path.read_bytes()
+                self.assertEqual(len(raw_bytes), item["bytes"])
+                self.assertEqual(showcase.sha256_bytes(raw_bytes), item["sha256"])
+                raw_text = raw_bytes.decode("utf-8")
+                self.assertTrue(raw_text.endswith("\n"))
+                lowered = raw_text.lower()
+                for token in forbidden:
+                    self.assertNotIn(token.lower(), lowered, f"forbidden token {token!r} in {rel_path}")
+                doc = json.loads(raw_text)
+                self._assert_macos_session_export_invariants(doc)
+                session_paths.append(file_path)
+                docs_by_id[item["journey_id"]] = doc
+
+            # Journey 1: interleaved narrative + audio + 2 visual slots, null opt-in telemetry
+            j1_turn = docs_by_id["journey_1"]["turns"][0]
+            self.assertTrue(j1_turn["prompt"])
+            self.assertTrue(j1_turn["response"])
+            self.assertEqual(len(j1_turn["visual_slots"]), 2)
+            self.assertIsNotNone(j1_turn["telemetry"]["ttft_ms"])
+            self.assertIsNotNone(j1_turn["telemetry"]["ttfa_ms"])
+            self.assertIsNone(j1_turn["telemetry"]["native_allocator"])
+            self.assertIsNone(j1_turn["telemetry"]["behavior_logprobs"])
+
+            # Journey 2: I2V render with honest null ttft/ttfa/native_allocator/behavior_logprobs
+            j2_turn = docs_by_id["journey_2"]["turns"][0]
+            self.assertEqual(j2_turn["response"], "")
+            self.assertEqual(len(j2_turn["visual_slots"]), 1)
+            self.assertEqual(j2_turn["visual_slots"][0]["kind"], "video")
+            self.assertEqual(j2_turn["visual_slots"][0]["continuity_mode"], "i2v_chain")
+            self.assertTrue(j2_turn["visual_slots"][0]["anchor_explicit"])
+            self.assertEqual(
+                j2_turn["visual_slots"][0]["anchor_sha256"],
+                report["journeys"]["journey_2"]["source_image_sha256"],
+            )
+            self.assertIsNone(j2_turn["telemetry"]["ttft_ms"])
+            self.assertIsNone(j2_turn["telemetry"]["ttfa_ms"])
+            self.assertEqual(j2_turn["telemetry"]["i2v_count"], 1)
+            self.assertIsNone(j2_turn["telemetry"]["native_allocator"])
+            self.assertIsNone(j2_turn["telemetry"]["behavior_logprobs"])
+
+            # Journey 3: 3-turn video QA -> 3 turns, zero base64, honest null ttft/ttfa
+            j3_doc = docs_by_id["journey_3"]
+            self.assertEqual(j3_doc["turn_count"], 3)
+            for t in j3_doc["turns"]:
+                self.assertTrue(t["prompt"])
+                self.assertTrue(t["response"])
+                self.assertEqual(t["visual_slots"], [])
+                self.assertIsNone(t["telemetry"]["ttft_ms"])
+                self.assertIsNone(t["telemetry"]["ttfa_ms"])
+                self.assertIsNotNone(t["telemetry"]["total_ms"])
+
+            # Journey 4: abstention vs visual scene -> 2 turns
+            j4_turns = docs_by_id["journey_4"]["turns"]
+            self.assertEqual(len(j4_turns), 2)
+            self.assertEqual(j4_turns[0]["visual_slots"], [])
+            self.assertTrue(j4_turns[0]["response"])
+            self.assertEqual(j4_turns[0]["telemetry"]["visual_slots"], 0)
+            self.assertIsNone(j4_turns[0]["telemetry"]["first_visual_ms"])
+            self.assertEqual(len(j4_turns[1]["visual_slots"]), 2)
+            self.assertTrue(j4_turns[1]["response"])
+            self.assertEqual(j4_turns[1]["telemetry"]["visual_slots"], 2)
+
+            # Journey 5: storyboard I2V chain
+            j5_turn = docs_by_id["journey_5"]["turns"][0]
+            self.assertEqual(len(j5_turn["visual_slots"]), 2)
+            self.assertEqual(j5_turn["visual_slots"][1]["continuity_mode"], "i2v_chain")
+            self.assertEqual(j5_turn["visual_slots"][1]["anchor_slot_index"], 0)
+            self.assertGreaterEqual(j5_turn["telemetry"]["i2v_count"], 1)
+
+            # Determinism: exporting again yields identical SHA-256 and bytes
+            with tempfile.TemporaryDirectory(prefix="showcase-gui-det-") as tmp2:
+                out2 = Path(tmp2)
+                r1 = showcase.export_gui_sessions(report, out2)
+                r2 = showcase.export_gui_sessions(report, out2)
+                self.assertEqual(r1, r2)
+
+            # Cross-client Node validation directly against web/index.html parseImportedSessionJson
+            web_results = self._validate_sessions_with_web_ui_node(session_paths)
+            self.assertEqual(len(web_results), 5)
+            self.assertEqual([r["turn_count"] for r in web_results], [1, 1, 3, 2, 1])
+            self.assertEqual([r["slot_counts"] for r in web_results], [[2], [1], [0, 0, 0], [0, 2], [2]])
+
+        # 2. Combined --export-gui-sessions + --native-allocator-telemetry + --behavior-logprobs
+        with tempfile.TemporaryDirectory(prefix="showcase-gui-full-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--export-gui-sessions",
+                    "--native-allocator-telemetry",
+                    "--behavior-logprobs",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            self.assertGreaterEqual(showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS"), 16)
+
+            full_paths = [out_dir / item["path"] for item in report["gui_sessions"]]
+            full_docs = {
+                item["journey_id"]: json.loads((out_dir / item["path"]).read_text(encoding="utf-8"))
+                for item in report["gui_sessions"]
+            }
+            for doc in full_docs.values():
+                self._assert_macos_session_export_invariants(doc)
+
+            # Journey 1 has COVERED VRAM + not_exposed behavior (null counts)
+            j1_tel = full_docs["journey_1"]["turns"][0]["telemetry"]
+            self.assertEqual(j1_tel["native_allocator"]["coverage"], "COVERED")
+            self.assertTrue(j1_tel["native_allocator"]["covered"])
+            self.assertEqual(j1_tel["native_allocator"]["peak_bytes"], 301989888)
+            self.assertEqual(j1_tel["behavior_logprobs"]["status"], "not_exposed")
+            self.assertIsNone(j1_tel["behavior_logprobs"]["token_count"])
+            self.assertIsNone(j1_tel["behavior_logprobs"]["supervised_count"])
+
+            # Journey 2 stays honestly null for both
+            j2_tel = full_docs["journey_2"]["turns"][0]["telemetry"]
+            self.assertIsNone(j2_tel["native_allocator"])
+            self.assertIsNone(j2_tel["behavior_logprobs"])
+
+            # Journey 3 has per-turn COVERED VRAM + not_exposed behavior on all 3 turns
+            for turn in full_docs["journey_3"]["turns"]:
+                self.assertEqual(turn["telemetry"]["native_allocator"]["coverage"], "COVERED")
+                self.assertEqual(turn["telemetry"]["behavior_logprobs"]["status"], "not_exposed")
+                self.assertIsNone(turn["telemetry"]["behavior_logprobs"]["token_count"])
+
+            # Journey 4 contrasts Turn 1 (exposed, 8 tok / 8 sup) vs Turn 2 (not_exposed, null counts)
+            j4_t1_beh = full_docs["journey_4"]["turns"][0]["telemetry"]["behavior_logprobs"]
+            j4_t2_beh = full_docs["journey_4"]["turns"][1]["telemetry"]["behavior_logprobs"]
+            self.assertEqual(j4_t1_beh["status"], "exposed")
+            self.assertEqual(j4_t1_beh["token_count"], 8)
+            self.assertEqual(j4_t1_beh["supervised_count"], 8)
+            self.assertEqual(j4_t1_beh["format"], "umminfer-behavior-logprobs-v1")
+            self.assertEqual(j4_t2_beh["status"], "not_exposed")
+            self.assertIsNone(j4_t2_beh["token_count"])
+            self.assertIsNone(j4_t2_beh["supervised_count"])
+
+            web_full = self._validate_sessions_with_web_ui_node(full_paths)
+            self.assertEqual(len(web_full), 5)
+            self.assertTrue(any("Behavior: 8 tok (8 sup)" in p for p in web_full[3]["pills"][0]))
+            self.assertTrue(any("Behavior: not_exposed" in p for p in web_full[3]["pills"][1]))
+            self.assertTrue(any("VRAM: 288 MiB peak" in p for p in web_full[0]["pills"][0]))
+
+        # 3. Honest NOT_COVERED + absent telemetry (zero fabricated zeros)
+        def _not_covered_factory(_req, request_id, stage_specs):
+            stages = [
+                showcase._mock_telemetry_stage(
+                    stage_name,
+                    request_id=request_id,
+                    coverage="NOT_COVERED",
+                    reason="batched_request_attribution_unavailable",
+                )
+                for stage_name, _ in stage_specs
+            ]
+            return showcase._mock_telemetry_envelope(request_id, stages)
+
+        with tempfile.TemporaryDirectory(prefix="showcase-gui-nc-") as tmp:
+            out_dir = Path(tmp)
+            report = showcase.run_self_check(
+                MANIFEST_PATH,
+                out_dir=out_dir,
+                native_allocator_telemetry=True,
+                telemetry_factory=_not_covered_factory,
+                behavior_logprobs=True,
+                behavior_factory=lambda _req, _default: (None, None),
+                export_gui_sessions=True,
+            )
+            nc_paths = [out_dir / item["path"] for item in report["gui_sessions"]]
+            for item in report["gui_sessions"]:
+                doc = json.loads((out_dir / item["path"]).read_text(encoding="utf-8"))
+                self._assert_macos_session_export_invariants(doc)
+                if item["journey_id"] != "journey_2":
+                    for turn in doc["turns"]:
+                        na = turn["telemetry"]["native_allocator"]
+                        beh = turn["telemetry"]["behavior_logprobs"]
+                        self.assertEqual(na["coverage"], "NOT_COVERED")
+                        self.assertFalse(na["covered"])
+                        self.assertIsNone(na["peak_bytes"])
+                        self.assertEqual(na["label"], "VRAM: N/C")
+                        self.assertEqual(beh["status"], "absent")
+                        self.assertIsNone(beh["token_count"])
+                        self.assertIsNone(beh["supervised_count"])
+            web_nc = self._validate_sessions_with_web_ui_node(nc_paths)
+            self.assertEqual(len(web_nc), 5)
+            self.assertTrue(any("VRAM: N/C" in p for p in web_nc[0]["pills"][0]))
+            self.assertTrue(any("Behavior: absent" in p for p in web_nc[0]["pills"][0]))
+
+    def test_build_gui_session_export_unit_scrubbing_anchors_and_fail_closed(self) -> None:
+        source_sha = showcase.sha256_bytes(showcase.MOCK_PNG_J5)
+        video_sha = showcase.sha256_bytes(showcase.MOCK_MP4_J5)
+        inline_uri = "data:image/png;base64," + base64.b64encode(showcase.MOCK_PNG_J5).decode("ascii")
+        j5_result = {
+            "journey_id": "storyboard_i2v_chain",
+            "passed": True,
+            "prose": f"Clean scene with scrubbed {inline_uri} payload.",
+            "ttft_s": 0.015,
+            "ttfa_s": 0.045,
+            "first_visual_slot_s": 0.02,
+            "total_wall_s": 0.25,
+            "slots": [
+                {
+                    "slot_id": "slot-0",
+                    "slot_index": 0,
+                    "media_type": "image",
+                    "prompt": f"Keyframe {inline_uri}",
+                    "bytes": len(showcase.MOCK_PNG_J5),
+                    "sha256": source_sha,
+                    "continuity_mode": "i2v_chain",
+                },
+                {
+                    "slot_id": "slot-1",
+                    "slot_index": 1,
+                    "media_type": "video",
+                    "prompt": "Smooth camera pan",
+                    "bytes": len(showcase.MOCK_MP4_J5),
+                    "sha256": video_sha,
+                    "continuity_mode": "i2v_chain",
+                    "anchor_slot_index": 0,
+                    "anchor_explicit": True,
+                    "anchor_sha256": source_sha,
+                },
+            ],
+        }
+        doc = showcase.build_gui_session_export(
+            j5_result,
+            model="qwen3-native",
+            exported_at="2026-11-26T10:15:00.000Z",
+            prompt=f"Prompt with {inline_uri}",
+        )
+        self._assert_macos_session_export_invariants(doc)
+        self.assertEqual(doc["exported_at"], "2026-11-26T10:15:00.000Z")
+        self.assertEqual(doc["session_id"], "showcase-storyboard_i2v_chain")
+        serialized = json.dumps(doc)
+        self.assertNotIn(";base64,", serialized)
+        self.assertIn("[omitted-base64]", doc["turns"][0]["prompt"])
+        self.assertIn("[omitted-base64]", doc["turns"][0]["response"])
+        self.assertIn("[omitted-base64]", doc["turns"][0]["visual_slots"][0]["prompt"])
+        self.assertTrue(doc["turns"][0]["visual_slots"][1]["anchor_explicit"])
+        self.assertEqual(doc["turns"][0]["visual_slots"][1]["anchor_sha256"], source_sha)
+
+        # Fail closed on malformed inputs
+        with self.assertRaises(ValueError):
+            showcase.build_gui_session_export({"passed": True}, model="qwen3-native")
+        with self.assertRaises(ValueError):
+            showcase.build_gui_session_export(j5_result, model="qwen3-native", exported_at="   ")
 
 
 if __name__ == "__main__":

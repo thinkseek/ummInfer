@@ -92,3 +92,20 @@ Pass `--behavior-logprobs` (default OFF) to opt into sampled behavior-token logp
 ```sh
 python3 -I tools/umminfer_showcase.py --self-check --behavior-logprobs --out-dir /tmp/showcase-behavior-check
 ```
+
+## Optional GUI Session Exports
+
+Pass `--export-gui-sessions` (default OFF) to export each completed journey as a clean, base64-free `umminfer-session-export-v1` JSON file under `<out-dir>/gui_sessions/<journey_id>.session.json` that can be imported directly into both the Web UI (`web/index.html`) and macOS `ummmlx` (`clients/ummmlx`):
+
+- **Default OFF (strict output invariance)**: when omitted, no `gui_sessions/` directory is created and `showcase_report.json`, `showcase_report.md`, and `SHA256SUMS` are unchanged.
+- **Opt-in ON (self-check & live modes)**: writes deterministic canonical JSON files (sorted keys, trailing newline) for every completed journey (`journey_1`..`journey_5`), records `gui_sessions` metadata (`journey_id`, `path`, `sha256`, `bytes`, `turn_count`) in `showcase_report.json` and the `## GUI Session Exports` Markdown section, and includes all exported session files in `SHA256SUMS`.
+- **Base64-free & honest telemetry**: omits all binary/base64 media payloads (preserving slot metadata, byte counts, SHA-256 digests, and I2V continuity anchors), preserves multi-turn structure (e.g., Journey 3 emits 3 turns; Journey 4 emits 2 turns contrasting pure-text abstention vs. visual scene), and leaves unobserved timing/VRAM/behavior fields as `null` (or honest `NOT_COVERED` / `not_exposed` / `absent`) without fabricating numbers.
+
+```sh
+python3 -I tools/umminfer_showcase.py \
+  --self-check \
+  --export-gui-sessions \
+  --native-allocator-telemetry \
+  --behavior-logprobs \
+  --out-dir /tmp/showcase-gui-export
+```

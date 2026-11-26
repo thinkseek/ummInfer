@@ -34,6 +34,7 @@ import argparse
 import base64
 import binascii
 import copy
+from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
@@ -70,6 +71,16 @@ TELEMETRY_ENVELOPE_COVERAGES = ("COVERED", "PARTIAL", "NOT_COVERED")
 BEHAVIOR_LOGPROBS_FORMAT = "umminfer-behavior-logprobs-v1"
 BEHAVIOR_EVIDENCE_HEADER = "X-UmmInfer-Behavior-Evidence"
 BEHAVIOR_EVIDENCE_STATUSES = ("exposed", "not_exposed", "absent")
+GUI_SESSION_EXPORT_SCHEMA = "umminfer-session-export-v1"
+GUI_SESSION_EXPORT_CLIENT = "umminfer-showcase"
+GUI_SESSION_EXPORT_DIR = "gui_sessions"
+GUI_CONTINUITY_MODES = ("prompt_anchor", "i2v_chain")
+OFFLINE_SELF_CHECK_EXPORTED_AT = "2025-11-24T16:00:00.000Z"
+INLINE_DATA_URI_RE = re.compile(
+    r"data:[a-z0-9.+-]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+",
+    re.IGNORECASE,
+)
+SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 def require(condition: object, message: str) -> None:
@@ -1738,6 +1749,7 @@ def run_journey_4(
     extra_headers: dict[str, str] | None = None,
     native_allocator_telemetry: bool = False,
     behavior_logprobs: bool = False,
+    capture_prose: dict[str, str] | None = None,
 ) -> tuple[dict, list[dict]]:
     """Journey 4: Autonomous Modality Routing Contrast under visual_mode=auto."""
     shared = spec["shared_options"]
@@ -1802,6 +1814,8 @@ def run_journey_4(
             case_out["native_allocator_telemetry"] = metrics["native_allocator_telemetry"]
         if behavior_logprobs:
             case_out["behavior_logprobs"] = metrics["behavior_logprobs"]
+        if capture_prose is not None:
+            capture_prose[case_spec["id"]] = metrics["prose"]
         return case_out
 
     pure_text = _run_case(spec["pure_text_case"], min_slots=0)
@@ -2351,8 +2365,497 @@ def render_markdown_report(report: dict) -> str:
             f"| `{art['filename']}` | {art['journey']} | `{art['media_type']}` | "
             f"{art['bytes']} | `{art['sha256']}` |"
         )
+    if "gui_sessions" in report and isinstance(report["gui_sessions"], list):
+        lines.extend([
+            "",
+            "## GUI Session Exports",
+            "",
+            f"- **Schema**: `{GUI_SESSION_EXPORT_SCHEMA}` (`client`: `{GUI_SESSION_EXPORT_CLIENT}`)",
+            "",
+            "| Journey | Path | Turns | Bytes | SHA-256 |",
+            "| --- | --- | ---: | ---: | --- |",
+        ])
+        for sess in report["gui_sessions"]:
+            lines.append(
+                f"| `{sess['journey_id']}` | `{sess['path']}` | {sess['turn_count']} | "
+                f"{sess['bytes']} | `{sess['sha256']}` |"
+            )
     lines.append("")
     return "\n".join(lines)
+
+
+def _format_utc_iso8601() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _scrub_inline_data_uris(text: object) -> str:
+    if not isinstance(text, str):
+        return ""
+    if ";base64," not in text.lower():
+        return text
+    return INLINE_DATA_URI_RE.sub("[omitted-base64]", text)
+
+
+def _sanitize_gui_session_id(raw_id: object, fallback: str = "journey") -> str:
+    text = raw_id.strip() if isinstance(raw_id, str) else ""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", text)
+    cleaned = re.sub(r"-+", "-", cleaned).strip("-_")[:64].rstrip("-_")
+    return cleaned or fallback
+
+
+def _seconds_to_ms(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    val = float(value)
+    if not math.isfinite(val) or val < 0.0:
+        return None
+    return round(val * 1000.0, 3)
+
+
+def _normalize_sha256(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    if not SHA256_HEX_RE.match(trimmed):
+        return None
+    return trimmed.lower()
+
+
+def _build_gui_native_allocator(raw_tel: object) -> dict | None:
+    if not isinstance(raw_tel, dict):
+        return None
+    coverage = raw_tel.get("coverage")
+    if coverage not in TELEMETRY_ENVELOPE_COVERAGES:
+        return None
+    covered_stage_count = raw_tel.get("covered_stages")
+    total_stage_count = raw_tel.get("total_stages")
+    if not is_int(covered_stage_count) or covered_stage_count < 0:
+        covered_stage_count = 0
+    if not is_int(total_stage_count) or total_stage_count < covered_stage_count:
+        total_stage_count = covered_stage_count
+
+    peak_raw = raw_tel.get("max_allocated_bytes_peak")
+    covered = coverage != "NOT_COVERED"
+    if covered:
+        if is_int(peak_raw) and peak_raw >= 0:
+            peak_bytes: int | None = peak_raw
+        else:
+            coverage = "NOT_COVERED"
+            covered = False
+            covered_stage_count = 0
+            peak_bytes = None
+    else:
+        peak_bytes = None
+
+    label = (
+        f"VRAM: {format_telemetry_bytes(peak_bytes)} peak"
+        if covered and peak_bytes is not None
+        else "VRAM: N/C"
+    )
+    details: list[str] = []
+    for stage in raw_tel.get("stages") or []:
+        if not isinstance(stage, dict):
+            continue
+        stage_name = str(stage.get("stage") or "").strip()
+        if not stage_name:
+            continue
+        stage_cov = str(stage.get("coverage") or "").strip()
+        stage_peak = stage.get("allocated_bytes_peak")
+        if stage_cov == "COVERED" and is_int(stage_peak) and stage_peak >= 0:
+            details.append(f"{stage_name}: {format_telemetry_bytes(stage_peak)} peak")
+        else:
+            reason = str(stage.get("reason") or "").strip()
+            details.append(f"{stage_name}: N/C ({reason})" if reason else f"{stage_name}: N/C")
+    if not details:
+        for reason in raw_tel.get("reasons") or []:
+            if isinstance(reason, str) and reason.strip():
+                details.append(reason.strip())
+
+    return {
+        "coverage": coverage,
+        "covered": covered,
+        "covered_stage_count": covered_stage_count,
+        "total_stage_count": total_stage_count,
+        "peak_bytes": peak_bytes,
+        "label": label,
+        "details": details,
+    }
+
+
+def _build_gui_behavior_logprobs(raw_beh: object) -> dict | None:
+    if not isinstance(raw_beh, dict):
+        return None
+    status = raw_beh.get("status")
+    if status not in BEHAVIOR_EVIDENCE_STATUSES:
+        return None
+    if status == "exposed":
+        token_count = raw_beh.get("token_count")
+        supervised_count = raw_beh.get("supervised_count")
+        if not (
+            is_int(token_count)
+            and token_count >= 0
+            and is_int(supervised_count)
+            and 0 <= supervised_count <= token_count
+        ):
+            return None
+        out: dict = {
+            "status": "exposed",
+            "token_count": token_count,
+            "supervised_count": supervised_count,
+            "label": f"Behavior: {token_count} tok ({supervised_count} sup)",
+        }
+        fmt = raw_beh.get("format")
+        if isinstance(fmt, str) and fmt.strip():
+            out["format"] = fmt.strip()
+        tok_sha = raw_beh.get("tokenizer_sha256")
+        if isinstance(tok_sha, str) and tok_sha.strip():
+            out["tokenizer_sha256"] = tok_sha.strip()
+        return out
+    return {
+        "status": status,
+        "token_count": None,
+        "supervised_count": None,
+        "label": f"Behavior: {status}",
+    }
+
+
+def _build_gui_visual_slot(raw_slot: dict, fallback_index: int) -> dict:
+    raw_idx = raw_slot.get("slot_index")
+    slot_index = raw_idx if is_int(raw_idx) and raw_idx >= 0 else fallback_index
+    raw_id = raw_slot.get("slot_id") or raw_slot.get("id")
+    slot_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else f"slot-{slot_index}"
+    raw_kind = raw_slot.get("kind") or raw_slot.get("media_type")
+    kind = "video" if raw_kind == "video" else "image"
+
+    slot_out: dict = {
+        "id": slot_id,
+        "slot_id": slot_id,
+        "slot_index": slot_index,
+        "kind": kind,
+    }
+    raw_prompt = raw_slot.get("prompt")
+    if isinstance(raw_prompt, str):
+        cleaned_prompt = _scrub_inline_data_uris(raw_prompt.strip())
+        if cleaned_prompt:
+            slot_out["prompt"] = cleaned_prompt
+
+    raw_bytes = raw_slot.get("bytes")
+    slot_out["bytes"] = raw_bytes if is_int(raw_bytes) and raw_bytes >= 0 else None
+    slot_out["sha256"] = _normalize_sha256(raw_slot.get("sha256"))
+
+    raw_continuity = raw_slot.get("continuity_mode")
+    if isinstance(raw_continuity, str) and raw_continuity.strip() in GUI_CONTINUITY_MODES:
+        slot_out["continuity_mode"] = raw_continuity.strip()
+
+    raw_anchor = raw_slot.get("anchor_slot_index")
+    has_anchor = is_int(raw_anchor) and raw_anchor >= 0
+    if has_anchor:
+        slot_out["anchor_slot_index"] = raw_anchor
+
+    raw_explicit = raw_slot.get("anchor_explicit")
+    if raw_explicit is True:
+        slot_out["anchor_explicit"] = True
+    elif has_anchor:
+        slot_out["anchor_explicit"] = False
+
+    anchor_sha = _normalize_sha256(raw_slot.get("anchor_sha256"))
+    if anchor_sha is not None:
+        slot_out["anchor_sha256"] = anchor_sha
+
+    raw_error = raw_slot.get("error")
+    if isinstance(raw_error, str) and raw_error.strip():
+        slot_out["error"] = _scrub_inline_data_uris(raw_error.strip())
+
+    return slot_out
+
+
+def _count_i2v_slots(visual_slots: list[dict]) -> int:
+    count = 0
+    for slot in visual_slots:
+        if (
+            is_int(slot.get("anchor_slot_index"))
+            or slot.get("continuity_mode") == "i2v_chain"
+            or slot.get("anchor_explicit") is True
+        ):
+            count += 1
+    return count
+
+
+def _build_gui_turn(
+    *,
+    index: int,
+    prompt: str,
+    response: str,
+    visual_slots: list[dict],
+    ttft_ms: float | None,
+    ttfa_ms: float | None,
+    first_visual_ms: float | None,
+    total_ms: float | None,
+    native_allocator: dict | None,
+    behavior_logprobs: dict | None,
+    asr_text: str | None = None,
+    interrupted: bool = False,
+    spoken_bytes: int | None = None,
+) -> dict:
+    clean_asr = _scrub_inline_data_uris(asr_text).strip() if isinstance(asr_text, str) else ""
+    return {
+        "index": index,
+        "role": "turn",
+        "prompt": _scrub_inline_data_uris(prompt),
+        "response": _scrub_inline_data_uris(response),
+        "asr_text": clean_asr or None,
+        "interrupted": bool(interrupted),
+        "spoken_bytes": spoken_bytes if interrupted and is_int(spoken_bytes) and spoken_bytes >= 0 else None,
+        "visual_slots": visual_slots,
+        "telemetry": {
+            "ttft_ms": ttft_ms,
+            "ttfa_ms": ttfa_ms,
+            "first_visual_ms": first_visual_ms,
+            "total_ms": total_ms,
+            "visual_slots": len(visual_slots),
+            "i2v_count": _count_i2v_slots(visual_slots),
+            "native_allocator": native_allocator,
+            "behavior_logprobs": behavior_logprobs,
+        },
+    }
+
+
+def build_gui_session_export(
+    journey_result: dict,
+    *,
+    model: str,
+    exported_at: str | None = None,
+    journey_id: str | None = None,
+    prompt: str | None = None,
+    case_prose: dict[str, str] | None = None,
+) -> dict:
+    """Build a base64-free umminfer-session-export-v1 dict importable by Web UI and macOS ummmlx."""
+    if not isinstance(journey_result, dict):
+        raise ValueError("journey_result must be a dict")
+    if exported_at is not None:
+        if not isinstance(exported_at, str) or not exported_at.strip():
+            raise ValueError("exported_at must be a non-empty ISO-8601 string")
+        resolved_exported_at = exported_at.strip()
+    else:
+        resolved_exported_at = _format_utc_iso8601()
+
+    model_str = model.strip() if isinstance(model, str) else ""
+    turns: list[dict] = []
+
+    if isinstance(journey_result.get("turns"), list):
+        # Journey 3: multi-turn video QA (video was input; zero base64 payload exported)
+        inferred_id = journey_id or journey_result.get("journey_id") or "journey_3"
+        for idx, raw_turn in enumerate(journey_result["turns"], start=1):
+            if not isinstance(raw_turn, dict):
+                raise ValueError(f"journey_result.turns[{idx - 1}] must be a dict")
+            turns.append(
+                _build_gui_turn(
+                    index=idx,
+                    prompt=str(raw_turn.get("question") or ""),
+                    response=str(raw_turn.get("answer") or ""),
+                    visual_slots=[],
+                    ttft_ms=None,
+                    ttfa_ms=None,
+                    first_visual_ms=None,
+                    total_ms=_seconds_to_ms(raw_turn.get("latency_s")),
+                    native_allocator=_build_gui_native_allocator(
+                        raw_turn.get("native_allocator_telemetry")
+                    ),
+                    behavior_logprobs=_build_gui_behavior_logprobs(
+                        raw_turn.get("behavior_logprobs")
+                    ),
+                )
+            )
+    elif isinstance(journey_result.get("pure_text"), dict) and isinstance(
+        journey_result.get("visual_scene"), dict
+    ):
+        # Journey 4: autonomous modality routing contrast (2 cases -> 2 turns)
+        inferred_id = journey_id or journey_result.get("journey_id") or "journey_4"
+        prose_map = case_prose if isinstance(case_prose, dict) else {}
+        for idx, case_key in enumerate(("pure_text", "visual_scene"), start=1):
+            case = journey_result[case_key]
+            raw_slots = case.get("slots") or []
+            visual_slots = [
+                _build_gui_visual_slot(slot, slot_idx)
+                for slot_idx, slot in enumerate(raw_slots)
+                if isinstance(slot, dict)
+            ]
+            first_visual_s = (
+                raw_slots[0].get("slot_arrival_s")
+                if raw_slots and isinstance(raw_slots[0], dict)
+                else None
+            )
+            case_id = str(case.get("case_id") or case_key)
+            response_text = str(
+                case.get("prose")
+                if isinstance(case.get("prose"), str)
+                else prose_map.get(case_id, "")
+            )
+            turns.append(
+                _build_gui_turn(
+                    index=idx,
+                    prompt=str(case.get("prompt") or ""),
+                    response=response_text,
+                    visual_slots=visual_slots,
+                    ttft_ms=_seconds_to_ms(case.get("ttft_s")),
+                    ttfa_ms=None,
+                    first_visual_ms=_seconds_to_ms(first_visual_s),
+                    total_ms=_seconds_to_ms(case.get("total_wall_s")),
+                    native_allocator=_build_gui_native_allocator(
+                        case.get("native_allocator_telemetry")
+                    ),
+                    behavior_logprobs=_build_gui_behavior_logprobs(
+                        case.get("behavior_logprobs")
+                    ),
+                )
+            )
+    elif "render_latency_s" in journey_result and "slots" not in journey_result:
+        # Journey 2: in-place I2V render (/v1/visual/render)
+        inferred_id = journey_id or journey_result.get("journey_id") or "journey_2"
+        render_ms = _seconds_to_ms(journey_result.get("render_latency_s"))
+        slot = _build_gui_visual_slot(
+            {
+                "slot_id": "slot-0",
+                "slot_index": 0,
+                "kind": journey_result.get("kind") or "video",
+                "prompt": journey_result.get("prompt") or "",
+                "bytes": journey_result.get("bytes"),
+                "sha256": journey_result.get("sha256"),
+                "continuity_mode": "i2v_chain",
+                "anchor_explicit": True,
+                "anchor_sha256": journey_result.get("source_image_sha256"),
+            },
+            0,
+        )
+        turns.append(
+            _build_gui_turn(
+                index=1,
+                prompt=str(journey_result.get("prompt") or ""),
+                response="",
+                visual_slots=[slot],
+                ttft_ms=None,
+                ttfa_ms=None,
+                first_visual_ms=render_ms,
+                total_ms=render_ms,
+                native_allocator=None,
+                behavior_logprobs=None,
+            )
+        )
+    elif "slots" in journey_result or "prose" in journey_result:
+        # Journey 1 / Journey 5: interleaved narrative / storyboard I2V chain
+        inferred_id = (
+            journey_id
+            or journey_result.get("journey_id")
+            or ("journey_5" if journey_result.get("i2v_chain_verified") else "journey_1")
+        )
+        visual_slots = [
+            _build_gui_visual_slot(slot, slot_idx)
+            for slot_idx, slot in enumerate(journey_result.get("slots") or [])
+            if isinstance(slot, dict)
+        ]
+        resolved_prompt = (
+            prompt if isinstance(prompt, str) else str(journey_result.get("prompt") or "")
+        )
+        turns.append(
+            _build_gui_turn(
+                index=1,
+                prompt=resolved_prompt,
+                response=str(journey_result.get("prose") or ""),
+                visual_slots=visual_slots,
+                ttft_ms=_seconds_to_ms(journey_result.get("ttft_s")),
+                ttfa_ms=_seconds_to_ms(journey_result.get("ttfa_s")),
+                first_visual_ms=_seconds_to_ms(journey_result.get("first_visual_slot_s")),
+                total_ms=_seconds_to_ms(journey_result.get("total_wall_s")),
+                native_allocator=_build_gui_native_allocator(
+                    journey_result.get("native_allocator_telemetry")
+                ),
+                behavior_logprobs=_build_gui_behavior_logprobs(
+                    journey_result.get("behavior_logprobs")
+                ),
+            )
+        )
+    else:
+        raise ValueError("unsupported showcase journey_result structure for GUI session export")
+
+    safe_journey_id = _sanitize_gui_session_id(inferred_id, fallback="journey")
+    return {
+        "schema": GUI_SESSION_EXPORT_SCHEMA,
+        "exported_at": resolved_exported_at,
+        "client": GUI_SESSION_EXPORT_CLIENT,
+        "model": model_str or None,
+        "session_id": f"showcase-{safe_journey_id}",
+        "turn_count": len(turns),
+        "turns": turns,
+    }
+
+
+def _write_gui_session_exports(
+    report: dict,
+    out_dir: Path,
+    *,
+    exported_at: str | None = None,
+    journey_context: dict[str, dict] | None = None,
+) -> list[dict]:
+    if not isinstance(report, dict) or not isinstance(report.get("journeys"), dict):
+        raise ValueError("report must be a showcase report dict with a journeys object")
+
+    if exported_at is not None:
+        resolved_exported_at = exported_at
+    elif report.get("evidence_class") == "OFFLINE_SELF_CHECK":
+        resolved_exported_at = OFFLINE_SELF_CHECK_EXPORTED_AT
+    else:
+        resolved_exported_at = _format_utc_iso8601()
+
+    model = str(report.get("model") or "").strip()
+    sessions_dir = Path(out_dir) / GUI_SESSION_EXPORT_DIR
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    exported_records: list[dict] = []
+    ctx_map = journey_context if isinstance(journey_context, dict) else {}
+    for jkey in sorted(report["journeys"].keys()):
+        jresult = report["journeys"][jkey]
+        if not isinstance(jresult, dict) or not jresult.get("passed"):
+            continue
+        safe_id = _sanitize_gui_session_id(jkey, fallback="journey")
+        ctx = ctx_map.get(jkey) if isinstance(ctx_map.get(jkey), dict) else {}
+        doc = build_gui_session_export(
+            jresult,
+            model=model,
+            exported_at=resolved_exported_at,
+            journey_id=safe_id,
+            prompt=ctx.get("prompt"),
+            case_prose=ctx.get("case_prose"),
+        )
+        encoded = (json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode(
+            "utf-8"
+        )
+        filename = f"{safe_id}.session.json"
+        rel_path = f"{GUI_SESSION_EXPORT_DIR}/{filename}"
+        (sessions_dir / filename).write_bytes(encoded)
+        exported_records.append({
+            "journey_id": safe_id,
+            "path": rel_path,
+            "sha256": sha256_bytes(encoded),
+            "bytes": len(encoded),
+            "turn_count": doc["turn_count"],
+        })
+    return exported_records
+
+
+def export_gui_sessions(
+    report: dict,
+    out_dir: Path,
+    *,
+    exported_at: str | None = None,
+    journey_context: dict[str, dict] | None = None,
+) -> list[dict]:
+    """Write deterministic canonical GUI session exports for all completed journeys."""
+    return _write_gui_session_exports(
+        report,
+        out_dir,
+        exported_at=exported_at,
+        journey_context=journey_context,
+    )
 
 
 def build_sha256sums(out_dir: Path, filenames: list[str]) -> str:
@@ -2379,6 +2882,12 @@ def write_reports(out_dir: Path, report: dict) -> dict[str, Path]:
         json_path.name,
         md_path.name,
     ]
+    if "gui_sessions" in report and isinstance(report["gui_sessions"], list):
+        tracked_files.extend(
+            item["path"]
+            for item in report["gui_sessions"]
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        )
     sums_path.write_text(build_sha256sums(out_dir, tracked_files), encoding="utf-8")
     return {"json": json_path, "markdown": md_path, "sha256sums": sums_path}
 
@@ -3129,6 +3638,7 @@ def execute_showcase(
     video_frame_selection: dict | None = None,
     fallback_image_bytes: bytes | None = None,
     fallback_video_bytes: bytes | None = None,
+    export_gui_sessions: bool = False,
 ) -> tuple[dict, dict[str, Path]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     health = check_health(base_url, extra_headers=extra_headers)
@@ -3136,14 +3646,16 @@ def execute_showcase(
 
     results: dict[str, dict] = {}
     all_artifacts: list[dict] = []
+    gui_session_context: dict[str, dict] = {}
     j1_handoff: dict = {}
     j2_handoff: dict = {}
 
     if 1 in journeys:
+        j1_spec = journey_specs["journey_1_interleaved_narrative"]
         j1_metrics, j1_arts, j1_handoff = run_journey_1(
             base_url,
             model,
-            journey_specs["journey_1_interleaved_narrative"],
+            j1_spec,
             out_dir,
             timeout=timeout,
             extra_headers=extra_headers,
@@ -3152,6 +3664,8 @@ def execute_showcase(
         )
         results["journey_1"] = j1_metrics
         all_artifacts.extend(j1_arts)
+        if export_gui_sessions:
+            gui_session_context["journey_1"] = {"prompt": j1_spec.get("prompt", "")}
 
     if 2 in journeys:
         if j1_handoff.get("first_image"):
@@ -3207,6 +3721,7 @@ def execute_showcase(
         results["journey_3"] = j3_metrics
 
     if 4 in journeys:
+        j4_prose_map: dict[str, str] | None = {} if export_gui_sessions else None
         j4_metrics, j4_arts = run_journey_4(
             base_url,
             model,
@@ -3217,15 +3732,19 @@ def execute_showcase(
             extra_headers=extra_headers,
             native_allocator_telemetry=native_allocator_telemetry,
             behavior_logprobs=behavior_logprobs,
+            capture_prose=j4_prose_map,
         )
         results["journey_4"] = j4_metrics
         all_artifacts.extend(j4_arts)
+        if export_gui_sessions and j4_prose_map is not None:
+            gui_session_context["journey_4"] = {"case_prose": j4_prose_map}
 
     if 5 in journeys:
+        j5_spec = journey_specs["journey_5"]
         j5_metrics, j5_arts = run_journey_5(
             base_url,
             model,
-            journey_specs["journey_5"],
+            j5_spec,
             out_dir,
             timeout=timeout,
             allow_ffprobe=allow_ffprobe,
@@ -3235,6 +3754,8 @@ def execute_showcase(
         )
         results["journey_5"] = j5_metrics
         all_artifacts.extend(j5_arts)
+        if export_gui_sessions:
+            gui_session_context["journey_5"] = {"prompt": j5_spec.get("prompt", "")}
 
     final_health = check_health(base_url, extra_headers=extra_headers)
     passed_count = sum(1 for item in results.values() if item.get("passed"))
@@ -3305,6 +3826,12 @@ def execute_showcase(
                 "token_count": None,
                 "supervised_count": None,
             }
+    if export_gui_sessions:
+        report["gui_sessions"] = _write_gui_session_exports(
+            report,
+            out_dir,
+            journey_context=gui_session_context,
+        )
     report_paths = write_reports(out_dir, report)
     return report, report_paths
 
@@ -3339,6 +3866,7 @@ def run_self_check(
     video_frame_selection: dict | None = None,
     image_path: Path | None = None,
     video_path: Path | None = None,
+    export_gui_sessions: bool = False,
 ) -> dict:
     validated_selection = (
         validate_video_frame_selection(video_frame_selection)
@@ -3384,6 +3912,7 @@ def run_self_check(
             video_frame_selection=validated_selection,
             fallback_image_bytes=MOCK_PNG_J1,
             fallback_video_bytes=MOCK_MP4_J2,
+            export_gui_sessions=export_gui_sessions,
         )
         verified_count = verify_sha256sums_file(work_dir, paths["sha256sums"])
         require(report["evidence_class"] == "OFFLINE_SELF_CHECK", "wrong self-check evidence_class")
@@ -3605,6 +4134,15 @@ def main(argv: list[str] | None = None) -> int:
             "(requires --video-frame-policy temporal)"
         ),
     )
+    parser.add_argument(
+        "--export-gui-sessions",
+        action="store_true",
+        help=(
+            "Opt-in: export each completed journey as a base64-free "
+            "umminfer-session-export-v1 JSON file under <out-dir>/gui_sessions/ "
+            "directly importable by Web UI and macOS ummmlx"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -3629,6 +4167,7 @@ def main(argv: list[str] | None = None) -> int:
             video_frame_selection=video_frame_selection,
             image_path=args.image_path,
             video_path=args.video_path,
+            export_gui_sessions=args.export_gui_sessions,
         )
         return 0
 
@@ -3660,6 +4199,7 @@ def main(argv: list[str] | None = None) -> int:
         native_allocator_telemetry=args.native_allocator_telemetry,
         behavior_logprobs=args.behavior_logprobs,
         video_frame_selection=video_frame_selection,
+        export_gui_sessions=args.export_gui_sessions,
     )
     verified = verify_sha256sums_file(args.out_dir, paths["sha256sums"])
     print(
