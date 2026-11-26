@@ -180,7 +180,9 @@ pending/running 时保持 pending 并计入 `legs_remaining`，源图 completed 
 MIME、data URL 与 SHA-256；真正提交前 `bind_chained_anchor_locked` 重算 SHA-256
 并核对内容寻址绑定，再以二进制 `inputs.image` 绑定同一份字节。请求原有
 size/seed/num_frames/steps/guidance 等设置原样保留，`anchor_crop="center_cover"`
-记录 Wan2.2 的保比例中心裁切策略。
+记录 Wan2.2 的保比例中心裁切策略。原生 Wan `parse_video_work` 在执行前再次核对
+`anchor_explicit` 与 `anchor_sha256`：显式无图、wrong-hash 或 tampered bytes 均 fail closed；
+未携带这些可选字段的既有 direct T2V/I2V 输入保持原行为。
 
 缺失、重复、 malformed、forward/self、cross-session、wrong-modality、冲突
 `video.image`、失败或取消的显式引用均不产生 T2V fallback 或陈旧字节；依赖 leg
@@ -191,9 +193,14 @@ size/seed/num_frames/steps/guidance 等设置原样保留，`anchor_crop="center
 `anchor_explicit`，不携带时序相关的哈希；解析后的视频 artifact 和 terminal leg
 才携带 `anchor_sha256`。轨迹 v2 仅在字段存在时投影这些元数据，媒体仍只落 CAS；
 已解析链接强制核对更早图像槽位的 CAS SHA-256，失败/取消的未解析引用可作为负例
-回放。`tests/narrative_slot_reference_live.py` 是后续 SM90
-text→image→I2V 首帧连续性/运动门禁；本任务 CPU-only，真实生成与感知质量均
-`NOT_RUN`。
+回放。`tests/narrative_slot_reference_live.py` 保留公开叙事链接的确定性契约与负例；
+Task #62 的 `tests/flux2_i2v_continuity_live.py` 另在隔离 SM90 物理 GPU 1 上完成
+**1 次真实 FLUX.2 源图 + 3 次原生 I2V + 3 次同设置 T2V 对照**，逐阶段卸载并校验精确
+PNG bytes/SHA-256、原生 `i2v=1/0` 日志与完整模型/二进制/请求/媒体/RGB 证据。冻结
+64×40 center-cover RGB 代理的 I2V 首帧 MAE 为 `2.286328`、首尾运动 MAE 为
+`3.466276`（T2V 分别 `85.225521` / `15.288021`）；wrong-hash 与 tampered-source
+均在生成前拒绝，新进程独立复核通过。完整公共 VLM 叙事编排和感知质量仍 `NOT_RUN`。
+详见 [flux2-i2v-continuity.md](flux2-i2v-continuity.md)。
 
 ---
 

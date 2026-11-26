@@ -23,6 +23,22 @@ Exactly one VLM stage runs at a time (`vlm_stage` selects `qwen38` or `omni` on
 GPU 3), and one image stage holds GPU 4 (`flux2` or native `image`). GPUs 0, 1,
 and 7 are not part of this resident service.
 
+### Task #62 isolated FLUX.2 → native I2V continuity gate (not deployed)
+
+On 2026-11-27, execution commit `e5a1ed3` used only idle physical GPU 1 and kept
+exactly one model Stage resident: real FLUX.2 produced one fixed-seed PNG, exited,
+then native Wan2.2 produced three explicit-anchor I2V and three T2V controls. The
+I2V first-frame/motion RGB proxies were `2.286328 / 3.466276` (T2V
+`85.225521 / 15.288021`), median request latency was `11,110.524 ms` I2V versus
+`11,080.627 ms` T2V, and wrong-hash/tampered-source inputs were rejected before
+execution. Native `parse_video_work` now recomputes the optional anchor SHA-256;
+implicit requests and the public schema are unchanged. Fresh remote and local
+verification passed 39 evidence files and GPU 1 returned to 3 MiB. This isolated
+result does not change or claim a resident deployment. Full public VLM narrative
+orchestration and perceptual quality remain `NOT_RUN`. See
+[flux2-i2v-continuity.md](flux2-i2v-continuity.md) and the
+[hash-only evidence](evidence/flux2-i2v-continuity-sm90.json).
+
 Stages talk to the server over ZeroMQ and MessagePack, with payloads in POSIX
 shared memory. Endpoints live under `ipc_dir` (`/tmp/umminfer-native-ipc` by
 default): `asr`, `qwen38` (or `omni`), `image`, `tts`, `video`, plus the shared

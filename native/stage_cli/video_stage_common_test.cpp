@@ -7,6 +7,7 @@
 #include <string>
 
 #include "stage_common.hpp"
+#include "umminfer/util/codec.hpp"
 
 namespace {
 
@@ -57,6 +58,62 @@ void test_parse_video_work_valid() {
   const stage::VideoWork raw_work = stage::parse_video_work(Value(std::move(raw)));
   check(raw_work.init_image_bytes.size() == 6,
         "binary image bytes forwarded unchanged");
+}
+
+void test_parse_video_work_anchor_binding() {
+  using namespace umminfer;
+  const char source_literal[] = "encoded-source-image\x00\xff";
+  const std::string source(source_literal, sizeof(source_literal) - 1);
+  const std::string digest = util::sha256_hex(source);
+  Value::Map valid;
+  valid["prompt"] = Value("animate the source");
+  valid["image"] = Value::bin(source);
+  valid["anchor_explicit"] = Value(true);
+  valid["anchor_sha256"] = Value(digest);
+  const stage::VideoWork accepted =
+      stage::parse_video_work(Value(std::move(valid)));
+  check(accepted.init_image_bytes == source,
+        "exact source bytes accepted with matching anchor SHA-256");
+
+  auto expect_rejected = [&](Value::Map inputs, const std::string& label) {
+    bool threw = false;
+    try {
+      (void)stage::parse_video_work(Value(std::move(inputs)));
+    } catch (const ProtocolError&) {
+      threw = true;
+    }
+    check(threw, label);
+  };
+  Value::Map wrong;
+  wrong["prompt"] = Value("animate the source");
+  wrong["image"] = Value::bin(source);
+  wrong["anchor_explicit"] = Value(true);
+  wrong["anchor_sha256"] = Value(std::string(64, '0'));
+  expect_rejected(std::move(wrong), "wrong anchor SHA-256 rejected");
+
+  Value::Map tampered;
+  tampered["prompt"] = Value("animate the source");
+  tampered["image"] = Value::bin(source + "tampered");
+  tampered["anchor_explicit"] = Value(true);
+  tampered["anchor_sha256"] = Value(digest);
+  expect_rejected(std::move(tampered), "tampered source rejected against frozen digest");
+
+  Value::Map hash_without_image;
+  hash_without_image["prompt"] = Value("animate the source");
+  hash_without_image["anchor_sha256"] = Value(digest);
+  expect_rejected(std::move(hash_without_image), "anchor SHA-256 without image rejected");
+
+  Value::Map explicit_without_image;
+  explicit_without_image["prompt"] = Value("animate the source");
+  explicit_without_image["anchor_explicit"] = Value(true);
+  expect_rejected(std::move(explicit_without_image),
+                  "explicit anchor without image rejected");
+
+  Value::Map malformed_flag;
+  malformed_flag["prompt"] = Value("animate the source");
+  malformed_flag["image"] = Value::bin(source);
+  malformed_flag["anchor_explicit"] = Value("true");
+  expect_rejected(std::move(malformed_flag), "non-boolean anchor_explicit rejected");
 }
 
 void test_parse_video_work_rejects_invalid() {
@@ -168,8 +225,9 @@ void test_video_result_artifact_shape() {
 
 int main() {
   test_parse_video_work_valid();
+  test_parse_video_work_anchor_binding();
   test_parse_video_work_rejects_invalid();
   test_video_result_artifact_shape();
-  std::cout << "stage_video_common_test: 3 passed, 0 failed\n";
+  std::cout << "stage_video_common_test: 4 passed, 0 failed\n";
   return 0;
 }

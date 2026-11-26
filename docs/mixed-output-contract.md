@@ -295,6 +295,15 @@ fields. Re-recording the same stream is byte-deterministic; SFT reconstruction
 restores `| source=slot-N` only for a resolved explicit I2V slot and skips a
 failed empty malformed marker without triggering fallback.
 
+The native Wan Stage independently enforces the same content binding before
+execution: an explicit anchor requires image bytes, and any supplied
+`anchor_sha256` must equal SHA-256 of the exact binary `image`. This is an
+internal Stage-input check, not a new public HTTP field. Direct
+`/v1/visual/render` continues to reject unknown anchor metadata, and omitted
+anchor metadata preserves legacy direct T2V/I2V behavior. The Task #62 real
+FLUX.2/native-Wan gate and negative controls are recorded in
+[flux2-i2v-continuity.md](flux2-i2v-continuity.md).
+
 ### Partial failure
 
 - For non-narrative requests, ASR or VLM failure/cancellation keeps the current

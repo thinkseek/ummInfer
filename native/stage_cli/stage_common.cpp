@@ -712,6 +712,27 @@ VideoWork parse_video_work(const Value& work, int default_width,
     }
   }
 
+  // Explicit narrative links carry the immutable source digest end to end.
+  // Validate it at the native boundary too: the Python Wan stage already does
+  // so, and silently ignoring it would let a substituted source run as I2V.
+  // Requests without anchor metadata retain the historical T2V/I2V behavior.
+  if (const Value* explicit_anchor = inputs.find("anchor_explicit");
+      explicit_anchor != nullptr && !explicit_anchor->is_nil()) {
+    if (!explicit_anchor->is_bool()) {
+      bad("video.anchor_explicit must be a boolean");
+    }
+    if (explicit_anchor->as_bool() && out.init_image_bytes.empty()) {
+      bad("explicit I2V anchor requires video.image bytes");
+    }
+  }
+  if (const Value* anchor_sha256 = inputs.find("anchor_sha256");
+      anchor_sha256 != nullptr && !anchor_sha256->is_nil()) {
+    if (out.init_image_bytes.empty() || !anchor_sha256->is_str() ||
+        util::sha256_hex(out.init_image_bytes) != anchor_sha256->as_str()) {
+      bad("video.image does not match anchor_sha256");
+    }
+  }
+
   return out;
 }
 

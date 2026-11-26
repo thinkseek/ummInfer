@@ -6,6 +6,7 @@ Fixture clocks are logical ticks; one chunked-HTTP smoke records real monotonic
 arrival ticks. No wall time, GPU, or serving import is used.
 """
 
+import base64
 import copy
 from contextlib import contextmanager
 import hashlib
@@ -173,6 +174,52 @@ class RawSSEReplayTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("RAW_SSE_REPLAY: PASS", proc.stdout)
             self.assertEqual(out.read_bytes(), recorder.jsonl_path.read_bytes())
+
+    def test_narrative_source_tamper_and_wrong_anchor_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="umm-sse-anchor-tamper-") as tmp:
+            root = Path(tmp)
+            tampered_events = copy.deepcopy(fixture.linked_events())
+            image = next(event["artifact"] for event in tampered_events
+                         if event["kind"] == "artifact"
+                         and event["artifact"]["media_type"] == "image")
+            changed = fixture.PNG + b"tampered"
+            image["data"] = base64.b64encode(changed).decode("ascii")
+            image["bytes"] = len(changed)
+            image["sha256"] = hashlib.sha256(changed).hexdigest()
+            with self.assertRaisesRegex(ValueError, "anchor CAS artifact mismatch"):
+                capture_bytes(fixture.sse_bytes(tampered_events), root / "tampered")
+
+            recorder, wrong = capture_bytes(
+                fixture.sse_bytes(fixture.linked_events()), root / "wrong")
+            # Remove transport provenance so this exercises narrative semantic
+            # validation rather than the expected raw-frame mismatch detector.
+            wrong.pop("sse_replay")
+            for event in wrong["events"]:
+                for key in ("source_event_index", "source_event_sha256",
+                            "source_event_tick"):
+                    event.pop(key, None)
+            for event in wrong["events"]:
+                if event["type"] == "artifact" \
+                        and event["artifact"]["media_type"] == "video":
+                    event["artifact"]["anchor_sha256"] = "0" * 64
+                if event["type"] == "complete":
+                    for leg in event["legs"]:
+                        if leg.get("slot_id") == "slot-1":
+                            leg["anchor_sha256"] = "0" * 64
+            wrong["artifacts"][1]["anchor_sha256"] = "0" * 64
+            for leg in wrong["terminal_legs"]:
+                if leg.get("slot_id") == "slot-1":
+                    leg["anchor_sha256"] = "0" * 64
+            recorder.jsonl_path.write_bytes(traj.canonical_json(wrong) + b"\n")
+            with self.assertRaisesRegex(ValueError, "anchor"):
+                worker.validate_trajectory(recorder.jsonl_path)
+
+            # A rejected mutation does not poison the retained valid record.
+            valid_recorder, valid = capture_bytes(
+                fixture.sse_bytes(fixture.linked_events()), root / "valid")
+            worker.validate_trajectory(valid_recorder.jsonl_path)
+            self.assertEqual(valid["artifacts"][1]["anchor_sha256"],
+                             valid["artifacts"][0]["sha256"])
 
     def test_live_harness_real_chunked_response_is_not_preconsumed(self):
         raw = fixture.sse_bytes(fixture.linked_events())

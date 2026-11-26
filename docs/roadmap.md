@@ -229,6 +229,20 @@ use case needs them, without blocking the VLM+ASR path.
 | Video | Unrun cases stay `BLOCKED` or `NOT_RUN`; no claim of local 2K or untested video output. |
 | Contract reuse | Optional workers use the same event, cancel, backpressure, and error schema; no worker-specific event channel. |
 
+**Phase 4 direct-native FLUX.2 → Wan2.2 continuity gate (Task #62,
+2026-11-27).** On isolated physical GPU 1, execution commit `e5a1ed3` produced
+one fixed-seed real FLUX.2 source and fed its exact PNG bytes to three native
+Wan2.2 I2V runs plus three same-settings T2V controls, with only one model Stage
+resident at a time. I2V first-frame/motion RGB proxies were `2.286328` /
+`3.466276`; median request latency was `11,110.524 ms` versus `11,080.627 ms` for
+T2V. Native anchor SHA-256 validation now rejects wrong-hash and tampered-source
+inputs before generation, with deterministic binding/lifecycle/cancel/failure
+coverage and independent fresh-process pixel/hash verification. The public
+schema and implicit defaults are unchanged. Full public VLM narrative
+orchestration, perceptual quality, and deployment remain `NOT_RUN`; exact hashes,
+all per-run values, negative controls, and cleanup are in
+[flux2-i2v-continuity](flux2-i2v-continuity.md).
+
 ### Phase 5 — Unified performance baseline and joint optimization
 
 **Goal.** Establish one measurable baseline for the unified engine, then

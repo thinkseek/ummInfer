@@ -15,6 +15,7 @@ check uses byte fixtures only and never claims real generation or quality.
 
 import argparse
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -85,8 +86,14 @@ def validate_linked_events(events):
             "unified event sequence is not gap-free")
     slots = [event for event in events if event["kind"] == "visual_slot"]
     require(len(slots) == 2, "expected one image and one I2V visual slot")
-    linked = slots[1]
+    source_slot, linked = slots
+    require(source_slot["slot_id"] == "slot-0"
+            and source_slot.get("slot_index") == 0
+            and source_slot.get("stage") == "image",
+            f"invalid source slot identity: {source_slot}")
     require(linked["slot_id"] == "slot-1"
+            and linked.get("slot_index") == 1
+            and linked.get("stage") == "video"
             and linked.get("continuity_mode") == "i2v_chain"
             and linked.get("anchor_slot_index") == 0
             and linked.get("anchor_explicit") is True
@@ -101,8 +108,12 @@ def validate_linked_events(events):
     groups = list(grouped.values())
     image_events, video_events = groups
     require(image_events[0]["artifact"]["media_type"] == "image"
-            and video_events[0]["artifact"]["media_type"] == "video",
-            "source/I2V modalities are reversed or invalid")
+            and image_events[0]["artifact"].get("slot_id") == "slot-0"
+            and image_events[0]["artifact"].get("slot_index") == 0
+            and video_events[0]["artifact"]["media_type"] == "video"
+            and video_events[0]["artifact"].get("slot_id") == "slot-1"
+            and video_events[0]["artifact"].get("slot_index") == 1,
+            "source/I2V modalities or slot identities are reversed or invalid")
     require(video_events[0]["seq"] > image_events[-1]["seq"],
             "I2V artifact predates the source image's final settled chunk")
     image = image_events[-1]["artifact"]
@@ -114,6 +125,9 @@ def validate_linked_events(events):
             "I2V artifact does not bind the source SHA-256")
     require(events[-1]["kind"] == "complete", "linked stream did not complete")
     legs = events[-1]["legs"]
+    source_leg = next(leg for leg in legs if leg.get("slot_id") == "slot-0")
+    require(source_leg.get("state") == "completed",
+            "source image leg is not completed")
     linked_leg = next(leg for leg in legs if leg.get("slot_id") == "slot-1")
     require(linked_leg.get("state") == "completed"
             and linked_leg.get("anchor_sha256") == source_sha,
@@ -129,17 +143,62 @@ def validate_linked_events(events):
 
 
 def self_check():
-    summary = validate_linked_events(linked_events(delayed=True))
-    raw = sse_bytes(linked_events(delayed=True))
-    require(b"data: [DONE]\n\n" in raw, "offline SSE fixture lacks [DONE]")
+    for delayed in (False, True):
+        events = linked_events(delayed=delayed)
+        summary = validate_linked_events(events)
+        raw = sse_bytes(events)
+        require(b"data: [DONE]\n\n" in raw, "offline SSE fixture lacks [DONE]")
+        require(summary["source_sha256"] == hashlib.sha256(PNG).hexdigest(),
+                "offline source digest mismatch")
+        require(summary["i2v_sha256"] == hashlib.sha256(MP4).hexdigest(),
+                "offline I2V digest mismatch")
     black, white = bytes([0, 0, 0]), bytes([255, 255, 255])
     require(_mean_absolute_rgb(black, black) == 0.0, "zero MAE mismatch")
     require(_mean_absolute_rgb(black, white) == 255.0, "RGB MAE mismatch")
-    require(summary["source_sha256"] == hashlib.sha256(PNG).hexdigest(),
-            "offline source digest mismatch")
-    require(summary["i2v_sha256"] == hashlib.sha256(MP4).hexdigest(),
-            "offline I2V digest mismatch")
-    print("OFFLINE_CONTRACT: PASS (immediate/delayed linkage, SHA-256, clean prose)")
+
+    def expect_rejected(events, label):
+        try:
+            validate_linked_events(events)
+        except (AssertionError, KeyError, StopIteration):
+            return
+        raise AssertionError(f"{label} was not rejected")
+
+    tampered = copy.deepcopy(linked_events(delayed=False))
+    image = next(event["artifact"] for event in tampered
+                 if event["kind"] == "artifact"
+                 and event["artifact"]["media_type"] == "image")
+    changed = PNG + b"tampered"
+    image["data"] = base64.b64encode(changed).decode("ascii")
+    image["bytes"] = len(changed)
+    image["sha256"] = hashlib.sha256(changed).hexdigest()
+    expect_rejected(tampered, "tampered source with stale anchor")
+
+    wrong_hash = copy.deepcopy(linked_events(delayed=False))
+    for event in wrong_hash:
+        if event["kind"] == "artifact" \
+                and event["artifact"]["media_type"] == "video":
+            event["artifact"]["anchor_sha256"] = "0" * 64
+        if event["kind"] == "complete":
+            for leg in event["legs"]:
+                if leg.get("slot_id") == "slot-1":
+                    leg["anchor_sha256"] = "0" * 64
+    expect_rejected(wrong_hash, "wrong anchor hash")
+
+    cancelled = copy.deepcopy(linked_events(delayed=False))
+    cancelled[-1]["kind"] = "cancelled"
+    for leg in cancelled[-1]["legs"]:
+        if leg.get("slot_id") == "slot-1":
+            leg["state"] = "aborted"
+    expect_rejected(cancelled, "cancelled I2V lifecycle")
+
+    failed = copy.deepcopy(linked_events(delayed=False))
+    for leg in failed[-1]["legs"]:
+        if leg.get("slot_id") == "slot-0":
+            leg["state"] = "failed"
+    expect_rejected(failed, "failed source lifecycle")
+
+    print("OFFLINE_CONTRACT: PASS (2 linkage orders; binding/tamper/wrong-hash; "
+          "completed/cancelled/failed lifecycle; clean prose)")
     print("REAL_GENERATION: NOT_RUN")
     print("PERCEPTUAL_QUALITY: NOT_RUN")
 
