@@ -568,6 +568,20 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 45 Real `Qwen/Qwen3.8-27B` Fast-Tokenizer Gate & `token_export` Format v2 (`4685125`):
+  - Harvested accepted Task #37 (`revisions=0`, CPU-only real fast-tokenizer
+    gate): preserved v1 byte-for-byte (golden canonical record SHA-256
+    `ea53770a...` unchanged) after isolating real NFC (`e` + U+0301 -> `é`) and
+    emoji ByteLevel byte-fallback offset behavior; added backward-compatible
+    `token_export` format v2 in `python/umminfer_token_export.py` +
+    `tests/token_export_test.py` + `docs/token-export-real-qwen.md` (and updated
+    `docs/rl.md`, `docs/joint-training.md`, `docs/roadmap.md`). Real
+    `Qwen/Qwen3.8-27B` 6-file tokenizer gate (`transformers 5.6.0` /
+    `tokenizers 0.22.2`) passed **10/10 OK (0 skips)** (`REAL_TOKENIZER_FIXTURE:
+    PASS`) with fresh-process export + independent re-encode strong validation;
+    local 8-suite Stage C regression passed (`64/64` tests; real tokenizer
+    honestly reports `NOT_RUN` when not supplied locally).
+
 - Wave 44 SM90 Real Request-Native CUDA Allocator Telemetry Gate & Nonstream Leak Fix (`4ff5133`):
   - Harvested accepted Task #35 (`revisions=0`, isolated SM90 GPU 0 real CUDA
     validation gate): landed `tests/request_telemetry_live.py`,
