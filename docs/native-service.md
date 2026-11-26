@@ -532,6 +532,21 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 38 Isolated SM90 Public-SSE Live Capture/Replay Gate (`869854f`):
+  - Harvested accepted Task #33 (`81c593c`, 7 files): landed focused live
+    harness `tests/sse_replay_live.py`, `docs/sse-replay-live.md`, hash-only
+    SM90 evidence `docs/evidence/sse-replay-live-sm90.json`, and 9-test
+    `tests/sse_replay_test.py` (`9/9 OK`, `rl_architecture_test.py 16/16 OK`,
+    `stage_c_pipeline_test.py 6/6 OK`).
+  - Isolated SM90 GPU 0 gate (resident `43301` & GPUs 2–6 untouched; GPU 0
+    returned to `3 MiB`, `/health in_flight=0`, `33/33 SHA256SUMS OK`) captured
+    3 public streams (text-only `1,654 B`, interleaved visual contract
+    `235,713 B`, real in-flight `/abort` `725 B` -> terminal `cancelled`) with
+    observed `perf_counter_ns` ticks and verified fresh-process CLI replay
+    produced byte-identical `26,040 B` JSONL (`b63b60dc...`), 5/5 CAS match,
+    split/coalesced framing invariance, and fail-closed rejection on byte and
+    re-hashed tick tampering (visual bytes explicitly marked contract fixtures).
+
 - Wave 37 Opt-In Request-Native CUDA Allocator Telemetry (`6ea24d5`):
   - Harvested accepted Task #31 (`d0c7822`, 31 files): added
     `telemetry.native_allocator=true` opt-in request-native CUDA allocator epoch
