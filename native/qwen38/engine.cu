@@ -5,6 +5,8 @@
 
 #include <cuda_runtime.h>
 
+#include "common/cuda_request_allocator.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -376,13 +378,13 @@ struct Engine::Impl {
         std::vector<float> host(n);
         const Bf16* src = static_cast<const Bf16*>(shards->tensor_bytes(name));
         for (size_t i = 0; i < n; ++i) host[i] = float(src[i]);
-        UMM_QWEN38_CUDA_CHECK(cudaMalloc(&d, n * sizeof(float)));
+        UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(&d, n * sizeof(float)));
         UMM_QWEN38_CUDA_CHECK(cudaMemcpy(d, host.data(), n * sizeof(float),
                                          cudaMemcpyHostToDevice));
         weights.emplace(name, Tensor{d, "F32"});
         bytes += n * sizeof(float);
       } else {
-        UMM_QWEN38_CUDA_CHECK(cudaMalloc(&d, info.byte_size));
+        UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(&d, info.byte_size));
         UMM_QWEN38_CUDA_CHECK(cudaMemcpy(d, shards->tensor_bytes(name), info.byte_size,
                                          cudaMemcpyHostToDevice));
         weights.emplace(name, Tensor{d, info.dtype});
@@ -479,11 +481,11 @@ struct Engine::Impl {
     UMM_QWEN38_CUDA_CHECK(cudaMallocHost(
         reinterpret_cast<void**>(&h_step_meta), 3 * sizeof(int)));
     auto mb = [](Bf16** p, size_t n) {
-      UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(p),
+      UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(reinterpret_cast<void**>(p),
                                        n * sizeof(Bf16)));
     };
     auto mf = [](float** p, size_t n) {
-      UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(p),
+      UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(reinterpret_cast<void**>(p),
                                        n * sizeof(float)));
     };
     const size_t S = static_cast<size_t>(max_seq);
@@ -521,29 +523,29 @@ struct Engine::Impl {
     const size_t conv_bytes = sizeof(Bf16) * kLayers * kConvDim * (kConvK - 1);
     const size_t kv_bytes = sizeof(Bf16) * 16 * 2 * S * kKvHeads * kHeadDim;
     mf(&logits, B * kVocab);
-    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_ids),
+    UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(reinterpret_cast<void**>(&d_ids),
                                      S * sizeof(int)));
-    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&argmax_scratch),
+    UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(reinterpret_cast<void**>(&argmax_scratch),
                                      sizeof(int)));
-    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&argmax_idx),
+    UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(reinterpret_cast<void**>(&argmax_idx),
                                      B * sizeof(int)));
-    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_logit_rows),
+    UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(reinterpret_cast<void**>(&d_logit_rows),
                                      kMaxBatch * sizeof(int)));
-    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_step_meta),
+    UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(reinterpret_cast<void**>(&d_step_meta),
                                      3 * sizeof(int)));
     UMM_QWEN38_CUDA_CHECK(cudaMemset(d_step_meta, 0, 3 * sizeof(int)));
-    UMM_QWEN38_CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_rope_inv),
+    UMM_QWEN38_CUDA_CHECK(request_cuda_malloc(reinterpret_cast<void**>(&d_rope_inv),
                                      kTextRotaryHalf * sizeof(double)));
     UMM_QWEN38_CUDA_CHECK(cudaMemcpy(d_rope_inv, rope_inv,
                                      kTextRotaryHalf * sizeof(double),
                                      cudaMemcpyHostToDevice));
     mb(&last_hidden, static_cast<size_t>(kMaxBatch) * kHidden);
     UMM_QWEN38_CUDA_CHECK(
-        cudaMalloc(reinterpret_cast<void**>(&kv), B * kv_bytes));
+        request_cuda_malloc(reinterpret_cast<void**>(&kv), B * kv_bytes));
     UMM_QWEN38_CUDA_CHECK(
-        cudaMalloc(reinterpret_cast<void**>(&rec_state), B * rec_bytes));
+        request_cuda_malloc(reinterpret_cast<void**>(&rec_state), B * rec_bytes));
     UMM_QWEN38_CUDA_CHECK(
-        cudaMalloc(reinterpret_cast<void**>(&conv_state), B * conv_bytes));
+        request_cuda_malloc(reinterpret_cast<void**>(&conv_state), B * conv_bytes));
     UMM_QWEN38_CUDA_CHECK(cudaMemset(rec_state, 0, B * rec_bytes));
     UMM_QWEN38_CUDA_CHECK(cudaMemset(conv_state, 0, B * conv_bytes));
 
@@ -609,12 +611,12 @@ Engine::~Engine() {
     }
   }
   for (const auto& [name, t] : impl_->weights)
-    cudaFree(const_cast<void*>(t.ptr));
+    request_cuda_free(const_cast<void*>(t.ptr));
   auto fb = [](Bf16*& p) {
-    if (p) cudaFree(p);
+    if (p) request_cuda_free(p);
   };
   auto ff = [](float*& p) {
-    if (p) cudaFree(p);
+    if (p) request_cuda_free(p);
   };
   fb(im.hidden); fb(im.norm); fb(im.qg); fb(im.q); fb(im.gate); fb(im.k);
   fb(im.v); fb(im.o); fb(im.mlp_gate); fb(im.mlp_up); fb(im.mlp_act);
@@ -626,12 +628,12 @@ Engine::~Engine() {
   fb(im.d_pixels); fb(im.v_hidden); fb(im.v_norm); fb(im.v_qkv); fb(im.v_q);
   fb(im.v_k); fb(im.v_v); fb(im.v_proj); fb(im.v_mlp); fb(im.v_pos); fb(im.pooler);
   ff(im.v_rope_cos); ff(im.v_rope_sin);
-  if (im.d_ids) cudaFree(im.d_ids);
-  if (im.argmax_scratch) cudaFree(im.argmax_scratch);
-  if (im.argmax_idx) cudaFree(im.argmax_idx);
-  if (im.d_logit_rows) cudaFree(im.d_logit_rows);
-  if (im.d_step_meta) cudaFree(im.d_step_meta);
-  if (im.d_rope_inv) cudaFree(im.d_rope_inv);
+  if (im.d_ids) request_cuda_free(im.d_ids);
+  if (im.argmax_scratch) request_cuda_free(im.argmax_scratch);
+  if (im.argmax_idx) request_cuda_free(im.argmax_idx);
+  if (im.d_logit_rows) request_cuda_free(im.d_logit_rows);
+  if (im.d_step_meta) request_cuda_free(im.d_step_meta);
+  if (im.d_rope_inv) request_cuda_free(im.d_rope_inv);
   if (im.h_ids) cudaFreeHost(im.h_ids);
   if (im.h_logit_rows) cudaFreeHost(im.h_logit_rows);
   if (im.h_argmax) cudaFreeHost(im.h_argmax);
@@ -936,11 +938,11 @@ void ensure_snapshot_buffers(Engine::Impl& im) {
   if (im.kv_snap != nullptr) return;
   const size_t kv_bytes = static_cast<size_t>(kKvSlots) * 2 * im.max_seq * kKvRow;
   UMM_QWEN38_CUDA_CHECK(
-      cudaMalloc(reinterpret_cast<void**>(&im.kv_snap), kv_bytes * sizeof(Bf16)));
+      request_cuda_malloc(reinterpret_cast<void**>(&im.kv_snap), kv_bytes * sizeof(Bf16)));
   UMM_QWEN38_CUDA_CHECK(
-      cudaMalloc(reinterpret_cast<void**>(&im.rec_snap), rec_state_bytes()));
+      request_cuda_malloc(reinterpret_cast<void**>(&im.rec_snap), rec_state_bytes()));
   UMM_QWEN38_CUDA_CHECK(
-      cudaMalloc(reinterpret_cast<void**>(&im.conv_snap), conv_state_bytes()));
+      request_cuda_malloc(reinterpret_cast<void**>(&im.conv_snap), conv_state_bytes()));
 }
 
 void copy_kv_rows(Bf16* dst, const Bf16* src, int len, size_t stride,

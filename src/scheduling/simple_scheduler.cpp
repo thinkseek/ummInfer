@@ -5,6 +5,8 @@
 #include <chrono>
 #include <iostream>
 
+#include "umminfer/obs/request_telemetry.hpp"
+
 namespace umminfer {
 namespace {
 
@@ -231,16 +233,39 @@ void SimpleScheduler::run_single(const IncomingMessage& msg) {
     } else {
       result = fn_(msg.data);
     }
-  } catch (const RequestAborted&) {
-    // The request already has a terminal event from the abort path. Drop the
-    // tombstone so the id can be reaped, and emit nothing.
+  } catch (RequestAborted& error) {
+    // The request already has a terminal event from the abort path. Preserve
+    // the historical no-output path unless this request explicitly opted into
+    // a terminal native allocation snapshot.
     consume_if_aborted(msg.request_id);
+    if (!error.telemetry_result.is_nil()) {
+      obs::rewrite_result_telemetry_lifecycle(error.telemetry_result, "cancelled");
+      outbox_.put(OutgoingMessage{msg.request_id, "cancelled",
+                                  std::move(error.telemetry_result)});
+    }
+    return;
+  } catch (const RequestComputeError& error) {
+    Value result = error.telemetry_result;
+    if (consume_if_aborted(msg.request_id)) {
+      obs::rewrite_result_telemetry_lifecycle(result, "cancelled");
+      outbox_.put(OutgoingMessage{msg.request_id, "cancelled", std::move(result)});
+    } else {
+      Value::Map failure = result.is_map() ? result.as_map() : Value::Map{};
+      failure["error"] = Value(error.what());
+      outbox_.put(OutgoingMessage{msg.request_id, "error",
+                                  Value(std::move(failure))});
+    }
     return;
   } catch (const std::exception& e) {
     if (!consume_if_aborted(msg.request_id)) emit_error(msg.request_id, e.what());
     return;
   }
-  if (consume_if_aborted(msg.request_id)) return;
+  if (consume_if_aborted(msg.request_id)) {
+    if (obs::rewrite_result_telemetry_lifecycle(result, "cancelled")) {
+      outbox_.put(OutgoingMessage{msg.request_id, "cancelled", std::move(result)});
+    }
+    return;
+  }
   emit_result(msg.request_id, std::move(result));
 }
 

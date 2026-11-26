@@ -40,6 +40,7 @@ add_library(umm_stage_core STATIC
   ${UMM_ROOT}/src/proto/wire.cpp
   ${UMM_ROOT}/src/proto/messages.cpp
   ${UMM_ROOT}/src/obs/metrics.cpp
+  ${UMM_ROOT}/src/obs/request_telemetry.cpp
   ${UMM_ROOT}/src/relay/relay.cpp
   ${UMM_ROOT}/src/comm/comm.cpp
   ${UMM_ROOT}/src/scheduling/simple_scheduler.cpp
@@ -60,6 +61,7 @@ endif()
 
 add_library(umm_stage_common STATIC
   stage_common.cpp
+  request_telemetry_stage.cpp
   ${NATIVE_DIR}/umm_asr_native/wav.cpp
 )
 target_include_directories(umm_stage_common PUBLIC
@@ -80,6 +82,12 @@ add_executable(stage_video_common_test
 )
 target_link_libraries(stage_video_common_test PRIVATE umm_stage_common)
 add_test(NAME stage_video_common_test COMMAND stage_video_common_test)
+
+add_executable(request_telemetry_test
+  request_telemetry_test.cpp
+)
+target_link_libraries(request_telemetry_test PRIVATE umm_stage_common)
+add_test(NAME request_telemetry_test COMMAND request_telemetry_test)
 
 add_executable(stage_common_test
   stage_common_test.cpp
@@ -128,6 +136,7 @@ if(UMM_STAGE_CUDA)
   find_package(CUDAToolkit REQUIRED)
 
   target_sources(umm-native-stage-video PRIVATE
+    ${NATIVE_DIR}/common/cuda_request_allocator.cpp
     ${NATIVE_DIR}/video/safetensors_mmap.cpp
     ${NATIVE_DIR}/video/umt5_tokenizer.cpp
     ${NATIVE_DIR}/video/umt5_encoder.cpp
@@ -138,7 +147,7 @@ if(UMM_STAGE_CUDA)
     ${NATIVE_DIR}/video/umt5_kernels.cu
     ${NATIVE_DIR}/video/wan_dit_kernels.cu
   )
-  target_compile_definitions(umm-native-stage-video PRIVATE UMM_VIDEO_CUDA=1 UMM_VIDEO_WAN_FULL=1)
+  target_compile_definitions(umm-native-stage-video PRIVATE UMM_VIDEO_CUDA=1 UMM_VIDEO_WAN_FULL=1 UMM_NATIVE_REQUEST_ALLOCATOR=1)
   target_link_libraries(umm-native-stage-video PRIVATE CUDA::cudart CUDA::cublas)
   set_target_properties(umm-native-stage-video PROPERTIES CUDA_ARCHITECTURES 90)
 
@@ -174,6 +183,7 @@ if(UMM_STAGE_CUDA)
   # ---- Qwen3.8-27B ----
   add_executable(umm-native-stage-qwen38
     main.cpp qwen38_stage.cpp
+    ${NATIVE_DIR}/common/cuda_request_allocator.cpp
     ${NATIVE_DIR}/qwen38/safetensors_mmap.cpp
     ${NATIVE_DIR}/qwen38/image_preprocess.cpp
     ${NATIVE_DIR}/qwen38/video_sampling.cpp
@@ -185,6 +195,7 @@ if(UMM_STAGE_CUDA)
     ${NATIVE_DIR}/qwen38/qwen38_gemm.cu
   )
   target_include_directories(umm-native-stage-qwen38 PRIVATE ${NATIVE_DIR})
+  target_compile_definitions(umm-native-stage-qwen38 PRIVATE UMM_NATIVE_REQUEST_ALLOCATOR=1)
   target_link_libraries(umm-native-stage-qwen38 PRIVATE umm_stage_common CUDA::cudart)
   set_target_properties(umm-native-stage-qwen38 PROPERTIES CUDA_ARCHITECTURES 90)
 

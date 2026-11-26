@@ -11,6 +11,7 @@
 #include "pipeline/narrative_parser.hpp"
 #include "pipeline/unified_schema.hpp"
 #include "umminfer/obs/metrics.hpp"
+#include "umminfer/obs/request_telemetry.hpp"
 #include "umminfer/pipeline/sentence_split.hpp"
 #include "umminfer/util/codec.hpp"
 
@@ -283,6 +284,8 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     throw QueueFullError();
   }
   Record record;
+  record.telemetry_requested =
+      obs::native_allocator_telemetry_requested(vlm_params);
   record.session_id = std::move(session_id);
   record.has_audio = parsed.has_audio;
   record.asr_state = parsed.has_audio ? LegState::kRunning : LegState::kPending;
@@ -1210,6 +1213,14 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
   event.seq = record.next_seq++;
   event.error = std::move(error);
   event.result = std::move(result);
+  if (record.telemetry_requested) {
+    const char* lifecycle = kind == UnifiedEvent::Kind::kComplete
+                                ? "completed"
+                                : kind == UnifiedEvent::Kind::kCancelled ? "cancelled"
+                                                                         : "failed";
+    event.telemetry = obs::request_telemetry_envelope(
+        request_id, lifecycle, record.telemetry_stages);
+  }
   if (kind == UnifiedEvent::Kind::kComplete) {
     event.stage_id = kVlmStageId;
     event.text = record.vlm_text;
@@ -1261,6 +1272,7 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
   record.public_info.result = kind == UnifiedEvent::Kind::kComplete
                                   ? event.result
                                   : Value{};
+  record.public_info.telemetry = event.telemetry;
   record.public_info.error = event.error;
   for (auto it = admission_.begin(); it != admission_.end(); ++it) {
     if (*it == request_id) {
@@ -1327,6 +1339,19 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
             break;
           }
         }
+      }
+      if (record.telemetry_requested) {
+        const char* public_stage = output_leg != nullptr
+                                       ? output_leg->stage_id.c_str()
+                                       : record.vlm_id.empty() ? kAsrStageId : kVlmStageId;
+        const char* lifecycle = record.cancel_requested || info.state == "aborted"
+                                    ? "cancelled"
+                                    : info.state == "completed" ? "completed" : "failed";
+        const Value* candidate = info.result.is_map()
+                                     ? info.result.find(obs::kRequestTelemetryResultKey)
+                                     : nullptr;
+        record.telemetry_stages.push_back(obs::sanitize_native_request_telemetry(
+            candidate, info.request_id, public_stage, lifecycle));
       }
       const auto record_primary_leg = [&record, &unified_id](
                                           const std::string& status) {

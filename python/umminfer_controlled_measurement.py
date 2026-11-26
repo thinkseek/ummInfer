@@ -70,7 +70,8 @@ def parse_contract(block):
         return None
     _known_keys(block, ("schema_version", "warmup_repetitions",
                         "measured_repetitions", "arm_order", "seed",
-                        "cooldown_ms", "exclusive_device", "cleanup"),
+                        "cooldown_ms", "exclusive_device", "cleanup",
+                        "request_memory"),
                 "contract")
     if block.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
         raise ValueError("measurement.schema_version must be 1")
@@ -132,6 +133,16 @@ def parse_contract(block):
         "max_residual_memory_mib": residual,
         "timeout_s": float(timeout_s),
     }
+    if "request_memory" in block:
+        request_memory = block["request_memory"]
+        _known_keys(request_memory, ("enabled", "required"), "request_memory")
+        enabled = request_memory.get("enabled", False)
+        required = request_memory.get("required", False)
+        if not isinstance(enabled, bool) or not isinstance(required, bool):
+            raise ValueError("measurement.request_memory enabled/required must be boolean")
+        if required and not enabled:
+            raise ValueError("measurement.request_memory.required=true requires enabled=true")
+        contract["request_memory"] = {"enabled": enabled, "required": required}
     return contract
 
 
@@ -315,7 +326,8 @@ def evaluate_cleanup(contract, *, in_flight, residual_mib=None):
 
 
 def evaluate_eligibility(contract, *, provenance, model, arms, preconditions,
-                         cleanups, visual_form_equivalence=None):
+                         cleanups, visual_form_equivalence=None,
+                         request_telemetry=None):
     """CONTROLLED_LIVE only when every contract dimension is fully covered.
 
     `arms` maps arm -> {warmups_declared, warmups_executed, warmup_failures,
@@ -395,29 +407,255 @@ def evaluate_eligibility(contract, *, provenance, model, arms, preconditions,
             visual_form_equivalence.get("coverage") != "COVERED"
             or not visual_form_equivalence.get("passed")):
         reasons.append("visual-form first-stage request/source-PNG equivalence failed")
+    request_memory = contract.get("request_memory", {})
+    if request_memory.get("required") and (
+            not isinstance(request_telemetry, dict)
+            or request_telemetry.get("coverage") != "COVERED"):
+        reasons.append("required request-native allocator telemetry is not fully COVERED")
+    rules = ["declared warmups executed", "declared measured repetitions completed",
+             "exclusive-device precondition passed",
+             "cooldown/cleanup checks passed",
+             "source/config/data/artifact hashes pinned",
+             "language/visual/auxiliary model config, available-weights, and backend binary hashes pinned",
+             "no failed measured requests",
+             "visual-form request/source-PNG equivalence passed when applicable"]
+    if request_memory.get("required"):
+        rules.append("request-native allocator telemetry fully covered")
     return {
         "label": CONTROLLED_LIVE if not reasons else UNCONTROLLED_LIVE,
         "reasons": reasons,
-        "rules": ["declared warmups executed", "declared measured repetitions completed",
-                  "exclusive-device precondition passed",
-                  "cooldown/cleanup checks passed",
-                  "source/config/data/artifact hashes pinned",
-                  "language/visual/auxiliary model config, available-weights, and backend binary hashes pinned",
-                  "no failed measured requests",
-                  "visual-form request/source-PNG equivalence passed when applicable"],
+        "rules": rules,
     }
 
 
-def request_scoped_telemetry():
-    """No existing public interface exposes request-scoped native allocator or
+REQUEST_MEMORY_SCOPE = "request-native-allocator"
+NATIVE_ALLOCATOR_SCOPE = "request-native-cuda-runtime"
+TELEMETRY_IDENTITY = re.compile(r"[A-Za-z0-9_.:@-]{1,160}\Z")
+NATIVE_ALLOCATOR_ATTRIBUTION = (
+    "explicit native cudaMalloc/cudaFree blocks first owned by one serial request "
+    "epoch; excludes pre-request resident allocations, CUDA context/driver and "
+    "external-library allocations; no baseline or peer-request subtraction"
+)
+NOT_COVERED_REASONS = {
+    "backend_not_instrumented", "contract_stub_has_no_cuda_allocator",
+    "concurrent_request_attribution_unavailable",
+    "batched_request_attribution_unavailable", "missing_request_identity",
+    "invalid_device_identity", "overlapping_serial_epochs",
+    "allocation_tracking_failed", "stage_terminal_snapshot_missing",
+    "malformed_native_telemetry",
+}
 
-    VRAM telemetry (/health carries only in_flight; /metrics and nvidia-smi are
-    whole-device). Until such an interface exists, request-scoped coverage is
-    honestly NOT_COVERED and whole-device sampling is retained and labelled.
-    """
+
+def _telemetry_error(message):
+    raise ValueError(f"request telemetry {message}")
+
+
+def _telemetry_int(value, label, minimum=0, maximum=None):
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum \
+            or (maximum is not None and value > maximum):
+        _telemetry_error(f"{label} must be an integer in range")
+    return value
+
+
+def _telemetry_identity(value, label, maximum=160):
+    if not isinstance(value, str) or len(value) > maximum \
+            or not TELEMETRY_IDENTITY.fullmatch(value):
+        _telemetry_error(f"{label} is not a bounded redacted identity")
+    return value
+
+
+def _native_allocator_stage(value, expected_request_id, expected_lifecycle):
+    """Validate and project one fixed-size native stage record, fail closed."""
+    if not isinstance(value, dict):
+        _telemetry_error("stage entry must be an object")
+    if value.get("schema_version") != 1 \
+            or value.get("scope") != NATIVE_ALLOCATOR_SCOPE:
+        _telemetry_error("stage schema/scope is invalid")
+    request_id = _telemetry_identity(value.get("request_id"), "stage request_id")
+    if request_id != expected_request_id \
+            and not request_id.startswith(expected_request_id + ":"):
+        _telemetry_error("stage request_id is not the public request or its child leg")
+    lifecycle = value.get("lifecycle_status")
+    if lifecycle not in ("completed", "failed", "cancelled"):
+        _telemetry_error("stage lifecycle is invalid")
+    coverage = value.get("coverage")
+    if coverage not in ("COVERED", "NOT_COVERED"):
+        _telemetry_error("stage coverage is invalid")
+    execution = value.get("execution")
+    if not isinstance(execution, dict) \
+            or execution.get("mode") not in ("serial", "concurrent", "batched",
+                                             "unknown"):
+        _telemetry_error("stage execution attribution is invalid")
+    mode = execution["mode"]
+    if mode == "unknown":
+        if execution.get("batch_capacity") is not None:
+            _telemetry_error("unknown execution cannot declare a batch capacity")
+        batch_capacity = None
+    else:
+        batch_capacity = _telemetry_int(execution.get("batch_capacity"),
+                                        "batch_capacity", 1, 4096)
+    epoch = value.get("epoch")
+    if not isinstance(epoch, dict) or not isinstance(epoch.get("reset"), bool):
+        _telemetry_error("stage epoch reset marker is invalid")
+    reset = epoch["reset"]
+    reset_semantics = epoch.get("semantics")
+    if reset_semantics not in ("new_allocation_ownership_epoch",
+                               "not_reset_shared_or_unsupported",
+                               "no_request_epoch"):
+        _telemetry_error("stage epoch semantics are invalid")
+    if mode == "unknown":
+        if epoch.get("id") is not None or reset or reset_semantics != "no_request_epoch":
+            _telemetry_error("unknown execution cannot fabricate an epoch")
+        epoch_id = None
+    else:
+        if reset_semantics == "no_request_epoch":
+            _telemetry_error("attributed execution requires an epoch id")
+        epoch_id = _telemetry_int(epoch.get("id"), "epoch id", 1)
+    samples = value.get("sample_coverage")
+    if not isinstance(samples, dict):
+        _telemetry_error("stage sample_coverage is invalid")
+    allocations = _telemetry_int(samples.get("allocation_events"), "allocation_events")
+    frees = _telemetry_int(samples.get("free_events"), "free_events")
+    snapshots = _telemetry_int(samples.get("terminal_snapshots"),
+                               "terminal_snapshots", 0, 1)
+    if frees > allocations:
+        _telemetry_error("free_events exceeds allocation_events")
+    out = {
+        "schema_version": 1, "coverage": coverage,
+        "scope": NATIVE_ALLOCATOR_SCOPE, "request_id": request_id,
+        "stage": _telemetry_identity(value.get("stage"), "public stage"),
+        "native_stage": _telemetry_identity(value.get("native_stage"), "native stage"),
+        "backend": _telemetry_identity(value.get("backend"), "backend", 64),
+        "lifecycle_status": lifecycle,
+        "execution": {"mode": mode, "batch_capacity": batch_capacity},
+        "epoch": {"id": epoch_id, "reset": reset, "semantics": reset_semantics},
+        "sample_coverage": {"allocation_events": allocations, "free_events": frees,
+                            "terminal_snapshots": snapshots},
+        "attribution": NATIVE_ALLOCATOR_ATTRIBUTION,
+    }
+    byte_keys = ("allocated_bytes_peak", "reserved_bytes_peak",
+                 "allocated_bytes_final", "reserved_bytes_final")
+    if coverage == "NOT_COVERED":
+        if value.get("reason") not in NOT_COVERED_REASONS \
+                or any(value.get(key) is not None for key in byte_keys) \
+                or allocations or frees or snapshots:
+            _telemetry_error("NOT_COVERED stage carries fabricated samples or bytes")
+        out["device_index"] = None
+        out.update({key: None for key in byte_keys})
+        out["reason"] = value["reason"]
+        return out
+    device = _telemetry_int(value.get("device_index"), "device_index", 0, 1024)
+    peaks = {key: _telemetry_int(value.get(key), key) for key in byte_keys}
+    if mode != "serial" or batch_capacity != 1 or not reset \
+            or reset_semantics != "new_allocation_ownership_epoch" \
+            or snapshots != 1 \
+            or peaks["allocated_bytes_peak"] != peaks["reserved_bytes_peak"] \
+            or peaks["allocated_bytes_final"] != peaks["reserved_bytes_final"] \
+            or peaks["allocated_bytes_final"] > peaks["allocated_bytes_peak"]:
+        _telemetry_error("covered stage violates serial direct-allocation invariants")
+    out["device_index"] = device
+    out.update(peaks)
+    return out
+
+
+def _request_telemetry_envelope(value, expected_request_id=None,
+                                expected_lifecycle=None):
+    if not isinstance(value, dict) or value.get("schema_version") != 1 \
+            or value.get("scope") != REQUEST_MEMORY_SCOPE:
+        _telemetry_error("envelope schema/scope is invalid")
+    request_id = _telemetry_identity(value.get("request_id"), "request_id")
+    lifecycle = value.get("lifecycle_status")
+    if lifecycle not in ("completed", "failed", "cancelled"):
+        _telemetry_error("lifecycle_status is invalid")
+    if expected_request_id is not None and request_id != expected_request_id:
+        _telemetry_error("request_id does not match its trajectory record")
+    if expected_lifecycle is not None and lifecycle != expected_lifecycle:
+        _telemetry_error("lifecycle_status does not match its trajectory record")
+    stages = value.get("stages")
+    if not isinstance(stages, list) or len(stages) > 64:
+        _telemetry_error("stages must be a bounded list")
+    projected = [_native_allocator_stage(stage, request_id, lifecycle)
+                 for stage in stages]
+    covered = sum(stage["coverage"] == "COVERED" for stage in projected)
+    coverage = "NOT_COVERED" if not projected or not covered \
+        else "COVERED" if covered == len(projected) else "PARTIAL"
+    samples = value.get("sample_coverage")
+    if not isinstance(samples, dict) \
+            or samples.get("stage_count") != len(projected) \
+            or samples.get("covered_stage_count") != covered \
+            or not isinstance(samples.get("truncated"), bool):
+        _telemetry_error("envelope sample coverage is inconsistent")
+    if value.get("coverage") != coverage \
+            or value.get("whole_device_nvml") != "separate_measurement_resources":
+        _telemetry_error("envelope coverage/NVML separation is invalid")
+    out = {
+        "schema_version": 1, "coverage": coverage, "scope": REQUEST_MEMORY_SCOPE,
+        "request_id": request_id, "lifecycle_status": lifecycle,
+        "sample_coverage": {"stage_count": len(projected),
+                            "covered_stage_count": covered,
+                            "truncated": samples["truncated"]},
+        "stages": projected,
+        "whole_device_nvml": "separate_measurement_resources",
+    }
+    return out
+
+
+def _missing_request_telemetry(request_id, lifecycle):
+    request_id = _telemetry_identity(request_id, "request_id")
+    if lifecycle not in ("completed", "failed", "cancelled"):
+        _telemetry_error("lifecycle_status is invalid")
     return {
-        "coverage": "NOT_COVERED",
-        "scope": "whole-device-used-memory",
-        "reason": "no existing public interface exposes request-scoped native "
-                  "allocator/VRAM telemetry; whole-device sampling is retained",
+        "schema_version": 1, "coverage": "NOT_COVERED",
+        "scope": REQUEST_MEMORY_SCOPE, "request_id": request_id,
+        "lifecycle_status": lifecycle,
+        "sample_coverage": {"stage_count": 0, "covered_stage_count": 0,
+                            "truncated": False},
+        "stages": [], "whole_device_nvml": "separate_measurement_resources",
+        "reason": "public response did not carry request-native allocator telemetry",
     }
+
+
+def request_scoped_telemetry(observations=None, *, request_id=None,
+                             terminal_state=None):
+    """Normalize public per-request envelopes without mixing in NVML samples.
+
+    No arguments retain the legacy replay/default record. One dict validates one
+    request; a list aggregates measured requests and reports max stage peaks.
+    Explicitly enabled requests missing a response envelope stay NOT_COVERED.
+    Malformed identities, lifecycle, epochs, counters, or byte values fail closed.
+    """
+    if observations is None and request_id is None:
+        return {
+            "coverage": "NOT_COVERED",
+            "scope": "whole-device-used-memory",
+            "reason": "request-native allocator telemetry was not requested; "
+                      "whole-device sampling remains separate",
+        }
+    if observations is None:
+        return _missing_request_telemetry(request_id, terminal_state)
+    if isinstance(observations, dict):
+        return _request_telemetry_envelope(observations, request_id, terminal_state)
+    if not isinstance(observations, list):
+        _telemetry_error("observations must be an envelope or a list")
+    requests = [_request_telemetry_envelope(value) for value in observations]
+    stage_rows = [stage for request in requests for stage in request["stages"]]
+    covered_stages = [stage for stage in stage_rows if stage["coverage"] == "COVERED"]
+    covered_requests = sum(request["coverage"] == "COVERED" for request in requests)
+    any_covered = bool(covered_stages) or any(
+        request["coverage"] == "PARTIAL" for request in requests)
+    coverage = "NOT_COVERED" if not requests or not any_covered \
+        else "COVERED" if covered_requests == len(requests) else "PARTIAL"
+    result = {
+        "schema_version": 1, "coverage": coverage, "scope": REQUEST_MEMORY_SCOPE,
+        "sample_coverage": {
+            "request_count": len(requests), "covered_request_count": covered_requests,
+            "stage_count": len(stage_rows), "covered_stage_count": len(covered_stages),
+        },
+        "max_stage_allocated_bytes_peak": max(
+            (stage["allocated_bytes_peak"] for stage in covered_stages), default=None),
+        "max_stage_reserved_bytes_peak": max(
+            (stage["reserved_bytes_peak"] for stage in covered_stages), default=None),
+        "requests": requests,
+        "whole_device_nvml": "separate_measurement_resources",
+    }
+    return result

@@ -454,7 +454,8 @@ void Stage::on_data_ready(const DataReadyMessage& msg) {
   }
 }
 
-void Stage::fail_request(const std::string& request_id, const std::string& error) {
+void Stage::fail_request(const std::string& request_id, const std::string& error,
+                         Value telemetry_result) {
   if (request_id.empty()) return;
   {
     std::lock_guard<std::mutex> lock(requests_mu_);
@@ -466,6 +467,7 @@ void Stage::fail_request(const std::string& request_id, const std::string& error
   done.from_stage = config_.name;
   done.success = false;
   done.error = error.empty() ? "stage failure" : error;
+  if (!telemetry_result.is_nil()) done.result = std::move(telemetry_result);
   try {
     control_plane_->send_complete(done);
   } catch (...) {
@@ -636,8 +638,20 @@ void Stage::pump_outbox() {
     if (!msg) continue;
     try {
       if (msg->type == "error") {
-        fail_request(msg->request_id,
-                     msg->data.is_str() ? msg->data.as_str() : "stage compute failed");
+        if (msg->data.is_map()) {
+          const Value* error = msg->data.find("error");
+          fail_request(msg->request_id,
+                       error != nullptr && error->is_str() ? error->as_str()
+                                                           : "stage compute failed",
+                       std::move(msg->data));
+        } else {
+          fail_request(msg->request_id,
+                       msg->data.is_str() ? msg->data.as_str() : "stage compute failed");
+        }
+        continue;
+      }
+      if (msg->type == "cancelled") {
+        fail_request(msg->request_id, "request aborted", std::move(msg->data));
         continue;
       }
       route_result(msg->request_id, std::move(msg->data));

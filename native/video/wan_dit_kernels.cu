@@ -5,6 +5,7 @@
 #ifdef UMM_VIDEO_CUDA
 
 #include "safetensors_mmap.hpp"
+#include "common/cuda_request_allocator.hpp"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -130,7 +131,7 @@ class DeviceBuffer {
 
   void reset() noexcept {
     if (data_ != nullptr) {
-      (void)cudaFree(data_);
+      (void)request_cuda_free(data_);
       if (tracker_ != nullptr) {
         tracker_->current -= bytes_;
       }
@@ -144,7 +145,7 @@ class DeviceBuffer {
     if (data_ != nullptr) throw std::logic_error("Wan DiT buffer allocated twice");
     if (bytes == 0) return;
     void* data = nullptr;
-    UMM_DIT_CUDA(cudaMalloc(&data, bytes));
+    UMM_DIT_CUDA(request_cuda_malloc(&data, bytes));
     data_ = data;
     bytes_ = bytes;
     tracker_ = &tracker;

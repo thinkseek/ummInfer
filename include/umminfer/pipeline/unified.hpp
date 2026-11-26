@@ -136,6 +136,8 @@ struct UnifiedEvent {
   std::string anchor_sha256;
   // Present on kComplete: the aggregated VLM result value.
   Value result;
+  // Present only for an explicit telemetry opt-in terminal event.
+  Value telemetry;
   // Present on kError.
   std::string error;
 
@@ -364,6 +366,10 @@ class UnifiedEngine {
     double image_ms = -1;
     double tts_ms = -1;
     double video_ms = -1;
+    // Fixed-size stage telemetry records are collected only for an explicit
+    // request opt-in and projected to one bounded terminal envelope.
+    bool telemetry_requested = false;
+    std::vector<Value> telemetry_stages;
     RequestInfo public_info;
     int64_t next_seq = 0;
     bool asr_final_seen = false;

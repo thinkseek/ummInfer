@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "umminfer/obs/request_telemetry.hpp"
 #include "umminfer/util/codec.hpp"
 
 namespace umminfer {
@@ -48,6 +49,8 @@ void OpenAIApi::Impl::release_chat(const std::string& request_id) {
 void OpenAIApi::Impl::handle_nonstream_mixed(const httplib::Request& req,
                             httplib::Response& res, StagePayload payload,
                             int64_t created) {
+  const bool telemetry_requested =
+      obs::native_allocator_telemetry_requested(payload.request.params);
   const std::string request_id = "http-" + std::to_string(++next_request_id_);
   payload.request_id = request_id;
   auto sink = std::make_shared<SseSink>();
@@ -130,10 +133,11 @@ void OpenAIApi::Impl::handle_nonstream_mixed(const httplib::Request& req,
     if (message.empty() && info) message = info->error;
     if (message.empty()) message = "request failed";
     res.status = 500;
-    res.set_content(
-        json{{"error", {{"message", message}, {"type", "generation_error"}}}}
-            .dump(),
-        "application/json");
+    json error = {{"error", {{"message", message}, {"type", "generation_error"}}}};
+    if (telemetry_requested && terminal && !terminal->telemetry.is_nil()) {
+      error["telemetry"] = value_to_json(terminal->telemetry);
+    }
+    res.set_content(error.dump(), "application/json");
     return;
   }
 
@@ -201,6 +205,9 @@ void OpenAIApi::Impl::handle_nonstream_mixed(const httplib::Request& req,
       {"artifacts", std::move(artifacts_json)},
       {"legs", terminal->legs.is_array() ? value_to_json(terminal->legs)
                                          : json::array()}};
+  if (telemetry_requested && !terminal->telemetry.is_nil()) {
+    out["telemetry"] = value_to_json(terminal->telemetry);
+  }
   res.set_content(out.dump(), "application/json");
 }
 
@@ -291,7 +298,7 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
       "model", "messages", "stream", "temperature", "max_tokens",
       "max_completion_tokens", "top_p", "seed", "stop", "response_format",
       "stream_options", "session_id", "session_history", "modalities",
-      "image", "audio", "video", "narrative"};
+      "image", "audio", "video", "narrative", "telemetry"};
   for (auto it = body.begin(); it != body.end(); ++it) {
     if (!kAllowedFields.count(it.key()) && !it.value().is_null()) {
       reject("unsupported field: " + it.key());
@@ -364,6 +371,26 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
       reject("temperature must be between 0 and 2");
       return;
     }
+  }
+  bool telemetry_requested = false;
+  if (body.contains("telemetry") && !body["telemetry"].is_null()) {
+    const json& telemetry = body["telemetry"];
+    if (!telemetry.is_object()) {
+      reject("telemetry must be an object");
+      return;
+    }
+    for (auto it = telemetry.begin(); it != telemetry.end(); ++it) {
+      if (it.key() != "native_allocator") {
+        reject("unsupported telemetry field: " + it.key());
+        return;
+      }
+    }
+    if (!telemetry.contains("native_allocator") ||
+        !telemetry["native_allocator"].is_boolean()) {
+      reject("telemetry.native_allocator must be a boolean");
+      return;
+    }
+    telemetry_requested = telemetry["native_allocator"].get<bool>();
   }
   const json* token_limit = nullptr;
   for (const char* key : {"max_tokens", "max_completion_tokens"}) {
@@ -461,6 +488,9 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
   if (body.contains("seed") && !body["seed"].is_null()) {
     params["seed"] = Value(body["seed"].get<int64_t>());
   }
+  if (telemetry_requested) {
+    params[obs::kNativeAllocatorTelemetryParam] = Value(true);
+  }
   params["stream"] = Value(stream);
   payload.request.params = std::move(params);
 
@@ -520,10 +550,16 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
     release_chat(request_id);
     if (info->state != "completed") {
       res.status = 500;
-      res.set_content(
-          json{{"error", {{"message", info->error}, {"type", "generation_error"}}}}
-              .dump(),
-          "application/json");
+      json error = {{"error", {{"message", info->error}, {"type", "generation_error"}}}};
+      if (telemetry_requested) {
+        Value telemetry = info->telemetry;
+        if (telemetry.is_nil()) {
+          telemetry = obs::request_telemetry_from_result(
+              info->result, request_id, config_.entry_stage, "failed");
+        }
+        error["telemetry"] = value_to_json(telemetry);
+      }
+      res.set_content(error.dump(), "application/json");
       return;
     }
     const std::string finish = result_finish_reason(info->result);
@@ -536,6 +572,14 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
                    {"message", {{"role", "assistant"},
                                 {"content", result_text(info->result)}}},
                    {"finish_reason", finish.empty() ? json(nullptr) : json(finish)}}}}};
+    if (telemetry_requested) {
+      Value telemetry = info->telemetry;
+      if (telemetry.is_nil()) {
+        telemetry = obs::request_telemetry_from_result(
+            info->result, request_id, config_.entry_stage, "completed");
+      }
+      out["telemetry"] = value_to_json(telemetry);
+    }
     res.set_content(out.dump(), "application/json");
     return;
   }
@@ -580,7 +624,7 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
   const std::string model = config_.served_model_name;
   res.set_chunked_content_provider(
       "text/event-stream",
-      [this, sink, request_id, model, created, cleanup](size_t,
+      [this, sink, request_id, model, created, cleanup, telemetry_requested](size_t,
                                                         httplib::DataSink& out_sink) {
         auto send_chunk = [&](const json& payload) {
           const std::string data = "data: " + payload.dump() + "\n\n";
@@ -692,6 +736,12 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
                    {"finish_reason",
                     finish.empty() ? json(nullptr) : json(finish)}}}}};
             if (terminal) final_chunk["unified"] = unified_event_json(*terminal);
+            if (telemetry_requested && !unified_engine_) {
+              const Value raw_result = sink_result ? *sink_result : Value{};
+              final_chunk["telemetry"] = value_to_json(
+                  obs::request_telemetry_from_result(
+                      raw_result, request_id, config_.entry_stage, "completed"));
+            }
             // The usage carrier rides on the last chunk, before [DONE]. A
             // client that does not know the key ignores it.
             const Value* usage_source =
@@ -707,6 +757,12 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
                                            {"type", "generation_error"},
                                            {"code", 500}}}};
             if (terminal) error_chunk["unified"] = unified_event_json(*terminal);
+            if (telemetry_requested && !unified_engine_) {
+              const Value raw_result = sink_result ? *sink_result : Value{};
+              error_chunk["telemetry"] = value_to_json(
+                  obs::request_telemetry_from_result(
+                      raw_result, request_id, config_.entry_stage, "failed"));
+            }
             send_chunk(error_chunk);
           }
           static const std::string kDone = "data: [DONE]\n\n";

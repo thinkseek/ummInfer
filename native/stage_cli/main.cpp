@@ -18,6 +18,7 @@
 #include <thread>
 
 #include "stage_kind.hpp"
+#include "request_telemetry_stage.hpp"
 #include "umminfer/pipeline/pipeline.hpp"
 
 namespace {
@@ -149,6 +150,13 @@ int main(int argc, char** argv) {
 
     const auto load_started = std::chrono::steady_clock::now();
     umminfer::CancellableComputeFn compute = umminfer::stage::make_compute(options);
+#ifdef UMM_NATIVE_REQUEST_ALLOCATOR
+    constexpr bool kInstrumentedAllocator = true;
+#else
+    constexpr bool kInstrumentedAllocator = false;
+#endif
+    compute = umminfer::stage::with_native_request_telemetry(
+        std::move(compute), options, config.name, kInstrumentedAllocator);
     const auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - load_started);
     std::cout << "native stage model loaded kind=" << kind << " model=" << model

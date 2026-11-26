@@ -1,9 +1,11 @@
 # Observability
 
-Three surfaces: a Prometheus endpoint, per-GPU gauges sampled over NVML, and an
-opt-in structured request trace. All of it lives in the `umm-infer` server
-process. No new dependency is linked: the text form is assembled by hand and
-NVML is opened with `dlopen`.
+Four surfaces: a Prometheus endpoint, per-GPU gauges sampled over NVML, an
+opt-in structured request trace, and opt-in request-native allocator envelopes.
+The first three live in the `umm-infer` server process; allocator ownership is
+observed in instrumented native stages and projected by the server. No new
+server dependency is linked: the text form is assembled by hand and NVML is
+opened with `dlopen`.
 
 ```
 GET /metrics        Prometheus text exposition (version 0.0.4)
@@ -97,6 +99,27 @@ exercised by `tests/soak_native.py`.)
 
 Every field except `name` also needs one `nvmlDeviceGet*` call to succeed for
 that device; a device that refuses a reading emits 0 for that field.
+
+## Request-native allocator telemetry
+
+Off by default. `POST /v1/chat/completions` accepts
+`telemetry: {"native_allocator": true}` and returns a terminal `telemetry`
+envelope only for that request. Serial instrumented Qwen3.8 and Wan2.2 stages
+report allocated/reserved byte peaks for explicit native CUDA blocks first owned
+by a new request epoch. Batches, concurrent/shared execution, uninstrumented
+stages, external proxies, and malformed/missing data remain `NOT_COVERED` with
+null peaks. No request-only value is inferred from another request or a resident
+baseline.
+
+This is a different scope from every `umm_gpu_*` gauge and from controlled
+`measurement.resources`. Those remain whole-device NVML samples; request peaks
+live only under `request_scoped_telemetry` in ablation reports. Epoch reset means
+a new ownership log, not a global CUDA counter reset. The projection is bounded,
+allow-listed, and excludes model/internal paths. See
+[native-service.md](native-service.md#opt-in-request-native-allocator-telemetry)
+for field definitions, lifecycle behavior, and the pending SM90 gate. Real CUDA
+measurements for this revision are `NOT_RUN`; host/fake-allocator tests are not
+GPU evidence.
 
 ## Request tracing
 

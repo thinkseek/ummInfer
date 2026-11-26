@@ -39,6 +39,7 @@
 #include "umminfer/serve/realtime_api.hpp"
 #include "umminfer/util/codec.hpp"
 #include "umminfer/obs/metrics.hpp"
+#include "umminfer/obs/request_telemetry.hpp"
 #include "pipeline/narrative_parser.hpp"
 #include "serve/echo_robust_vad.hpp"
 #include "serve/energy_vad.hpp"
@@ -11673,6 +11674,207 @@ void test_explicit_anchor_http_wire() {
         "explicit-anchor HTTP visual/artifact/terminal wire metadata is incomplete");
 }
 
+Value native_stage_telemetry(const std::string& request_id,
+                             const std::string& lifecycle = "completed") {
+  Value::Map out;
+  out["schema_version"] = Value(int64_t{1});
+  out["coverage"] = Value("COVERED");
+  out["scope"] = Value("request-native-cuda-runtime");
+  out["request_id"] = Value(request_id);
+  out["stage"] = Value("vlm-native");
+  out["backend"] = Value("qwen38");
+  out["device_index"] = Value(int64_t{0});
+  out["lifecycle_status"] = Value(lifecycle);
+  out["execution"] = Value(Value::Map{{"mode", Value("serial")},
+                                      {"batch_capacity", Value(int64_t{1})}});
+  out["epoch"] = Value(Value::Map{
+      {"id", Value(int64_t{7})}, {"reset", Value(true)},
+      {"semantics", Value("new_allocation_ownership_epoch")}});
+  out["allocated_bytes_peak"] = Value(int64_t{8192});
+  out["reserved_bytes_peak"] = Value(int64_t{8192});
+  out["allocated_bytes_final"] = Value(int64_t{4096});
+  out["reserved_bytes_final"] = Value(int64_t{4096});
+  out["sample_coverage"] = Value(Value::Map{
+      {"allocation_events", Value(int64_t{2})},
+      {"free_events", Value(int64_t{1})},
+      {"terminal_snapshots", Value(int64_t{1})}});
+  out["attribution"] = Value("native fixture");
+  return Value(std::move(out));
+}
+
+void test_public_http_request_native_allocator_telemetry() {
+  Harness h("requesttelemetryhttp");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "request telemetry HTTP server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string url = "http://127.0.0.1:" +
+                          std::to_string(api.bound_port()) +
+                          "/v1/chat/completions";
+  auto post = [&](json body) {
+    return std::async(std::launch::async, [url, body = std::move(body)] {
+      test_http::HttpRequest request;
+      request.url = url;
+      request.body = body.dump();
+      request.headers.emplace("Content-Type", "application/json");
+      request.timeout = client::Milliseconds{15000};
+      return test_http::perform(request);
+    });
+  };
+  const json messages = json::array(
+      {json{{"role", "user"}, {"content", "telemetry please"}}});
+
+  // Invalid opt-ins fail before a stage request is created.
+  httplib::Client raw_client("127.0.0.1", api.bound_port());
+  for (const json& telemetry : {json{{"native_allocator", "yes"}},
+                                json{{"unknown", true}}, json::array()}) {
+    json bad = {{"model", "qwen3-unified"}, {"messages", messages},
+                {"stream", false}, {"telemetry", telemetry}};
+    auto response = raw_client.Post("/v1/chat/completions", bad.dump(),
+                                    "application/json");
+    check(response && response->status == 400,
+          "malformed telemetry opt-in was not rejected");
+  }
+
+  json stream_body = {{"model", "qwen3-unified"}, {"messages", messages},
+                      {"stream", true},
+                      {"telemetry", {{"native_allocator", true}}}};
+  auto stream_future = post(stream_body);
+  auto stream_submit = h.next_submit(h.vlm_recv);
+  check(stream_submit.has_value(), "telemetry SSE request did not reach VLM");
+  StagePayload stream_payload;
+  if (stream_submit) {
+    stream_payload = StagePayload::from_value(stream_submit->data);
+    check(obs::native_allocator_telemetry_requested(stream_payload.request.params),
+          "HTTP telemetry opt-in did not reach native stage params");
+    Value result = Value(text_result("covered answer"));
+    result[obs::kRequestTelemetryResultKey] =
+        native_stage_telemetry(stream_submit->request_id);
+    h.complete(stream_submit->request_id, "vlm", true, std::move(result));
+  }
+  const auto stream_response = stream_future.get();
+  check(stream_response.status == 200, "telemetry SSE request failed");
+  check(stream_response.body.find("\"telemetry\"") != std::string::npos &&
+            stream_response.body.find("\"coverage\":\"COVERED\"") !=
+                std::string::npos &&
+            stream_response.body.find("\"allocated_bytes_peak\":8192") !=
+                std::string::npos &&
+            stream_response.body.find("\"native_stage\":\"vlm-native\"") !=
+                std::string::npos,
+        "covered native allocator envelope missing from terminal SSE");
+  check(stream_response.body.find("umm_gpu_memory") == std::string::npos,
+        "whole-device NVML samples leaked into request allocator telemetry");
+
+  json missing_body = {{"model", "qwen3-unified"}, {"messages", messages},
+                       {"stream", false},
+                       {"telemetry", {{"native_allocator", true}}}};
+  auto missing_future = post(missing_body);
+  auto missing_submit = h.next_submit(h.vlm_recv);
+  check(missing_submit.has_value(), "missing telemetry request did not reach VLM");
+  if (missing_submit) {
+    h.complete(missing_submit->request_id, "vlm", true,
+               Value(text_result("unsupported answer")));
+  }
+  const auto missing_response = missing_future.get();
+  const json missing = json::parse(missing_response.body);
+  check(missing["choices"][0]["message"]["content"] == "unsupported answer" &&
+            missing["telemetry"]["coverage"] == "NOT_COVERED" &&
+            missing["telemetry"]["stages"][0]["reason"] ==
+                "stage_terminal_snapshot_missing" &&
+            missing["telemetry"]["stages"][0]["allocated_bytes_peak"].is_null(),
+        "unsupported stage did not produce explicit null-byte NOT_COVERED");
+
+  json malformed_body = missing_body;
+  auto malformed_future = post(malformed_body);
+  auto malformed_submit = h.next_submit(h.vlm_recv);
+  check(malformed_submit.has_value(), "malformed telemetry request did not reach VLM");
+  if (malformed_submit) {
+    Value raw = native_stage_telemetry(malformed_submit->request_id);
+    raw["allocated_bytes_peak"] = Value(int64_t{-1});
+    raw["model_path"] = Value("/secret/internal/model");
+    Value result = Value(text_result("malformed answer"));
+    result[obs::kRequestTelemetryResultKey] = std::move(raw);
+    h.complete(malformed_submit->request_id, "vlm", true, std::move(result));
+  }
+  const auto malformed_response = malformed_future.get();
+  const json malformed = json::parse(malformed_response.body);
+  check(malformed["telemetry"]["coverage"] == "NOT_COVERED" &&
+            malformed["telemetry"]["stages"][0]["reason"] ==
+                "malformed_native_telemetry" &&
+            malformed_response.body.find("/secret/internal/model") ==
+                std::string::npos,
+        "malformed metrics were not redacted and converted to NOT_COVERED");
+
+  auto failed_future = std::async(std::launch::async, [&] {
+    json body = missing_body;
+    httplib::Client client("127.0.0.1", api.bound_port());
+    return client.Post("/v1/chat/completions", body.dump(), "application/json");
+  });
+  auto failed_submit = h.next_submit(h.vlm_recv);
+  check(failed_submit.has_value(), "failed telemetry request did not reach VLM");
+  if (failed_submit) {
+    Value result = Value(text_result("unused failed answer"));
+    result[obs::kRequestTelemetryResultKey] =
+        native_stage_telemetry(failed_submit->request_id, "failed");
+    h.complete(failed_submit->request_id, "vlm", false, std::move(result),
+               std::string("injected native failure"));
+  }
+  auto failed_response = failed_future.get();
+  check(failed_response && failed_response->status == 500,
+        "failed native request did not retain HTTP failure");
+  if (failed_response) {
+    const json failed = json::parse(failed_response->body);
+    check(failed["telemetry"]["coverage"] == "COVERED" &&
+              failed["telemetry"]["lifecycle_status"] == "failed" &&
+              failed["telemetry"]["stages"][0]["lifecycle_status"] == "failed" &&
+              failed["telemetry"]["stages"][0]["allocated_bytes_peak"] == 8192,
+          "failed native request lost its covered terminal peak");
+  }
+
+  auto cancel_future = post(stream_body);
+  auto cancel_submit = h.next_submit(h.vlm_recv);
+  check(cancel_submit.has_value(), "cancel telemetry request did not reach VLM");
+  if (cancel_submit) {
+    check(engine.cancel(cancel_submit->request_id),
+          "telemetry cancellation was not accepted");
+  }
+  const auto cancel_response = cancel_future.get();
+  check(cancel_response.body.find("\"kind\":\"cancelled\"") != std::string::npos &&
+            cancel_response.body.find("\"lifecycle_status\":\"cancelled\"") !=
+                std::string::npos &&
+            cancel_response.body.find("stage_terminal_snapshot_missing") !=
+                std::string::npos,
+        "immediate public cancellation did not retain truthful status/coverage");
+
+  json default_body = {{"model", "qwen3-unified"}, {"messages", messages},
+                       {"stream", false}};
+  auto default_future = post(default_body);
+  auto default_submit = h.next_submit(h.vlm_recv);
+  check(default_submit.has_value(), "default telemetry regression request missing");
+  if (default_submit) {
+    StagePayload payload = StagePayload::from_value(default_submit->data);
+    check(!obs::native_allocator_telemetry_requested(payload.request.params),
+          "default request unexpectedly enabled native telemetry");
+    h.complete(default_submit->request_id, "vlm", true,
+               Value(text_result("legacy answer")));
+  }
+  const auto default_response = default_future.get();
+  const json legacy = json::parse(default_response.body);
+  check(!legacy.contains("telemetry") &&
+            legacy["choices"][0]["message"]["content"] == "legacy answer",
+        "default public JSON gained telemetry or changed its content");
+
+  api.stop();
+  server_thread.join();
+}
+
 }  // namespace
 
 int main() {
@@ -11803,5 +12005,6 @@ int main() {
   RUN(test_explicit_anchor_completion());
   RUN(test_explicit_anchor_failure_cancel_and_validation());
   RUN(test_explicit_anchor_http_wire());
+  RUN(test_public_http_request_native_allocator_telemetry());
   return g_failures == 0 ? 0 : 1;
 }

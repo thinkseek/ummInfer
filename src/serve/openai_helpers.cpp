@@ -190,6 +190,7 @@ json unified_event_json(const UnifiedEvent& event) {
       }
     }
   }
+  if (!event.telemetry.is_nil()) out["telemetry"] = value_to_json(event.telemetry);
   if (event.legs.type() == Value::Type::Array) {
     out["legs"] = value_to_json(event.legs);
   }

@@ -342,6 +342,9 @@ def build_request(experiment, prompt, policy):
     for modality in VISUAL_MODALITIES:
         if modality in selected:
             body[modality] = copy.deepcopy(fixed["visual"][modality])
+    request_memory = experiment.config.get("measurement", {}).get("request_memory")
+    if request_memory and request_memory.get("enabled"):
+        body["telemetry"] = {"native_allocator": True}
     return body
 
 
@@ -1154,7 +1157,8 @@ def _latency_coverage(value):
 
 
 def _case_report(experiment, variant, prompt, body, record, latency, animations=None,
-                 media_validation=None, repetition=None, schedule_index=None):
+                 media_validation=None, repetition=None, schedule_index=None,
+                 request_telemetry=None):
     variable = _variable(experiment)
     observation = routing_metrics.routing_observation(record) \
         if variable == "routing_policy" else None
@@ -1197,6 +1201,10 @@ def _case_report(experiment, variant, prompt, body, record, latency, animations=
                 else "NOT_COVERED",
         },
     }
+    if request_telemetry is not None:
+        result["request_scoped_telemetry"] = copy.deepcopy(request_telemetry)
+        result["metric_coverage"]["request_native_allocator"] = \
+            request_telemetry["coverage"]
     if repetition is not None:
         result["phase"] = "measured"
         result["repetition"] = repetition
@@ -1458,7 +1466,8 @@ def _replay_measurement(experiment, contract):
                   "controlled live measurement requires a separate exclusive live gate",
         "contract": contract,
         "schedule": controlled.schedule_descriptor(variants, contract, steps),
-        "request_scoped_telemetry": controlled.request_scoped_telemetry(),
+        "request_scoped_telemetry": controlled.request_scoped_telemetry(
+            [] if contract.get("request_memory", {}).get("enabled") else None),
     }
 
 
@@ -1566,6 +1575,8 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
     missing repetition, exclusivity, hash, or completion coverage downgrades
     the whole run to UNCONTROLLED_LIVE with explicit reasons.
     """
+    request_memory = contract.get("request_memory", {})
+    telemetry_enabled = request_memory.get("enabled", False)
     mode = "live"
     variable = _variable(experiment)
     variants = _variants(experiment)
@@ -1628,9 +1639,26 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
             session_id = (f"{experiment.config['ablation_id']}:{variant}:"
                           f"{step['phase']}:r{step['repetition']}:{prompt['id']}")
             tracker = LatencyTracker()
+            telemetry_events = []
+
+            def observe(event):
+                tracker.observe(event)
+                if telemetry_enabled and isinstance(event, dict) \
+                        and event.get("telemetry") is not None:
+                    telemetry_events.append(event["telemetry"])
+
             record = traj.record_chat_completion(
                 normalized_url, body, recorder, session_id,
-                timeout=timeout_s, event_observer=tracker.observe)
+                timeout=timeout_s, event_observer=observe)
+            if telemetry_enabled:
+                if len(telemetry_events) > 1:
+                    raise ValueError("request emitted more than one telemetry envelope")
+                request_telemetry = controlled.request_scoped_telemetry(
+                    telemetry_events[0] if telemetry_events else None,
+                    request_id=record["request_id"],
+                    terminal_state=record["terminal_state"])
+            else:
+                request_telemetry = None
             latency = normalize_latency(tracker.finish(), record, "monotonic-live")
             animations = []
             if variable == "visual_form" and variant == "image_then_i2v_animate":
@@ -1647,6 +1675,7 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
                     "leg_errors": record["leg_errors"],
                     "media_validation": media_validation,
                     "animations": animations,
+                    "request_scoped_telemetry": request_telemetry,
                 }
                 warmup_cases.append({
                     "prompt_id": prompt["id"],
@@ -1661,7 +1690,7 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
             else:
                 pending[variant].append((prompt, body, record, latency,
                                          media_validation, step["repetition"],
-                                         step["index"]))
+                                         step["index"], request_telemetry))
                 animation_rows[variant].append(animations)
                 entries[variant].append({"prompt": prompt,
                                          "repetition": step["repetition"]})
@@ -1715,9 +1744,10 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
         cases = [
             _case_report(experiment, variant, prompt, body, record, latency,
                          animations, media_validation, repetition=repetition,
-                         schedule_index=schedule_index)
+                         schedule_index=schedule_index,
+                         request_telemetry=request_telemetry)
             for (prompt, body, _, latency, media_validation, repetition,
-                 schedule_index), record, animations
+                 schedule_index, request_telemetry), record, animations
             in zip(pending[variant], records, animation_rows[variant])]
         arm_coverage[variant]["measured_failed"] = sum(
             not _case_success(case) for case in cases)
@@ -1727,10 +1757,13 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
     provenance = _provenance(experiment, source, _artifact_entries(all_cases))
     equivalence = _first_stage_image_equivalence(all_cases, variable) \
         if variable == "visual_form" else None
+    request_telemetry = controlled.request_scoped_telemetry([
+        case["request_scoped_telemetry"] for case in all_cases]) \
+        if telemetry_enabled else None
     eligibility = controlled.evaluate_eligibility(
         contract, provenance=provenance, model=provenance["model"],
         arms=arm_coverage, preconditions=preconditions, cleanups=cleanups,
-        visual_form_equivalence=equivalence)
+        visual_form_equivalence=equivalence, request_telemetry=request_telemetry)
     evidence_class = eligibility["label"]
 
     policy_reports = []
@@ -1742,6 +1775,10 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
             "schedule_sha256": schedule["schedule_sha256"],
             "aggregates": _controlled_aggregates(cases),
         })
+        if telemetry_enabled:
+            measurement["request_scoped_telemetry"] = \
+                controlled.request_scoped_telemetry([
+                    case["request_scoped_telemetry"] for case in cases])
         report = _policy_report(
             experiment, source, mode, variant, cases, records, trajectory_path,
             output_root,
@@ -1771,7 +1808,8 @@ def _run_controlled_experiment(experiment, output_root, source, normalized_url, 
                            "devices and persistent model baselines",
             "steps": step_resources,
         },
-        "request_scoped_telemetry": controlled.request_scoped_telemetry(),
+        "request_scoped_telemetry": request_telemetry
+        if telemetry_enabled else controlled.request_scoped_telemetry(),
         "eligibility": eligibility,
     }
     return _build_combined(experiment, source, mode, evidence_class, variants,

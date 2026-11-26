@@ -233,6 +233,26 @@ declares:
   `/health` interface after every step), an optional
   `max_residual_memory_mib` tolerance against the recorded baseline, and a
   poll `timeout_s`. `cooldown_ms` declares an optional inter-step cooldown.
+- optional `request_memory`: `enabled` adds
+  `telemetry: {"native_allocator": true}` to every measured/warmup chat request;
+  `required` additionally refuses `CONTROLLED_LIVE` unless every measured
+  request has fully covered native allocator telemetry. `required=true` needs
+  `enabled=true`. If the block is absent, request bodies and the legacy report
+  shape are unchanged.
+
+```json
+"request_memory": {"enabled": true, "required": true}
+```
+
+Each measured case then carries `request_scoped_telemetry` and
+`metric_coverage.request_native_allocator`. Per-arm and combined measurement
+sections retain every request envelope, explicit coverage/sample counts, and the
+maximum **stage** allocated/reserved byte peaks. They do not sum stages into a
+pretend whole-request device footprint. Malformed identities, paths, lifecycle,
+epochs, counters, or byte values fail closed; missing, batched, concurrent,
+external, and uninstrumented attribution remains `NOT_COVERED` with null peaks.
+See [native-service.md](native-service.md#opt-in-request-native-allocator-telemetry)
+for the epoch and backend contract.
 
 `benchmarks/ablations/narrative-routing-controlled-example.json` is a complete
 checked-in example. The same block is present in
@@ -270,18 +290,19 @@ first-stage image equivalence is checked per repetition. A missing pair,
 request-hash mismatch, or source-PNG byte mismatch both fails the combined run
 and revokes `CONTROLLED_LIVE`; the strict flag cannot hide that failure.
 
-Telemetry stays within existing interfaces: `/health` `in_flight` for cleanup
-and nvidia-smi whole-device used-memory for baselines, residuals, and per-arm
-resource summaries. Every controlled schedule step has a 50 ms poll monitor,
-so its recorded peak is the maximum observed during that step rather than a
-maximum of end-of-step values; per-arm sample counts sum those actual polls.
-No existing public interface exposes request-scoped native allocator/VRAM
-telemetry, so `request_scoped_telemetry.coverage` is honestly `NOT_COVERED`
-and every device number is labelled
-`whole-device-used-memory`, including persistent model baselines and, under
-interleaving, other arms' activity. No serving, realtime/VAD, CLI realtime, or
-post-training file is modified by this layer, and no Wave 16 kernel, showcase,
-routing, or joint-trainer code is duplicated.
+Whole-device telemetry uses `/health` `in_flight` for cleanup and nvidia-smi
+used-memory for baselines, residuals, and per-arm resource summaries. Every
+controlled schedule step has a 50 ms poll monitor, so its recorded peak is the
+maximum observed during that step rather than a maximum of end-of-step values;
+per-arm sample counts sum those actual polls. Every device number remains
+labelled `whole-device-used-memory`, including persistent model baselines and,
+under interleaving, other arms' activity. Optional request-native allocator
+telemetry is reported only in `request_scoped_telemetry`, never folded into those
+NVML rows. Runs without `request_memory.enabled` retain the legacy `NOT_COVERED`
+record; a missing enabled response envelope also stays `NOT_COVERED`. No serving,
+realtime/VAD, CLI realtime, trajectory-replay, or post-training file is modified
+by this report layer, and no Wave 16/24 kernel, showcase, routing, or
+joint-trainer telemetry is duplicated.
 
 Before the accepted run documented below, controlled coverage consisted only of
 deterministic replay and loopback canned-response tests with injected samplers;
@@ -723,8 +744,9 @@ baseline or a generalized latency-improvement claim.
 | `image_then_i2v_animate` | 78,064 | 92,558 | 78,106 | 1,975 |
 
 These are whole-device `nvidia-smi` samples including persistent weights and
-other interleaved arms, not request-scoped allocator peaks. Request-scoped
-telemetry remains `NOT_COVERED`. The final loaded residual was 42 MiB.
+other interleaved arms, not request-scoped allocator peaks. This historical run
+did not enable the later `request_memory` option, so its request-scoped telemetry
+correctly remains `NOT_COVERED`. The final loaded residual was 42 MiB.
 
 ### Controlled artifacts, source linkage, and first-frame behavior
 
@@ -828,7 +850,9 @@ counts, incomplete-repetition and failed-arm refusal, terminal/leg validity,
 exclusive-device precondition failure and fail-fast abort, stuck-cleanup
 refusal, incomplete language/visual/auxiliary provenance refusal,
 per-repetition visual-form request/source equivalence with explicit
-`CONTROLLED_LIVE` refusal, and true polled resource peaks/sample counts.
+`CONTROLLED_LIVE` refusal, true polled resource peaks/sample counts, optional
+request-native allocator epoch/peak normalization, per-request report plumbing,
+malformed-metric rejection, and required-coverage refusal.
 Loopback canned responses remain
 contract-only; decoder tests use independently generated tiny media and do not
 access a GPU, remote host, real model, optimizer, or resident service.

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "cuda_kernels.hpp"
 
+#include "common/cuda_request_allocator.hpp"
+
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -72,7 +74,7 @@ void cuda_check_video(cudaError_t err, const char* what) {
 
 DeviceBuffer::DeviceBuffer(size_t bytes) : bytes_(bytes) {
   if (bytes_ == 0) return;
-  cuda_check_video(cudaMalloc(&ptr_, bytes_), "cudaMalloc");
+  cuda_check_video(request_cuda_malloc(&ptr_, bytes_), "cudaMalloc");
 }
 
 DeviceBuffer::~DeviceBuffer() { reset(); }
@@ -96,7 +98,7 @@ DeviceBuffer& DeviceBuffer::operator=(DeviceBuffer&& other) noexcept {
 
 void DeviceBuffer::reset() {
   if (ptr_ != nullptr) {
-    (void)cudaFree(ptr_);
+    (void)request_cuda_free(ptr_);
     ptr_ = nullptr;
     bytes_ = 0;
   }

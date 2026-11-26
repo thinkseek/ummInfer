@@ -154,6 +154,36 @@ text→image→I2V 首帧连续性/运动门禁；本任务 CPU-only，真实生
 
 ---
 
+### 2.3 可选请求级原生分配器遥测与受控消融边界
+
+公开聊天请求的 `telemetry.native_allocator=true` 是唯一启用入口；默认请求不增加
+Stage 参数、结果字段、SSE/JSON 字段或遥测日志。启用后，`UnifiedEngine` 将布尔参数
+随 ASR/VLM/输出子 leg 透传，原生 Stage 包装器在单次 compute 外建立独立
+allocation-ownership epoch，终态结果经 `request_telemetry` 回到统一终态信封。
+
+当前仅串行 Qwen3.8 与串行 Wan2.2（`cuda` / `cuda-scaffold`）把显式
+`cudaMalloc`/`cudaFree` 接入所有权跟踪。峰值只累计该 epoch 首次拥有的直接 CUDA
+块；加载期常驻权重、CUDA context/driver、外部库内分配不在范围内。直接 runtime 块的
+allocated 与 reserved 相等，不从设备显存、常驻基线或其他请求做减法。跨请求晚到的
+free 只修改原 owner，不能污染新 epoch；重叠串行作用域会把双方降级为
+`NOT_COVERED`。批处理、并发共享执行、未接入后端、Python/外部代理、缺失或 malformed
+数据均显式 `NOT_COVERED`，字节峰值为 null 而非伪造的零。
+
+终态信封保留公共 request id、子 stage request id、公共/原生 stage 身份、串行/批处理
+属性、epoch reset 语义、事件样本覆盖和 completed/failed/cancelled 状态。立即取消若先于
+原生终态到达，则以 `stage_terminal_snapshot_missing` 结束，不回写已发送事件。公开投影
+采用固定字段 allow-list，最多 64 个 stage 项，不接收模型路径、IPC 路径或自由格式后端
+诊断。锁与指针表仅服务于启用的覆盖 epoch，无逐帧采样或无界日志。
+
+请求级峰值与 `/metrics` NVML、消融 `measurement.resources` 的
+`whole-device-used-memory` 严格分离。受控测量可选
+`request_memory={enabled,required}`：enabled 注入公开请求选项并保存逐请求报告；
+required 要求所有测量请求完全 COVERED，否则撤销 `CONTROLLED_LIVE`。详细协议和后续
+SM90 门禁见 [native-service.md](native-service.md#opt-in-request-native-allocator-telemetry)。
+本轮只有 CPU host/fake-allocator 与协议证据，真实 CUDA 峰值保持 `NOT_RUN`。
+
+---
+
 ## 3. 本机轻量构建与测试验证矩阵
 
 > 环境：macOS 25.3.0 (ARM64), Zig 0.16.0, AppleClang 21.0.0, CMake, Swift, Python 3.13.7（系统 Python 无 `msgpack`/`pyzmq`/`mlx`/`websockets` 第三方包），无 NVIDIA CUDA GPU。

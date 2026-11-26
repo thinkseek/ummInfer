@@ -71,6 +71,7 @@ class ControlledHandler(BaseHTTPRequestHandler):
     chat_count = 0
     fail_indices = set()
     misordered = []
+    telemetry_responses = False
 
     def log_message(self, *args):
         pass
@@ -108,6 +109,20 @@ class ControlledHandler(BaseHTTPRequestHandler):
                 return
             case = self.cases[(arm, prompt_id)]
             raw = base64.b64decode(case["response_sse_base64"])
+            if type(self).telemetry_responses:
+                frames = []
+                for line in raw.decode("utf-8").splitlines():
+                    if not line.startswith("data: ") or line == "data: [DONE]":
+                        continue
+                    chunk = json.loads(line[6:])
+                    unified = chunk.get("unified")
+                    if unified is not None and unified.get("kind") == "complete":
+                        unified["telemetry"] = request_envelope(
+                            chunk["id"], epoch=index + 1, peak=4096 + index)
+                    frames.append("data: " + json.dumps(
+                        chunk, sort_keys=True, separators=(",", ":")) + "\n\n")
+                frames.append("data: [DONE]\n\n")
+                raw = "".join(frames).encode("utf-8")
             content_type = "text/event-stream"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -145,6 +160,35 @@ def good_provenance():
                                 for name in ("image", "video")}}
 
 
+def native_stage(request_id="http-test", epoch=1, peak=4096):
+    return {
+        "schema_version": 1, "coverage": "COVERED",
+        "scope": "request-native-cuda-runtime", "request_id": request_id,
+        "stage": "vlm", "native_stage": "vlm-native", "backend": "qwen38",
+        "device_index": 0, "lifecycle_status": "completed",
+        "execution": {"mode": "serial", "batch_capacity": 1},
+        "epoch": {"id": epoch, "reset": True,
+                  "semantics": "new_allocation_ownership_epoch"},
+        "allocated_bytes_peak": peak, "reserved_bytes_peak": peak,
+        "allocated_bytes_final": peak // 2, "reserved_bytes_final": peak // 2,
+        "sample_coverage": {"allocation_events": 2, "free_events": 1,
+                            "terminal_snapshots": 1},
+        "attribution": controlled.NATIVE_ALLOCATOR_ATTRIBUTION,
+    }
+
+
+def request_envelope(request_id="http-test", epoch=1, peak=4096):
+    return {
+        "schema_version": 1, "coverage": "COVERED",
+        "scope": "request-native-allocator", "request_id": request_id,
+        "lifecycle_status": "completed",
+        "sample_coverage": {"stage_count": 1, "covered_stage_count": 1,
+                            "truncated": False},
+        "stages": [native_stage(request_id, epoch, peak)],
+        "whole_device_nvml": "separate_measurement_resources",
+    }
+
+
 class ContractValidationTests(unittest.TestCase):
     def assert_rejected(self, mutate):
         contract = good_contract()
@@ -157,6 +201,10 @@ class ContractValidationTests(unittest.TestCase):
         self.assertEqual(parsed["measured_repetitions"], 2)
         self.assertEqual(parsed["exclusive_device"]["max_memory_used_mib"], None)
         self.assertIsNone(controlled.parse_contract(None))
+        self.assertNotIn("request_memory", parsed)
+        opted_in = good_contract(request_memory={"enabled": True, "required": True})
+        self.assertEqual(controlled.parse_contract(opted_in)["request_memory"],
+                         {"enabled": True, "required": True})
 
     def test_tampered_contract_fields_are_rejected(self):
         cases = [
@@ -180,6 +228,10 @@ class ContractValidationTests(unittest.TestCase):
             lambda c: c["cleanup"].update(timeout_s=float("inf")),
             lambda c: c["cleanup"].update(require_in_flight_zero="yes"),
             lambda c: c["cleanup"].update(max_residual_memory_mib=-2),
+            lambda c: c.update(request_memory=[]),
+            lambda c: c.update(request_memory={"enabled": True, "unknown": 1}),
+            lambda c: c.update(request_memory={"enabled": "yes"}),
+            lambda c: c.update(request_memory={"enabled": False, "required": True}),
         ]
         for index, mutate in enumerate(cases):
             with self.subTest(case=index):
@@ -342,7 +394,8 @@ class AggregationTests(unittest.TestCase):
 
 class EligibilityTests(unittest.TestCase):
     def evaluate(self, *, contract=None, provenance=None, model=None, arms=None,
-                 preconditions=None, cleanups=None, visual_equivalence=None):
+                 preconditions=None, cleanups=None, visual_equivalence=None,
+                 request_telemetry=None):
         return controlled.evaluate_eligibility(
             contract or controlled.parse_contract(good_contract()),
             provenance=provenance or good_provenance(),
@@ -352,7 +405,8 @@ class EligibilityTests(unittest.TestCase):
                 {"check": "exclusive_device", "passed": True, "problems": []}],
             cleanups=cleanups if cleanups is not None else [
                 {"passed": True, "schedule_index": 0, "problems": []}],
-            visual_form_equivalence=visual_equivalence)
+            visual_form_equivalence=visual_equivalence,
+            request_telemetry=request_telemetry)
 
     def test_fully_covered_run_is_controlled(self):
         verdict = self.evaluate()
@@ -432,6 +486,18 @@ class EligibilityTests(unittest.TestCase):
                                 preconditions=[])
         self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
         self.assertTrue(any("exclusivity" in reason for reason in verdict["reasons"]))
+    def test_required_request_memory_must_be_fully_covered(self):
+        contract = controlled.parse_contract(good_contract(
+            request_memory={"enabled": True, "required": True}))
+        summary = controlled.request_scoped_telemetry([request_envelope()])
+        self.assertEqual(self.evaluate(contract=contract,
+                                       request_telemetry=summary)["label"],
+                         "CONTROLLED_LIVE")
+        verdict = self.evaluate(contract=contract, request_telemetry={
+            "coverage": "PARTIAL"})
+        self.assertEqual(verdict["label"], "UNCONTROLLED_LIVE")
+        self.assertTrue(any("allocator telemetry" in reason
+                            for reason in verdict["reasons"]))
 
 
 class PreconditionAndCleanupTests(unittest.TestCase):
@@ -471,6 +537,115 @@ class PreconditionAndCleanupTests(unittest.TestCase):
         self.assertEqual(telemetry["scope"], "whole-device-used-memory")
 
 
+class RequestTelemetryTests(unittest.TestCase):
+    def test_covered_envelope_is_normalized_and_paths_are_not_projected(self):
+        envelope = request_envelope()
+        envelope["stages"][0]["model_path"] = "/private/model/weights"
+        envelope["stages"][0]["internal_note"] = "x" * 10000
+        normalized = controlled.request_scoped_telemetry(
+            envelope, request_id="http-test", terminal_state="completed")
+        self.assertEqual(normalized["coverage"], "COVERED")
+        self.assertEqual(normalized["stages"][0]["allocated_bytes_peak"], 4096)
+        self.assertNotIn("model_path", normalized["stages"][0])
+        self.assertNotIn("internal_note", normalized["stages"][0])
+        self.assertEqual(normalized["whole_device_nvml"],
+                         "separate_measurement_resources")
+        optional_failure = copy.deepcopy(envelope)
+        optional_failure["stages"][0]["lifecycle_status"] = "failed"
+        normalized_failure = controlled.request_scoped_telemetry(optional_failure)
+        self.assertEqual(normalized_failure["lifecycle_status"], "completed")
+        self.assertEqual(normalized_failure["stages"][0]["lifecycle_status"],
+                         "failed")
+        child = copy.deepcopy(envelope)
+        child["stages"][0]["request_id"] = "http-test:vlm"
+        normalized_child = controlled.request_scoped_telemetry(
+            child, request_id="http-test", terminal_state="completed")
+        self.assertEqual(normalized_child["stages"][0]["request_id"],
+                         "http-test:vlm")
+
+    def test_aggregate_preserves_per_request_peaks_and_counts(self):
+        rows = [request_envelope("http-a", 1, 100),
+                request_envelope("http-b", 2, 300)]
+        summary = controlled.request_scoped_telemetry(rows)
+        self.assertEqual(summary["coverage"], "COVERED")
+        self.assertEqual(summary["sample_coverage"]["request_count"], 2)
+        self.assertEqual(summary["sample_coverage"]["covered_stage_count"], 2)
+        self.assertEqual(summary["max_stage_allocated_bytes_peak"], 300)
+        self.assertEqual([row["request_id"] for row in summary["requests"]],
+                         ["http-a", "http-b"])
+        missing = controlled.request_scoped_telemetry(
+            None, request_id="http-c", terminal_state="cancelled")
+        self.assertEqual(missing["coverage"], "NOT_COVERED")
+        self.assertEqual(missing["lifecycle_status"], "cancelled")
+        partial = controlled.request_scoped_telemetry(rows + [missing])
+        self.assertEqual(partial["coverage"], "PARTIAL")
+
+    def test_unsupported_backend_has_null_bytes_not_zero(self):
+        envelope = request_envelope()
+        stage = envelope["stages"][0]
+        stage.update(coverage="NOT_COVERED", device_index=None,
+                     execution={"mode": "batched", "batch_capacity": 4},
+                     reason="batched_request_attribution_unavailable",
+                     allocated_bytes_peak=None, reserved_bytes_peak=None,
+                     allocated_bytes_final=None, reserved_bytes_final=None,
+                     sample_coverage={"allocation_events": 0, "free_events": 0,
+                                      "terminal_snapshots": 0})
+        stage["epoch"] = {"id": 4, "reset": False,
+                          "semantics": "not_reset_shared_or_unsupported"}
+        envelope["coverage"] = "NOT_COVERED"
+        envelope["sample_coverage"]["covered_stage_count"] = 0
+        normalized = controlled.request_scoped_telemetry(envelope)
+        self.assertEqual(normalized["coverage"], "NOT_COVERED")
+        self.assertIsNone(normalized["stages"][0]["allocated_bytes_peak"])
+
+    def test_missing_stage_snapshot_allows_explicit_no_epoch_shape(self):
+        envelope = request_envelope()
+        envelope["coverage"] = "NOT_COVERED"
+        envelope["sample_coverage"]["covered_stage_count"] = 0
+        envelope["stages"] = [{
+            "schema_version": 1, "coverage": "NOT_COVERED",
+            "scope": "request-native-cuda-runtime", "request_id": "http-test",
+            "stage": "vlm", "native_stage": "unknown", "backend": "unknown",
+            "device_index": None, "lifecycle_status": "completed",
+            "execution": {"mode": "unknown", "batch_capacity": None},
+            "epoch": {"id": None, "reset": False, "semantics": "no_request_epoch"},
+            "allocated_bytes_peak": None, "reserved_bytes_peak": None,
+            "allocated_bytes_final": None, "reserved_bytes_final": None,
+            "sample_coverage": {"allocation_events": 0, "free_events": 0,
+                                "terminal_snapshots": 0},
+            "reason": "stage_terminal_snapshot_missing",
+            "attribution": controlled.NATIVE_ALLOCATOR_ATTRIBUTION,
+        }]
+        normalized = controlled.request_scoped_telemetry(envelope)
+        self.assertEqual(normalized["coverage"], "NOT_COVERED")
+        self.assertIsNone(normalized["stages"][0]["epoch"]["id"])
+
+    def test_malformed_metrics_fail_closed(self):
+        mutations = [
+            lambda row: row["stages"][0].update(allocated_bytes_peak=-1),
+            lambda row: row["stages"][0].update(allocated_bytes_peak=True),
+            lambda row: row["stages"][0].update(request_id="http-other"),
+            lambda row: row.update(lifecycle_status="running"),
+            lambda row: row["stages"][0].update(native_stage="/secret/model"),
+            lambda row: row["stages"][0].update(backend="x" * 100),
+            lambda row: row["stages"][0].update(allocated_bytes_final=99999),
+            lambda row: row["stages"][0]["epoch"].update(reset=False),
+            lambda row: row["stages"][0].update(sample_coverage={}),
+            lambda row: row.update(whole_device_nvml="merged"),
+            lambda row: row.update(request_id="bad/id"),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(case=index):
+                row = copy.deepcopy(request_envelope())
+                mutate(row)
+                with self.assertRaises(ValueError):
+                    controlled.request_scoped_telemetry(row)
+        with self.assertRaises(ValueError):
+            controlled.request_scoped_telemetry(
+                request_envelope(), request_id="http-other",
+                terminal_state="completed")
+
+
 class CaseSuccessTests(unittest.TestCase):
     def test_terminal_and_leg_coverage_must_be_valid(self):
         case = {"terminal_state": "completed", "latency": {"terminal_ms": 1.0},
@@ -488,10 +663,11 @@ class CaseSuccessTests(unittest.TestCase):
 
 
 class LiveHarness:
-    def __init__(self, test, config, *, visual=False, fail_indices=()):
+    def __init__(self, test, config, *, visual=False, fail_indices=(), telemetry=False):
         self.test = test
         self.config = config
         self.visual = visual
+        self.telemetry = telemetry
         replay_path = VISUAL_REPLAY if visual else ROUTING_REPLAY
         replay = json.loads(replay_path.read_text())
         key = "visual_form" if visual else "routing_policy"
@@ -506,6 +682,7 @@ class LiveHarness:
         ControlledHandler.requests = []
         ControlledHandler.misordered = []
         ControlledHandler.chat_count = 0
+        ControlledHandler.telemetry_responses = self.telemetry
         self.server = None
 
     def __enter__(self):
@@ -770,6 +947,51 @@ class ControlledLiveTests(unittest.TestCase):
                     self.assertEqual(len(case["animations"]), 1)
                     self.assertEqual(case["animations"][0]["terminal_state"],
                                      "completed")
+    def test_request_native_allocator_telemetry_feeds_controlled_reports(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-request-memory-") as tmp:
+            config = example_config(measured=1)
+            config["measurement"]["request_memory"] = {
+                "enabled": True, "required": True}
+            harness = LiveHarness(self, config, telemetry=True)
+            harness.write_config(tmp)
+            with harness:
+                report = harness.run(Path(tmp) / "out")
+            self.assertEqual(report["evidence_class"], "CONTROLLED_LIVE")
+            summary = report["measurement"]["request_scoped_telemetry"]
+            self.assertEqual(summary["coverage"], "COVERED")
+            self.assertEqual(summary["scope"], "request-native-allocator")
+            self.assertEqual(summary["sample_coverage"]["request_count"],
+                             len(report["cases"]))
+            self.assertGreater(summary["max_stage_allocated_bytes_peak"], 4096)
+            self.assertEqual(report["measurement"]["resources"]["scope"],
+                             "whole-device-used-memory")
+            for case in report["cases"]:
+                self.assertEqual(case["metric_coverage"]["request_native_allocator"],
+                                 "COVERED")
+                self.assertEqual(case["request_scoped_telemetry"]["lifecycle_status"],
+                                 case["terminal_state"])
+            for path, body in ControlledHandler.requests:
+                if path == "/v1/chat/completions":
+                    self.assertEqual(body.get("telemetry"),
+                                     {"native_allocator": True})
+
+    def test_required_request_memory_refuses_missing_public_envelopes(self):
+        with tempfile.TemporaryDirectory(prefix="umm-controlled-request-missing-") as tmp:
+            config = example_config(measured=1)
+            config["measurement"]["request_memory"] = {
+                "enabled": True, "required": True}
+            harness = LiveHarness(self, config, telemetry=False)
+            harness.write_config(tmp)
+            with harness:
+                report = harness.run(Path(tmp) / "out")
+            self.assertEqual(report["evidence_class"], "UNCONTROLLED_LIVE")
+            summary = report["measurement"]["request_scoped_telemetry"]
+            self.assertEqual(summary["coverage"], "NOT_COVERED")
+            self.assertIsNone(summary["max_stage_allocated_bytes_peak"])
+            self.assertTrue(all(case["request_scoped_telemetry"]["coverage"] ==
+                                "NOT_COVERED" for case in report["cases"]))
+            self.assertTrue(any("allocator telemetry" in reason for reason in
+                                report["measurement"]["eligibility"]["reasons"]))
 
 
 class ReplayContractTests(unittest.TestCase):

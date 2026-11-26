@@ -71,6 +71,7 @@ pub fn build(b: *std.Build) void {
             "src/proto/wire.cpp",
             "src/proto/messages.cpp",
             "src/obs/metrics.cpp",
+            "src/obs/request_telemetry.cpp",
             "src/relay/relay.cpp",
             "src/comm/comm.cpp",
             "src/scheduling/simple_scheduler.cpp",

@@ -12,6 +12,7 @@
 #ifdef UMM_VIDEO_CUDA
 
 #include "safetensors_mmap.hpp"
+#include "common/cuda_request_allocator.hpp"
 
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
@@ -270,11 +271,11 @@ class BufferPool {
  private:
   float* allocate_device_bytes(size_t bytes) {
     float* ptr = nullptr;
-    cudaError_t status = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
+    cudaError_t status = request_cuda_malloc(reinterpret_cast<void**>(&ptr), bytes);
     if (status == cudaErrorMemoryAllocation && !idle_ptrs_.empty()) {
       (void)cudaGetLastError();
       clear();
-      status = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
+      status = request_cuda_malloc(reinterpret_cast<void**>(&ptr), bytes);
     }
     UMM_CUDA(status);
     g_device_bytes += bytes;
@@ -284,7 +285,7 @@ class BufferPool {
 
   static void free_device_bytes(float* ptr, size_t bytes) noexcept {
     if (ptr != nullptr) {
-      (void)cudaFree(ptr);
+      (void)request_cuda_free(ptr);
       g_device_bytes -= bytes;
     }
   }
@@ -304,7 +305,7 @@ class DeviceBuffer {
       throw std::overflow_error("device allocation size overflow");
     }
     const size_t bytes = elements * sizeof(float);
-    UMM_CUDA(cudaMalloc(reinterpret_cast<void**>(&data_), bytes));
+    UMM_CUDA(request_cuda_malloc(reinterpret_cast<void**>(&data_), bytes));
     capacity_bytes_ = bytes;
     g_device_bytes += bytes;
     g_peak_device_bytes = std::max(g_peak_device_bytes, g_device_bytes);
@@ -366,7 +367,7 @@ class DeviceBuffer {
       if (pool_ != nullptr) {
         pool_->release(data_, capacity_bytes_);
       } else {
-        (void)cudaFree(data_);
+        (void)request_cuda_free(data_);
         g_device_bytes -= capacity_bytes_;
       }
       data_ = nullptr;
@@ -573,7 +574,7 @@ class CudaContext {
       convert_fp32_to_lowp(weight_fp32, lowp_ptr, elements, gemm_prec_);
       lowp_weight_cache_.emplace(weight_fp32, CachedWeight{lowp_ptr, bytes});
     } catch (...) {
-      (void)cudaFree(lowp_ptr);
+      (void)request_cuda_free(lowp_ptr);
       g_device_bytes -= bytes;
       throw;
     }
@@ -585,7 +586,7 @@ class CudaContext {
     const auto it = lowp_weight_cache_.find(weight_fp32);
     if (it != lowp_weight_cache_.end()) {
       if (it->second.ptr != nullptr) {
-        (void)cudaFree(it->second.ptr);
+        (void)request_cuda_free(it->second.ptr);
         g_device_bytes -= it->second.bytes;
       }
       lowp_weight_cache_.erase(it);
@@ -611,7 +612,7 @@ class CudaContext {
   void clear_lowp_weight_cache() noexcept {
     for (auto& kv : lowp_weight_cache_) {
       if (kv.second.ptr != nullptr) {
-        (void)cudaFree(kv.second.ptr);
+        (void)request_cuda_free(kv.second.ptr);
         g_device_bytes -= kv.second.bytes;
       }
     }

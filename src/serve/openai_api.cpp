@@ -414,6 +414,10 @@ void OpenAIApi::Impl::on_complete(const RequestInfo& info) {
     }
   }
   if (!sink) return;
+  if (!info.result.is_nil()) {
+    std::lock_guard<std::mutex> lock(sink->mu);
+    sink->result = info.result;
+  }
   if (info.state == "completed") {
     bool has_deltas;
     {

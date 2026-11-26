@@ -3,6 +3,7 @@
 #include "umt5_encoder.hpp"
 
 #include "safetensors_mmap.hpp"
+#include "common/cuda_request_allocator.hpp"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -79,7 +80,7 @@ class DeviceBuffer {
   DeviceBuffer(size_t bytes, AllocationTracker& tracker) { allocate(bytes, tracker); }
   ~DeviceBuffer() {
     if (data_ != nullptr) {
-      cudaFree(data_);
+      request_cuda_free(data_);
       tracker_->current -= bytes_;
     }
   }
@@ -90,7 +91,7 @@ class DeviceBuffer {
     if (data_ != nullptr) throw std::logic_error("DeviceBuffer allocated twice");
     if (bytes == 0) return;
     void* data = nullptr;
-    UMM_CUDA(cudaMalloc(&data, bytes));
+    UMM_CUDA(request_cuda_malloc(&data, bytes));
     data_ = data;
     bytes_ = bytes;
     tracker_ = &tracker;

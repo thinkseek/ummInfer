@@ -31,6 +31,8 @@ struct RequestInfo {
   std::string state = "pending";  // pending, running, completed, failed, aborted
   std::string current_stage;
   Value result;
+  // Opt-in unified terminal telemetry. Nil on every legacy request.
+  Value telemetry;
   std::string error;
 };
 
@@ -93,7 +95,8 @@ class Stage {
   void on_data_ready(const DataReadyMessage& msg);
   void on_data_ack(const DataAckMessage& msg);
   void pump_outbox();
-  void fail_request(const std::string& request_id, const std::string& error);
+  void fail_request(const std::string& request_id, const std::string& error,
+                    Value telemetry_result = {});
   void send_failure_ack(const DataReadyMessage& msg, const std::string& object_id,
                         const std::string& error);
   // Drops one pending entry and settles its operation. Never throws.

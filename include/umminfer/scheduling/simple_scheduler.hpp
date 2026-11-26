@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "umminfer/proto/wire.hpp"
@@ -80,8 +81,23 @@ class MessageQueue {
 // reporting the exception as a failure.
 class RequestAborted : public std::runtime_error {
  public:
-  explicit RequestAborted(std::string message = "request aborted")
-      : std::runtime_error(std::move(message)) {}
+  explicit RequestAborted(std::string message = "request aborted",
+                          Value telemetry_result = {})
+      : std::runtime_error(std::move(message)),
+        telemetry_result(std::move(telemetry_result)) {}
+  // Nil on the historical path. Opted-in native requests retain their terminal
+  // allocation snapshot here even though the public Coordinator already aborted.
+  Value telemetry_result;
+};
+
+// Opt-in native telemetry companion for a failed compute call. The scheduler
+// still emits the same error string; only the opted-in result carries metrics.
+class RequestComputeError : public std::runtime_error {
+ public:
+  RequestComputeError(std::string message, Value telemetry_result)
+      : std::runtime_error(std::move(message)),
+        telemetry_result(std::move(telemetry_result)) {}
+  Value telemetry_result;
 };
 
 // Declares how the scheduler may call the compute function. A serial engine
