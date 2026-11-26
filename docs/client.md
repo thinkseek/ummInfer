@@ -331,19 +331,24 @@ JSON wire fields above when calling a server that supports them.
 #### Showcase starter presets and live per-turn telemetry (Web UI and macOS ummmlx)
 
 Both the Web UI (`web/index.html`) and the native macOS client (`clients/ummmlx`)
-display three curated North-Star starter preset cards in the empty conversation
+display four curated North-Star starter preset cards in the empty conversation
 state and hide them automatically once the conversation contains any turns:
 
 | Preset ID | Title | Subtitle | Applied Controls |
 | --- | --- | --- | --- |
-| `documentary` | **Live Documentary** | Interleaved prose, diagram & voice | Narrative `auto`, `allow_text_only=true`, continuity `off`, empty `style_anchor`, Fast Video on, Voice/audio output on |
-| `storyboard_i2v` | **Storyboard I2V Chain** | Slot 0 keyframe -> Slot 1 anchored I2V | Narrative `auto`, `allow_text_only=false`, continuity `i2v_chain`, `style_anchor="cinematic 35mm film grain, warm lantern twilight, smooth camera motion"`, Fast Video on, Voice/audio output on |
-| `smart_text_only` | **Smart Text-Only** | Autonomous zero-visual abstention | Narrative `auto`, `allow_text_only=true`, continuity `off`, empty `style_anchor`, Fast Video off, Voice/audio output off |
+| `documentary` | **Live Documentary** | Interleaved prose, diagram & voice | Narrative `auto`, `allow_text_only=true`, continuity `off`, empty `style_anchor`, Fast Video on, Voice/audio output on, Input frames `uniform` |
+| `storyboard_i2v` | **Storyboard I2V Chain** | Slot 0 keyframe -> Slot 1 anchored I2V | Narrative `auto`, `allow_text_only=false`, continuity `i2v_chain`, `style_anchor="cinematic 35mm film grain, warm lantern twilight, smooth camera motion"`, explicit `source=slot-0` anchor prompt, Fast Video on, Voice/audio output on, Input frames `uniform` |
+| `smart_text_only` | **Smart Text-Only** | Autonomous zero-visual abstention | Narrative `auto`, `allow_text_only=true`, continuity `off`, empty `style_anchor`, Fast Video off, Voice/audio output off, Input frames `uniform` |
+| `temporal_video_qa` | **Temporal Video QA** | Motion & scene-cut multi-turn video Q&A | Narrative `auto`, `allow_text_only=true`, continuity `off`, empty `style_anchor`, Fast Video off, Voice/audio output off, Input frames `temporal` (`motion_threshold=0.02`, `scene_threshold=0.25`) |
 
 Clicking a preset card updates the reactive client controls, populates the
 composer prompt, and focuses the prompt input without auto-sending a network
-request so the user can inspect or edit before sending. Existing default control
-values are untouched when no preset is selected.
+request so the user can inspect or edit before sending. Selecting
+**Temporal Video QA** reveals the temporal Input frames options (`0.02` /
+`0.25`) and shows a subtle non-blocking status hint when no video clip is
+attached yet; switching back to any of the other three presets resets Input
+frames to `uniform`. Existing default control values are untouched when no
+preset is selected.
 
 During streaming, each assistant turn tracks real client-observed timings
 (`performance.now()` in Web UI; `ContinuousClock` in `ummmlx`) and renders a

@@ -139,7 +139,7 @@
 
   #transcript { flex: 1; overflow-y: auto; padding: 20px; }
   .empty-state {
-    max-width: 760px; margin: 10vh auto 0; padding: 0 4px;
+    max-width: 860px; margin: 10vh auto 0; padding: 0 4px;
     display: flex; flex-direction: column; align-items: center; gap: 16px;
     text-align: center;
   }
@@ -150,7 +150,7 @@
     margin: -8px 0 0; font-size: var(--f-caption); color: var(--secondary);
   }
   .preset-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
     gap: 10px; width: 100%;
   }
   .preset-card {
@@ -505,6 +505,11 @@
         <span class="preset-subtitle">Autonomous zero-visual abstention</span>
         <span class="preset-tags"><span class="preset-tag">Auto</span><span class="preset-tag">Smart text-only</span></span>
       </button>
+      <button type="button" class="preset-card" data-preset="temporal_video_qa">
+        <span class="preset-title">Temporal Video QA</span>
+        <span class="preset-subtitle">Motion &amp; scene-cut multi-turn video Q&amp;A</span>
+        <span class="preset-tags"><span class="preset-tag">Temporal</span><span class="preset-tag">+ Vid</span><span class="preset-tag">Multi-turn</span></span>
+      </button>
     </div>
   </section>
 </main>
@@ -551,6 +556,7 @@ const ui = {
   videoFrames: $('videoFrames'), videoSteps: $('videoSteps'),
   videoGuidance: $('videoGuidance'), videoFramePolicy: $('videoFramePolicy'),
   videoMotionThreshold: $('videoMotionThreshold'), videoSceneThreshold: $('videoSceneThreshold'),
+  advanced: $('advanced'),
   transcript: $('transcript'), emptyState: $('emptyState'), showcasePresets: $('showcasePresets'),
   error: $('error'),
   attachBar: $('attachBar'), askImage: $('askImage'), askVideo: $('askVideo'),
@@ -810,6 +816,9 @@ ui.askVideo.addEventListener('change', async () => {
     attachedVideo = { name: file.name, dataURL };
     attachedImage = null; ui.askImage.value = '';
     renderAttachments();
+    if (ui.status.textContent === SHOWCASE_PRESETS.temporal_video_qa.missingVideoHint) {
+      setStatus('Ready', false);
+    }
   } catch (err) { showError(err.message); }
 });
 
@@ -925,6 +934,10 @@ const SHOWCASE_PRESETS = Object.freeze({
     styleAnchor: '',
     fastVideo: true,
     enableAudio: true,
+    videoFramePolicy: 'uniform',
+    videoMotionThreshold: '0.02',
+    videoSceneThreshold: '0.25',
+    requiresVideoAttachment: false,
     prompt: 'Explain how a black hole accretion disk produces relativistic jets and gravitational lensing. Speak clearly like a live documentary narrator, include one crisp diagram of the spacetime curvature, and one short motion clip of plasma spiraling into the event horizon.',
   }),
   storyboard_i2v: Object.freeze({
@@ -937,7 +950,11 @@ const SHOWCASE_PRESETS = Object.freeze({
     styleAnchor: 'cinematic 35mm film grain, warm lantern twilight, smooth camera motion',
     fastVideo: true,
     enableAudio: true,
-    prompt: 'Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe, then animate the river breeze and water reflections in motion.',
+    videoFramePolicy: 'uniform',
+    videoMotionThreshold: '0.02',
+    videoSceneThreshold: '0.25',
+    requiresVideoAttachment: false,
+    prompt: 'Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe as slot-0, then animate the river breeze and water reflections in a motion clip explicitly anchored to source=slot-0.',
   }),
   smart_text_only: Object.freeze({
     id: 'smart_text_only',
@@ -949,7 +966,28 @@ const SHOWCASE_PRESETS = Object.freeze({
     styleAnchor: '',
     fastVideo: false,
     enableAudio: false,
+    videoFramePolicy: 'uniform',
+    videoMotionThreshold: '0.02',
+    videoSceneThreshold: '0.25',
+    requiresVideoAttachment: false,
     prompt: 'Prove concisely why the square root of 2 is irrational and explain the key step in two sentences.',
+  }),
+  temporal_video_qa: Object.freeze({
+    id: 'temporal_video_qa',
+    title: 'Temporal Video QA',
+    subtitle: 'Motion & scene-cut multi-turn video Q&A',
+    narrativeMode: 'auto',
+    allowTextOnly: true,
+    continuityMode: 'off',
+    styleAnchor: '',
+    fastVideo: false,
+    enableAudio: false,
+    videoFramePolicy: 'temporal',
+    videoMotionThreshold: '0.02',
+    videoSceneThreshold: '0.25',
+    requiresVideoAttachment: true,
+    missingVideoHint: 'Attach a clip with + Vid, then press Send',
+    prompt: 'Watch this attached video clip and summarize the key visual events, motion changes, and scene cuts in chronological order.',
   }),
 });
 
@@ -962,12 +1000,35 @@ function applyShowcasePresetToControls(presetId, controls, hooks = {}) {
   controls.narrativeContinuity.value = preset.continuityMode;
   controls.styleAnchor.value = preset.styleAnchor;
   controls.fastVideo.checked = preset.fastVideo;
+  if (controls.videoFramePolicy) {
+    controls.videoFramePolicy.value = preset.videoFramePolicy;
+  }
+  if (controls.videoMotionThreshold) {
+    controls.videoMotionThreshold.value = preset.videoMotionThreshold;
+  }
+  if (controls.videoSceneThreshold) {
+    controls.videoSceneThreshold.value = preset.videoSceneThreshold;
+  }
+  if (controls.advanced && preset.videoFramePolicy === 'temporal') {
+    controls.advanced.open = true;
+  }
   if (typeof hooks.setAudioEnabled === 'function') {
     hooks.setAudioEnabled(preset.enableAudio);
   }
   controls.prompt.value = preset.prompt;
   if (typeof hooks.syncNarrativeControls === 'function') hooks.syncNarrativeControls();
+  if (typeof hooks.syncVideoFrameControls === 'function') hooks.syncVideoFrameControls();
   if (typeof hooks.saveSettings === 'function') hooks.saveSettings();
+  if (typeof hooks.setStatus === 'function') {
+    const hasVideo = typeof hooks.hasAttachedVideo === 'function'
+      ? Boolean(hooks.hasAttachedVideo())
+      : false;
+    if (preset.requiresVideoAttachment && !hasVideo && preset.missingVideoHint) {
+      hooks.setStatus(preset.missingVideoHint, false);
+    } else {
+      hooks.setStatus('Ready', false);
+    }
+  }
   if (typeof controls.prompt.focus === 'function') controls.prompt.focus();
   return preset;
 }
@@ -3236,6 +3297,7 @@ ui.prompt.addEventListener('keydown', (event) => {
 });
 function applyShowcasePreset(presetId) {
   if (running) return;
+  clearError();
   applyShowcasePresetToControls(presetId, ui, {
     setAudioEnabled(enabled) {
       voiceOn = Boolean(enabled);
@@ -3244,7 +3306,10 @@ function applyShowcasePreset(presetId) {
       applyVoice();
     },
     syncNarrativeControls,
+    syncVideoFrameControls,
     saveSettings,
+    hasAttachedVideo: () => Boolean(attachedVideo),
+    setStatus,
   });
 }
 

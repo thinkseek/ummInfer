@@ -75,7 +75,10 @@ final class ShowcaseTelemetryTests: XCTestCase {
     }
 
     func testShowcasePresetDefinitions() {
-        XCTAssertEqual(ShowcasePreset.allCases, [.documentary, .storyboardI2V, .smartTextOnly])
+        XCTAssertEqual(
+            ShowcasePreset.allCases,
+            [.documentary, .storyboardI2V, .smartTextOnly, .temporalVideoQA]
+        )
 
         XCTAssertEqual(ShowcasePreset.documentary.rawValue, "documentary")
         XCTAssertEqual(ShowcasePreset.documentary.title, "Live Documentary")
@@ -86,6 +89,9 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertEqual(ShowcasePreset.documentary.styleAnchor, "")
         XCTAssertTrue(ShowcasePreset.documentary.fastVideo)
         XCTAssertTrue(ShowcasePreset.documentary.enableAudio)
+        XCTAssertEqual(ShowcasePreset.documentary.videoFramePolicy, .uniform)
+        XCTAssertFalse(ShowcasePreset.documentary.requiresVideoAttachment)
+        XCTAssertNil(ShowcasePreset.documentary.missingVideoHint)
 
         XCTAssertEqual(ShowcasePreset.storyboardI2V.rawValue, "storyboard_i2v")
         XCTAssertEqual(ShowcasePreset.storyboardI2V.title, "Storyboard I2V Chain")
@@ -95,8 +101,13 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertEqual(ShowcasePreset.storyboardI2V.continuityMode, .i2vChain)
         XCTAssertEqual(ShowcasePreset.storyboardI2V.styleAnchor,
                        "cinematic 35mm film grain, warm lantern twilight, smooth camera motion")
+        XCTAssertLessThanOrEqual(ShowcasePreset.storyboardI2V.styleAnchor.utf8.count, 256)
         XCTAssertTrue(ShowcasePreset.storyboardI2V.fastVideo)
         XCTAssertTrue(ShowcasePreset.storyboardI2V.enableAudio)
+        XCTAssertEqual(ShowcasePreset.storyboardI2V.videoFramePolicy, .uniform)
+        XCTAssertTrue(ShowcasePreset.storyboardI2V.prompt.contains("source=slot-0"))
+        XCTAssertFalse(ShowcasePreset.storyboardI2V.requiresVideoAttachment)
+        XCTAssertNil(ShowcasePreset.storyboardI2V.missingVideoHint)
 
         XCTAssertEqual(ShowcasePreset.smartTextOnly.rawValue, "smart_text_only")
         XCTAssertEqual(ShowcasePreset.smartTextOnly.title, "Smart Text-Only")
@@ -107,6 +118,26 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertEqual(ShowcasePreset.smartTextOnly.styleAnchor, "")
         XCTAssertFalse(ShowcasePreset.smartTextOnly.fastVideo)
         XCTAssertFalse(ShowcasePreset.smartTextOnly.enableAudio)
+        XCTAssertEqual(ShowcasePreset.smartTextOnly.videoFramePolicy, .uniform)
+        XCTAssertFalse(ShowcasePreset.smartTextOnly.requiresVideoAttachment)
+        XCTAssertNil(ShowcasePreset.smartTextOnly.missingVideoHint)
+
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.rawValue, "temporal_video_qa")
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.title, "Temporal Video QA")
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.subtitle, "Motion & scene-cut multi-turn video Q&A")
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.iconName, "sparkles.tv")
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.narrativeVisualMode, "auto")
+        XCTAssertTrue(ShowcasePreset.temporalVideoQA.allowTextOnly)
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.continuityMode, .off)
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.styleAnchor, "")
+        XCTAssertFalse(ShowcasePreset.temporalVideoQA.fastVideo)
+        XCTAssertFalse(ShowcasePreset.temporalVideoQA.enableAudio)
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.videoFramePolicy, .temporal)
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.videoMotionThresholdText, "0.02")
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.videoSceneThresholdText, "0.25")
+        XCTAssertTrue(ShowcasePreset.temporalVideoQA.requiresVideoAttachment)
+        XCTAssertEqual(ShowcasePreset.temporalVideoQA.missingVideoHint,
+                       "Attach a video clip, then press Send")
     }
 
     func testDefaultControlsUntouchedBeforePresetApplied() {
@@ -120,6 +151,10 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertFalse(model.audioOutput)
         XCTAssertFalse(model.imageOutput)
         XCTAssertFalse(model.videoOutput)
+        XCTAssertEqual(model.videoFramePolicy, "uniform")
+        XCTAssertEqual(model.videoMotionThresholdText, "0.02")
+        XCTAssertEqual(model.videoSceneThresholdText, "0.25")
+        XCTAssertEqual(model.status, "Ready")
         XCTAssertEqual(model.prompt, "")
     }
 
@@ -138,6 +173,9 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertEqual(model.narrativeStyleAnchor, "")
         XCTAssertTrue(model.fastVideoMode)
         XCTAssertTrue(model.audioOutput)
+        XCTAssertEqual(model.videoFramePolicy, "uniform")
+        XCTAssertEqual(model.status, "Ready")
+        XCTAssertNil(model.error)
         XCTAssertEqual(
             model.prompt,
             "Explain how a black hole accretion disk produces relativistic jets and gravitational lensing. Speak clearly like a live documentary narrator, include one crisp diagram of the spacetime curvature, and one short motion clip of plasma spiraling into the event horizon."
@@ -156,9 +194,13 @@ final class ShowcaseTelemetryTests: XCTestCase {
         )
         XCTAssertTrue(model.fastVideoMode)
         XCTAssertTrue(model.audioOutput)
+        XCTAssertEqual(model.videoFramePolicy, "uniform")
+        XCTAssertEqual(model.status, "Ready")
+        XCTAssertNil(model.error)
+        XCTAssertTrue(model.prompt.contains("source=slot-0"))
         XCTAssertEqual(
             model.prompt,
-            "Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe, then animate the river breeze and water reflections in motion."
+            "Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe as slot-0, then animate the river breeze and water reflections in a motion clip explicitly anchored to source=slot-0."
         )
 
         model.applyShowcasePreset(.smartTextOnly)
@@ -171,10 +213,63 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertEqual(model.narrativeStyleAnchor, "")
         XCTAssertFalse(model.fastVideoMode)
         XCTAssertFalse(model.audioOutput)
+        XCTAssertEqual(model.videoFramePolicy, "uniform")
+        XCTAssertEqual(model.status, "Ready")
+        XCTAssertNil(model.error)
         XCTAssertEqual(
             model.prompt,
             "Prove concisely why the square root of 2 is irrational and explain the key step in two sentences."
         )
+
+        // Temporal Video QA with no video attached enables temporal frame selection + defaults
+        // and sets a subtle non-blocking status hint without throwing an error or sending.
+        model.videoMotionThresholdText = "0.99"
+        model.videoSceneThresholdText = "0.88"
+        model.applyShowcasePreset(.temporalVideoQA)
+        XCTAssertTrue(model.narrativeMode)
+        XCTAssertEqual(model.narrativeVisualMode, "auto")
+        XCTAssertTrue(model.imageOutput)
+        XCTAssertTrue(model.videoOutput)
+        XCTAssertTrue(model.narrativeAllowTextOnly)
+        XCTAssertEqual(model.narrativeContinuityMode, .off)
+        XCTAssertEqual(model.narrativeStyleAnchor, "")
+        XCTAssertFalse(model.fastVideoMode)
+        XCTAssertFalse(model.audioOutput)
+        XCTAssertEqual(model.videoFramePolicy, "temporal")
+        XCTAssertEqual(model.videoMotionThresholdText, "0.02")
+        XCTAssertEqual(model.videoSceneThresholdText, "0.25")
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.status, "Attach a video clip, then press Send")
+        XCTAssertEqual(
+            model.prompt,
+            "Watch this attached video clip and summarize the key visual events, motion changes, and scene cuts in chronological order."
+        )
+
+        // Attaching a video clears the subtle hint back to Ready.
+        model.attachedVideoURL = URL(fileURLWithPath: "/tmp/sample-clip.mp4")
+        XCTAssertEqual(model.status, "Ready")
+
+        // Applying Temporal Video QA while a video is already attached keeps status Ready.
+        model.applyShowcasePreset(.temporalVideoQA)
+        XCTAssertEqual(model.videoFramePolicy, "temporal")
+        XCTAssertEqual(model.status, "Ready")
+        model.attachedVideoURL = nil
+
+        // Switching away from Temporal Video QA to any other preset resets policy back to uniform.
+        for other in [ShowcasePreset.documentary, .storyboardI2V, .smartTextOnly] {
+            model.applyShowcasePreset(.temporalVideoQA)
+            model.videoMotionThresholdText = "0.15"
+            model.videoSceneThresholdText = "0.45"
+            XCTAssertEqual(model.videoFramePolicy, "temporal")
+
+            model.applyShowcasePreset(other)
+            XCTAssertEqual(model.videoFramePolicy, "uniform",
+                           "switching from temporalVideoQA to \(other.rawValue) must reset to uniform")
+            XCTAssertEqual(model.videoMotionThresholdText, "0.02")
+            XCTAssertEqual(model.videoSceneThresholdText, "0.25")
+            XCTAssertEqual(model.status, "Ready")
+            XCTAssertNil(model.error)
+        }
 
         XCTAssertEqual(requestCount, 0)
         XCTAssertTrue(model.turns.isEmpty)

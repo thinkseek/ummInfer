@@ -50,7 +50,7 @@ def module_scripts(html):
 def check_markup(html):
     for tag in ('<main id="transcript">', 'id="emptyState"', 'id="showcasePresets"',
                 'data-preset="documentary"', 'data-preset="storyboard_i2v"',
-                'data-preset="smart_text_only"',
+                'data-preset="smart_text_only"', 'data-preset="temporal_video_qa"',
                 'id="prompt"', 'id="send"', 'id="stop"',
                 'id="voiceToggle"', 'id="voiceWave"', 'id="voiceStatus"',
                 'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
@@ -1156,6 +1156,12 @@ def check_showcase_and_telemetry(html, script):
         'data-preset="smart_text_only"',
         'Smart Text-Only',
         'Autonomous zero-visual abstention',
+        'data-preset="temporal_video_qa"',
+        'Temporal Video QA',
+        'Motion &amp; scene-cut multi-turn video Q&amp;A',
+        '<span class="preset-tag">Temporal</span>',
+        '<span class="preset-tag">+ Vid</span>',
+        '<span class="preset-tag">Multi-turn</span>',
         '.telemetry-strip',
         '.telemetry-pill',
     ):
@@ -1197,11 +1203,19 @@ const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
 
-// 1. Showcase preset application across all 3 curated presets.
+// 1. Showcase preset application across all 4 curated presets.
+assert(JSON.stringify(Object.keys(SHOWCASE_PRESETS)) ===
+       '["documentary","storyboard_i2v","smart_text_only","temporal_video_qa"]',
+       'expected exactly 4 curated showcase presets');
+
 let focusCount = 0;
 let syncCount = 0;
+let syncVideoFrameCount = 0;
 let saveCount = 0;
 let audioState = false;
+let hasAttachedVideo = false;
+let lastStatus = 'Ready';
+let lastStatusBusy = false;
 const controls = {
   narrative: { checked: false },
   visualMode: { value: 'image' },
@@ -1209,12 +1223,19 @@ const controls = {
   narrativeContinuity: { value: 'prompt_anchor' },
   styleAnchor: { value: 'stale' },
   fastVideo: { checked: false },
+  videoFramePolicy: { value: 'temporal' },
+  videoMotionThreshold: { value: '0.15' },
+  videoSceneThreshold: { value: '0.55' },
+  advanced: { open: false },
   prompt: { value: '', focus() { focusCount += 1; } },
 };
 const hooks = {
   setAudioEnabled(v) { audioState = v; },
   syncNarrativeControls() { syncCount += 1; },
+  syncVideoFrameControls() { syncVideoFrameCount += 1; },
   saveSettings() { saveCount += 1; },
+  hasAttachedVideo() { return hasAttachedVideo; },
+  setStatus(text, busy = false) { lastStatus = text; lastStatusBusy = busy; },
 };
 
 const doc = applyShowcasePresetToControls('documentary', controls, hooks);
@@ -1227,10 +1248,15 @@ assert(controls.narrative.checked === true &&
        controls.narrativeContinuity.value === 'off' &&
        controls.styleAnchor.value === '' &&
        controls.fastVideo.checked === true &&
+       controls.videoFramePolicy.value === 'uniform' &&
+       controls.videoMotionThreshold.value === '0.02' &&
+       controls.videoSceneThreshold.value === '0.25' &&
        audioState === true &&
+       lastStatus === 'Ready' &&
+       lastStatusBusy === false &&
        controls.prompt.value === 'Explain how a black hole accretion disk produces relativistic jets and gravitational lensing. Speak clearly like a live documentary narrator, include one crisp diagram of the spacetime curvature, and one short motion clip of plasma spiraling into the event horizon.',
        'documentary preset control mutations mismatch');
-assert(focusCount === 1 && syncCount === 1 && saveCount === 1,
+assert(focusCount === 1 && syncCount === 1 && syncVideoFrameCount === 1 && saveCount === 1,
        'documentary preset did not focus/sync/save');
 
 const story = applyShowcasePresetToControls('storyboard_i2v', controls, hooks);
@@ -1242,9 +1268,12 @@ assert(controls.narrative.checked === true &&
        controls.allowTextOnly.checked === false &&
        controls.narrativeContinuity.value === 'i2v_chain' &&
        controls.styleAnchor.value === 'cinematic 35mm film grain, warm lantern twilight, smooth camera motion' &&
+       new TextEncoder().encode(controls.styleAnchor.value).length <= 256 &&
        controls.fastVideo.checked === true &&
+       controls.videoFramePolicy.value === 'uniform' &&
        audioState === true &&
-       controls.prompt.value === 'Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe, then animate the river breeze and water reflections in motion.',
+       controls.prompt.value.includes('source=slot-0') &&
+       controls.prompt.value === 'Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe as slot-0, then animate the river breeze and water reflections in a motion clip explicitly anchored to source=slot-0.',
        'storyboard_i2v preset control mutations mismatch');
 assert(focusCount === 2, 'storyboard_i2v preset did not focus prompt');
 
@@ -1258,10 +1287,59 @@ assert(controls.narrative.checked === true &&
        controls.narrativeContinuity.value === 'off' &&
        controls.styleAnchor.value === '' &&
        controls.fastVideo.checked === false &&
+       controls.videoFramePolicy.value === 'uniform' &&
        audioState === false &&
        controls.prompt.value === 'Prove concisely why the square root of 2 is irrational and explain the key step in two sentences.',
        'smart_text_only preset control mutations mismatch');
 assert(focusCount === 3, 'smart_text_only preset did not focus prompt');
+
+// Temporal Video QA without an attached video sets temporal policy, thresholds, opens Options, and shows non-blocking hint.
+controls.videoMotionThreshold.value = '0.99';
+controls.videoSceneThreshold.value = '0.88';
+controls.advanced.open = false;
+hasAttachedVideo = false;
+const temporal = applyShowcasePresetToControls('temporal_video_qa', controls, hooks);
+assert(temporal && temporal.title === 'Temporal Video QA' &&
+       temporal.subtitle === 'Motion & scene-cut multi-turn video Q&A',
+       'temporal_video_qa metadata mismatch');
+assert(controls.narrative.checked === true &&
+       controls.visualMode.value === 'auto' &&
+       controls.allowTextOnly.checked === true &&
+       controls.narrativeContinuity.value === 'off' &&
+       controls.styleAnchor.value === '' &&
+       controls.fastVideo.checked === false &&
+       audioState === false &&
+       controls.videoFramePolicy.value === 'temporal' &&
+       controls.videoMotionThreshold.value === '0.02' &&
+       controls.videoSceneThreshold.value === '0.25' &&
+       controls.advanced.open === true &&
+       lastStatus === 'Attach a clip with + Vid, then press Send' &&
+       lastStatusBusy === false &&
+       controls.prompt.value === 'Watch this attached video clip and summarize the key visual events, motion changes, and scene cuts in chronological order.',
+       'temporal_video_qa preset control mutations mismatch');
+assert(focusCount === 4 && syncVideoFrameCount === 4,
+       'temporal_video_qa preset did not focus prompt and sync video frame controls');
+
+// Temporal Video QA with an already-attached video keeps status Ready (no missing-video hint).
+hasAttachedVideo = true;
+applyShowcasePresetToControls('temporal_video_qa', controls, hooks);
+assert(lastStatus === 'Ready' && controls.videoFramePolicy.value === 'temporal',
+       'temporal_video_qa with attached video should keep status Ready');
+
+// Switching away from Temporal Video QA to each other preset resets videoFramePolicy back to uniform.
+for (const otherId of ['documentary', 'storyboard_i2v', 'smart_text_only']) {
+  hasAttachedVideo = false;
+  applyShowcasePresetToControls('temporal_video_qa', controls, hooks);
+  controls.videoMotionThreshold.value = '0.12';
+  controls.videoSceneThreshold.value = '0.44';
+  assert(controls.videoFramePolicy.value === 'temporal', 'setup temporal failed');
+  applyShowcasePresetToControls(otherId, controls, hooks);
+  assert(controls.videoFramePolicy.value === 'uniform' &&
+         controls.videoMotionThreshold.value === '0.02' &&
+         controls.videoSceneThreshold.value === '0.25' &&
+         lastStatus === 'Ready',
+         `switching from temporal_video_qa to ${otherId} did not reset videoFramePolicy to uniform`);
+}
 
 // Unknown preset is a safe no-op.
 assert(applyShowcasePresetToControls('unknown', controls, hooks) === null,

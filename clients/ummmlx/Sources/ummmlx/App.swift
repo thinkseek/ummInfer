@@ -485,10 +485,17 @@ struct RootView: View {
     }
 
     private var showcasePresetsView: some View {
-        HStack(alignment: .top, spacing: 10) {
+        let columns = [
+            GridItem(.flexible(), spacing: 10),
+            GridItem(.flexible(), spacing: 10)
+        ]
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
             ForEach(ShowcasePreset.allCases) { preset in
                 Button {
                     model.applyShowcasePreset(preset)
+                    if preset.videoFramePolicy == .temporal {
+                        showOptions = true
+                    }
                     promptFocused = true
                 } label: {
                     VStack(alignment: .leading, spacing: 6) {

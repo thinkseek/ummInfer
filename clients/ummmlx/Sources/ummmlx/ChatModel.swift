@@ -100,6 +100,7 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
     case documentary = "documentary"
     case storyboardI2V = "storyboard_i2v"
     case smartTextOnly = "smart_text_only"
+    case temporalVideoQA = "temporal_video_qa"
 
     var id: String { rawValue }
 
@@ -108,6 +109,7 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .documentary: return "Live Documentary"
         case .storyboardI2V: return "Storyboard I2V Chain"
         case .smartTextOnly: return "Smart Text-Only"
+        case .temporalVideoQA: return "Temporal Video QA"
         }
     }
 
@@ -116,6 +118,7 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .documentary: return "Interleaved prose, diagram & voice"
         case .storyboardI2V: return "Slot 0 keyframe -> Slot 1 anchored I2V"
         case .smartTextOnly: return "Autonomous zero-visual abstention"
+        case .temporalVideoQA: return "Motion & scene-cut multi-turn video Q&A"
         }
     }
 
@@ -124,6 +127,7 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .documentary: return "waveform.and.magnifyingglass"
         case .storyboardI2V: return "film.stack"
         case .smartTextOnly: return "function"
+        case .temporalVideoQA: return "sparkles.tv"
         }
     }
 
@@ -134,6 +138,7 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .documentary: return true
         case .storyboardI2V: return false
         case .smartTextOnly: return true
+        case .temporalVideoQA: return true
         }
     }
 
@@ -142,6 +147,7 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .documentary: return .off
         case .storyboardI2V: return .i2vChain
         case .smartTextOnly: return .off
+        case .temporalVideoQA: return .off
         }
     }
 
@@ -151,6 +157,7 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .storyboardI2V:
             return "cinematic 35mm film grain, warm lantern twilight, smooth camera motion"
         case .smartTextOnly: return ""
+        case .temporalVideoQA: return ""
         }
     }
 
@@ -159,6 +166,7 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .documentary: return true
         case .storyboardI2V: return true
         case .smartTextOnly: return false
+        case .temporalVideoQA: return false
         }
     }
 
@@ -167,6 +175,28 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .documentary: return true
         case .storyboardI2V: return true
         case .smartTextOnly: return false
+        case .temporalVideoQA: return false
+        }
+    }
+
+    var videoFramePolicy: VideoFramePolicy {
+        switch self {
+        case .documentary, .storyboardI2V, .smartTextOnly: return .uniform
+        case .temporalVideoQA: return .temporal
+        }
+    }
+
+    var videoMotionThresholdText: String { "0.02" }
+    var videoSceneThresholdText: String { "0.25" }
+
+    var requiresVideoAttachment: Bool {
+        self == .temporalVideoQA
+    }
+
+    var missingVideoHint: String? {
+        switch self {
+        case .temporalVideoQA: return "Attach a video clip, then press Send"
+        case .documentary, .storyboardI2V, .smartTextOnly: return nil
         }
     }
 
@@ -175,9 +205,11 @@ enum ShowcasePreset: String, CaseIterable, Identifiable, Equatable {
         case .documentary:
             return "Explain how a black hole accretion disk produces relativistic jets and gravitational lensing. Speak clearly like a live documentary narrator, include one crisp diagram of the spacetime curvature, and one short motion clip of plasma spiraling into the event horizon."
         case .storyboardI2V:
-            return "Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe, then animate the river breeze and water reflections in motion."
+            return "Create a two-beat cinematic storyboard of a glowing paper lantern drifting over a misty mountain river at dusk: first illustrate the establishing keyframe as slot-0, then animate the river breeze and water reflections in a motion clip explicitly anchored to source=slot-0."
         case .smartTextOnly:
             return "Prove concisely why the square root of 2 is irrational and explain the key step in two sentences."
+        case .temporalVideoQA:
+            return "Watch this attached video clip and summarize the key visual events, motion changes, and scene cuts in chronological order."
         }
     }
 }
@@ -325,7 +357,13 @@ final class ChatModel: ObservableObject {
     @Published var videoSceneThresholdText = "0.25"
     @Published var fastVideoMode = false
     @Published var attachedImageURL: URL?
-    @Published var attachedVideoURL: URL?
+    @Published var attachedVideoURL: URL? {
+        didSet {
+            if attachedVideoURL != nil && status == ShowcasePreset.temporalVideoQA.missingVideoHint {
+                status = "Ready"
+            }
+        }
+    }
     @Published var partialTranscript = ""
     @Published private(set) var isListening = false
     @Published private(set) var speechStatus = ""
@@ -451,8 +489,17 @@ final class ChatModel: ObservableObject {
         narrativeStyleAnchor = preset.styleAnchor
         fastVideoMode = preset.fastVideo
         audioOutput = preset.enableAudio
+        videoFramePolicy = preset.videoFramePolicy.rawValue
+        videoMotionThresholdText = preset.videoMotionThresholdText
+        videoSceneThresholdText = preset.videoSceneThresholdText
         prompt = preset.prompt
         error = nil
+        if preset.requiresVideoAttachment, attachedVideoURL == nil,
+           let hint = preset.missingVideoHint {
+            status = hint
+        } else {
+            status = "Ready"
+        }
     }
 
     private static func dataURL(from url: URL) throws -> String {
