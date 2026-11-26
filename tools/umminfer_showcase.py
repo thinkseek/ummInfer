@@ -63,6 +63,9 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 MARKER_RE = re.compile(r"\[\[\s*(?:image|video|visual)\s*:", re.IGNORECASE)
 TERMINAL_KINDS = {"complete", "error", "cancelled"}
 ALL_JOURNEYS = (1, 2, 3, 4, 5)
+NATIVE_ALLOCATOR_SCOPE = "request-native-allocator"
+TELEMETRY_STAGE_COVERAGES = ("COVERED", "NOT_COVERED")
+TELEMETRY_ENVELOPE_COVERAGES = ("COVERED", "PARTIAL", "NOT_COVERED")
 
 
 def require(condition: object, message: str) -> None:
@@ -72,6 +75,292 @@ def require(condition: object, message: str) -> None:
 
 def is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def format_telemetry_bytes(num_bytes: int) -> str:
+    """Format a non-negative integer byte count in B / KiB / MiB / GiB."""
+    require(is_int(num_bytes) and num_bytes >= 0, f"invalid telemetry byte count: {num_bytes!r}")
+    kib = 1024.0
+    mib = 1024.0 * 1024.0
+    gib = 1024.0 * 1024.0 * 1024.0
+    value = float(num_bytes)
+    if value >= gib:
+        return f"{value / gib:.1f} GiB"
+    if value >= mib:
+        return f"{value / mib:.1f} MiB"
+    if value >= kib:
+        return f"{value / kib:.1f} KiB"
+    return f"{num_bytes} B"
+
+
+def validate_native_allocator_telemetry(
+    envelope: object,
+    *,
+    expected_request_id: str | None = None,
+) -> dict:
+    """Strictly validate one request-native allocator telemetry envelope (fail-closed)."""
+    require(
+        isinstance(envelope, dict),
+        "native allocator telemetry requested, but response omitted or returned non-object telemetry",
+    )
+    schema_version = envelope.get("schema_version")
+    require(
+        is_int(schema_version) and schema_version == 1,
+        f"telemetry schema_version must be integer 1, got {schema_version!r}",
+    )
+    scope = envelope.get("scope")
+    require(
+        scope == NATIVE_ALLOCATOR_SCOPE,
+        f"telemetry scope must be {NATIVE_ALLOCATOR_SCOPE!r}, got {scope!r}",
+    )
+    envelope_coverage = envelope.get("coverage")
+    require(
+        envelope_coverage in TELEMETRY_ENVELOPE_COVERAGES,
+        f"telemetry coverage invalid: {envelope_coverage!r}",
+    )
+
+    env_request_id: str | None = None
+    if "request_id" in envelope:
+        raw_req_id = envelope.get("request_id")
+        require(
+            isinstance(raw_req_id, str) and bool(raw_req_id.strip()),
+            f"telemetry request_id must be a non-empty string, got {raw_req_id!r}",
+        )
+        env_request_id = raw_req_id
+        if expected_request_id is not None:
+            require(
+                env_request_id == expected_request_id,
+                f"telemetry request_id mismatch: expected={expected_request_id!r} actual={env_request_id!r}",
+            )
+
+    if "whole_device_nvml" in envelope:
+        whole_device_nvml = envelope.get("whole_device_nvml")
+        require(
+            isinstance(whole_device_nvml, str) and bool(whole_device_nvml.strip()),
+            f"telemetry whole_device_nvml must be a separation marker string, got {whole_device_nvml!r}",
+        )
+    else:
+        whole_device_nvml = "separate_measurement_resources"
+
+    stages = envelope.get("stages")
+    require(
+        isinstance(stages, list) and len(stages) > 0,
+        "telemetry stages must be a non-empty list",
+    )
+
+    stage_summaries: list[dict] = []
+    reasons: list[str] = []
+    seen_reasons: set[str] = set()
+    covered_alloc_peaks: list[int] = []
+    covered_res_peaks: list[int] = []
+
+    def _add_reason(value: object, context: str) -> str:
+        require(
+            isinstance(value, str) and bool(value.strip()),
+            f"{context} reason must be a non-empty string, got {value!r}",
+        )
+        if value not in seen_reasons:
+            seen_reasons.add(value)
+            reasons.append(value)
+        return value
+
+    for idx, entry in enumerate(stages):
+        require(isinstance(entry, dict), f"telemetry stages[{idx}] must be an object")
+        stage_name = entry.get("stage")
+        require(
+            isinstance(stage_name, str) and bool(stage_name.strip()),
+            f"telemetry stages[{idx}].stage must be a non-empty string, got {stage_name!r}",
+        )
+        stage_cov = entry.get("coverage")
+        require(
+            stage_cov in TELEMETRY_STAGE_COVERAGES,
+            f"telemetry stages[{idx}].coverage invalid: {stage_cov!r}",
+        )
+
+        if "request_id" in entry and entry["request_id"] is not None:
+            stage_req_id = entry["request_id"]
+            require(
+                isinstance(stage_req_id, str) and bool(stage_req_id.strip()),
+                f"telemetry stages[{idx}].request_id must be a non-empty string",
+            )
+            if env_request_id is not None:
+                require(
+                    stage_req_id == env_request_id
+                    or stage_req_id.startswith(env_request_id + ":"),
+                    f"telemetry stages[{idx}].request_id mismatch: {stage_req_id!r} vs {env_request_id!r}",
+                )
+
+        alloc_peak = entry.get("allocated_bytes_peak")
+        res_peak = entry.get("reserved_bytes_peak")
+        alloc_final = entry.get("allocated_bytes_final")
+        res_final = entry.get("reserved_bytes_final")
+
+        stage_reason: str | None = None
+        if "reason" in entry and entry["reason"] is not None:
+            stage_reason = _add_reason(entry["reason"], f"telemetry stages[{idx}]")
+
+        if stage_cov == "NOT_COVERED":
+            require(
+                alloc_peak is None and res_peak is None,
+                f"NOT_COVERED telemetry stage {stage_name!r} must have null peaks, "
+                f"got allocated_bytes_peak={alloc_peak!r} reserved_bytes_peak={res_peak!r}",
+            )
+            require(
+                alloc_final is None and res_final is None,
+                f"NOT_COVERED telemetry stage {stage_name!r} must have null final bytes",
+            )
+        else:
+            require(
+                is_int(alloc_peak) and alloc_peak >= 0,
+                f"COVERED telemetry stage {stage_name!r} allocated_bytes_peak must be a "
+                f"non-negative integer (not bool), got {alloc_peak!r}",
+            )
+            require(
+                is_int(res_peak) and res_peak >= 0,
+                f"COVERED telemetry stage {stage_name!r} reserved_bytes_peak must be a "
+                f"non-negative integer (not bool), got {res_peak!r}",
+            )
+            if alloc_final is not None:
+                require(
+                    is_int(alloc_final) and alloc_final >= 0,
+                    f"COVERED telemetry stage {stage_name!r} allocated_bytes_final invalid: {alloc_final!r}",
+                )
+            if res_final is not None:
+                require(
+                    is_int(res_final) and res_final >= 0,
+                    f"COVERED telemetry stage {stage_name!r} reserved_bytes_final invalid: {res_final!r}",
+                )
+            covered_alloc_peaks.append(alloc_peak)
+            covered_res_peaks.append(res_peak)
+
+        summary: dict = {
+            "stage": stage_name,
+            "coverage": stage_cov,
+            "allocated_bytes_peak": alloc_peak,
+            "reserved_bytes_peak": res_peak,
+        }
+        if isinstance(entry.get("native_stage"), str) and entry["native_stage"].strip():
+            summary["native_stage"] = entry["native_stage"]
+        if isinstance(entry.get("backend"), str) and entry["backend"].strip():
+            summary["backend"] = entry["backend"]
+        if stage_reason is not None:
+            summary["reason"] = stage_reason
+        stage_summaries.append(summary)
+
+    if "reason" in envelope and envelope["reason"] is not None:
+        _add_reason(envelope["reason"], "telemetry envelope")
+
+    covered_stages = len(covered_alloc_peaks)
+    total_stages = len(stage_summaries)
+    expected_coverage = (
+        "NOT_COVERED"
+        if covered_stages == 0
+        else ("COVERED" if covered_stages == total_stages else "PARTIAL")
+    )
+    require(
+        envelope_coverage == expected_coverage,
+        f"telemetry envelope coverage {envelope_coverage!r} inconsistent with stages "
+        f"({covered_stages}/{total_stages} covered -> expected {expected_coverage!r})",
+    )
+
+    if "sample_coverage" in envelope and envelope["sample_coverage"] is not None:
+        sc = envelope["sample_coverage"]
+        require(isinstance(sc, dict), "telemetry sample_coverage must be an object")
+        if "stage_count" in sc:
+            require(
+                is_int(sc["stage_count"]) and sc["stage_count"] == total_stages,
+                f"telemetry sample_coverage.stage_count mismatch: {sc['stage_count']!r} != {total_stages}",
+            )
+        if "covered_stage_count" in sc:
+            require(
+                is_int(sc["covered_stage_count"]) and sc["covered_stage_count"] == covered_stages,
+                f"telemetry sample_coverage.covered_stage_count mismatch: "
+                f"{sc['covered_stage_count']!r} != {covered_stages}",
+            )
+
+    result = {
+        "schema_version": 1,
+        "scope": NATIVE_ALLOCATOR_SCOPE,
+        "coverage": expected_coverage,
+        "covered_stages": covered_stages,
+        "total_stages": total_stages,
+        "max_allocated_bytes_peak": max(covered_alloc_peaks) if covered_alloc_peaks else None,
+        "max_reserved_bytes_peak": max(covered_res_peaks) if covered_res_peaks else None,
+        "reasons": reasons,
+        "stages": stage_summaries,
+        "whole_device_nvml": whole_device_nvml,
+    }
+    if env_request_id is not None:
+        result["request_id"] = env_request_id
+    return result
+
+
+def aggregate_native_allocator_telemetry(summaries: list[dict]) -> dict:
+    """Aggregate validated request-native allocator telemetry summaries without mixing NVML."""
+    require(bool(summaries), "cannot aggregate empty native allocator telemetry summaries")
+    covered_stages = 0
+    total_stages = 0
+    alloc_peaks: list[int] = []
+    res_peaks: list[int] = []
+    reasons: list[str] = []
+    seen_reasons: set[str] = set()
+    all_stages: list[dict] = []
+    nvml_markers: set[str] = set()
+
+    for item in summaries:
+        covered_stages += item["covered_stages"]
+        total_stages += item["total_stages"]
+        if item["max_allocated_bytes_peak"] is not None:
+            alloc_peaks.append(item["max_allocated_bytes_peak"])
+        if item["max_reserved_bytes_peak"] is not None:
+            res_peaks.append(item["max_reserved_bytes_peak"])
+        for reason in item.get("reasons", []):
+            if reason not in seen_reasons:
+                seen_reasons.add(reason)
+                reasons.append(reason)
+        all_stages.extend(item.get("stages", []))
+        marker = item.get("whole_device_nvml")
+        if isinstance(marker, str) and marker:
+            nvml_markers.add(marker)
+
+    coverage = (
+        "NOT_COVERED"
+        if total_stages == 0 or covered_stages == 0
+        else ("COVERED" if covered_stages == total_stages else "PARTIAL")
+    )
+    return {
+        "schema_version": 1,
+        "scope": NATIVE_ALLOCATOR_SCOPE,
+        "coverage": coverage,
+        "requests": len(summaries),
+        "covered_stages": covered_stages,
+        "total_stages": total_stages,
+        "max_allocated_bytes_peak": max(alloc_peaks) if alloc_peaks else None,
+        "max_reserved_bytes_peak": max(res_peaks) if res_peaks else None,
+        "reasons": reasons,
+        "stages": all_stages,
+        "whole_device_nvml": (
+            next(iter(nvml_markers))
+            if len(nvml_markers) == 1
+            else "separate_measurement_resources"
+        ),
+    }
+
+
+def format_native_allocator_summary(summary: dict) -> str:
+    """Format a validated telemetry summary honestly (COVERED peak or N/C; never 0 B for null)."""
+    covered = summary["covered_stages"]
+    total = summary["total_stages"]
+    peak = summary["max_allocated_bytes_peak"]
+    reasons = summary.get("reasons") or []
+    if covered > 0 and peak is not None:
+        base = f"{format_telemetry_bytes(peak)} peak (covered={covered}/{total})"
+        if reasons:
+            return f"{base} [N/C: {', '.join(reasons)}]"
+        return base
+    if reasons:
+        return f"N/C ({', '.join(reasons)})"
+    return "N/C"
 
 
 def sha256_bytes(raw: bytes) -> str:
@@ -380,6 +669,7 @@ def validate_narrative_stream(
     min_slots: int = 1,
     require_audio: bool = False,
     require_mid_stream_slot: bool = False,
+    require_native_allocator_telemetry: bool = False,
 ) -> tuple[dict, list[dict], list[dict]]:
     """Validate SSE narrative stream invariants, seq monotonicity, clean prose, and SHA-256."""
     observations = stream["observations"]
@@ -643,6 +933,18 @@ def validate_narrative_stream(
         "slots": slot_reports,
         "legs": legs,
     }
+    if require_native_allocator_telemetry:
+        terminal_event = terminals[0]["event"]
+        stream_request_id = terminal_event.get("request_id")
+        if not isinstance(stream_request_id, str) or not stream_request_id.strip():
+            frame_id = terminals[0]["frame"].get("id")
+            stream_request_id = (
+                frame_id if isinstance(frame_id, str) and frame_id.strip() else None
+            )
+        metrics["native_allocator_telemetry"] = validate_native_allocator_telemetry(
+            terminal_event.get("telemetry"),
+            expected_request_id=stream_request_id,
+        )
     return metrics, visual, audio
 
 
@@ -745,6 +1047,7 @@ def run_journey_1(
     *,
     timeout: float,
     extra_headers: dict[str, str] | None = None,
+    native_allocator_telemetry: bool = False,
 ) -> tuple[dict, list[dict], dict]:
     """Journey 1: Interleaved Narrative + Global Streaming Voice."""
     body = {
@@ -760,6 +1063,8 @@ def run_journey_1(
         "video": copy.deepcopy(spec["video"]),
         "audio": copy.deepcopy(spec["audio"]),
     }
+    if native_allocator_telemetry:
+        body["telemetry"] = {"native_allocator": True}
     stream = stream_chat(base_url, body, timeout=timeout, extra_headers=extra_headers)
     metrics, visual, audio = validate_narrative_stream(
         stream,
@@ -767,6 +1072,7 @@ def run_journey_1(
         min_slots=1,
         require_audio=True,
         require_mid_stream_slot=True,
+        require_native_allocator_telemetry=native_allocator_telemetry,
     )
 
     saved_artifacts: list[dict] = []
@@ -931,6 +1237,7 @@ def run_journey_3(
     video_bytes: bytes,
     timeout: float,
     extra_headers: dict[str, str] | None = None,
+    native_allocator_telemetry: bool = False,
 ) -> dict:
     """Journey 3: 3-Turn OpenAI Multi-Turn Native Video Understanding (Prefix KV-Cache)."""
     require(
@@ -947,6 +1254,7 @@ def run_journey_3(
 
     messages: list[dict] = []
     turn_results: list[dict] = []
+    turn_telemetries: list[dict] = []
     for idx, question in enumerate(turns_prompts, start=1):
         if idx == 1:
             messages.append({
@@ -967,6 +1275,8 @@ def run_journey_3(
             "seed": spec["seed"],
             "messages": copy.deepcopy(messages),
         }
+        if native_allocator_telemetry:
+            body["telemetry"] = {"native_allocator": True}
         started = time.perf_counter()
         status, _, raw = http_request(
             base_url.rstrip("/") + "/v1/chat/completions",
@@ -988,13 +1298,23 @@ def run_journey_3(
             f"Journey 3 turn {idx} returned empty answer",
         )
         messages.append({"role": "assistant", "content": answer})
-        turn_results.append({
+        turn_record = {
             "turn": idx,
             "question": question,
             "answer": answer,
             "latency_s": round(elapsed_s, 6),
             "message_count_sent": len(body["messages"]),
-        })
+        }
+        if native_allocator_telemetry:
+            resp_id = payload.get("id")
+            expected_id = resp_id if isinstance(resp_id, str) and resp_id.strip() else None
+            turn_tel = validate_native_allocator_telemetry(
+                payload.get("telemetry"),
+                expected_request_id=expected_id,
+            )
+            turn_record["native_allocator_telemetry"] = turn_tel
+            turn_telemetries.append(turn_tel)
+        turn_results.append(turn_record)
 
     t1 = turn_results[0]["latency_s"]
     t2 = turn_results[1]["latency_s"]
@@ -1002,7 +1322,7 @@ def run_journey_3(
     t2_speedup = round(t1 / t2, 4) if t2 > 0 else None
     t3_speedup = round(t1 / t3, 4) if t3 > 0 else None
 
-    return {
+    result = {
         "passed": True,
         "temperature": spec["temperature"],
         "max_tokens": spec["max_tokens"],
@@ -1015,6 +1335,11 @@ def run_journey_3(
         "turn3_speedup_vs_turn1": t3_speedup,
         "turns": turn_results,
     }
+    if native_allocator_telemetry:
+        result["native_allocator_telemetry"] = aggregate_native_allocator_telemetry(
+            turn_telemetries
+        )
+    return result
 
 
 def run_journey_4(
@@ -1026,6 +1351,7 @@ def run_journey_4(
     timeout: float,
     strict_zero_text_slots: bool = False,
     extra_headers: dict[str, str] | None = None,
+    native_allocator_telemetry: bool = False,
 ) -> tuple[dict, list[dict]]:
     """Journey 4: Autonomous Modality Routing Contrast under visual_mode=auto."""
     shared = spec["shared_options"]
@@ -1044,6 +1370,8 @@ def run_journey_4(
             "image": copy.deepcopy(shared["image"]),
             "video": copy.deepcopy(shared["video"]),
         }
+        if native_allocator_telemetry:
+            body["telemetry"] = {"native_allocator": True}
         stream = stream_chat(base_url, body, timeout=timeout, extra_headers=extra_headers)
         metrics, visual, _ = validate_narrative_stream(
             stream,
@@ -1051,6 +1379,7 @@ def run_journey_4(
             min_slots=min_slots,
             require_audio=False,
             require_mid_stream_slot=False,
+            require_native_allocator_telemetry=native_allocator_telemetry,
         )
         slot_by_id = {slot["slot_id"]: slot for slot in metrics["slots"]}
         for item in visual:
@@ -1067,7 +1396,7 @@ def run_journey_4(
                 "bytes": len(item["bytes"]),
                 "sha256": desc["sha256"],
             })
-        return {
+        case_out = {
             "case_id": case_spec["id"],
             "prompt": case_spec["prompt"],
             "visual_slots_emitted": metrics["visual_slots_emitted"],
@@ -1080,6 +1409,9 @@ def run_journey_4(
             "prose_chars": metrics["prose_chars"],
             "slots": metrics["slots"],
         }
+        if native_allocator_telemetry:
+            case_out["native_allocator_telemetry"] = metrics["native_allocator_telemetry"]
+        return case_out
 
     pure_text = _run_case(spec["pure_text_case"], min_slots=0)
     visual_scene = _run_case(
@@ -1111,6 +1443,11 @@ def run_journey_4(
             visual_scene["visual_slots_emitted"] - pure_text["visual_slots_emitted"]
         ),
     }
+    if native_allocator_telemetry:
+        metrics["native_allocator_telemetry"] = aggregate_native_allocator_telemetry([
+            pure_text["native_allocator_telemetry"],
+            visual_scene["native_allocator_telemetry"],
+        ])
     return metrics, saved_artifacts
 
 
@@ -1118,6 +1455,7 @@ def validate_journey_5_stream(
     stream: dict,
     *,
     max_slots: int = 2,
+    require_native_allocator_telemetry: bool = False,
 ) -> tuple[dict, list[dict], list[dict]]:
     """Validate Journey 5 (storyboard_i2v_chain) SSE stream and cross-slot I2V continuity."""
     metrics, visual, audio = validate_narrative_stream(
@@ -1126,6 +1464,7 @@ def validate_journey_5_stream(
         min_slots=2,
         require_audio=True,
         require_mid_stream_slot=True,
+        require_native_allocator_telemetry=require_native_allocator_telemetry,
     )
     slots = metrics["slots"]
     require(len(slots) >= 2, f"Journey 5 requires at least 2 visual slots, got {len(slots)}")
@@ -1180,6 +1519,7 @@ def run_journey_5(
     timeout: float,
     allow_ffprobe: bool,
     extra_headers: dict[str, str] | None = None,
+    native_allocator_telemetry: bool = False,
 ) -> tuple[dict, list[dict]]:
     """Journey 5: Native Cross-Slot Storyboard I2V Chain (continuity_mode=i2v_chain)."""
     body = {
@@ -1195,10 +1535,13 @@ def run_journey_5(
         "video": copy.deepcopy(spec["video"]),
         "audio": copy.deepcopy(spec["audio"]),
     }
+    if native_allocator_telemetry:
+        body["telemetry"] = {"native_allocator": True}
     stream = stream_chat(base_url, body, timeout=timeout, extra_headers=extra_headers)
     metrics, visual, audio = validate_journey_5_stream(
         stream,
         max_slots=spec["narrative"]["max_slots"],
+        require_native_allocator_telemetry=native_allocator_telemetry,
     )
 
     saved_artifacts: list[dict] = []
@@ -1318,7 +1661,7 @@ def render_markdown_report(report: dict) -> str:
 
     if "journey_1" in journeys:
         j1 = journeys["journey_1"]
-        lines.extend([
+        j1_lines = [
             "",
             "## Journey 1: Interleaved Narrative + Global Streaming Voice",
             "",
@@ -1330,10 +1673,17 @@ def render_markdown_report(report: dict) -> str:
             f"- **Audio WAV**: `{j1['audio']['filename']}` ({j1['audio']['wav_bytes']} bytes, "
             f"{j1['audio']['sample_rate']} Hz, {j1['audio']['channels']}ch, {j1['audio']['duration_s']}s, "
             f"SHA-256 `{j1['audio']['wav_sha256']}`)",
+        ]
+        if "native_allocator_telemetry" in j1:
+            j1_lines.append(
+                f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j1['native_allocator_telemetry'])}`"
+            )
+        j1_lines.extend([
             "",
             "| Slot | Media | Slot Arrival (s) | Artifact Arrival (s) | Render Latency (s) | Bytes | SHA-256 |",
             "| --- | --- | ---: | ---: | ---: | ---: | --- |",
         ])
+        lines.extend(j1_lines)
         for slot in j1["slots"]:
             lines.append(
                 f"| `{slot['slot_id']}` | `{slot['media_type']}` | "
@@ -1358,17 +1708,24 @@ def render_markdown_report(report: dict) -> str:
 
     if "journey_3" in journeys:
         j3 = journeys["journey_3"]
-        lines.extend([
+        j3_lines = [
             "",
             "## Journey 3: 3-Turn Multi-Turn Native Video Understanding",
             "",
             f"- **Input Video**: `{j3['video_bytes']}` bytes (SHA-256 `{j3['video_sha256']}`)",
             f"- **Turn Latencies**: `t1={j3['t1_s']:.6f}s`, `t2={j3['t2_s']:.6f}s`, `t3={j3['t3_s']:.6f}s`",
             f"- **Prefix KV-Cache Speedups**: Turn 2 = `{j3['turn2_speedup_vs_turn1']}x`, Turn 3 = `{j3['turn3_speedup_vs_turn1']}x`",
+        ]
+        if "native_allocator_telemetry" in j3:
+            j3_lines.append(
+                f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j3['native_allocator_telemetry'])}`"
+            )
+        j3_lines.extend([
             "",
             "| Turn | Messages Sent | Latency (s) | Question | Answer |",
             "| ---: | ---: | ---: | --- | --- |",
         ])
+        lines.extend(j3_lines)
         for t in j3["turns"]:
             q = t["question"].replace("|", "\\|").replace("\n", " ")
             a = t["answer"].replace("|", "\\|").replace("\n", " ")
@@ -1401,10 +1758,14 @@ def render_markdown_report(report: dict) -> str:
             f"- **Visual Routing Active on Scene**: `{j4['visual_routing_active_on_scene']}`",
             f"- **Contrast Delta Slots**: `{j4['contrast_delta_slots']}`",
         ])
+        if "native_allocator_telemetry" in j4:
+            lines.append(
+                f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j4['native_allocator_telemetry'])}`"
+            )
 
     if "journey_5" in journeys:
         j5 = journeys["journey_5"]
-        lines.extend([
+        j5_lines = [
             "",
             "## Journey 5: Native Cross-Slot Storyboard I2V Chain",
             "",
@@ -1416,10 +1777,17 @@ def render_markdown_report(report: dict) -> str:
             f"- **Audio WAV**: `{j5['audio']['filename']}` ({j5['audio']['wav_bytes']} bytes, "
             f"{j5['audio']['sample_rate']} Hz, {j5['audio']['channels']}ch, {j5['audio']['duration_s']}s, "
             f"SHA-256 `{j5['audio']['wav_sha256']}`)",
+        ]
+        if "native_allocator_telemetry" in j5:
+            j5_lines.append(
+                f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j5['native_allocator_telemetry'])}`"
+            )
+        j5_lines.extend([
             "",
             "| Slot | Media | Continuity | Anchor Slot | Bytes | SHA-256 |",
             "| --- | --- | --- | ---: | ---: | --- |",
         ])
+        lines.extend(j5_lines)
         for slot in j5["slots"]:
             anchor_val = slot["anchor_slot_index"] if slot["anchor_slot_index"] is not None else "-"
             cont_val = slot["continuity_mode"] or "-"
@@ -1427,6 +1795,69 @@ def render_markdown_report(report: dict) -> str:
                 f"| `{slot['slot_id']}` | `{slot['media_type']}` | `{cont_val}` | "
                 f"{anchor_val} | {slot['bytes']} | `{slot['sha256']}` |"
             )
+
+    telemetry_rows: list[tuple[str, dict]] = []
+    if "journey_1" in journeys and "native_allocator_telemetry" in journeys["journey_1"]:
+        telemetry_rows.append(("1. Interleaved Narrative", journeys["journey_1"]["native_allocator_telemetry"]))
+    if "journey_3" in journeys and "native_allocator_telemetry" in journeys["journey_3"]:
+        telemetry_rows.append(("3. Multi-Turn Video QA (3 turns)", journeys["journey_3"]["native_allocator_telemetry"]))
+    if "journey_4" in journeys and "native_allocator_telemetry" in journeys["journey_4"]:
+        j4 = journeys["journey_4"]
+        if "native_allocator_telemetry" in j4.get("pure_text", {}):
+            telemetry_rows.append((
+                f"4a. Routing Contrast Pure-Text (`{j4['pure_text']['case_id']}`)",
+                j4["pure_text"]["native_allocator_telemetry"],
+            ))
+        if "native_allocator_telemetry" in j4.get("visual_scene", {}):
+            telemetry_rows.append((
+                f"4b. Routing Contrast Visual Scene (`{j4['visual_scene']['case_id']}`)",
+                j4["visual_scene"]["native_allocator_telemetry"],
+            ))
+    if "journey_5" in journeys and "native_allocator_telemetry" in journeys["journey_5"]:
+        telemetry_rows.append(("5. Storyboard I2V Chain", journeys["journey_5"]["native_allocator_telemetry"]))
+
+    if telemetry_rows or "native_allocator_telemetry" in report:
+        top_tel = report.get("native_allocator_telemetry")
+        nvml_marker = (
+            top_tel.get("whole_device_nvml", "separate_measurement_resources")
+            if isinstance(top_tel, dict)
+            else "separate_measurement_resources"
+        )
+        lines.extend([
+            "",
+            "## Native Allocator Telemetry",
+            "",
+            f"- **Scope**: `{NATIVE_ALLOCATOR_SCOPE}` (`whole_device_nvml`: `{nvml_marker}`)",
+        ])
+        if isinstance(top_tel, dict) and top_tel.get("total_stages", 0) > 0:
+            lines.append(
+                f"- **Overall**: `{format_native_allocator_summary(top_tel)}`"
+            )
+        if telemetry_rows:
+            lines.extend([
+                "",
+                "| Journey / Case | Coverage | Stages | Peak Allocated | Peak Reserved | Reasons |",
+                "| --- | --- | ---: | ---: | ---: | --- |",
+            ])
+            for label, tel in telemetry_rows:
+                alloc_peak = tel["max_allocated_bytes_peak"]
+                res_peak = tel["max_reserved_bytes_peak"]
+                alloc_cell = (
+                    f"{format_telemetry_bytes(alloc_peak)} ({alloc_peak} B)"
+                    if alloc_peak is not None
+                    else "N/C"
+                )
+                res_cell = (
+                    f"{format_telemetry_bytes(res_peak)} ({res_peak} B)"
+                    if res_peak is not None
+                    else "N/C"
+                )
+                reasons_cell = ", ".join(tel.get("reasons") or []) or "-"
+                lines.append(
+                    f"| {label} | `{tel['coverage']}` | "
+                    f"{tel['covered_stages']}/{tel['total_stages']} | "
+                    f"{alloc_cell} | {res_cell} | {reasons_cell} |"
+                )
 
     lines.extend([
         "",
@@ -1550,6 +1981,101 @@ def _mock_artifact_frames(
     return frames
 
 
+def _mock_telemetry_stage(
+    stage: str,
+    *,
+    request_id: str,
+    coverage: str = "COVERED",
+    peak_bytes: int | None = None,
+    epoch_id: int = 1,
+    reason: str | None = None,
+) -> dict:
+    native_map = {
+        "vlm": ("qwen38", "qwen38"),
+        "image": ("wan22", "wan22"),
+        "video": ("wan22", "wan22"),
+        "tts": ("cosyvoice", "cosyvoice"),
+    }
+    native_stage, backend = native_map.get(stage, (stage, stage))
+    if coverage == "NOT_COVERED":
+        return {
+            "schema_version": 1,
+            "coverage": "NOT_COVERED",
+            "scope": "request-native-cuda-runtime",
+            "request_id": request_id,
+            "stage": stage,
+            "native_stage": native_stage,
+            "backend": backend,
+            "device_index": None,
+            "lifecycle_status": "completed",
+            "execution": {"mode": "unknown", "batch_capacity": None},
+            "epoch": {"id": None, "reset": False, "semantics": "no_request_epoch"},
+            "allocated_bytes_peak": None,
+            "reserved_bytes_peak": None,
+            "allocated_bytes_final": None,
+            "reserved_bytes_final": None,
+            "sample_coverage": {
+                "allocation_events": 0,
+                "free_events": 0,
+                "terminal_snapshots": 0,
+            },
+            "reason": reason or "backend_not_instrumented",
+        }
+    peak = 134217728 if peak_bytes is None else peak_bytes
+    return {
+        "schema_version": 1,
+        "coverage": "COVERED",
+        "scope": "request-native-cuda-runtime",
+        "request_id": request_id,
+        "stage": stage,
+        "native_stage": native_stage,
+        "backend": backend,
+        "device_index": 0,
+        "lifecycle_status": "completed",
+        "execution": {"mode": "serial", "batch_capacity": 1},
+        "epoch": {
+            "id": epoch_id,
+            "reset": True,
+            "semantics": "new_allocation_ownership_epoch",
+        },
+        "allocated_bytes_peak": peak,
+        "reserved_bytes_peak": peak,
+        "allocated_bytes_final": 0,
+        "reserved_bytes_final": 0,
+        "sample_coverage": {
+            "allocation_events": 4,
+            "free_events": 4,
+            "terminal_snapshots": 1,
+        },
+    }
+
+
+def _mock_telemetry_envelope(
+    request_id: str,
+    stages: list[dict],
+) -> dict:
+    covered = sum(1 for item in stages if item.get("coverage") == "COVERED")
+    coverage = (
+        "NOT_COVERED"
+        if not stages or covered == 0
+        else ("COVERED" if covered == len(stages) else "PARTIAL")
+    )
+    return {
+        "schema_version": 1,
+        "coverage": coverage,
+        "scope": NATIVE_ALLOCATOR_SCOPE,
+        "request_id": request_id,
+        "lifecycle_status": "completed",
+        "sample_coverage": {
+            "stage_count": len(stages),
+            "covered_stage_count": covered,
+            "truncated": False,
+        },
+        "stages": stages,
+        "whole_device_nvml": "separate_measurement_resources",
+    }
+
+
 class _MockShowcaseHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -1634,6 +2160,39 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
         time.sleep(0.015)
         self._reply(200, MOCK_MP4_J2, "video/mp4", "video")
 
+    def _parse_telemetry_request(self, req: dict) -> bool | None:
+        if "telemetry" not in req or req["telemetry"] is None:
+            return False
+        tel = req["telemetry"]
+        if not isinstance(tel, dict):
+            self._error("telemetry must be an object")
+            return None
+        extra_keys = set(tel) - {"native_allocator"}
+        if extra_keys:
+            self._error(f"unsupported telemetry field: {sorted(extra_keys)[0]}")
+            return None
+        val = tel.get("native_allocator")
+        if not isinstance(val, bool):
+            self._error("telemetry.native_allocator must be a boolean")
+            return None
+        return val
+
+    def _build_mock_telemetry(self, req: dict, request_id: str, stage_specs: list[tuple[str, int]]) -> dict | None:
+        factory = getattr(self.server, "telemetry_factory", None)
+        if factory is not None:
+            return factory(req, request_id, stage_specs)
+        stages = [
+            _mock_telemetry_stage(
+                stage_name,
+                request_id=request_id,
+                coverage="COVERED",
+                peak_bytes=peak_bytes,
+                epoch_id=idx,
+            )
+            for idx, (stage_name, peak_bytes) in enumerate(stage_specs, start=1)
+        ]
+        return _mock_telemetry_envelope(request_id, stages)
+
     def _handle_chat(self, raw: bytes) -> None:
         req = json.loads(raw)
         self.server.chat_requests.append(req)
@@ -1641,12 +2200,15 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
         if not isinstance(messages, list) or not messages:
             self._error("messages must be non-empty")
             return
+        telemetry_requested = self._parse_telemetry_request(req)
+        if telemetry_requested is None:
+            return
         if req.get("stream"):
-            self._handle_narrative_stream(req)
+            self._handle_narrative_stream(req, telemetry_requested=telemetry_requested)
         else:
-            self._handle_multiturn_video(req)
+            self._handle_multiturn_video(req, telemetry_requested=telemetry_requested)
 
-    def _handle_narrative_stream(self, req: dict) -> None:
+    def _handle_narrative_stream(self, req: dict, *, telemetry_requested: bool = False) -> None:
         narrative = req.get("narrative") or {}
         if not narrative.get("enabled"):
             self._error("expected narrative.enabled=true for streaming showcase request")
@@ -1671,8 +2233,17 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
             seq += 1
             events.append(_mock_envelope(seq, "vlm_delta", part2))
             seq += 1
+            complete_extra: dict = {}
+            if telemetry_requested:
+                tel = self._build_mock_telemetry(
+                    req,
+                    "showcase-mock-1",
+                    [("vlm", 134217728)],
+                )
+                if tel is not None:
+                    complete_extra["telemetry"] = tel
             events.append(
-                _mock_envelope(seq, "complete", part1 + part2, finish="stop", legs=[])
+                _mock_envelope(seq, "complete", part1 + part2, finish="stop", legs=[], **complete_extra)
             )
         else:
             is_i2v_chain = narrative.get("continuity_mode") == "i2v_chain"
@@ -1770,8 +2341,20 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
             ]
             if want_audio:
                 legs.append({"stage": "tts", "state": "completed"})
+            complete_extra = {}
+            if telemetry_requested:
+                stage_specs = [
+                    ("vlm", 268435456),
+                    ("image", 201326592),
+                    ("video", 335544320 if is_i2v_chain else 301989888),
+                ]
+                if want_audio:
+                    stage_specs.append(("tts", 67108864))
+                tel = self._build_mock_telemetry(req, "showcase-mock-1", stage_specs)
+                if tel is not None:
+                    complete_extra["telemetry"] = tel
             events.append(
-                _mock_envelope(seq, "complete", part1 + part2, finish="stop", legs=legs)
+                _mock_envelope(seq, "complete", part1 + part2, finish="stop", legs=legs, **complete_extra)
             )
 
         self.send_response(200)
@@ -1788,7 +2371,7 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
         self.close_connection = True
 
-    def _handle_multiturn_video(self, req: dict) -> None:
+    def _handle_multiturn_video(self, req: dict, *, telemetry_requested: bool = False) -> None:
         messages = req["messages"]
         video_parts = 0
         for idx, msg in enumerate(messages):
@@ -1841,6 +2424,14 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
                 "finish_reason": "stop",
             }],
         }
+        if telemetry_requested:
+            tel = self._build_mock_telemetry(
+                req,
+                body["id"],
+                [("vlm", 234881024 if turn_num == 1 else 167772160)],
+            )
+            if tel is not None:
+                body["telemetry"] = tel
         self._reply(200, json.dumps(body).encode("utf-8"))
 
 
@@ -1882,6 +2473,7 @@ def execute_showcase(
     video_path: Path | None = None,
     extra_headers: dict[str, str] | None = None,
     sanitized_server_url: str | None = None,
+    native_allocator_telemetry: bool = False,
 ) -> tuple[dict, dict[str, Path]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     health = check_health(base_url, extra_headers=extra_headers)
@@ -1900,6 +2492,7 @@ def execute_showcase(
             out_dir,
             timeout=timeout,
             extra_headers=extra_headers,
+            native_allocator_telemetry=native_allocator_telemetry,
         )
         results["journey_1"] = j1_metrics
         all_artifacts.extend(j1_arts)
@@ -1946,6 +2539,7 @@ def execute_showcase(
             video_bytes=vid_bytes,
             timeout=timeout,
             extra_headers=extra_headers,
+            native_allocator_telemetry=native_allocator_telemetry,
         )
         results["journey_3"] = j3_metrics
 
@@ -1958,6 +2552,7 @@ def execute_showcase(
             timeout=timeout,
             strict_zero_text_slots=strict_zero_text_slots,
             extra_headers=extra_headers,
+            native_allocator_telemetry=native_allocator_telemetry,
         )
         results["journey_4"] = j4_metrics
         all_artifacts.extend(j4_arts)
@@ -1971,6 +2566,7 @@ def execute_showcase(
             timeout=timeout,
             allow_ffprobe=allow_ffprobe,
             extra_headers=extra_headers,
+            native_allocator_telemetry=native_allocator_telemetry,
         )
         results["journey_5"] = j5_metrics
         all_artifacts.extend(j5_arts)
@@ -1996,6 +2592,31 @@ def execute_showcase(
             "verified_artifacts": len(all_artifacts),
         },
     }
+    if native_allocator_telemetry:
+        chat_summaries = [
+            results[key]["native_allocator_telemetry"]
+            for key in ("journey_1", "journey_3", "journey_4", "journey_5")
+            if key in results and "native_allocator_telemetry" in results[key]
+        ]
+        if chat_summaries:
+            agg = aggregate_native_allocator_telemetry(chat_summaries)
+            agg["enabled"] = True
+            report["native_allocator_telemetry"] = agg
+        else:
+            report["native_allocator_telemetry"] = {
+                "enabled": True,
+                "schema_version": 1,
+                "scope": NATIVE_ALLOCATOR_SCOPE,
+                "coverage": "NOT_COVERED",
+                "requests": 0,
+                "covered_stages": 0,
+                "total_stages": 0,
+                "max_allocated_bytes_peak": None,
+                "max_reserved_bytes_peak": None,
+                "reasons": [],
+                "stages": [],
+                "whole_device_nvml": "separate_measurement_resources",
+            }
     report_paths = write_reports(out_dir, report)
     return report, report_paths
 
@@ -2022,12 +2643,16 @@ def run_self_check(
     manifest_path: Path,
     out_dir: Path | None = None,
     journeys: list[int] | None = None,
+    *,
+    native_allocator_telemetry: bool = False,
+    telemetry_factory=None,
 ) -> dict:
     manifest = load_manifest(manifest_path)
     selected_journeys = list(ALL_JOURNEYS) if journeys is None else list(journeys)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _MockShowcaseHandler)
     server.chat_requests = []
     server.render_requests = []
+    server.telemetry_factory = telemetry_factory
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
@@ -2053,6 +2678,7 @@ def run_self_check(
             allow_ffprobe=False,
             strict_zero_text_slots=True,
             sanitized_server_url="http://127.0.0.1:0 (offline-self-check)",
+            native_allocator_telemetry=native_allocator_telemetry,
         )
         verified_count = verify_sha256sums_file(work_dir, paths["sha256sums"])
         require(report["evidence_class"] == "OFFLINE_SELF_CHECK", "wrong self-check evidence_class")
@@ -2092,6 +2718,22 @@ def run_self_check(
                 f"expected {expected_renders} /v1/visual/render request(s), got {len(server.render_requests)}")
         require(len(server.chat_requests) == expected_chats,
                 f"expected {expected_chats} /v1/chat/completions request(s), got {len(server.chat_requests)}")
+        for req in server.render_requests:
+            require(
+                "telemetry" not in req,
+                f"/v1/visual/render must never include telemetry: {req}",
+            )
+        for req in server.chat_requests:
+            if native_allocator_telemetry:
+                require(
+                    req.get("telemetry") == {"native_allocator": True},
+                    f"/v1/chat/completions missing opt-in telemetry: {req}",
+                )
+            else:
+                require(
+                    "telemetry" not in req,
+                    f"/v1/chat/completions must omit telemetry by default: {req}",
+                )
 
         print(
             "SELF-CHECK PASS [OFFLINE_SELF_CHECK | REAL_MODEL: NOT_RUN]: "
@@ -2178,13 +2820,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Fail live Journey 4 if the pure-text prompt emits any visual slot",
     )
+    parser.add_argument(
+        "--native-allocator-telemetry",
+        action="store_true",
+        help=(
+            "Opt-in: send telemetry.native_allocator=true on /v1/chat/completions "
+            "requests and strictly validate/report request-native allocator telemetry"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.self_check:
         if args.url:
             parser.error("--self-check and --url are mutually exclusive")
         journeys = parse_journeys(args.journeys)
-        run_self_check(args.manifest, out_dir=args.out_dir, journeys=journeys)
+        run_self_check(
+            args.manifest,
+            out_dir=args.out_dir,
+            journeys=journeys,
+            native_allocator_telemetry=args.native_allocator_telemetry,
+        )
         return 0
 
     if not args.url:
@@ -2212,6 +2867,7 @@ def main(argv: list[str] | None = None) -> int:
         image_path=args.image_path,
         video_path=args.video_path,
         extra_headers=extra_headers,
+        native_allocator_telemetry=args.native_allocator_telemetry,
     )
     verified = verify_sha256sums_file(args.out_dir, paths["sha256sums"])
     print(

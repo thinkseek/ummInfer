@@ -520,6 +520,284 @@ class ShowcaseSuiteTest(unittest.TestCase):
             listed_names = [line.split("  ", 1)[1] for line in sums_a.strip().splitlines()]
             self.assertEqual(listed_names, sorted(listed_names))
 
+            # Default OFF must not inject telemetry keys or Native Allocator Telemetry markdown
+            self.assertNotIn("native_allocator_telemetry", report)
+            for jkey in ("journey_1", "journey_2", "journey_3", "journey_4", "journey_5"):
+                self.assertNotIn("native_allocator_telemetry", report["journeys"][jkey])
+            self.assertNotIn("## Native Allocator Telemetry", md_a)
+
+    def test_native_allocator_telemetry_opt_in_cli_covered(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="showcase-tel-covered-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--native-allocator-telemetry",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("SELF-CHECK PASS", proc.stdout)
+
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            verified = showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS")
+            self.assertGreaterEqual(verified, 11)
+
+            top_tel = report["native_allocator_telemetry"]
+            self.assertTrue(top_tel["enabled"])
+            self.assertEqual(top_tel["scope"], "request-native-allocator")
+            self.assertEqual(top_tel["coverage"], "COVERED")
+            self.assertEqual(top_tel["covered_stages"], top_tel["total_stages"])
+            self.assertGreater(top_tel["total_stages"], 0)
+            self.assertEqual(top_tel["max_allocated_bytes_peak"], 335544320)
+            self.assertEqual(top_tel["max_reserved_bytes_peak"], 335544320)
+            self.assertEqual(top_tel["reasons"], [])
+            self.assertEqual(top_tel["whole_device_nvml"], "separate_measurement_resources")
+
+            # Journey 1, 3, 4, 5 carry validated native_allocator_telemetry; Journey 2 does not.
+            j1_tel = report["journeys"]["journey_1"]["native_allocator_telemetry"]
+            self.assertEqual(j1_tel["coverage"], "COVERED")
+            self.assertEqual(j1_tel["covered_stages"], 4)
+            self.assertEqual(j1_tel["total_stages"], 4)
+            self.assertEqual(j1_tel["max_allocated_bytes_peak"], 301989888)
+            self.assertEqual(j1_tel["whole_device_nvml"], "separate_measurement_resources")
+
+            self.assertNotIn("native_allocator_telemetry", report["journeys"]["journey_2"])
+
+            j3 = report["journeys"]["journey_3"]
+            self.assertEqual(j3["native_allocator_telemetry"]["coverage"], "COVERED")
+            self.assertEqual(j3["native_allocator_telemetry"]["requests"], 3)
+            self.assertEqual(j3["native_allocator_telemetry"]["max_allocated_bytes_peak"], 234881024)
+            for turn in j3["turns"]:
+                self.assertEqual(turn["native_allocator_telemetry"]["coverage"], "COVERED")
+                self.assertEqual(
+                    turn["native_allocator_telemetry"]["request_id"],
+                    f"showcase-video-t{turn['turn']}",
+                )
+
+            j4 = report["journeys"]["journey_4"]
+            self.assertEqual(j4["pure_text"]["native_allocator_telemetry"]["max_allocated_bytes_peak"], 134217728)
+            self.assertEqual(j4["visual_scene"]["native_allocator_telemetry"]["max_allocated_bytes_peak"], 301989888)
+            self.assertEqual(j4["native_allocator_telemetry"]["max_allocated_bytes_peak"], 301989888)
+
+            j5_tel = report["journeys"]["journey_5"]["native_allocator_telemetry"]
+            self.assertEqual(j5_tel["coverage"], "COVERED")
+            self.assertEqual(j5_tel["max_allocated_bytes_peak"], 335544320)
+
+            self.assertIn("## Native Allocator Telemetry", md_text)
+            self.assertIn("320.0 MiB peak", md_text)
+            self.assertIn("288.0 MiB (301989888 B)", md_text)
+            self.assertIn("128.0 MiB (134217728 B)", md_text)
+            self.assertIn("separate_measurement_resources", md_text)
+
+    def test_native_allocator_telemetry_honest_not_covered_and_partial(self) -> None:
+        def _not_covered_factory(_req, request_id, stage_specs):
+            stages = [
+                showcase._mock_telemetry_stage(
+                    stage_name,
+                    request_id=request_id,
+                    coverage="NOT_COVERED",
+                    reason="batched_request_attribution_unavailable",
+                )
+                for stage_name, _ in stage_specs
+            ]
+            return showcase._mock_telemetry_envelope(request_id, stages)
+
+        with tempfile.TemporaryDirectory(prefix="showcase-tel-nc-") as tmp:
+            out_dir = Path(tmp)
+            report = showcase.run_self_check(
+                MANIFEST_PATH,
+                out_dir=out_dir,
+                native_allocator_telemetry=True,
+                telemetry_factory=_not_covered_factory,
+            )
+            top_tel = report["native_allocator_telemetry"]
+            self.assertEqual(top_tel["coverage"], "NOT_COVERED")
+            self.assertEqual(top_tel["covered_stages"], 0)
+            self.assertGreater(top_tel["total_stages"], 0)
+            self.assertIsNone(top_tel["max_allocated_bytes_peak"])
+            self.assertIsNone(top_tel["max_reserved_bytes_peak"])
+            self.assertEqual(top_tel["reasons"], ["batched_request_attribution_unavailable"])
+            for jkey in ("journey_1", "journey_3", "journey_4", "journey_5"):
+                jtel = report["journeys"][jkey]["native_allocator_telemetry"]
+                self.assertEqual(jtel["coverage"], "NOT_COVERED")
+                self.assertIsNone(jtel["max_allocated_bytes_peak"])
+                self.assertIsNone(jtel["max_reserved_bytes_peak"])
+                for stage in jtel["stages"]:
+                    self.assertIsNone(stage["allocated_bytes_peak"])
+                    self.assertIsNone(stage["reserved_bytes_peak"])
+
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Native Allocator Telemetry", md_text)
+            self.assertIn("N/C (batched_request_attribution_unavailable)", md_text)
+            self.assertNotIn("0 B", md_text)
+            self.assertNotIn("0.0 MiB", md_text)
+
+        # Partial coverage: vlm COVERED + tts NOT_COVERED
+        partial_env = showcase._mock_telemetry_envelope(
+            "showcase-mock-1",
+            [
+                showcase._mock_telemetry_stage(
+                    "vlm", request_id="showcase-mock-1", coverage="COVERED", peak_bytes=268435456
+                ),
+                showcase._mock_telemetry_stage(
+                    "tts",
+                    request_id="showcase-mock-1",
+                    coverage="NOT_COVERED",
+                    reason="backend_not_instrumented",
+                ),
+            ],
+        )
+        summary = showcase.validate_native_allocator_telemetry(
+            partial_env, expected_request_id="showcase-mock-1"
+        )
+        self.assertEqual(summary["coverage"], "PARTIAL")
+        self.assertEqual(summary["covered_stages"], 1)
+        self.assertEqual(summary["total_stages"], 2)
+        self.assertEqual(summary["max_allocated_bytes_peak"], 268435456)
+        self.assertEqual(summary["reasons"], ["backend_not_instrumented"])
+        self.assertEqual(
+            showcase.format_native_allocator_summary(summary),
+            "256.0 MiB peak (covered=1/2) [N/C: backend_not_instrumented]",
+        )
+
+    def test_native_allocator_telemetry_fails_closed_on_malformed_envelopes(self) -> None:
+        base_stream = self._sample_stream()
+        valid_env = showcase._mock_telemetry_envelope(
+            "showcase-mock-1",
+            [
+                showcase._mock_telemetry_stage(
+                    "vlm", request_id="showcase-mock-1", coverage="COVERED", peak_bytes=134217728
+                )
+            ],
+        )
+
+        # 1. Missing telemetry when required fails closed
+        with self.assertRaisesRegex(AssertionError, "telemetry"):
+            showcase.validate_narrative_stream(
+                base_stream,
+                require_audio=True,
+                require_mid_stream_slot=True,
+                require_native_allocator_telemetry=True,
+            )
+
+        # Baseline valid telemetry passes
+        ok_stream = copy.deepcopy(base_stream)
+        ok_stream["observations"][-1]["event"]["telemetry"] = copy.deepcopy(valid_env)
+        metrics, _, _ = showcase.validate_narrative_stream(
+            ok_stream,
+            require_audio=True,
+            require_mid_stream_slot=True,
+            require_native_allocator_telemetry=True,
+        )
+        self.assertEqual(metrics["native_allocator_telemetry"]["max_allocated_bytes_peak"], 134217728)
+
+        # 2. Boolean peak rejected (allocated_bytes_peak=True / reserved_bytes_peak=False)
+        for field, bad_val in (
+            ("allocated_bytes_peak", True),
+            ("allocated_bytes_peak", False),
+            ("reserved_bytes_peak", True),
+        ):
+            bad_env = copy.deepcopy(valid_env)
+            bad_env["stages"][0][field] = bad_val
+            with self.assertRaisesRegex(AssertionError, "not bool"):
+                showcase.validate_native_allocator_telemetry(bad_env, expected_request_id="showcase-mock-1")
+
+        # 3. Negative peak rejected
+        for field in ("allocated_bytes_peak", "reserved_bytes_peak"):
+            bad_env = copy.deepcopy(valid_env)
+            bad_env["stages"][0][field] = -1
+            with self.assertRaisesRegex(AssertionError, "non-negative integer"):
+                showcase.validate_native_allocator_telemetry(bad_env, expected_request_id="showcase-mock-1")
+
+        # 4. request_id mismatch rejected on stream and envelope
+        mismatch_stream = copy.deepcopy(ok_stream)
+        mismatch_stream["observations"][-1]["event"]["telemetry"]["request_id"] = "other-req-999"
+        with self.assertRaisesRegex(AssertionError, "request_id mismatch"):
+            showcase.validate_narrative_stream(
+                mismatch_stream,
+                require_audio=True,
+                require_mid_stream_slot=True,
+                require_native_allocator_telemetry=True,
+            )
+
+        # 5. NOT_COVERED with fabricated 0 peak rejected (never coerce None -> 0)
+        nc_zero = showcase._mock_telemetry_envelope(
+            "showcase-mock-1",
+            [
+                showcase._mock_telemetry_stage(
+                    "vlm", request_id="showcase-mock-1", coverage="NOT_COVERED", reason="backend_not_instrumented"
+                )
+            ],
+        )
+        nc_zero["stages"][0]["allocated_bytes_peak"] = 0
+        with self.assertRaisesRegex(AssertionError, "null peaks"):
+            showcase.validate_native_allocator_telemetry(nc_zero, expected_request_id="showcase-mock-1")
+
+        # 6. COVERED with null peak rejected
+        cov_null = copy.deepcopy(valid_env)
+        cov_null["stages"][0]["allocated_bytes_peak"] = None
+        with self.assertRaisesRegex(AssertionError, "non-negative integer"):
+            showcase.validate_native_allocator_telemetry(cov_null, expected_request_id="showcase-mock-1")
+
+        # 7. Boolean schema_version, empty stages, wrong scope, invalid coverage, non-string NVML marker
+        bad_schema = copy.deepcopy(valid_env)
+        bad_schema["schema_version"] = True
+        with self.assertRaisesRegex(AssertionError, "schema_version"):
+            showcase.validate_native_allocator_telemetry(bad_schema)
+
+        empty_stages = copy.deepcopy(valid_env)
+        empty_stages["stages"] = []
+        with self.assertRaisesRegex(AssertionError, "non-empty list"):
+            showcase.validate_native_allocator_telemetry(empty_stages)
+
+        bad_scope = copy.deepcopy(valid_env)
+        bad_scope["scope"] = "whole-device-nvml"
+        with self.assertRaisesRegex(AssertionError, "scope"):
+            showcase.validate_native_allocator_telemetry(bad_scope)
+
+        bad_nvml = copy.deepcopy(valid_env)
+        bad_nvml["whole_device_nvml"] = {"used_bytes": 12345}
+        with self.assertRaisesRegex(AssertionError, "whole_device_nvml"):
+            showcase.validate_native_allocator_telemetry(bad_nvml)
+
+        # 8. End-to-end loopback fail-closed when server omits telemetry on opt-in request
+        with self.assertRaisesRegex(AssertionError, "telemetry"):
+            showcase.run_self_check(
+                MANIFEST_PATH,
+                journeys=[1],
+                native_allocator_telemetry=True,
+                telemetry_factory=lambda _req, _rid, _specs: None,
+            )
+
+        # 9. End-to-end loopback fail-closed on Journey 3 non-stream request_id mismatch
+        def _j3_mismatch_factory(req, request_id, stage_specs):
+            effective_id = request_id + "-wrong" if not req.get("stream") else request_id
+            stages = [
+                showcase._mock_telemetry_stage(
+                    stage_name, request_id=effective_id, coverage="COVERED", peak_bytes=peak
+                )
+                for stage_name, peak in stage_specs
+            ]
+            return showcase._mock_telemetry_envelope(effective_id, stages)
+
+        with self.assertRaisesRegex(AssertionError, "request_id mismatch"):
+            showcase.run_self_check(
+                MANIFEST_PATH,
+                journeys=[1, 2, 3],
+                native_allocator_telemetry=True,
+                telemetry_factory=_j3_mismatch_factory,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
