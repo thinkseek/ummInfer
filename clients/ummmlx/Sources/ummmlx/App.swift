@@ -319,6 +319,10 @@ struct RootView: View {
                             .disabled(!model.narrativeMode || model.isRunning || model.isLiveVoiceActive)
                             .help("Optional cross-slot style cue (max 256 UTF-8 bytes)")
                             .accessibilityIdentifier("narrativeStyleAnchor")
+                        Toggle("Native VRAM telemetry", isOn: $model.nativeAllocatorTelemetry)
+                            .toggleStyle(.checkbox)
+                            .help("Opt in to per-request native CUDA allocator peak telemetry (telemetry.native_allocator=true); omitted when off")
+                            .accessibilityIdentifier("nativeAllocatorTelemetry")
                     }
                 }
                 .padding(.top, 4)
@@ -535,7 +539,7 @@ struct RootView: View {
         HStack(spacing: 6) {
             ForEach(pills) { pill in
                 let isAccent = pill.kind == .i2v
-                Text(pill.label)
+                let pillView = Text(pill.label)
                     .font(.system(size: 11, weight: isAccent ? .semibold : .regular, design: .monospaced))
                     .foregroundStyle(isAccent ? theme.accent : theme.secondary)
                     .padding(.horizontal, 8)
@@ -545,6 +549,11 @@ struct RootView: View {
                     .overlay(Capsule().stroke(isAccent ? theme.accent.opacity(0.4) : theme.line))
                     .fixedSize(horizontal: true, vertical: false)
                     .accessibilityIdentifier("telemetry-pill-\(pill.kind.rawValue)")
+                if let helpText = pill.help {
+                    pillView.help(helpText)
+                } else {
+                    pillView
+                }
             }
         }
         .padding(.top, 2)

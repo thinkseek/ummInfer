@@ -481,6 +481,7 @@
       </select></label>
       <label title="Temporal motion score threshold in [0,1]">Motion ≥<input id="videoMotionThreshold" type="number" min="0" max="1" step="0.01" value="0.02" style="width:68px" disabled></label>
       <label title="Temporal scene-change score threshold in [0,1]">Scene ≥<input id="videoSceneThreshold" type="number" min="0" max="1" step="0.01" value="0.25" style="width:68px" disabled></label>
+      <label class="check" title="Opt in to per-request native CUDA allocator peak telemetry (telemetry.native_allocator=true); omitted when off"><input type="checkbox" id="nativeAllocatorTelemetry"> Native VRAM telemetry</label>
     </div>
   </details>
 </section>
@@ -556,6 +557,7 @@ const ui = {
   videoFrames: $('videoFrames'), videoSteps: $('videoSteps'),
   videoGuidance: $('videoGuidance'), videoFramePolicy: $('videoFramePolicy'),
   videoMotionThreshold: $('videoMotionThreshold'), videoSceneThreshold: $('videoSceneThreshold'),
+  nativeAllocatorTelemetry: $('nativeAllocatorTelemetry'),
   advanced: $('advanced'),
   transcript: $('transcript'), emptyState: $('emptyState'), showcasePresets: $('showcasePresets'),
   error: $('error'),
@@ -623,6 +625,7 @@ ui.video.checked = localStorage.getItem('ummweb.video') === '1';
 ui.narrative.checked = localStorage.getItem('ummweb.narrative') !== '0';
 ui.allowTextOnly.checked = localStorage.getItem('ummweb.allowTextOnly') !== '0';
 ui.fastVideo.checked = localStorage.getItem('ummweb.fastVideo') === '1';
+ui.nativeAllocatorTelemetry.checked = localStorage.getItem('ummweb.nativeAllocatorTelemetry') === '1';
 ui.realtimeEchoSuppression.checked = localStorage.getItem('ummweb.echoSuppression') !== '0';
 const saveSettings = () => {
   for (const key of SETTINGS) localStorage.setItem('ummweb.' + key, ui[key].value);
@@ -632,6 +635,7 @@ const saveSettings = () => {
   localStorage.setItem('ummweb.narrative', ui.narrative.checked ? '1' : '0');
   localStorage.setItem('ummweb.allowTextOnly', ui.allowTextOnly.checked ? '1' : '0');
   localStorage.setItem('ummweb.fastVideo', ui.fastVideo.checked ? '1' : '0');
+  localStorage.setItem('ummweb.nativeAllocatorTelemetry', ui.nativeAllocatorTelemetry.checked ? '1' : '0');
   localStorage.setItem('ummweb.echoSuppression', ui.realtimeEchoSuppression.checked ? '1' : '0');
 };
 
@@ -1047,6 +1051,102 @@ function formatTelemetryDuration(ms) {
   return `${(ms / 1000).toFixed(2)} s`;
 }
 
+function formatAllocatorBytes(bytes) {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return null;
+  const KiB = 1024;
+  const MiB = 1024 * 1024;
+  const GiB = 1024 * 1024 * 1024;
+  const fmt = (val, unit) => {
+    const rounded = Math.round(val * 10) / 10;
+    const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+    return `${text} ${unit}`;
+  };
+  if (bytes >= GiB) return fmt(bytes / GiB, 'GiB');
+  if (bytes >= MiB) return fmt(bytes / MiB, 'MiB');
+  if (bytes >= KiB) return fmt(bytes / KiB, 'KiB');
+  return `${Math.round(bytes)} B`;
+}
+
+function applyNativeAllocatorTelemetryOption(body, enabled) {
+  if (enabled === true) {
+    body.telemetry = { native_allocator: true };
+  }
+  return body;
+}
+
+function extractNativeAllocatorTelemetry(root) {
+  if (!root || typeof root !== 'object') return null;
+  const candidate = (root.unified && typeof root.unified === 'object' &&
+                     root.unified.telemetry != null)
+    ? root.unified.telemetry
+    : root.telemetry;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+  if (!Array.isArray(candidate.stages) && typeof candidate.coverage !== 'string') return null;
+  return candidate;
+}
+
+function summarizeNativeAllocatorTelemetry(envelope) {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return null;
+  const stages = Array.isArray(envelope.stages) ? envelope.stages : [];
+  let coveredCount = 0;
+  let peakBytes = null;
+  const detailLines = [];
+  for (const entry of stages) {
+    if (!entry || typeof entry !== 'object') continue;
+    const stage = typeof entry.stage === 'string' && entry.stage ? entry.stage : '';
+    const nativeStage = typeof entry.native_stage === 'string' &&
+                        entry.native_stage && entry.native_stage !== 'unknown'
+      ? entry.native_stage : '';
+    const stageName = (stage && nativeStage && nativeStage !== stage)
+      ? `${stage}/${nativeStage}`
+      : (nativeStage || stage || 'stage');
+    const rawPeak = entry.allocated_bytes_peak;
+    const validPeak = entry.coverage === 'COVERED' &&
+                      typeof rawPeak === 'number' &&
+                      Number.isFinite(rawPeak) &&
+                      rawPeak >= 0;
+    if (validPeak) {
+      coveredCount += 1;
+      peakBytes = peakBytes === null ? rawPeak : Math.max(peakBytes, rawPeak);
+      const formattedPeak = formatAllocatorBytes(rawPeak);
+      const epochId = entry.epoch && typeof entry.epoch === 'object' &&
+                      typeof entry.epoch.id === 'number' &&
+                      Number.isSafeInteger(entry.epoch.id) && entry.epoch.id > 0
+        ? entry.epoch.id : null;
+      const epochSuffix = epochId !== null ? ` · epoch #${epochId}` : '';
+      detailLines.push(`${stageName}: COVERED · peak ${formattedPeak}${epochSuffix}`);
+    } else {
+      const reason = typeof entry.reason === 'string' && entry.reason ? entry.reason : '';
+      const reasonSuffix = reason ? ` (${reason})` : '';
+      detailLines.push(`${stageName}: NOT_COVERED${reasonSuffix}`);
+    }
+  }
+  if (coveredCount > 0 && peakBytes !== null) {
+    const formatted = formatAllocatorBytes(peakBytes);
+    const header = `Native CUDA allocator (${coveredCount}/${stages.length} stage${stages.length === 1 ? '' : 's'} covered)`;
+    return {
+      covered: true,
+      coverage: coveredCount === stages.length ? 'COVERED' : 'PARTIAL',
+      coveredStageCount: coveredCount,
+      totalStageCount: stages.length,
+      peakBytes,
+      label: `VRAM: ${formatted} peak`,
+      title: [header, ...detailLines].join('\n'),
+    };
+  }
+  const header = 'Native CUDA allocator (NOT_COVERED)';
+  const lines = detailLines.length ? detailLines : ['no stages reported'];
+  return {
+    covered: false,
+    coverage: 'NOT_COVERED',
+    coveredStageCount: 0,
+    totalStageCount: stages.length,
+    peakBytes: null,
+    label: 'VRAM: N/C',
+    title: [header, ...lines].join('\n'),
+  };
+}
+
 function formatTurnTelemetry(telemetry) {
   if (!telemetry || typeof telemetry !== 'object') return [];
   const pills = [];
@@ -1072,6 +1172,15 @@ function formatTurnTelemetry(telemetry) {
   }
   const total = formatTelemetryDuration(telemetry.totalMs);
   if (total !== null) pills.push({ kind: 'total', label: `Total ${total}` });
+  const vram = summarizeNativeAllocatorTelemetry(telemetry.nativeAllocator);
+  if (vram !== null) {
+    pills.push({
+      kind: 'vram',
+      label: vram.label,
+      title: vram.title,
+      coverage: vram.coverage,
+    });
+  }
   return pills;
 }
 // TURN_TELEMETRY_END
@@ -1099,11 +1208,19 @@ function renderTurnTelemetry(targetTurn) {
     const span = document.createElement('span');
     span.className = 'telemetry-pill' + (pill.kind === 'i2v' ? ' accent' : '');
     span.dataset.metric = pill.kind;
+    if (pill.coverage) span.dataset.coverage = pill.coverage;
+    if (pill.title) span.title = pill.title;
     span.textContent = pill.label;
     frag.append(span);
   }
   targetTurn.telemetryEl.replaceChildren(frag);
   targetTurn.telemetryEl.hidden = false;
+}
+
+function recordNativeAllocatorTelemetry(targetTurn, rawTelemetry) {
+  if (!targetTurn?.telemetry || !rawTelemetry || typeof rawTelemetry !== 'object') return;
+  targetTurn.telemetry.nativeAllocator = rawTelemetry;
+  renderTurnTelemetry(targetTurn);
 }
 
 function recordTurnTotal(targetTurn) {
@@ -2715,6 +2832,8 @@ async function consume(payload, st) {
   if (payload === '[DONE]') { st.done = true; return; }
   let root;
   try { root = JSON.parse(payload); } catch { throw new Error('An SSE event is not JSON.'); }
+  const rawTelemetry = extractNativeAllocatorTelemetry(root);
+  if (rawTelemetry) recordNativeAllocatorTelemetry(turn, rawTelemetry);
   if (root.error != null) throw new Error(errorDetail(root));
 
   const unified = root.unified;
@@ -2820,7 +2939,7 @@ function setBusy(busy) {
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
     ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly,
-    ui.narrativeContinuity, ui.styleAnchor, ui.fastVideo,
+    ui.narrativeContinuity, ui.styleAnchor, ui.fastVideo, ui.nativeAllocatorTelemetry,
     ui.videoFramePolicy, ui.videoMotionThreshold, ui.videoSceneThreshold]) {
     control.disabled = busy;
   }
@@ -2836,6 +2955,7 @@ ui.allowTextOnly.addEventListener('change', saveSettings);
 ui.narrativeContinuity.addEventListener('change', saveSettings);
 ui.styleAnchor.addEventListener('change', saveSettings);
 ui.fastVideo.addEventListener('change', saveSettings);
+ui.nativeAllocatorTelemetry.addEventListener('change', saveSettings);
 ui.videoFramePolicy.addEventListener('change', () => {
   saveSettings();
   syncVideoFrameControls();
@@ -3138,6 +3258,7 @@ async function send() {
     }
   }
   if (modalities.size > 1) body.modalities = [...modalities];
+  applyNativeAllocatorTelemetryOption(body, ui.nativeAllocatorTelemetry.checked);
 
   const userLabel = [
     text,
@@ -3186,6 +3307,7 @@ async function send() {
     hasI2VChain: false,
     hasExplicitAnchor: false,
     totalMs: null,
+    nativeAllocator: null,
   };
   if (body.audio?.stream) player.begin(ui.voiceWave);
 

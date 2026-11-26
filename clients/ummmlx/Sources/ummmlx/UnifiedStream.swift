@@ -121,6 +121,157 @@ struct UnifiedLegSummary: Equatable {
     }
 }
 
+/// One stage entry inside a server-returned opt-in `telemetry` envelope
+/// (`telemetry.native_allocator=true`). `allocatedBytesPeak` stays `nil` when
+/// the server reports `null` or `NOT_COVERED` — never fabricated as `0`.
+struct NativeAllocatorStageTelemetry: Equatable {
+    let stage: String
+    let nativeStage: String?
+    let backend: String?
+    let coverage: String
+    let allocatedBytesPeak: Int64?
+    let reservedBytesPeak: Int64?
+    let allocatedBytesFinal: Int64?
+    let reservedBytesFinal: Int64?
+    let epochID: Int64?
+    let reason: String?
+    let lifecycleStatus: String?
+
+    init(stage: String, nativeStage: String? = nil, backend: String? = nil,
+         coverage: String, allocatedBytesPeak: Int64? = nil,
+         reservedBytesPeak: Int64? = nil, allocatedBytesFinal: Int64? = nil,
+         reservedBytesFinal: Int64? = nil, epochID: Int64? = nil,
+         reason: String? = nil, lifecycleStatus: String? = nil) {
+        self.stage = stage
+        self.nativeStage = nativeStage
+        self.backend = backend
+        self.coverage = coverage
+        self.allocatedBytesPeak = allocatedBytesPeak
+        self.reservedBytesPeak = reservedBytesPeak
+        self.allocatedBytesFinal = allocatedBytesFinal
+        self.reservedBytesFinal = reservedBytesFinal
+        self.epochID = epochID
+        self.reason = reason
+        self.lifecycleStatus = lifecycleStatus
+    }
+}
+
+/// Bounded request-native CUDA allocator telemetry envelope returned on
+/// `unified.telemetry` (or top-level `telemetry` on non-unified responses).
+struct NativeAllocatorTelemetryEnvelope: Equatable {
+    let schemaVersion: Int?
+    let coverage: String
+    let scope: String?
+    let requestID: String?
+    let lifecycleStatus: String?
+    let stages: [NativeAllocatorStageTelemetry]
+    let truncated: Bool
+
+    init(schemaVersion: Int? = 1, coverage: String, scope: String? = nil,
+         requestID: String? = nil, lifecycleStatus: String? = nil,
+         stages: [NativeAllocatorStageTelemetry], truncated: Bool = false) {
+        self.schemaVersion = schemaVersion
+        self.coverage = coverage
+        self.scope = scope
+        self.requestID = requestID
+        self.lifecycleStatus = lifecycleStatus
+        self.stages = stages
+        self.truncated = truncated
+    }
+
+    var summary: NativeAllocatorTelemetrySummary {
+        NativeAllocatorTelemetrySummary.from(self)
+    }
+}
+
+/// Honest summary of a `NativeAllocatorTelemetryEnvelope` for display in the
+/// per-turn telemetry strip (`VRAM: <peak> peak` vs `VRAM: N/C`).
+struct NativeAllocatorTelemetrySummary: Equatable {
+    let covered: Bool
+    let coverage: String
+    let coveredStageCount: Int
+    let totalStageCount: Int
+    let peakBytes: Int64?
+    let label: String
+    let help: String
+
+    static func formatBytes(_ bytes: Int64) -> String? {
+        guard bytes >= 0 else { return nil }
+        let kib: Double = 1024
+        let mib: Double = 1024 * 1024
+        let gib: Double = 1024 * 1024 * 1024
+        func fmt(_ val: Double, _ unit: String) -> String {
+            let rounded = (val * 10.0).rounded() / 10.0
+            if rounded.truncatingRemainder(dividingBy: 1.0) == 0 {
+                return "\(Int64(rounded)) \(unit)"
+            }
+            return String(format: "%.1f %@", rounded, unit)
+        }
+        let value = Double(bytes)
+        if value >= gib { return fmt(value / gib, "GiB") }
+        if value >= mib { return fmt(value / mib, "MiB") }
+        if value >= kib { return fmt(value / kib, "KiB") }
+        return "\(bytes) B"
+    }
+
+    static func from(_ envelope: NativeAllocatorTelemetryEnvelope) -> NativeAllocatorTelemetrySummary {
+        var coveredCount = 0
+        var peak: Int64? = nil
+        var detailLines: [String] = []
+        for entry in envelope.stages {
+            let stage = entry.stage
+            let nativeStage = (entry.nativeStage?.isEmpty == false && entry.nativeStage != "unknown")
+                ? entry.nativeStage : nil
+            let stageName: String
+            if !stage.isEmpty, let nativeStage, nativeStage != stage {
+                stageName = "\(stage)/\(nativeStage)"
+            } else if let nativeStage {
+                stageName = nativeStage
+            } else if !stage.isEmpty {
+                stageName = stage
+            } else {
+                stageName = "stage"
+            }
+            if entry.coverage == "COVERED",
+               let bytes = entry.allocatedBytesPeak,
+               bytes >= 0,
+               let formattedPeak = formatBytes(bytes) {
+                coveredCount += 1
+                peak = peak.map { max($0, bytes) } ?? bytes
+                let epochSuffix = entry.epochID.flatMap { $0 > 0 ? " · epoch #\($0)" : nil } ?? ""
+                detailLines.append("\(stageName): COVERED · peak \(formattedPeak)\(epochSuffix)")
+            } else {
+                let reasonSuffix = (entry.reason?.isEmpty == false) ? " (\(entry.reason!))" : ""
+                detailLines.append("\(stageName): NOT_COVERED\(reasonSuffix)")
+            }
+        }
+        if coveredCount > 0, let peak, let formatted = formatBytes(peak) {
+            let count = envelope.stages.count
+            let header = "Native CUDA allocator (\(coveredCount)/\(count) stage\(count == 1 ? "" : "s") covered)"
+            return NativeAllocatorTelemetrySummary(
+                covered: true,
+                coverage: coveredCount == count ? "COVERED" : "PARTIAL",
+                coveredStageCount: coveredCount,
+                totalStageCount: count,
+                peakBytes: peak,
+                label: "VRAM: \(formatted) peak",
+                help: ([header] + detailLines).joined(separator: "\n")
+            )
+        }
+        let header = "Native CUDA allocator (NOT_COVERED)"
+        let lines = detailLines.isEmpty ? ["no stages reported"] : detailLines
+        return NativeAllocatorTelemetrySummary(
+            covered: false,
+            coverage: "NOT_COVERED",
+            coveredStageCount: 0,
+            totalStageCount: envelope.stages.count,
+            peakBytes: nil,
+            label: "VRAM: N/C",
+            help: ([header] + lines).joined(separator: "\n")
+        )
+    }
+}
+
 struct UnifiedEvent {
     let kind: UnifiedKind
     let seq: Int
@@ -151,6 +302,8 @@ struct UnifiedEvent {
     let anchorSha256: String?
     /// Optional terminal leg summaries carried on `complete`/`cancelled`/`error`.
     let legs: [UnifiedLegSummary]
+    /// Optional opt-in request-native CUDA allocator telemetry envelope.
+    let telemetry: NativeAllocatorTelemetryEnvelope?
 
     init(kind: UnifiedKind, seq: Int, sessionID: String, stage: String,
          isFinal: Bool, text: String, error: String,
@@ -158,7 +311,8 @@ struct UnifiedEvent {
          slotIndex: Int? = nil, mediaType: String = "", prompt: String = "",
          textOffset: Int? = nil, continuityMode: String? = nil,
          anchorSlotIndex: Int? = nil, anchorExplicit: Bool = false,
-         anchorSha256: String? = nil, legs: [UnifiedLegSummary] = []) {
+         anchorSha256: String? = nil, legs: [UnifiedLegSummary] = [],
+         telemetry: NativeAllocatorTelemetryEnvelope? = nil) {
         self.kind = kind
         self.seq = seq
         self.sessionID = sessionID
@@ -177,6 +331,7 @@ struct UnifiedEvent {
         self.anchorExplicit = anchorExplicit
         self.anchorSha256 = anchorSha256
         self.legs = legs
+        self.telemetry = telemetry
     }
 }
 
@@ -340,6 +495,10 @@ enum UnifiedDecode {
             }
             legs = try array.map { try decodeLeg(try object($0)) }
         }
+        var telemetry: NativeAllocatorTelemetryEnvelope? = nil
+        if let rawTelemetry = root["telemetry"] as? [String: Any] {
+            telemetry = decodeNativeAllocatorTelemetry(rawTelemetry)
+        }
         return UnifiedEvent(
             kind: kind, seq: seq, sessionID: sessionID, stage: stage,
             isFinal: isFinal, text: text, error: errorText,
@@ -347,7 +506,78 @@ enum UnifiedDecode {
             mediaType: mediaType, prompt: prompt, textOffset: textOffset,
             continuityMode: continuityMode, anchorSlotIndex: anchorSlotIndex,
             anchorExplicit: anchorExplicit, anchorSha256: anchorSha256,
-            legs: legs
+            legs: legs, telemetry: telemetry
+        )
+    }
+
+    private static func optionalNonNegativeInt64(_ value: Any?) -> Int64? {
+        guard let value, !(value is NSNull),
+              let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              !CFNumberIsFloatType(number) else {
+            return nil
+        }
+        let intVal = number.int64Value
+        return intVal >= 0 ? intVal : nil
+    }
+
+    static func decodeNativeAllocatorTelemetry(
+        _ raw: [String: Any]
+    ) -> NativeAllocatorTelemetryEnvelope? {
+        let rawStages = raw["stages"] as? [Any]
+        let coverageText = raw["coverage"] as? String
+        guard rawStages != nil || coverageText != nil else { return nil }
+        var stages: [NativeAllocatorStageTelemetry] = []
+        if let rawStages {
+            for item in rawStages {
+                guard let entry = item as? [String: Any] else { continue }
+                let stage = (entry["stage"] as? String) ?? ""
+                let nativeStage = entry["native_stage"] as? String
+                let backend = entry["backend"] as? String
+                let entryCoverage = (entry["coverage"] as? String) ?? "NOT_COVERED"
+                let allocatedPeak = optionalNonNegativeInt64(entry["allocated_bytes_peak"])
+                let reservedPeak = optionalNonNegativeInt64(entry["reserved_bytes_peak"])
+                let allocatedFinal = optionalNonNegativeInt64(entry["allocated_bytes_final"])
+                let reservedFinal = optionalNonNegativeInt64(entry["reserved_bytes_final"])
+                let epochID: Int64?
+                if let epochObj = entry["epoch"] as? [String: Any] {
+                    epochID = optionalNonNegativeInt64(epochObj["id"])
+                } else {
+                    epochID = nil
+                }
+                let reason = entry["reason"] as? String
+                let lifecycle = entry["lifecycle_status"] as? String
+                stages.append(NativeAllocatorStageTelemetry(
+                    stage: stage, nativeStage: nativeStage, backend: backend,
+                    coverage: entryCoverage,
+                    allocatedBytesPeak: allocatedPeak,
+                    reservedBytesPeak: reservedPeak,
+                    allocatedBytesFinal: allocatedFinal,
+                    reservedBytesFinal: reservedFinal,
+                    epochID: epochID, reason: reason, lifecycleStatus: lifecycle
+                ))
+            }
+        }
+        let schemaVersion = optionalNonNegativeInt64(raw["schema_version"]).map(Int.init)
+        let scope = raw["scope"] as? String
+        let requestID = raw["request_id"] as? String
+        let lifecycleStatus = raw["lifecycle_status"] as? String
+        let truncated: Bool
+        if let sampleCov = raw["sample_coverage"] as? [String: Any],
+           let flag = sampleCov["truncated"] as? NSNumber,
+           CFGetTypeID(flag) == CFBooleanGetTypeID() {
+            truncated = flag.boolValue
+        } else {
+            truncated = false
+        }
+        return NativeAllocatorTelemetryEnvelope(
+            schemaVersion: schemaVersion,
+            coverage: coverageText ?? "NOT_COVERED",
+            scope: scope,
+            requestID: requestID,
+            lifecycleStatus: lifecycleStatus,
+            stages: stages,
+            truncated: truncated
         )
     }
 

@@ -58,7 +58,8 @@ timeout. A retry never starts after a text delta was delivered.
 The route accepts an explicit allowlist of top-level chat fields: `model`,
 `messages`, `stream`, `temperature`, `max_tokens`, `max_completion_tokens`,
 `top_p`, `seed`, `stop`, `response_format`, `stream_options`, `session_id`,
-`session_history`, `modalities`, `image`, `audio`, `video`, and `narrative`.
+`session_history`, `modalities`, `image`, `audio`, `video`, `narrative`, and
+`telemetry`.
 The mixed-output and narrative fields require unified mode. Any other non-null
 top-level field returns HTTP 400 `unsupported field: NAME`, whether or not this
 server knows the name. A null value is treated as absent. A non-empty
@@ -361,6 +362,7 @@ estimated, and the strip stays hidden until at least one real metric arrives:
 - `<N> visual(s) (<dur>)`: count of settled visual slots/artifacts plus elapsed time to the first settled visual.
 - `I2V`: shown when any `visual_slot` carries `anchor_slot_index` I2V continuity metadata.
 - `Total <dur>`: elapsed time from request send to stream completion or stop.
+- `VRAM: <peak> peak` / `VRAM: N/C` (opt-in): controlled by the **Native VRAM telemetry** toggle in Options (default OFF, persisted in `localStorage` in Web UI, never auto-enabled by Showcase presets). When OFF, the request omits `telemetry` completely for byte-identical default wire requests and omits the VRAM pill. When ON, the request includes `"telemetry": {"native_allocator": true}` and reads the server-returned `telemetry` envelope from `unified.telemetry` (or top-level `telemetry` on non-unified streams). If one or more `stages[]` report `coverage="COVERED"` with a non-null finite `allocated_bytes_peak`, the pill displays the covered peak formatted in `B` / `KiB` / `MiB` / `GiB` with a per-stage tooltip (`stage`/`native_stage`, `coverage`, peak bytes, `epoch.id`, or `reason`). If the envelope is returned with zero covered stages (for example `NOT_COVERED` with `allocated_bytes_peak: null`), the pill displays `VRAM: N/C` with the server's `reason`s in the tooltip and never treats `null` as `0`.
 
 Sub-second durations format as `<N> ms` (e.g. `265 ms`) and values at or above
 `1000 ms` format as `<X.XX> s` (e.g. `1.42 s`). Both clients adapt the cards and

@@ -224,10 +224,18 @@ struct TurnTelemetry: Equatable {
             case visual
             case i2v
             case total
+            case vram
         }
         let kind: Kind
         let label: String
+        let help: String?
         var id: String { kind.rawValue }
+
+        init(kind: Kind, label: String, help: String? = nil) {
+            self.kind = kind
+            self.label = label
+            self.help = help
+        }
     }
 
     var ttftMs: Double? = nil
@@ -237,6 +245,9 @@ struct TurnTelemetry: Equatable {
     var hasI2VChain: Bool = false
     var hasExplicitAnchor: Bool = false
     var totalMs: Double? = nil
+    /// Real server-returned opt-in request-native CUDA allocator telemetry envelope.
+    /// Remains nil unless requested and returned by the server.
+    var nativeAllocator: NativeAllocatorTelemetryEnvelope? = nil
 
     static func formatDuration(_ ms: Double) -> String? {
         guard ms.isFinite, ms >= 0 else { return nil }
@@ -269,6 +280,10 @@ struct TurnTelemetry: Equatable {
         }
         if let totalMs, let formatted = Self.formatDuration(totalMs) {
             pills.append(Pill(kind: .total, label: "Total \(formatted)"))
+        }
+        if let nativeAllocator {
+            let summary = nativeAllocator.summary
+            pills.append(Pill(kind: .vram, label: summary.label, help: summary.help))
         }
         return pills
     }
@@ -356,6 +371,8 @@ final class ChatModel: ObservableObject {
     @Published var videoMotionThresholdText = "0.02"
     @Published var videoSceneThresholdText = "0.25"
     @Published var fastVideoMode = false
+    /// Opt-in per-request native CUDA allocator peak telemetry (`telemetry.native_allocator=true`).
+    @Published var nativeAllocatorTelemetry = false
     @Published var attachedImageURL: URL?
     @Published var attachedVideoURL: URL? {
         didSet {
@@ -601,6 +618,7 @@ final class ChatModel: ObservableObject {
         if requestSessionID.isEmpty { requestSessionID = Self.newSessionID() }
         options.sessionID = requestSessionID
         options.videoFrameSelection = videoFrameSelection
+        options.nativeAllocatorTelemetry = nativeAllocatorTelemetry
         if let maxTok = Int(maxTokensText.trimmingCharacters(in: .whitespaces)), maxTok > 0 {
             options.maxTokens = maxTok
         }
@@ -820,6 +838,12 @@ final class ChatModel: ObservableObject {
                     }
                     self.streamingAudioTurnID = assistant.id
                     self.audioStream.enqueue(chunk)
+                } onTelemetry: { envelope in
+                    guard self.activeTurn == assistant.id,
+                          let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
+                        return
+                    }
+                    self.turns[index].telemetry.nativeAllocator = envelope
                 }
                 guard self.activeTurn == assistant.id,
                       let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
@@ -827,6 +851,10 @@ final class ChatModel: ObservableObject {
                 }
                 self.audioStream.finishStream()
                 self.turns[index].text = result.text
+                if self.turns[index].telemetry.nativeAllocator == nil,
+                   let telemetry = result.telemetry {
+                    self.turns[index].telemetry.nativeAllocator = telemetry
+                }
                 self.settleVisualSlots(at: index)
                 if self.turns[index].telemetry.totalMs == nil {
                     self.turns[index].telemetry.totalMs = Self.elapsedMilliseconds(since: requestStart)

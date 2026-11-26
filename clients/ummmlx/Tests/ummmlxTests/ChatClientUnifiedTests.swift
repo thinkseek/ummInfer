@@ -321,6 +321,65 @@ private final class UnifiedSSEProtocol: URLProtocol {
                     "anchor_explicit": true
                   ]),
             frame(kind: "complete", seq: 2, text: "Early error. ")
+        ]),
+        // Wave 39: Unified SSE terminal event carrying COVERED native allocator telemetry.
+        "10.1.2.18": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Measured."),
+            frame(kind: "complete", seq: 1, text: "Measured.", extra: [
+                "telemetry": [
+                    "schema_version": 1,
+                    "coverage": "COVERED",
+                    "scope": "request-native-allocator",
+                    "request_id": "http-18",
+                    "lifecycle_status": "completed",
+                    "stages": [[
+                        "stage": "vlm",
+                        "native_stage": "qwen38",
+                        "coverage": "COVERED",
+                        "allocated_bytes_peak": 512 * 1024,
+                        "reserved_bytes_peak": 512 * 1024,
+                        "epoch": ["id": 11, "reset": true]
+                    ]]
+                ]
+            ])
+        ]),
+        // Wave 39: Unified SSE terminal event carrying NOT_COVERED telemetry with null peak.
+        "10.1.2.19": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Batched."),
+            frame(kind: "complete", seq: 1, text: "Batched.", extra: [
+                "telemetry": [
+                    "schema_version": 1,
+                    "coverage": "NOT_COVERED",
+                    "scope": "request-native-allocator",
+                    "request_id": "http-19",
+                    "lifecycle_status": "completed",
+                    "stages": [[
+                        "stage": "vlm",
+                        "native_stage": "qwen38",
+                        "coverage": "NOT_COVERED",
+                        "allocated_bytes_peak": NSNull(),
+                        "reason": "batched_request_attribution_unavailable"
+                    ]]
+                ]
+            ])
+        ]),
+        // Wave 39: Non-unified SSE final chunk carrying top-level telemetry envelope.
+        "10.1.2.20": sse([
+            ["choices": [["delta": ["content": "Plain."], "finish_reason": NSNull()]]],
+            [
+                "choices": [["delta": [:], "finish_reason": "stop"]],
+                "telemetry": [
+                    "schema_version": 1,
+                    "coverage": "COVERED",
+                    "stages": [[
+                        "stage": "vlm",
+                        "native_stage": "qwen38",
+                        "coverage": "COVERED",
+                        "allocated_bytes_peak": 2 * 1024 * 1024,
+                        "epoch": ["id": 4, "reset": true]
+                    ]]
+                ]
+            ]
         ])
     ]
 
@@ -1545,5 +1604,93 @@ final class ChatClientUnifiedTests: XCTestCase {
             XCTAssertFalse(slots[0].isLoading, host)
             XCTAssertEqual(slots[0].error, "source slot slot-1 is not an earlier slot", host)
         }
+    }
+
+    @MainActor
+    func testNativeAllocatorTelemetryRequestWireCompatibilityAndStreamDecoding() async throws {
+        // 1. Default ChatStreamOptions omits telemetry completely (byte-identical default).
+        let defaultOptions = ChatStreamOptions()
+        XCTAssertFalse(defaultOptions.nativeAllocatorTelemetry)
+        let defaultBody = ChatClient.requestBody(
+            model: "qwen3-native",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            options: defaultOptions)
+        XCTAssertNil(defaultBody["telemetry"],
+                     "default OFF must omit telemetry completely from request JSON")
+
+        // 2. Opt-in emits exact {"native_allocator": true}.
+        var optInOptions = ChatStreamOptions()
+        optInOptions.nativeAllocatorTelemetry = true
+        let optInBody = ChatClient.requestBody(
+            model: "qwen3-native",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            options: optInOptions)
+        let telemetryObj = try XCTUnwrap(optInBody["telemetry"] as? [String: Any])
+        XCTAssertEqual(telemetryObj.count, 1)
+        XCTAssertEqual(telemetryObj["native_allocator"] as? Bool, true)
+
+        // 3. End-to-end ChatModel: default OFF omits telemetry; ON sends telemetry and displays COVERED peak.
+        UnifiedSSEProtocol.resetBodies()
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        XCTAssertFalse(model.nativeAllocatorTelemetry)
+        model.endpoint = "http://10.1.2.1/v1"
+        model.model = "qwen3-native"
+        model.prompt = "default off"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let sentDefault = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(UnifiedSSEProtocol.bodies().first)) as? [String: Any])
+        XCTAssertNil(sentDefault["telemetry"])
+        let defaultTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertNil(defaultTurn.telemetry.nativeAllocator)
+        XCTAssertFalse(defaultTurn.telemetry.formattedPills.contains { $0.kind == .vram })
+
+        // Opt-in COVERED unified.telemetry -> VRAM: 512 KiB peak.
+        UnifiedSSEProtocol.resetBodies()
+        model.newChat()
+        model.endpoint = "http://10.1.2.18/v1"
+        model.nativeAllocatorTelemetry = true
+        model.prompt = "measure peak"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let sentOptIn = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(UnifiedSSEProtocol.bodies().first)) as? [String: Any])
+        let sentTelemetry = try XCTUnwrap(sentOptIn["telemetry"] as? [String: Any])
+        XCTAssertEqual(sentTelemetry["native_allocator"] as? Bool, true)
+        let coveredTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        let coveredPill = try XCTUnwrap(coveredTurn.telemetry.formattedPills.first { $0.kind == .vram })
+        XCTAssertEqual(coveredPill.label, "VRAM: 512 KiB peak")
+        XCTAssertTrue(coveredPill.help?.contains("vlm/qwen38") == true)
+        XCTAssertTrue(coveredPill.help?.contains("epoch #11") == true)
+
+        // Opt-in NOT_COVERED unified.telemetry with null peak -> VRAM: N/C (never 0).
+        model.newChat()
+        model.endpoint = "http://10.1.2.19/v1"
+        model.prompt = "batched"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let ncTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        let ncPill = try XCTUnwrap(ncTurn.telemetry.formattedPills.first { $0.kind == .vram })
+        XCTAssertEqual(ncPill.label, "VRAM: N/C")
+        XCTAssertTrue(ncPill.help?.contains("batched_request_attribution_unavailable") == true)
+
+        // Non-unified SSE top-level telemetry envelope also decodes cleanly.
+        model.newChat()
+        model.endpoint = "http://10.1.2.20/v1"
+        model.prompt = "plain stream"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let plainTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        let plainPill = try XCTUnwrap(plainTurn.telemetry.formattedPills.first { $0.kind == .vram })
+        XCTAssertEqual(plainPill.label, "VRAM: 2 MiB peak")
     }
 }

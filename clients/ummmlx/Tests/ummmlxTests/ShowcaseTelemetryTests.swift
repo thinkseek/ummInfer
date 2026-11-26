@@ -154,6 +154,7 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertEqual(model.videoFramePolicy, "uniform")
         XCTAssertEqual(model.videoMotionThresholdText, "0.02")
         XCTAssertEqual(model.videoSceneThresholdText, "0.25")
+        XCTAssertFalse(model.nativeAllocatorTelemetry)
         XCTAssertEqual(model.status, "Ready")
         XCTAssertEqual(model.prompt, "")
     }
@@ -274,6 +275,8 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertEqual(requestCount, 0)
         XCTAssertTrue(model.turns.isEmpty)
         XCTAssertFalse(model.isRunning)
+        XCTAssertFalse(model.nativeAllocatorTelemetry,
+                       "Showcase presets must not auto-enable nativeAllocatorTelemetry")
     }
 
     func testTurnTelemetryFormattingAndBounds() {
@@ -328,6 +331,50 @@ final class ShowcaseTelemetryTests: XCTestCase {
             singleVisual.formattedPills.map(\.label),
             ["TTFT 92 ms", "1 visual (940 ms)"]
         )
+
+        // Native allocator telemetry formatting: COVERED, NOT_COVERED (null -> N/C), and absent.
+        let coveredTelemetry = TurnTelemetry(
+            ttftMs: 140,
+            totalMs: 1200,
+            nativeAllocator: NativeAllocatorTelemetryEnvelope(
+                coverage: "COVERED",
+                stages: [
+                    NativeAllocatorStageTelemetry(
+                        stage: "vlm", nativeStage: "qwen38",
+                        coverage: "COVERED",
+                        allocatedBytesPeak: Int64((128.4 * 1024.0 * 1024.0).rounded()),
+                        epochID: 17)
+                ]
+            )
+        )
+        XCTAssertEqual(
+            coveredTelemetry.formattedPills.map(\.label),
+            ["TTFT 140 ms", "Total 1.20 s", "VRAM: 128.4 MiB peak"]
+        )
+        let coveredVram = coveredTelemetry.formattedPills.first { $0.kind == .vram }
+        XCTAssertTrue(coveredVram?.help?.contains("vlm/qwen38") == true)
+        XCTAssertTrue(coveredVram?.help?.contains("epoch #17") == true)
+
+        let notCoveredTelemetry = TurnTelemetry(
+            ttftMs: 120,
+            totalMs: 950,
+            nativeAllocator: NativeAllocatorTelemetryEnvelope(
+                coverage: "NOT_COVERED",
+                stages: [
+                    NativeAllocatorStageTelemetry(
+                        stage: "vlm", nativeStage: "qwen38",
+                        coverage: "NOT_COVERED",
+                        allocatedBytesPeak: nil,
+                        reason: "batched_request_attribution_unavailable")
+                ]
+            )
+        )
+        XCTAssertEqual(
+            notCoveredTelemetry.formattedPills.map(\.label),
+            ["TTFT 120 ms", "Total 950 ms", "VRAM: N/C"]
+        )
+        let ncVram = notCoveredTelemetry.formattedPills.first { $0.kind == .vram }
+        XCTAssertTrue(ncVram?.help?.contains("batched_request_attribution_unavailable") == true)
     }
 
     func testStreamRecordsObservedTelemetryForMultimodalI2VTurn() async {

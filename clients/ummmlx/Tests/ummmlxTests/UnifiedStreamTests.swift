@@ -324,6 +324,133 @@ final class UnifiedDecodeTests: XCTestCase {
                                               artifact: chunk))
         XCTAssertThrowsError(try UnifiedDecode.decode(data))
     }
+
+    func testDecodesNativeAllocatorTelemetryCoveredNotCoveredPartialAndAbsent() throws {
+        // 1. Absent telemetry decodes as nil.
+        let plain = try UnifiedDecode.decode(eventData(unifiedEvent(
+            kind: "complete", seq: 0, text: "done", isFinal: true)))
+        XCTAssertNil(plain.telemetry)
+
+        // 2. COVERED stage decodes real peak bytes and formats MiB + tooltip.
+        var coveredObj = unifiedEvent(
+            kind: "complete", seq: 1, text: "done", isFinal: true)
+        let peakMiB = Int64((128.4 * 1024.0 * 1024.0).rounded())
+        coveredObj["telemetry"] = [
+            "schema_version": 1,
+            "coverage": "COVERED",
+            "scope": "request-native-allocator",
+            "request_id": "http-1",
+            "lifecycle_status": "completed",
+            "sample_coverage": ["stage_count": 1, "covered_stage_count": 1, "truncated": false],
+            "stages": [[
+                "stage": "vlm",
+                "native_stage": "qwen38",
+                "backend": "qwen38",
+                "coverage": "COVERED",
+                "allocated_bytes_peak": peakMiB,
+                "reserved_bytes_peak": peakMiB,
+                "allocated_bytes_final": 4096,
+                "reserved_bytes_final": 4096,
+                "epoch": ["id": 17, "reset": true, "semantics": "new_allocation_ownership_epoch"]
+            ]]
+        ]
+        let covered = try UnifiedDecode.decode(eventData(coveredObj))
+        let coveredEnv = try XCTUnwrap(covered.telemetry)
+        XCTAssertEqual(coveredEnv.coverage, "COVERED")
+        XCTAssertEqual(coveredEnv.stages.count, 1)
+        XCTAssertEqual(coveredEnv.stages[0].allocatedBytesPeak, peakMiB)
+        XCTAssertEqual(coveredEnv.stages[0].epochID, 17)
+        let coveredSummary = coveredEnv.summary
+        XCTAssertTrue(coveredSummary.covered)
+        XCTAssertEqual(coveredSummary.coverage, "COVERED")
+        XCTAssertEqual(coveredSummary.peakBytes, peakMiB)
+        XCTAssertEqual(coveredSummary.label, "VRAM: 128.4 MiB peak")
+        XCTAssertTrue(coveredSummary.help.contains("vlm/qwen38"))
+        XCTAssertTrue(coveredSummary.help.contains("epoch #17"))
+
+        // 3. NOT_COVERED stage with allocated_bytes_peak: null stays nil and renders VRAM: N/C (never 0).
+        var notCoveredObj = unifiedEvent(
+            kind: "complete", seq: 2, text: "done", isFinal: true)
+        notCoveredObj["telemetry"] = [
+            "schema_version": 1,
+            "coverage": "NOT_COVERED",
+            "scope": "request-native-allocator",
+            "request_id": "http-2",
+            "lifecycle_status": "completed",
+            "stages": [[
+                "stage": "vlm",
+                "native_stage": "qwen38",
+                "backend": "qwen38",
+                "coverage": "NOT_COVERED",
+                "allocated_bytes_peak": NSNull(),
+                "reserved_bytes_peak": NSNull(),
+                "reason": "batched_request_attribution_unavailable"
+            ]]
+        ]
+        let notCovered = try UnifiedDecode.decode(eventData(notCoveredObj))
+        let ncEnv = try XCTUnwrap(notCovered.telemetry)
+        XCTAssertEqual(ncEnv.coverage, "NOT_COVERED")
+        XCTAssertNil(ncEnv.stages[0].allocatedBytesPeak)
+        let ncSummary = ncEnv.summary
+        XCTAssertFalse(ncSummary.covered)
+        XCTAssertNil(ncSummary.peakBytes)
+        XCTAssertEqual(ncSummary.label, "VRAM: N/C")
+        XCTAssertFalse(ncSummary.label.contains("0 B"))
+        XCTAssertFalse(ncSummary.label.contains("0 MiB"))
+        XCTAssertTrue(ncSummary.help.contains("vlm/qwen38"))
+        XCTAssertTrue(ncSummary.help.contains("batched_request_attribution_unavailable"))
+
+        // 4. PARTIAL multi-stage envelope formats KiB peak and lists both stages honestly.
+        var partialObj = unifiedEvent(
+            kind: "complete", seq: 3, text: "done", isFinal: true)
+        partialObj["telemetry"] = [
+            "schema_version": 1,
+            "coverage": "PARTIAL",
+            "stages": [
+                [
+                    "stage": "video",
+                    "native_stage": "wan22",
+                    "coverage": "COVERED",
+                    "allocated_bytes_peak": 512 * 1024,
+                    "epoch": ["id": 9, "reset": true]
+                ],
+                [
+                    "stage": "tts",
+                    "native_stage": "tts",
+                    "coverage": "NOT_COVERED",
+                    "allocated_bytes_peak": NSNull(),
+                    "reason": "backend_not_instrumented"
+                ]
+            ]
+        ]
+        let partial = try UnifiedDecode.decode(eventData(partialObj))
+        let partialSummary = try XCTUnwrap(partial.telemetry).summary
+        XCTAssertTrue(partialSummary.covered)
+        XCTAssertEqual(partialSummary.coverage, "PARTIAL")
+        XCTAssertEqual(partialSummary.coveredStageCount, 1)
+        XCTAssertEqual(partialSummary.totalStageCount, 2)
+        XCTAssertEqual(partialSummary.label, "VRAM: 512 KiB peak")
+        XCTAssertTrue(partialSummary.help.contains("video/wan22: COVERED · peak 512 KiB · epoch #9"))
+        XCTAssertTrue(partialSummary.help.contains("tts: NOT_COVERED (backend_not_instrumented)"))
+
+        // 5. Malformed COVERED stage with null or boolean peak never fabricates 0 B.
+        for badPeak in [NSNull() as Any, false as Any, -1 as Any] {
+            var badObj = unifiedEvent(kind: "complete", seq: 4, text: "done", isFinal: true)
+            badObj["telemetry"] = [
+                "coverage": "COVERED",
+                "stages": [[
+                    "stage": "vlm",
+                    "coverage": "COVERED",
+                    "allocated_bytes_peak": badPeak
+                ]]
+            ]
+            let decoded = try UnifiedDecode.decode(eventData(badObj))
+            let summary = try XCTUnwrap(decoded.telemetry).summary
+            XCTAssertFalse(summary.covered)
+            XCTAssertNil(summary.peakBytes)
+            XCTAssertEqual(summary.label, "VRAM: N/C")
+        }
+    }
 }
 
 final class UnifiedSequenceTests: XCTestCase {

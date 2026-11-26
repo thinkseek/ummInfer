@@ -62,7 +62,8 @@ def check_markup(html):
                 'id="visualMode"', 'id="maxSlots"', 'id="allowTextOnly"',
                 'id="narrativeContinuity"', 'id="styleAnchor"',
                 'id="fastVideo"', 'id="videoFramePolicy"',
-                'id="videoMotionThreshold"', 'id="videoSceneThreshold"'):
+                'id="videoMotionThreshold"', 'id="videoSceneThreshold"',
+                'id="nativeAllocatorTelemetry"'):
         require(tag in html, f"missing element: {tag}")
     require('<option value="off" selected>Off</option>' in html,
             "narrativeContinuity must default to Off")
@@ -71,6 +72,8 @@ def check_markup(html):
             "narrativeContinuity must expose prompt_anchor and i2v_chain options")
     require('<input type="checkbox" id="fastVideo">' in html,
             "fastVideo checkbox must default to unchecked")
+    require('<input type="checkbox" id="nativeAllocatorTelemetry">' in html,
+            "nativeAllocatorTelemetry checkbox must default to unchecked")
     require('<input type="checkbox" id="realtimeEchoSuppression" checked>' in html,
             "realtimeEchoSuppression checkbox must default to checked (ON)")
     require('<option value="uniform" selected>Uniform</option>' in html,
@@ -146,6 +149,19 @@ def check_hooks(script):
             "fastVideo must include teacache_thresh: 0.05 in /visual/render video requests")
     require("ui.fastVideo" in script.split("function setBusy(busy)", 1)[1].split("}", 1)[0],
             "fastVideo must be disabled while running")
+    # Opt-in Native VRAM telemetry (telemetry.native_allocator=true): default
+    # unchecked, persisted in localStorage, disabled while running, omitted on wire when off.
+    require("localStorage.getItem('ummweb.nativeAllocatorTelemetry') === '1'" in script,
+            "nativeAllocatorTelemetry must default to unchecked unless persisted as '1'")
+    require("localStorage.setItem('ummweb.nativeAllocatorTelemetry'" in script,
+            "nativeAllocatorTelemetry must persist in localStorage")
+    require("applyNativeAllocatorTelemetryOption(body, ui.nativeAllocatorTelemetry.checked)" in script,
+            "send() must apply nativeAllocatorTelemetry through applyNativeAllocatorTelemetryOption")
+    require("extractNativeAllocatorTelemetry(root)" in script
+            and "recordNativeAllocatorTelemetry(turn, rawTelemetry)" in script,
+            "consume() must extract and record server-returned native allocator telemetry")
+    require("ui.nativeAllocatorTelemetry" in script.split("function setBusy(busy)", 1)[1].split("}", 1)[0],
+            "nativeAllocatorTelemetry must be disabled while running")
 
 
 def check_wave10(script):
@@ -1226,6 +1242,7 @@ const controls = {
   videoFramePolicy: { value: 'temporal' },
   videoMotionThreshold: { value: '0.15' },
   videoSceneThreshold: { value: '0.55' },
+  nativeAllocatorTelemetry: { checked: false },
   advanced: { open: false },
   prompt: { value: '', focus() { focusCount += 1; } },
 };
@@ -1341,6 +1358,14 @@ for (const otherId of ['documentary', 'storyboard_i2v', 'smart_text_only']) {
          `switching from temporal_video_qa to ${otherId} did not reset videoFramePolicy to uniform`);
 }
 
+// None of the 4 Showcase presets auto-enable or mutate nativeAllocatorTelemetry.
+for (const presetId of ['documentary', 'storyboard_i2v', 'smart_text_only', 'temporal_video_qa']) {
+  controls.nativeAllocatorTelemetry.checked = false;
+  applyShowcasePresetToControls(presetId, controls, hooks);
+  assert(controls.nativeAllocatorTelemetry.checked === false,
+         `preset ${presetId} must not auto-enable nativeAllocatorTelemetry`);
+}
+
 // Unknown preset is a safe no-op.
 assert(applyShowcasePresetToControls('unknown', controls, hooks) === null,
        'unknown preset should return null');
@@ -1420,6 +1445,145 @@ const streamingVisualPills = formatTurnTelemetry({
 assert(JSON.stringify(streamingVisualPills.map((p) => p.label)) ===
   '["TTFT 0 ms","1 visual (850 ms)"]',
   'streaming visual telemetry mismatch: ' + JSON.stringify(streamingVisualPills));
+
+// 3. Opt-in native CUDA allocator telemetry wire encoding & honest parsing/display.
+const baseBody = { model: 'qwen3-native', messages: [{ role: 'user', content: 'hi' }], stream: true };
+const offBody = applyNativeAllocatorTelemetryOption({ ...baseBody }, false);
+assert(!Object.prototype.hasOwnProperty.call(offBody, 'telemetry') &&
+       JSON.stringify(offBody) === JSON.stringify(baseBody),
+       'default OFF must omit telemetry completely for byte-identical requests');
+const onBody = applyNativeAllocatorTelemetryOption({ ...baseBody }, true);
+assert(JSON.stringify(onBody.telemetry) === '{"native_allocator":true}',
+       'opt-in ON must emit telemetry: {native_allocator: true}');
+
+// Byte formatting across B / KiB / MiB / GiB and strict rejection of null/invalid values.
+assert(formatAllocatorBytes(0) === '0 B', '0 B format mismatch');
+assert(formatAllocatorBytes(512) === '512 B', '512 B format mismatch');
+assert(formatAllocatorBytes(512 * 1024) === '512 KiB', '512 KiB format mismatch');
+assert(formatAllocatorBytes(Math.round(128.4 * 1024 * 1024)) === '128.4 MiB', '128.4 MiB format mismatch');
+assert(formatAllocatorBytes(Math.round(1.5 * 1024 * 1024 * 1024)) === '1.5 GiB', '1.5 GiB format mismatch');
+for (const badBytes of [null, undefined, false, true, -1, Number.NaN, Number.POSITIVE_INFINITY, '1024']) {
+  assert(formatAllocatorBytes(badBytes) === null, `invalid bytes must return null: ${badBytes}`);
+}
+
+// Extract telemetry from unified.telemetry (unified SSE) and top-level telemetry (non-unified SSE / JSON).
+const coveredEnvelope = {
+  schema_version: 1,
+  coverage: 'COVERED',
+  scope: 'request-native-allocator',
+  request_id: 'http-1',
+  lifecycle_status: 'completed',
+  stages: [
+    {
+      stage: 'vlm',
+      native_stage: 'qwen38',
+      coverage: 'COVERED',
+      allocated_bytes_peak: Math.round(128.4 * 1024 * 1024),
+      reserved_bytes_peak: Math.round(128.4 * 1024 * 1024),
+      epoch: { id: 17, reset: true, semantics: 'new_allocation_ownership_epoch' },
+    },
+  ],
+};
+assert(extractNativeAllocatorTelemetry({ unified: { kind: 'complete', telemetry: coveredEnvelope } }) === coveredEnvelope,
+       'must extract unified.telemetry from unified SSE terminal chunk');
+assert(extractNativeAllocatorTelemetry({ choices: [], telemetry: coveredEnvelope }) === coveredEnvelope,
+       'must extract top-level telemetry from non-unified SSE / non-stream response');
+assert(extractNativeAllocatorTelemetry({ unified: { kind: 'complete' } }) === null,
+       'absent telemetry must extract as null');
+
+// Covered envelope renders real peak MiB/KiB pill + detailed tooltip.
+const coveredPills = formatTurnTelemetry({
+  ttftMs: 140,
+  totalMs: 1200,
+  nativeAllocator: coveredEnvelope,
+});
+assert(JSON.stringify(coveredPills.map((p) => p.label)) ===
+  '["TTFT 140 ms","Total 1.20 s","VRAM: 128.4 MiB peak"]',
+  'covered telemetry pill mismatch: ' + JSON.stringify(coveredPills));
+const coveredVramPill = coveredPills.find((p) => p.kind === 'vram');
+assert(coveredVramPill && coveredVramPill.coverage === 'COVERED' &&
+       coveredVramPill.title.includes('vlm/qwen38') &&
+       coveredVramPill.title.includes('COVERED') &&
+       coveredVramPill.title.includes('128.4 MiB') &&
+       coveredVramPill.title.includes('epoch #17'),
+       'covered VRAM tooltip mismatch: ' + coveredVramPill?.title);
+
+// Multi-stage PARTIAL envelope (512 KiB covered + 1 NOT_COVERED) shows covered peak and both stage details.
+const partialEnvelope = {
+  schema_version: 1,
+  coverage: 'PARTIAL',
+  stages: [
+    {
+      stage: 'video',
+      native_stage: 'wan22',
+      coverage: 'COVERED',
+      allocated_bytes_peak: 512 * 1024,
+      epoch: { id: 9, reset: true },
+    },
+    {
+      stage: 'tts',
+      native_stage: 'tts',
+      coverage: 'NOT_COVERED',
+      allocated_bytes_peak: null,
+      reason: 'backend_not_instrumented',
+    },
+  ],
+};
+const partialSummary = summarizeNativeAllocatorTelemetry(partialEnvelope);
+assert(partialSummary && partialSummary.covered === true &&
+       partialSummary.coverage === 'PARTIAL' &&
+       partialSummary.coveredStageCount === 1 &&
+       partialSummary.totalStageCount === 2 &&
+       partialSummary.label === 'VRAM: 512 KiB peak' &&
+       partialSummary.title.includes('video/wan22: COVERED · peak 512 KiB · epoch #9') &&
+       partialSummary.title.includes('tts: NOT_COVERED (backend_not_instrumented)'),
+       'partial telemetry summary mismatch: ' + JSON.stringify(partialSummary));
+
+// NOT_COVERED envelope with allocated_bytes_peak: null renders honest 'VRAM: N/C' — NEVER '0 B' or '0 MiB'.
+const notCoveredEnvelope = {
+  schema_version: 1,
+  coverage: 'NOT_COVERED',
+  stages: [
+    {
+      stage: 'vlm',
+      native_stage: 'qwen38',
+      coverage: 'NOT_COVERED',
+      allocated_bytes_peak: null,
+      reason: 'batched_request_attribution_unavailable',
+    },
+  ],
+};
+const notCoveredPills = formatTurnTelemetry({
+  ttftMs: 120,
+  totalMs: 950,
+  nativeAllocator: notCoveredEnvelope,
+});
+assert(JSON.stringify(notCoveredPills.map((p) => p.label)) ===
+  '["TTFT 120 ms","Total 950 ms","VRAM: N/C"]',
+  'NOT_COVERED telemetry pill must be VRAM: N/C, got ' + JSON.stringify(notCoveredPills));
+const ncPill = notCoveredPills.find((p) => p.kind === 'vram');
+assert(ncPill && ncPill.coverage === 'NOT_COVERED' &&
+       !ncPill.label.includes('0 B') && !ncPill.label.includes('0 MiB') &&
+       ncPill.title.includes('vlm/qwen38') &&
+       ncPill.title.includes('batched_request_attribution_unavailable'),
+       'NOT_COVERED tooltip mismatch: ' + ncPill?.title);
+
+// Malformed COVERED stage with null/boolean peak never fabricates 0 B; falls back honestly to VRAM: N/C.
+for (const badPeak of [null, undefined, false, -10]) {
+  const malformed = summarizeNativeAllocatorTelemetry({
+    coverage: 'COVERED',
+    stages: [{ stage: 'vlm', coverage: 'COVERED', allocated_bytes_peak: badPeak }],
+  });
+  assert(malformed && malformed.covered === false && malformed.peakBytes === null &&
+         malformed.label === 'VRAM: N/C',
+         `malformed peak ${badPeak} must render VRAM: N/C, got ${JSON.stringify(malformed)}`);
+}
+
+// Absent telemetry omits VRAM pill completely.
+const absentPills = formatTurnTelemetry({ ttftMs: 150, totalMs: 1100, nativeAllocator: null });
+assert(!absentPills.some((p) => p.kind === 'vram') &&
+       JSON.stringify(absentPills.map((p) => p.label)) === '["TTFT 150 ms","Total 1.10 s"]',
+       'absent telemetry must omit VRAM pill completely');
 
 console.log('showcase and telemetry behavior passed');
 """

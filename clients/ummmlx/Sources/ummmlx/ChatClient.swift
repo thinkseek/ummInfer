@@ -26,6 +26,17 @@ struct ChatCompletion {
     let finishReason: String
     let sessionID: String
     let artifacts: [GeneratedArtifact]
+    let telemetry: NativeAllocatorTelemetryEnvelope?
+
+    init(text: String, finishReason: String, sessionID: String,
+         artifacts: [GeneratedArtifact],
+         telemetry: NativeAllocatorTelemetryEnvelope? = nil) {
+        self.text = text
+        self.finishReason = finishReason
+        self.sessionID = sessionID
+        self.artifacts = artifacts
+        self.telemetry = telemetry
+    }
 }
 
 struct ImageOptions: Equatable {
@@ -177,6 +188,9 @@ struct ChatStreamOptions: Equatable {
     /// user message plus session_history=true. Set by the capability fallback
     /// when a server rejects replayed history.
     var serverHistory = false
+    /// Opt-in per-request native CUDA allocator peak telemetry
+    /// (`telemetry.native_allocator=true`). Omitted completely when false.
+    var nativeAllocatorTelemetry = false
 
     var modalities: [String] {
         var values = ["text"]
@@ -524,6 +538,9 @@ final class ChatClient {
             }
             body["narrative"] = object
         }
+        if options.nativeAllocatorTelemetry {
+            body["telemetry"] = ["native_allocator": true]
+        }
         return body
     }
 
@@ -536,7 +553,8 @@ final class ChatClient {
                 onDelta: (String) -> Void,
                 onEvent: ((UnifiedEvent) -> Void)? = nil,
                 onArtifact: ((GeneratedArtifact) -> Void)? = nil,
-                onAudioChunk: ((AudioStreamChunk) -> Void)? = nil) async throws -> ChatCompletion {
+                onAudioChunk: ((AudioStreamChunk) -> Void)? = nil,
+                onTelemetry: ((NativeAllocatorTelemetryEnvelope) -> Void)? = nil) async throws -> ChatCompletion {
         var shape = options
         var wire = messages
         var historyUnavailable = false
@@ -546,7 +564,7 @@ final class ChatClient {
                 return try await attempt(
                     base: base, model: model, messages: wire, options: shape,
                     onDelta: onDelta, onEvent: onEvent, onArtifact: onArtifact,
-                    onAudioChunk: onAudioChunk)
+                    onAudioChunk: onAudioChunk, onTelemetry: onTelemetry)
             } catch let ChatClientError.http(status, detail)
                         where status == 400 && attempts < 3 {
                 attempts += 1
@@ -625,7 +643,8 @@ final class ChatClient {
                          onDelta: (String) -> Void,
                          onEvent: ((UnifiedEvent) -> Void)?,
                          onArtifact: ((GeneratedArtifact) -> Void)?,
-                         onAudioChunk: ((AudioStreamChunk) -> Void)?) async throws -> ChatCompletion {
+                         onAudioChunk: ((AudioStreamChunk) -> Void)?,
+                         onTelemetry: ((NativeAllocatorTelemetryEnvelope) -> Void)?) async throws -> ChatCompletion {
         try options.videoFrameSelection?.validate()
         try options.narrative?.validate()
         let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -664,10 +683,26 @@ final class ChatClient {
         var finishReason = ""
         var sessionID = ""
         var artifacts: [GeneratedArtifact] = []
+        var latestTelemetry: NativeAllocatorTelemetryEnvelope? = nil
         var received = 0
         var done = false
         var unifiedSeen = false
         var terminalCount = 0
+
+        func deliverTopLevelTelemetry(from root: [String: Any]) {
+            if let rawUnified = root["unified"] as? [String: Any],
+               let rawTelemetry = rawUnified["telemetry"] as? [String: Any],
+               let envelope = UnifiedDecode.decodeNativeAllocatorTelemetry(rawTelemetry) {
+                latestTelemetry = envelope
+                onTelemetry?(envelope)
+                return
+            }
+            if let rawTelemetry = root["telemetry"] as? [String: Any],
+               let envelope = UnifiedDecode.decodeNativeAllocatorTelemetry(rawTelemetry) {
+                latestTelemetry = envelope
+                onTelemetry?(envelope)
+            }
+        }
 
         func consume(_ event: String) throws -> Bool {
             if event == "[DONE]" { return true }
@@ -681,8 +716,10 @@ final class ChatClient {
                 throw ChatClientError.invalidResponse("an SSE event is not an object")
             }
             if let error = root["error"], !(error is NSNull) {
+                deliverTopLevelTelemetry(from: root)
                 throw ChatClientError.http(500, Self.errorDetail(Data(event.utf8)))
             }
+            var deliveredUnifiedTelemetry = false
             if let rawUnified = root["unified"], !(rawUnified is NSNull) {
                 guard let object = rawUnified as? [String: Any] else {
                     throw ChatClientError.invalidResponse("unified is not an object")
@@ -697,6 +734,11 @@ final class ChatClient {
                 unifiedSeen = true
                 if unified.kind.isTerminal { terminalCount = 1 }
                 if !unified.sessionID.isEmpty { sessionID = unified.sessionID }
+                if let telemetry = unified.telemetry {
+                    latestTelemetry = telemetry
+                    deliveredUnifiedTelemetry = true
+                    onTelemetry?(telemetry)
+                }
                 if unified.kind == .artifact, let chunk = unified.artifact,
                    let completed = try collector.ingest(chunk) {
                     if completed.mimeType == "audio/pcm" {
@@ -722,6 +764,12 @@ final class ChatClient {
                 default:
                     break
                 }
+            }
+            if !deliveredUnifiedTelemetry,
+               let rawTelemetry = root["telemetry"] as? [String: Any],
+               let envelope = UnifiedDecode.decodeNativeAllocatorTelemetry(rawTelemetry) {
+                latestTelemetry = envelope
+                onTelemetry?(envelope)
             }
             if let rawChoices = root["choices"] {
                 guard let choices = rawChoices as? [Any] else {
@@ -791,7 +839,8 @@ final class ChatClient {
             throw ChatClientError.invalidResponse("the model returned no text")
         }
         return ChatCompletion(text: text, finishReason: finishReason,
-                              sessionID: sessionID, artifacts: artifacts)
+                              sessionID: sessionID, artifacts: artifacts,
+                              telemetry: latestTelemetry)
     }
 
     private func readLimited(_ bytes: URLSession.AsyncBytes, limit: Int) async throws -> Data {
