@@ -1,0 +1,46 @@
+{
+  "video_id": "order-after",
+  "arm": "uniform",
+  "budget": 8,
+  "source_frame_indices": [
+    3,
+    11,
+    19,
+    27,
+    35,
+    43,
+    51,
+    59
+  ],
+  "source_timestamps_seconds": [
+    1.5,
+    5.5,
+    9.5,
+    13.5,
+    17.5,
+    21.5,
+    25.5,
+    29.5
+  ],
+  "decoded_native_rgb_sha256": [
+    "69d57e76fb8736552698894992ac3b322eb942804bd26811252023a497867205",
+    "dc8ca323d6436e2070dded3c41a927ba44d26f046c57fdf0ae43c7896133c2f0",
+    "415e384a19a267b62c1d2ae52d6620f3279a4a0f3f2ca37a815ce19ec339abd7",
+    "d7880064ca81dbb9a83ad440cb25a37ff8d2368a4d4734571f23bbb2bef4deba",
+    "952f471bcdb040ebc9c9ad15c02dbbcf3550c7747be3a7a2c7aea22b09e36df9",
+    "a640d4363b4912d9ad7d2c4e96749b66b99e1c982ca7160fb5792c4c8f993738",
+    "90c0a035a2c05a582dc3d7ab5b236e8cf9e863f31206b1e51980c27d97c38cba",
+    "4de93317e8073079a9044b4ea3665b0422d56fe9219dcbc3b63b0053de0ab528"
+  ],
+  "content_fnv1a64": [
+    "0437eb019e380432",
+    "d9630bac69dc87f3",
+    "02e8b950af0a83f7",
+    "1146616ab3493268",
+    "ec598c1ccf2fab4f",
+    "d50df45168a3ad46",
+    "ce6b25044865c7a2",
+    "1c0357d24e7a1c46"
+  ],
+  "contact_sheet_layout": "4 columns; presentation order left-to-right, top-to-bottom"
+}

@@ -1,0 +1,30 @@
+{
+  "video_id": "five-events",
+  "arm": "temporal",
+  "budget": 4,
+  "source_frame_indices": [
+    0,
+    32,
+    392,
+    448
+  ],
+  "source_timestamps_seconds": [
+    0.0,
+    16.0,
+    196.0,
+    224.0
+  ],
+  "decoded_native_rgb_sha256": [
+    "adac57460053059093fe0bebb46cdb905477efab4e940cba5222520be1c5c8af",
+    "b3b6811fcfa17e813eb90ba3c073bac8f66549327a63ca9b71c57e1bdd964a23",
+    "e4d88c226f886c2a3bbf88ecc9413848dcd447fc294bf2ade76df46accf3bff4",
+    "9833eea6a157e63b096532a1a36eb4c41d8b8e7475238ebc3d42eefb46a72727"
+  ],
+  "content_fnv1a64": [
+    "adf8757a744312fd",
+    "acae95fb0a4b4932",
+    "485ffaf9a3944c87",
+    "e824b7982e183725"
+  ],
+  "contact_sheet_layout": "4 columns; presentation order left-to-right, top-to-bottom"
+}

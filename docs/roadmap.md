@@ -243,6 +243,19 @@ orchestration, perceptual quality, and deployment remain `NOT_RUN`; exact hashes
 all per-run values, negative controls, and cleanup are in
 [flux2-i2v-continuity](flux2-i2v-continuity.md).
 
+**Phase 4 held-out temporal-selector evaluation (Task #66, 2026-11-27).** Ten new
+preregistered synthetic long-video quality questions ran on sequential isolated
+SM90 GPU 1 serial/batch-four stacks with 560/560 completed requests and 500/500
+exact parity checks. The accepted motion-run selector's primary temporal-8 arm
+matched uniform-8 at 18/60, with two improved and two worsened case/mode pairs
+(`p=1.0`), so generalized improvement remains unsupported. Temporal-4 scored
+30/60 versus uniform-4's 12/60 (`p=0.109375`); temporal-16 and uniform-16 both
+scored 24/60. Historical Task #61 cases/scores and its Japanese miss remain
+unchanged and outside the held-out denominator. Natural-video and perceptual
+quality are `NOT_COVERED`/`NOT_RUN`; no runtime change followed the retained
+regressions. Exact raw answers, misses, outliers, hashes, and cleanup are in
+[video-temporal-heldout](video-temporal-heldout.md).
+
 **Phase 4 real public narrative source-slot gate (Task #65, 2026-11-27).** On
 isolated physical GPU 1, one real public VLM request emitted a FLUX.2 image
 slot, an explicit `source=slot-0` native Wan I2V, and clean streaming speech.

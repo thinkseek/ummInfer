@@ -1,0 +1,30 @@
+{
+  "video_id": "bframe-anchors-heldout",
+  "arm": "uniform",
+  "budget": 4,
+  "source_frame_indices": [
+    0,
+    149,
+    299,
+    448
+  ],
+  "source_timestamps_seconds": [
+    0.0,
+    74.5,
+    149.5,
+    224.0
+  ],
+  "decoded_native_rgb_sha256": [
+    "6f892215241dfe7d57a7eefcc4f2e5fe21c479032c7b70f4239b891a10f00227",
+    "97e71afd022ee59639a220042dc0152e9dca1924c0c8397e640b75cdce6f6943",
+    "00e362cb5b37f173ed3f847df9a0b89f9081b441e58e80ceb78908f8cd4a6b66",
+    "ead06ef71660b2317c00e0d6180a444beafba08177f08a2c787ff2fe4855426c"
+  ],
+  "content_fnv1a64": [
+    "8cc274d268c373f7",
+    "bc0a52c774ceb60d",
+    "01c3c2300291139e",
+    "475dedb97cc26c9a"
+  ],
+  "contact_sheet_layout": "4 columns; presentation order left-to-right, top-to-bottom"
+}

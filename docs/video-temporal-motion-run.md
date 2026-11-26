@@ -210,3 +210,14 @@ or generalized quality benchmark ran. Those remain `NOT_RUN`/`NOT_COVERED`. The
 small synthetic fixture cannot resolve statistical significance, and the Japanese
 `円` miss remains unchanged. No realtime/TTS, online-training, client, deployment,
 or resident-service behavior was changed or validated.
+
+Task #66 subsequently froze ten new synthetic held-out questions and evaluated the
+unchanged accepted candidate on sequential GPU 1 serial/batch-four stacks. The
+primary temporal-8 result was 18/60, equal to uniform-8, with two improved and two
+worsened case/mode pairs and exact sign-test `p=1.0`; this does not support a
+general improvement claim. Temporal-4 scored 30/60 versus uniform-4's 12/60 with
+`p=0.109375`; temporal-16 matched uniform-16 at 24/60. The four cases and scores
+above remain unchanged historical controls, and `円` remains a miss with no new
+alias. Full raw answers, misses, outliers, checksums, and cleanup are in
+[video-temporal-heldout](video-temporal-heldout.md). Natural-video and perceptual
+quality remain `NOT_COVERED`/`NOT_RUN`; final runtime stayed unchanged.

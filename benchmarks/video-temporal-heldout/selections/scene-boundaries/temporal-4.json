@@ -1,0 +1,30 @@
+{
+  "video_id": "scene-boundaries",
+  "arm": "temporal",
+  "budget": 4,
+  "source_frame_indices": [
+    0,
+    256,
+    368,
+    448
+  ],
+  "source_timestamps_seconds": [
+    0.0,
+    128.0,
+    184.0,
+    224.0
+  ],
+  "decoded_native_rgb_sha256": [
+    "adac57460053059093fe0bebb46cdb905477efab4e940cba5222520be1c5c8af",
+    "b6ff950b5613a4b2897645ac310e96173d16a181f502732d0685da9517ffcc72",
+    "a322f846b7598aedbf55bf1511d6836c9f80f5bd15ae4c0de45629457d0145fb",
+    "a322f846b7598aedbf55bf1511d6836c9f80f5bd15ae4c0de45629457d0145fb"
+  ],
+  "content_fnv1a64": [
+    "adf8757a744312fd",
+    "8949cdf77ed2e263",
+    "da5cd7a51d2349c3",
+    "da5cd7a51d2349c3"
+  ],
+  "contact_sheet_layout": "4 columns; presentation order left-to-right, top-to-bottom"
+}

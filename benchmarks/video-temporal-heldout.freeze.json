@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "temporal-heldout-r1",
+  "frozen_on": "2026-11-27",
+  "frozen_before_any_model_response": true,
+  "model_response_inspected": false,
+  "preregistration_sha256": "74eb3eac15233ec5fe508168dfa6b974259544b5b29ef9c28f74ca3539d24bbe",
+  "manifest_sha256": "25c51b6c97cdf9bd6b95991da8a424e8a366ae3105a59099a181d22b65eb2db8",
+  "sha256sums_sha256": "9a0d0389ac38f48e91dd251dacd6d5e1fd398e01fd7ca52a6705b3585468c000",
+  "quality_case_ids": [
+    "heldout-separated-middle-en",
+    "heldout-contiguous-last-zh",
+    "heldout-third-scene-es",
+    "heldout-scene-count-es",
+    "heldout-static-square-ja",
+    "heldout-bframe-first-fr",
+    "heldout-bframe-last-en",
+    "heldout-order-after-de",
+    "heldout-five-events-en",
+    "heldout-single-flash-it"
+  ],
+  "historical_task61_cases_in_denominator": [],
+  "post_freeze_case_prompt_source_answer_scoring_population_or_runtime_changes": "forbidden"
+}

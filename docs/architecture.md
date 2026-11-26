@@ -156,6 +156,16 @@ default/uniform 均不变。在同一空闲 SM90 物理 GPU 1 上顺序运行 se
 `p=0.5`，故仅为四例合成夹具的受控改进，感知质量与泛化仍 `NOT_RUN`/`NOT_COVERED`。
 详见 [video-temporal-motion-run.md](video-temporal-motion-run.md)。
 
+Task #66 随后在不改 accepted selector、阈值或 runtime 的前提下，冻结 8 个新 procedural
+synthetic 449 帧源与 10 个多语言质量问题，在同一空闲 SM90 物理 GPU 1 顺序运行 serial 与
+batch-four，完成 560/560 请求和 500/500 parity。primary temporal-8 与 uniform-8 均为
+18/60，paired case/mode 为 2 改进 / 2 回退，精确符号检验 `p=1.0`；temporal-4 为 30/60
+（uniform-4 12/60，`p=0.109375`），temporal-16 与 uniform-16 均 24/60。四个 Task #61
+用例及分数保持不变且不进入新分母，历史日文 `円` miss 不新增别名。独立新进程重解码
+3,592 帧并复核全部 RGB/source/PTS/temporal-2/mRoPE、答案、聚合与校验和。该结果不支持
+泛化提升；自然视频与感知质量仍 `NOT_COVERED`/`NOT_RUN`，最终 runtime 不变。详见
+[video-temporal-heldout.md](video-temporal-heldout.md)。
+
 ---
 
 ### 2.2 显式叙事图像槽位 → I2V 引用与内容寻址绑定

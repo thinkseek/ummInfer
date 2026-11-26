@@ -1,0 +1,30 @@
+{
+  "video_id": "static-square",
+  "arm": "temporal",
+  "budget": 4,
+  "source_frame_indices": [
+    0,
+    280,
+    304,
+    448
+  ],
+  "source_timestamps_seconds": [
+    0.0,
+    140.0,
+    152.0,
+    224.0
+  ],
+  "decoded_native_rgb_sha256": [
+    "c8e9bb8076cb513de111bfd73aadb1cb2a272ad7bf305db2b5190587759ca24a",
+    "25aa15ef4a0e22fa88e26ed5b9522a0e9c4d8445e02df2eb7d10b720b35e9d80",
+    "0dab57bf4e56b07e663196b6cae57c0f7b4dcd81d7568713aa95f3af86c1eab6",
+    "0dab57bf4e56b07e663196b6cae57c0f7b4dcd81d7568713aa95f3af86c1eab6"
+  ],
+  "content_fnv1a64": [
+    "aec2267ad2940002",
+    "595c21bd0bd37d53",
+    "d6e3ccf62dc8fb79",
+    "d6e3ccf62dc8fb79"
+  ],
+  "contact_sheet_layout": "4 columns; presentation order left-to-right, top-to-bottom"
+}
