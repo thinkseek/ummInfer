@@ -568,6 +568,23 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 48 Stage C Opt-In Exported-Token Joint-SFT Path & SM90 GPU 7 Dual-Path Equivalence Gate (`f344d1d`):
+  - Harvested accepted Task #40 (`revisions=0`, isolated SM90 GPU 7 real
+    `Qwen2.5-0.5B` BF16 AdamW gate): landed `--token-source legacy|token_export`
+    with pre-Torch strong tokenizer/file-hash validation in
+    `python/umminfer_joint_sft_live.py`, additive `token_export`/`token_export_source`
+    SFT row support in `python/umminfer_sft_dataset.py` (default legacy JSONL
+    bytes unchanged), `tests/joint_sft_live_test.py` (6/6 PASS),
+    `docs/exported-token-sft-live.md`, and updated `docs/joint-training.md`,
+    `docs/rl.md`, and `docs/roadmap.md`.
+  - SM90 GPU 7 gate: 2 AdamW steps per path (losses `8.0031595` -> `4.8293972`),
+    exact zero-mismatch equivalence across legacy vs exported-token IDs, labels,
+    masks, losses, 290/290 non-zero gradient tensors, parameter updates, and
+    model/optimizer states, exact fresh-process resume byte equality, **66/66
+    `SHA256SUMS` PASS**, GPU 7 returned to `3 MiB`. Local 10-suite Stage C
+    regression passed; model quality & sampled online behavior IDs remain
+    explicitly `NOT_RUN`.
+
 - Wave 47 Deterministic Realtime Full-Duplex Concurrency/Lifecycle Stress Gate & Duplicate-Terminal Tombstone Fix (`3a46598`):
   - Harvested accepted Task #38 (`revisions=0`, CPU-only stress & sanitizer
     gate): landed `tests/realtime_stress_test.cpp`,
