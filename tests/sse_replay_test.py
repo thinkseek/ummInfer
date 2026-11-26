@@ -2,7 +2,8 @@
 """Deterministic raw-SSE capture/replay and tamper-rejection contracts.
 
 Usage: python3 -I tests/sse_replay_test.py
-All clocks are explicit logical ticks; no wall time, GPU, or serving import.
+Fixture clocks are logical ticks; one chunked-HTTP smoke records real monotonic
+arrival ticks. No wall time, GPU, or serving import is used.
 """
 
 import copy
@@ -23,6 +24,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import narrative_rl_fixtures as fixture  # noqa: E402
+import sse_replay_live as live_harness  # noqa: E402
 import umminfer_rl_reward as reward_mod  # noqa: E402
 import umminfer_rl_trajectory as traj  # noqa: E402
 import umminfer_rl_worker as worker  # noqa: E402
@@ -54,6 +56,7 @@ class ChunkReader:
 
 class CannedHandler(BaseHTTPRequestHandler):
     response_bytes = b""
+    chunked = False
 
     def log_message(self, *_args):
         pass
@@ -62,21 +65,32 @@ class CannedHandler(BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(self.response_bytes)))
+        if self.chunked:
+            self.send_header("Transfer-Encoding", "chunked")
+        else:
+            self.send_header("Content-Length", str(len(self.response_bytes)))
         self.send_header("Connection", "close")
         self.end_headers()
         # Several writes exercise real HTTP capture; the exact read boundaries
         # themselves are recorded rather than assumed from these writes.
         cut = max(1, len(self.response_bytes) // 3)
         for start in range(0, len(self.response_bytes), cut):
-            self.wfile.write(self.response_bytes[start:start + cut])
+            part = self.response_bytes[start:start + cut]
+            if self.chunked:
+                self.wfile.write(f"{len(part):X}\r\n".encode() + part + b"\r\n")
+            else:
+                self.wfile.write(part)
+            self.wfile.flush()
+        if self.chunked:
+            self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         self.close_connection = True
 
 
 @contextmanager
-def canned_server(raw):
-    handler = type("Handler", (CannedHandler,), {"response_bytes": raw})
+def canned_server(raw, *, chunked=False):
+    handler = type("Handler", (CannedHandler,),
+                   {"response_bytes": raw, "chunked": chunked})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -159,6 +173,21 @@ class RawSSEReplayTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("RAW_SSE_REPLAY: PASS", proc.stdout)
             self.assertEqual(out.read_bytes(), recorder.jsonl_path.read_bytes())
+
+    def test_live_harness_real_chunked_response_is_not_preconsumed(self):
+        raw = fixture.sse_bytes(fixture.linked_events())
+        with tempfile.TemporaryDirectory(prefix="umm-sse-live-chunked-") as tmp:
+            recorder = traj.TrajectoryRecorder(Path(tmp) / "trajectories.jsonl")
+            with canned_server(raw, chunked=True) as url:
+                record, abort = live_harness.capture_public_sse(
+                    url, request_body(), recorder, "chunked-session")
+            self.assertIsNone(abort)
+            self.assertEqual(record["terminal_state"], "completed")
+            self.assertEqual(record["sse_replay"]["clock"]["kind"], "monotonic_ns")
+            self.assertEqual(
+                (recorder.artifact_dir / record["sse_replay"]["raw_ref"]).read_bytes(),
+                raw)
+            self.assertGreater(len(record["sse_replay"]["chunks"]), 1)
 
     def test_split_coalesced_crlf_comments_keepalives_and_plain_terminal(self):
         linked = fixture.sse_bytes(fixture.linked_events(delayed=True))

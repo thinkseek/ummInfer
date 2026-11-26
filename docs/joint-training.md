@@ -211,7 +211,7 @@ python3 -I tests/joint_grpo_live_test.py
 | --- | --- | --- |
 | Offline v1/v2 trajectory integrity & CAS audit | **COVERED** | Deterministic CPU-only unit tests |
 | Raw-SSE live-versus-replay byte identity | **COVERED (loopback fixture)** | Exact raw/chunk/frame/[DONE], logical ticks, normalized JSONL and source hashes; no model claim |
-| Real resident-service raw capture + fresh-process replay | **NOT_RUN** | Later live gate must use observed `monotonic_ns` ticks and actual model service |
+| Isolated real-service raw capture + fresh-process replay | **PASS (SM90 GPU 0)** | Real text/visual-contract/cancelled streams, observed `monotonic_ns`, byte-identical JSONL/CAS and tamper rejection; visual media are contract fixtures. See [sse-replay-live.md](sse-replay-live.md) |
 | SFT interleaved beat-marker reconstruction & dedup | **COVERED** | Byte-identical across repeated runs |
 | Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")` |
 | Zero train/eval prompt leakage & manifest sidecar | **COVERED** | Verified at build time and `--audit-only` |

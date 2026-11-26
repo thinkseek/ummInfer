@@ -311,11 +311,15 @@ ticks, with content-addressed raw `.sse` bytes and transport chunk/frame
 boundaries outside JSONL. Deterministic CPU loopback fixtures prove
 live-versus-replay byte identity, source hashes, cancellation, explicit
 `source=slot-N` anchors, framing variants, and tamper rejection; schema v1 and
-older v2 records remain readable. This satisfies the recorded-transport replay
-contract only. Real resident-service capture, observed-clock live replay, and
-model-quality outcomes are `NOT_RUN` here and retain the later live gate in
-[rl.md](rl.md#raw-sse-byte-replay-sidecar-format-v1). Sampled token ids and the
-phase-2 boundary-token precision limit are unchanged.
+older v2 records remain readable. The isolated SM90 GPU 0 live gate also
+passed real public text-only, interleaved visual-contract, and in-flight
+cancelled captures with observed `monotonic_ns` ticks, byte-identical
+fresh-process JSONL/raw/media replay, split/coalesced reads, and altered
+frame/tick rejection. Visual bytes are explicitly marked contract fixtures.
+This satisfies the recorded-transport replay contract only; exact hashes and
+cleanup are in [sse-replay-live.md](sse-replay-live.md). Model quality,
+generalized performance, and sampled token-id recovery remain unclaimed. The
+phase-2 boundary-token precision limit is unchanged.
 
 The Stage C joint-SFT, joint-DPO, and joint-GRPO optimizer gates are separately
 bounded to deterministic schema-v2 text/visual-slot fixtures and one small local

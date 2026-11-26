@@ -12,7 +12,9 @@ or transformers, and no second inference engine exists.
 | `python/umminfer_rl_reward.py` | Export-only reward interface, deterministic composite UMM reward, and plugin loader |
 | `python/umminfer_rl_worker.py` | Independent v1/v2 validation, NDJSON worker protocol, checkpoint hash chain |
 | `tests/narrative_rl_fixtures.py` | Deterministic interleaved narrative, explicit-slot, failed-leg, and cancelled-response fixtures |
-| `tests/sse_replay_test.py` | Loopback live/replay byte identity, framing, timing, CAS, and tamper contracts |
+| `tests/sse_replay_test.py` | Loopback live/replay byte identity, framing, timing, CAS, chunked HTTP, and tamper contracts |
+| `tests/sse_replay_live.py` | Opt-in isolated real public-SSE capture, cancellation, fresh-process replay, framing, and tamper gate |
+| `docs/sse-replay-live.md` | SM90 live hashes, contract-media boundary, replay evidence, and cleanup record |
 | `tests/narrative_slot_reference_live.py` | Explicit `source=slot-N` offline self-check and deferred real-model gate |
 | `tests/rl_architecture_test.py` | Deterministic schema-v2 recorder/validator/reward contracts |
 | `tests/rl_phase2_test.py` | Worker/checkpoint/protocol contracts; does not execute an optimizer |
@@ -248,11 +250,13 @@ including CAS names and bytes.
 
 This closes the **recorded transport** portion of the roadmap Replay gate. It
 does not make model inference deterministic and does not add sampled token ids.
-Real-time capture against a resident model service and model-quality outcomes
-are `NOT_RUN` for this change. The later live gate must record raw bytes and
-observed monotonic ticks from an actual service, replay them in a fresh process,
-verify byte-identical JSONL/raw SSE and CAS hashes, and keep model quality as a
-separate evaluation.
+The isolated SM90 live gate has now passed for real text-only, interleaved
+visual-contract, and in-flight-cancelled public streams with observed
+`monotonic_ns` ticks. Fresh-process replay was byte-identical, raw/media CAS
+checks passed, and altered frame/tick cases were rejected. Visual bytes are
+explicit contract fixtures, not model-quality evidence. See
+[sse-replay-live.md](sse-replay-live.md) for exact hashes, scope, and cleanup.
+Model quality and generalized performance remain `NOT_RUN`.
 
 ## Rewards
 
