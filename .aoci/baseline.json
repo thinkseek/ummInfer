@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T08:49:44Z",
+  "updated_at": "2026-11-26T09:10:27Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "e5085b1d99398b0a56afb550d0b29c4ef992ddb1bf3007609b8c0097a94d1dbe",
-      "size": 252982,
-      "normalized_sha256": "e5085b1d99398b0a56afb550d0b29c4ef992ddb1bf3007609b8c0097a94d1dbe"
+      "sha256": "550ebb10c6082bb0c534a2654d9fe9fc9528201763919e1821a820e85b8469f2",
+      "size": 252956,
+      "normalized_sha256": "550ebb10c6082bb0c534a2654d9fe9fc9528201763919e1821a820e85b8469f2"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -557,9 +557,9 @@
     },
     "docs/client.md": {
       "role": "index",
-      "sha256": "2f229af6102c0b6b9b110346fd94086aa09c91fa97e3d5d91c57737b00794da7",
-      "size": 50835,
-      "normalized_sha256": "2f229af6102c0b6b9b110346fd94086aa09c91fa97e3d5d91c57737b00794da7"
+      "sha256": "f46d09ed4c65de9f2fbc1b2ad4d78b6babd603942a6d6095e5f18abd11fe9641",
+      "size": 51665,
+      "normalized_sha256": "f46d09ed4c65de9f2fbc1b2ad4d78b6babd603942a6d6095e5f18abd11fe9641"
     },
     "docs/concurrency.md": {
       "role": "index",
@@ -635,9 +635,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "7b23de7ca97f94d65985ce2b8f90f13366f7e8d08aaaf273fae52b51bb22bdeb",
-      "size": 146441,
-      "normalized_sha256": "7b23de7ca97f94d65985ce2b8f90f13366f7e8d08aaaf273fae52b51bb22bdeb"
+      "sha256": "e965ed4be9661df2d3a5421b2f7db125fc0a29d33f4eadb11a712ae125f8674e",
+      "size": 146483,
+      "normalized_sha256": "e965ed4be9661df2d3a5421b2f7db125fc0a29d33f4eadb11a712ae125f8674e"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -3175,9 +3175,9 @@
     },
     "tests/web_ui_contract_test.py": {
       "role": "observe",
-      "sha256": "004b73c452489ccc8a597b0a20a8e55e2baef8b03c4b1dcd6e2c89d135227ffd",
-      "size": 94146,
-      "normalized_sha256": "004b73c452489ccc8a597b0a20a8e55e2baef8b03c4b1dcd6e2c89d135227ffd"
+      "sha256": "7150546d6b8710ac2e41ec8c4a5c0dbe10c34dbf1a446a49052d1c016ff4e89b",
+      "size": 113862,
+      "normalized_sha256": "7150546d6b8710ac2e41ec8c4a5c0dbe10c34dbf1a446a49052d1c016ff4e89b"
     },
     "tools/audio_analyze.py": {
       "role": "index",
@@ -3229,9 +3229,9 @@
     },
     "web/index.html": {
       "role": "index",
-      "sha256": "af6748593074247a9a19b45fb1ba86a587814b5d942bbd33e2432669cb58df77",
-      "size": 140029,
-      "normalized_sha256": "af6748593074247a9a19b45fb1ba86a587814b5d942bbd33e2432669cb58df77"
+      "sha256": "a9759942434a75983feec96faae8c5224bdfbd4d2bdd049261760365e496f67f",
+      "size": 159243,
+      "normalized_sha256": "a9759942434a75983feec96faae8c5224bdfbd4d2bdd049261760365e496f67f"
     }
   },
   "managed_scope": {
