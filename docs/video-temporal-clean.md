@@ -432,3 +432,16 @@ Final claim boundary: `REAL_GENERATION: MEASURED_LIMITED_FIXTURE`,
 `LIVE_LATENCY: CONTROLLED_LIVE`,
 `FIXTURE_SUBSTRING_ACCURACY: MEASURED_LIMITED_FIXTURE`,
 `PERCEPTUAL_QUALITY: NOT_RUN`, generalized quality claim `false`.
+
+## Task #61 motion-run selection follow-up
+
+The frozen fixture bytes, prompts, answers, scoring, thresholds, and controls above
+remain unchanged. A separate preregistered single-factor candidate coalesces each
+contiguous above-threshold motion run to one representative before the existing
+uniform fill. Sequential serial/batch-four execution used only physical GPU 1.
+Across 896 baseline/candidate requests, temporal-8 improved from 12/24 to 18/24,
+matching but not exceeding default/uniform-8; temporal-4/16 and every
+default/uniform arm did not regress. The exact paired sign-test p-value is 0.5,
+so this is limited-fixture evidence only. Exact selections, latency, raw answers,
+checksums, independent fresh-process verification, and remaining limits are in
+[video-temporal-motion-run.md](video-temporal-motion-run.md).

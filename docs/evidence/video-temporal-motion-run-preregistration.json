@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "experiment": "qwen38_temporal_motion_run_v1",
+  "preregistered_on": "2026-11-26",
+  "baseline_commit": "49d34063b7ecb61d0571bf962b11f1a71c0d039f",
+  "frozen_fixture": {
+    "revision": "temporal-clean-r1",
+    "manifest_sha256": "62f475a74732fa3504850ebe4517dc98903ba39202dce457441c52133a6c96c0",
+    "preregistration_sha256": "96608dc793d54f64f55a7c46862d1b1737cbf807a8807d1b22b2fcd0502d2a77",
+    "freeze_receipt_sha256": "ca9e93ddd80cdc4495e0a7c3893687afb9db31c21d69cc48d87d458aef931dad",
+    "bytes_prompts_answers_scoring_and_thresholds_may_change": false
+  },
+  "historical_controlled_evidence": {
+    "task54_per_mode_quality_hits_out_of_12": {
+      "default_8": 9,
+      "uniform_4": 3,
+      "uniform_8": 9,
+      "uniform_16": 9,
+      "temporal_4": 3,
+      "temporal_8": 6,
+      "temporal_16": 9
+    },
+    "use": "motivation only; this experiment reruns every baseline arm before candidate traffic"
+  },
+  "primary_quality_metric": {
+    "name": "frozen_clean_quality_casefold_substring_hits",
+    "population": "the four quality_scored cases only; selection_miss_control records are retained but excluded",
+    "denominator_per_arm_budget": 24,
+    "construction": "4 cases x 3 measured repetitions x serial and batch-four modes",
+    "rule": "casefolded expect_any_group uses any term; otherwise every expect_all term must occur; no aliases may be added",
+    "promotion_rule": "candidate temporal-8 hits must exceed rerun baseline temporal-8 and be at least max(rerun default-8, rerun uniform-8); no case/mode/budget that is a temporal baseline hit may become a candidate miss"
+  },
+  "single_factor_intervention": {
+    "name": "coalesce_contiguous_above_threshold_motion_runs",
+    "runtime_file_permitted_to_change": "native/qwen38/video_sampling.cpp",
+    "algorithm": "After the frozen scene-representative pass, replace the list of every above-motion-threshold candidate with one representative per contiguous above-threshold run. Choose greatest motion, then greatest scene, then earliest decode index. Globally rank run representatives by the frozen motion/scene/index comparator; retain frozen anchors, scene priority, uniform fill, chronological output, thresholds, candidate stride, and budgets.",
+    "forbidden_changes": [
+      "default or uniform decode and pixels",
+      "public request schema or defaults",
+      "motion or scene thresholds",
+      "candidate count or source stride",
+      "temporal-2 packing or mRoPE",
+      "fixture prompts answers aliases scoring or validation strength"
+    ]
+  },
+  "schedule": {
+    "phases": ["baseline", "candidate"],
+    "physical_gpu": 1,
+    "execution": "newly launched serial and batch-four stacks sequentially on the same exclusively idle physical GPU; never simultaneously resident",
+    "modes": {
+      "serial": {"batch_size": 1, "client_concurrency": 1},
+      "batch4": {"batch_size": 4, "client_concurrency": 4}
+    },
+    "budgets": [4, 8, 16],
+    "default_budget": 8,
+    "warmup_repetitions": 1,
+    "measured_repetitions": 3,
+    "seed": 510051,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 64,
+    "prefix_cache": "disabled; every request prefix_reused=0",
+    "requests_per_phase": 448,
+    "warmup_requests_per_phase": 112,
+    "measured_requests_per_phase": 336,
+    "arm_order": "the frozen seeded/interleaved clean schedule"
+  },
+  "technical_no_regression_gates": [
+    "448/448 completed and native-valid requests per phase; all raw answers, SSE frames, failures and misses retained",
+    "400/400 default-uniform, serial-batch-four and within-mode repetition parity checks per phase",
+    "exact independently bound selected RGB, source indices, source PTS and chronological order for every request",
+    "exact temporal-2 pair-first timestamps, grid/token layout and mRoPE parity; cold prefix on every request",
+    "default and every uniform arm are byte-identical between baseline and candidate in request projection, raw answer and native parity fields",
+    "candidate temporal selections exactly match an independent fresh-process motion-run oracle derived from frozen candidate scores and source-content records",
+    "whole-device exclusivity before and after each mode, in_flight=0 after every schedule step, bounded resident memory and post-stop GPU cleanup",
+    "candidate temporal total and native-elapsed median milliseconds no more than 5 percent above the corresponding baseline mode/budget median"
+  ],
+  "uncertainty": {
+    "request_level_interval": "two-sided 95 percent Wilson score interval for hits/24, reported descriptively",
+    "paired_unit": "case-by-mode pair (8 pairs); repetitions are determinism checks, not independent semantic examples",
+    "paired_effect": "discordant improved/worsened case-mode pairs and exact two-sided sign-test p-value",
+    "interpretation": "four synthetic semantic cases cannot establish generalized perceptual quality; PERCEPTUAL_QUALITY remains NOT_RUN"
+  },
+  "decision": {
+    "accept_candidate_only_if": "primary promotion rule and every technical no-regression gate pass",
+    "otherwise": "retain all negative evidence and revert the runtime intervention; default behavior remains unchanged in either outcome",
+    "generalized_quality_claim": false,
+    "perceptual_quality": "NOT_RUN"
+  }
+}

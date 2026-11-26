@@ -73,8 +73,33 @@ void test_motion_scene_order_and_ties() {
   scores[3] = {0.5, 0.4};
   scores[5] = {0.5, 0.4};
   selected = umminfer::qwen38::select_temporal_keyframes(scores, options);
-  check(selected == std::vector<size_t>({0, 2, 3, 7}),
-        "equal motion/scene scores break ties by earliest decode index");
+  check(selected == std::vector<size_t>({0, 2, 5, 7}),
+        "equal scores use the earliest member of a motion run and preserve separated events");
+}
+
+void test_motion_run_representatives_and_anchors() {
+  VideoFrameSelection options = temporal(4, 12);
+  options.scene_threshold = 1.0;
+  std::vector<TemporalFrameScore> scores(12);
+  scores[2] = {0.4, 0.1};
+  scores[3] = {0.9, 0.2};
+  scores[4] = {0.5, 0.3};
+  scores[8] = {0.8, 0.1};
+  scores[9] = {0.8, 0.1};
+  auto selected = umminfer::qwen38::select_temporal_keyframes(scores, options);
+  check(selected == std::vector<size_t>({0, 3, 8, 11}),
+        "each contiguous motion run has one strongest/earliest representative between anchors");
+
+  options.motion_threshold = 1.0;
+  selected = umminfer::qwen38::select_temporal_keyframes(scores, options);
+  check(selected == std::vector<size_t>({0, 4, 7, 11}),
+        "below-threshold motion runs retain deterministic uniform fill and boundary anchors");
+
+  options = temporal(4, 12);
+  scores.assign(12, {0.8, 0.8});
+  selected = umminfer::qwen38::select_temporal_keyframes(scores, options);
+  check(selected == std::vector<size_t>({0, 1, 4, 11}),
+        "one all-motion run consumes one priority slot without losing coverage anchors");
 }
 
 void test_static_repeated_short_and_all_motion_fallbacks() {
@@ -459,6 +484,7 @@ void test_ffmpeg_default_equivalence_and_temporal_budget() {
 
 int main() {
   test_motion_scene_order_and_ties();
+  test_motion_run_representatives_and_anchors();
   test_static_repeated_short_and_all_motion_fallbacks();
   test_duplicate_scene_run();
   test_analysis_and_temporal_timestamps();

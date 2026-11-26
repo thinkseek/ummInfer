@@ -58,9 +58,12 @@ std::vector<TemporalFrameScore> analyze_temporal_frames(
 // Selects at most options.max_frames candidate positions. The first and last
 // candidates are coverage anchors. Adjacent scene detections count as one
 // boundary; the strongest detection represents the run (motion, then earliest
-// index, breaks ties). Scene representatives rank before other motion peaks.
-// Unused slots are filled by deterministic uniform coverage, so static clips,
-// repeated frames, high thresholds, and short clips always have a valid result.
+// index, breaks ties). Scene representatives rank before motion representatives;
+// each contiguous above-threshold motion run contributes only its strongest member
+// (motion, then scene, then earliest index), preventing one event from consuming
+// several priority slots. Unused slots are filled by deterministic uniform
+// coverage, so static clips, repeated frames, high thresholds, and short clips
+// always have a valid result.
 // The returned positions are unique and strictly increasing in decode order.
 std::vector<size_t> select_temporal_keyframes(
     const std::vector<TemporalFrameScore>& scores,

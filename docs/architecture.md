@@ -146,6 +146,16 @@ batch-four 完成 448/448 请求（112 热身 + 336 实测），400/400 parity�
 下降；16 帧提高部分 temporal 命中但增加 prefill/ViT 时延，不能据此声称泛化质量。详见
 [video-temporal-clean.md](video-temporal-clean.md#task-54-explicit-4816-frame-budgets)。
 
+Task #61 的受控单因子扩展只改变显式 temporal 的运动优先级：相邻超阈值 motion
+候选先合并为一个事件，每个 run 以 motion、scene、最早解码序选出唯一代表，再沿用冻结
+的全局排序与 uniform 补位；首末锚点、阈值、候选 stride、PTS、temporal-2/mRoPE 和
+default/uniform 均不变。在同一空闲 SM90 物理 GPU 1 上顺序运行 serial 与 batch-four，
+896/896 请求、每阶段 400/400 parity 和 256/256 default/uniform 跨阶段恒等通过；temporal-8
+冻结质量命中从 12/24 提升到 18/24，仅追平 default/uniform-8，4/16 无回退，时延门禁通过。
+两个无 producer scoring import 的新进程独立重解码 1,796 源帧并复核全部记录。配对符号检验
+`p=0.5`，故仅为四例合成夹具的受控改进，感知质量与泛化仍 `NOT_RUN`/`NOT_COVERED`。
+详见 [video-temporal-motion-run.md](video-temporal-motion-run.md)。
+
 ---
 
 ### 2.2 显式叙事图像槽位 → I2V 引用与内容寻址绑定

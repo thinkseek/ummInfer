@@ -276,8 +276,11 @@ mapping and the historical 0.25-fps floor cannot clamp 16 to 8.
 
 The opt-in `policy="temporal"` path decodes at most 64 candidates, ranks
 deduplicated scene boundaries and motion on a fixed 16×16 luma grid, and selects
-4/8/16 frames with first/last anchors and uniform fallback. Ties use the earliest
-decode index; short/static/repeated clips always have a bounded valid result.
+4/8/16 frames with first/last anchors and uniform fallback. Each contiguous
+above-threshold motion run contributes one strongest representative (motion, then
+scene, then earliest index), so one event cannot consume several priority slots.
+Ties use the earliest decode index; short/static/repeated clips always have a
+bounded valid result.
 Selection stays in decode order and preserves finite source PTS, including
 non-monotonic PTS. Pair-first source timestamps feed the existing video prompt
 and 3D MRoPE; an odd short decode duplicates only its final temporal-2 pixel

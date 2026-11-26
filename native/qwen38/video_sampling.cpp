@@ -195,10 +195,25 @@ std::vector<size_t> select_temporal_keyframes(
   for (size_t index : scene_representatives) select(index);
 
   std::vector<size_t> motion_peaks;
-  for (size_t i = 1; i < count; ++i) {
+  for (size_t i = 1; i < count;) {
     // Strict comparison makes repeated frames (score zero) ineligible even at
-    // a zero threshold. They can still be used by bounded uniform fallback.
-    if (scores[i].motion > options.motion_threshold) motion_peaks.push_back(i);
+    // a zero threshold. Coalesce each contiguous above-threshold motion run to
+    // one strongest representative so one event cannot consume several slots.
+    if (!(scores[i].motion > options.motion_threshold)) {
+      ++i;
+      continue;
+    }
+    size_t end = i + 1;
+    size_t best = i;
+    while (end < count && scores[end].motion > options.motion_threshold) {
+      if (higher_motion(scores[end], scores[best]) ||
+          (!higher_motion(scores[best], scores[end]) && end < best)) {
+        best = end;
+      }
+      ++end;
+    }
+    motion_peaks.push_back(best);
+    i = end;
   }
   stable_score_sort(&motion_peaks, scores, /*scene_primary=*/false);
   for (size_t index : motion_peaks) select(index);
