@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T09:20:14Z",
+  "updated_at": "2026-11-26T09:44:12Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c7b04525e24c637c714e028d52eccb1cbcf793edcff6bbb92fd11625b7da5dea",
-      "size": 268050,
-      "normalized_sha256": "c7b04525e24c637c714e028d52eccb1cbcf793edcff6bbb92fd11625b7da5dea"
+      "sha256": "7826b485d206d723531db17141de801d4f3cd9ae404b96c86536e5c4c3208ab7",
+      "size": 269212,
+      "normalized_sha256": "7826b485d206d723531db17141de801d4f3cd9ae404b96c86536e5c4c3208ab7"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -821,15 +821,15 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "813467ba942420a298f1b03824dedc2ed93362d695b1a9bbc8e8dbc85cedbe50",
-      "size": 147661,
-      "normalized_sha256": "813467ba942420a298f1b03824dedc2ed93362d695b1a9bbc8e8dbc85cedbe50"
+      "sha256": "40ba07230650c6c5f1e3f5ce3cfba5a815fc36379f904e8d8db121342001b700",
+      "size": 148790,
+      "normalized_sha256": "40ba07230650c6c5f1e3f5ce3cfba5a815fc36379f904e8d8db121342001b700"
     },
     "docs/full-duplex.md": {
       "role": "index",
-      "sha256": "a16d11b2ffe5381174aeab93de4bdcae9621532df9cddd56acf8db8edc6e2355",
-      "size": 48820,
-      "normalized_sha256": "a16d11b2ffe5381174aeab93de4bdcae9621532df9cddd56acf8db8edc6e2355"
+      "sha256": "fec32f4c0d3cfb5b2a92838770fe11f964522c0ec3cd8057e21459e37a1d1ddc",
+      "size": 49568,
+      "normalized_sha256": "fec32f4c0d3cfb5b2a92838770fe11f964522c0ec3cd8057e21459e37a1d1ddc"
     },
     "docs/gpu-utilization.md": {
       "role": "index",
@@ -932,6 +932,12 @@
       "sha256": "b33a4a67c8f9f7266b10f5335a58f8ae039c4b82109f47237415a437138d592f",
       "size": 11055,
       "normalized_sha256": "b33a4a67c8f9f7266b10f5335a58f8ae039c4b82109f47237415a437138d592f"
+    },
+    "docs/realtime-latency-audit.md": {
+      "role": "index",
+      "sha256": "bad95eafd8826ff9cd57415a8eedf7959519b385e51e39fd5e59a32e60def848",
+      "size": 17512,
+      "normalized_sha256": "bad95eafd8826ff9cd57415a8eedf7959519b385e51e39fd5e59a32e60def848"
     },
     "docs/release.md": {
       "role": "index",
@@ -2501,6 +2507,12 @@
       "size": 45096,
       "normalized_sha256": "21713261010366719ecdd125de49e3756c68d56cf9eef81d075b6243f5b7f510"
     },
+    "python/umminfer_realtime_latency_audit.py": {
+      "role": "index",
+      "sha256": "5be00b638ec34bd7f83cdbd1de8ecb8972ae5392cae95316c8d19c9c42f53c4d",
+      "size": 80846,
+      "normalized_sha256": "5be00b638ec34bd7f83cdbd1de8ecb8972ae5392cae95316c8d19c9c42f53c4d"
+    },
     "python/umminfer_realtime_network.py": {
       "role": "index",
       "sha256": "90424bf598d2c8c3fbc1eae666fff90af67bc034298d0c5da877f045bd9bef0a",
@@ -3220,6 +3232,18 @@
       "sha256": "205a02bc551f1ec06e1fe19d4dd02292184a73c12f6585dd881c3ee55745984b",
       "size": 28356,
       "normalized_sha256": "205a02bc551f1ec06e1fe19d4dd02292184a73c12f6585dd881c3ee55745984b"
+    },
+    "tests/realtime_latency_audit_test.py": {
+      "role": "observe",
+      "sha256": "904a3b48206139025777bf401be48822bbb9311ea98ab13bcd75703d63335123",
+      "size": 21171,
+      "normalized_sha256": "904a3b48206139025777bf401be48822bbb9311ea98ab13bcd75703d63335123"
+    },
+    "tests/realtime_latency_audit_verify.py": {
+      "role": "observe",
+      "sha256": "5e4dfab0a5e6107c5902c145495df3243d6b0c7be35caee4150597a6aa81807a",
+      "size": 1775,
+      "normalized_sha256": "5e4dfab0a5e6107c5902c145495df3243d6b0c7be35caee4150597a6aa81807a"
     },
     "tests/realtime_network_live.py": {
       "role": "observe",
