@@ -485,15 +485,22 @@ def _fresh_replay(source_records, aligned_records, artifact_dir):
                      f"{label}: fresh raw-SSE replay is not byte-identical")
 
 
-def validate_bundle(root, tokenizer_dir, *, tokenizer=None, reencode=False):
+def validate_bundle(root, tokenizer_dir=None, *, tokenizer=None, reencode=False):
     """Validate one pinned fixture bundle and return a path-free JSON report.
 
     Supplying an already constructed tokenizer is intended for deterministic
     fixture tests. ``reencode=True`` loads a local fast tokenizer only after all
     structural checks pass. Both modes independently re-encode token_export.
+    Omitting ``tokenizer_dir`` is permitted only for read-only structural
+    validation (``reencode=False`` and ``tokenizer=None``), in which case
+    ``tokenizer_files`` is explicitly reported as ``NOT_RUN``.
     """
     root = Path(root)
-    tokenizer_dir = Path(tokenizer_dir)
+    if tokenizer_dir is None:
+        _require(not reencode and tokenizer is None,
+                 "tokenizer_dir is required for tokenizer re-encoding")
+    else:
+        tokenizer_dir = Path(tokenizer_dir)
     manifest = _document(root, "alignment.json")
     _require(manifest.get("schema") == ALIGNMENT_SCHEMA,
              "unsupported behavior-token alignment fixture schema")
@@ -534,20 +541,38 @@ def validate_bundle(root, tokenizer_dir, *, tokenizer=None, reencode=False):
              "source summary/checksum binding failed")
 
     tokenizer_info = manifest["tokenizer"]
-    available_files = tokens.hash_available_tokenizer_files(tokenizer_dir)
+    _require(isinstance(tokenizer_info, dict),
+             "alignment manifest lacks tokenizer metadata")
     expected_identity = tokenizer_info["identity"]
-    terminal_token_ids = _terminal_ids(tokenizer_dir)
-    _require(terminal_token_ids == tokenizer_info["terminal_token_ids"],
-             "terminal-token declaration differs from the pinned fixture")
-    loaded_digest = _loaded_tokenizer_digest(tokenizer_dir)
-    _require(loaded_digest == tokenizer_info["behavior_sha256"],
-             "exact loaded tokenizer files differ from sampled evidence")
+    expected_files = tokenizer_info["files"]
+    _require(isinstance(expected_files, list) and bool(expected_files),
+             "alignment manifest lacks tokenizer available-file metadata")
+    if tokenizer_dir is not None:
+        available_files = tokens.hash_available_tokenizer_files(tokenizer_dir)
+        terminal_token_ids = _terminal_ids(tokenizer_dir)
+        _require(terminal_token_ids == tokenizer_info["terminal_token_ids"],
+                 "terminal-token declaration differs from the pinned fixture")
+        loaded_digest = _loaded_tokenizer_digest(tokenizer_dir)
+        _require(loaded_digest == tokenizer_info["behavior_sha256"],
+                 "exact loaded tokenizer files differ from sampled evidence")
+    else:
+        available_files = expected_files
+        terminal_token_ids = tokenizer_info["terminal_token_ids"]
+        _require(isinstance(terminal_token_ids, list) and bool(terminal_token_ids)
+                 and all(_integer(value) and value >= 0 for value in terminal_token_ids)
+                 and len(terminal_token_ids) == len(set(terminal_token_ids))
+                 and terminal_token_ids == sorted(terminal_token_ids),
+                 "pinned terminal_token_ids are invalid")
+        loaded_digest = tokenizer_info["behavior_sha256"]
+        _require(isinstance(loaded_digest, str) and len(loaded_digest) == 64
+                 and not set(loaded_digest) - _HEX,
+                 "pinned behavior tokenizer digest is invalid")
     for index, aligned in enumerate(aligned_records):
         if "token_export" not in aligned:
             continue
         identity = aligned["token_export"]["tokenizer"]
         _require(identity["available_files"] == available_files
-                 == tokenizer_info["files"],
+                 == expected_files,
                  f"record {index}: tokenizer identity/files are incomplete or changed")
         result = tokens.validate_record_token_export(
             aligned, tokenizer_dir=tokenizer_dir,
@@ -624,7 +649,8 @@ def validate_bundle(root, tokenizer_dir, *, tokenizer=None, reencode=False):
         "schema": "umminfer-behavior-token-alignment-report-v1",
         "status": "PASS", "evidence_class": manifest["evidence_class"],
         "validation_level": "STRONG" if strong else "STRUCTURAL",
-        "tokenizer_files": "PASS", "tokenizer_reencode": "PASS" if strong else "NOT_RUN",
+        "tokenizer_files": "PASS" if tokenizer_dir is not None else "NOT_RUN",
+        "tokenizer_reencode": "PASS" if strong else "NOT_RUN",
         "raw_sse_fresh_replay": "PASS_BYTE_IDENTICAL",
         "accepted_cases": accepted_reports, "excluded_cases": excluded_reports,
         "claims": {

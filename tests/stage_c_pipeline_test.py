@@ -6,14 +6,18 @@ Usage: python3 -m unittest tests/stage_c_pipeline_test.py -v
 Zero network calls, zero GPU/torch/numpy, zero serving processes.
 """
 
+from contextlib import contextmanager
 import copy
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,9 +26,13 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import narrative_rl_fixtures as fixture  # noqa: E402
+import token_export_test as token_fixture  # noqa: E402
 import umminfer_rl_trajectory as traj  # noqa: E402
 import umminfer_sft_dataset as ds  # noqa: E402
 import umminfer_stage_c_pipeline as pipeline  # noqa: E402
+import umminfer_token_export as token_export  # noqa: E402
+
+REAL_TASK42_BUNDLE = ROOT / "tests" / "fixtures" / "behavior_token_alignment" / "task42"
 
 # Assembled dynamically so literal internal tokens never appear in source.
 FORBIDDEN_TOKENS = (
@@ -839,6 +847,527 @@ class StageCPipelineTest(unittest.TestCase):
             text = (ROOT / rel).read_text(encoding="utf-8")
             for token in FORBIDDEN_TOKENS:
                 self.assertNotIn(token, text, f"forbidden token {token!r} in {rel}")
+
+    def test_default_off_parity_no_optional_sections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            file_a, dir_b = _build_fixture_trajectories(root)
+            out_dir = root / "default_off_out"
+            report = pipeline.run_stage_c_pipeline(
+                output_dir=out_dir,
+                trajectory_paths=[file_a, dir_b],
+                ablation_matrix_path=ROOT / "configs" / "training" / "ablation_matrix.json",
+                ablation_override="joint_full",
+                execution_mode="dry_run_micro_step",
+                dry_run_steps=1,
+            )
+            self.assertNotIn("behavior_logprobs_capture", report)
+            self.assertNotIn("behavior_token_alignment", report)
+            self.assertNotIn("dpo_export_preflight", report)
+            self.assertNotIn("torch", sys.modules)
+            self.assertNotIn("transformers", sys.modules)
+
+    def test_capture_behavior_logprobs_fail_closed_and_mock_live_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            file_a, _ = _build_fixture_trajectories(root)
+
+            # 1. Fail-closed without --capture-live (API and CLI exit 2)
+            with self.assertRaisesRegex(ValueError, "--capture-behavior-logprobs requires --capture-live"):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=root / "bad_api",
+                    trajectory_paths=[file_a],
+                    capture_behavior_logprobs=True,
+                )
+            self.assertFalse((root / "bad_api" / "stage_c_e2e_report.json").exists())
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--from-trajectories",
+                    str(file_a),
+                    "--out",
+                    str(root / "bad_cli"),
+                    "--capture-behavior-logprobs",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 2, proc.stdout)
+            self.assertFalse((root / "bad_cli" / "stage_c_e2e_report.json").exists())
+
+            # 2. Mock live HTTP SSE server with exposed + not_exposed rollouts
+            exposed_behavior = {
+                "format": "umminfer-behavior-logprobs-v1",
+                "tokenizer_sha256": "a" * 64,
+                "token_ids": [11, 12, 13],
+                "logprobs": [-0.125, -0.25, -0.5],
+                "mask": [1, 1, 1],
+            }
+
+            def _make_sse_with_behavior(text_parts, behavior_block=None):
+                events = [
+                    fixture.envelope(i, "vlm_delta", part, request_id=f"req-mock-{len(text_parts)}")
+                    for i, part in enumerate(text_parts)
+                ]
+                events.append(
+                    fixture.envelope(
+                        len(text_parts),
+                        "complete",
+                        "".join(text_parts),
+                        legs=[],
+                        request_id=f"req-mock-{len(text_parts)}",
+                    )
+                )
+                frames = fixture.sse_bytes(events).split(b"\n\n")
+                if behavior_block is not None:
+                    for idx in range(len(frames) - 1, -1, -1):
+                        if frames[idx].startswith(b"data: ") and frames[idx] != b"data: [DONE]":
+                            chunk = json.loads(frames[idx][6:].decode("utf-8"))
+                            chunk["behavior"] = copy.deepcopy(behavior_block)
+                            frames[idx] = b"data: " + traj.canonical_json(chunk)
+                            break
+                return b"\n\n".join(frames)
+
+            @contextmanager
+            def _mock_server(responses):
+                recorded_bodies = []
+                state = {"idx": 0}
+
+                class _Handler(BaseHTTPRequestHandler):
+                    def log_message(self, *args):
+                        pass
+
+                    def do_POST(self):
+                        length = int(self.headers.get("Content-Length") or 0)
+                        body = json.loads(self.rfile.read(length).decode("utf-8"))
+                        recorded_bodies.append(body)
+                        hdr_val, payload = responses[state["idx"]]
+                        state["idx"] += 1
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Content-Length", str(len(payload)))
+                        if hdr_val is not None:
+                            self.send_header("X-UmmInfer-Behavior-Evidence", hdr_val)
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(payload)
+                        self.close_connection = True
+
+                server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    yield f"http://127.0.0.1:{server.server_port}", recorded_bodies
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
+
+            mini_suite = (
+                {
+                    "prompt_id": "mock_behavior_case",
+                    "prompt": "Prove concisely that sqrt(2) is irrational.",
+                    "expected_visual_modalities": [],
+                    "rollouts": (
+                        {
+                            "rollout_label": "exposed_rollout",
+                            "temperature": 0.0,
+                            "seed": 42,
+                            "max_tokens": 64,
+                            "modalities": ["text"],
+                            "narrative": {
+                                "enabled": True,
+                                "visual_mode": "auto",
+                                "max_slots": 1,
+                                "allow_text_only": True,
+                            },
+                        },
+                        {
+                            "rollout_label": "not_exposed_rollout",
+                            "temperature": 0.7,
+                            "seed": 43,
+                            "max_tokens": 64,
+                            "modalities": ["text"],
+                            "narrative": {
+                                "enabled": True,
+                                "visual_mode": "auto",
+                                "max_slots": 1,
+                                "allow_text_only": True,
+                            },
+                        },
+                    ),
+                },
+            )
+
+            sse_exposed = _make_sse_with_behavior(["Proof line one. ", "QED."], exposed_behavior)
+            sse_not_exposed = _make_sse_with_behavior(["Alternate proof text."], None)
+
+            with _mock_server([
+                ("exposed", sse_exposed),
+                ("not_exposed", sse_not_exposed),
+            ]) as (base_url, seen_bodies):
+                report = pipeline.run_stage_c_pipeline(
+                    output_dir=root / "live_behavior_on",
+                    capture_live_url=base_url,
+                    live_prompt_suite=mini_suite,
+                    capture_behavior_logprobs=True,
+                    config_path=ROOT / "configs" / "training" / "joint_sft_default.json",
+                    execution_mode="dry_run_micro_step",
+                    dry_run_steps=1,
+                )
+                self.assertEqual(len(seen_bodies), 2)
+                for req_body in seen_bodies:
+                    self.assertEqual(req_body.get("behavior"), {"logprobs": True})
+
+                bc = report["behavior_logprobs_capture"]
+                self.assertTrue(bc["requested"])
+                self.assertEqual(bc["exposed_count"], 1)
+                self.assertEqual(bc["not_exposed_count"], 1)
+                self.assertEqual(bc["absent_count"], 0)
+                self.assertEqual(bc["total_requests"], 2)
+                self.assertEqual(bc["cases"][0]["behavior_evidence_header"], "exposed")
+                self.assertEqual(bc["cases"][0]["behavior"], exposed_behavior)
+                self.assertEqual(
+                    bc["cases"][0]["behavior_sha256"],
+                    traj.sha256_bytes(traj.canonical_json(exposed_behavior)),
+                )
+                # Zero fabrication on not_exposed!
+                self.assertEqual(bc["cases"][1]["behavior_evidence_header"], "not_exposed")
+                self.assertIsNone(bc["cases"][1]["behavior"])
+                self.assertIsNone(bc["cases"][1]["behavior_sha256"])
+
+            # Default live capture (flag OFF) sends NO behavior field and omits report section
+            with _mock_server([
+                (None, sse_not_exposed),
+                (None, sse_not_exposed),
+            ]) as (base_url, seen_bodies_off):
+                report_off = pipeline.run_stage_c_pipeline(
+                    output_dir=root / "live_behavior_off",
+                    capture_live_url=base_url,
+                    live_prompt_suite=mini_suite,
+                    capture_behavior_logprobs=False,
+                    config_path=ROOT / "configs" / "training" / "joint_sft_default.json",
+                    execution_mode="dry_run_micro_step",
+                    dry_run_steps=1,
+                )
+                self.assertTrue(all("behavior" not in b for b in seen_bodies_off))
+                self.assertNotIn("behavior_logprobs_capture", report_off)
+
+            # Fail closed if server says exposed without final behavior block
+            with _mock_server([
+                ("exposed", sse_not_exposed),
+                ("not_exposed", sse_not_exposed),
+            ]) as (base_url, _):
+                with self.assertRaisesRegex(ValueError, "requires exactly one behavior block"):
+                    pipeline.run_stage_c_pipeline(
+                        output_dir=root / "live_bad_exposed",
+                        capture_live_url=base_url,
+                        live_prompt_suite=mini_suite,
+                        capture_behavior_logprobs=True,
+                        config_path=ROOT / "configs" / "training" / "joint_sft_default.json",
+                    )
+                self.assertFalse((root / "live_bad_exposed" / "stage_c_e2e_report.json").exists())
+
+            # Fail closed if server says not_exposed yet emits a behavior block
+            with _mock_server([
+                ("not_exposed", sse_exposed),
+                ("not_exposed", sse_not_exposed),
+            ]) as (base_url, _):
+                with self.assertRaisesRegex(ValueError, "unexpectedly contained a behavior block"):
+                    pipeline.run_stage_c_pipeline(
+                        output_dir=root / "live_bad_not_exposed",
+                        capture_live_url=base_url,
+                        live_prompt_suite=mini_suite,
+                        capture_behavior_logprobs=True,
+                        config_path=ROOT / "configs" / "training" / "joint_sft_default.json",
+                    )
+                self.assertFalse((root / "live_bad_not_exposed" / "stage_c_e2e_report.json").exists())
+
+    def test_verify_behavior_alignment_real_task42_and_tamper_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            file_a, dir_b = _build_fixture_trajectories(root)
+
+            # 1. Combined pipeline + real Task #42 alignment bundle (stdlib-only, zero GPU/ML)
+            out_combined = root / "combined_align"
+            report = pipeline.run_stage_c_pipeline(
+                output_dir=out_combined,
+                trajectory_paths=[file_a, dir_b],
+                config_path=ROOT / "configs" / "training" / "joint_sft_default.json",
+                execution_mode="dry_run_micro_step",
+                dry_run_steps=1,
+                verify_behavior_alignment=REAL_TASK42_BUNDLE,
+            )
+            align_section = report["behavior_token_alignment"]
+            self.assertEqual(align_section["status"], "PASS")
+            self.assertEqual(align_section["evidence_class"], "RETAINED_REAL_TASK42")
+            self.assertEqual(align_section["validation_level"], "STRUCTURAL")
+            self.assertEqual(align_section["tokenizer_files"], "NOT_RUN")
+            self.assertEqual(align_section["tokenizer_reencode"], "NOT_RUN")
+            self.assertEqual(align_section["raw_sse_fresh_replay"], "PASS_BYTE_IDENTICAL")
+            self.assertEqual(align_section["accepted_case_count"], 2)
+            self.assertEqual(align_section["excluded_case_count"], 3)
+            self.assertEqual(align_section["sampled_token_count"], 61)
+            self.assertEqual(align_section["masked_token_count"], 49)
+            self.assertEqual(len(align_section["bundle_sha256"]), 64)
+            self.assertEqual(align_section["claims"]["new_inference"], "NOT_RUN")
+            self.assertEqual(align_section["claims"]["optimizer_step"], "NOT_RUN")
+            self.assertEqual(align_section["claims"]["new_model_inference"], "NOT_RUN")
+            self.assertEqual(align_section["claims"]["online_optimizer"], "NOT_RUN")
+            self.assertNotIn("torch", sys.modules)
+            self.assertNotIn("transformers", sys.modules)
+
+            # 2. Standalone CLI invocation against real Task #42 bundle (python3 -I)
+            out_cli = root / "standalone_align_cli"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--verify-behavior-alignment",
+                    str(REAL_TASK42_BUNDLE),
+                    "--out",
+                    str(out_cli),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            cli_report = json.loads(proc.stdout)
+            self.assertEqual(cli_report["status"], "COMPLETED")
+            self.assertEqual(cli_report["source_mode"], "behavior_alignment_only")
+            self.assertEqual(cli_report["REAL_TRAINING"], "NOT_RUN")
+            self.assertEqual(cli_report["behavior_token_alignment"]["status"], "PASS")
+            self.assertEqual(cli_report["behavior_token_alignment"]["sampled_token_count"], 61)
+            self.assertEqual(
+                cli_report["behavior_token_alignment"]["claims"]["new_inference"], "NOT_RUN"
+            )
+            self.assertEqual(
+                cli_report["behavior_token_alignment"]["claims"]["optimizer_step"], "NOT_RUN"
+            )
+            self.assertTrue((out_cli / "stage_c_e2e_report.json").is_file())
+            self.assertTrue((out_cli / "stage_c_e2e_report.json.sha256").is_file())
+
+            # 3. Fail-closed on --alignment-reencode without --alignment-tokenizer-dir
+            proc_bad_reenc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--verify-behavior-alignment",
+                    str(REAL_TASK42_BUNDLE),
+                    "--alignment-reencode",
+                    "--out",
+                    str(root / "bad_reenc"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_bad_reenc.returncode, 2, proc_bad_reenc.stdout)
+            self.assertFalse((root / "bad_reenc" / "stage_c_e2e_report.json").exists())
+
+            # 4. Fail-closed rejection on copied tampered Task #42 bundle (CAS PNG + raw SSE)
+            for tamper_kind in ("cas_png", "raw_sse"):
+                with self.subTest(tamper=tamper_kind):
+                    tampered_dir = root / f"tampered_{tamper_kind}"
+                    shutil.copytree(REAL_TASK42_BUNDLE, tampered_dir)
+                    if tamper_kind == "cas_png":
+                        png = next((tampered_dir / "live" / "artifacts").glob("*.png"))
+                        raw = bytearray(png.read_bytes())
+                        raw[-1] ^= 1
+                        png.write_bytes(raw)
+                    else:
+                        sse_file = next((tampered_dir / "live" / "artifacts").glob("*.sse"))
+                        raw = bytearray(sse_file.read_bytes())
+                        raw[10] ^= 1
+                        sse_file.write_bytes(raw)
+
+                    bad_out = root / f"out_tampered_{tamper_kind}"
+                    with self.assertRaisesRegex(ValueError, "behavior token alignment"):
+                        pipeline.run_stage_c_pipeline(
+                            output_dir=bad_out,
+                            verify_behavior_alignment=tampered_dir,
+                        )
+                    self.assertFalse((bad_out / "stage_c_e2e_report.json").exists())
+
+                    cli_bad_out = root / f"cli_tampered_{tamper_kind}"
+                    proc_tamper = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                            "--verify-behavior-alignment",
+                            str(tampered_dir),
+                            "--out",
+                            str(cli_bad_out),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(proc_tamper.returncode, 2, proc_tamper.stdout)
+                    self.assertFalse((cli_bad_out / "stage_c_e2e_report.json").exists())
+
+    def test_dpo_export_preflight_pass_and_missing_export_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            file_a, dir_b = _build_fixture_trajectories(root)
+
+            # 1. Fail-closed when token_export metadata is missing (never falls back to legacy!)
+            missing_out = root / "dpo_missing_api"
+            with self.assertRaisesRegex(ValueError, "refusing per-side legacy fallback"):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=missing_out,
+                    trajectory_paths=[file_a, dir_b],
+                    config_path=ROOT / "configs" / "training" / "joint_dpo_grpo_default.json",
+                    execution_mode="dry_run_micro_step",
+                    dry_run_steps=1,
+                    dpo_export_preflight=True,
+                )
+            self.assertFalse((missing_out / "stage_c_e2e_report.json").exists())
+
+            missing_cli_out = root / "dpo_missing_cli"
+            proc_missing = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--from-trajectories",
+                    str(file_a),
+                    str(dir_b),
+                    "--out",
+                    str(missing_cli_out),
+                    "--config",
+                    str(ROOT / "configs" / "training" / "joint_dpo_grpo_default.json"),
+                    "--dpo-export-preflight",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_missing.returncode, 2, proc_missing.stdout)
+            self.assertFalse((missing_cli_out / "stage_c_e2e_report.json").exists())
+
+            # 2. Build deterministic v2 token_export trajectories and run CPU preflight PASS
+            tok = token_fixture.V2FixtureTokenizer()
+            tok_dir = token_fixture._v2_tokenizer_dir(root / "v2_tokenizer")
+            exported_file = file_a.with_name("trajectories_a.tokens.jsonl")
+            raw_records = [
+                json.loads(line)
+                for line in file_a.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            exported_records = [
+                token_export.attach_token_export(
+                    rec,
+                    tok,
+                    tokenizer_dir=tok_dir,
+                    tokenizer_id="fixture-bytelevel-nfc",
+                    tokenizer_revision="fixture-revision-2",
+                    tokenization_version="fixture-tokenization-v2",
+                    sft_target=ds.reconstruct_director_target(rec)[0],
+                    format_version=2,
+                )
+                for rec in raw_records
+            ]
+            exported_file.write_bytes(
+                b"".join(traj.canonical_json(rec) + b"\n" for rec in exported_records)
+            )
+
+            # API pass (with strong fixture tokenizer check + zero torch import)
+            out_api = root / "dpo_preflight_api"
+            report = pipeline.run_stage_c_pipeline(
+                output_dir=out_api,
+                token_export_file=exported_file,
+                artifact_dir=file_a.parent / "artifacts",
+                strict_artifacts=True,
+                eval_ratio=0.0,
+                config_path=ROOT / "configs" / "training" / "joint_dpo_grpo_default.json",
+                execution_mode="dry_run_micro_step",
+                dry_run_steps=1,
+                dpo_export_preflight=True,
+                dpo_preflight_tokenizer_dir=tok_dir,
+                dpo_preflight_tokenizer=tok,
+            )
+            pf = report["dpo_export_preflight"]
+            self.assertEqual(pf["status"], "PASS")
+            self.assertEqual(pf["token_source"], "token_export")
+            self.assertEqual(pf["EXPORT_DPO_OPTIMIZER"], "NOT_RUN")
+            self.assertEqual(pf["REAL_TRAINING"], "NOT_RUN")
+            self.assertFalse(pf["torch_imported"])
+            self.assertEqual(pf["validation_level"], "STRONG")
+            self.assertTrue(pf["tokenizer_files_verified"])
+            self.assertTrue(pf["tokenizer_reencoded"])
+            self.assertEqual(pf["format_versions"], [2])
+            self.assertGreater(pf["validated_pair_count"], 0)
+            self.assertEqual(len(pf["preflight_sha256"]), 64)
+            self.assertEqual(pf["claims"]["EXPORT_DPO_OPTIMIZER"], "NOT_RUN")
+            self.assertEqual(pf["claims"]["real_dpo_optimizer"], "NOT_RUN")
+            self.assertFalse(pf["claims"]["legacy_fallback_used"])
+            self.assertNotIn("torch", sys.modules)
+            self.assertNotIn("transformers", sys.modules)
+
+            # CLI pass (pure stdlib via --token-export-file + --dpo-preflight-tokenizer-dir)
+            out_cli = root / "dpo_preflight_cli"
+            proc_ok = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--token-export-file",
+                    str(exported_file),
+                    "--artifact-dir",
+                    str(file_a.parent / "artifacts"),
+                    "--strict-artifacts",
+                    "--eval-ratio",
+                    "0.0",
+                    "--config",
+                    str(ROOT / "configs" / "training" / "joint_dpo_grpo_default.json"),
+                    "--execution-mode",
+                    "dry_run_micro_step",
+                    "--dry-run-steps",
+                    "1",
+                    "--dpo-export-preflight",
+                    "--dpo-preflight-tokenizer-dir",
+                    str(tok_dir),
+                    "--out",
+                    str(out_cli),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_ok.returncode, 0, proc_ok.stderr)
+            cli_pf = json.loads(proc_ok.stdout)["dpo_export_preflight"]
+            self.assertEqual(cli_pf["status"], "PASS")
+            self.assertEqual(cli_pf["EXPORT_DPO_OPTIMIZER"], "NOT_RUN")
+            self.assertFalse(cli_pf["torch_imported"])
+            self.assertTrue(cli_pf["tokenizer_files_verified"])
+
+            # 3. Fail-closed on partial token_export (one record stripped -> zero fallback!)
+            partial_records = copy.deepcopy(exported_records)
+            partial_records[0].pop("token_export")
+            partial_file = file_a.with_name("trajectories_a.partial.jsonl")
+            partial_file.write_bytes(
+                b"".join(traj.canonical_json(rec) + b"\n" for rec in partial_records)
+            )
+            with self.assertRaisesRegex(ValueError, "refusing per-side legacy fallback"):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=root / "dpo_partial_fail",
+                    token_export_file=partial_file,
+                    artifact_dir=file_a.parent / "artifacts",
+                    strict_artifacts=True,
+                    eval_ratio=0.0,
+                    config_path=ROOT / "configs" / "training" / "joint_dpo_grpo_default.json",
+                    dpo_export_preflight=True,
+                )
+            self.assertFalse((root / "dpo_partial_fail" / "stage_c_e2e_report.json").exists())
 
 
 if __name__ == "__main__":

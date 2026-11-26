@@ -257,6 +257,45 @@ python3 -I tools/umminfer_stage_c_pipeline.py \
   --execution-mode dry_run_micro_step
 ```
 
+Optional Stage C verification flags (all default OFF; omitting them preserves
+the exact default schema, digests, and zero-ML stdlib-only behavior):
+
+- `--capture-behavior-logprobs` (requires `--capture-live`; exits 2 otherwise):
+  adds `"behavior": {"logprobs": true}` to `/v1/chat/completions` requests,
+  records the observed `X-UmmInfer-Behavior-Evidence` header (`exposed`,
+  `not_exposed`, or `absent`) and exact raw final SSE `behavior` block only when
+  `exposed` (never fabricating values and failing closed on header/payload
+  mismatches), and emits `behavior_logprobs_capture` (`exposed_count`,
+  `not_exposed_count`, `absent_count`, and per-case digests) in
+  `stage_c_e2e_report.json`.
+- `--verify-behavior-alignment <bundle_dir>` (optional
+  `--alignment-tokenizer-dir <dir>` and `--alignment-reencode`): runs read-only
+  `umminfer_behavior_token_alignment.validate_bundle(...)` (standalone or
+  alongside trajectory/live inputs), fails closed on any tampered or mismatched
+  bundle, and records `behavior_token_alignment` with `bundle_sha256`, verdict,
+  and explicit `new_inference: "NOT_RUN"` and `optimizer_step: "NOT_RUN"`.
+  Without `--alignment-reencode` it stays pure stdlib with zero GPU/Torch/Transformers
+  imports; `--alignment-reencode` requires `--alignment-tokenizer-dir`.
+- `--dpo-export-preflight` (works with `--from-trajectories` carrying additive
+  `token_export` blocks or explicit `--token-export-file <jsonl>`, plus optional
+  `--dpo-preflight-tokenizer-dir <dir>`): validates built
+  `preference/dpo_{train,eval}.jsonl` pairs via `umminfer_joint_dpo_live`'s CPU
+  structural preflight (blocking `torch` import, enforcing strict
+  export/source/tokenizer identity binding with zero legacy fallback), and
+  records `dpo_export_preflight` with explicit `EXPORT_DPO_OPTIMIZER: "NOT_RUN"`
+  and `REAL_TRAINING: "NOT_RUN"`.
+
+```text
+python3 -I tools/umminfer_stage_c_pipeline.py \
+  --verify-behavior-alignment tests/fixtures/behavior_token_alignment/task42 \
+  --out path/to/alignment-check
+
+python3 -I tools/umminfer_stage_c_pipeline.py \
+  --token-export-file path/to/trajectories.tokens.jsonl \
+  --dpo-export-preflight \
+  --out path/to/stage-c-dpo-preflight
+```
+
 ## Verification & Claim Boundary
 
 Run the offline CPU-only contract tests:

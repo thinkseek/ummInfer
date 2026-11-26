@@ -26,7 +26,9 @@ Architecture boundary:
 from __future__ import annotations
 
 import argparse
+import builtins
 import copy
+import importlib.util
 import io
 import ipaddress
 import json
@@ -57,6 +59,9 @@ DEFAULT_EXECUTION_MODE = "dry_run_micro_step"
 DEFAULT_LIVE_MODEL = "qwen3-native"
 DEFAULT_LIVE_TIMEOUT_S = 300.0
 _ALLOWED_LATENCY_KEYS = frozenset(("ttft_ms", "ttfa_ms", "terminal_ms", "barge_in_ms"))
+_BEHAVIOR_FORMAT = "umminfer-behavior-logprobs-v1"
+_BEHAVIOR_KEYS = frozenset(("format", "tokenizer_sha256", "token_ids", "logprobs", "mask"))
+_HEX_CHARS = frozenset("0123456789abcdef")
 
 # Deterministic live-capture prompt suite: covers pure-text (allow_text_only),
 # visual-scene image, visual-scene video/auto, and mixed narrative beats, with
@@ -576,12 +581,346 @@ def sse_bytes_to_v2_record(
     )
 
 
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_behavior_evidence_block(evidence) -> dict:
+    """Strictly validate a raw umminfer-behavior-logprobs-v1 SSE block."""
+    if not isinstance(evidence, dict) or set(evidence) != _BEHAVIOR_KEYS:
+        raise ValueError(
+            "exposed SSE behavior block schema differs from umminfer-behavior-logprobs-v1"
+        )
+    if evidence.get("format") != _BEHAVIOR_FORMAT:
+        raise ValueError(
+            f"unsupported SSE behavior format {evidence.get('format')!r}"
+        )
+    digest = evidence.get("tokenizer_sha256")
+    if not isinstance(digest, str) or len(digest) != 64 or (set(digest) - _HEX_CHARS):
+        raise ValueError("SSE behavior tokenizer_sha256 must be 64 lowercase hex chars")
+    token_ids = evidence.get("token_ids")
+    logprobs = evidence.get("logprobs")
+    mask = evidence.get("mask")
+    if not all(isinstance(arr, list) and arr for arr in (token_ids, logprobs, mask)):
+        raise ValueError("SSE behavior token_ids/logprobs/mask must be non-empty lists")
+    if not (len(token_ids) == len(logprobs) == len(mask)):
+        raise ValueError("SSE behavior token_ids/logprobs/mask lengths differ")
+    if not all(_is_int(v) and v >= 0 for v in token_ids):
+        raise ValueError("SSE behavior token_ids must be non-negative integers")
+    if not all(_is_finite(v) and float(v) <= 0.0 for v in logprobs):
+        raise ValueError("SSE behavior logprobs must be finite and non-positive")
+    if not all(_is_int(v) and v in (0, 1) for v in mask) or not any(mask):
+        raise ValueError(
+            "SSE behavior mask must be binary integers with at least one supervised token"
+        )
+    return copy.deepcopy(evidence)
+
+
+def _extract_behavior_from_raw_sse(raw_bytes: bytes, header_status: str) -> dict | None:
+    """Extract raw final-chunk behavior evidence iff header is exposed; never fabricate."""
+    chunks = []
+    for raw_frame in raw_bytes.replace(b"\r\n", b"\n").split(b"\n\n"):
+        data_lines = []
+        for line in raw_frame.split(b"\n"):
+            if line.startswith(b"data:"):
+                payload = line[5:]
+                if payload.startswith(b" "):
+                    payload = payload[1:]
+                data_lines.append(payload)
+        if not data_lines:
+            continue
+        joined = b"\n".join(data_lines).strip()
+        if not joined or joined == b"[DONE]":
+            continue
+        parsed = json.loads(joined.decode("utf-8"))
+        if isinstance(parsed, dict):
+            chunks.append(parsed)
+
+    blocks = [chunk["behavior"] for chunk in chunks if "behavior" in chunk]
+    if header_status == "exposed":
+        if not chunks or len(blocks) != 1 or "behavior" not in chunks[-1]:
+            raise ValueError(
+                "X-UmmInfer-Behavior-Evidence=exposed requires exactly one behavior "
+                "block in the final SSE data chunk"
+            )
+        return _validate_behavior_evidence_block(blocks[0])
+    if header_status == "not_exposed":
+        if blocks:
+            raise ValueError(
+                "X-UmmInfer-Behavior-Evidence=not_exposed response unexpectedly "
+                "contained a behavior block"
+            )
+        return None
+    if header_status == "absent":
+        if blocks:
+            raise ValueError(
+                "SSE response contained a behavior block without "
+                "X-UmmInfer-Behavior-Evidence header"
+            )
+        return None
+    raise ValueError(f"unsupported behavior evidence header state: {header_status!r}")
+
+
+def _hash_bundle_tree(bundle_dir: Path) -> tuple[str, str]:
+    """Compute path-free canonical SHA-256 digests of alignment.json and all bundle files."""
+    root = Path(bundle_dir)
+    if not root.is_dir():
+        raise FileNotFoundError(f"behavior alignment bundle directory not found: {root}")
+    manifest_path = root / "alignment.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise ValueError(f"alignment.json not found in bundle directory: {root}")
+    manifest_sha = ds.sha256_file(manifest_path)
+
+    entries = []
+    for path in sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix()):
+        if path.is_symlink():
+            raise ValueError(
+                f"behavior alignment bundle contains symlink: {path.relative_to(root)}"
+            )
+        if not path.is_file():
+            continue
+        entries.append({
+            "path": path.relative_to(root).as_posix(),
+            "bytes": path.stat().st_size,
+            "sha256": ds.sha256_file(path),
+        })
+    if not entries:
+        raise ValueError(f"behavior alignment bundle contains no files: {root}")
+    bundle_sha = traj.sha256_bytes(traj.canonical_json(entries))
+    return bundle_sha, manifest_sha
+
+
+def _run_behavior_token_alignment(
+    bundle_dir: str | Path,
+    *,
+    tokenizer_dir: str | Path | None = None,
+    reencode: bool = False,
+    tokenizer=None,
+) -> dict:
+    """Run read-only umminfer_behavior_token_alignment.validate_bundle() verification."""
+    import umminfer_behavior_token_alignment as align  # noqa: PLC0415
+
+    bundle_path = Path(bundle_dir)
+    if tokenizer_dir is not None:
+        tok_path = Path(tokenizer_dir)
+        if not tok_path.is_dir():
+            raise FileNotFoundError(
+                f"alignment tokenizer directory not found: {tok_path}"
+            )
+    else:
+        tok_path = None
+        if reencode or tokenizer is not None:
+            raise ValueError(
+                "--alignment-reencode requires --alignment-tokenizer-dir"
+            )
+
+    bundle_sha, manifest_sha = _hash_bundle_tree(bundle_path)
+    try:
+        alignment_report = align.validate_bundle(
+            bundle_path,
+            tok_path,
+            tokenizer=tokenizer,
+            reencode=bool(reencode),
+        )
+    except (
+        align.AlignmentError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+    ) as exc:
+        raise ValueError(f"behavior token alignment verification failed: {exc}") from exc
+
+    if alignment_report.get("status") != "PASS":
+        raise ValueError(
+            f"behavior token alignment returned non-PASS status: "
+            f"{alignment_report.get('status')!r}"
+        )
+
+    accepted = alignment_report.get("accepted_cases") or []
+    excluded = alignment_report.get("excluded_cases") or []
+    claims = dict(alignment_report.get("claims") or {})
+    claims["new_inference"] = "NOT_RUN"
+    claims["optimizer_step"] = "NOT_RUN"
+
+    return {
+        "status": alignment_report["status"],
+        "schema": alignment_report["schema"],
+        "evidence_class": alignment_report["evidence_class"],
+        "validation_level": alignment_report["validation_level"],
+        "bundle_sha256": bundle_sha,
+        "alignment_manifest_sha256": manifest_sha,
+        "tokenizer_files": alignment_report["tokenizer_files"],
+        "tokenizer_reencode": alignment_report["tokenizer_reencode"],
+        "raw_sse_fresh_replay": alignment_report["raw_sse_fresh_replay"],
+        "accepted_case_count": len(accepted),
+        "excluded_case_count": len(excluded),
+        "sampled_token_count": sum(int(c["sampled_token_count"]) for c in accepted),
+        "masked_token_count": sum(int(c["masked_token_count"]) for c in accepted),
+        "report_sha256": traj.sha256_bytes(traj.canonical_json(alignment_report)),
+        "accepted_cases": accepted,
+        "excluded_cases": excluded,
+        "claims": claims,
+    }
+
+
+def _run_dpo_export_preflight(
+    pref_dir: Path,
+    pref_manifest: dict,
+    pref_audit: dict,
+    *,
+    tokenizer_dir: str | Path | None = None,
+    tokenizer=None,
+) -> dict:
+    """Validate preference/dpo_{train,eval}.jsonl via umminfer_joint_dpo_live CPU preflight.
+
+    Strictly forbids torch import and fails closed on missing, partial, mixed,
+    or tampered token_export metadata (never silently falling back to legacy).
+    """
+    if "torch" in sys.modules:
+        raise RuntimeError("torch must not be imported before DPO export preflight")
+    if tokenizer is not None and tokenizer_dir is None:
+        raise ValueError(
+            "dpo_preflight_tokenizer requires dpo_preflight_tokenizer_dir"
+        )
+    tok_dir_path = Path(tokenizer_dir) if tokenizer_dir is not None else None
+    if tok_dir_path is not None and not tok_dir_path.is_dir():
+        raise FileNotFoundError(
+            f"DPO preflight tokenizer directory not found: {tok_dir_path}"
+        )
+
+    real_import = builtins.__import__
+    real_find_spec = importlib.util.find_spec
+
+    def _forbid_torch_spec(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    def _forbid_torch_import(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise ImportError("torch import is forbidden in Stage C DPO export preflight")
+        return real_import(name, *args, **kwargs)
+
+    builtins.__import__ = _forbid_torch_import
+    importlib.util.find_spec = _forbid_torch_spec
+    try:
+        import umminfer_joint_dpo_live as dpo_live  # noqa: PLC0415
+        import umminfer_token_export as token_export  # noqa: PLC0415
+
+        dataset = trainer.verify_and_load_dataset_pack(pref_dir)
+        train_rows = dataset["packs"].get("dpo_train") or []
+        eval_rows = dataset["packs"].get("dpo_eval") or []
+
+        train_records = dpo_live._structural_export_pairs(train_rows)
+        eval_records = dpo_live._structural_export_pairs(eval_rows) if eval_rows else {}
+
+        unified_tokenizer_identity = None
+        format_versions: set[int] = set()
+        pair_summaries = []
+
+        for split_name, rows, record_map in (
+            ("train", train_rows, train_records),
+            ("eval", eval_rows, eval_records),
+        ):
+            for row in rows:
+                pair_id = row["pair_id"]
+                sides = record_map[pair_id]
+                side_meta = {}
+                for side in ("chosen", "rejected"):
+                    record = sides[side]
+                    block = record["token_export"]
+                    identity = block["tokenizer"]
+                    if unified_tokenizer_identity is None:
+                        unified_tokenizer_identity = copy.deepcopy(identity)
+                    elif traj.canonical_json(identity) != traj.canonical_json(
+                        unified_tokenizer_identity
+                    ):
+                        raise ValueError(
+                            "mixed DPO token-export tokenizer identities across splits"
+                        )
+                    if tok_dir_path is not None:
+                        token_export.validate_record_token_export(
+                            record,
+                            tokenizer=tokenizer,
+                            tokenizer_dir=tok_dir_path,
+                            expected_tokenizer_id=unified_tokenizer_identity["id"],
+                            expected_tokenizer_revision=unified_tokenizer_identity["revision"],
+                            expected_tokenization_version=unified_tokenizer_identity[
+                                "tokenization_version"
+                            ],
+                            expected_sft_target=row[side]["assistant_target"],
+                        )
+                    format_versions.add(int(block["format_version"]))
+                    target_stream = block["streams"]["sft_target"]
+                    side_meta[side] = {
+                        "format": block["format"],
+                        "format_version": int(block["format_version"]),
+                        "export_sha256": block["export_sha256"],
+                        "source_record_sha256": block["source_record_sha256"],
+                        "sft_target_token_count": int(target_stream["token_count"]),
+                        "sft_target_token_ids_sha256": target_stream["token_ids_sha256"],
+                        "sft_mask_weights_sha256": target_stream["sft_mask"][
+                            "token_weights_sha256"
+                        ],
+                    }
+                pair_summaries.append({
+                    "pair_id": pair_id,
+                    "split": split_name,
+                    "prompt_sha256": row["prompt_sha256"],
+                    "pair_identity_sha256": traj.sha256_text(
+                        f"{pair_id}:{row['prompt_sha256']}:"
+                        f"{side_meta['chosen']['export_sha256']}:"
+                        f"{side_meta['rejected']['export_sha256']}"
+                    ),
+                    "chosen": side_meta["chosen"],
+                    "rejected": side_meta["rejected"],
+                })
+
+        if "torch" in sys.modules:
+            raise RuntimeError("torch was imported during Stage C DPO export preflight")
+    finally:
+        builtins.__import__ = real_import
+        importlib.util.find_spec = real_find_spec
+
+    summary = {
+        "schema": "umminfer-stage-c-dpo-export-preflight-v1",
+        "status": "PASS",
+        "token_source": "token_export",
+        "EXPORT_DPO_OPTIMIZER": "NOT_RUN",
+        "REAL_TRAINING": "NOT_RUN",
+        "torch_imported": False,
+        "validation_level": "STRONG" if tokenizer is not None else "STRUCTURAL",
+        "tokenizer_files_verified": tok_dir_path is not None,
+        "tokenizer_reencoded": tokenizer is not None,
+        "preference_manifest_sha256": pref_audit["manifest_sha256"],
+        "dpo_train_sha256": pref_manifest["outputs"]["dpo_train"]["sha256"],
+        "dpo_eval_sha256": pref_manifest["outputs"]["dpo_eval"]["sha256"],
+        "dpo_train_pair_count": len(train_rows),
+        "dpo_eval_pair_count": len(eval_rows),
+        "validated_pair_count": len(train_rows) + len(eval_rows),
+        "format_versions": sorted(format_versions),
+        "tokenizer": unified_tokenizer_identity,
+        "pairs": pair_summaries,
+        "claims": {
+            "EXPORT_DPO_OPTIMIZER": "NOT_RUN",
+            "real_dpo_optimizer": "NOT_RUN",
+            "model_quality": "NOT_RUN",
+            "sampled_online_behavior_ids": "NOT_CLAIMED",
+            "legacy_fallback_used": False,
+        },
+    }
+    summary["preflight_sha256"] = traj.sha256_bytes(traj.canonical_json(summary))
+    return summary
+
+
 def _build_live_request_body(
     case: dict,
     rollout: dict,
     *,
     model: str,
     enable_audio: bool = False,
+    capture_behavior_logprobs: bool = False,
 ) -> dict:
     modalities = list(rollout["modalities"])
     if enable_audio and "audio" not in modalities:
@@ -603,6 +942,8 @@ def _build_live_request_body(
         body["video"] = copy.deepcopy(_DEFAULT_VIDEO_OPTS)
     if "audio" in modalities:
         body["audio"] = copy.deepcopy(_DEFAULT_AUDIO_OPTS)
+    if capture_behavior_logprobs:
+        body["behavior"] = {"logprobs": True}
     return body
 
 
@@ -616,6 +957,8 @@ def capture_live_trajectories(
     extra_headers: dict[str, str] | None = None,
     allow_remote_http: bool = False,
     enable_audio: bool = False,
+    capture_behavior_logprobs: bool = False,
+    behavior_summary_out: dict | None = None,
 ) -> tuple[Path, Path, dict]:
     """Capture live SSE rollouts into verified schema-v2 JSONL + local CAS dir."""
     normalized_url = validate_server_url(
@@ -633,6 +976,7 @@ def capture_live_trajectories(
     endpoint_url = normalized_url.rstrip("/") + "/v1/chat/completions"
 
     case_summaries = []
+    behavior_cases = []
     completed = 0
     failed = 0
 
@@ -641,7 +985,11 @@ def capture_live_trajectories(
         expected_modalities = list(case["expected_visual_modalities"])
         for rollout_idx, rollout in enumerate(case["rollouts"]):
             body = _build_live_request_body(
-                case, rollout, model=model, enable_audio=enable_audio
+                case,
+                rollout,
+                model=model,
+                enable_audio=enable_audio,
+                capture_behavior_logprobs=capture_behavior_logprobs,
             )
             session_id = f"{prompt_id}:r{rollout_idx}:{rollout['rollout_label']}"
             headers = {
@@ -665,6 +1013,8 @@ def capture_live_trajectories(
                 "ttft_ms": None,
                 "ttfa_ms": None,
             }
+            raw_behavior_header: str | None = None
+            got_http_sse = False
 
             def _observer(event):
                 # Raw capture records arrival before deferred normalization;
@@ -690,6 +1040,10 @@ def capture_live_trajectories(
                         raise RuntimeError(
                             f"expected text/event-stream, got {ctype!r}"
                         )
+                    if capture_behavior_logprobs:
+                        raw_behavior_header = resp.headers.get(
+                            "X-UmmInfer-Behavior-Evidence"
+                        )
                     record = sse_stream_to_v2_record(
                         resp,
                         request_body=body,
@@ -699,6 +1053,7 @@ def capture_live_trajectories(
                         event_observer=_observer,
                         replay_clock=replay_clock,
                     )
+                    got_http_sse = True
             except (urllib.error.URLError, OSError, RuntimeError, ValueError) as exc:
                 terminal_ms = (time.perf_counter() - started) * 1000.0
                 message = f"live capture error: {exc}"
@@ -732,6 +1087,44 @@ def capture_live_trajectories(
             else:
                 terminal_ms = (time.perf_counter() - started) * 1000.0
 
+            if capture_behavior_logprobs:
+                if raw_behavior_header is None or not raw_behavior_header.strip():
+                    header_status = "absent"
+                else:
+                    normalized_hdr = raw_behavior_header.strip().lower()
+                    if normalized_hdr not in ("exposed", "not_exposed"):
+                        raise ValueError(
+                            f"invalid X-UmmInfer-Behavior-Evidence header "
+                            f"{raw_behavior_header!r}; expected 'exposed' or 'not_exposed'"
+                        )
+                    header_status = normalized_hdr
+
+                behavior_block = None
+                if got_http_sse:
+                    replay_meta = record.get("sse_replay")
+                    if not isinstance(replay_meta, dict) or not replay_meta.get("raw_ref"):
+                        raise ValueError(
+                            "missing raw SSE replay capture for behavior logprobs audit"
+                        )
+                    raw_sse_bytes = (artifact_dir / replay_meta["raw_ref"]).read_bytes()
+                    behavior_block = _extract_behavior_from_raw_sse(
+                        raw_sse_bytes, header_status
+                    )
+
+                behavior_cases.append({
+                    "prompt_id": prompt_id,
+                    "rollout_index": rollout_idx,
+                    "rollout_label": rollout["rollout_label"],
+                    "terminal_state": record["terminal_state"],
+                    "behavior_evidence_header": header_status,
+                    "behavior": behavior_block,
+                    "behavior_sha256": (
+                        traj.sha256_bytes(traj.canonical_json(behavior_block))
+                        if behavior_block is not None
+                        else None
+                    ),
+                })
+
             latency_obs = {"terminal_ms": round(max(0.0, terminal_ms), 3)}
             if timings["ttft_ms"] is not None:
                 latency_obs["ttft_ms"] = round(max(0.0, timings["ttft_ms"]), 3)
@@ -762,6 +1155,25 @@ def capture_live_trajectories(
                 "artifact_count": len(record.get("artifacts") or []),
                 "latency_ms": latency_obs,
             })
+
+    if capture_behavior_logprobs and behavior_summary_out is not None:
+        behavior_summary_out.clear()
+        behavior_summary_out.update({
+            "requested": True,
+            "exposed_count": sum(
+                1 for c in behavior_cases if c["behavior_evidence_header"] == "exposed"
+            ),
+            "not_exposed_count": sum(
+                1
+                for c in behavior_cases
+                if c["behavior_evidence_header"] == "not_exposed"
+            ),
+            "absent_count": sum(
+                1 for c in behavior_cases if c["behavior_evidence_header"] == "absent"
+            ),
+            "total_requests": len(behavior_cases),
+            "cases": behavior_cases,
+        })
 
     summary = {
         "model": model,
@@ -988,6 +1400,7 @@ def run_stage_c_pipeline(
     *,
     output_dir: str | Path,
     trajectory_paths=None,
+    token_export_file: str | Path | None = None,
     capture_live_url: str | None = None,
     artifact_dir: str | Path | None = None,
     strict_artifacts: bool = False,
@@ -1008,6 +1421,14 @@ def run_stage_c_pipeline(
     allow_remote_http: bool = False,
     live_enable_audio: bool = False,
     live_prompt_suite=LIVE_CAPTURE_PROMPT_SUITE,
+    capture_behavior_logprobs: bool = False,
+    verify_behavior_alignment: str | Path | None = None,
+    alignment_tokenizer_dir: str | Path | None = None,
+    alignment_reencode: bool = False,
+    alignment_tokenizer=None,
+    dpo_export_preflight: bool = False,
+    dpo_preflight_tokenizer_dir: str | Path | None = None,
+    dpo_preflight_tokenizer=None,
     overwrite: bool = False,
 ) -> dict:
     """Run the complete Stage C serving-export -> dataset -> trainer E2E pipeline."""
@@ -1026,11 +1447,85 @@ def run_stage_c_pipeline(
         dry_run_steps = 0
 
     has_offline = bool(trajectory_paths)
+    has_token_export_file = token_export_file is not None
     has_live = capture_live_url is not None
-    if has_offline == has_live:
+    source_count = int(has_offline) + int(has_token_export_file) + int(has_live)
+
+    if capture_behavior_logprobs and not has_live:
+        raise ValueError("--capture-behavior-logprobs requires --capture-live")
+    if (
+        alignment_tokenizer_dir is not None
+        or alignment_reencode
+        or alignment_tokenizer is not None
+    ) and verify_behavior_alignment is None:
         raise ValueError(
-            "specify exactly one of trajectory_paths (--from-trajectories) or "
-            "capture_live_url (--capture-live)"
+            "--alignment-tokenizer-dir and --alignment-reencode require "
+            "--verify-behavior-alignment"
+        )
+    if alignment_reencode and alignment_tokenizer_dir is None:
+        raise ValueError("--alignment-reencode requires --alignment-tokenizer-dir")
+    if (
+        dpo_preflight_tokenizer_dir is not None
+        or dpo_preflight_tokenizer is not None
+    ) and not dpo_export_preflight:
+        raise ValueError(
+            "--dpo-preflight-tokenizer-dir requires --dpo-export-preflight"
+        )
+
+    if source_count > 1:
+        raise ValueError(
+            "specify at most one of trajectory_paths (--from-trajectories), "
+            "token_export_file (--token-export-file), or capture_live_url (--capture-live)"
+        )
+    if source_count == 0:
+        if verify_behavior_alignment is None:
+            raise ValueError(
+                "specify exactly one of trajectory_paths (--from-trajectories) or "
+                "capture_live_url (--capture-live)"
+            )
+        if dpo_export_preflight:
+            raise ValueError(
+                "--dpo-export-preflight requires trajectory inputs "
+                "(--from-trajectories or --token-export-file)"
+            )
+        alignment_summary = _run_behavior_token_alignment(
+            verify_behavior_alignment,
+            tokenizer_dir=alignment_tokenizer_dir,
+            reencode=alignment_reencode,
+            tokenizer=alignment_tokenizer,
+        )
+        out_path = _prepare_out_dir(Path(output_dir), overwrite=overwrite)
+        report = {
+            "pipeline_schema_version": PIPELINE_SCHEMA_VERSION,
+            "status": "COMPLETED",
+            "source_mode": "behavior_alignment_only",
+            "REAL_TRAINING": "NOT_RUN",
+            "claims": {
+                "REAL_TRAINING": "NOT_RUN",
+                "optimizer": "NOT_RUN",
+                "model_weights_updated": False,
+                "real_gpu_training_executed": False,
+                "decoupled_from_cpp_serving": True,
+            },
+            "behavior_token_alignment": alignment_summary,
+        }
+        report_bytes = traj.canonical_json(report) + b"\n"
+        report_sha = traj.sha256_bytes(report_bytes)
+        _write_bytes_atomic(out_path / "stage_c_e2e_report.json", report_bytes)
+        _write_bytes_atomic(
+            out_path / "stage_c_e2e_report.json.sha256",
+            (report_sha + "\n").encode("utf-8"),
+        )
+        return report
+
+    # Optional read-only behavior-token alignment verification (fail-closed before writes).
+    alignment_summary = None
+    if verify_behavior_alignment is not None:
+        alignment_summary = _run_behavior_token_alignment(
+            verify_behavior_alignment,
+            tokenizer_dir=alignment_tokenizer_dir,
+            reencode=alignment_reencode,
+            tokenizer=alignment_tokenizer,
         )
 
     # Default to the full ablation matrix when neither --config nor --ablation-matrix is set.
@@ -1041,6 +1536,7 @@ def run_stage_c_pipeline(
 
     # 0. Optional live SSE capture -> verified schema-v2 JSONL + local CAS dir.
     live_summary = None
+    behavior_capture_summary: dict | None = {} if capture_behavior_logprobs else None
     effective_artifact_dir = artifact_dir
     if has_live:
         source_mode = "live_capture"
@@ -1053,10 +1549,15 @@ def run_stage_c_pipeline(
             extra_headers=live_headers,
             allow_remote_http=allow_remote_http,
             enable_audio=live_enable_audio,
+            capture_behavior_logprobs=capture_behavior_logprobs,
+            behavior_summary_out=behavior_capture_summary,
         )
         effective_inputs = [captured_jsonl]
         effective_artifact_dir = captured_cas
         strict_artifacts = True
+    elif has_token_export_file:
+        source_mode = "offline_trajectories"
+        effective_inputs = [token_export_file]
     else:
         source_mode = "offline_trajectories"
         effective_inputs = list(trajectory_paths)
@@ -1103,6 +1604,17 @@ def run_stage_c_pipeline(
     pref_audit = ds.audit_dataset_pack(pref_dir)
     if pref_audit["split_audit"]["leakage_count"] != 0:
         raise RuntimeError("Preference pack failed zero prompt-leakage audit")
+
+    # Optional exported-token DPO CPU preflight (fail-closed; never falls back to legacy).
+    dpo_preflight_summary = None
+    if dpo_export_preflight:
+        dpo_preflight_summary = _run_dpo_export_preflight(
+            pref_dir,
+            pref_manifest,
+            pref_audit,
+            tokenizer_dir=dpo_preflight_tokenizer_dir,
+            tokenizer=dpo_preflight_tokenizer,
+        )
 
     joint_manifest = ds.build_dataset(
         resolved_files,
@@ -1275,6 +1787,12 @@ def run_stage_c_pipeline(
         "trainer_runs": trainer_runs,
         "live_capture": live_summary,
     }
+    if behavior_capture_summary is not None:
+        report["behavior_logprobs_capture"] = behavior_capture_summary
+    if alignment_summary is not None:
+        report["behavior_token_alignment"] = alignment_summary
+    if dpo_preflight_summary is not None:
+        report["dpo_export_preflight"] = dpo_preflight_summary
 
     report_bytes = traj.canonical_json(report) + b"\n"
     report_sha = traj.sha256_bytes(report_bytes)
@@ -1293,13 +1811,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "-> SFT/DPO/GRPO packs -> leakage audit -> joint trainer / ablation matrix"
         )
     )
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument(
         "--from-trajectories",
         action="extend",
         nargs="+",
         default=None,
         help="Offline trajectory JSONL file(s) and/or directory path(s)",
+    )
+    source.add_argument(
+        "--token-export-file",
+        default=None,
+        help="Offline trajectory JSONL carrying additive token_export blocks",
     )
     source.add_argument(
         "--capture-live",
@@ -1410,6 +1933,36 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Include audio modality in --capture-live requests",
     )
     parser.add_argument(
+        "--capture-behavior-logprobs",
+        action="store_true",
+        help="Opt-in (--capture-live only): send behavior.logprobs=true and record raw exposed SSE behavior blocks",
+    )
+    parser.add_argument(
+        "--verify-behavior-alignment",
+        default=None,
+        help="Opt-in: validate a pinned behavior-token alignment bundle directory read-only",
+    )
+    parser.add_argument(
+        "--alignment-tokenizer-dir",
+        default=None,
+        help="Optional local tokenizer directory for --verify-behavior-alignment",
+    )
+    parser.add_argument(
+        "--alignment-reencode",
+        action="store_true",
+        help="Opt-in (--verify-behavior-alignment + --alignment-tokenizer-dir): strongly re-encode token_export",
+    )
+    parser.add_argument(
+        "--dpo-export-preflight",
+        action="store_true",
+        help="Opt-in: run CPU-only exported-token DPO preflight over preference/dpo_{train,eval}.jsonl (no torch)",
+    )
+    parser.add_argument(
+        "--dpo-preflight-tokenizer-dir",
+        default=None,
+        help="Optional local tokenizer directory to verify available_files during --dpo-export-preflight",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Allow writing into an existing non-empty --out directory",
@@ -1425,6 +1978,7 @@ def main(argv=None) -> int:
         report = run_stage_c_pipeline(
             output_dir=args.out,
             trajectory_paths=args.from_trajectories,
+            token_export_file=args.token_export_file,
             capture_live_url=args.capture_live,
             artifact_dir=args.artifact_dir,
             strict_artifacts=args.strict_artifacts,
@@ -1444,6 +1998,12 @@ def main(argv=None) -> int:
             live_headers=headers,
             allow_remote_http=args.allow_remote_http,
             live_enable_audio=args.live_audio,
+            capture_behavior_logprobs=args.capture_behavior_logprobs,
+            verify_behavior_alignment=args.verify_behavior_alignment,
+            alignment_tokenizer_dir=args.alignment_tokenizer_dir,
+            alignment_reencode=args.alignment_reencode,
+            dpo_export_preflight=args.dpo_export_preflight,
+            dpo_preflight_tokenizer_dir=args.dpo_preflight_tokenizer_dir,
             overwrite=args.overwrite,
         )
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
