@@ -85,6 +85,128 @@ sha256sum "${UMM_NATIVE_ROOT:-/opt/umminfer/native-service}"/bin/umm-infer \
 git rev-parse HEAD
 ```
 
+## Opt-in request-native allocator telemetry
+
+A chat request may explicitly ask for native allocator peaks without enabling a
+process-wide profiler:
+
+```json
+{
+  "model": "qwen3-native",
+  "stream": true,
+  "messages": [{"role": "user", "content": "hello"}],
+  "telemetry": {"native_allocator": true}
+}
+```
+
+The option is propagated as the Stage request parameter
+`native_allocator_telemetry=true`. The terminal unified event (or the non-SSE
+JSON body) then carries one bounded `telemetry` envelope. A covered stage entry
+has this shape:
+
+```json
+{
+  "coverage": "COVERED",
+  "scope": "request-native-cuda-runtime",
+  "request_id": "http-1",
+  "stage": "vlm",
+  "native_stage": "qwen38",
+  "backend": "qwen38",
+  "device_index": 0,
+  "lifecycle_status": "completed",
+  "execution": {"mode": "serial", "batch_capacity": 1},
+  "epoch": {
+    "id": 17,
+    "reset": true,
+    "semantics": "new_allocation_ownership_epoch"
+  },
+  "allocated_bytes_peak": 123456,
+  "reserved_bytes_peak": 123456,
+  "allocated_bytes_final": 4096,
+  "reserved_bytes_final": 4096,
+  "sample_coverage": {
+    "allocation_events": 4,
+    "free_events": 3,
+    "terminal_snapshots": 1
+  }
+}
+```
+
+`allocated` and `reserved` are equal because these are direct CUDA runtime
+blocks, not a caching-allocator reservation estimate. Peaks include only blocks
+**first allocated and owned by that request epoch**. Model weights and other
+resident allocations made before the request are excluded, never subtracted from
+a device or process baseline. CUDA context/driver allocations and allocations
+inside external libraries are outside this scope. A nonzero final value can be a
+retained cache or snapshot owned by the completed request; it is not, by itself,
+a leak verdict.
+
+An epoch id is monotonically increasing within a native stage process. `reset`
+means a new allocation-ownership log, **not** `cudaDeviceReset`, a global
+high-water reset, or a reset of another request. A late free updates its original
+owner, including after that owner's terminal snapshot, and cannot contaminate a
+later epoch. Overlapping supposedly serial scopes poison both records to
+`NOT_COVERED` rather than divide or reset shared counters.
+
+Current coverage is deliberately narrow:
+
+| Path | Request allocator result |
+| --- | --- |
+| Qwen3.8 native stage, `--batch-size 1` | Instrumented explicit native `cudaMalloc`/`cudaFree`; `COVERED` when attribution invariants hold |
+| Wan2.2 native stage, `cuda` or `cuda-scaffold`, serial | Instrumented explicit native runtime allocations in UMT5, DiT, VAE, and scaffold paths |
+| Qwen3.8 `--batch-size > 1` | `NOT_COVERED`, reason `batched_request_attribution_unavailable`; configured capacity and request identity remain attached |
+| Concurrent/shared execution or overlapping serial epochs | `NOT_COVERED`; no peer subtraction or shared-counter split |
+| Native ASR, Omni, Image, and TTS stages | `NOT_COVERED`, `backend_not_instrumented` |
+| Video `contract-stub` | `NOT_COVERED`, `contract_stub_has_no_cuda_allocator` |
+| Python/Diffusers/FLUX stages and fixed external proxies | No truthful native epoch is inferred; absent/missing terminal data is normalized to `NOT_COVERED` |
+
+Success and failure completions carry their native terminal snapshot. The
+scheduler also retains a covered cancelled snapshot when compute observes the
+abort. The Coordinator's public cancellation is intentionally immediate: if it
+wins before the native terminal arrives, the public envelope instead records
+`cancelled` plus `stage_terminal_snapshot_missing`; late data is not used to
+rewrite an already sent terminal event.
+
+No request content, model path, IPC path, or free-form backend diagnostic is
+accepted into the public projection. Identifiers and reasons are allow-listed,
+unknown fields are dropped, malformed byte/counter/epoch values become fixed
+`NOT_COVERED` records, and the envelope is capped at 64 stage entries. The native
+pointer table contains only live blocks owned by active or retained request
+epochs; frees remove entries. There are no per-frame samples or telemetry log
+files. Allocation/free locking exists only for opted-in covered serial epochs.
+Without the opt-in, request parameters, result payloads, SSE, and JSON remain
+byte-identical and no telemetry field is emitted.
+
+These peaks are **not** whole-device VRAM. `/metrics` NVML gauges and controlled
+`measurement.resources` remain separate `whole-device-used-memory` observations,
+including resident weights and other processes. The request envelope's
+`whole_device_nvml` value is always `separate_measurement_resources`.
+
+### Required SM90 validation gate
+
+The implementation in this revision has CPU-only host/fake-allocator and
+protocol evidence. Real CUDA allocation measurements are **NOT_RUN**. A later
+exclusive SM90 window must:
+
+1. build the gateway and Qwen3.8/Wan2.2 stages with CUDA for SM90 and run the
+   native CTests; use only the agreed idle GPUs and leave the resident service
+   untouched;
+2. issue serial Qwen3.8 and Wan2.2 requests with telemetry off/on, verify output
+   bytes and default wire parity, then verify nonzero peaks, monotonic distinct
+   epoch ids, event counts, and eventual tracked-block cleanup;
+3. repeat serial requests with prefix/VAE caches retained, and verify a later
+   request neither inherits nor subtracts the earlier resident blocks;
+4. verify batch/concurrent and every uninstrumented backend returns its declared
+   `NOT_COVERED` reason with null, not zero, peaks;
+5. exercise completed, failed, and cancelled requests, checking public lifecycle,
+   the documented immediate-cancellation limitation, `in_flight=0`, and device
+   cleanup; and
+6. run a controlled ablation with `request_memory.enabled=true` and
+   `required=true`, requiring `request_scoped_telemetry.coverage=COVERED` while
+   independently retaining the 50 ms whole-device NVML samples and hashes.
+
+No real CUDA peak or production-deployment claim is made until that gate passes.
+
 ## Operate
 
 Without supervision:
@@ -409,6 +531,20 @@ and `--web-root`:
     `0` restarts on GPUs 2/4/5/6 and verified live on `43301` with
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
+
+- Wave 37 Opt-In Request-Native CUDA Allocator Telemetry (`6ea24d5`):
+  - Harvested accepted Task #31 (`d0c7822`, 31 files): added
+    `telemetry.native_allocator=true` opt-in request-native CUDA allocator epoch
+    tracking (`include/umminfer/obs/request_telemetry.hpp`,
+    `src/obs/request_telemetry.cpp`, `native/common/cuda_request_allocator.*`,
+    `native/stage_cli/request_telemetry_stage.*`, Qwen3.8 & Wan2.2 explicit
+    allocation instrumentation, public bounded 64-stage projection, and
+    controlled-ablation `request_memory` integration).
+  - Verified locally: `zig build test` PASS (`unified_contract_test` +
+    `voice_client_test` 16/16), `controlled_measurement_test.py` **37/37 OK**,
+    `ablation_runner_test.py` **17/17 OK**, `stage_c_pipeline_test.py` **6/6 OK**,
+    `sse_replay_test.py` **8/8 OK**. Real CUDA allocation measurements remain
+    `NOT_RUN` pending the exclusive SM90 gate.
 
 - Wave 36 Web UI & macOS `ummmlx` 4th Showcase Preset (`Temporal Video QA`) & Explicit `source=slot-0` Storyboard Preset (`3a53f89`):
   - Added `temporal_video_qa` (`Temporal Video QA`: configures `temporal` frame
