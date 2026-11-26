@@ -188,6 +188,10 @@ struct ChatRequest {
   // Opt in to per-request native CUDA allocator peak telemetry
   // (telemetry.native_allocator=true). Omitted from the wire body when false.
   bool native_allocator_telemetry = false;
+  // Opt in to per-request sampled behavior token/log-probability evidence
+  // (behavior.logprobs=true; requires stream=true on the server). Omitted from
+  // the wire body when false.
+  bool behavior_logprobs = false;
   std::function<void(const std::string&)> on_delta;
   Milliseconds timeout{0};
   Milliseconds first_token_timeout{0};
@@ -206,6 +210,15 @@ struct ChatResponse {
   nlohmann::json legs = nlohmann::json::array();
   // Opt-in server telemetry envelope (unified.telemetry or top-level telemetry).
   std::optional<nlohmann::json> telemetry;
+  // Value of the X-UmmInfer-Behavior-Evidence response header when present
+  // ("exposed" or "not_exposed"). Empty when the server omitted the header.
+  std::string behavior_evidence_header;
+  // Opt-in final SSE behavior logprobs block (top-level "behavior" object),
+  // preserved as parsed JSON when exposed by the server. Unset when omitted or
+  // not_exposed.
+  std::optional<nlohmann::json> behavior_evidence;
+  // Serialized JSON string of `behavior_evidence` when present; empty otherwise.
+  std::string behavior_evidence_json;
   std::string finish_reason;
   std::string model;
   Usage usage;

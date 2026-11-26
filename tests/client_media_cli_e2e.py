@@ -160,6 +160,21 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(body)
             messages = req.get("messages") or []
             last_content = messages[-1].get("content", "") if messages else ""
+            behavior_req = req.get("behavior")
+            behavior_opted_in = isinstance(behavior_req, dict) and behavior_req.get("logprobs") is True
+            if behavior_opted_in and not req.get("stream"):
+                self.reply(
+                    400,
+                    json.dumps({
+                        "error": {
+                            "message": "behavior.logprobs requires stream=true",
+                            "type": "invalid_request",
+                        }
+                    }).encode(),
+                    "application/json",
+                    {"X-UmmInfer-Behavior-Evidence": "not_exposed"},
+                )
+                return
             if req.get("stream"):
                 chunks = [
                     {
@@ -177,6 +192,7 @@ class Handler(BaseHTTPRequestHandler):
                                      "finish_reason": None}],
                     },
                 ]
+                extra_headers = {}
                 if last_content == "telemetry covered sse":
                     chunks.append({
                         "id": "chat-tel-sse",
@@ -226,6 +242,39 @@ class Handler(BaseHTTPRequestHandler):
                             "truncated": False,
                         },
                     })
+                elif last_content == "behavior exposed sse":
+                    if behavior_opted_in:
+                        extra_headers["X-UmmInfer-Behavior-Evidence"] = "exposed"
+                        chunks.append({
+                            "id": "chat-beh-sse",
+                            "object": "chat.completion.chunk",
+                            "model": req.get("model", "m"),
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                            "usage": {"completion_tokens": 3},
+                            "behavior": {
+                                "format": "umminfer-behavior-logprobs-v1",
+                                "tokenizer_sha256": "a" * 64,
+                                "token_ids": [11, 12, 13],
+                                "logprobs": [-0.125, -0.25, -0.5],
+                                "mask": [1, 0, 1],
+                            },
+                        })
+                    else:
+                        chunks.append({
+                            "id": "chat-beh-sse",
+                            "object": "chat.completion.chunk",
+                            "model": req.get("model", "m"),
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        })
+                elif last_content == "behavior not exposed sse":
+                    if behavior_opted_in:
+                        extra_headers["X-UmmInfer-Behavior-Evidence"] = "not_exposed"
+                    chunks.append({
+                        "id": "chat-beh-sse",
+                        "object": "chat.completion.chunk",
+                        "model": req.get("model", "m"),
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}],
+                    })
                 else:
                     chunks.append({
                         "id": "chat-tel-sse",
@@ -235,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 sse = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
                 sse += "data: [DONE]\n\n"
-                self.reply(200, sse.encode(), "text/event-stream")
+                self.reply(200, sse.encode(), "text/event-stream", extra_headers)
                 return
             artifacts = []
             mods = set(req.get("modalities", []))
@@ -713,6 +762,76 @@ def test_chat_native_allocator_telemetry(binary, base, _workdir):
             f"boolean peak must never fabricate 0 B: {malformed_res.stderr!r}")
 
 
+def test_chat_behavior_logprobs(binary, base, _workdir):
+    # (a) Default OFF: omitting --behavior-logprobs omits "behavior" on the wire and emits no stderr diagnostic.
+    default_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "behavior exposed sse", "--stream",
+    ])
+    require(default_res.returncode == 0, f"default stream chat failed: {default_res.stderr}")
+    [default_entry] = take()
+    default_req = json.loads(default_entry["body"])
+    require("behavior" not in default_req,
+            f"default chat must omit behavior key: {default_req}")
+    require(default_res.stdout == "hello world\n", f"default stdout: {default_res.stdout!r}")
+    require(default_res.stderr == "",
+            f"default chat must emit no behavior stderr: {default_res.stderr!r}")
+
+    # (b) Opt-in exposed SSE: sends behavior.logprobs=true, captures mixed-case header + 5-field payload.
+    exposed_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "behavior exposed sse", "--stream", "--behavior-logprobs",
+    ])
+    require(exposed_res.returncode == 0, f"exposed behavior chat failed: {exposed_res.stderr}")
+    [exposed_entry] = take()
+    exposed_req = json.loads(exposed_entry["body"])
+    require(exposed_req.get("stream") is True, f"expected stream=true: {exposed_req}")
+    require(exposed_req.get("behavior") == {"logprobs": True},
+            f"opt-in must send behavior.logprobs=true: {exposed_req}")
+    require(exposed_res.stdout == "hello world\n",
+            f"exposed behavior stdout must stay clean prose: {exposed_res.stdout!r}")
+    expected_exposed_diag = (
+        "[behavior] x-umminfer-behavior-evidence: exposed "
+        "(payload=present, format=umminfer-behavior-logprobs-v1, "
+        "tokens=3, supervised=2, tokenizer_sha256=aaaaaaaaaaaa)"
+    )
+    require(expected_exposed_diag in exposed_res.stderr,
+            f"expected exposed behavior diagnostic on stderr: {exposed_res.stderr!r}")
+
+    # (c) Opt-in not_exposed SSE: captures not_exposed header and reports payload=none with zero fabrication.
+    ne_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "behavior not exposed sse", "--stream", "--behavior-logprobs",
+    ])
+    require(ne_res.returncode == 0, f"not_exposed behavior chat failed: {ne_res.stderr}")
+    [ne_entry] = take()
+    ne_req = json.loads(ne_entry["body"])
+    require(ne_req.get("stream") is True and ne_req.get("behavior") == {"logprobs": True},
+            f"not_exposed opt-in request: {ne_req}")
+    require(ne_res.stdout == "hello world\n",
+            f"not_exposed behavior stdout must stay clean prose: {ne_res.stdout!r}")
+    require("[behavior] x-umminfer-behavior-evidence: not_exposed (payload=none)" in ne_res.stderr,
+            f"expected not_exposed diagnostic on stderr: {ne_res.stderr!r}")
+    require("payload=present" not in ne_res.stderr and "tokens=" not in ne_res.stderr,
+            f"not_exposed must never fabricate behavior payload fields: {ne_res.stderr!r}")
+
+    # (d) Opt-in without --stream surfaces server HTTP 400 without hiding it.
+    nonstream_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "behavior exposed sse", "--behavior-logprobs",
+    ])
+    require(nonstream_res.returncode != 0,
+            f"non-streaming --behavior-logprobs must fail with server 400: {nonstream_res.stderr!r}")
+    [nonstream_entry] = take()
+    nonstream_req = json.loads(nonstream_entry["body"])
+    require(nonstream_req.get("behavior") == {"logprobs": True} and
+            nonstream_req.get("stream") is not True,
+            f"non-streaming behavior request: {nonstream_req}")
+    require("400" in nonstream_res.stderr and
+            "behavior.logprobs requires stream=true" in nonstream_res.stderr,
+            f"non-streaming behavior must surface HTTP 400: {nonstream_res.stderr!r}")
+
+
 def test_chat_video_teacache_thresh(binary, base, workdir):
     # (a) Default --video-out without --video-teacache-thresh omits teacache_thresh.
     default_out = workdir / "vid-default.mp4"
@@ -1023,6 +1142,7 @@ def main():
         test_chat_wave9_multimodal_flags,
         test_chat_video_input,
         test_chat_native_allocator_telemetry,
+        test_chat_behavior_logprobs,
         test_chat_video_teacache_thresh,
         test_chat_narrative_controls,
     ]

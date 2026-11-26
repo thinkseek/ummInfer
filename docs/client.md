@@ -48,8 +48,8 @@ Plain HTTP is allowed only for a loopback host. Other OpenAI endpoints must use
 HTTPS. Redirects are disabled.
 
 Options include `--system`, `--max-tokens`, `--temperature`, `--top-p`,
-`--seed`, `--native-allocator-telemetry`, `--timeout-ms`, `--first-token-ms`,
-`--stall-ms`, and `--max-attempts`.
+`--seed`, `--native-allocator-telemetry`, `--behavior-logprobs`,
+`--timeout-ms`, `--first-token-ms`, `--stall-ms`, and `--max-attempts`.
 Retries use exponential backoff with equal jitter: the delay is drawn from
 `[cap/2, cap)`, and `cap` doubles from `retry_base` up to `retry_max`.
 `Retry-After` and `Retry-After-Ms` are honored; a wait above `max_retry_after`
@@ -59,8 +59,8 @@ timeout. A retry never starts after a text delta was delivered.
 The route accepts an explicit allowlist of top-level chat fields: `model`,
 `messages`, `stream`, `temperature`, `max_tokens`, `max_completion_tokens`,
 `top_p`, `seed`, `stop`, `response_format`, `stream_options`, `session_id`,
-`session_history`, `modalities`, `image`, `audio`, `video`, `narrative`, and
-`telemetry`.
+`session_history`, `modalities`, `image`, `audio`, `video`, `narrative`,
+`telemetry`, and `behavior`.
 The mixed-output and narrative fields require unified mode. Any other non-null
 top-level field returns HTTP 400 `unsupported field: NAME`, whether or not this
 server knows the name. A null value is treated as absent. A non-empty
@@ -205,6 +205,42 @@ data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],...,
   ignores it. It is sent regardless of `stream_options`; the field
   `stream_options.include_usage: true` is still rejected with HTTP 400.
 - The non-streaming response body is unchanged.
+
+### Behavior logprobs evidence (opt-in)
+
+`ChatRequest::behavior_logprobs` (default `false`) and `umm-infer chat
+--behavior-logprobs` opt into the server's sampled behavior-token/log-probability
+streaming contract (`behavior.logprobs=true`, see
+[behavior-logprobs-live.md](behavior-logprobs-live.md)):
+
+```sh
+./zig-out/bin/umm-infer chat \
+  --url http://127.0.0.1:43301/v1 --model qwen3-native \
+  --prompt 'Hello' --stream --behavior-logprobs
+```
+
+- **Default OFF**: when `behavior_logprobs` is `false` (default), `"behavior"` is
+  omitted completely from the `/v1/chat/completions` JSON payload, and no
+  behavior diagnostic line is written to `stderr`.
+- **Opt-in wire & streaming contract**: when `behavior_logprobs` is `true`, the
+  client serializes `"behavior": {"logprobs": true}`. The server requires
+  `stream=true` (pass `--stream` or `--narrative` in the CLI); non-streaming
+  requests pass through and surface the server's HTTP 400
+  (`behavior.logprobs requires stream=true`) as `ErrorCode::kBadRequest`.
+- **Response capture**: `OpenAIClient::chat` captures the case-insensitive
+  `X-UmmInfer-Behavior-Evidence` HTTP response header into
+  `ChatResponse::behavior_evidence_header` (`"exposed"` or `"not_exposed"`, or
+  empty when absent). On SSE streams, when the final chunk contains a top-level
+  `"behavior"` JSON object (`format`, `tokenizer_sha256`, `token_ids`,
+  `logprobs`, `mask`), it is preserved verbatim in
+  `ChatResponse::behavior_evidence` (`std::optional<nlohmann::json>`) and
+  `ChatResponse::behavior_evidence_json` (`std::string`). When the server
+  returns `not_exposed` or omits `"behavior"`, both remain unset/empty with zero
+  fabrication.
+- **CLI diagnostics**: when `--behavior-logprobs` is passed, `umm-infer chat`
+  keeps `stdout` clean prose and writes one summary line to `stderr`:
+  - Exposed: `[behavior] x-umminfer-behavior-evidence: exposed (payload=present, format=umminfer-behavior-logprobs-v1, tokens=N, supervised=M, tokenizer_sha256=<prefix>)`
+  - Not exposed / omitted: `[behavior] x-umminfer-behavior-evidence: not_exposed (payload=none)` (or `absent` when the header is missing).
 
 ## Mixed output (generated image, audio and video)
 

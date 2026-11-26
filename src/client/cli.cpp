@@ -103,7 +103,7 @@ void usage(const std::string& command, std::ostream& out) {
   if (command == "chat") {
     out << "usage: umm-infer chat --prompt TEXT [--url https://api.openai.com/v1] "
            "[--model M] [--system TEXT] [--stream] [--native-allocator-telemetry] "
-           "[--max-tokens N] [--temperature X] "
+           "[--behavior-logprobs] [--max-tokens N] [--temperature X] "
            "[--top-p X] [--seed N] [--timeout-ms N] [--first-token-ms N] [--stall-ms N] "
            "[--max-attempts N]\n"
            "       [--image-url URL ... | --video-input PATH] [--video-url URL ...]\n"
@@ -513,6 +513,45 @@ void print_native_allocator_telemetry(const nlohmann::json& telemetry,
   err << '\n';
 }
 
+void print_behavior_evidence(const ChatResponse& response, std::ostream& err) {
+  const std::string header = response.behavior_evidence_header.empty()
+                                 ? "absent"
+                                 : response.behavior_evidence_header;
+  err << "[behavior] x-umminfer-behavior-evidence: " << header;
+  if (response.behavior_evidence && response.behavior_evidence->is_object()) {
+    const auto& evidence = *response.behavior_evidence;
+    err << " (payload=present";
+    if (const auto it = evidence.find("format");
+        it != evidence.end() && it->is_string()) {
+      err << ", format=" << it->get<std::string>();
+    }
+    if (const auto it = evidence.find("token_ids");
+        it != evidence.end() && it->is_array()) {
+      err << ", tokens=" << it->size();
+    }
+    if (const auto it = evidence.find("mask");
+        it != evidence.end() && it->is_array()) {
+      size_t supervised = 0;
+      for (const auto& bit : *it) {
+        if (!bit.is_boolean() && bit.is_number_integer() &&
+            bit.get<int64_t>() == 1) {
+          ++supervised;
+        }
+      }
+      err << ", supervised=" << supervised;
+    }
+    if (const auto it = evidence.find("tokenizer_sha256");
+        it != evidence.end() && it->is_string()) {
+      const std::string& sha = it->get<std::string>();
+      err << ", tokenizer_sha256="
+          << sha.substr(0, std::min<size_t>(12, sha.size()));
+    }
+    err << ")\n";
+  } else {
+    err << " (payload=none)\n";
+  }
+}
+
 int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   Options options(argc, argv, 2,
                   {"url", "model", "prompt", "system", "max-tokens", "temperature",
@@ -527,8 +566,8 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
                    "video-teacache-thresh", "video-seed", "video-image",
                    "narrative-visual-mode", "narrative-continuity",
                    "narrative-style-anchor"},
-                  {"stream", "native-allocator-telemetry", "narrative",
-                   "narrative-no-allow-text-only"},
+                  {"stream", "native-allocator-telemetry", "behavior-logprobs",
+                   "narrative", "narrative-no-allow-text-only"},
                   {"image-url", "video-url"});
   if (options.help) {
     usage("chat", std::cout);
@@ -645,6 +684,7 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   request.stall_timeout = milliseconds(options, "stall-ms", 0);
   request.stream = options.has("stream");
   request.native_allocator_telemetry = options.has("native-allocator-telemetry");
+  request.behavior_logprobs = options.has("behavior-logprobs");
   request.cancel = cancel;
 
   auto add_modality = [&](const char* mod) {
@@ -866,6 +906,9 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   }
   if (request.native_allocator_telemetry && response.telemetry) {
     print_native_allocator_telemetry(*response.telemetry, std::cerr);
+  }
+  if (request.behavior_logprobs) {
+    print_behavior_evidence(response, std::cerr);
   }
   return 0;
 }

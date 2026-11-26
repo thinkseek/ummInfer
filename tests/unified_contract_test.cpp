@@ -12682,6 +12682,184 @@ void test_public_http_behavior_logprobs() {
   server_thread.join();
 }
 
+void test_openai_client_behavior_logprobs() {
+  Harness h("clientbehaviorlogprobs");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "client behavior logprobs server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  client::OpenAIConfig cfg;
+  cfg.base_url = "http://127.0.0.1:" + std::to_string(api.bound_port()) + "/v1";
+  cfg.model = "qwen3-unified";
+  cfg.timeout = client::Milliseconds{8000};
+  client::OpenAIClient cli(cfg);
+
+  // 1. Default OFF: omits "behavior" from request, receives no header or block.
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "default off"});
+    req.stream = true;
+    auto fut = std::async(std::launch::async, [&] { return cli.chat(req); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "default-off behavior request did not reach VLM");
+    if (vlm) {
+      StagePayload payload = StagePayload::from_value(vlm->data);
+      check(!obs::behavior_logprobs_requested(payload.request.params),
+            "OpenAIClient default-off request enabled behavior_logprobs");
+      h.stream(vlm->request_id, "vlm", text_chunk("plain", false));
+      h.complete(vlm->request_id, "vlm", true, native_behavior_result("plain"));
+    }
+    const client::ChatResponse resp = fut.get();
+    check(resp.text == "plain", "default-off client text mismatch");
+    check(resp.behavior_evidence_header.empty(),
+          "default-off response unexpectedly populated behavior_evidence_header");
+    check(!resp.behavior_evidence.has_value() && resp.behavior_evidence_json.empty(),
+          "default-off response unexpectedly populated behavior_evidence");
+  }
+
+  // 2. Opt-in with stream=false passes through and surfaces server HTTP 400.
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "nonstream behavior"});
+    req.stream = false;
+    req.behavior_logprobs = true;
+    bool caught_400 = false;
+    try {
+      (void)cli.chat(req);
+    } catch (const client::Error& err) {
+      caught_400 = err.code() == client::ErrorCode::kBadRequest &&
+                   err.status() == 400 &&
+                   std::string(err.what()).find("stream=true") != std::string::npos;
+    }
+    check(caught_400,
+          "OpenAIClient behavior_logprobs with stream=false did not surface HTTP 400");
+  }
+
+  // 3. Opt-in with stream=true and valid native evidence -> header=exposed + exact 5-field block.
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "exposed behavior"});
+    req.stream = true;
+    req.behavior_logprobs = true;
+    auto fut = std::async(std::launch::async, [&] { return cli.chat(req); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "exposed behavior request did not reach VLM");
+    if (vlm) {
+      StagePayload payload = StagePayload::from_value(vlm->data);
+      check(obs::behavior_logprobs_requested(payload.request.params),
+            "OpenAIClient did not serialize behavior.logprobs=true");
+      h.stream(vlm->request_id, "vlm", text_chunk("covered", false));
+      h.complete(vlm->request_id, "vlm", true, native_behavior_result("covered"));
+    }
+    const client::ChatResponse resp = fut.get();
+    check(resp.text == "covered", "exposed behavior client text mismatch");
+    check(resp.behavior_evidence_header == "exposed",
+          "OpenAIClient did not capture x-umminfer-behavior-evidence=exposed");
+    check(resp.behavior_evidence.has_value() && !resp.behavior_evidence_json.empty(),
+          "OpenAIClient did not capture exposed behavior payload");
+    if (resp.behavior_evidence) {
+      const json& ev = *resp.behavior_evidence;
+      check(ev.size() == 5 &&
+                ev["format"] == obs::kBehaviorLogprobsFormat &&
+                ev["tokenizer_sha256"] == std::string(64, 'a') &&
+                ev["token_ids"] == json::array({11, 12, 13}) &&
+                ev["logprobs"] == json::array({-0.125, -0.25, -0.5}) &&
+                ev["mask"] == json::array({1, 0, 1}),
+            "OpenAIClient behavior_evidence fields did not match server contract");
+      check(json::parse(resp.behavior_evidence_json) == ev,
+            "OpenAIClient behavior_evidence_json did not round-trip to behavior_evidence");
+    }
+  }
+
+  // 4. Opt-in with stream=true and truncated/missing evidence -> header=not_exposed, zero fabrication.
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "truncated behavior"});
+    req.stream = true;
+    req.behavior_logprobs = true;
+    auto fut = std::async(std::launch::async, [&] { return cli.chat(req); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "not_exposed behavior request did not reach VLM");
+    if (vlm) {
+      Value truncated = native_behavior_result("cut");
+      truncated["finish_reason"] = Value("length");
+      h.stream(vlm->request_id, "vlm", text_chunk("cut", false));
+      h.complete(vlm->request_id, "vlm", true, std::move(truncated));
+    }
+    const client::ChatResponse resp = fut.get();
+    check(resp.text == "cut" && resp.finish_reason == "length",
+          "not_exposed behavior client text/finish mismatch");
+    check(resp.behavior_evidence_header == "not_exposed",
+          "OpenAIClient did not capture x-umminfer-behavior-evidence=not_exposed");
+    check(!resp.behavior_evidence.has_value() && resp.behavior_evidence_json.empty(),
+          "OpenAIClient fabricated behavior evidence on not_exposed");
+  }
+
+  // 5. Opt-in with interleaved image narrative captures exposed masked behavior + artifact.
+  {
+    client::ChatRequest req;
+    req.messages.push_back({"user", "narrative behavior"});
+    req.stream = true;
+    req.behavior_logprobs = true;
+    req.modalities = {"text", "image"};
+    client::ImageOutput img_out;
+    img_out.size = "256x256";
+    img_out.output_format = "png";
+    req.image = img_out;
+    client::NarrativeOptions n;
+    n.enabled = true;
+    n.visual_mode = "image";
+    n.max_slots = 1;
+    req.narrative = n;
+
+    auto fut = std::async(std::launch::async, [&] { return cli.chat(req); });
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "narrative behavior request did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("A. [[image: red boat]] Tail", false));
+    }
+    auto img = h.next_submit(h.image_recv);
+    check(img.has_value(), "narrative behavior image slot missing");
+    if (img) {
+      h.complete(img->request_id, "image", true,
+                 artifact_result("image", "image/png", "PNG_BEH"));
+    }
+    if (vlm) {
+      Value result = native_behavior_result("A. [[image: red boat]] Tail", 4);
+      Value::Map evidence = result["behavior"].as_map();
+      evidence["token_ids"] = Value(Value::Array{
+          Value(int64_t{21}), Value(int64_t{22}), Value(int64_t{23}), Value(int64_t{24})});
+      evidence["logprobs"] = Value(Value::Array{
+          Value(-0.1), Value(-0.2), Value(-0.3), Value(-0.4)});
+      evidence["mask"] = Value(Value::Array{
+          Value(int64_t{1}), Value(int64_t{0}), Value(int64_t{0}), Value(int64_t{1})});
+      result["behavior"] = Value(std::move(evidence));
+      h.complete(vlm->request_id, "vlm", true, std::move(result));
+    }
+    const client::ChatResponse resp = fut.get();
+    check(resp.behavior_evidence_header == "exposed" &&
+              resp.behavior_evidence.has_value() &&
+              (*resp.behavior_evidence)["mask"] == json::array({1, 0, 0, 1}) &&
+              resp.artifacts.size() == 1 &&
+              resp.text.find("[[") == std::string::npos,
+          "OpenAIClient narrative behavior roundtrip mismatch");
+  }
+
+  api.stop();
+  server_thread.join();
+  wait_until([&]() -> bool { return engine.in_flight() == 0; },
+             "client behavior logprobs requests stayed in flight");
+}
+
 void test_online_attestation_python_canonical_fixtures() {
   std::ifstream input("tests/online_attestation_canonical_fixtures.json",
                       std::ios::binary);
@@ -13101,6 +13279,7 @@ int main() {
   RUN(test_public_http_request_native_allocator_telemetry());
   RUN(test_openai_client_teacache_and_narrative());
   RUN(test_public_http_behavior_logprobs());
+  RUN(test_openai_client_behavior_logprobs());
   RUN(test_online_attestation_python_canonical_fixtures());
   RUN(test_public_http_online_attestation_retry_cancel());
   return g_failures == 0 ? 0 : 1;

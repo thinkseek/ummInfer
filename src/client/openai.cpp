@@ -348,6 +348,26 @@ void read_telemetry_field(const json& root, ChatResponse& out) {
   }
 }
 
+// Captures the case-insensitive X-UmmInfer-Behavior-Evidence response header
+// (http.cpp stores all response header names lowercased).
+void read_behavior_header(const std::map<std::string, std::string>& headers,
+                          ChatResponse& out) {
+  if (const auto it = headers.find("x-umminfer-behavior-evidence");
+      it != headers.end()) {
+    out.behavior_evidence_header = it->second;
+  }
+}
+
+// Extracts an opt-in server behavior logprobs block (top-level "behavior"
+// object on the final SSE frame). Never fabricates evidence when omitted.
+void read_behavior_field(const json& root, ChatResponse& out) {
+  const auto it = root.find("behavior");
+  if (it != root.end() && it->is_object()) {
+    out.behavior_evidence = *it;
+    out.behavior_evidence_json = it->dump();
+  }
+}
+
 detail::HttpRequest media_request(const OpenAIConfig& config, const std::string& base_url,
                                   const std::string& path, detail::HttpMethod method,
                                   Milliseconds timeout, CancelFlag cancel) {
@@ -739,6 +759,9 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     if (request.native_allocator_telemetry) {
       body["telemetry"] = {{"native_allocator", true}};
     }
+    if (request.behavior_logprobs) {
+      body["behavior"] = {{"logprobs", true}};
+    }
     if (stream) {
       body["stream"] = true;
     } else {
@@ -827,6 +850,7 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
             read_artifacts_field(root, out, response.body, config_.api_key);
             read_legs_field(root, out, response.body, config_.api_key);
             read_telemetry_field(root, out);
+            read_behavior_header(response.headers, out);
             const std::string refusal =
                 response_string(*message, "refusal", response.body, config_.api_key);
             const std::string reason =
@@ -1031,10 +1055,12 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
               }
             }
             read_telemetry_field(root, out);
+            read_behavior_field(root, out);
             return true;
           };
           http.on_body = [&](std::string_view bytes) { return parser.feed(bytes, event); };
-          detail::perform(http);
+          const detail::HttpResponse response = detail::perform(http);
+          read_behavior_header(response.headers, out);
           if (!parser.stopped()) parser.finish(event);
           detail::check_cancelled(request.cancel);
           // [DONE] is the terminator. A finish_reason alone is not: the stream
