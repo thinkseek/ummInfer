@@ -532,6 +532,21 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 39 Web UI & macOS `ummmlx` Opt-In Native VRAM Allocator Telemetry Pills (`8319791`):
+  - Exposed Wave 37's `telemetry.native_allocator=true` across Web UI
+    (`web/index.html`) and macOS `ummmlx` (`UnifiedStream.swift`,
+    `ChatClient.swift`, `ChatModel.swift`, `App.swift`): default OFF omits
+    `telemetry` completely (byte-identical default requests); opted-in ON
+    parses both `unified.telemetry` and top-level `telemetry` envelopes and
+    renders `VRAM: <peak> peak` (when `>=1` stage is `COVERED`) or honest
+    `VRAM: N/C` with real server reason tooltips (never mapping `null` to `0`):
+    - `web_ui_contract_test.py`: **17/17 PASS** (`2,914` script lines);
+      macOS `swift test`: **136/136 PASS**; Release `ummmlx.app` rebuilt
+      (zero `_AVKit_SwiftUI`).
+    - Zero-restart hot-deployed `web/index.html` (`.wave36` backup) live onto
+      SM90 `43301` (`id="nativeAllocatorTelemetry"` &
+      `summarizeNativeAllocatorTelemetry` verified live, `/health in_flight=0`).
+
 - Wave 38 Isolated SM90 Public-SSE Live Capture/Replay Gate (`869854f`):
   - Harvested accepted Task #33 (`81c593c`, 7 files): landed focused live
     harness `tests/sse_replay_live.py`, `docs/sse-replay-live.md`, hash-only
