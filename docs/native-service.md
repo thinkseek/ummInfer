@@ -532,6 +532,21 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 42 Native C++ CLI `umm-infer voice` Per-Turn Barge-In Cut-Point, Real PCM16 RMS Mic Level & Interactive Echo Toggle (`58a58c0`):
+  - Completed full 3-client parity (Web UI + macOS `ummmlx` + native C++ CLI
+    `umm-infer`) for Wave 34's full-duplex barge-in & mic observability:
+    added `compute_pcm16_rms_level`, `VoiceBargeInCutPoint` /
+    `format_barge_in_cut_point` (`Interrupted · <N> B spoken` /
+    `Interrupted before audio`), monotonic `response.playback_ack` + optional
+    `response.cancelled.text_cursor` resolution, `on_response_cancelled` /
+    `on_mic_level` callbacks, `last_barge_in_cut_point()` /
+    `last_mic_rms_level()` accessors with clean reconnect/stop reset, and
+    interactive stdin `echo on` / `echo off` runtime toggle in
+    `src/client/voice.{hpp,cpp}`, `src/client/cli.cpp`,
+    `tests/voice_client_test.cpp`, and `docs/client.md`
+    (`zig build test` PASS, `voice_client_test` **20/20 PASS**,
+    `client_media_cli_e2e.py` **9/9 PASS**; physical mic/speaker `NOT_RUN`).
+
 - Wave 41 Tokenizer-Backed Trajectory Token-ID & Span Export (`python/umminfer_token_export.py`):
   - Harvested accepted Task #34 (`f098749` + `f847a5a`, `revisions=0`): added
     optional additive `token_export` format v1 with explicit tokenizer file
