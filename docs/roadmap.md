@@ -405,6 +405,22 @@ generation, online optimizer execution, batch/audio/video behavior evidence, and
 model-quality outcomes remain `NOT_RUN`/`NOT_COVERED` as applicable; see
 [joint-training](joint-training.md#online-grpo-rollout-generation-and-validation-contract).
 
+**Phase 6 independent behavior/token-export alignment gate (2026-11-26).** An
+independent stdlib-first validator (`python/umminfer_behavior_token_alignment.py`)
+now binds retained native sampled evidence to trajectory token_export v1/v2
+supervision ids, raw source spans, and SFT masks before any optional tokenizer
+import or report output. Deterministic explicit-anchor and multilingual
+NFC/emoji/byte-fallback fixtures cover valid alignment and every fail-closed
+mismatch class. The retained real text/visual captures passed fresh-process
+strong re-encoding, all 61 sampled raw-target ids, 49 supervised masks plus 12
+zero directive masks, exact raw-SSE/CAS replay, and five tamper cases with no
+output. The visual clean stream legitimately re-encodes to 24 context-dependent
+ids rather than the 25 masked sampled ids; this is reported, never silently
+substituted. Exact hashes and future online optimizer requirements are in
+[behavior-token-alignment](behavior-token-alignment.md). New inference,
+numerical logprob recomputation, online optimization, and model-quality outcomes
+remain `NOT_RUN`.
+
 ## Model support plan
 
 These entries are not current deliverables. Their acceptance procedure,

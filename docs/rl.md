@@ -526,6 +526,15 @@ online optimizer execution and model-quality outcomes remain `NOT_RUN`. The
 isolated SM90 native producer/recomputation result and exact evidence hashes are
 in [behavior-logprobs-live.md](behavior-logprobs-live.md).
 
+The independent CPU alignment gate binds those sampled blocks to token_export
+v1/v2 raw-target ids, source spans, and masks without importing the online
+rollout's acceptance routine. It proves the retained 61-token text/visual
+alignment and raw replay, reports the visual clean-context re-encoding boundary
+instead of substituting ids, and rejects stale/incomplete/cross-record/tokenizer,
+mask, EOS, non-finite, raw, and CAS evidence before ML imports or output. See
+[behavior-token-alignment.md](behavior-token-alignment.md). New numerical
+forwards and online optimizer/model-quality outcomes remain `NOT_RUN`.
+
 ## Rewards
 
 `Reward.score(record)` reads only the exported JSON object. It needs no serving

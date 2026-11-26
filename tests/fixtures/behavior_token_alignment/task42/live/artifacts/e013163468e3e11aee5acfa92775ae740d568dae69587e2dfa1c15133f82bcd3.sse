@@ -1,0 +1,50 @@
+data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk"}
+
+data: {"choices":[{"delta":{"content":"红灯"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":0,"session_id":"behavior-default-42","stage":"vlm","text":"红灯"}}
+
+data: {"choices":[{"delta":{"content":"笼"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":1,"session_id":"behavior-default-42","stage":"vlm","text":"笼"}}
+
+data: {"choices":[{"delta":{"content":"在"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":2,"session_id":"behavior-default-42","stage":"vlm","text":"在"}}
+
+data: {"choices":[{"delta":{"content":"🌅"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":3,"session_id":"behavior-default-42","stage":"vlm","text":"🌅"}}
+
+data: {"choices":[{"delta":{"content":"的"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":4,"session_id":"behavior-default-42","stage":"vlm","text":"的"}}
+
+data: {"choices":[{"delta":{"content":"余"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":5,"session_id":"behavior-default-42","stage":"vlm","text":"余"}}
+
+data: {"choices":[{"delta":{"content":"晖"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":6,"session_id":"behavior-default-42","stage":"vlm","text":"晖"}}
+
+data: {"choices":[{"delta":{"content":"中"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":7,"session_id":"behavior-default-42","stage":"vlm","text":"中"}}
+
+data: {"choices":[{"delta":{"content":"摇曳"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":8,"session_id":"behavior-default-42","stage":"vlm","text":"摇曳"}}
+
+data: {"choices":[{"delta":{"content":"，"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":9,"session_id":"behavior-default-42","stage":"vlm","text":"，"}}
+
+data: {"choices":[{"delta":{"content":"为"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":10,"session_id":"behavior-default-42","stage":"vlm","text":"为"}}
+
+data: {"choices":[{"delta":{"content":"静谧"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":11,"session_id":"behavior-default-42","stage":"vlm","text":"静谧"}}
+
+data: {"choices":[{"delta":{"content":"的"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":12,"session_id":"behavior-default-42","stage":"vlm","text":"的"}}
+
+data: {"choices":[{"delta":{"content":"黄昏"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":13,"session_id":"behavior-default-42","stage":"vlm","text":"黄昏"}}
+
+data: {"choices":[{"delta":{"content":"增添"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":14,"session_id":"behavior-default-42","stage":"vlm","text":"增添"}}
+
+data: {"choices":[{"delta":{"content":"了一"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":15,"session_id":"behavior-default-42","stage":"vlm","text":"了一"}}
+
+data: {"choices":[{"delta":{"content":"抹"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":16,"session_id":"behavior-default-42","stage":"vlm","text":"抹"}}
+
+data: {"choices":[{"delta":{"content":"喜庆"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":17,"session_id":"behavior-default-42","stage":"vlm","text":"喜庆"}}
+
+data: {"choices":[{"delta":{"content":"的"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":18,"session_id":"behavior-default-42","stage":"vlm","text":"的"}}
+
+data: {"choices":[{"delta":{"content":"暖"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":19,"session_id":"behavior-default-42","stage":"vlm","text":"暖"}}
+
+data: {"choices":[{"delta":{"content":"色"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":20,"session_id":"behavior-default-42","stage":"vlm","text":"色"}}
+
+data: {"choices":[{"delta":{"content":"。"},"finish_reason":null,"index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":false,"kind":"vlm_delta","seq":21,"session_id":"behavior-default-42","stage":"vlm","text":"。"}}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],"created":1795671137,"id":"http-5","model":"qwen3-native","object":"chat.completion.chunk","unified":{"is_final":true,"kind":"complete","seq":22,"session_id":"behavior-default-42","stage":"vlm","text":"红灯笼在🌅的余晖中摇曳，为静谧的黄昏增添了一抹喜庆的暖色。"},"usage":{"completion_tokens":24}}
+
+data: [DONE]
+

@@ -1,0 +1,1 @@
+{"max_tokens":96,"messages":[{"content":"用一句中文解释红灯笼，并自然包含 🌅。","role":"user"}],"model":"qwen3-native","seed":42,"session_id":"behavior-default-42","stream":true,"temperature":0.7,"top_p":0.9}

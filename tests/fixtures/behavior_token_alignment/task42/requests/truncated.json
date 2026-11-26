@@ -1,0 +1,1 @@
+{"behavior":{"logprobs":true},"max_tokens":1,"messages":[{"content":"Count from one to one hundred, separated by spaces.","role":"user"}],"model":"qwen3-native","seed":7,"session_id":"behavior-truncated-7","stream":true,"temperature":0.7,"top_p":0.9}

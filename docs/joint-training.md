@@ -461,6 +461,33 @@ For sampled behavior evidence itself, the native Qwen3.8 producer (`behavior.log
 
 Real end-to-end attested online rollout generation, an online optimizer adapter, real model-quality evaluation, generalized improvement, and production-model training remain **NOT_RUN**. Serving retains no trainer/optimizer imports and the trainer retains no inference imports.
 
+### Independent sampled-behavior/token-export alignment gate
+
+`python/umminfer_behavior_token_alignment.py` is a separate CPU-only consumer
+of retained evidence. It validates exact requests/attestations, raw SSE/CAS,
+source records, tokenizer files, terminal ids, complete sampled
+ids/logprobs/masks, token_export v1/v2 source spans and existing SFT masks before
+any optional ML import or output. It then requires sampled ids to equal a
+post-hoc encoding of the **raw reconstructed SFT target**, not a clean-context
+substitute, derives behavior masks from prose versus directive/prompt/anchor
+spans, and performs byte-identical fresh raw replay.
+
+The deterministic v1 explicit-anchor and v2 multilingual NFC/emoji/byte-fallback
+fixtures and all mismatch classes pass. The retained real Task #42 text/visual
+fixtures pass strong fresh-process validation for all 61 sampled ids and source
+mappings, plus raw/media/tokenizer/logprob tamper rejection. In the visual case,
+25 masked sampled prose tokens differ from the 24 ids produced by re-encoding
+clean prose in isolation because the removed directive changes the tokenization
+boundary. The validator requires exact masked bytes and reports this difference
+rather than replacing sampled ids. Offline joint-SFT directive weights remain
+separate from online clean-prose behavior masks.
+
+Commands, exact evidence hashes, numerical limits, and the evidence an online
+optimizer must still prove are in
+[behavior-token-alignment.md](behavior-token-alignment.md). New inference,
+logit recomputation, online optimization, and model-quality results remain
+`NOT_RUN`.
+
 ## Bounded real joint-SFT optimizer gate
 
 `python/umminfer_joint_sft_live.py` is a narrow execution adapter around the

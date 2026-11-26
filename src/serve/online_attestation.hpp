@@ -17,10 +17,9 @@ namespace umminfer::openai_detail {
 
 using OnlineJson = nlohmann::json;
 
-// Exact public response-header names shared with
-// python/umminfer_online_rollout.py. attestation_sha256 is deliberately not a
-// wire header in the accepted contract: the trainer recomputes it using the
-// observed HTTP status.
+// Exact public response-header names for the online-rollout attestation
+// contract. attestation_sha256 is deliberately not a wire header in the
+// accepted contract: the trainer recomputes it using the observed HTTP status.
 const std::map<std::string, std::string>& online_response_headers();
 
 // Canonical compact, key-sorted, unescaped-Unicode UTF-8 JSON used by the
