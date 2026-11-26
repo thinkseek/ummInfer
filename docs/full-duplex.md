@@ -532,6 +532,106 @@ behaviour, listening quality, or live full-duplex audio quality. No GPU, model
 worker, deployment or resident service is used. The physical-device/live gates
 above remain separately required.
 
+### Real public WebSocket/network and native-model gate (SM90, 2026-11-26)
+
+This gate complements, and does not duplicate, the deterministic CPU stress above.
+Implementation commit `8994399a7b8f125e0e6459cba0708276ebe3a325` integrated the
+accepted deterministic stress non-destructively with newest main `7687efa`. The
+real path was public loopback `WS /v1/realtime` -> native Qwen3-ASR-1.7B on
+physical GPU 0 -> native Qwen3.8-27B and Qwen3-TTS-12Hz-1.7B-CustomVoice sharing
+physical GPU 1. GPU 7 was reserved and unused; the resident service and GPUs 2-6
+were not contacted. Model revisions stayed `UNKNOWN`.
+
+```sh
+python3 -I tests/realtime_network_test.py
+python3 -I tests/realtime_network_live.py \
+  --bin-dir "$UMM_BIN_DIR" --asr-model "$UMM_ASR_MODEL" \
+  --vlm-model "$UMM_VLM_MODEL" --tts-model "$UMM_TTS_MODEL" \
+  --audio "$UMM_ASR_AUDIO" --out "$UMM_OUT_DIR" --log-dir "$UMM_LOG_DIR" \
+  --source-commit 8994399a7b8f125e0e6459cba0708276ebe3a325 \
+  --seed 0x41c0de --rounds 3
+python3 -I tests/realtime_network_verify.py "$UMM_OUT_DIR" --write
+```
+
+The gateway used pinned Zig 0.16.0; native stages used CUDA 12.4.131 for SM90.
+Only new task-owned loopback processes were started. `run.json` records their
+pids, wall/monotonic start times and Linux process-start ticks; teardown checks
+those identities before signalling them. Both assigned GPUs were idle at initial
+and immediate-launch preflight and returned to 3 MiB, 0%, no compute process.
+All four owned processes exited, isolated IPC/SHM directories were removed, and
+`/health` ended at `in_flight=0`.
+
+| Independent raw-frame result | Value |
+| --- | ---: |
+| Concurrent isolated sessions / repeated rounds | 6 / 3 |
+| Real WebSocket connections (including reconnects) | 15 |
+| Real ASR -> VLM -> streaming-TTS responses | 41 |
+| Exact next-turn native VLM prompts checked | 30 |
+| Completed/cancelled history turns checked | 21 |
+| User terminal callbacks (exactly once per callback kind) | 27 |
+| Stale events / cross-session leaks / duplicate callback kinds | 0 / 0 / 0 |
+| Accepted decreasing cursors / final in-flight | 0 / 0 |
+| Evidence files verified by `SHA256SUMS` | 44 |
+
+Each scenario occurred three times: full final ACK, immediate barge-in, delayed
+barge-in after an acknowledged sentence prefix, reconnect during playback,
+reconnect during in-flight generation, and teardown with an active timer callback.
+Seeded round permutations, per-session jitter and ACK delays are retained in
+`plan.json`. The driver also sent duplicate, decreasing, foreign and unissued ACKs,
+performed late old-response ACKs after reconnect, and checked late text/audio and
+terminal frames after cancellation. A generation-complete response awaiting
+playback can legally emit one `response.completed` and later one
+`response.cancelled`; the verifier rejects a duplicate of either callback kind
+rather than weakening the protocol by accepting duplicates or forbidding this
+legal sequence.
+
+The echo A/B used the **same active real TTS response** and byte-identical near
+and far-end PCM. With 73 ms echo, the protected arm had zero cut-ins and the
+disabled arm had one cancellation. Microphone SHA-256 was
+`0ce82424419fc5aa5b8cf5294890772e45c5bdc3b49c56150b9799550cca698f`;
+far-end SHA-256 was
+`85be5639dab889cea9da1740f2ab392567b78abedcfc969d5c3bb230eef0750e`.
+Simultaneous double-talk cancelled in both echo modes and retained the exact
+acknowledged prefix. Double-talk necessarily moves to subsequent real responses
+after the first cancellation; no false claim is made that two different TTS
+responses have identical far-end bytes. Physical playback/capture is not involved.
+
+The raw evidence contains exact masked client and unmasked server wire frames,
+strictly increasing per-connection monotonic arrival/transmit times, response and
+request identities, every PCM chunk hash, captured PCM, ACK/cancel schedules, all
+next-turn prompt observations, process logs and resource samples. A separate
+fresh process decodes those wire bytes and the byte-preserving ZMQ forwarding
+observer's raw submissions; it derives history independently rather than trusting
+the driver. The production queue caps are pinned at 1,024 outbound frames, 4,096
+partial events, 4,096 unified events and 64 MiB audio per session. Server RSS grew
+21,348,352 bytes, below the 268,435,456-byte gate; deterministic stress separately
+covers queue saturation. No real-server queue-saturation claim is made.
+
+Whole-model manifest SHA-256 values (including every model file) were ASR
+`a16807fc65e05f36687484bdfb8cb9f103c3fb59f6787d1f904f3ffebf8a3005`, VLM
+`fb2a8751df1dfbcdf556988acd8e2ac7c6f7180c609797d5e9b3a8e3e40a1c7e`, and TTS
+`92db72616c9578462add19ed81720b7abf1c1e9c3f4d225877a1cd6104d2fb27`.
+Binary SHA-256 values were gateway
+`e7f569bcd848ae42dec221d2b9c0b9c950ca98d8100aa366a245a243fa351e83`, ASR
+`3c501baabf3302859a1333c9cfc38a357e4072b8d5bcffe85fcf6e8f8ffa370e`, VLM
+`caf01c8dca9e33d9fcb30d23fc9bcd9e8e51abaf15f673b578e0133a4f6c3159`, and TTS
+`8906fb7c852b778c336ad03ae402ded84a62fac7318c528c27dc5223a4baba6e`.
+Harness and scheduler/verifier SHA-256 values were respectively
+`8b0be64d03db09ac8723e7676a30fb83c769726492259441573ddc1829eb589a` and
+`90424bf598d2c8c3fbc1eae666fff90af67bc034298d0c5da877f045bd9bef0a`.
+`run.json`, `independent-verification.json`, and `SHA256SUMS` SHA-256 values were
+`5d01adb537008856302f455a6b3667fad723b1d30623de7827d3688a9c8ab427`,
+`30cf8077ab7fa7bafcdc53d030213dc8abca603adc6b14c706968957465a9029`, and
+`a06aaef64e7726d67a8652fa6522b013872d39e0c4bf97d72fcf8f22a2d9b355`.
+The 44-file manifest passed again after retrieval. Raw evidence is an uncommitted
+run artifact under `$UMM_OUT_DIR`; two earlier driver-only failed attempts are not
+counted as passes, and their owned-process/GPU cleanup also succeeded.
+
+This is **REAL_DIGITAL_LOOPBACK_NETWORK_AND_NATIVE_MODELS** evidence only. It is
+not WAN, physical microphone/speaker, acoustic echo-cancellation, perceptual
+listening, or generalized performance evidence. Those physical and perceptual
+checks remain `NOT_COVERED`.
+
 ### Incremental prefill
 
 The omni stage keeps one prefix cache per process: the session id, the prompt

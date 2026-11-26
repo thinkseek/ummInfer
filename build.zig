@@ -165,6 +165,12 @@ pub fn build(b: *std.Build) void {
     const realtime_stress_test = b.step("realtime-stress-test", "Run deterministic realtime concurrency and lifecycle stress");
     realtime_stress_test.dependOn(&run_realtime_stress.step);
 
+    const realtime_network = b.addSystemCommand(&.{ "python3", "-I" });
+    realtime_network.addFileArg(b.path("tests/realtime_network_test.py"));
+    test_step.dependOn(&realtime_network.step);
+    const realtime_network_test = b.step("realtime-network-test", "Run deterministic realtime network scheduler and verifier tests");
+    realtime_network_test.dependOn(&realtime_network.step);
+
     const bench_step = b.step("cuda-bench", "Measure SHM and CUDA IPC relay latency");
     if (cuda) {
         const bench_exe = b.addExecutable(.{
