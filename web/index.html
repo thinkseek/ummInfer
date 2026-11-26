@@ -86,6 +86,22 @@
     background: color-mix(in srgb, var(--danger) 10%, transparent);
     font-weight: 600;
   }
+  .realtime-mic-meter {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px; border-radius: 999px;
+    background: var(--bg); border: 1px solid var(--line);
+    font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--secondary);
+  }
+  .realtime-mic-track {
+    position: relative; width: 64px; height: 6px;
+    border-radius: 999px; overflow: hidden;
+    background: var(--hover); border: 1px solid var(--line);
+  }
+  .realtime-mic-fill {
+    display: block; height: 100%; width: 0%;
+    border-radius: 999px; background: var(--accent);
+  }
 
   #settings {
     display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
@@ -181,7 +197,18 @@
   }
   .turn { display: flex; flex-direction: column; gap: 6px; max-width: 720px; margin: 0 0 18px; }
   .turn.user { margin-left: auto; align-items: flex-end; }
-  .turn .meta { font-size: var(--f-caption); font-weight: 500; color: var(--secondary); }
+  .turn .meta {
+    display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    font-size: var(--f-caption); font-weight: 500; color: var(--secondary);
+  }
+  .turn-interrupted-badge {
+    display: inline-flex; align-items: center;
+    font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-weight: 500; color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+    border-radius: 999px; padding: 1px 7px;
+  }
   .turn .body { display: flex; flex-direction: column; gap: 8px; width: 100%; }
   .flow { display: flex; flex-direction: column; gap: 10px; }
   .block.text {
@@ -485,6 +512,11 @@
 
 <div class="realtime-strip" id="realtimeStrip" role="status" aria-live="polite" hidden>
   <span class="realtime-pill" id="realtimeStripPhase"></span>
+  <div class="realtime-mic-meter" id="realtimeMicMeter" role="meter"
+       aria-label="Live microphone input level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <span aria-hidden="true">Mic</span>
+    <span class="realtime-mic-track"><span class="realtime-mic-fill" id="realtimeMicMeterFill"></span></span>
+  </div>
   <span class="realtime-pill" id="realtimeEchoState" hidden></span>
   <span class="realtime-pill" id="realtimeBargeInCount"></span>
 </div>
@@ -533,6 +565,7 @@ const ui = {
   realtimeToggle: $('realtimeToggle'), realtimeStatus: $('realtimeStatus'),
   realtimeEchoSuppression: $('realtimeEchoSuppression'),
   realtimeStrip: $('realtimeStrip'), realtimeStripPhase: $('realtimeStripPhase'),
+  realtimeMicMeter: $('realtimeMicMeter'), realtimeMicMeterFill: $('realtimeMicMeterFill'),
   realtimeEchoState: $('realtimeEchoState'), realtimeBargeInCount: $('realtimeBargeInCount'),
 };
 
@@ -1049,8 +1082,8 @@ function addTurn(role, text) {
   }
   scrollToEnd();
   return {
-    el, asrEl, flow, artifacts, legs, telemetryEl, text,
-    tailText: null, slots: new Map(), telemetry: null,
+    el, meta, asrEl, flow, artifacts, legs, telemetryEl, text,
+    tailText: null, interruptedBadgeEl: null, slots: new Map(), telemetry: null,
   };
 }
 
@@ -1732,6 +1765,77 @@ function sendRealtimeEchoSuppressionToggle(enabled, silenceMs, socket) {
 }
 // REALTIME_ECHO_SUPPRESSION_END
 
+// REALTIME_AUDIO_METER_BEGIN
+function computePcm16RmsLevel(pcmBytes) {
+  if (!(pcmBytes instanceof Uint8Array) || pcmBytes.byteLength === 0 || (pcmBytes.byteLength % 2) !== 0) {
+    return 0;
+  }
+  const sampleCount = pcmBytes.byteLength / 2;
+  const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+  let sumSquares = 0;
+  for (let i = 0; i < sampleCount; i += 1) {
+    const normalized = view.getInt16(i * 2, true) / 32768;
+    sumSquares += normalized * normalized;
+  }
+  const rms = Math.sqrt(sumSquares / sampleCount);
+  if (!Number.isFinite(rms) || rms <= 0) return 0;
+  return Math.min(1, rms);
+}
+
+function parseNonNegativeCursor(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function formatInterruptedBadge(acknowledgedBytes) {
+  const bytes = parseNonNegativeCursor(acknowledgedBytes);
+  if (bytes === null) return '';
+  return bytes > 0 ? `Interrupted · ${bytes} B spoken` : 'Interrupted before audio';
+}
+
+function createRealtimeTurnTracker() {
+  return {
+    acknowledgedBytesByResponse: new Map(),
+    interruptedBytesByResponse: new Map(),
+  };
+}
+
+function recordRealtimePlaybackAck(tracker, responseId, textCursor) {
+  if (!tracker || !responseId) return null;
+  const cursor = parseNonNegativeCursor(textCursor);
+  if (cursor === null) return null;
+  const prev = tracker.acknowledgedBytesByResponse.get(responseId) ?? 0;
+  const next = Math.max(prev, cursor);
+  tracker.acknowledgedBytesByResponse.set(responseId, next);
+  return next;
+}
+
+function recordRealtimeTurnCancelled(tracker, responseId, cancelledTextCursor) {
+  if (!tracker || !responseId) return null;
+  const ackFromPlayback = tracker.acknowledgedBytesByResponse.get(responseId) ?? 0;
+  const ackFromCancelled = parseNonNegativeCursor(cancelledTextCursor);
+  const resolvedBytes = ackFromCancelled !== null
+    ? Math.max(ackFromPlayback, ackFromCancelled)
+    : ackFromPlayback;
+  tracker.acknowledgedBytesByResponse.set(responseId, resolvedBytes);
+  tracker.interruptedBytesByResponse.set(responseId, resolvedBytes);
+  return {
+    acknowledgedBytes: resolvedBytes,
+    badgeText: formatInterruptedBadge(resolvedBytes),
+  };
+}
+
+function clearRealtimeTurnTracking(tracker, responseId) {
+  if (!tracker || !responseId) return;
+  tracker.acknowledgedBytesByResponse.delete(responseId);
+}
+
+function resetRealtimeTurnTracker(tracker) {
+  if (!tracker) return;
+  tracker.acknowledgedBytesByResponse.clear();
+  tracker.interruptedBytesByResponse.clear();
+}
+// REALTIME_AUDIO_METER_END
+
 const realtime = {
   ws: null,
   enabled: false,
@@ -1739,9 +1843,11 @@ const realtime = {
   generation: 0,
   mic: null,
   micStarting: false,
+  micLevel: 0,
   activeResponseId: '',
   cancelledResponses: new Set(),
   turns: new Map(),
+  turnTracker: createRealtimeTurnTracker(),
   phase: 'Realtime off',
   echoSuppression: ui.realtimeEchoSuppression.checked,
   negotiatedSilenceMs: 400,
@@ -1749,10 +1855,25 @@ const realtime = {
   bargeInCount: 0,
 };
 
+function renderRealtimeMicMeter() {
+  const clamped = realtime.enabled && Number.isFinite(realtime.micLevel)
+    ? Math.max(0, Math.min(1, realtime.micLevel)) : 0;
+  const pct = Math.round(clamped * 100);
+  ui.realtimeMicMeter.setAttribute('aria-valuenow', String(pct));
+  ui.realtimeMicMeterFill.style.width = `${pct}%`;
+}
+
+function setRealtimeMicLevel(level) {
+  realtime.micLevel = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
+  renderRealtimeMicMeter();
+}
+
 function renderRealtimeStrip() {
   ui.realtimeStrip.hidden = !realtime.enabled;
   if (!realtime.enabled) {
     ui.realtimeStripPhase.textContent = '';
+    realtime.micLevel = 0;
+    renderRealtimeMicMeter();
     ui.realtimeEchoState.hidden = true;
     ui.realtimeEchoState.textContent = '';
     ui.realtimeEchoState.classList.remove('echo-on', 'echo-off');
@@ -1760,6 +1881,7 @@ function renderRealtimeStrip() {
     return;
   }
   ui.realtimeStripPhase.textContent = realtime.phase;
+  renderRealtimeMicMeter();
   const echoLabel = formatRealtimeEchoSuppressionLabel(realtime.confirmedEchoSuppression);
   ui.realtimeEchoState.hidden = !echoLabel;
   ui.realtimeEchoState.textContent = echoLabel;
@@ -1982,6 +2104,7 @@ function closeRealtimeMic() {
   const mic = realtime.mic;
   realtime.mic = null;
   realtime.ready = false;
+  setRealtimeMicLevel(0);
   if (!mic) return;
   mic.proc.onaudioprocess = null;
   try { mic.proc.disconnect(); } catch { /* already disconnected */ }
@@ -2023,6 +2146,7 @@ async function startRealtimeMic(generation) {
       const pcm16k = resampleMono(input, ctx.sampleRate, 16000);
       const pcmBytes = encodePcm16Mono(pcm16k);
       if (!pcmBytes.length) return;
+      setRealtimeMicLevel(computePcm16RmsLevel(pcmBytes));
       socket.send(JSON.stringify({
         type: 'input_audio_buffer.append',
         audio: encodeBase64(pcmBytes),
@@ -2041,12 +2165,31 @@ async function startRealtimeMic(generation) {
   }
 }
 
-function appendRealtimeResponseText(responseId, delta) {
+function ensureRealtimeResponseTurn(responseId) {
   let responseTurn = realtime.turns.get(responseId);
   if (!responseTurn) {
     responseTurn = addTurn('assistant', '');
     realtime.turns.set(responseId, responseTurn);
   }
+  return responseTurn;
+}
+
+function attachRealtimeInterruptedBadge(responseTurn, acknowledgedBytes, badgeText) {
+  if (!responseTurn?.meta || !badgeText) return;
+  let badge = responseTurn.interruptedBadgeEl;
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'turn-interrupted-badge';
+    responseTurn.interruptedBadgeEl = badge;
+    responseTurn.meta.append(badge);
+  }
+  badge.dataset.acknowledgedBytes = String(acknowledgedBytes);
+  badge.setAttribute('aria-label', badgeText);
+  badge.textContent = badgeText;
+}
+
+function appendRealtimeResponseText(responseId, delta) {
+  const responseTurn = ensureRealtimeResponseTurn(responseId);
   responseTurn.text += delta;
   if (!responseTurn.tailText) {
     responseTurn.tailText = document.createElement('div');
@@ -2114,6 +2257,7 @@ async function handleRealtimeEvent(event, generation) {
       }
       const bytes = decodeBase64(event.audio);
       realtime.activeResponseId = responseId;
+      ensureRealtimeResponseTurn(responseId);
       realtimePlayback.push(responseId, bytes, Number(event.sample_rate),
                             Number(event.channels), Number(event.text_cursor));
       break;
@@ -2123,7 +2267,11 @@ async function handleRealtimeEvent(event, generation) {
       realtimePlayback.done(responseId, Number(event.text_cursor));
       break;
     case 'response.playback_ack':
+      if (responseId) {
+        recordRealtimePlaybackAck(realtime.turnTracker, responseId, event.text_cursor);
+      }
       if (event.final === true) {
+        if (responseId) clearRealtimeTurnTracking(realtime.turnTracker, responseId);
         if (realtime.activeResponseId === responseId) realtime.activeResponseId = '';
         setRealtimeStatus('Listening');
       }
@@ -2138,12 +2286,30 @@ async function handleRealtimeEvent(event, generation) {
       // Mark stale before touching Web Audio so any already queued onended or
       // late audio/text/completion frame for this response becomes inert.
       recordRealtimeBargeIn(realtime);
+      const targetId = responseId || realtime.activeResponseId || realtimePlayback.responseId;
       cancelRealtimeResponse(responseId);
+      if (targetId) {
+        const result = recordRealtimeTurnCancelled(realtime.turnTracker, targetId, event.text_cursor);
+        const responseTurn = realtime.turns.get(targetId);
+        if (responseTurn && result) {
+          if (typeof event.acknowledged_text === 'string') {
+            responseTurn.text = event.acknowledged_text;
+            if (responseTurn.tailText) {
+              responseTurn.tailText._raw = event.acknowledged_text;
+              renderMarkdownInto(responseTurn.tailText, event.acknowledged_text);
+            }
+          }
+          attachRealtimeInterruptedBadge(responseTurn, result.acknowledgedBytes, result.badgeText);
+        }
+        clearRealtimeTurnTracking(realtime.turnTracker, targetId);
+      }
       setRealtimeStatus('Interrupted · Listening');
       break;
     }
     case 'response.failed': {
       // Timeout failures may omit response_id; fall back to the active response.
+      const targetId = responseId || realtime.activeResponseId || realtimePlayback.responseId;
+      if (targetId) clearRealtimeTurnTracking(realtime.turnTracker, targetId);
       cancelRealtimeResponse(responseId);
       showError(`Realtime response failed: ${limit(event.error || 'unknown error')}`);
       setRealtimeStatus('Listening');
@@ -2161,8 +2327,10 @@ function stopRealtime(status = 'Realtime off') {
   realtime.enabled = false;
   realtime.ready = false;
   realtime.micStarting = false;
+  realtime.micLevel = 0;
   realtime.activeResponseId = '';
   resetRealtimeTelemetry(realtime);
+  resetRealtimeTurnTracker(realtime.turnTracker);
   realtime.cancelledResponses.clear();
   realtime.turns.clear();
   const socket = realtime.ws;
@@ -2200,8 +2368,10 @@ async function startRealtime() {
   const generation = realtime.generation;
   realtime.enabled = true;
   realtime.ready = false;
+  realtime.micLevel = 0;
   realtime.echoSuppression = ui.realtimeEchoSuppression.checked;
   resetRealtimeTelemetry(realtime);
+  resetRealtimeTurnTracker(realtime.turnTracker);
   realtime.cancelledResponses.clear();
   clearError();
   setRealtimeStatus('Connecting…');

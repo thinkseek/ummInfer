@@ -407,7 +407,18 @@ struct RootView: View {
                         && turn.artifacts.isEmpty && turn.blocks.isEmpty {
                         ProgressView().controlSize(.small)
                     }
-                    if turn.state == .stopped {
+                    if let interruptedBadge = turn.interruptedBadgeText {
+                        Text(interruptedBadge)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(theme.danger)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(theme.danger.opacity(0.10))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(theme.danger.opacity(0.35)))
+                            .accessibilityIdentifier("turn-interrupted-badge")
+                            .accessibilityLabel(interruptedBadge)
+                    } else if turn.state == .stopped {
                         Text("Stopped").font(.system(size: theme.captionSize))
                             .foregroundStyle(theme.secondary)
                     }
@@ -785,6 +796,30 @@ struct RootView: View {
                             .accessibilityIdentifier("live-voice-end")
                     }
                     HStack(spacing: 8) {
+                        let clampedLevel = min(max(model.liveVoiceMicLevel, 0.0), 1.0)
+                        HStack(spacing: 6) {
+                            Text("Mic")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(theme.secondary)
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(theme.hover)
+                                    .overlay(Capsule().stroke(theme.line))
+                                Capsule()
+                                    .fill(theme.accent)
+                                    .frame(width: 64 * CGFloat(clampedLevel))
+                            }
+                            .frame(width: 64, height: 6)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(theme.background)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(theme.line))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Live microphone input level")
+                        .accessibilityValue("\(Int((clampedLevel * 100).rounded())) percent")
+                        .accessibilityIdentifier("live-voice-mic-meter")
                         if let echoText = model.liveVoiceEchoSuppressionStatusText {
                             let echoOn = model.liveVoiceConfirmedEchoSuppression == true
                             Text(echoText)

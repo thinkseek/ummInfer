@@ -1066,4 +1066,228 @@ final class RealtimeChatModelIntegrationTests: XCTestCase {
         XCTAssertNotNil(model.error)
         XCTAssertNil(transport.connectedURL)
     }
+
+    private func makePCM16Data(_ samples: [Int16]) -> Data {
+        var data = Data(capacity: samples.count * 2)
+        for sample in samples {
+            var le = sample.littleEndian
+            withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
+        }
+        return data
+    }
+
+    func testPerTurnInterruptedBadgeOnBargeInAndNormalCompletionLeavesBadgeNil() async throws {
+        let transport = MockRealtimeTransport()
+        let capturer = MockAudioCapturer()
+        let player = ControllableAudioStreamPlayer()
+        let realtime = RealtimeClient(
+            transportFactory: { transport },
+            audioCapturer: capturer
+        )
+        let model = ChatModel(audioStream: player, realtime: realtime)
+        model.endpoint = "http://127.0.0.1:43301/v1"
+        model.model = "qwen3-asr"
+
+        model.startLiveVoice()
+        transport.pushServerJSON([
+            "type": "transcription_session.updated",
+            "session": [
+                "input_audio_format": "pcm16",
+                "turn_detection": ["type": "server_vad", "silence_ms": 400],
+                "audio_output": ["voice": "vivian", "playback_ack": true],
+            ],
+        ])
+        await waitUntil { model.liveVoiceState == .listening }
+
+        // Turn 1: completes normally -> interruptedSpokenBytes and badge must remain nil.
+        transport.pushServerJSON([
+            "type": "response.text.delta", "response_id": "req-ok", "segment_id": 0,
+            "text": "All done.", "text_cursor": 9,
+        ])
+        transport.pushServerJSON([
+            "type": "response.playback_ack", "response_id": "req-ok",
+            "segment_id": 0, "text_cursor": 9, "final": true,
+        ])
+        await waitUntil { model.turns.count == 1 && model.turns[0].state == .complete }
+        XCTAssertNil(model.turns[0].interruptedSpokenBytes)
+        XCTAssertNil(model.turns[0].interruptedBadgeText)
+
+        // Turn 2: receives non-final playback_ack(18), then cancelled without text_cursor -> uses 18 B.
+        transport.pushServerJSON([
+            "type": "response.text.delta", "response_id": "req-ack", "segment_id": 1,
+            "text": "First spoken part and tail.", "text_cursor": 27,
+        ])
+        transport.pushServerJSON([
+            "type": "response.playback_ack", "response_id": "req-ack",
+            "segment_id": 1, "text_cursor": 18, "final": false,
+        ])
+        transport.pushServerJSON([
+            "type": "response.cancelled", "response_id": "req-ack",
+            "segment_id": 1, "reason": "barge_in",
+        ])
+        await waitUntil { model.turns.count == 2 && model.turns[1].state == .stopped }
+        XCTAssertEqual(model.turns[1].interruptedSpokenBytes, 18)
+        XCTAssertEqual(model.turns[1].interruptedBadgeText, "Interrupted · 18 B spoken")
+
+        // Turn 3: cancelled before any audio playback ACK (0 B, empty acknowledged_text).
+        transport.pushServerJSON([
+            "type": "response.text.delta", "response_id": "req-zero", "segment_id": 2,
+            "text": "Unspoken prefix.", "text_cursor": 16,
+        ])
+        transport.pushServerJSON([
+            "type": "response.cancelled", "response_id": "req-zero",
+            "segment_id": 2, "reason": "barge_in",
+            "text_cursor": 0, "acknowledged_text": "", "history_recorded": false,
+        ])
+        await waitUntil { model.turns.count == 3 && model.turns[2].state == .stopped }
+        XCTAssertEqual(model.turns[2].text, "")
+        XCTAssertEqual(model.turns[2].interruptedSpokenBytes, 0)
+        XCTAssertEqual(model.turns[2].interruptedBadgeText, "Interrupted before audio")
+
+        // Confirm Turn 1 (normal completion) still has nil interrupted badge.
+        XCTAssertNil(model.turns[0].interruptedSpokenBytes)
+        XCTAssertNil(model.turns[0].interruptedBadgeText)
+
+        model.stopLiveVoice()
+    }
+
+    func testLiveVoiceMicLevelTracksRealPcm16AndResetsOnStopDisconnectAndError() async throws {
+        final class TransportQueue: @unchecked Sendable {
+            private let lock = NSLock()
+            private var items: [MockRealtimeTransport]
+            init(_ items: [MockRealtimeTransport]) { self.items = items }
+            func next() -> MockRealtimeTransport {
+                lock.withLock { items.removeFirst() }
+            }
+        }
+        let transport1 = MockRealtimeTransport()
+        let transport2 = MockRealtimeTransport()
+        let transport3 = MockRealtimeTransport()
+        let queue = TransportQueue([transport1, transport2, transport3])
+        let capturer = MockAudioCapturer()
+        let player = ControllableAudioStreamPlayer()
+        let realtime = RealtimeClient(
+            transportFactory: { queue.next() },
+            audioCapturer: capturer
+        )
+        let model = ChatModel(audioStream: player, realtime: realtime)
+        model.endpoint = "http://127.0.0.1:43301/v1"
+        model.model = "qwen3-asr"
+
+        XCTAssertEqual(model.liveVoiceMicLevel, 0.0)
+        model.startLiveVoice()
+        transport1.pushServerJSON([
+            "type": "transcription_session.updated",
+            "session": [
+                "input_audio_format": "pcm16",
+                "turn_detection": ["type": "server_vad", "silence_ms": 400],
+                "audio_output": ["voice": "vivian", "playback_ack": true],
+            ],
+        ])
+        await waitUntil { model.liveVoiceState == .listening && capturer.startCount == 1 }
+
+        // Silent frame -> 0.0.
+        capturer.emitFrame(makePCM16Data([0, 0, 0, 0]))
+        await waitUntil {
+            transport1.sentJSONObjects().contains { ($0["type"] as? String) == "input_audio_buffer.append" }
+        }
+        XCTAssertEqual(model.liveVoiceMicLevel, 0.0, accuracy: 1e-6)
+
+        // Half-scale square wave (+16384 / -16384) -> 0.5.
+        let halfSquare = makePCM16Data([16384, -16384, 16384, -16384])
+        capturer.emitFrame(halfSquare)
+        await waitUntil { model.liveVoiceMicLevel > 0.4 }
+        XCTAssertEqual(model.liveVoiceMicLevel, 0.5, accuracy: 1e-5)
+
+        // Explicit stop resets mic level strictly to 0.0.
+        model.stopLiveVoice()
+        XCTAssertEqual(model.liveVoiceMicLevel, 0.0)
+
+        // Reconnect, emit loud frame, then server disconnect -> resets strictly to 0.0.
+        model.startLiveVoice()
+        transport2.pushServerJSON([
+            "type": "transcription_session.updated",
+            "session": [
+                "input_audio_format": "pcm16",
+                "turn_detection": ["type": "server_vad", "silence_ms": 400],
+                "audio_output": ["voice": "vivian", "playback_ack": true],
+            ],
+        ])
+        await waitUntil { model.liveVoiceState == .listening && capturer.startCount == 2 }
+        capturer.emitFrame(halfSquare)
+        await waitUntil { model.liveVoiceMicLevel > 0.4 }
+        transport2.finishServerStream()
+        await waitUntil { !model.isLiveVoiceActive }
+        XCTAssertEqual(model.liveVoiceMicLevel, 0.0)
+
+        // Reconnect, emit loud frame, then transport error -> resets strictly to 0.0.
+        model.startLiveVoice()
+        transport3.pushServerJSON([
+            "type": "transcription_session.updated",
+            "session": [
+                "input_audio_format": "pcm16",
+                "turn_detection": ["type": "server_vad", "silence_ms": 400],
+                "audio_output": ["voice": "vivian", "playback_ack": true],
+            ],
+        ])
+        await waitUntil { model.liveVoiceState == .listening && capturer.startCount == 3 }
+        capturer.emitFrame(halfSquare)
+        await waitUntil { model.liveVoiceMicLevel > 0.4 }
+        transport3.finishServerStream(throwing: RealtimeClientError.serverError("socket lost"))
+        await waitUntil { !model.isLiveVoiceActive }
+        XCTAssertEqual(model.liveVoiceMicLevel, 0.0)
+    }
+}
+
+// MARK: - RealtimeAudioLevel & Interrupted Badge Pure Helper Tests
+
+final class RealtimeAudioLevelTests: XCTestCase {
+    private func makePCM16Data(_ samples: [Int16]) -> Data {
+        var data = Data(capacity: samples.count * 2)
+        for sample in samples {
+            var le = sample.littleEndian
+            withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
+        }
+        return data
+    }
+
+    func testRmsLevelHandlesEmptyOddSilentMidScaleAndFullScaleClippedPcm16() {
+        XCTAssertEqual(RealtimeAudioLevel.rmsLevel(pcm16: Data()), 0.0)
+        XCTAssertEqual(RealtimeAudioLevel.rmsLevel(pcm16: Data([0x01, 0x02, 0x03])), 0.0)
+        XCTAssertEqual(RealtimeAudioLevel.rmsLevel(pcm16: makePCM16Data([0, 0, 0, 0])), 0.0)
+
+        // Half-scale square wave -> 0.5 exactly.
+        let halfSquare = makePCM16Data([16384, -16384, 16384, -16384])
+        XCTAssertEqual(RealtimeAudioLevel.rmsLevel(pcm16: halfSquare), 0.5, accuracy: 1e-6)
+
+        // Mid-scale sine wave (amplitude 16384 over exact integer cycles) -> 0.5 / sqrt(2).
+        var sine: [Int16] = []
+        sine.reserveCapacity(640)
+        for i in 0..<640 {
+            let v = Int16((16384.0 * sin(2.0 * Double.pi * 10.0 * Double(i) / 640.0)).rounded())
+            sine.append(v)
+        }
+        XCTAssertEqual(
+            RealtimeAudioLevel.rmsLevel(pcm16: makePCM16Data(sine)),
+            0.5 / 2.0.squareRoot(),
+            accuracy: 1e-3
+        )
+
+        // Full-scale negative (-32768) clamps to 1.0; full-scale positive (32767) stays <= 1.0.
+        XCTAssertEqual(
+            RealtimeAudioLevel.rmsLevel(pcm16: makePCM16Data([-32768, -32768, -32768, -32768])),
+            1.0,
+            accuracy: 1e-9
+        )
+        let fullPos = RealtimeAudioLevel.rmsLevel(pcm16: makePCM16Data([32767, 32767, 32767, 32767]))
+        XCTAssertGreaterThan(fullPos, 0.9999)
+        XCTAssertLessThanOrEqual(fullPos, 1.0)
+    }
+
+    func testFormatInterruptedBadgeFormatsZeroPositiveAndNil() {
+        XCTAssertNil(ChatTurn.formatInterruptedBadge(acknowledgedBytes: nil))
+        XCTAssertNil(ChatTurn.formatInterruptedBadge(acknowledgedBytes: -1))
+        XCTAssertEqual(ChatTurn.formatInterruptedBadge(acknowledgedBytes: 0), "Interrupted before audio")
+        XCTAssertEqual(ChatTurn.formatInterruptedBadge(acknowledgedBytes: 12), "Interrupted · 12 B spoken")
+    }
 }

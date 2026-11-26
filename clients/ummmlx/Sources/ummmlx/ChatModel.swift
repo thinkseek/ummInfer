@@ -269,6 +269,19 @@ struct ChatTurn: Identifiable {
     var blocks: [TurnBlock] = []
     /// Real client-observed streaming telemetry for assistant turns.
     var telemetry = TurnTelemetry()
+    /// Real server-observed UTF-8 byte count acknowledged before a Live Voice
+    /// barge-in (`response.playback_ack` / `response.cancelled` `text_cursor`).
+    /// Nil for normal completed turns.
+    var interruptedSpokenBytes: Int? = nil
+
+    var interruptedBadgeText: String? {
+        Self.formatInterruptedBadge(acknowledgedBytes: interruptedSpokenBytes)
+    }
+
+    static func formatInterruptedBadge(acknowledgedBytes: Int?) -> String? {
+        guard let bytes = acknowledgedBytes, bytes >= 0 else { return nil }
+        return bytes > 0 ? "Interrupted · \(bytes) B spoken" : "Interrupted before audio"
+    }
 }
 
 @MainActor
@@ -330,6 +343,8 @@ final class ChatModel: ObservableObject {
     @Published private(set) var liveVoiceConfirmedEchoSuppression: Bool? = nil
     /// Real observed count of `response.cancelled` events in the current Live Voice session.
     @Published private(set) var liveVoiceBargeInCount = 0
+    /// Real normalized `[0.0, 1.0]` RMS microphone input level computed from captured PCM16 frames.
+    @Published private(set) var liveVoiceMicLevel: Double = 0.0
 
     var liveVoiceEchoSuppressionStatusText: String? {
         guard let confirmed = liveVoiceConfirmedEchoSuppression else { return nil }
@@ -352,6 +367,7 @@ final class ChatModel: ObservableObject {
     private var receivedDelta = false
     private var requestSessionID = ""
     private var liveVoiceAssistantTurns: [String: UUID] = [:]
+    private var liveVoiceAcknowledgedBytes: [String: Int] = [:]
     var onFirstDelta: (() -> Void)?
     /// Automation hook: the exact messages sent for one request.
     var onRequest: (([ChatMessage]) -> Void)?
@@ -1186,7 +1202,9 @@ final class ChatModel: ObservableObject {
                     self.liveVoicePartialTranscript = ""
                     self.liveVoiceConfirmedEchoSuppression = nil
                     self.liveVoiceBargeInCount = 0
+                    self.liveVoiceMicLevel = 0.0
                     self.liveVoiceAssistantTurns.removeAll()
+                    self.liveVoiceAcknowledgedBytes.removeAll()
                     self.streamingAudioTurnID = nil
                     self.isStreamingAudioPlaying = false
                     self.error = err.localizedDescription
@@ -1199,12 +1217,18 @@ final class ChatModel: ObservableObject {
                     self.liveVoicePartialTranscript = ""
                     self.liveVoiceConfirmedEchoSuppression = nil
                     self.liveVoiceBargeInCount = 0
+                    self.liveVoiceMicLevel = 0.0
                     self.liveVoiceAssistantTurns.removeAll()
+                    self.liveVoiceAcknowledgedBytes.removeAll()
                     self.streamingAudioTurnID = nil
                     self.isStreamingAudioPlaying = false
                     if self.error == nil {
                         self.status = "Ready"
                     }
+                },
+                onMicLevel: { [weak self] level in
+                    guard let self, self.isLiveVoiceActive else { return }
+                    self.liveVoiceMicLevel = level
                 }
             )
         } catch {
@@ -1223,7 +1247,9 @@ final class ChatModel: ObservableObject {
         liveVoiceLastAckCursor = 0
         liveVoiceConfirmedEchoSuppression = nil
         liveVoiceBargeInCount = 0
+        liveVoiceMicLevel = 0.0
         liveVoiceAssistantTurns.removeAll()
+        liveVoiceAcknowledgedBytes.removeAll()
         status = "Live Voice · Connecting…"
     }
 
@@ -1250,7 +1276,9 @@ final class ChatModel: ObservableObject {
         liveVoicePartialTranscript = ""
         liveVoiceConfirmedEchoSuppression = nil
         liveVoiceBargeInCount = 0
+        liveVoiceMicLevel = 0.0
         liveVoiceAssistantTurns.removeAll()
+        liveVoiceAcknowledgedBytes.removeAll()
         if error == nil {
             status = "Ready"
         }
@@ -1317,14 +1345,22 @@ final class ChatModel: ObservableObject {
                turns[index].state == .streaming {
                 turns[index].state = .complete
             }
-            if !realtime.stateMachine.playbackAckEnabled && !isStreamingAudioPlaying {
-                liveVoiceState = .listening
-                status = "Live Voice · Listening"
+            if !realtime.stateMachine.playbackAckEnabled {
+                liveVoiceAcknowledgedBytes.removeValue(forKey: responseID)
+                if !isStreamingAudioPlaying {
+                    liveVoiceState = .listening
+                    status = "Live Voice · Listening"
+                }
             }
 
         case .responsePlaybackAck(let responseID, _, let cursor, let isFinal):
             liveVoiceLastAckCursor = cursor
+            if cursor >= 0 {
+                let prev = liveVoiceAcknowledgedBytes[responseID] ?? 0
+                liveVoiceAcknowledgedBytes[responseID] = max(prev, cursor)
+            }
             if isFinal {
+                liveVoiceAcknowledgedBytes.removeValue(forKey: responseID)
                 if let turnID = liveVoiceAssistantTurns.removeValue(forKey: responseID),
                    let index = turns.firstIndex(where: { $0.id == turnID }),
                    turns[index].state == .streaming {
@@ -1338,35 +1374,37 @@ final class ChatModel: ObservableObject {
             liveVoiceBargeInCount += 1
             streamingAudioTurnID = nil
             isStreamingAudioPlaying = false
+            let observedAck = liveVoiceAcknowledgedBytes.removeValue(forKey: cancellation.responseID) ?? 0
+            let resolvedAckBytes: Int
+            if let cancelledCursor = cancellation.textCursor, cancelledCursor >= 0 {
+                resolvedAckBytes = max(observedAck, cancelledCursor)
+            } else {
+                resolvedAckBytes = observedAck
+            }
             if let turnID = liveVoiceAssistantTurns.removeValue(forKey: cancellation.responseID),
                let index = turns.firstIndex(where: { $0.id == turnID }) {
                 if let ackText = cancellation.acknowledgedText {
-                    if ackText.isEmpty && turns[index].artifacts.isEmpty {
-                        turns.remove(at: index)
-                    } else {
-                        turns[index].text = ackText
-                        turns[index].blocks = ackText.isEmpty
-                            ? [] : [.text(id: UUID(), content: ackText)]
-                        turns[index].state = .stopped
-                    }
-                } else if turns[index].text.isEmpty && turns[index].artifacts.isEmpty {
-                    turns.remove(at: index)
-                } else {
-                    turns[index].state = .stopped
+                    turns[index].text = ackText
+                    turns[index].blocks = ackText.isEmpty
+                        ? [] : [.text(id: UUID(), content: ackText)]
                 }
+                turns[index].state = .stopped
+                turns[index].interruptedSpokenBytes = resolvedAckBytes
             }
             liveVoiceState = .listening
             status = "Live Voice · Interrupted"
 
         case .responseFailed(let responseID, _, let detail):
             streamingAudioTurnID = nil
-            if let responseID,
-               let turnID = liveVoiceAssistantTurns.removeValue(forKey: responseID),
-               let index = turns.firstIndex(where: { $0.id == turnID }) {
-                if turns[index].text.isEmpty && turns[index].artifacts.isEmpty {
-                    turns.remove(at: index)
-                } else {
-                    turns[index].state = .failed
+            if let responseID {
+                liveVoiceAcknowledgedBytes.removeValue(forKey: responseID)
+                if let turnID = liveVoiceAssistantTurns.removeValue(forKey: responseID),
+                   let index = turns.firstIndex(where: { $0.id == turnID }) {
+                    if turns[index].text.isEmpty && turns[index].artifacts.isEmpty {
+                        turns.remove(at: index)
+                    } else {
+                        turns[index].state = .failed
+                    }
                 }
             }
             self.error = detail

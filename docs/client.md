@@ -608,13 +608,23 @@ suppression** toggle (default ON) alongside their full-duplex voice controls.
 Toggling it before connecting sets the initial `session.update` payload (omitting
 `echo_suppression` when ON and sending `"echo_suppression": false` when OFF);
 toggling it while connected or mid-response sends the narrow active
-`turn_detection`-only `session.update` with the negotiated `silence_ms`. When a
-voice session is active, both clients render a live status strip showing the
-server-confirmed echo-suppression state (`Echo suppression: On` or
+`turn_detection`-only `session.update` with the negotiated `silence_ms`. When a voice session is active, both clients render a live status strip showing
+a real PCM16 microphone input level meter (`computePcm16RmsLevel` in Web UI and
+`RealtimeAudioLevel.rmsLevel(pcm16:)` in `ummmlx`, computing normalized
+`[0.0, 1.0]` RMS directly from captured little-endian 16-bit PCM frames with no
+synthetic animation and resetting strictly to `0.0` on stop, disconnect, or
+error), the server-confirmed echo-suppression state (`Echo suppression: On` or
 `Echo suppression: Off (A/B)`, omitted until confirmed by
-`transcription_session.updated`) and the real observed barge-in count
+`transcription_session.updated`), and the real observed barge-in count
 (`Barge-ins: N`, counting `response.cancelled` events in the current session and
 resetting on disconnect or reconnect).
+
+When `response.cancelled` interrupts an active Live Voice assistant turn, both
+clients attach an inline cut-point badge driven strictly by real
+server-acknowledged UTF-8 byte offsets from `response.playback_ack` and
+`response.cancelled` (`text_cursor`): `Interrupted · <N> B spoken` when `N > 0`,
+and `Interrupted before audio` when cancelled with `0` acknowledged bytes.
+Normally completed turns display no interrupted badge.
 
 The bundled server submits a preview request for every 200 ms of new audio.
 Each completed preview sends one `transcription.segment` with `is_final: false`

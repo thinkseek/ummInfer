@@ -937,6 +937,34 @@ final class LiveRealtimeAudioCapturer: RealtimeAudioCapturing, @unchecked Sendab
     }
 }
 
+// MARK: - RealtimeAudioLevel
+
+/// Pure, deterministic PCM16 microphone input level calculator.
+enum RealtimeAudioLevel {
+    /// Computes normalized RMS level in `[0.0, 1.0]` directly from signed
+    /// little-endian 16-bit PCM frames. Returns `0.0` for empty, odd-byte,
+    /// or silent buffers.
+    static func rmsLevel(pcm16: Data) -> Double {
+        guard !pcm16.isEmpty, pcm16.count % 2 == 0 else { return 0.0 }
+        let sampleCount = pcm16.count / 2
+        var sumSquares = 0.0
+        pcm16.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for i in 0..<sampleCount {
+                let offset = i * 2
+                let lo = UInt16(bytes[offset])
+                let hi = UInt16(bytes[offset + 1])
+                let sample = Int16(bitPattern: lo | (hi << 8))
+                let normalized = Double(sample) / 32768.0
+                sumSquares += normalized * normalized
+            }
+        }
+        let rms = (sumSquares / Double(sampleCount)).squareRoot()
+        guard rms.isFinite, rms > 0.0 else { return 0.0 }
+        return min(1.0, rms)
+    }
+}
+
 // MARK: - RealtimeClient
 
 @MainActor
@@ -959,6 +987,7 @@ final class RealtimeClient {
     private var onEventHandler: ((RealtimeServerEvent) -> Void)?
     private var onErrorHandler: ((Error) -> Void)?
     private var onDisconnectHandler: (() -> Void)?
+    private var onMicLevelHandler: ((Double) -> Void)?
 
     init(
         transportFactory: @escaping @Sendable () -> RealtimeTransport = { URLSessionRealtimeTransport() },
@@ -1020,7 +1049,8 @@ final class RealtimeClient {
         allowedHTTPHosts: Set<String> = ChatClient.plainHTTPHostAllowlist(),
         onEvent: @escaping (RealtimeServerEvent) -> Void,
         onError: @escaping (Error) -> Void,
-        onDisconnect: @escaping () -> Void = {}
+        onDisconnect: @escaping () -> Void = {},
+        onMicLevel: @escaping (Double) -> Void = { _ in }
     ) throws {
         let url = try Self.realtimeURL(base: base, model: model, allowedHTTPHosts: allowedHTTPHosts)
         let sessionUpdateFrame = try RealtimeWire.encodeSessionUpdate(config)
@@ -1040,6 +1070,7 @@ final class RealtimeClient {
         self.onEventHandler = onEvent
         self.onErrorHandler = onError
         self.onDisconnectHandler = onDisconnect
+        self.onMicLevelHandler = onMicLevel
 
         receiveTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1112,6 +1143,7 @@ final class RealtimeClient {
         onEventHandler = nil
         onErrorHandler = nil
         onDisconnectHandler = nil
+        onMicLevelHandler = nil
         if let oldTransport {
             Task { await oldTransport.close() }
         }
@@ -1191,8 +1223,12 @@ final class RealtimeClient {
             do {
                 for try await pcm16 in stream {
                     guard self.sessionToken == token, let transport = self.transport else { return }
+                    self.onMicLevelHandler?(RealtimeAudioLevel.rmsLevel(pcm16: pcm16))
                     let frame = try RealtimeWire.encodeAudioAppend(pcm16)
                     try await transport.send(text: frame)
+                }
+                if self.sessionToken == token {
+                    self.onMicLevelHandler?(0.0)
                 }
             } catch {
                 guard self.sessionToken == token else { return }

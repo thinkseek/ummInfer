@@ -56,6 +56,7 @@ def check_markup(html):
                 'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
                 'id="realtimeEchoSuppression"', 'id="realtimeStatus"',
                 'id="realtimeStrip"', 'id="realtimeStripPhase"',
+                'id="realtimeMicMeter"', 'id="realtimeMicMeterFill"',
                 'id="realtimeEchoState"', 'id="realtimeBargeInCount"',
                 'id="narrative"',
                 'id="visualMode"', 'id="maxSlots"', 'id="allowTextOnly"',
@@ -626,6 +627,16 @@ def check_realtime(html, script):
             "response.cancelled must increment the observed barge-in counter")
     require("resetRealtimeTelemetry(realtime);" in script,
             "disconnect/reconnect must reset realtime echo and barge-in telemetry")
+    require("computePcm16RmsLevel(pcmBytes)" in script and
+            "setRealtimeMicLevel(" in script,
+            "realtime mic capture must compute and display real PCM16 RMS level")
+    require('aria-label="Live microphone input level"' in html,
+            "realtime mic meter must expose an accessible aria-label")
+    require("recordRealtimePlaybackAck(" in script and
+            "recordRealtimeTurnCancelled(" in script and
+            "attachRealtimeInterruptedBadge(" in script and
+            "turn-interrupted-badge" in html,
+            "realtime turns must track playback_ack cursors and attach per-turn interrupted badges")
     require("Echo suppression: On" in script and "Echo suppression: Off (A/B)" in script,
             "live voice status strip must format confirmed echo suppression states")
     require("input_audio_format: 'pcm16'" in script and
@@ -979,6 +990,158 @@ console.log('realtime echo-suppression behavior passed');
             "realtime echo-suppression harness did not reach its success assertion")
 
 
+def check_realtime_audio_meter_and_barge_in_behavior(script):
+    """Execute PCM16 RMS level meter and per-turn barge-in badge helpers in Node."""
+    node = shutil.which("node")
+    if not node:
+        print("skip realtime audio meter behavior: node is not installed", flush=True)
+        return
+    require("// REALTIME_AUDIO_METER_BEGIN" in script and
+            "// REALTIME_AUDIO_METER_END" in script,
+            "missing realtime audio meter behavior-test markers")
+    helpers = script.split("// REALTIME_AUDIO_METER_BEGIN", 1)[1].split(
+        "// REALTIME_AUDIO_METER_END", 1)[0]
+    attach_fn = re.search(
+        r"function attachRealtimeInterruptedBadge\(.*?\n\}", script, re.S)
+    require(attach_fn is not None,
+            "could not extract attachRealtimeInterruptedBadge for behavior checks")
+    harness = helpers + "\n" + attach_fn.group(0) + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+const assertClose = (actual, expected, tol, message) => {
+  if (Math.abs(actual - expected) > tol) {
+    throw new Error(`${message}: expected ${expected} ± ${tol}, got ${actual}`);
+  }
+};
+function pcmFromSamples(samples) {
+  const bytes = new Uint8Array(samples.length * 2);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < samples.length; i += 1) {
+    view.setInt16(i * 2, samples[i], true);
+  }
+  return bytes;
+}
+
+// 1. computePcm16RmsLevel: empty, odd, non-Uint8Array, silence, square, sine, full-scale clamp, subarray.
+assert(computePcm16RmsLevel(null) === 0, 'null must return 0');
+assert(computePcm16RmsLevel(undefined) === 0, 'undefined must return 0');
+assert(computePcm16RmsLevel(new Uint8Array(0)) === 0, 'empty buffer must return 0');
+assert(computePcm16RmsLevel(new Uint8Array([0x00, 0x40, 0x01])) === 0,
+  'odd byte-length buffer must return 0');
+assert(computePcm16RmsLevel(pcmFromSamples([0, 0, 0, 0])) === 0,
+  'silent PCM16 buffer must return 0');
+
+// Half-scale square wave (+16384 / -16384) => RMS = 0.5 exactly.
+const halfSquare = pcmFromSamples([16384, -16384, 16384, -16384]);
+assertClose(computePcm16RmsLevel(halfSquare), 0.5, 1e-6, 'half-scale square RMS');
+
+// Mid-scale sine wave (amplitude 16384 over exact integer cycles) => RMS = 0.5 / sqrt(2).
+const sineSamples = [];
+for (let i = 0; i < 640; i += 1) {
+  sineSamples.push(Math.round(16384 * Math.sin((2 * Math.PI * 10 * i) / 640)));
+}
+assertClose(computePcm16RmsLevel(pcmFromSamples(sineSamples)), 0.5 / Math.SQRT2, 1e-3,
+  'mid-scale sine RMS');
+
+// Full-scale negative (-32768) => exact 1.0 (clamped); full-scale positive (32767) <= 1.0.
+const fullNeg = pcmFromSamples([-32768, -32768, -32768, -32768]);
+assert(computePcm16RmsLevel(fullNeg) === 1, 'full-scale negative must clamp cleanly to 1.0');
+const fullPos = pcmFromSamples([32767, 32767, 32767, 32767]);
+const posRms = computePcm16RmsLevel(fullPos);
+assert(posRms > 0.9999 && posRms <= 1, 'full-scale positive RMS must be within (0.9999, 1.0]');
+
+// Non-zero byteOffset Uint8Array view computes RMS over slice only.
+const padded = pcmFromSamples([0, 16384, -16384, 0]);
+const slice = new Uint8Array(padded.buffer, 2, 4);
+assertClose(computePcm16RmsLevel(slice), 0.5, 1e-6, 'byteOffset subarray RMS');
+
+// 2. formatInterruptedBadge exact strings and zero-fabrication guards.
+assert(formatInterruptedBadge(0) === 'Interrupted before audio',
+  '0 B badge mismatch');
+assert(formatInterruptedBadge(12) === 'Interrupted · 12 B spoken',
+  '12 B badge mismatch');
+assert(formatInterruptedBadge(2048) === 'Interrupted · 2048 B spoken',
+  '2048 B badge mismatch');
+for (const bad of [-1, null, undefined, Number.NaN, 1.5, '12']) {
+  assert(formatInterruptedBadge(bad) === '', `invalid cursor must yield empty badge: ${bad}`);
+}
+
+// 3. Per-turn barge-in cut-point tracking and inline badge DOM attachment.
+class FakeEl {
+  constructor(tag) {
+    this.tagName = tag.toUpperCase();
+    this.className = '';
+    this.textContent = '';
+    this.dataset = {};
+    this.attrs = {};
+    this.children = [];
+  }
+  append(...nodes) { this.children.push(...nodes); }
+  setAttribute(k, v) { this.attrs[k] = v; }
+}
+globalThis.document = { createElement: (tag) => new FakeEl(tag) };
+
+const tracker = createRealtimeTurnTracker();
+
+// Completed turn: playback_ack observed and cleared; never marked interrupted.
+assert(recordRealtimePlaybackAck(tracker, 'r-done', 12) === 12, 'playback_ack 12');
+assert(recordRealtimePlaybackAck(tracker, 'r-done', 24) === 24, 'playback_ack 24');
+clearRealtimeTurnTracking(tracker, 'r-done');
+assert(!tracker.interruptedBytesByResponse.has('r-done'),
+  'completed turn must never be marked interrupted');
+assert(!tracker.acknowledgedBytesByResponse.has('r-done'),
+  'completed turn tracking must be cleared');
+
+// Cancelled before any audio playback ACK => 0 B -> 'Interrupted before audio'.
+const zeroTurn = { meta: new FakeEl('div'), interruptedBadgeEl: null };
+const zeroCancel = recordRealtimeTurnCancelled(tracker, 'r-zero', 0);
+assert(zeroCancel.acknowledgedBytes === 0 && zeroCancel.badgeText === 'Interrupted before audio',
+  'zero-byte barge-in result mismatch');
+attachRealtimeInterruptedBadge(zeroTurn, zeroCancel.acknowledgedBytes, zeroCancel.badgeText);
+assert(zeroTurn.meta.children.length === 1 &&
+       zeroTurn.interruptedBadgeEl.textContent === 'Interrupted before audio' &&
+       zeroTurn.interruptedBadgeEl.dataset.acknowledgedBytes === '0' &&
+       zeroTurn.interruptedBadgeEl.attrs['aria-label'] === 'Interrupted before audio',
+  'zero-byte badge DOM mismatch');
+
+// Cancelled after real playback_ack cursors (with omitted text_cursor on cancelled) retains real ack.
+assert(recordRealtimePlaybackAck(tracker, 'r-ack', 12) === 12, 'ack 12');
+assert(recordRealtimePlaybackAck(tracker, 'r-ack', 24) === 24, 'ack 24');
+// Stale/negative playback_ack cursors never regress monotonic max.
+assert(recordRealtimePlaybackAck(tracker, 'r-ack', 8) === 24, 'monotonic max must hold');
+assert(recordRealtimePlaybackAck(tracker, 'r-ack', -5) === null, 'negative cursor must be ignored');
+const ackTurn = { meta: new FakeEl('div'), interruptedBadgeEl: null };
+const ackCancel = recordRealtimeTurnCancelled(tracker, 'r-ack', undefined);
+assert(ackCancel.acknowledgedBytes === 24 && ackCancel.badgeText === 'Interrupted · 24 B spoken',
+  'playback_ack tracked barge-in mismatch');
+attachRealtimeInterruptedBadge(ackTurn, ackCancel.acknowledgedBytes, ackCancel.badgeText);
+// Duplicate cancellation updates in place without adding a second badge element.
+const dupCancel = recordRealtimeTurnCancelled(tracker, 'r-ack', 30);
+attachRealtimeInterruptedBadge(ackTurn, dupCancel.acknowledgedBytes, dupCancel.badgeText);
+assert(ackTurn.meta.children.length === 1 &&
+       ackTurn.interruptedBadgeEl.textContent === 'Interrupted · 30 B spoken' &&
+       ackTurn.interruptedBadgeEl.dataset.acknowledgedBytes === '30',
+  'duplicate cancel must update single badge cleanly');
+
+resetRealtimeTurnTracker(tracker);
+assert(tracker.acknowledgedBytesByResponse.size === 0 &&
+       tracker.interruptedBytesByResponse.size === 0,
+  'resetRealtimeTurnTracker must clear all maps');
+
+console.log('realtime audio meter and barge-in behavior passed');
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "realtime-audio-meter.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"realtime audio meter behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
+    require("realtime audio meter and barge-in behavior passed" in result.stdout,
+            "realtime audio meter harness did not reach its success assertion")
+
+
 def check_showcase_and_telemetry(html, script):
     """North-Star showcase starter presets and live per-turn telemetry hooks."""
     for snippet in (
@@ -1273,6 +1436,9 @@ class WebUIContractTest(unittest.TestCase):
     def test_realtime_echo_suppression_behavior(self):
         check_realtime_echo_suppression_behavior(self.script)
 
+    def test_realtime_audio_meter_and_barge_in_behavior(self):
+        check_realtime_audio_meter_and_barge_in_behavior(self.script)
+
     def test_showcase_and_telemetry(self):
         check_showcase_and_telemetry(self.html, self.script)
 
@@ -1302,6 +1468,7 @@ def main():
         ("realtime", lambda: check_realtime(html, script)),
         ("realtime_behavior", lambda: check_realtime_behavior(script)),
         ("realtime_echo_suppression_behavior", lambda: check_realtime_echo_suppression_behavior(script)),
+        ("realtime_audio_meter_and_barge_in_behavior", lambda: check_realtime_audio_meter_and_barge_in_behavior(script)),
         ("showcase_and_telemetry", lambda: check_showcase_and_telemetry(html, script)),
         ("showcase_and_telemetry_behavior", lambda: check_showcase_and_telemetry_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),
