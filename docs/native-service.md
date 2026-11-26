@@ -532,6 +532,24 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 43 Stage C Decoupled Online GRPO Rollout Generation, Validation & Replay Contract (`db43e7e`):
+  - Harvested accepted Task #36 (`revisions=0`, CPU-only contract): added
+    stdlib trainer-side HTTP orchestrator `python/umminfer_online_rollout.py`,
+    fixture `configs/training/online_grpo_rollout_fixture.json`,
+    `tests/online_rollout_test.py` (10/10 PASS), backward-compatible
+    `python/umminfer_rl_trajectory.py` hooks, pre-ML online-group rejection in
+    `python/umminfer_joint_grpo_live.py`, and updated `docs/joint-training.md`,
+    `docs/rl.md`, and `docs/roadmap.md`. Verified all 10 Stage C Python suites
+    PASS (`online_rollout_test.py` 10/10, `joint_grpo_live_test.py` 4/4,
+    `token_export_test.py` 5/5 + 1 `REAL_TOKENIZER_FIXTURE: NOT_RUN`,
+    `rl_architecture_test.py` 16/16, `rl_phase2_test.py` 6/6,
+    `sft_dataset_test.py` 8/8, `joint_trainer_test.py` 6/6,
+    `stage_c_pipeline_test.py` 6/6, `ablation_runner_test.py` 17/17,
+    `sse_replay_test.py` 9/9). Real online generation, online optimizer
+    execution, and model-quality evaluation remain explicitly `NOT_RUN`, and
+    behavior log-probabilities/masks remain `NOT_COVERED` unless exposed by
+    the endpoint.
+
 - Wave 42 Native C++ CLI `umm-infer voice` Per-Turn Barge-In Cut-Point, Real PCM16 RMS Mic Level & Interactive Echo Toggle (`58a58c0`):
   - Completed full 3-client parity (Web UI + macOS `ummmlx` + native C++ CLI
     `umm-infer`) for Wave 34's full-duplex barge-in & mic observability:
