@@ -13,6 +13,7 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -21,6 +22,12 @@
 namespace umminfer::stage {
 
 long long epoch_millis();
+
+// SHA-256 of a canonical, domain-separated manifest of the exact buffers the
+// native Qwen tokenizer parsed. Each row is name, byte length, and content
+// SHA-256; names are sorted and duplicates/empty names return an empty string.
+std::string loaded_tokenizer_sha256(
+    const std::vector<std::pair<std::string, std::string_view>>& files);
 
 // Wraps the scheduler's abort check and remembers when it first fired, so the
 // stage log can state the abort-to-exit latency.

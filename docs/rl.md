@@ -507,15 +507,19 @@ Only completed raw-SSE-backed responses with finite export-derived rewards enter
 online GRPO groups. Cancelled and malformed responses never become zero-reward
 or empty candidates.
 
-The current public endpoint does not expose behavior log-probabilities or masks
-and does not emit the required online attestation headers. Those values stay
-`NOT_COVERED`/null unless a compatible endpoint provides a complete final-SSE
-`umminfer-behavior-logprobs-v1` block. The full header, retry, validation, export,
-fresh-process replay, and deferred isolated-live gate are specified in
+The native unified Qwen3.8 endpoint now has an explicit
+`behavior.logprobs=true` streaming opt-in for actual sampled ids, full native
+log-softmax values, exact clean-target masks, and the required online
+attestation headers. Other endpoints and every incomplete capture remain
+`NOT_COVERED`/null; no re-encoded supervision ids are substituted. The producer,
+tokenizer-digest, narrative-mask, fail-closed, retry, validation, export, and
+fresh-process replay contracts are specified in
 [joint-training.md](joint-training.md#online-grpo-rollout-generation-and-validation-contract).
 The accepted frozen-offline GRPO optimizer rejects online-provenance groups and
 source trajectories, even when an ordinary pack is rebuilt without row markers;
-online optimizer execution and real generation remain `NOT_RUN`.
+online optimizer execution and model-quality outcomes remain `NOT_RUN`. The
+isolated SM90 native producer/recomputation result and exact evidence hashes are
+in [behavior-logprobs-live.md](behavior-logprobs-live.md).
 
 ## Rewards
 

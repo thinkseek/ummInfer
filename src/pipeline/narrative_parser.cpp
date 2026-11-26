@@ -191,6 +191,8 @@ std::string NarrativeStreamParser::scan(bool eof,
       pos = open + 1;
       continue;
     }
+    removed_spans_.push_back(
+        NarrativeRemovedSpan{buf_raw_begin_ + open, buf_raw_begin_ + close + 2});
     NarrativeDirective directive;
     directive.kind = std::move(kind);
     parse_reference(directive,
@@ -203,8 +205,45 @@ std::string NarrativeStreamParser::scan(bool eof,
     pos = close + 2;
   }
   buf_.erase(0, pos);
+  buf_raw_begin_ += pos;
   prose_emitted_ += ret.size();
   return ret;
+}
+
+std::optional<std::vector<int64_t>> narrative_behavior_masks(
+    const std::vector<int>& token_ids,
+    const std::function<std::string(int)>& decode_token) {
+  if (token_ids.empty() || !decode_token) return std::nullopt;
+  NarrativeStreamParser parser;
+  std::vector<NarrativeDirective> directives;
+  std::vector<std::string> token_bytes;
+  token_bytes.reserve(token_ids.size());
+  std::string clean;
+  std::string raw;
+  for (const int id : token_ids) {
+    token_bytes.push_back(decode_token(id));
+    raw += token_bytes.back();
+    clean += parser.feed(token_bytes.back(), directives);
+  }
+  clean += parser.flush(directives);
+
+  std::vector<int64_t> mask(token_ids.size(), 1);
+  size_t token_begin = 0;
+  for (size_t i = 0; i < token_bytes.size(); ++i) {
+    const size_t token_end = token_begin + token_bytes[i].size();
+    if (token_bytes[i].empty()) mask[i] = 0;
+    for (const NarrativeRemovedSpan& span : parser.removed_spans()) {
+      if (span.begin > span.end || span.end > raw.size()) return std::nullopt;
+      if (token_begin < span.end && token_end > span.begin) mask[i] = 0;
+    }
+    token_begin = token_end;
+  }
+  std::string masked;
+  for (size_t i = 0; i < token_bytes.size(); ++i) {
+    if (mask[i] == 1) masked += token_bytes[i];
+  }
+  if (masked != clean) return std::nullopt;
+  return mask;
 }
 
 }  // namespace umminfer

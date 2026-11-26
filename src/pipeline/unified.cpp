@@ -10,6 +10,7 @@
 
 #include "pipeline/narrative_parser.hpp"
 #include "pipeline/unified_schema.hpp"
+#include "umminfer/obs/behavior_evidence.hpp"
 #include "umminfer/obs/metrics.hpp"
 #include "umminfer/obs/request_telemetry.hpp"
 #include "umminfer/pipeline/sentence_split.hpp"
@@ -273,6 +274,8 @@ std::string UnifiedEngine::submit(StagePayload payload) {
     // and must not see them. `record.vlm_params` already holds the copy above.
     payload.request.params.erase("top_p");
     payload.request.params.erase("seed");
+    payload.request.params.erase(obs::kBehaviorLogprobsParam);
+    payload.request.params.erase(obs::kBehaviorNarrativeParam);
   }
   std::string session_id =
       parsed.explicit_session
@@ -359,6 +362,10 @@ std::string UnifiedEngine::submit(StagePayload payload) {
           record.narrative_max_slots, record.narrative_continuity_mode);
     }
     vlm_payload.request.params = record.vlm_params;
+    if (record.narrative_enabled &&
+        obs::behavior_logprobs_requested(vlm_payload.request.params)) {
+      vlm_payload.request.params[obs::kBehaviorNarrativeParam] = Value(true);
+    }
     vlm_payload.request.metadata = record.vlm_metadata;
     record.phase = Phase::kVlm;
     request_id = coordinator_.submit(vlm_payload, config_.vlm_stage);
@@ -812,6 +819,10 @@ void UnifiedEngine::start_vlm_locked(const std::string& request_id,
         record.narrative_max_slots, record.narrative_continuity_mode);
   }
   vlm_payload.request.params = record.vlm_params;
+  if (record.narrative_enabled &&
+      obs::behavior_logprobs_requested(vlm_payload.request.params)) {
+    vlm_payload.request.params[obs::kBehaviorNarrativeParam] = Value(true);
+  }
   vlm_payload.request.metadata = record.vlm_metadata;
   record.phase = Phase::kVlm;
   record.vlm_state = LegState::kRunning;
@@ -1008,6 +1019,8 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
   payload.request_id = leg.child_id;
   payload.request.inputs = Value(std::move(options));
   payload.request.params = record.vlm_params;
+  payload.request.params.erase(obs::kBehaviorLogprobsParam);
+  payload.request.params.erase(obs::kBehaviorNarrativeParam);
   payload.request.metadata = record.vlm_metadata;
 
   // The slot event goes out first, at the exact point the directive closed in
@@ -1619,6 +1632,8 @@ void UnifiedEngine::submit_single_output_leg_locked(
   payload.request_id = leg.child_id;
   payload.request.inputs = std::move(inputs);
   payload.request.params = record.vlm_params;
+  payload.request.params.erase(obs::kBehaviorLogprobsParam);
+  payload.request.params.erase(obs::kBehaviorNarrativeParam);
   payload.request.metadata = record.vlm_metadata;
   leg.submitted = true;
   leg.state = LegState::kRunning;
@@ -1655,6 +1670,8 @@ void UnifiedEngine::start_tts_locked(const std::string& request_id,
   payload.request.inputs = unified_detail::build_tts_inputs(
       record.audio_options, text, record.tts_stream);
   payload.request.params = record.vlm_params;
+  payload.request.params.erase(obs::kBehaviorLogprobsParam);
+  payload.request.params.erase(obs::kBehaviorNarrativeParam);
   payload.request.metadata = record.vlm_metadata;
   leg.submitted = true;
   leg.state = LegState::kRunning;

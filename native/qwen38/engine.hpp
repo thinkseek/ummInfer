@@ -31,10 +31,14 @@ struct SamplingParams {
   float top_p = 1.0f;
   uint64_t seed = 0;
   bool has_seed = false;
+  // Serial-only observability. No flag preserves the legacy greedy fast path.
+  bool capture_behavior_logprobs = false;
 };
 
 struct GenResult {
   std::vector<int> ids;        // generated token ids, EOS excluded
+  // Full-row log-softmax values aligned with ids when capture is enabled.
+  std::vector<double> behavior_logprobs;
   bool stopped_by_eos = false;
   // prompt_tokens is the whole prompt; prefill_tokens is what this call
   // actually computed, and reused_tokens came from the prefix snapshot.

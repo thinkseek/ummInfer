@@ -35,6 +35,7 @@ using umminfer::qwen38::RenderedChatPrompt;
 using umminfer::qwen38::resolve_snapshot_len;
 using umminfer::qwen38::SamplingParams;
 using umminfer::qwen38::sample_token;
+using umminfer::qwen38::selected_token_logprob;
 
 int g_failures = 0;
 
@@ -342,6 +343,58 @@ void test_extreme_logits() {
   check(id >= 0 && id < 3, "an all-degenerate row returns a valid index");
   check(sample_token(dead.data(), 3, sampling(0.0f, 1.0f, 3), rng) == 0,
         "an all-degenerate greedy row returns a valid index");
+}
+
+void test_behavior_logprobs() {
+  const std::vector<float> row{static_cast<float>(std::log(2.0)), 0.0f, 0.0f};
+  const auto reference = [&row](int id) {
+    const long double maxv = *std::max_element(row.begin(), row.end());
+    long double total = 0.0;
+    for (const float value : row) total += std::exp(static_cast<long double>(value) - maxv);
+    return static_cast<double>(static_cast<long double>(row[id]) - maxv - std::log(total));
+  };
+  const double expected[] = {reference(0), reference(1), reference(2)};
+  for (int id = 0; id < 3; ++id) {
+    double value = 1.0;
+    check(selected_token_logprob(row.data(), 3, id, &value),
+          "behavior logprob accepts a finite row");
+    check(std::abs(value - expected[id]) < 1e-15,
+          "behavior logprob matches an independent known probability");
+    check(std::isfinite(value) && value <= 0.0,
+          "behavior logprob is finite and non-positive");
+  }
+
+  const std::vector<float> extreme{10000.0f, 9999.0f, -10000.0f};
+  double dominant = 1.0;
+  check(selected_token_logprob(extreme.data(), 3, 0, &dominant) &&
+            std::abs(dominant + std::log1p(std::exp(-1.0))) < 1e-15,
+        "behavior logprob is stable across extreme finite logits");
+
+  const SamplingParams params = sampling(0.7f, 0.9f, 42);
+  std::mt19937_64 first_rng(params.seed);
+  std::mt19937_64 second_rng(params.seed);
+  for (int i = 0; i < 128; ++i) {
+    const int first = sample_token(row.data(), 3, params, first_rng);
+    const int second = sample_token(row.data(), 3, params, second_rng);
+    double value = 1.0;
+    check(first == second && selected_token_logprob(row.data(), 3, first, &value) &&
+              std::abs(value - expected[first]) < 1e-15,
+          "evidence preserves the sampled id and consumes no additional RNG");
+  }
+
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const std::vector<float> bad_rows[] = {
+      {inf, 0.0f}, {nan, 0.0f}, {-inf, -inf}};
+  for (const auto& bad : bad_rows) {
+    double value = 1.0;
+    check(!selected_token_logprob(bad.data(), 2, 0, &value) && std::isnan(value),
+          "degenerate logits fail evidence closed");
+  }
+  double value = 1.0;
+  check(!selected_token_logprob(row.data(), 3, 3, &value) &&
+            !selected_token_logprob(nullptr, 3, 0, &value),
+        "invalid row and token bounds fail evidence closed");
 }
 
 void test_prefix_match() {
@@ -1178,6 +1231,7 @@ int main() {
   test_sampling_is_seed_deterministic();
   test_top_p_excludes_tail();
   test_extreme_logits();
+  test_behavior_logprobs();
   test_prefix_match();
   test_render_parts_matches_full();
   test_turn_boundary_prefix_is_stable();

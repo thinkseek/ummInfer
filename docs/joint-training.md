@@ -363,6 +363,47 @@ or numerical correctness against a trainer model. A future online optimizer
 must separately prove tokenizer/token/target alignment and behavior-model
 identity before consuming those values.
 
+### Native Qwen3.8 behavior-evidence producer
+
+The native unified endpoint accepts the explicit streaming request member
+`"behavior":{"logprobs":true}`. Ordinary requests, `behavior:null`, and
+`{"logprobs":false}` keep the historical stage parameters and public bytes;
+they emit no behavior member or behavior-evidence response header. The opt-in
+uses a terminal-buffered SSE response (the same SSE data frames with a content
+length rather than incremental delivery) so the server does not attest
+`exposed` before it knows whether a complete record exists. The accepted online
+attestation headers are echoed only when the caller supplied the online rollout
+contract header. Every such response, including validation errors, declares
+`X-UmmInfer-Behavior-Evidence: exposed` or `not_exposed` as applicable.
+
+A covered final data frame contains exactly the five accepted fields. Each
+log-probability is full log-softmax over the same FP32 native LM-head logits row
+used for that token's selection, before temperature scaling or top-p filtering;
+temperature and top-p affect the sampled id, not this score's definition.
+Greedy mode retains the device argmax id and only then copies the logits for
+scoring. Stochastic mode consumes the existing single RNG draw. EOS and any
+lookahead sample are absent. Text-only emitted non-EOS ids have `mask=1`.
+Narrative route tags, their prompt bodies and anchor suffixes have `mask=0`
+only when the mask=1 token bytes reconstruct the exact parser-clean prose;
+invisible tokens are also zero. A token straddling prose and a directive fails
+alignment rather than dropping prose. Generated media bytes and
+server-synthesized fallback prompts/anchors are never sampled ids.
+
+The tokenizer digest is SHA-256 of the domain-separated
+`umminfer-qwen38-loaded-tokenizer-v1` manifest, whose canonically ordered rows
+are `merges.txt`, `tokenizer_config.json`, and `vocab.json`, each with exact byte
+length and content SHA-256. The hashes are computed from the same three binary
+buffers parsed by the native tokenizer, not from a second file read and not
+from `token_export`'s distinct available-files digest.
+
+Continuous batching, non-native/fixed-upstream workers, audio/video input or
+output, truncation, cancellation, empty EOS-only output, missing/mismatched
+tokenizer identity, non-finite or positive scores, invalid masks, count
+mismatches, unavailable per-token logits, and any narrative alignment failure
+produce `not_exposed` and no behavior block. They never produce empty or partial
+arrays, fabricated zeros, or re-encoded substitute ids. The native replay CLI
+is diagnostic tooling only; it does not change the public five-field schema.
+
 ### Accepted bundle and byte-identical replay
 
 ```text
@@ -407,22 +448,24 @@ trees. `attempts.jsonl` is diagnostic and intentionally outside that accepted
 file set. The committed fixture uses only logical ticks and a deterministic fake
 endpoint; it is not real generation evidence.
 
-### Later isolated live gate
+### Isolated native Qwen3.8 live gate
 
-Real online generation and optimizer/quality outcomes remain **NOT_RUN**. A later
-gate must use a separately approved, isolated endpoint and training process;
-record actual model/policy revision, model/config/weight hashes, exact requests,
-seeds and sampling; implement and verify every response attestation; capture
-observed monotonic raw-SSE ticks; reject cancellation/drift; and reproduce the
-accepted trajectories and groups byte-for-byte in fresh processes. It must keep
-serving free of trainer/optimizer imports and the trainer free of inference
-imports. If behavior log-probabilities are consumed, the gate must additionally
-prove model/tokenizer/token-target/mask alignment rather than treating the
-structural evidence check as sufficient. An online optimizer adapter, real
-model-quality evaluation, generalized improvement, and production-model training
-are separate later gates. The current public ummInfer endpoint does not emit the
-required attestation or behavior-evidence headers, so it is deliberately rejected
-rather than treated as compatible.
+The native Qwen3.8 producer passed an isolated SM90 GPU 7 gate on 2026-11-26.
+It verified actual model/config/weight/tokenizer/binary/source hashes, exact
+requests/seeds/sampling, every response attestation, observed monotonic raw-SSE
+ticks, cancellation and truncation rejection, and fresh-process byte-identical
+raw replay. Text-only and supported interleaved image-narrative cases each
+recomputed every exposed log-probability in a fresh native forward process from
+the frozen model and exact sampled prefix: 61/61 token ids and masks matched,
+with maximum absolute difference `0.0` under tolerance `1e-6`. The visual case
+also proved route-token masks against public clean prose. Exact hashes,
+commands, failures, tolerances, and cleanup are in
+[behavior-logprobs-live.md](behavior-logprobs-live.md).
+
+This validates serving evidence only. An online optimizer adapter, real
+model-quality evaluation, generalized improvement, and production-model
+training remain separate unrun gates. Serving retains no trainer/optimizer
+imports and the trainer retains no inference imports.
 
 ## Bounded real joint-SFT optimizer gate
 

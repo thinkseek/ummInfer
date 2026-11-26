@@ -48,6 +48,32 @@ inline int key_index(uint64_t key) {
 
 }  // namespace detail
 
+// Full FP32-row log-softmax for behavior evidence. Sampling transformations are
+// intentionally not reapplied: the value is always the selected id's raw model
+// log-probability under the exact pre-sampling logits, for greedy and sampled
+// decode alike. Degenerate rows fail closed instead of producing placeholders.
+inline bool selected_token_logprob(const float* logits, int n, int id,
+                                   double* out) {
+  if (out == nullptr) return false;
+  *out = std::numeric_limits<double>::quiet_NaN();
+  if (logits == nullptr || n <= 0 || id < 0 || id >= n) return false;
+  double maxv = -std::numeric_limits<double>::infinity();
+  for (int i = 0; i < n; ++i) {
+    const double value = logits[i];
+    if (!std::isfinite(value)) return false;
+    maxv = std::max(maxv, value);
+  }
+  double total = 0.0;
+  for (int i = 0; i < n; ++i) {
+    total += std::exp(static_cast<double>(logits[i]) - maxv);
+  }
+  if (!(total > 0.0) || !std::isfinite(total)) return false;
+  const double value = static_cast<double>(logits[id]) - maxv - std::log(total);
+  if (!std::isfinite(value) || value > 0.0) return false;
+  *out = value;
+  return true;
+}
+
 // Draws one token id from `n` fp32 logits.
 //
 // temperature <= 0 keeps the exact argmax, so the default request is bitwise

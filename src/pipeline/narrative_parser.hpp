@@ -15,6 +15,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,6 +42,11 @@ struct NarrativeDirective {
   size_t prose_offset = 0;
 };
 
+struct NarrativeRemovedSpan {
+  size_t begin = 0;  // absolute raw byte offset, inclusive
+  size_t end = 0;    // absolute raw byte offset, exclusive
+};
+
 class NarrativeStreamParser {
  public:
   // A candidate longer than this without a closing "]]" is treated as prose.
@@ -55,11 +63,27 @@ class NarrativeStreamParser {
   // Total clean prose bytes emitted so far.
   size_t prose_bytes() const { return prose_emitted_; }
 
+  // Complete directive byte ranges removed from the raw stream. These internal
+  // offsets are never serialized into the public visual-slot contract.
+  const std::vector<NarrativeRemovedSpan>& removed_spans() const {
+    return removed_spans_;
+  }
+
  private:
   std::string scan(bool eof, std::vector<NarrativeDirective>& out);
 
   std::string buf_;
   size_t prose_emitted_ = 0;
+  size_t buf_raw_begin_ = 0;
+  std::vector<NarrativeRemovedSpan> removed_spans_;
 };
+
+// Assigns binary clean-prose masks to actual decoded token bytes. Tokens that
+// overlap a removed directive, or decode to no bytes, are mask=0. Returns
+// nullopt unless the mask=1 bytes reconstruct the parser's exact clean prose;
+// a token straddling prose and a directive therefore fails closed.
+std::optional<std::vector<int64_t>> narrative_behavior_masks(
+    const std::vector<int>& token_ids,
+    const std::function<std::string(int)>& decode_token);
 
 }  // namespace umminfer

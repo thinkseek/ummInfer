@@ -38,6 +38,7 @@
 #include "umminfer/client/client.hpp"
 #include "umminfer/serve/realtime_api.hpp"
 #include "umminfer/util/codec.hpp"
+#include "umminfer/obs/behavior_evidence.hpp"
 #include "umminfer/obs/metrics.hpp"
 #include "umminfer/obs/request_telemetry.hpp"
 #include "pipeline/narrative_parser.hpp"
@@ -12416,6 +12417,265 @@ void test_openai_client_teacache_and_narrative() {
              "client parity requests stayed in flight");
 }
 
+Value native_behavior_result(const std::string& text, int64_t count = 3) {
+  Value result = Value(text_result(text));
+  result["generated_token_count"] = Value(count);
+  result["finish_reason"] = Value("stop");
+  result[obs::kBehaviorLogprobsResultKey] = obs::behavior_logprobs_value(
+      {11, 12, 13}, {-0.125, -0.25, -0.5}, {1, 0, 1}, std::string(64, 'a'));
+  return result;
+}
+
+std::string behavior_response_header(const test_http::HttpResponse& response,
+                                     const std::string& name) {
+  for (const auto& [key, value] : response.headers) {
+    std::string lower = key;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    if (lower == name) return value;
+  }
+  return {};
+}
+
+void test_public_http_behavior_logprobs() {
+  Harness h("behaviorlogprobshttp");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "behavior HTTP server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string url = "http://127.0.0.1:" +
+                          std::to_string(api.bound_port()) +
+                          "/v1/chat/completions";
+  auto post = [&](json body, std::map<std::string, std::string> headers = {}) {
+    return std::async(std::launch::async,
+                      [url, body = std::move(body), headers = std::move(headers)] {
+      test_http::HttpRequest request;
+      request.url = url;
+      request.body = body.dump();
+      request.headers = headers;
+      request.headers.emplace("Content-Type", "application/json");
+      request.timeout = client::Milliseconds{15000};
+      return test_http::perform(request);
+    });
+  };
+  const json messages = json::array(
+      {json{{"role", "user"}, {"content", "show evidence"}}});
+  const json base = {{"model", "qwen3-unified"}, {"messages", messages},
+                     {"stream", true}};
+  const std::map<std::string, std::string> attestation = {
+      {"x-umminfer-online-rollout-contract", "1"},
+      {"x-umminfer-rollout-generation", "fresh"},
+      {"x-umminfer-rollout-batch-id", "batch-42"},
+      {"x-umminfer-rollout-group-id", "group-42"},
+      {"x-umminfer-rollout-id", "rollout-42"},
+      {"x-umminfer-rollout-index", "0"},
+      {"x-umminfer-rollout-attempt", "0"},
+      {"x-umminfer-request-sha256", std::string(64, '1')},
+      {"x-umminfer-behavior-policy-sha256", std::string(64, '2')},
+      {"x-umminfer-behavior-policy-revision", "policy-v1"},
+      {"x-umminfer-behavior-model-id", "qwen3-unified"},
+      {"x-umminfer-behavior-model-revision", "UNKNOWN"},
+      {"x-umminfer-behavior-model-sha256", std::string(64, '3')},
+      {"x-umminfer-behavior-model-config-sha256", std::string(64, '4')},
+      {"x-umminfer-sampling-sha256", std::string(64, '5')},
+  };
+
+  httplib::Client raw_client("127.0.0.1", api.bound_port());
+  for (const json& behavior : {json{{"logprobs", "yes"}},
+                               json{{"unknown", true}}, json::array()}) {
+    json bad = base;
+    bad["behavior"] = behavior;
+    httplib::Headers headers;
+    for (const auto& [key, value] : attestation) headers.emplace(key, value);
+    auto response = raw_client.Post("/v1/chat/completions", headers, bad.dump(),
+                                    "application/json");
+    check(response && response->status == 400 &&
+              response->get_header_value("x-umminfer-behavior-evidence") ==
+                  "not_exposed" &&
+              response->get_header_value("x-umminfer-online-rollout-contract") == "1",
+          "malformed behavior opt-in failed closed with attestation");
+  }
+  json nonstream = base;
+  nonstream["stream"] = false;
+  nonstream["behavior"] = json{{"logprobs", true}};
+  auto nonstream_response = raw_client.Post(
+      "/v1/chat/completions", nonstream.dump(), "application/json");
+  check(nonstream_response && nonstream_response->status == 400,
+        "behavior evidence requires the final SSE contract");
+
+  json covered_body = base;
+  covered_body["behavior"] = json{{"logprobs", true}};
+  auto covered_future = post(covered_body, attestation);
+  auto covered_submit = h.next_submit(h.vlm_recv);
+  check(covered_submit.has_value(), "covered behavior request did not reach VLM");
+  if (covered_submit) {
+    StagePayload payload = StagePayload::from_value(covered_submit->data);
+    check(obs::behavior_logprobs_requested(payload.request.params) &&
+              !payload.request.params.contains(obs::kBehaviorNarrativeParam),
+          "text behavior opt-in reached only the native VLM parameters");
+    h.stream(covered_submit->request_id, "vlm", text_chunk("covered", false));
+    h.complete(covered_submit->request_id, "vlm", true,
+               native_behavior_result("covered"));
+  }
+  const auto covered = covered_future.get();
+  check(covered.status == 200 &&
+            behavior_response_header(covered, "x-umminfer-behavior-evidence") ==
+                "exposed" &&
+            behavior_response_header(covered, "x-umminfer-rollout-id") ==
+                "rollout-42" &&
+            behavior_response_header(covered, "x-umminfer-sampling-sha256") ==
+                std::string(64, '5'),
+        "covered response preserved exact online attestation headers");
+  const auto covered_frames = sse_data_payloads(covered.body);
+  size_t behavior_blocks = 0;
+  for (size_t i = 0; i < covered_frames.size(); ++i) {
+    const json frame = json::parse(covered_frames[i]);
+    if (frame.contains("behavior")) {
+      ++behavior_blocks;
+      check(i + 1 == covered_frames.size() &&
+                frame["behavior"].size() == 5 &&
+                frame["behavior"]["format"] == obs::kBehaviorLogprobsFormat &&
+                frame["behavior"]["token_ids"] == json::array({11, 12, 13}) &&
+                frame["behavior"]["mask"] == json::array({1, 0, 1}),
+            "behavior evidence was not the exact final five-field block");
+    }
+  }
+  check(behavior_blocks == 1 && covered.body.ends_with("data: [DONE]\n\n"),
+        "covered SSE contains one final behavior block before DONE");
+
+  auto default_future = post(base);
+  auto default_submit = h.next_submit(h.vlm_recv);
+  if (default_submit) {
+    StagePayload payload = StagePayload::from_value(default_submit->data);
+    check(!obs::behavior_logprobs_requested(payload.request.params),
+          "default request unexpectedly enabled behavior capture");
+    h.complete(default_submit->request_id, "vlm", true,
+               native_behavior_result("legacy"));
+  }
+  const auto legacy = default_future.get();
+  check(legacy.status == 200 && legacy.body.find("\"behavior\"") == std::string::npos &&
+            behavior_response_header(legacy, "x-umminfer-behavior-evidence").empty(),
+        "default protocol projected unsolicited native behavior fields");
+
+  std::vector<Value> invalid;
+  Value missing = Value(text_result("missing"));
+  missing["generated_token_count"] = Value(int64_t{3});
+  missing["finish_reason"] = Value("stop");
+  invalid.push_back(std::move(missing));
+  Value truncated = native_behavior_result("truncated");
+  truncated["finish_reason"] = Value("length");
+  invalid.push_back(std::move(truncated));
+  Value positive = native_behavior_result("positive");
+  {
+    Value::Map evidence = positive["behavior"].as_map();
+    evidence["logprobs"] = Value(Value::Array{Value(0.1), Value(-0.2), Value(-0.3)});
+    positive["behavior"] = Value(std::move(evidence));
+  }
+  invalid.push_back(std::move(positive));
+  Value misaligned = native_behavior_result("misaligned");
+  {
+    Value::Map evidence = misaligned["behavior"].as_map();
+    evidence["mask"] = Value(Value::Array{Value(int64_t{1})});
+    misaligned["behavior"] = Value(std::move(evidence));
+  }
+  invalid.push_back(std::move(misaligned));
+  Value zero_mask = native_behavior_result("zero-mask");
+  {
+    Value::Map evidence = zero_mask["behavior"].as_map();
+    evidence["mask"] = Value(Value::Array{Value(int64_t{0}), Value(int64_t{0}),
+                                          Value(int64_t{0})});
+    zero_mask["behavior"] = Value(std::move(evidence));
+  }
+  invalid.push_back(std::move(zero_mask));
+  Value bad_hash = native_behavior_result("bad-hash");
+  {
+    Value::Map evidence = bad_hash["behavior"].as_map();
+    evidence["tokenizer_sha256"] = Value("bad");
+    bad_hash["behavior"] = Value(std::move(evidence));
+  }
+  invalid.push_back(std::move(bad_hash));
+  Value bad_count = native_behavior_result("bad-count", 2);
+  invalid.push_back(std::move(bad_count));
+  for (Value& result : invalid) {
+    auto future = post(covered_body);
+    auto submit = h.next_submit(h.vlm_recv);
+    check(submit.has_value(), "invalid behavior case did not reach VLM");
+    if (submit) h.complete(submit->request_id, "vlm", true, std::move(result));
+    const auto response = future.get();
+    check(response.status == 200 &&
+              behavior_response_header(response, "x-umminfer-behavior-evidence") ==
+                  "not_exposed" &&
+              response.body.find("\"behavior\"") == std::string::npos,
+          "invalid/truncated evidence did not fail closed to not_exposed");
+  }
+
+  auto cancel_future = post(covered_body);
+  auto cancel_submit = h.next_submit(h.vlm_recv);
+  if (cancel_submit) {
+    check(engine.cancel(cancel_submit->request_id),
+          "behavior cancellation was not accepted");
+  }
+  const auto cancelled = cancel_future.get();
+  check(cancelled.body.find("\"kind\":\"cancelled\"") != std::string::npos &&
+            cancelled.body.find("\"behavior\"") == std::string::npos &&
+            behavior_response_header(cancelled, "x-umminfer-behavior-evidence") ==
+                "not_exposed",
+        "cancelled behavior stream retained partial or misleading evidence");
+
+  json narrative_body = covered_body;
+  narrative_body["modalities"] = json::array({"text", "image"});
+  narrative_body["image"] = json{{"output_format", "png"}, {"size", "256x256"}};
+  narrative_body["narrative"] = json{{"enabled", true}, {"visual_mode", "image"},
+                                     {"max_slots", 1}};
+  auto narrative_future = post(narrative_body);
+  auto narrative_vlm = h.next_submit(h.vlm_recv);
+  if (narrative_vlm) {
+    StagePayload payload = StagePayload::from_value(narrative_vlm->data);
+    check(payload.request.params.contains(obs::kBehaviorNarrativeParam),
+          "narrative behavior alignment flag did not reach the VLM");
+    h.stream(narrative_vlm->request_id, "vlm",
+             text_chunk("A. [[image: red boat]] Tail", false));
+  }
+  auto narrative_image = h.next_submit(h.image_recv);
+  if (narrative_image) {
+    StagePayload payload = StagePayload::from_value(narrative_image->data);
+    check(!obs::behavior_logprobs_requested(payload.request.params),
+          "behavior capture leaked into the image output leg");
+    h.complete(narrative_image->request_id, "image", true,
+               artifact_result("image", "image/png", "PNG"));
+  }
+  if (narrative_vlm) {
+    Value result = native_behavior_result("A. [[image: red boat]] Tail", 4);
+    Value::Map evidence = result["behavior"].as_map();
+    evidence["token_ids"] = Value(Value::Array{
+        Value(int64_t{21}), Value(int64_t{22}), Value(int64_t{23}), Value(int64_t{24})});
+    evidence["logprobs"] = Value(Value::Array{
+        Value(-0.1), Value(-0.2), Value(-0.3), Value(-0.4)});
+    evidence["mask"] = Value(Value::Array{
+        Value(int64_t{1}), Value(int64_t{0}), Value(int64_t{0}), Value(int64_t{1})});
+    result["behavior"] = Value(std::move(evidence));
+    h.complete(narrative_vlm->request_id, "vlm", true, std::move(result));
+  }
+  const auto narrative = narrative_future.get();
+  check(narrative.status == 200 &&
+            behavior_response_header(narrative, "x-umminfer-behavior-evidence") ==
+                "exposed" &&
+            narrative.body.find("\"mask\":[1,0,0,1]") != std::string::npos &&
+            narrative.body.find("\"kind\":\"artifact\"") != std::string::npos,
+        "supported interleaved image narrative lost its aligned behavior mask");
+
+  api.stop();
+  server_thread.join();
+}
+
 }  // namespace
 
 int main() {
@@ -12549,5 +12809,6 @@ int main() {
   RUN(test_explicit_anchor_http_wire());
   RUN(test_public_http_request_native_allocator_telemetry());
   RUN(test_openai_client_teacache_and_narrative());
+  RUN(test_public_http_behavior_logprobs());
   return g_failures == 0 ? 0 : 1;
 }

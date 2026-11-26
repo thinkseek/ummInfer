@@ -198,6 +198,13 @@ class OpenAIApi::Impl {
   void handle_nonstream_mixed(const httplib::Request& req,
                               httplib::Response& res, StagePayload payload,
                               int64_t created);
+  // Behavior evidence coverage is known only at terminal. This opted-in path
+  // buffers the complete SSE body before committing response headers.
+  void handle_behavior_stream(
+      const httplib::Request& req, httplib::Response& res,
+      const std::string& request_id, const std::shared_ptr<openai_detail::SseSink>& sink,
+      int64_t created, bool capture_supported, bool telemetry_requested,
+      const std::function<void(const char*)>& apply_coverage);
   void handle_transcription(const httplib::Request& req, httplib::Response& res);
   void handle_speech(const httplib::Request& req, httplib::Response& res);
   // Direct single-stage visual swap: one image or video render against the

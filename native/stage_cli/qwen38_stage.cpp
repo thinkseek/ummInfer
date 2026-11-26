@@ -36,6 +36,8 @@
 #include "qwen38/video_input.hpp"
 #include "stage_common.hpp"
 #include "stage_kind.hpp"
+#include "umminfer/obs/behavior_evidence.hpp"
+#include "pipeline/narrative_parser.hpp"
 
 namespace umminfer::stage {
 namespace {
@@ -124,9 +126,20 @@ bool parse_stage_flag(const std::string& key, const std::string& value,
 CancellableComputeFn make_compute(const StageOptions& options) {
   const int max_new_tokens =
       options.max_new_tokens > 0 ? options.max_new_tokens : kDefaultMaxNewTokens;
-  auto tokenizer = std::make_shared<qwen38::Qwen2BpeTokenizer>(
+  auto tokenizer_source = qwen38::Qwen2BpeTokenizerSource::from_files(
       options.model_dir + "/vocab.json", options.model_dir + "/merges.txt",
       options.model_dir + "/tokenizer_config.json");
+  const std::string tokenizer_sha256 = loaded_tokenizer_sha256({
+      {"vocab.json", tokenizer_source.vocab_json},
+      {"merges.txt", tokenizer_source.merges_txt},
+      {"tokenizer_config.json", tokenizer_source.tokenizer_config_json},
+  });
+  auto tokenizer = std::make_shared<qwen38::Qwen2BpeTokenizer>(
+      std::move(tokenizer_source));
+  if (tokenizer_sha256.empty() || tokenizer->id_of("<|im_end|>") != 248046 ||
+      tokenizer->id_of("<|endoftext|>") != 248044) {
+    throw ProtocolError("qwen38 tokenizer identity/EOS contract mismatch");
+  }
   // batch_size > 1 enables continuous batching; the engine owns one batch
   // thread and is safe to call from several scheduler workers.
   const int batch_size = options.batch_size > 1 ? options.batch_size : 1;
@@ -135,7 +148,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       options.model_dir, options.gpu, max_seq, batch_size);
 
   const int gpu = options.gpu;
-  return [tokenizer, engine, max_new_tokens, max_seq, gpu](
+  return [tokenizer, tokenizer_sha256, engine, max_new_tokens, max_seq, gpu](
              const Value& work, const AbortCheck& aborted) {
     const auto started = std::chrono::steady_clock::now();
     // The compute function runs on the Stage scheduler thread, whose CUDA
@@ -148,8 +161,16 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     const std::string req_id = bound_request_id();
     const int req_max_new_tokens =
         resolve_max_new_tokens(bound_request_params(), max_new_tokens, max_seq);
-    const qwen38::SamplingParams sampling =
-        parse_sampling(bound_request_params());
+    qwen38::SamplingParams sampling = parse_sampling(bound_request_params());
+    const Value::Map& request_params = bound_request_params();
+    const bool capture_behavior =
+        engine->batch_capacity() == 1 &&
+        obs::behavior_logprobs_requested(request_params);
+    sampling.capture_behavior_logprobs = capture_behavior;
+    const auto narrative_param = request_params.find(obs::kBehaviorNarrativeParam);
+    const bool narrative_behavior =
+        narrative_param != request_params.end() && narrative_param->second.is_bool() &&
+        narrative_param->second.as_bool();
 
     std::unique_ptr<qwen38::PreprocessedImage> image;
     std::unique_ptr<qwen38::DecodedVideo> decoded_video;
@@ -367,8 +388,27 @@ CancellableComputeFn make_compute(const StageOptions& options) {
         << decode_tok_s
         << " elapsed_ms=" << elapsed.count() << "\n";
     std::cerr << log.str();
-    return omni_result(text, static_cast<int>(result.ids.size()),
-                       result.prefill_ms, result.decode_ms, finish_reason);
+    Value output = omni_result(text, static_cast<int>(result.ids.size()),
+                               result.prefill_ms, result.decode_ms, finish_reason);
+    if (capture_behavior && result.stopped_by_eos) {
+      std::vector<int64_t> behavior_ids(result.ids.begin(), result.ids.end());
+      std::optional<std::vector<int64_t>> narrative_mask;
+      if (narrative_behavior) {
+        narrative_mask = narrative_behavior_masks(
+            result.ids, [&tokenizer](int id) { return tokenizer->decode({id}); });
+      }
+      const std::vector<int64_t> mask =
+          narrative_mask ? *narrative_mask
+                         : std::vector<int64_t>(result.ids.size(), 1);
+      Value evidence = obs::behavior_logprobs_value(
+          behavior_ids, result.behavior_logprobs, mask, tokenizer_sha256);
+      // A failed narrative alignment must not fall back to an all-ones mask.
+      if ((!narrative_behavior || narrative_mask.has_value()) &&
+          !evidence.is_nil()) {
+        output[obs::kBehaviorLogprobsResultKey] = std::move(evidence);
+      }
+    }
+    return output;
   };
 }
 

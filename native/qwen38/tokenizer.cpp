@@ -246,10 +246,22 @@ std::vector<std::string> pretokenize(const std::string& s) {
 
 }  // namespace
 
+Qwen2BpeTokenizerSource Qwen2BpeTokenizerSource::from_files(
+    const std::string& vocab_json_path, const std::string& merges_txt_path,
+    const std::string& tokenizer_config_json_path) {
+  return Qwen2BpeTokenizerSource{read_text(vocab_json_path),
+                                 read_text(merges_txt_path),
+                                 read_text(tokenizer_config_json_path)};
+}
+
 Qwen2BpeTokenizer::Qwen2BpeTokenizer(const std::string& vocab_json,
                                      const std::string& merges_txt,
-                                     const std::string& tokenizer_config_json) {
-  const nlohmann::json vocab = nlohmann::json::parse(read_text(vocab_json));
+                                     const std::string& tokenizer_config_json)
+    : Qwen2BpeTokenizer(Qwen2BpeTokenizerSource::from_files(
+          vocab_json, merges_txt, tokenizer_config_json)) {}
+
+Qwen2BpeTokenizer::Qwen2BpeTokenizer(Qwen2BpeTokenizerSource source) {
+  const nlohmann::json vocab = nlohmann::json::parse(source.vocab_json);
   int max_id = 0;
   for (auto it = vocab.begin(); it != vocab.end(); ++it) {
     const int id = it.value().get<int>();
@@ -257,7 +269,7 @@ Qwen2BpeTokenizer::Qwen2BpeTokenizer(const std::string& vocab_json,
     max_id = std::max(max_id, id);
   }
   // The 33 added tokens live in tokenizer_config.json, not vocab.json.
-  const nlohmann::json cfg = nlohmann::json::parse(read_text(tokenizer_config_json));
+  const nlohmann::json cfg = nlohmann::json::parse(source.tokenizer_config_json);
   for (auto it = cfg.at("added_tokens_decoder").begin();
        it != cfg.at("added_tokens_decoder").end(); ++it) {
     const int id = std::stoi(it.key());
@@ -269,7 +281,7 @@ Qwen2BpeTokenizer::Qwen2BpeTokenizer(const std::string& vocab_json,
   id_to_token_.resize(max_id + 1);
   for (const auto& [tok, id] : token_to_id_) id_to_token_[id] = tok;
 
-  std::istringstream ms(read_text(merges_txt));
+  std::istringstream ms(source.merges_txt);
   std::string line;
   int rank = 0;
   while (std::getline(ms, line)) {

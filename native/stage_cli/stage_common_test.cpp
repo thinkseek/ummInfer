@@ -3,6 +3,9 @@
 // TTS request parsing, CJK language detection, and the TTS artifact descriptor.
 #include "stage_common.hpp"
 
+#include "pipeline/narrative_parser.hpp"
+#include "umminfer/obs/behavior_evidence.hpp"
+
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -343,6 +346,62 @@ void test_sampling_params() {
         "sampling: integer temperature accepted as a number");
 }
 
+void test_behavior_alignment_and_tokenizer_identity() {
+  using umminfer::narrative_behavior_masks;
+  using umminfer::obs::behavior_logprobs_value;
+  using umminfer::stage::loaded_tokenizer_sha256;
+
+  const std::vector<std::pair<std::string, std::string_view>> files = {
+      {"vocab.json", "{}"},
+      {"merges.txt", "#version: 0.2\n"},
+      {"tokenizer_config.json", "{}"},
+  };
+  const std::string digest = loaded_tokenizer_sha256(files);
+  check(digest == "0eb2247dc9d7f36ae2b6ab0c59295f32cba9e341a77244996fa3d81a8b0fc1ed",
+        "loaded tokenizer digest matches independent canonical SHA-256");
+  auto changed = files;
+  changed[0].second = "{\"x\":0}";
+  check(loaded_tokenizer_sha256(changed) != digest,
+        "one loaded byte changes tokenizer identity");
+  check(loaded_tokenizer_sha256({files[1], files[0], files[2]}) == digest,
+        "tokenizer manifest order is canonical");
+  check(loaded_tokenizer_sha256({files[0], files[0]}).empty(),
+        "duplicate tokenizer files fail closed");
+
+  const std::vector<std::string> pieces = {
+      "A. ", "[[im", "age: red", " boat]]", " Tail", ""};
+  const std::vector<int> ids = {0, 1, 2, 3, 4, 5};
+  auto mask = narrative_behavior_masks(
+      ids, [&pieces](int id) { return pieces[static_cast<size_t>(id)]; });
+  check(mask && *mask == std::vector<int64_t>({1, 0, 0, 0, 1, 0}),
+        "narrative masks exclude route tags and invisible tokens");
+  umminfer::Value evidence = behavior_logprobs_value(
+      {0, 1, 2, 3, 4}, {-0.1, -0.2, -0.3, -0.4, -0.5},
+      {1, 0, 0, 0, 1}, digest);
+  check(!evidence.is_nil(), "valid complete behavior evidence is accepted");
+  check(behavior_logprobs_value({0}, {0.1}, {1}, digest).is_nil(),
+        "positive behavior logprob is rejected");
+  check(behavior_logprobs_value({0}, {-0.1}, {0}, digest).is_nil(),
+        "all-zero behavior mask is rejected");
+  check(behavior_logprobs_value({0, 1}, {-0.1}, {1, 1}, digest).is_nil(),
+        "misaligned behavior arrays are rejected");
+  check(behavior_logprobs_value({0}, {std::numeric_limits<double>::infinity()},
+                                {1}, digest).is_nil(),
+        "non-finite behavior logprob is rejected");
+  check(behavior_logprobs_value({0}, {-0.1}, {1}, "bad").is_nil(),
+        "missing tokenizer identity is rejected");
+
+  const std::vector<std::string> straddled = {"prose [[image: x]]"};
+  check(!narrative_behavior_masks(
+            {0}, [&straddled](int) { return straddled[0]; }),
+        "a token straddling clean prose and a directive fails closed");
+  const std::vector<std::string> unclosed = {"prose [[image: x"};
+  auto unclosed_mask = narrative_behavior_masks(
+      {0}, [&unclosed](int) { return unclosed[0]; });
+  check(unclosed_mask && (*unclosed_mask)[0] == 1,
+        "an unclosed marker remains exact clean prose");
+}
+
 }  // namespace
 
 int main() {
@@ -351,6 +410,7 @@ int main() {
   test_tts_work();
   test_tts_result();
   test_sampling_params();
+  test_behavior_alignment_and_tokenizer_identity();
   if (g_failures) {
     std::printf("%d check(s) failed\n", g_failures);
     return 1;

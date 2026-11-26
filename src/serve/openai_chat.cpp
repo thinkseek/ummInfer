@@ -3,15 +3,69 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <limits>
 #include <utility>
 #include <vector>
 
+#include "umminfer/obs/behavior_evidence.hpp"
 #include "umminfer/obs/request_telemetry.hpp"
 #include "umminfer/util/codec.hpp"
 
 namespace umminfer {
+namespace {
+
+class ChatResponseBinding {
+ public:
+  explicit ChatResponseBinding(const httplib::Request& req) {
+    static constexpr const char* kHeaders[] = {
+        "x-umminfer-online-rollout-contract",
+        "x-umminfer-rollout-generation",
+        "x-umminfer-rollout-batch-id",
+        "x-umminfer-rollout-group-id",
+        "x-umminfer-rollout-id",
+        "x-umminfer-rollout-index",
+        "x-umminfer-rollout-attempt",
+        "x-umminfer-request-sha256",
+        "x-umminfer-behavior-policy-sha256",
+        "x-umminfer-behavior-policy-revision",
+        "x-umminfer-behavior-model-id",
+        "x-umminfer-behavior-model-revision",
+        "x-umminfer-behavior-model-sha256",
+        "x-umminfer-behavior-model-config-sha256",
+        "x-umminfer-sampling-sha256",
+    };
+    online_ = !req.get_header_value(kHeaders[0]).empty();
+    if (!online_) return;
+    for (const char* name : kHeaders) {
+      headers_.emplace_back(name, req.get_header_value(name));
+    }
+  }
+
+  void set_behavior_requested(bool value) { behavior_requested_ = value; }
+
+  void apply(httplib::Response& res, const char* coverage) {
+    if (applied_) return;
+    if (online_) {
+      for (const auto& [name, value] : headers_) {
+        if (!value.empty()) res.set_header(name, value);
+      }
+    }
+    if (online_ || behavior_requested_) {
+      res.set_header("x-umminfer-behavior-evidence", coverage);
+    }
+    applied_ = true;
+  }
+
+ private:
+  bool online_ = false;
+  bool behavior_requested_ = false;
+  bool applied_ = false;
+  std::vector<std::pair<std::string, std::string>> headers_;
+};
+
+}  // namespace
 
 using namespace openai_detail;
 
@@ -214,8 +268,153 @@ void OpenAIApi::Impl::handle_nonstream_mixed(const httplib::Request& req,
   res.set_content(out.dump(), "application/json");
 }
 
+void OpenAIApi::Impl::handle_behavior_stream(
+    const httplib::Request& req, httplib::Response& res,
+    const std::string& request_id, const std::shared_ptr<openai_detail::SseSink>& sink,
+    int64_t created, bool capture_supported, bool telemetry_requested,
+    const std::function<void(const char*)>& apply_coverage) {
+  const std::string model = config_.served_model_name;
+  std::fprintf(stderr, "behavior stream begin request_id=%s\n", request_id.c_str());
+  std::string body;
+  auto append_chunk = [&](const json& payload) {
+    body += "data: " + payload.dump() + "\n\n";
+  };
+  append_chunk({{"id", request_id},
+                {"object", "chat.completion.chunk"},
+                {"created", created},
+                {"model", model},
+                {"choices", {{{"index", 0},
+                             {"delta", {{"role", "assistant"}}},
+                             {"finish_reason", nullptr}}}}});
+  std::string stream_error;
+  std::string finish;
+  std::optional<UnifiedEvent> terminal;
+  std::optional<Value> sink_result;
+  bool settled = false;
+  bool disconnected = false;
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::duration<double>(config_.request_timeout_s);
+  while (true) {
+    if (req.is_connection_closed()) {
+      disconnected = true;
+      break;
+    }
+    const double remaining = std::chrono::duration<double>(
+                                 deadline - std::chrono::steady_clock::now())
+                                 .count();
+    if (remaining <= 0) {
+      stream_error = "stream timed out";
+      break;
+    }
+    SseItem item;
+    if (sink->pop(item, std::min(0.2, remaining))) {
+      json chunk_body = {{"id", request_id},
+                         {"object", "chat.completion.chunk"},
+                         {"created", created},
+                         {"model", model}};
+      if (const auto* chunk = std::get_if<Value>(&item)) {
+        chunk_body["choices"] = {{{"index", 0},
+                                  {"delta", {{"content", result_text(*chunk)}}},
+                                  {"finish_reason", nullptr}}};
+      } else {
+        const auto& event = std::get<UnifiedEvent>(item);
+        json delta = json::object();
+        if (event.kind == UnifiedEvent::Kind::kVlmDelta) delta["content"] = event.text;
+        chunk_body["choices"] = {{{"index", 0},
+                                  {"delta", std::move(delta)},
+                                  {"finish_reason", nullptr}}};
+        chunk_body["unified"] = unified_event_json(event);
+        if (event.kind == UnifiedEvent::Kind::kArtifact) {
+          json& artifact = chunk_body["unified"]["artifact"];
+          const std::string& raw = *event.artifact_bytes;
+          const std::string_view slice(raw.data() + event.artifact_offset,
+                                       event.artifact_length);
+          artifact["encoding"] = "base64";
+          artifact["data"] = util::base64_encode(slice);
+          const int64_t index = artifact.value("index", int64_t{-1});
+          const int64_t total = artifact.value("total", int64_t{-1});
+          if (index + 1 == total) {
+            artifact["bytes"] = static_cast<int64_t>(raw.size());
+            artifact["sha256"] = util::sha256_hex(raw);
+          }
+        }
+      }
+      if (chunk_body.dump().size() + 8 > kMaxSseFrameWireBytes) {
+        stream_error = "artifact SSE frame exceeds its size limit";
+        break;
+      }
+      append_chunk(std::move(chunk_body));
+      continue;
+    }
+    {
+      std::lock_guard<std::mutex> lock(sink->mu);
+      settled = sink->done;
+      if (settled) {
+        stream_error = sink->error;
+        finish = sink->finish_reason;
+        terminal = sink->terminal;
+        sink_result = sink->result;
+      }
+    }
+    if (settled) break;
+  }
+  if (!settled) cancel_chat(request_id);
+  if (disconnected) {
+    std::fprintf(stderr, "behavior stream disconnected request_id=%s\n",
+                 request_id.c_str());
+    return;
+  }
+
+  std::optional<Value> behavior;
+  if (stream_error.empty()) {
+    json final_chunk = {{"id", request_id},
+                        {"object", "chat.completion.chunk"},
+                        {"created", created},
+                        {"model", model},
+                        {"choices", {{{"index", 0},
+                                      {"delta", json::object()},
+                                      {"finish_reason",
+                                       finish.empty() ? json(nullptr) : json(finish)}}}}};
+    if (terminal) final_chunk["unified"] = unified_event_json(*terminal);
+    if (telemetry_requested && !unified_engine_) {
+      const Value raw_result = sink_result ? *sink_result : Value{};
+      final_chunk["telemetry"] = value_to_json(obs::request_telemetry_from_result(
+          raw_result, request_id, config_.entry_stage, "completed"));
+    }
+    const Value* result = terminal ? &terminal->result
+                                   : (sink_result ? &*sink_result : nullptr);
+    if (result != nullptr) {
+      json usage = result_usage(*result);
+      if (!usage.is_null()) final_chunk["usage"] = std::move(usage);
+      if (capture_supported) behavior = obs::behavior_logprobs_projection(*result);
+    }
+    if (behavior) final_chunk["behavior"] = value_to_json(*behavior);
+    append_chunk(std::move(final_chunk));
+  } else {
+    json error_chunk = {{"error", {{"message", stream_error},
+                                   {"type", "generation_error"}, {"code", 500}}}};
+    if (terminal) error_chunk["unified"] = unified_event_json(*terminal);
+    if (telemetry_requested && !unified_engine_) {
+      const Value raw_result = sink_result ? *sink_result : Value{};
+      error_chunk["telemetry"] = value_to_json(obs::request_telemetry_from_result(
+          raw_result, request_id, config_.entry_stage, "failed"));
+    }
+    append_chunk(std::move(error_chunk));
+  }
+  body += "data: [DONE]\n\n";
+  apply_coverage(behavior ? "exposed" : "not_exposed");
+  std::fprintf(stderr, "behavior stream end request_id=%s bytes=%zu covered=%d\n",
+               request_id.c_str(), body.size(), behavior.has_value() ? 1 : 0);
+  res.set_content(std::move(body), "text/event-stream");
+}
+
 void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response& res) {
   RouteMetric route_metric{"chat", &res};
+  auto response_binding = std::make_shared<ChatResponseBinding>(req);
+  const auto binding_cleanup = std::shared_ptr<void>(
+      nullptr, [response_binding, &res](void*) {
+        response_binding->apply(res, "not_exposed");
+      });
   const json body = json::parse(req.body, nullptr, false);
   auto reject = [&res](const std::string& message) {
     res.status = 400;
@@ -301,7 +500,7 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
       "model", "messages", "stream", "temperature", "max_tokens",
       "max_completion_tokens", "top_p", "seed", "stop", "response_format",
       "stream_options", "session_id", "session_history", "modalities",
-      "image", "audio", "video", "narrative", "telemetry"};
+      "image", "audio", "video", "narrative", "telemetry", "behavior"};
   for (auto it = body.begin(); it != body.end(); ++it) {
     if (!kAllowedFields.count(it.key()) && !it.value().is_null()) {
       reject("unsupported field: " + it.key());
@@ -395,6 +594,31 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
     }
     telemetry_requested = telemetry["native_allocator"].get<bool>();
   }
+  bool behavior_requested = false;
+  if (body.contains("behavior") && !body["behavior"].is_null()) {
+    const json& behavior = body["behavior"];
+    if (!behavior.is_object()) {
+      reject("behavior must be an object");
+      return;
+    }
+    for (auto it = behavior.begin(); it != behavior.end(); ++it) {
+      if (it.key() != "logprobs") {
+        reject("unsupported behavior field: " + it.key());
+        return;
+      }
+    }
+    if (!behavior.contains("logprobs") || !behavior["logprobs"].is_boolean()) {
+      reject("behavior.logprobs must be a boolean");
+      return;
+    }
+    behavior_requested = behavior["logprobs"].get<bool>();
+    if (behavior_requested && !stream) {
+      reject("behavior.logprobs requires stream=true");
+      return;
+    }
+  }
+  response_binding->set_behavior_requested(behavior_requested);
+  bool behavior_capture_supported = true;
   const json* token_limit = nullptr;
   for (const char* key : {"max_tokens", "max_completion_tokens"}) {
     if (!body.contains(key) || body[key].is_null()) continue;
@@ -435,17 +659,38 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
   // terminal result.
   const bool mixed_output =
       mixed_engine_inputs.find("output_modalities") != mixed_engine_inputs.end();
+  const auto output_modalities = mixed_engine_inputs.find("output_modalities");
+  if (output_modalities != mixed_engine_inputs.end() &&
+      output_modalities->second.is_array()) {
+    for (const Value& modality : output_modalities->second.as_array()) {
+      if (modality.is_str() &&
+          (modality.as_str() == "audio" || modality.as_str() == "video")) {
+        behavior_capture_supported = false;
+      }
+    }
+  }
+  bool has_audio_input = false;
   try {
     inputs["messages"] = json_to_value(body["messages"]);
     if (unified_engine_) {
       std::string pcm;
-      bool has_audio = false;
       std::string error;
-      if (!unified_input_parts(body, pcm, has_audio, error)) {
+      if (!unified_input_parts(body, pcm, has_audio_input, error)) {
         reject(error);
         return;
       }
-      if (has_audio) inputs["audio"] = Value::bin(std::move(pcm));
+      if (has_audio_input) {
+        inputs["audio"] = Value::bin(std::move(pcm));
+        behavior_capture_supported = false;
+      }
+      for (const auto& message : body["messages"]) {
+        if (!message["content"].is_array()) continue;
+        for (const auto& part : message["content"]) {
+          if (part.is_object() && part.value("type", "") == "video_url") {
+            behavior_capture_supported = false;
+          }
+        }
+      }
       if (body.contains("stream_options") &&
           body["stream_options"].value("include_asr_partials", false)) {
         inputs["asr_partials"] = Value(true);
@@ -493,6 +738,9 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
   }
   if (telemetry_requested) {
     params[obs::kNativeAllocatorTelemetryParam] = Value(true);
+  }
+  if (behavior_requested && behavior_capture_supported) {
+    params[obs::kBehaviorLogprobsParam] = Value(true);
   }
   params["stream"] = Value(stream);
   payload.request.params = std::move(params);
@@ -625,6 +873,24 @@ void OpenAIApi::Impl::handle_chat(const httplib::Request& req, httplib::Response
         release_chat(request_id);
       });
   const std::string model = config_.served_model_name;
+  if (behavior_requested) {
+    try {
+      handle_behavior_stream(
+          req, res, request_id, sink, created, behavior_capture_supported,
+          telemetry_requested, [response_binding, &res](const char* coverage) {
+            response_binding->apply(res, coverage);
+          });
+    } catch (const std::exception& error) {
+      response_binding->apply(res, "not_exposed");
+      res.status = 500;
+      res.set_content(
+          json{{"error", {{"message", error.what()},
+                          {"type", "behavior_evidence_error"}}}}
+              .dump(),
+          "application/json");
+    }
+    return;
+  }
   res.set_chunked_content_provider(
       "text/event-stream",
       [this, sink, request_id, model, created, cleanup, telemetry_requested](size_t,

@@ -1605,8 +1605,12 @@ cudaGraphExec_t ensure_decode_graph(Engine::Impl& im, int slot) {
 int launch_decode_step_m1_graph(Engine::Impl& im, int slot, int token_id,
                                 int seq_len, int next_pos,
                                 const SamplingParams& sampling,
-                                std::mt19937_64& rng) {
+                                std::mt19937_64& rng,
+                                double* behavior_logprob = nullptr) {
   cudaStream_t st = im.stream;
+  if (behavior_logprob != nullptr) {
+    *behavior_logprob = std::numeric_limits<double>::quiet_NaN();
+  }
   im.h_step_meta[0] = token_id;
   im.h_step_meta[1] = seq_len;
   im.h_step_meta[2] = next_pos;
@@ -1614,7 +1618,8 @@ int launch_decode_step_m1_graph(Engine::Impl& im, int slot, int token_id,
                                         3 * sizeof(int), cudaMemcpyHostToDevice,
                                         st));
   UMM_QWEN38_CUDA_CHECK(cudaGraphLaunch(im.decode_graphs[slot], st));
-  if (!(sampling.temperature > 0.0f)) {
+  const bool greedy = !(sampling.temperature > 0.0f);
+  if (greedy && behavior_logprob == nullptr) {
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.h_argmax, im.argmax_idx,
                                           sizeof(int), cudaMemcpyDeviceToHost,
                                           st));
@@ -1625,8 +1630,17 @@ int launch_decode_step_m1_graph(Engine::Impl& im, int slot, int token_id,
   UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(
       host, im.logits, static_cast<size_t>(kVocab) * sizeof(float),
       cudaMemcpyDeviceToHost, st));
+  if (greedy) {
+    UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.h_argmax, im.argmax_idx,
+                                          sizeof(int), cudaMemcpyDeviceToHost,
+                                          st));
+  }
   UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
-  return sample_token(host, kVocab, sampling, rng);
+  const int id = greedy ? im.h_argmax[0] : sample_token(host, kVocab, sampling, rng);
+  if (behavior_logprob != nullptr) {
+    (void)selected_token_logprob(host, kVocab, id, behavior_logprob);
+  }
+  return id;
 }
 
 void step_decode(Engine::Impl& im,
@@ -1901,8 +1915,12 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   const int M = P - prefix;
 
   std::mt19937_64 rng(sampling.has_seed ? sampling.seed : std::random_device{}());
-  auto pick_token = [&]() -> int {
-    if (!(sampling.temperature > 0.0f)) {
+  auto pick_token = [&](double* behavior_logprob) -> int {
+    if (behavior_logprob != nullptr) {
+      *behavior_logprob = std::numeric_limits<double>::quiet_NaN();
+    }
+    const bool greedy = !(sampling.temperature > 0.0f);
+    if (greedy && behavior_logprob == nullptr) {
       argmax_rows(im.logits, 1, kVocab, im.argmax_scratch, st);
       UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.h_argmax, im.argmax_scratch,
                                             sizeof(int), cudaMemcpyDeviceToHost,
@@ -1914,8 +1932,19 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
     UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(host, im.logits,
                                           static_cast<size_t>(kVocab) * sizeof(float),
                                           cudaMemcpyDeviceToHost, st));
+    if (greedy) {
+      argmax_rows(im.logits, 1, kVocab, im.argmax_scratch, st);
+      UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.h_argmax, im.argmax_scratch,
+                                            sizeof(int), cudaMemcpyDeviceToHost,
+                                            st));
+    }
     UMM_QWEN38_CUDA_CHECK(cudaStreamSynchronize(st));
-    return sample_token(host, kVocab, sampling, rng);
+    const int id = greedy ? im.h_argmax[0]
+                          : sample_token(host, kVocab, sampling, rng);
+    if (behavior_logprob != nullptr) {
+      (void)selected_token_logprob(host, kVocab, id, behavior_logprob);
+    }
+    return id;
   };
 
   GenResult result;
@@ -2064,7 +2093,9 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
                            im.final_norm_w, im.norm, 1, kHidden, kEps, st);
   }
   gemv_bf16_f32(im.lm_head_w, im.norm, im.logits, kVocab, kHidden, st);
-  int next = pick_token();
+  double next_logprob = std::numeric_limits<double>::quiet_NaN();
+  int next = pick_token(sampling.capture_behavior_logprobs ? &next_logprob
+                                                           : nullptr);
   result.prefill_ms = ms_since(t_prefill);
   if (!dump_dir.empty())
     dump_dev(im, dump_dir, "logits0.f32", im.logits,
@@ -2080,12 +2111,16 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
   const auto t_decode = Clock::now();
   while (static_cast<int>(result.ids.size()) < max_new_tokens && !is_eos(next)) {
     result.ids.push_back(next);
+    if (sampling.capture_behavior_logprobs) {
+      result.behavior_logprobs.push_back(next_logprob);
+    }
     if (on_token) on_token(next);
     if (static_cast<int>(result.ids.size()) >= max_new_tokens) break;
     check_abort("decode");
     if (use_graph && im.decode_graphs[0] != nullptr) {
-      next = launch_decode_step_m1_graph(im, /*slot=*/0, next, seq_len,
-                                         next_pos, sampling, rng);
+      next = launch_decode_step_m1_graph(
+          im, /*slot=*/0, next, seq_len, next_pos, sampling, rng,
+          sampling.capture_behavior_logprobs ? &next_logprob : nullptr);
     } else {
       im.h_ids[0] = next;
       UMM_QWEN38_CUDA_CHECK(cudaMemcpyAsync(im.d_ids, im.h_ids, sizeof(int),
@@ -2107,7 +2142,8 @@ GenResult Engine::generate(const std::vector<int>& prompt_ids,
                   /*last_row_only_norm=*/false, "");
       }
       gemv_bf16_f32(im.lm_head_w, im.norm, im.logits, kVocab, kHidden, st);
-      next = pick_token();
+      next = pick_token(sampling.capture_behavior_logprobs ? &next_logprob
+                                                           : nullptr);
     }
     ++seq_len;
     ++next_pos;

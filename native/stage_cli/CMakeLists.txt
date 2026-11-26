@@ -41,6 +41,8 @@ add_library(umm_stage_core STATIC
   ${UMM_ROOT}/src/proto/messages.cpp
   ${UMM_ROOT}/src/obs/metrics.cpp
   ${UMM_ROOT}/src/obs/request_telemetry.cpp
+  ${UMM_ROOT}/src/obs/behavior_evidence.cpp
+  ${UMM_ROOT}/src/pipeline/narrative_parser.cpp
   ${UMM_ROOT}/src/relay/relay.cpp
   ${UMM_ROOT}/src/comm/comm.cpp
   ${UMM_ROOT}/src/scheduling/simple_scheduler.cpp

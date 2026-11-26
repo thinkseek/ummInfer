@@ -29,7 +29,9 @@ import umminfer_online_rollout as online  # noqa: E402
 import umminfer_rl_trajectory as traj  # noqa: E402
 import umminfer_sft_dataset as dataset  # noqa: E402
 from umminfer_rl_reward import load_reward  # noqa: E402
-from umminfer_sse_replay import LogicalTickClock, replay_record, validate_replay_metadata  # noqa: E402
+from umminfer_sse_replay import (  # noqa: E402
+    LogicalTickClock, RawSSECapture, replay_record, validate_replay_metadata,
+)
 
 PLAN_PATH = ROOT / "configs/training/online_grpo_rollout_fixture.json"
 
@@ -377,6 +379,70 @@ class OnlineRolloutContractTests(unittest.TestCase):
                 replayed = online.replay_bundle(
                     Path(tmp) / "bundle", Path(tmp) / "replayed")
                 self.assertEqual(replayed, result)
+                tampered = copy.deepcopy(records[0])
+                tampered["rollout_provenance"]["behavior"]["token_ids"][0] = 12
+                item = state.by_rollout[
+                    tampered["rollout_provenance"]["rollout_id"]]
+                with self.assertRaisesRegex(ValueError, "exact raw SSE block"):
+                    online.validate_online_record(
+                        tampered, item, state.plan, state.schedule_sha,
+                        Path(tmp) / "bundle/artifacts")
+
+    def test_behavior_raw_chunking_and_malformed_blocks_fail_closed(self):
+        state = FakeState()
+        item = state.schedule[0]
+        state.behavior_mode = "exposed"
+        behavior = state.behavior_block()
+        raw = response_bytes(response_events(0, 0), item, "http-behavior", behavior)
+        for chunks in ([raw], [raw[index:index + 1] for index in range(len(raw))],
+                       [raw[index:index + 7] for index in range(0, len(raw), 7)]):
+            with self.subTest(chunks=len(chunks)):
+                capture = RawSSECapture(clock=LogicalTickClock(start=1, step=1))
+                for chunk in chunks:
+                    capture.feed(chunk)
+                capture.finish()
+                self.assertEqual(capture.raw_bytes, raw)
+                restored = RawSSECapture.from_metadata(
+                    capture.public_metadata(), capture.raw_bytes)
+                parsed = [json.loads(payload) for _, payload in restored.payload_frames
+                          if payload != "[DONE]"]
+                evidence = online._behavior_evidence(
+                    {}, "exposed", None, chunks=parsed)
+                self.assertEqual(evidence["status"], "COVERED")
+                self.assertEqual(evidence["token_ids"], [11, 12, 13])
+                with self.assertRaisesRegex(ValueError, "not_exposed"):
+                    online._behavior_evidence(
+                        {}, "not_exposed", None, chunks=parsed)
+        truncated = RawSSECapture(clock=LogicalTickClock(start=1, step=1))
+        truncated.feed(raw[:-2])
+        with self.assertRaisesRegex(Exception, "truncated|DONE"):
+            truncated.finish()
+
+        valid = [{"id": "http-behavior", "model": "qwen3-native"},
+                 {"id": "http-behavior", "model": "qwen3-native",
+                  "behavior": behavior}]
+        self.assertEqual(online._behavior_evidence(
+            {}, "exposed", None, chunks=valid)["masked_token_count"], 2)
+        malformed = []
+        malformed.append([valid[0]])
+        malformed.append([valid[0], valid[1], valid[1]])
+        malformed.append([{"behavior": behavior}, valid[0]])
+        for key, value in (
+                ("format", "wrong"), ("tokenizer_sha256", "BAD"),
+                ("token_ids", []), ("token_ids", [11, True, 13]),
+                ("logprobs", [-0.1, 0.0, 0.1]),
+                ("logprobs", [-0.1, float("nan"), -0.2]),
+                ("mask", [0, 0, 0]), ("mask", [1, 2, 1])):
+            block = copy.deepcopy(behavior)
+            block[key] = value
+            malformed.append([valid[0], {"behavior": block}])
+        block = copy.deepcopy(behavior)
+        block["extra"] = None
+        malformed.append([valid[0], {"behavior": block}])
+        for chunks in malformed:
+            with self.subTest(malformed=len(malformed), chunks=chunks):
+                with self.assertRaises(ValueError):
+                    online._behavior_evidence({}, "exposed", None, chunks=chunks)
 
     def test_cancelled_response_replays_exactly_but_is_not_trainable(self):
         with tempfile.TemporaryDirectory(prefix="umm-online-cancel-") as tmp:

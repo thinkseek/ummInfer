@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "stage_common.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cctype>
@@ -9,9 +10,16 @@
 #include <string_view>
 
 #include "umm_asr_native/wav.hpp"
+#include "umminfer/obs/behavior_evidence.hpp"
 #include "umminfer/util/codec.hpp"
 
 namespace umminfer::stage {
+
+std::string loaded_tokenizer_sha256(
+    const std::vector<std::pair<std::string, std::string_view>>& files) {
+  return obs::loaded_tokenizer_sha256(files);
+}
+
 namespace {
 
 [[noreturn]] void bad(const std::string& message) {

@@ -374,17 +374,22 @@ online rollout generation, model-quality, generalized-improvement, or
 production-model training gates.
 
 **Phase 6 online-rollout contract (2026-11-26).** A separate trainer-side
-orchestrator now defines deterministic online GRPO plans, seeds, group/candidate
+orchestrator defines deterministic online GRPO plans, seeds, group/candidate
 order, exact request and behavior-policy/model/config/sampling hashes, required
 endpoint attestation, raw-SSE/cancellation handling, bounded retry/no-retry,
 complete group validation, and fresh-process byte-identical replay. Deterministic
 fake-endpoint tests cover interleaved visual text and malformed/drifting groups
 without ML or serving imports. The accepted frozen-offline GRPO adapter rejects
-online-provenance groups. Real endpoint generation and online optimizer/quality
-outcomes remain `NOT_RUN`; behavior log-probabilities/masks are `NOT_COVERED`
-unless exposed with complete evidence by an endpoint. The current public server
-lacks the required response attestation, and the later isolated live gate is in
-[joint-training](joint-training.md#online-grpo-rollout-generation-and-validation-contract).
+online-provenance groups. Native Qwen3.8 now provides an explicit
+`behavior.logprobs=true` producer with actual sampled ids, full native
+log-softmax, clean-target masks, exact loaded-tokenizer identity, and required
+attestation. The isolated SM90 GPU 7 gate passed text and interleaved visual
+coverage, truncation/cancellation/default-off behavior, exact fresh-process
+forward recomputation (61/61 tokens, maximum absolute difference `0.0`), and
+byte-identical raw replay; see
+[behavior-logprobs-live](behavior-logprobs-live.md). Online optimizer execution,
+batch/audio/video evidence, and model-quality outcomes remain
+`NOT_RUN`/`NOT_COVERED` as applicable.
 
 ## Model support plan
 

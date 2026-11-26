@@ -91,7 +91,13 @@ if(UMM_QWEN38_CUDA)
     qwen38/engine.cu
     qwen38/qwen38_kernels.cu
     qwen38/qwen38_gemm.cu
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/obs/behavior_evidence.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/util/codec.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pipeline/narrative_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pipeline/narrative_prompt.cpp
   )
+  target_include_directories(umm-qwen38-native PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
   target_link_libraries(umm-qwen38-native PRIVATE qwen38_host CUDA::cudart)
   set_target_properties(umm-qwen38-native PROPERTIES CUDA_ARCHITECTURES 90)
 
