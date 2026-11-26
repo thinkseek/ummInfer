@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T11:20:47Z",
+  "updated_at": "2026-11-26T12:23:20Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "5bc83e532c67de350277356cb30f550221fe36fa95fc4e2bfad31851f1818149",
-      "size": 273338,
-      "normalized_sha256": "5bc83e532c67de350277356cb30f550221fe36fa95fc4e2bfad31851f1818149"
+      "sha256": "f13f0bf54f42af28bc3cf84c3b99776bd5b849b734fdfc39ba6f5b8e99e1b8a7",
+      "size": 274576,
+      "normalized_sha256": "f13f0bf54f42af28bc3cf84c3b99776bd5b849b734fdfc39ba6f5b8e99e1b8a7"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -695,9 +695,9 @@
     },
     "docs/architecture.md": {
       "role": "index",
-      "sha256": "b8b3f958ed59243ce458bfd0b75d47321b8fe81e0c7d0cc700f12853537d65d5",
-      "size": 38236,
-      "normalized_sha256": "b8b3f958ed59243ce458bfd0b75d47321b8fe81e0c7d0cc700f12853537d65d5"
+      "sha256": "66b12a5fb3e1bf1a209edbc53fea868023ffb1beba8f9d8b0c41f4189978ee8d",
+      "size": 38814,
+      "normalized_sha256": "66b12a5fb3e1bf1a209edbc53fea868023ffb1beba8f9d8b0c41f4189978ee8d"
     },
     "docs/batching.md": {
       "role": "index",
@@ -758,6 +758,12 @@
       "sha256": "f3be5756e9dc382bae3e482b7806fcda31a64e060d8d0b7f9f1c2016b5853c0a",
       "size": 4889,
       "normalized_sha256": "f3be5756e9dc382bae3e482b7806fcda31a64e060d8d0b7f9f1c2016b5853c0a"
+    },
+    "docs/evidence/asr-request-allocator-sm90.json": {
+      "role": "index",
+      "sha256": "a6a36fae77ddba8315dcfc49167cb91741640cf94cb80e069135d3fd6a794e56",
+      "size": 7159,
+      "normalized_sha256": "a6a36fae77ddba8315dcfc49167cb91741640cf94cb80e069135d3fd6a794e56"
     },
     "docs/evidence/behavior-logprobs-live-sm90.json": {
       "role": "index",
@@ -851,9 +857,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "cc07f1eaadc6d20206424f7f7f847c68bf974a73259582f8183cc7f30ceabc32",
-      "size": 153428,
-      "normalized_sha256": "cc07f1eaadc6d20206424f7f7f847c68bf974a73259582f8183cc7f30ceabc32"
+      "sha256": "757f4e92e94902450738a13c0eaeeba0f36e10b70a328d01797053720ca59f1d",
+      "size": 153903,
+      "normalized_sha256": "757f4e92e94902450738a13c0eaeeba0f36e10b70a328d01797053720ca59f1d"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -923,9 +929,9 @@
     },
     "docs/native-service.md": {
       "role": "index",
-      "sha256": "799015a40aa8dde6f08e206db9bf7d8673c0f18ae901c38949636eec35138d13",
-      "size": 80759,
-      "normalized_sha256": "799015a40aa8dde6f08e206db9bf7d8673c0f18ae901c38949636eec35138d13"
+      "sha256": "68cc8d33a723f475b414fe4536ab2ea6114193455893d362ca048af1cb0dfa8c",
+      "size": 84743,
+      "normalized_sha256": "68cc8d33a723f475b414fe4536ab2ea6114193455893d362ca048af1cb0dfa8c"
     },
     "docs/objective-mix-ablation.md": {
       "role": "index",
@@ -935,9 +941,9 @@
     },
     "docs/observability.md": {
       "role": "index",
-      "sha256": "665aba5253c08ed5e711a26500e98b63e6785d848362f693f1e6c0fe9c8be35b",
-      "size": 9260,
-      "normalized_sha256": "665aba5253c08ed5e711a26500e98b63e6785d848362f693f1e6c0fe9c8be35b"
+      "sha256": "2f6ff600cc93a262f156a7424bd84e673ef0de625e269ed236577dff97858fba",
+      "size": 9656,
+      "normalized_sha256": "2f6ff600cc93a262f156a7424bd84e673ef0de625e269ed236577dff97858fba"
     },
     "docs/online-attestation.md": {
       "role": "index",
@@ -1919,9 +1925,15 @@
     },
     "native/stage_cli/CMakeLists.txt": {
       "role": "index",
-      "sha256": "2664fa60234e94f07c38ae2d9ae2e958897425fa7e3a107e1c00320b020767ec",
-      "size": 12809,
-      "normalized_sha256": "2664fa60234e94f07c38ae2d9ae2e958897425fa7e3a107e1c00320b020767ec"
+      "sha256": "286cc4769d333a484077ff2a0943a6bb00cf9eebe352e2d013d8ca9e56eeb8fe",
+      "size": 13526,
+      "normalized_sha256": "286cc4769d333a484077ff2a0943a6bb00cf9eebe352e2d013d8ca9e56eeb8fe"
+    },
+    "native/stage_cli/asr_request_allocator_test.cpp": {
+      "role": "index",
+      "sha256": "b7e747143f256eaf910492787731744e10030c2453e2779db48e48188d60f30e",
+      "size": 8090,
+      "normalized_sha256": "b7e747143f256eaf910492787731744e10030c2453e2779db48e48188d60f30e"
     },
     "native/stage_cli/asr_stage.cpp": {
       "role": "index",
@@ -2229,9 +2241,9 @@
     },
     "native/umm_asr_native/engine.cpp": {
       "role": "index",
-      "sha256": "bb6b31f5170fed5f0a202c48d39add7d52105830db1a2487088ce4d24763c307",
-      "size": 33264,
-      "normalized_sha256": "bb6b31f5170fed5f0a202c48d39add7d52105830db1a2487088ce4d24763c307"
+      "sha256": "fa6e6e8fd75b3b00f00e40abd37cd58be67ea87669a71e93a06ea9587f7eaac1",
+      "size": 33651,
+      "normalized_sha256": "fa6e6e8fd75b3b00f00e40abd37cd58be67ea87669a71e93a06ea9587f7eaac1"
     },
     "native/umm_asr_native/engine.hpp": {
       "role": "index",
@@ -3333,9 +3345,9 @@
     },
     "tests/request_telemetry_live.py": {
       "role": "observe",
-      "sha256": "102cbc2cc2fa2eee90ce9a5eba809ddd7cc2765f345a685ad5367a0e2dae82d7",
-      "size": 40876,
-      "normalized_sha256": "102cbc2cc2fa2eee90ce9a5eba809ddd7cc2765f345a685ad5367a0e2dae82d7"
+      "sha256": "80b034bcfcf78e29505d5ab0e745f77155a75c73a4bc1c98f30d3cd3bf996d53",
+      "size": 53168,
+      "normalized_sha256": "80b034bcfcf78e29505d5ab0e745f77155a75c73a4bc1c98f30d3cd3bf996d53"
     },
     "tests/rl_architecture_test.py": {
       "role": "observe",
@@ -3429,9 +3441,9 @@
     },
     "tests/unified_contract_test.cpp": {
       "role": "observe",
-      "sha256": "21be93387312588a97cb528f00ebe644b27fe7de04667dc8806c126b1226f120",
-      "size": 595885,
-      "normalized_sha256": "21be93387312588a97cb528f00ebe644b27fe7de04667dc8806c126b1226f120"
+      "sha256": "61180451d5008376bf2a9eb22b7ac2fa5c5121f0189eebc7181b63dcaa192231",
+      "size": 607933,
+      "normalized_sha256": "61180451d5008376bf2a9eb22b7ac2fa5c5121f0189eebc7181b63dcaa192231"
     },
     "tests/video_live_e2e.py": {
       "role": "observe",
