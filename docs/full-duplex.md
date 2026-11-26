@@ -415,6 +415,123 @@ cancellation races, repeated cancellation, stale callbacks, reconnect, cleanup,
 and error paths. It is contract evidence, not a listening test or a real-model
 claim.
 
+### Deterministic CPU concurrency, cancellation and lifecycle stress gate
+
+`tests/realtime_stress_test.cpp` drives the **production** `VoiceClient` and
+`VoicePlayback` implementations. Only sockets, microphones and output devices
+are scripted; the production connection thread, ACK worker, cancellation epoch,
+queue accounting, reconnect and teardown code all run. A SplitMix64 permutation
+selects the next session/action. Socket actions complete at explicit scheduled
+boundaries, and asynchronous ACK assertions wait for state rather than assuming
+a thread schedule. Failures print the exact seed, iteration, round, session,
+stage and the last 32 actions. `--trace` prints the complete action schedule.
+
+The default native test suite includes three iterations of six isolated voice
+sessions (252 scheduled actions), with echo protection enabled and disabled on
+alternate sessions and an active A/B toggle. Run the complete local suite plus
+the named target with:
+
+```sh
+umm-test-local realtime-stress-test
+```
+
+Run just the dedicated target on this Linux dependency layout with:
+
+```sh
+zig build realtime-stress-test \
+  -Ddeps-prefix="$HOME/.local/opt/umm-deps" \
+  -Dcurl-prefix="$HOME/.local/opt/curl-ws"
+```
+
+Its expected summary is:
+
+```text
+REALTIME_STRESS PASS seed=6221112 iterations=3 sessions=6 scheduler_actions=252 echo_modes=on,off queue_bound=4096 trace=0xb2066d415e934bee
+```
+
+For the recorded repeated soak, the following exact command was run twice. Both
+runs passed 3,360 scheduled actions and produced byte-identical logs with trace
+`0x4ce990317a0823eb` (`cmp` exit 0):
+
+```sh
+zig build realtime-stress-test \
+  -Ddeps-prefix="$HOME/.local/opt/umm-deps" \
+  -Dcurl-prefix="$HOME/.local/opt/curl-ws" -- \
+  --seed=0xdecafbad --iterations=20 --sessions=12
+```
+
+The per-session scenario covers tagged microphone chunks and ASR finals, VLM
+text, far-end PCM, out-of-order and repeated device completions, monotonic and
+duplicate/decreasing playback ACKs, duplicate terminal frames, local and server
+barge-in cancellation, stale text/audio/ACK delivery, reconnect without mic/ACK
+replay, and Stop Voice with a device callback still in flight. A separate case
+fills the production 4,096-item playback queue, requires the next push to fail
+closed, cancels it without an ACK, and blocks an ACK sink while `close()` runs.
+Every session's text, PCM, response id, request cursor and completion callback is
+checked against that session's tag.
+
+`test_realtime_deterministic_coordinator_history_stress` in
+`tests/unified_contract_test.cpp` independently exercises the real Coordinator,
+ZMQ control messages and `UnifiedEngine`: six sessions times three rounds,
+seed `0x38c001d`, 18 ASR -> VLM -> two-sentence streamed-TTS requests. Fixed
+permutations interleave submissions, ASR finals, VLM/TTS deltas, final ACKs,
+barge-in, duplicate backend terminals and late backend work after release. It
+also saturates the test-only six-request admission limit and rejects one extra
+submission without reaching ASR. The expected summary is:
+
+```text
+REALTIME_COORDINATOR_STRESS PASS seed=59506717 sessions=6 rounds=3 requests=18 history_exact=1 terminal_double=0 stale_after_release=0
+```
+
+Every next-turn prompt is compared with an independent per-session role/content
+model. Cancelled turns contain exactly the acknowledged assistant prefix;
+completed turns enter history only after the full cursor; repeated cancellation
+and final ACKs do not duplicate or lengthen it. No late text/PCM, cross-session
+event, reused request id or double terminal is accepted.
+
+The stress exposed two real callback-lifecycle defects: a duplicate
+`response.completed` invoked the user completion callback twice, and a repeated
+`response.cancelled` repeated barge-in telemetry/callbacks.
+`src/client/voice.cpp` now keeps bounded per-connection terminal-event
+tombstones. This changes no public wire field, opt-in default, playback cursor or
+server history rule. The new stress case is the red/green regression for both.
+
+Recorded sanitizer commands on 2026-11-26:
+
+```sh
+# ThreadSanitizer: dedicated realtime client/playback target, PASS.
+zig build realtime-stress-test -Dtsan=true \
+  -Ddeps-prefix="$HOME/.local/opt/umm-deps" \
+  -Dcurl-prefix="$HOME/.local/opt/curl-ws" -- \
+  --seed=0x5eed38 --iterations=3 --sessions=6
+
+# GCC AddressSanitizer + UndefinedBehaviorSanitizer + leak detection, PASS.
+tests/realtime_stress_sanitize.sh voice -- \
+  --seed=0x5eed38 --iterations=3 --sessions=6
+
+# Optional full-source ASan/UBSan driver (not completed on this host).
+tests/realtime_stress_sanitize.sh unified
+```
+
+Set `UMM_DEPS_PREFIX`, `UMM_CURL_PREFIX`, `UMM_SANITIZE_BUILD_DIR` or `CXX` when
+the defaults do not match the host. The dedicated voice ASan/UBSan command
+passed with leak detection and halt-on-error. The optional full GCC
+ASan/UBSan compilation exceeded 600 seconds before producing a test binary and
+was stopped, so Coordinator ASan/UBSan coverage is `NOT_RUN` here; the ordinary
+full native suite passed separately.
+
+The full `unified_contract_test` Zig TSan
+configuration is **not claimed as covered on this host**: its instrumented
+binary segfaulted before producing a test or TSan diagnostic, while the dedicated
+realtime TSan binary above passed. This is recorded as an unsupported full-suite
+TSan configuration, not as a passing or failing product race result.
+
+These are deterministic digital contract/stress results. They do not establish
+real-network timing, real model output, physical speaker/microphone echo
+behaviour, listening quality, or live full-duplex audio quality. No GPU, model
+worker, deployment or resident service is used. The physical-device/live gates
+above remain separately required.
+
 ### Incremental prefill
 
 The omni stage keeps one prefix cache per process: the session id, the prompt

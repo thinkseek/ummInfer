@@ -6218,6 +6218,37 @@ StagePayload realtime_playback_request(const std::string& session_id) {
   return payload;
 }
 
+StagePayload realtime_audio_playback_request(const std::string& session_id) {
+  StagePayload payload = audio_leg_request(true);
+  Value::Map inputs = payload.request.inputs.as_map();
+  Value::Array outputs{Value("text"), Value("audio")};
+  inputs["output_modalities"] = Value(std::move(outputs));
+  Value::Map audio;
+  audio["voice"] = Value("vivian");
+  audio["stream"] = Value(true);
+  inputs["audio_options"] = Value(std::move(audio));
+  inputs["session_id"] = Value(session_id);
+  inputs["session_history"] = Value(true);
+  inputs["realtime_playback_ack"] = Value(true);
+  payload.request.inputs = Value(std::move(inputs));
+  return payload;
+}
+
+std::vector<size_t> realtime_stress_permutation(uint64_t seed, size_t count) {
+  std::vector<size_t> order(count);
+  for (size_t i = 0; i < count; ++i) order[i] = i;
+  auto next = [&seed] {
+    uint64_t z = (seed += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+  };
+  for (size_t i = count; i > 1; --i) {
+    std::swap(order[i - 1], order[static_cast<size_t>(next() % i)]);
+  }
+  return order;
+}
+
 StagePayload inspect_history_probe(Harness& h, UnifiedEngine& engine,
                                    const std::string& session_id) {
   StagePayload request = vlm_only_request(true, false);
@@ -6370,6 +6401,256 @@ void test_realtime_playback_completion_and_default_exclusion() {
   probe = inspect_history_probe(h, engine, "rt-session-b");
   check(prompt_roles(probe).size() == 1,
         "realtime history leaked across session ids");
+}
+
+// Fixed-seed multi-session ASR -> VLM -> streamed-TTS lifecycle stress. The
+// permutation is scheduler input, not timing-dependent thread randomness: each
+// backend message is sent in the listed order and each prompt is checked against
+// a separately maintained per-session history model.
+void test_realtime_deterministic_coordinator_history_stress() {
+  constexpr size_t kSessions = 6;
+  constexpr size_t kRounds = 3;
+  constexpr uint64_t kSeed = 0x38c001dULL;
+  Harness h("rt-history-stress");
+  UnifiedConfig config = realtime_history_config(h);
+  config.max_in_flight = kSessions;
+  config.session_history.max_sessions = 16;
+  config.session_history.max_turns = 64;
+  config.session_history.max_chars = 65536;
+  UnifiedEngine engine(h.coordinator, config);
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& event) { log.add(event); };
+  engine.on_terminal = [&](const UnifiedEvent& event) { log.finish(event); };
+
+  struct ExpectedTurn {
+    std::string user;
+    std::string assistant;
+  };
+  struct Turn {
+    size_t session = 0;
+    size_t round = 0;
+    std::string id;
+    std::string vlm_id;
+    std::string transcript;
+    std::string answer;
+    size_t acknowledged = 0;
+    bool cancel = false;
+    std::vector<std::string> tts_ids;
+  };
+  std::vector<std::vector<ExpectedTurn>> expected(kSessions);
+  std::vector<std::pair<std::string, size_t>> owners;
+
+  for (size_t round = 0; round < kRounds; ++round) {
+    std::vector<Turn> turns(kSessions);
+    const auto submit_order =
+        realtime_stress_permutation(kSeed + round * 101 + 1, kSessions);
+    for (const size_t session : submit_order) {
+      Turn& turn = turns[session];
+      turn.session = session;
+      turn.round = round;
+      turn.cancel = ((session + round) % 2) == 0;
+      const std::string tag = "s" + std::to_string(session) + "r" +
+                              std::to_string(round);
+      turn.transcript = tag + " microphone transcript";
+      turn.answer = tag + " played. " + tag + " unplayed suffix.";
+      turn.acknowledged = turn.answer.find(tag + " unplayed");
+      turn.id = engine.submit(realtime_audio_playback_request("stress-s" +
+          std::to_string(session)));
+      owners.emplace_back(turn.id, session);
+    }
+
+    if (round == 0) {
+      bool full = false;
+      try {
+        (void)engine.submit(realtime_audio_playback_request("stress-overflow"));
+      } catch (const QueueFullError&) {
+        full = true;
+      }
+      check(full, "saturated unified admission did not fail closed");
+    }
+
+    std::vector<SubmitMessage> asr_submits;
+    for (size_t i = 0; i < kSessions; ++i) {
+      auto submit = h.next_submit(h.asr_recv);
+      check(submit.has_value(), "stress ASR submit was not received");
+      if (!submit) return;
+      asr_submits.push_back(*submit);
+    }
+    if (round == 0) {
+      check(h.no_submit(h.asr_recv),
+            "an over-capacity realtime request reached the ASR backend");
+    }
+    const auto asr_finish_order =
+        realtime_stress_permutation(kSeed + round * 101 + 2, kSessions);
+    for (const size_t index : asr_finish_order) {
+      const SubmitMessage& submit = asr_submits[index];
+      // Locate by public request id rather than relying on completion order.
+      auto owner = std::find_if(turns.begin(), turns.end(), [&](const Turn& turn) {
+        return turn.id == submit.request_id;
+      });
+      check(owner != turns.end(), "ASR submit has a foreign request id");
+      if (owner == turns.end()) return;
+      h.stream(submit.request_id, "asr", text_chunk(owner->transcript, false));
+      h.complete(submit.request_id, "asr", true, text_result(owner->transcript));
+    }
+
+    // Completion messages ride one ordered PUSH socket. Consume each resulting
+    // VLM submit, but permute which ASR final was sent above.
+    for (size_t index = 0; index < kSessions; ++index) {
+      auto submit = h.next_submit(h.vlm_recv);
+      check(submit.has_value(), "stress VLM submit was not received");
+      if (!submit) return;
+      auto owner = std::find_if(turns.begin(), turns.end(), [&](const Turn& turn) {
+        return turn.id + ":vlm" == submit->request_id;
+      });
+      check(owner != turns.end(), "VLM submit has a foreign or duplicate request id");
+      if (owner == turns.end()) return;
+      owner->vlm_id = submit->request_id;
+      StagePayload payload = StagePayload::from_value(submit->data);
+      const auto roles = prompt_roles(payload);
+      const auto& history = expected[owner->session];
+      check(roles.size() == history.size() * 2 + 1,
+            "realtime history has a missing or duplicate turn");
+      if (roles.size() != history.size() * 2 + 1) return;
+      for (size_t item = 0; item < history.size(); ++item) {
+        check(roles[item * 2].first == "user" &&
+                  roles[item * 2].second == history[item].user &&
+                  roles[item * 2 + 1].first == "assistant" &&
+                  roles[item * 2 + 1].second == history[item].assistant,
+              "realtime history order/content differs from its acknowledged model");
+        check(roles[item * 2].second.find("stress-s") == std::string::npos ||
+                  roles[item * 2].second.find(
+                      "s" + std::to_string(owner->session) + "r") == 0,
+              "history text crossed realtime sessions");
+      }
+      check(roles.back().first == "user" &&
+                roles.back().second == owner->transcript,
+            "ASR final did not become exactly the current VLM user turn");
+    }
+
+    const auto stream_order =
+        realtime_stress_permutation(kSeed + round * 101 + 4, kSessions);
+    for (const size_t session : stream_order) {
+      Turn& turn = turns[session];
+      h.stream(turn.vlm_id, "vlm", text_chunk(turn.answer, false));
+      for (size_t sentence = 0; sentence < 2; ++sentence) {
+        auto tts = h.next_submit(h.tts_recv);
+        check(tts.has_value(), "streamed response did not create both TTS legs");
+        if (!tts) return;
+        check(tts->request_id.rfind(turn.id + ":tts:", 0) == 0,
+              "TTS leg crossed request ownership");
+        turn.tts_ids.push_back(tts->request_id);
+        Value::Map chunk;
+        const std::string bytes = "PCM-" + std::to_string(session) + "-" +
+                                  std::to_string(round) + "-" +
+                                  std::to_string(sentence);
+        chunk["audio"] = Value::bin(bytes);
+        chunk["index"] = Value(int64_t{0});
+        chunk["sample_rate"] = Value(int64_t{16000});
+        chunk["channels"] = Value(int64_t{1});
+        chunk["format"] = Value("pcm16");
+        h.stream(tts->request_id, "tts", Value(std::move(chunk)));
+      }
+    }
+
+    const auto settle_order =
+        realtime_stress_permutation(kSeed + round * 101 + 5, kSessions);
+    for (const size_t session : settle_order) {
+      Turn& turn = turns[session];
+      const std::string session_id = "stress-s" + std::to_string(session);
+      if (turn.cancel) {
+        auto foreign = engine.cancel_realtime_barge_in(
+            turn.id, "stress-s-other", turn.acknowledged);
+        check(!foreign.accepted && !foreign.history_recorded,
+              "foreign realtime session cancelled or recorded history");
+        auto cancelled = engine.cancel_realtime_barge_in(
+            turn.id, session_id, turn.acknowledged);
+        check(cancelled.accepted && cancelled.history_recorded &&
+                  cancelled.assistant_prefix ==
+                      turn.answer.substr(0, turn.acknowledged),
+              "barge-in did not retain the exact acknowledged prefix");
+        auto repeated = engine.cancel_realtime_barge_in(
+            turn.id, session_id, turn.answer.size());
+        check(repeated.accepted && !repeated.history_recorded &&
+                  repeated.assistant_prefix == cancelled.assistant_prefix,
+              "delayed duplicate barge-in extended or duplicated history");
+        expected[session].push_back(
+            ExpectedTurn{turn.transcript, cancelled.assistant_prefix});
+        // RealtimeApi releases immediately after sending response.cancelled.
+        // Backend work is deliberately still in flight at this point.
+        engine.release(turn.id);
+        h.stream(turn.vlm_id, "vlm", text_chunk("LATE-TEXT-" + session_id, false));
+        for (const std::string& tts : turn.tts_ids) {
+          Value::Map late;
+          late["audio"] = Value::bin("LATE-PCM-" + session_id);
+          late["index"] = Value(int64_t{1});
+          late["sample_rate"] = Value(int64_t{16000});
+          late["channels"] = Value(int64_t{1});
+          late["format"] = Value("pcm16");
+          h.stream(tts, "tts", Value(std::move(late)));
+          h.complete(tts, "tts", false, Value{}, "aborted");
+        }
+        h.complete(turn.vlm_id, "vlm", false, Value{}, "aborted");
+        h.complete(turn.vlm_id, "vlm", true, text_result("LATE-COMPLETE"));
+      } else {
+        h.complete(turn.vlm_id, "vlm", true, text_result(turn.answer));
+        h.complete(turn.vlm_id, "vlm", true, text_result("DUPLICATE-COMPLETE"));
+        for (const std::string& tts : turn.tts_ids) {
+          Value::Map extra;
+          extra["streamed"] = Value(true);
+          h.complete(tts, "tts", true,
+                     artifact_result("audio", "audio/wav",
+                                     audio::wav_from_pcm16(std::string(4, '\x01'), 16000),
+                                     extra));
+          h.complete(tts, "tts", true, Value{});
+        }
+        check(engine.wait(turn.id, 5.0), "completed stress response did not settle");
+        check(!engine.complete_realtime_playback(
+                  turn.id, session_id, turn.acknowledged),
+              "partial playback cursor committed a complete answer");
+        check(engine.complete_realtime_playback(turn.id, session_id, turn.answer.size()),
+              "monotonic final playback cursor was rejected");
+        check(engine.complete_realtime_playback(turn.id, session_id, turn.answer.size()),
+              "delayed duplicate final playback cursor was not idempotent");
+        expected[session].push_back(ExpectedTurn{turn.transcript, turn.answer});
+        engine.release(turn.id);
+      }
+    }
+  }
+
+  wait_until([&] { return engine.in_flight() == 0; },
+             "realtime history stress left unified requests in flight");
+  check(h.coordinator.in_flight() == 0,
+        "realtime history stress left Coordinator requests in flight");
+  std::set<std::string> counted;
+  for (const auto& [id, session] : owners) {
+    check(log.terminal_count(id) <= 1,
+          "duplicate backend terminal produced double completion");
+    counted.insert(id + ":" + std::to_string(session));
+  }
+  check(counted.size() == kSessions * kRounds,
+        "request ids were reused or crossed sessions");
+  for (const UnifiedEvent& event : log.snapshot()) {
+    const auto owner = std::find_if(owners.begin(), owners.end(), [&](const auto& item) {
+      return item.first == event.request_id;
+    });
+    check(owner != owners.end(), "an event has no realtime session owner");
+    if (owner == owners.end()) continue;
+    check(event.session_id == "stress-s" + std::to_string(owner->second),
+          "an event crossed realtime session ids");
+    check(event.text.find("LATE-") == std::string::npos &&
+              event.text.find("DUPLICATE-COMPLETE") == std::string::npos,
+          "stale or duplicate backend text was emitted after cancellation/terminal");
+    if (event.artifact_bytes != nullptr) {
+      check(event.artifact_bytes->find("LATE-PCM-") == std::string::npos,
+            "stale TTS PCM was emitted after cancellation/release");
+    }
+  }
+  std::cout << "REALTIME_COORDINATOR_STRESS PASS seed=" << kSeed
+            << " sessions=" << kSessions << " rounds=" << kRounds
+            << " requests=" << owners.size()
+            << " history_exact=1 terminal_double=0 stale_after_release=0\n";
 }
 
 // Each VLM delta that completes a sentence starts its own :tts:N leg in
@@ -11996,6 +12277,7 @@ int main() {
   RUN(test_realtime_spoken_audio_format_and_leg_error());
   RUN(test_realtime_barge_in_history_before_and_after_vlm());
   RUN(test_realtime_playback_completion_and_default_exclusion());
+  RUN(test_realtime_deterministic_coordinator_history_stress());
   RUN(test_public_http_finish_reason_length_and_router_reset());
   RUN(test_public_http_audio_speech());
   RUN(test_public_http_audio_speech_without_tts());

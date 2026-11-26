@@ -30,6 +30,19 @@ constexpr size_t kMaxAudioChunkBytes = 16u << 20;
 constexpr size_t kMaxBufferedAudioBytes = 64u << 20;
 constexpr size_t kMaxBufferedChunks = 4096;
 constexpr size_t kMaxCancelledResponses = 64;
+constexpr size_t kMaxRememberedResponseEvents = 256;
+
+bool remember_response_event(const std::string& id, std::set<std::string>& ids,
+                             std::deque<std::string>& order) {
+  if (id.empty() || ids.count(id)) return false;
+  ids.insert(id);
+  order.push_back(id);
+  if (order.size() > kMaxRememberedResponseEvents) {
+    ids.erase(order.front());
+    order.pop_front();
+  }
+  return true;
+}
 
 uint64_t cursor(const nlohmann::json& event, const char* field) {
   if (!event.contains(field) || !event[field].is_number_integer() ||
@@ -478,6 +491,14 @@ struct VoiceClient::Impl {
     std::optional<bool> confirmed_echo_suppression;
     std::string active_response;
     std::map<std::string, uint64_t> acked_text_cursors;
+    // WebSocket reconnection or a test/device adapter can deliver a duplicate
+    // terminal frame. Keep bounded per-connection tombstones so user-facing
+    // completion/cancellation callbacks remain exactly-once without retaining
+    // every response id for the lifetime of a long-running voice session.
+    std::set<std::string> completed_responses;
+    std::deque<std::string> completed_order;
+    std::set<std::string> cancelled_responses;
+    std::deque<std::string> cancelled_order;
   };
 
   Impl(VoiceConfig input, VoiceHandlers hooks, VoiceSocketFactory sockets,
@@ -739,8 +760,22 @@ struct VoiceClient::Impl {
     } else if (type == "audio.done") {
       connection->playback->done(id, cursor(event, "text_cursor"));
     } else if (type == "response.completed") {
-      if (handlers.on_response_completed) handlers.on_response_completed(id);
+      bool first = false;
+      {
+        std::lock_guard lock(connection->mu);
+        first = remember_response_event(id, connection->completed_responses,
+                                        connection->completed_order);
+      }
+      if (first && handlers.on_response_completed) handlers.on_response_completed(id);
     } else if (type == "response.cancelled") {
+      {
+        std::lock_guard lock(connection->mu);
+        if (!id.empty() &&
+            !remember_response_event(id, connection->cancelled_responses,
+                                     connection->cancelled_order)) {
+          return;
+        }
+      }
       uint64_t event_cursor = 0;
       if (event.contains("text_cursor")) {
         event_cursor = cursor(event, "text_cursor");

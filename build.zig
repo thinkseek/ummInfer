@@ -148,6 +148,23 @@ pub fn build(b: *std.Build) void {
     const voice_test = b.step("voice-test", "Run fake-WebSocket and fake-audio voice client tests");
     voice_test.dependOn(&run_voice_test.step);
 
+    const realtime_stress_exe = b.addExecutable(.{
+        .name = "realtime_stress_test",
+        .root_module = module(b, target, optimize),
+    });
+    configure(realtime_stress_exe.root_module, b, deps_prefix, curl_prefix, cuda_prefix, cuda, true, true);
+    realtime_stress_exe.root_module.sanitize_thread = tsan;
+    realtime_stress_exe.root_module.linkLibrary(core);
+    realtime_stress_exe.root_module.addCSourceFiles(.{
+        .files = &.{"tests/realtime_stress_test.cpp"},
+        .flags = &.{"-std=c++20"},
+    });
+    const run_realtime_stress = b.addRunArtifact(realtime_stress_exe);
+    if (b.args) |args| run_realtime_stress.addArgs(args);
+    test_step.dependOn(&run_realtime_stress.step);
+    const realtime_stress_test = b.step("realtime-stress-test", "Run deterministic realtime concurrency and lifecycle stress");
+    realtime_stress_test.dependOn(&run_realtime_stress.step);
+
     const bench_step = b.step("cuda-bench", "Measure SHM and CUDA IPC relay latency");
     if (cuda) {
         const bench_exe = b.addExecutable(.{
