@@ -486,6 +486,39 @@ final class ChatModel: ObservableObject {
         return String(text.prefix(8))
     }
 
+    /// True while a chat request or any turn is actively streaming.
+    var isStreaming: Bool {
+        isRunning || turns.contains { $0.state == .streaming }
+    }
+
+    /// Pure client-side session export bytes (JSON or Markdown) for the current
+    /// conversation without contacting the server.
+    func exportSessionData(format: SessionExportFormat,
+                           exportedAt: Date = Date()) -> Data {
+        SessionExporter.buildData(
+            format: format,
+            sessionID: sessionID,
+            model: model,
+            turns: turns,
+            exportedAt: exportedAt
+        )
+    }
+
+    /// Sanitized default export filename for the current session.
+    func exportSessionFilename(format: SessionExportFormat) -> String {
+        SessionExporter.defaultFilename(sessionID: sessionID, format: format)
+    }
+
+    func noteSessionExported(filename: String) {
+        error = nil
+        status = "Exported \(filename)"
+    }
+
+    func noteSessionExportFailed(_ message: String) {
+        error = "Could not export session: \(message)"
+        status = "Export error"
+    }
+
     private static func imageMimeType(for url: URL) -> String {
         switch url.pathExtension.lowercased() {
         case "jpg", "jpeg": return "image/jpeg"

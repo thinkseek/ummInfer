@@ -163,6 +163,20 @@ struct RootView: View {
             }
             .pickerStyle(.menu)
             .fixedSize()
+            Menu("Export") {
+                Button("Export JSON…") {
+                    exportSession(format: .json)
+                }
+                .accessibilityIdentifier("exportSessionJSON")
+                Button("Export Markdown…") {
+                    exportSession(format: .markdown)
+                }
+                .accessibilityIdentifier("exportSessionMarkdown")
+            }
+            .fixedSize()
+            .disabled(model.turns.isEmpty || model.isStreaming)
+            .help("Export session transcript, visual metadata, and observed telemetry as JSON or Markdown")
+            .accessibilityIdentifier("exportSession")
             Button("New chat") { model.newChat() }
                 .accessibilityIdentifier("new-chat")
         }
@@ -364,6 +378,23 @@ struct RootView: View {
         panel.nameFieldStringValue = defaultName
         if panel.runModal() == .OK, let url = panel.url {
             try? artifact.data.write(to: url)
+        }
+    }
+
+    private func exportSession(format: SessionExportFormat) {
+        guard !model.turns.isEmpty, !model.isStreaming else { return }
+        let data = model.exportSessionData(format: format)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = model.exportSessionFilename(format: format)
+        let markdownType = UTType(filenameExtension: "md") ?? .plainText
+        panel.allowedContentTypes = [format == .json ? .json : markdownType]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+            model.noteSessionExported(filename: url.lastPathComponent)
+        } catch {
+            model.noteSessionExportFailed(error.localizedDescription)
         }
     }
 
