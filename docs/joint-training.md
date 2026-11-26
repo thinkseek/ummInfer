@@ -280,7 +280,7 @@ python3 -I tests/online_rollout_test.py
 | Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")` |
 | Zero train/eval prompt leakage & manifest sidecar | **COVERED** | Verified at build time and `--audit-only` |
 | End-to-end trajectory -> pack -> ablation-matrix dry-run driver | **COVERED** | `tools/umminfer_stage_c_pipeline.py` + `tests/stage_c_pipeline_test.py` |
-| Real joint-SFT optimizer gate | **PASS (SM90)** | Two real AdamW steps, changed finite parameters, exact resume equivalence, and invalid-input rejection; see measured record below |
+| Real joint-SFT optimizer gate | **PASS (SM90, legacy + token_export)** | Two exact-equivalent AdamW steps per path, changed finite parameters, fresh-process export resume, and pre-output invalid-input rejection; see [exported-token-sft-live](exported-token-sft-live.md) |
 | Real joint-DPO optimizer gate | **PASS (SM90)** | Two real sigmoid-DPO AdamW steps, policy/reference log-probabilities, independent chosen/rejected masks, exact resume equivalence, and pre-import malformed/crossed-pair rejection |
 | Real joint-GRPO optimizer gate | **PASS (SM90)** | Two complete export-bound three-rollout groups, clipped policy ratios + KL, finite AdamW updates, exact fresh-process resume, and six pre-import rejection gates |
 | Online GRPO orchestration and validation | **COVERED (fake endpoint)** | Deterministic requests, exact response attestation, raw SSE, cancellation, bounded retry, complete groups, and fresh-process byte replay; no real-model claim |
@@ -433,18 +433,30 @@ one, constant LR, and zero weight decay.  It is not the production 7B training
 recipe and does not execute DPO, GRPO, vision/media forward passes, or serving.
 
 The adapter performs all model-independent validation before importing `torch`
-or `transformers`.  It then uses an offline fast tokenizer's character offsets
-to mask every prompt token and assign the existing Stage C span weights to each
-assistant token. Optional `token_export` stores the equivalent target-only ids,
-exact UTF-8 byte offsets, and codepoint-overlap weights; its tests require the
-same labels, weights, span types, and closing-delimiter annotations. Scheduled
-fixtures must include both text-only and structured
-visual targets.  Each visual slot must bind to its reconstructed marker,
-verified CAS artifact, and completed terminal leg; route headers, prompt bodies,
-and closing `]]` delimiters must all receive positive target loss weight.
-Non-finite loss/gradients/parameters, empty gradients, unchanged parameters,
-out-of-range sequences, checkpoint identity mismatches, and hash tampering are
-hard failures.
+or `transformers`. The default `--token-source legacy` retains the accepted
+full-text re-encoding operation-for-operation. The opt-in
+`--token-source token_export` requires every `sft_train` row to carry a
+supported v1/v2 export and its complete bound source record; missing, mixed,
+partial, stale, mismatched, or malformed exports fail without legacy fallback.
+SFT rows without exports retain byte-identical JSONL.
+
+A fresh tokenizer-only preflight makes Torch unavailable and blocks its import,
+rehashes the complete local model/tokenizer directory, and calls the existing
+strong v1/v2 validator before planner output or optimizer state is created.
+Only the prompt prefix is tokenized for training. Exported target ids, raw
+offsets, labels, weights, and annotations are consumed directly; a separate
+legacy encoding is used only to require exact joint_full equality, never as a
+fallback. Tokenizer/export identity is bound into checkpoint resume identity.
+Every run records raw preflight and per-step export evidence plus canonical
+gradient and FP32 parameter-update hashes. Exported post-hoc ids are never
+claimed as sampled online behavior ids.
+
+Scheduled fixtures must include both text-only and structured visual targets.
+Each visual slot must bind to its reconstructed marker, verified CAS artifact,
+and completed terminal leg; route headers, prompt bodies, and closing `]]`
+delimiters must all receive positive target loss weight. Non-finite
+loss/gradients/parameters, empty gradients, unchanged parameters, out-of-range
+sequences, checkpoint identity mismatches, and hash tampering are hard failures.
 
 Run the deterministic no-model/no-GPU preflight suite:
 
@@ -462,19 +474,25 @@ CUDA_VISIBLE_DEVICES=<idle-gpu> python3 -I tests/joint_sft_live_test.py --live \
 ```
 
 The live harness creates two deterministic schema-v2 fixtures through the real
-recorder and dataset builder, then starts three independent training processes:
+recorder and dataset builder, strongly exports them with the exact local Qwen
+tokenizer, then starts four independent training processes:
 
-1. two uninterrupted AdamW steps;
-2. the same two-step run identity stopped after step 1 (`--stop-after 1`); and
-3. a fresh process resumed from that step-1 checkpoint through step 2.
+1. two legacy AdamW steps;
+2. the same frozen pack through two export-driven AdamW steps;
+3. the export run stopped after step 1 (`--stop-after 1`); and
+4. a fresh process resumed from that step-1 checkpoint through step 2.
+
+Two more processes submit re-signed target-binding and partial-export input;
+both must exit 2 before Torch import or planner/preflight/checkpoint creation.
 
 The checkpoint contains model and optimizer tensors, schedule position, and CPU
 and CUDA RNG states.  Its sidecar and source/config/data/model/order identity
 are rechecked before loading.  The gate compares the initial split step and the
 resumed second step against the uninterrupted run, including loss, gradient
 norm, record order, target/mask hashes, all-parameter hashes, and optimizer-state
-hashes.  A fourth process submits a re-signed but semantically invalid target;
-it must exit nonzero without a checkpoint or success manifest.
+hashes. Legacy and export paths must match exactly on ids, labels, masks,
+losses, canonical gradients, FP32 parameter updates, and model/optimizer hashes.
+Fresh-process export resume must also reproduce checkpoint bytes exactly.
 
 Every run records the source commit and listed source-file hashes, exact and
 resolved config hashes, dataset and pack hashes, all available model files and
@@ -485,7 +503,22 @@ the gate.  Evidence directories and checkpoints are runtime artifacts and are
 not committed.  Model quality, generalized improvement, DPO/GRPO outcomes, and
 upstream model revision verification remain `NOT_RUN` unless separately measured.
 
-### Measured SM90 acceptance — 2026-11-26
+### Exported-token SM90 acceptance — 2026-11-26
+
+Source `93214a5261ebaf2fd6108e129aa5e7993af18aa7` passed the complete gate on
+explicitly idle physical GPU 7 with the local Qwen2.5-0.5B tokenizer/model,
+Torch 2.6.0+cu124, Transformers 5.23.0, and tokenizers 0.23.3. Legacy and
+export-driven runs both produced losses `8.003159523010254` and
+`4.829397201538086`, with exact matching ids, labels, masks, gradients,
+parameter updates, and model/optimizer hashes. Fresh-process export resume
+reproduced both checkpoint byte hashes, and both invalid processes exited 2
+without planner, preflight, checkpoint, or optimizer output. Acceptance SHA-256
+is `04b38f4f535be8deb3fcb7d9589dab91c3f344fc6d91acb2fbd8cdc09642182b`.
+The exact commands, all source/config/data/model/tokenizer/binary hashes,
+per-step evidence, independent verification, GPU cleanup, and quality limits
+are in [exported-token-sft-live](exported-token-sft-live.md).
+
+### Historical legacy-only SM90 acceptance — 2026-11-26
 
 The final gate ran on explicitly idle physical GPU 7 (NVIDIA H20, SM90), with
 `CUDA_VISIBLE_DEVICES=7` and logical `cuda:0`.  No server, realtime stack, or

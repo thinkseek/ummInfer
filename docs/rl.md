@@ -437,6 +437,21 @@ and rehashes the complete selected tokenizer-file bundle. The real local Qwen
 identity, exact files, gate hashes, commands, and limitations are recorded in
 [token-export-real-qwen.md](token-export-real-qwen.md).
 
+### Export-driven joint-SFT consumption
+
+The SFT builder additively retains `token_export` and its complete
+`token_export_source` only when present; no-export pack bytes are unchanged.
+The bounded live adapter's explicit `--token-source token_export` mode requires
+every train row to use an export and strongly revalidates it against the exact
+local tokenizer before Torch import or planner/optimizer output. It consumes
+exported target ids/raw offsets/labels/weights/annotations directly, with only
+the prompt prefix tokenized. Legacy full-text encoding is solely an equality
+reference, never a fallback. The default `--token-source legacy` is unchanged.
+Exact SM90 legacy/export arithmetic, fresh-process resume, invalid-input, and
+cleanup evidence is in
+[exported-token-sft-live](exported-token-sft-live.md). These post-hoc ids are
+not sampled online behavior ids.
+
 ## Determinism
 
 JSON is key-sorted, compact UTF-8 with `allow_nan=False`. Turn indexes start at

@@ -12,14 +12,19 @@ not run DPO, GRPO, a vision encoder, media generation, or a serving process.
 """
 
 import argparse
+import builtins
+import copy
 import hashlib
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
 import platform
 import re
+import subprocess
 import sys
+import tempfile
 import time
 
 # Direct script execution uses -I, so add only this repository's known paths.
@@ -28,6 +33,8 @@ if str(ROOT / "python") not in sys.path:
     sys.path.insert(0, str(ROOT / "python"))
 
 import umminfer_joint_trainer as stage_c  # noqa: E402
+import umminfer_sft_dataset as sft_dataset  # noqa: E402
+import umminfer_token_export as token_export  # noqa: E402
 
 CHECKPOINT_FORMAT = "umminfer-joint-sft-live-checkpoint-v1"
 LIVE_MANIFEST_SCHEMA = "umminfer-joint-sft-live-result-v1"
@@ -172,6 +179,54 @@ def _audit_sft_record(row):
     }
 
 
+def _sft_export_record(row):
+    """Rebuild and structurally verify one additive SFT token-export binding."""
+    has_block = "token_export" in row
+    has_source = "token_export_source" in row
+    if not has_block and not has_source:
+        return None
+    if not has_block or not has_source:
+        raise ValueError("SFT token_export and token_export_source must appear together")
+    block = row["token_export"]
+    source = row["token_export_source"]
+    if not isinstance(block, dict) or not isinstance(source, dict) \
+            or "token_export" in source:
+        raise ValueError("SFT token export/source binding is malformed")
+    record = copy.deepcopy(source)
+    record["token_export"] = copy.deepcopy(block)
+    try:
+        token_export.validate_record_token_export(
+            record, expected_sft_target=row.get("assistant_target"))
+    except token_export.TokenExportError as exc:
+        raise ValueError(f"SFT token-export source is invalid: {exc}") from exc
+    candidate = sft_dataset._extract_candidate(record, verified_on_disk=True)
+    for key in (
+            "prompt_sha256", "prompt_text", "prompt_parts", "input_media_refs",
+            "target_sha256", "assistant_target", "clean_text", "clean_text_sha256",
+            "visual_slots", "modality_route", "is_text_only", "output_media_refs",
+            "provenance"):
+        if stage_c.canonical_json(row.get(key)) != stage_c.canonical_json(candidate[key]):
+            raise ValueError(f"SFT row differs from token-export source field: {key}")
+    return record
+
+
+def _structural_export_rows(rows):
+    """Validate every requested row before tokenizer/ML imports or run outputs."""
+    records = {}
+    for row in rows:
+        record = _sft_export_record(row)
+        if record is None:
+            raise ValueError(
+                f"token_export was requested but SFT row {row.get('example_id')!r} "
+                "has no export; refusing legacy fallback")
+        example_id = row.get("example_id")
+        if not isinstance(example_id, str) or not example_id \
+                or example_id in records:
+            raise ValueError("exported SFT example ids must be non-empty and unique")
+        records[example_id] = record
+    return records
+
+
 def _token_loss_mask(offsets, *, target_start, target, token_ids, mask_info):
     """Map HF offset tokens to prompt-masked, span-weighted causal SFT labels."""
     if len(offsets) != len(token_ids):
@@ -233,11 +288,221 @@ def _token_loss_mask(offsets, *, target_start, target, token_ids, mask_info):
     return labels, weights, annotations
 
 
-def _source_fingerprints(source_commit):
+def _legacy_pack_row(row, tokenizer, *, span_loss_weights, max_seq_len):
+    """Preserve the accepted full-text re-encoding path operation-for-operation."""
+    prompt = row["prompt_text"]
+    target = row["assistant_target"]
+    full_text = prompt + "\n" + target
+    target_start = len(prompt) + 1
+    encoded = tokenizer(
+        full_text, add_special_tokens=False, return_offsets_mapping=True,
+        truncation=False)
+    ids = list(encoded["input_ids"])
+    offsets = list(encoded["offset_mapping"])
+    if not ids or len(ids) > max_seq_len:
+        raise ValueError("packed target is empty or exceeds max_seq_len")
+    mask_info = stage_c.build_span_loss_mask(
+        target, ablation_profile="joint_full", span_weights=span_loss_weights)
+    labels, weights, annotations = _token_loss_mask(
+        offsets, target_start=target_start, target=target,
+        token_ids=ids, mask_info=mask_info)
+    route_tokens = sum(
+        "visual_route_tag" in item["span_types"] for item in annotations)
+    prompt_body_tokens = sum(
+        "visual_prompt_body" in item["span_types"] for item in annotations)
+    closing_tokens = sum(
+        item.get("includes_terminal_delimiter", False) for item in annotations)
+    audit = _audit_sft_record(row)
+    if audit["visual_modalities"] and not (
+            route_tokens and prompt_body_tokens and closing_tokens):
+        raise ValueError("HF token mask misses visual route, prompt, or terminal delimiter")
+    return {
+        "row": row,
+        "input_ids": ids,
+        "offsets": offsets,
+        "labels": labels,
+        "weights": weights,
+        "annotations": annotations,
+        "audit": {
+            **audit,
+            "sequence_tokens": len(ids),
+            "supervised_target_tokens": sum(v > 0 for v in weights),
+            "prompt_masked_tokens": sum(v == 0 for v in weights),
+            "visual_route_tag_tokens": route_tokens,
+            "visual_prompt_body_tokens": prompt_body_tokens,
+            "terminal_delimiter_tokens": closing_tokens,
+            "input_ids_sha256": stage_c.sha256_bytes(stage_c.canonical_json(ids)),
+            "labels_sha256": stage_c.sha256_bytes(stage_c.canonical_json(labels)),
+            "loss_weights_sha256": stage_c.sha256_bytes(
+                stage_c.canonical_json(weights)),
+        },
+    }
+
+
+def _export_raw_offsets(stream, *, target_start):
+    offsets = []
+    for token in stream["tokens"]:
+        if "offset_char_start" in token or "offset_char_end" in token:
+            start = token.get("offset_char_start")
+            end = token.get("offset_char_end")
+        else:
+            start = token.get("char_start")
+            end = token.get("char_end")
+        offsets.append((start + target_start, end + target_start))
+    return offsets
+
+
+def _pack_export_rows(rows, tokenizer, *, tokenizer_dir, tokenizer_id,
+                      tokenizer_revision, tokenization_version,
+                      span_loss_weights, max_seq_len):
+    """Strongly validate exports and pack their ids without target re-tokenizing.
+
+    The legacy full-text encoding is computed only as an equality reference. The
+    returned training tensors use exported target ids, raw offsets, labels,
+    weights, and annotations; only the unexported prompt prefix is tokenized.
+    """
+    records = _structural_export_rows(rows)
+    packed = []
+    summaries = []
+    identity = None
+    for row in rows:
+        record = records[row["example_id"]]
+        block = record["token_export"]
+        if identity is None:
+            identity = copy.deepcopy(block["tokenizer"])
+        elif stage_c.canonical_json(identity) != stage_c.canonical_json(block["tokenizer"]):
+            raise ValueError("mixed token-export tokenizer identities are not deterministic")
+        token_export.validate_record_token_export(
+            record, tokenizer=tokenizer, tokenizer_dir=tokenizer_dir,
+            expected_tokenizer_id=tokenizer_id,
+            expected_tokenizer_revision=tokenizer_revision,
+            expected_tokenization_version=tokenization_version,
+            expected_sft_target=row["assistant_target"])
+        legacy = _legacy_pack_row(
+            row, tokenizer, span_loss_weights=span_loss_weights,
+            max_seq_len=max_seq_len)
+        prompt = row["prompt_text"]
+        target = row["assistant_target"]
+        prefix = tokenizer(
+            prompt + "\n", add_special_tokens=False, return_offsets_mapping=True,
+            truncation=False)
+        prefix_ids = list(prefix["input_ids"])
+        prefix_offsets = list(prefix["offset_mapping"])
+        stream = block["streams"]["sft_target"]
+        target_ids = list(stream["token_ids"])
+        if not prefix_ids or not target_ids \
+                or len(prefix_ids) + len(target_ids) != len(legacy["input_ids"]):
+            raise ValueError("exported/prompt token counts do not match legacy encoding")
+        if stage_c.canonical_json(prefix_ids) != stage_c.canonical_json(
+                legacy["input_ids"][:len(prefix_ids)]):
+            raise ValueError("prompt-prefix encoding changed at the export boundary")
+        legacy_offsets = legacy["offsets"]
+        if stage_c.canonical_json(prefix_offsets) != stage_c.canonical_json(
+                legacy_offsets[:len(prefix_ids)]):
+            raise ValueError("prompt-prefix offsets differ from legacy encoding")
+        target_offsets = _export_raw_offsets(stream, target_start=len(prompt) + 1)
+        if stage_c.canonical_json(target_offsets) != stage_c.canonical_json(
+                legacy_offsets[len(prefix_ids):]):
+            raise ValueError("exported raw offsets differ from legacy target offsets")
+        mask_info = stage_c.build_span_loss_mask(
+            target, ablation_profile="joint_full", span_weights=span_loss_weights)
+        target_labels, target_weights, target_annotations = _token_loss_mask(
+            target_offsets, target_start=len(prompt) + 1, target=target,
+            token_ids=target_ids, mask_info=mask_info)
+        if target_labels != target_ids \
+                or target_weights != stream["sft_mask"]["token_weights"]:
+            raise ValueError("exported labels or weights differ from the SFT mask")
+        annotations_sha = stage_c.sha256_bytes(stage_c.canonical_json(target_annotations))
+        if annotations_sha != stream["sft_mask"]["annotations_sha256"]:
+            raise ValueError("exported annotations do not recompute from raw offsets")
+        ids = prefix_ids + target_ids
+        labels = [-100] * len(prefix_ids) + target_labels
+        weights = [0.0] * len(prefix_ids) + target_weights
+        annotations = [{
+            "span_types": [], "weight": 0.0,
+            "includes_terminal_delimiter": False,
+        } for _ in prefix_ids] + target_annotations
+        for key, actual, expected in (
+                ("input_ids", ids, legacy["input_ids"]),
+                ("labels", labels, legacy["labels"]),
+                ("weights", weights, legacy["weights"]),
+                ("annotations", annotations, legacy["annotations"])):
+            if stage_c.canonical_json(actual) != stage_c.canonical_json(expected):
+                raise ValueError(f"export-driven {key} differ from legacy joint_full packing")
+        item = copy.deepcopy(legacy)
+        item["input_ids"] = ids
+        item["labels"] = labels
+        item["weights"] = weights
+        item["annotations"] = annotations
+        summary = {
+            "example_id": row["example_id"],
+            "format": block["format"],
+            "format_version": block["format_version"],
+            "export_sha256": block["export_sha256"],
+            "source_record_sha256": block["source_record_sha256"],
+            "input_ids_sha256": item["audit"]["input_ids_sha256"],
+            "labels_sha256": item["audit"]["labels_sha256"],
+            "loss_weights_sha256": item["audit"]["loss_weights_sha256"],
+            "annotations_sha256": annotations_sha,
+            "raw_offsets_sha256": stage_c.sha256_bytes(
+                stage_c.canonical_json(target_offsets)),
+            "prompt_tokens": len(prefix_ids),
+            "target_tokens": len(target_ids),
+            "tokenizer_reencoded": True,
+            "legacy_equality": "PASS",
+        }
+        item["token_export"] = summary
+        item["raw_target_offsets"] = target_offsets
+        packed.append(item)
+        summaries.append(summary)
+    return {
+        "schema": "umminfer-joint-sft-token-export-preflight-v1",
+        "status": "PASS",
+        "tokenizer": identity,
+        "tokenization_version": tokenization_version,
+        "records": summaries,
+        "packed": packed,
+        "claims": {
+            "sampled_online_behavior_ids": "NOT_CLAIMED",
+            "target_retokenization_for_training": False,
+            "legacy_equality_reference_only": True,
+        },
+    }
+
+
+def _run_export_preflight(*, dataset_dir, model_path, tokenizer_id,
+                          tokenizer_revision, max_seq_len):
+    """Run real-tokenizer validation in a fresh process with Torch import banned."""
+    with tempfile.TemporaryDirectory(prefix="umm-sft-export-preflight-") as tmp:
+        result_path = Path(tmp) / "preflight.json"
+        command = [
+            sys.executable, "-I", str(ROOT / "python/umminfer_joint_sft_live.py"),
+            "--token-export-preflight", "--dataset-dir", str(dataset_dir),
+            "--model-path", str(model_path), "--tokenizer-id", tokenizer_id,
+            "--tokenizer-revision", tokenizer_revision,
+            "--max-seq-len", str(max_seq_len), "--output", str(result_path),
+        ]
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=1800)
+        if proc.returncode or not result_path.is_file():
+            detail = proc.stderr.strip() or proc.stdout.strip() or "no diagnostic"
+            raise ValueError(f"token-export real-tokenizer preflight failed: {detail}")
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if result.get("status") != "PASS" or not result.get("packed"):
+            raise ValueError("token-export preflight returned no validated packed rows")
+        return result
+
+
+def _source_fingerprints(source_commit, *, include_token_export=False):
     if not isinstance(source_commit, str) or not _HEX_40.fullmatch(source_commit):
         raise ValueError("--source-commit must be one lowercase 40-character commit")
     files = {}
-    for rel in SOURCE_FILES:
+    rels = list(SOURCE_FILES)
+    if include_token_export:
+        rels.extend((
+            "python/umminfer_sft_dataset.py",
+            "python/umminfer_token_export.py",
+        ))
+    for rel in rels:
         path = ROOT / rel
         if not path.is_file():
             raise ValueError(f"missing live-gate source file: {rel}")
@@ -254,8 +519,11 @@ def _source_fingerprints(source_commit):
 
 def prepare_live_run(*, dataset_dir, output_dir, config_path, model_path,
                      source_commit, max_steps, checkpoint_every=1,
-                     stop_after=None, resume_from=None, model_revision=None):
+                     stop_after=None, resume_from=None, model_revision=None,
+                     token_source="legacy"):
     """Run every model-independent validation before importing torch/transformers."""
+    if token_source not in ("legacy", "token_export"):
+        raise ValueError("--token-source must be legacy or token_export")
     if not _is_int(max_steps) or max_steps <= 0:
         raise ValueError("--max-steps must be a positive integer")
     if stop_after is None:
@@ -277,6 +545,30 @@ def prepare_live_run(*, dataset_dir, output_dir, config_path, model_path,
         raise ValueError("live training config does not exist")
     config_sha256 = stage_c.sha256_file(config_file)
     output = Path(output_dir)
+    export_preflight = None
+    model = None
+    if token_source == "token_export":
+        # This read-only structural gate deliberately precedes planner/output
+        # creation, model loading, and every ML-framework import.
+        early_dataset = stage_c.verify_and_load_dataset_pack(dataset_dir)
+        early_rows = early_dataset["packs"].get("sft_train") or []
+        if not early_rows:
+            raise ValueError("token_export mode requires non-empty sft_train rows")
+        _structural_export_rows(early_rows)
+        raw_config = json.loads(config_file.read_text(encoding="utf-8"))
+        raw_max_seq_len = raw_config.get("optimization", {}).get("max_seq_len")
+        if not _is_int(raw_max_seq_len) or raw_max_seq_len <= 1:
+            raise ValueError("export preflight requires a valid optimization.max_seq_len")
+        model = _fingerprint_model(model_path)
+        if model_revision is not None:
+            if not isinstance(model_revision, str) or not model_revision:
+                raise ValueError("model revision override must be non-empty")
+            model["revision"] = model_revision
+            model["upstream_revision_verification"] = "NOT_RUN"
+        export_preflight = _run_export_preflight(
+            dataset_dir=dataset_dir, model_path=model_path,
+            tokenizer_id=model["model_id"], tokenizer_revision=model["revision"],
+            max_seq_len=raw_max_seq_len)
     plan = stage_c.prepare_training_run(
         mode="sft", ablation="joint_full", dataset_dir=dataset_dir,
         output_dir=output / "plan", config_path=config_file,
@@ -312,6 +604,10 @@ def prepare_live_run(*, dataset_dir, output_dir, config_path, model_path,
         raise ValueError("max_grad_norm must be finite and positive")
     if not _is_int(opt.get("max_seq_len")) or opt["max_seq_len"] <= 1:
         raise ValueError("max_seq_len must be an integer greater than one")
+    if export_preflight is not None:
+        if stage_c.canonical_json(plan["ablation"]["span_weights"]) \
+                != stage_c.canonical_json(stage_c.DEFAULT_SPAN_WEIGHTS):
+            raise ValueError("token_export v1/v2 is bound to the joint_full default weights")
 
     dataset = stage_c.verify_and_load_dataset_pack(dataset_dir)
     rows = dataset["packs"].get("sft_train") or []
@@ -328,6 +624,13 @@ def prepare_live_run(*, dataset_dir, output_dir, config_path, model_path,
     if len(by_id) != len(rows) or any(item not in by_id for item in scheduled_ids):
         raise ValueError("scheduled example ids are absent or non-unique")
     scheduled_rows = [by_id[item] for item in scheduled_ids]
+    export_packed = None
+    if export_preflight is not None:
+        packed_by_id = {item["row"]["example_id"]: item
+                        for item in export_preflight["packed"]}
+        if len(packed_by_id) != len(rows) or set(packed_by_id) != set(by_id):
+            raise ValueError("token-export preflight rows differ from the frozen SFT train pack")
+        export_packed = [packed_by_id[item] for item in scheduled_ids]
     scheduled_audits = [_audit_sft_record(row) for row in scheduled_rows]
     if not any(a["text_only"] for a in scheduled_audits) \
             or not any(a["visual_modalities"] for a in scheduled_audits):
@@ -335,13 +638,15 @@ def prepare_live_run(*, dataset_dir, output_dir, config_path, model_path,
     if not any(a["terminal_legs_verified"] for a in scheduled_audits):
         raise ValueError("scheduled gate steps must verify completed visual terminal legs")
 
-    model = _fingerprint_model(model_path)
-    if model_revision is not None:
+    if model is None:
+        model = _fingerprint_model(model_path)
+    if model_revision is not None and token_source != "token_export":
         if not isinstance(model_revision, str) or not model_revision:
             raise ValueError("model revision override must be non-empty")
         model["revision"] = model_revision
         model["upstream_revision_verification"] = "NOT_RUN"
-    source = _source_fingerprints(source_commit)
+    source = _source_fingerprints(
+        source_commit, include_token_export=token_source == "token_export")
     identity = {
         "source": source,
         "config_file_sha256": config_sha256,
@@ -354,6 +659,15 @@ def prepare_live_run(*, dataset_dir, output_dir, config_path, model_path,
         "max_steps": max_steps,
         "objective": "full-parameter-span-weighted-causal-sft-v1",
     }
+    if export_preflight is not None:
+        identity["token_source"] = {
+            "mode": "token_export",
+            "schema": export_preflight["schema"],
+            "tokenizer": export_preflight["tokenizer"],
+            "tokenization_version": export_preflight["tokenization_version"],
+            "records": export_preflight["records"],
+            "claims": export_preflight["claims"],
+        }
     return {
         "output_dir": output,
         "dataset_dir": Path(dataset_dir),
@@ -361,6 +675,9 @@ def prepare_live_run(*, dataset_dir, output_dir, config_path, model_path,
         "model_path": Path(model_path),
         "plan": plan,
         "rows": scheduled_rows,
+        "token_source": token_source,
+        "export_packed": export_packed,
+        "token_export_preflight": export_preflight,
         "row_audits": scheduled_audits,
         "all_row_audits": audits,
         "source": source,
@@ -392,6 +709,17 @@ def _model_fingerprint(torch, model):
     return digest.hexdigest()
 
 
+def _gradient_fingerprint(torch, model):
+    digest = hashlib.sha256()
+    for name, param in sorted(model.named_parameters()):
+        digest.update(name.encode("utf-8"))
+        if param.grad is None:
+            digest.update(b"NO_GRADIENT")
+        else:
+            digest.update(_tensor_digest(torch, param.grad).encode("ascii"))
+    return digest.hexdigest()
+
+
 def _optimizer_fingerprint(torch, model, optimizer):
     digest = hashlib.sha256()
     for name, param in sorted(model.named_parameters()):
@@ -419,7 +747,7 @@ def execute_live_run(prepared):
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
 
     if not torch.cuda.is_available():
         raise RuntimeError("live gate requires CUDA; no optimizer was executed")
@@ -449,60 +777,30 @@ def execute_live_run(prepared):
         if resume_payload.get("schedule_position") != next_step:
             raise ValueError("resume schedule position mismatch")
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        prepared["model_path"], local_files_only=True, use_fast=True,
-        trust_remote_code=False)
-    if not getattr(tokenizer, "is_fast", False):
-        raise ValueError("live gate requires a fast tokenizer before model loading")
-
-    packed = []
-    max_seq_len = prepared["identity"]["optimization"]["max_seq_len"]
-    for row, audit in zip(prepared["rows"], prepared["row_audits"]):
-        prompt = row["prompt_text"]
-        target = row["assistant_target"]
-        full_text = prompt + "\n" + target
-        target_start = len(prompt) + 1
-        encoded = tokenizer(
-            full_text, add_special_tokens=False, return_offsets_mapping=True,
-            truncation=False)
-        ids = list(encoded["input_ids"])
-        offsets = list(encoded["offset_mapping"])
-        if not ids or len(ids) > max_seq_len:
-            raise ValueError("packed target is empty or exceeds max_seq_len")
-        mask_info = stage_c.build_span_loss_mask(
-            target, ablation_profile="joint_full",
-            span_weights=prepared["identity"]["span_loss_weights"])
-        labels, weights, annotations = _token_loss_mask(
-            offsets, target_start=target_start, target=target,
-            token_ids=ids, mask_info=mask_info)
-        route_tokens = sum(
-            "visual_route_tag" in item["span_types"] for item in annotations)
-        prompt_body_tokens = sum(
-            "visual_prompt_body" in item["span_types"] for item in annotations)
-        closing_tokens = sum(
-            item.get("includes_terminal_delimiter", False) for item in annotations)
-        if audit["visual_modalities"] and not (
-                route_tokens and prompt_body_tokens and closing_tokens):
-            raise ValueError("HF token mask misses visual route, prompt, or terminal delimiter")
-        packed.append({
-            "row": row,
-            "input_ids": ids,
-            "labels": labels,
-            "weights": weights,
-            "audit": {
-                **audit,
-                "sequence_tokens": len(ids),
-                "supervised_target_tokens": sum(v > 0 for v in weights),
-                "prompt_masked_tokens": sum(v == 0 for v in weights),
-                "visual_route_tag_tokens": route_tokens,
-                "visual_prompt_body_tokens": prompt_body_tokens,
-                "terminal_delimiter_tokens": closing_tokens,
-                "input_ids_sha256": stage_c.sha256_bytes(stage_c.canonical_json(ids)),
-                "labels_sha256": stage_c.sha256_bytes(stage_c.canonical_json(labels)),
-                "loss_weights_sha256": stage_c.sha256_bytes(
-                    stage_c.canonical_json(weights)),
-            },
-        })
+    output = prepared["output_dir"]
+    export_preflight_sha = None
+    if prepared["token_source"] == "token_export":
+        packed = prepared["export_packed"]
+        if packed is None or len(packed) != len(prepared["rows"]):
+            raise ValueError("validated export-driven packed rows are unavailable")
+        preflight_path = output / "token_export_preflight.json"
+        _atomic_json(preflight_path, prepared["token_export_preflight"])
+        export_preflight_sha = stage_c.sha256_file(preflight_path)
+    else:
+        # Default legacy path: retain the accepted full prompt+target re-encoding.
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
+            prepared["model_path"], local_files_only=True, use_fast=True,
+            trust_remote_code=False)
+        if not getattr(tokenizer, "is_fast", False):
+            raise ValueError("live gate requires a fast tokenizer before model loading")
+        packed = [
+            _legacy_pack_row(
+                row, tokenizer,
+                span_loss_weights=prepared["identity"]["span_loss_weights"],
+                max_seq_len=prepared["identity"]["optimization"]["max_seq_len"])
+            for row in prepared["rows"]
+        ]
 
     model = AutoModelForCausalLM.from_pretrained(
         prepared["model_path"], local_files_only=True, trust_remote_code=False,
@@ -528,7 +826,6 @@ def execute_live_run(prepared):
     started = time.perf_counter()
     history = []
     checkpoints = []
-    output = prepared["output_dir"]
 
     def save_checkpoint(completed_steps):
         checkpoint_dir = output / "checkpoints"
@@ -594,6 +891,7 @@ def execute_live_run(prepared):
         if not grad_tensors or not any(torch.count_nonzero(g).item() > 0
                                       for g in grad_tensors):
             raise RuntimeError("real SFT step produced no non-zero gradient")
+        gradient_sha = _gradient_fingerprint(torch, model)
         optimizer.step()
         torch.cuda.synchronize(device)
         step_elapsed = time.perf_counter() - step_started
@@ -603,10 +901,13 @@ def execute_live_run(prepared):
         max_delta = 0.0
         delta_l2_squared = 0.0
         finite_after = True
-        for name, param in model.named_parameters():
+        update_digest = hashlib.sha256()
+        for name, param in sorted(model.named_parameters()):
             after = param.detach().cpu()
             finite_after = finite_after and bool(torch.isfinite(after).all().item())
             difference = after.float() - before[name].float()
+            update_digest.update(name.encode("utf-8"))
+            update_digest.update(_tensor_digest(torch, difference).encode("ascii"))
             count = int(torch.count_nonzero(difference).item())
             if count:
                 changed_tensors += 1
@@ -625,6 +926,8 @@ def execute_live_run(prepared):
                 stage_c.canonical_json([item["row"]["example_id"]])),
             "loss": float(loss.item()),
             "grad_norm": float(grad_norm),
+            "gradient_sha256": gradient_sha,
+            "parameter_update_sha256": update_digest.hexdigest(),
             "nonzero_gradient_tensors": sum(
                 torch.count_nonzero(g).item() > 0 for g in grad_tensors),
             "gradient_tensors": len(grad_tensors),
@@ -646,6 +949,8 @@ def execute_live_run(prepared):
             "peak_memory_reserved_bytes": int(torch.cuda.max_memory_reserved(device)),
             "target_audit": item["audit"],
         }
+        if item.get("token_export") is not None:
+            entry["token_export"] = item["token_export"]
         history.append(entry)
         if (step_index + 1) % prepared["checkpoint_every"] == 0 \
                 or step_index + 1 == prepared["stop_after"]:
@@ -702,8 +1007,83 @@ def execute_live_run(prepared):
             "cublas_workspace_config": os.environ["CUBLAS_WORKSPACE_CONFIG"],
         },
     }
+    if export_preflight_sha is not None:
+        result["claims"]["sampled_online_behavior_ids"] = "NOT_CLAIMED"
+        result["token_source"] = {
+            "mode": "token_export",
+            "preflight_schema": prepared["token_export_preflight"]["schema"],
+            "preflight_sha256": export_preflight_sha,
+            "tokenizer": prepared["token_export_preflight"]["tokenizer"],
+            "tokenization_version": prepared["token_export_preflight"]
+                ["tokenization_version"],
+            "records": prepared["token_export_preflight"]["records"],
+            "target_retokenization_for_training": False,
+            "legacy_equality_reference_only": True,
+        }
     _atomic_json(output / "live_manifest.json", result)
     return result
+
+
+def _token_export_preflight_main(argv):
+    """Internal fresh-process entry point; never imports Torch."""
+    parser = argparse.ArgumentParser(description="Validate and pack SFT token exports")
+    parser.add_argument("--dataset-dir", required=True)
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--tokenizer-id", required=True)
+    parser.add_argument("--tokenizer-revision", required=True)
+    parser.add_argument("--max-seq-len", required=True, type=int)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    real_import = builtins.__import__
+    real_find_spec = importlib.util.find_spec
+
+    def torch_unavailable(name, *find_args, **find_kwargs):
+        if name == "torch" or name.startswith("torch."):
+            return None
+        return real_find_spec(name, *find_args, **find_kwargs)
+
+    def no_torch(name, *import_args, **import_kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise ImportError("torch import is forbidden in token-export preflight")
+        return real_import(name, *import_args, **import_kwargs)
+
+    builtins.__import__ = no_torch
+    importlib.util.find_spec = torch_unavailable
+    try:
+        import transformers
+        import tokenizers
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.model_path, local_files_only=True, use_fast=True,
+            trust_remote_code=False)
+        if not getattr(tokenizer, "is_fast", False):
+            raise ValueError("token-export preflight requires a fast tokenizer")
+        dataset = stage_c.verify_and_load_dataset_pack(args.dataset_dir)
+        rows = dataset["packs"].get("sft_train") or []
+        version = (f"transformers-{transformers.__version__}_"
+                   f"tokenizers-{tokenizers.__version__}")
+        result = _pack_export_rows(
+            rows, tokenizer, tokenizer_dir=args.model_path,
+            tokenizer_id=args.tokenizer_id,
+            tokenizer_revision=args.tokenizer_revision,
+            tokenization_version=version,
+            span_loss_weights=stage_c.DEFAULT_SPAN_WEIGHTS,
+            max_seq_len=args.max_seq_len)
+        if "torch" in sys.modules:
+            raise RuntimeError("torch was imported during token-export preflight")
+        _atomic_json(args.output, result)
+    finally:
+        builtins.__import__ = real_import
+        importlib.util.find_spec = real_find_spec
+    sys.stdout.write(stage_c.canonical_json({
+        "status": "PASS", "records": len(result["records"]),
+        "tokenization_version": version,
+        "torch_imported": False,
+    }).decode("utf-8") + "\n")
+    return 0
 
 
 def _build_parser():
@@ -719,10 +1099,16 @@ def _build_parser():
     parser.add_argument("--stop-after", type=int, default=None)
     parser.add_argument("--checkpoint-every", type=int, default=1)
     parser.add_argument("--resume-from", default=None)
+    parser.add_argument("--token-source", choices=("legacy", "token_export"),
+                        default="legacy",
+                        help="legacy preserves full-text re-encoding; token_export requires every train row")
     return parser
 
 
 def main(argv=None):
+    actual_argv = list(sys.argv[1:] if argv is None else argv)
+    if actual_argv and actual_argv[0] == "--token-export-preflight":
+        return _token_export_preflight_main(actual_argv[1:])
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
@@ -732,7 +1118,8 @@ def main(argv=None):
             source_commit=args.source_commit, max_steps=args.max_steps,
             checkpoint_every=args.checkpoint_every, stop_after=args.stop_after,
             resume_from=args.resume_from,
-            model_revision=args.model_revision)
+            model_revision=args.model_revision,
+            token_source=args.token_source)
         result = execute_live_run(prepared)
     except (OSError, ValueError, RuntimeError, ImportError,
             json.JSONDecodeError) as exc:

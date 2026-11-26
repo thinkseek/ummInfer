@@ -334,6 +334,17 @@ limitations are in [token-export-real-qwen](token-export-real-qwen.md). No GPU,
 model inference, sampled decode-id recovery, serving, online rollout, or model
 quality is claimed.
 
+**Phase 6 exported-token joint-SFT gate (2026-11-26).** The bounded SFT adapter
+now has an explicit `--token-source token_export` mode with strong local
+v1/v2 tokenizer/file/source validation and fail-closed mixed-batch behavior;
+default legacy re-encoding and no-export pack bytes are unchanged. On isolated
+SM90 GPU 7, the same frozen multilingual/NFC/emoji/spoken and explicit-anchor
+visual examples produced exact-equal ids, labels, masks, losses, gradients, and
+updates through legacy and export-driven paths, plus byte-identical
+fresh-process export checkpoint resume. Exported post-hoc ids are not sampled
+online behavior ids. Commands, hashes, rejection evidence, cleanup, and scope
+are in [exported-token-sft-live](exported-token-sft-live.md).
+
 The Stage C joint-SFT, joint-DPO, and joint-GRPO optimizer gates are separately
 bounded to deterministic schema-v2 text/visual-slot fixtures and one small local
 Qwen2 model. Their commands, fail-closed input/mask contracts, checkpoint

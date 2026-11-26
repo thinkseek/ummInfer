@@ -1018,6 +1018,16 @@ def _build_sft_records(candidates, *, seed, eval_ratio):
             "output_media_refs": candidate["output_media_refs"],
             "provenance": candidate["provenance"],
         }
+        raw_record = candidate["_raw_record"]
+        if "token_export" in raw_record:
+            # Keep the complete source binding needed for independent staleness,
+            # provenance, target, and strong real-tokenizer validation.  This is
+            # deliberately additive: legacy rows retain their exact JSON bytes.
+            entry["token_export"] = copy.deepcopy(raw_record["token_export"])
+            entry["token_export_source"] = {
+                key: copy.deepcopy(value) for key, value in raw_record.items()
+                if key != "token_export"
+            }
         if split == "eval":
             eval_records.append(entry)
         else:
