@@ -380,7 +380,68 @@ private final class UnifiedSSEProtocol: URLProtocol {
                     ]]
                 ]
             ]
+        ]),
+        // Opt-in behavior.logprobs: unified SSE exposed final chunk with top-level behavior object.
+        "10.1.2.21": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Hello world"),
+            {
+                var terminal = frame(kind: "complete", seq: 1, text: "Hello world")
+                terminal["behavior"] = [
+                    "format": "umminfer-behavior-logprobs-v1",
+                    "tokenizer_sha256": "1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016",
+                    "token_ids": [101, 202, 303, 404, 505],
+                    "logprobs": [-0.1, -0.25, -0.05, -0.4, -0.01],
+                    "mask": [1, 0, 1, 0, 1]
+                ]
+                return terminal
+            }()
+        ]),
+        // Opt-in behavior.logprobs: unified SSE not_exposed with no behavior payload.
+        "10.1.2.22": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Truncated"),
+            frame(kind: "complete", seq: 1, text: "Truncated", finish: "length")
+        ]),
+        // Opt-in behavior.logprobs: non-unified SSE exposed final chunk.
+        "10.1.2.23": sse([
+            ["choices": [["delta": ["content": "Plain."], "finish_reason": NSNull()]]],
+            [
+                "choices": [["delta": [:], "finish_reason": "stop"]],
+                "behavior": [
+                    "format": "umminfer-behavior-logprobs-v1",
+                    "tokenizer_sha256": "1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016",
+                    "token_ids": [11, 22, 33],
+                    "logprobs": [-0.02, -0.03, -0.04],
+                    "mask": [1, 1, 1]
+                ]
+            ]
+        ]),
+        // Opt-in behavior.logprobs: requested, but server omits X-UmmInfer-Behavior-Evidence header.
+        "10.1.2.24": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Legacy."),
+            frame(kind: "complete", seq: 1, text: "Legacy.")
+        ]),
+        // Opt-in behavior.logprobs: not_exposed header with stray behavior block must NOT leak counts.
+        "10.1.2.25": sse([
+            frame(kind: "vlm_delta", seq: 0, text: "Guarded."),
+            {
+                var terminal = frame(kind: "complete", seq: 1, text: "Guarded.")
+                terminal["behavior"] = [
+                    "format": "umminfer-behavior-logprobs-v1",
+                    "tokenizer_sha256": "1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016",
+                    "token_ids": [1, 2, 3],
+                    "logprobs": [-0.1, -0.2, -0.3],
+                    "mask": [1, 1, 1]
+                ]
+                return terminal
+            }()
         ])
+    ]
+
+    static let responseHeaders: [String: [String: String]] = [
+        "10.1.2.21": ["X-UmmInfer-Behavior-Evidence": "exposed"],
+        "10.1.2.22": ["x-umminfer-behavior-evidence": "NOT_EXPOSED"],
+        "10.1.2.23": ["X-UmmInfer-Behavior-Evidence": "Exposed"],
+        "10.1.2.25": ["X-UmmInfer-Behavior-Evidence": "not_exposed"]
     ]
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -396,11 +457,15 @@ private final class UnifiedSSEProtocol: URLProtocol {
         Self.lock.lock()
         Self.requestBodies.append(sent)
         Self.lock.unlock()
+        var headers = ["Content-Type": "text/event-stream"]
+        if let host = request.url?.host, let extra = Self.responseHeaders[host] {
+            headers.merge(extra) { _, new in new }
+        }
         guard let url = request.url, let host = url.host,
               let data = Self.responses[host],
               let response = HTTPURLResponse(
                 url: url, statusCode: 200, httpVersion: nil,
-                headerFields: ["Content-Type": "text/event-stream"]) else {
+                headerFields: headers) else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
@@ -1692,5 +1757,131 @@ final class ChatClientUnifiedTests: XCTestCase {
         let plainTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
         let plainPill = try XCTUnwrap(plainTurn.telemetry.formattedPills.first { $0.kind == .vram })
         XCTAssertEqual(plainPill.label, "VRAM: 2 MiB peak")
+    }
+
+    @MainActor
+    func testBehaviorLogprobsRequestWireCompatibilityAndStreamDecoding() async throws {
+        // 1. Default ChatStreamOptions omits behavior completely (strict wire compatibility).
+        let defaultOptions = ChatStreamOptions()
+        XCTAssertFalse(defaultOptions.behaviorLogprobs)
+        let defaultBody = ChatClient.requestBody(
+            model: "qwen3-native",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            options: defaultOptions)
+        XCTAssertNil(defaultBody["behavior"],
+                     "default OFF must omit behavior completely from request JSON")
+
+        // 2. Opt-in emits exact {"logprobs": true} alongside stream=true.
+        var optInOptions = ChatStreamOptions()
+        optInOptions.behaviorLogprobs = true
+        let optInBody = ChatClient.requestBody(
+            model: "qwen3-native",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            options: optInOptions)
+        XCTAssertEqual(optInBody["stream"] as? Bool, true)
+        let behaviorObj = try XCTUnwrap(optInBody["behavior"] as? [String: Any])
+        XCTAssertEqual(behaviorObj.count, 1)
+        XCTAssertEqual(behaviorObj["logprobs"] as? Bool, true)
+
+        // 3. End-to-end ChatModel: default OFF omits behavior and emits no behavior pill.
+        UnifiedSSEProtocol.resetBodies()
+        let model = ChatModel(client: makeClient(),
+                              audioStream: NoOpAudioStreamPlayer())
+        XCTAssertFalse(model.behaviorLogprobs)
+        model.endpoint = "http://10.1.2.1/v1"
+        model.model = "qwen3-native"
+        model.prompt = "default off"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let sentDefault = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(UnifiedSSEProtocol.bodies().first)) as? [String: Any])
+        XCTAssertNil(sentDefault["behavior"])
+        let defaultTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertFalse(defaultTurn.telemetry.behaviorRequested)
+        XCTAssertNil(defaultTurn.telemetry.behaviorEvidenceHeader)
+        XCTAssertNil(defaultTurn.telemetry.behaviorEvidence)
+        XCTAssertFalse(defaultTurn.telemetry.formattedPills.contains { $0.kind == .behavior })
+
+        // 4. Opt-in ON with exposed header + final SSE behavior object -> Behavior: 5 tok (3 sup).
+        UnifiedSSEProtocol.resetBodies()
+        model.newChat()
+        model.endpoint = "http://10.1.2.21/v1"
+        model.behaviorLogprobs = true
+        model.prompt = "capture behavior"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let sentOptIn = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(UnifiedSSEProtocol.bodies().first)) as? [String: Any])
+        let sentBehavior = try XCTUnwrap(sentOptIn["behavior"] as? [String: Any])
+        XCTAssertEqual(sentBehavior["logprobs"] as? Bool, true)
+        let exposedTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertTrue(exposedTurn.telemetry.behaviorRequested)
+        XCTAssertEqual(exposedTurn.telemetry.behaviorEvidenceHeader, "exposed")
+        XCTAssertEqual(exposedTurn.telemetry.behaviorEvidence?.tokenIDs, [101, 202, 303, 404, 505])
+        XCTAssertEqual(exposedTurn.telemetry.behaviorEvidence?.mask, [1, 0, 1, 0, 1])
+        XCTAssertEqual(exposedTurn.telemetry.behaviorEvidence?.logprobs?.count, 5)
+        let exposedPill = try XCTUnwrap(exposedTurn.telemetry.formattedPills.first { $0.kind == .behavior })
+        XCTAssertEqual(exposedPill.label, "Behavior: 5 tok (3 sup)")
+        XCTAssertTrue(exposedPill.help?.contains("umminfer-behavior-logprobs-v1") == true)
+        XCTAssertTrue(exposedPill.help?.contains("1dd1199e35f6cfb9") == true)
+
+        // 5. Opt-in ON with case-insensitive not_exposed header -> Behavior: not_exposed (nil evidence).
+        model.newChat()
+        model.endpoint = "http://10.1.2.22/v1"
+        model.prompt = "truncated"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let notExposedTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertEqual(notExposedTurn.telemetry.behaviorEvidenceHeader, "not_exposed")
+        XCTAssertNil(notExposedTurn.telemetry.behaviorEvidence)
+        let notExposedPill = try XCTUnwrap(notExposedTurn.telemetry.formattedPills.first { $0.kind == .behavior })
+        XCTAssertEqual(notExposedPill.label, "Behavior: not_exposed")
+
+        // 6. Non-unified SSE exposed final chunk -> Behavior: 3 tok (3 sup).
+        model.newChat()
+        model.endpoint = "http://10.1.2.23/v1"
+        model.prompt = "plain exposed"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let plainExposedTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertEqual(plainExposedTurn.telemetry.behaviorEvidenceHeader, "exposed")
+        let plainBehaviorPill = try XCTUnwrap(plainExposedTurn.telemetry.formattedPills.first { $0.kind == .behavior })
+        XCTAssertEqual(plainBehaviorPill.label, "Behavior: 3 tok (3 sup)")
+
+        // 7. Requested with absent response header -> Behavior: absent.
+        model.newChat()
+        model.endpoint = "http://10.1.2.24/v1"
+        model.prompt = "legacy server"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let absentTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertNil(absentTurn.telemetry.behaviorEvidenceHeader)
+        XCTAssertNil(absentTurn.telemetry.behaviorEvidence)
+        let absentPill = try XCTUnwrap(absentTurn.telemetry.formattedPills.first { $0.kind == .behavior })
+        XCTAssertEqual(absentPill.label, "Behavior: absent")
+
+        // 8. not_exposed header ignores any stray payload -> zero leakage / zero fabrication.
+        model.newChat()
+        model.endpoint = "http://10.1.2.25/v1"
+        model.prompt = "guarded"
+        model.send()
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let guardedTurn = try XCTUnwrap(model.turns.last { $0.role == .assistant })
+        XCTAssertEqual(guardedTurn.telemetry.behaviorEvidenceHeader, "not_exposed")
+        XCTAssertNil(guardedTurn.telemetry.behaviorEvidence)
+        let guardedPill = try XCTUnwrap(guardedTurn.telemetry.formattedPills.first { $0.kind == .behavior })
+        XCTAssertEqual(guardedPill.label, "Behavior: not_exposed")
     }
 }

@@ -63,7 +63,7 @@ def check_markup(html):
                 'id="narrativeContinuity"', 'id="styleAnchor"',
                 'id="fastVideo"', 'id="videoFramePolicy"',
                 'id="videoMotionThreshold"', 'id="videoSceneThreshold"',
-                'id="nativeAllocatorTelemetry"'):
+                'id="nativeAllocatorTelemetry"', 'id="behaviorLogprobs"'):
         require(tag in html, f"missing element: {tag}")
     require('<option value="off" selected>Off</option>' in html,
             "narrativeContinuity must default to Off")
@@ -74,6 +74,8 @@ def check_markup(html):
             "fastVideo checkbox must default to unchecked")
     require('<input type="checkbox" id="nativeAllocatorTelemetry">' in html,
             "nativeAllocatorTelemetry checkbox must default to unchecked")
+    require('<input type="checkbox" id="behaviorLogprobs">' in html,
+            "behaviorLogprobs checkbox must default to unchecked")
     require('<input type="checkbox" id="realtimeEchoSuppression" checked>' in html,
             "realtimeEchoSuppression checkbox must default to checked (ON)")
     require('<option value="uniform" selected>Uniform</option>' in html,
@@ -162,6 +164,22 @@ def check_hooks(script):
             "consume() must extract and record server-returned native allocator telemetry")
     require("ui.nativeAllocatorTelemetry" in script.split("function setBusy(busy)", 1)[1].split("}", 1)[0],
             "nativeAllocatorTelemetry must be disabled while running")
+    # Opt-in Behavior logprobs (behavior.logprobs=true): default unchecked,
+    # persisted in localStorage, disabled while running, omitted on wire when off.
+    require("localStorage.getItem('ummweb.behaviorLogprobs') === '1'" in script,
+            "behaviorLogprobs must default to unchecked unless persisted as '1'")
+    require("localStorage.setItem('ummweb.behaviorLogprobs'" in script,
+            "behaviorLogprobs must persist in localStorage")
+    require("applyBehaviorLogprobsOption(body, behaviorRequested)" in script,
+            "send() must apply behaviorLogprobs through applyBehaviorLogprobsOption")
+    require("res.headers.get('x-umminfer-behavior-evidence')" in script,
+            "send() must read X-UmmInfer-Behavior-Evidence response header")
+    require("extractBehaviorEvidence(root)" in script
+            and "recordBehaviorEvidence(turn," in script
+            and "finalizeBehaviorEvidence(turn," in script,
+            "SSE handling must extract, record, and finalize server-returned behavior evidence")
+    require("ui.behaviorLogprobs" in script.split("function setBusy(busy)", 1)[1].split("}", 1)[0],
+            "behaviorLogprobs must be disabled while running")
 
 
 def check_wave10(script):
@@ -1243,6 +1261,7 @@ const controls = {
   videoMotionThreshold: { value: '0.15' },
   videoSceneThreshold: { value: '0.55' },
   nativeAllocatorTelemetry: { checked: false },
+  behaviorLogprobs: { checked: false },
   advanced: { open: false },
   prompt: { value: '', focus() { focusCount += 1; } },
 };
@@ -1358,12 +1377,15 @@ for (const otherId of ['documentary', 'storyboard_i2v', 'smart_text_only']) {
          `switching from temporal_video_qa to ${otherId} did not reset videoFramePolicy to uniform`);
 }
 
-// None of the 4 Showcase presets auto-enable or mutate nativeAllocatorTelemetry.
+// None of the 4 Showcase presets auto-enable or mutate nativeAllocatorTelemetry or behaviorLogprobs.
 for (const presetId of ['documentary', 'storyboard_i2v', 'smart_text_only', 'temporal_video_qa']) {
   controls.nativeAllocatorTelemetry.checked = false;
+  controls.behaviorLogprobs.checked = false;
   applyShowcasePresetToControls(presetId, controls, hooks);
   assert(controls.nativeAllocatorTelemetry.checked === false,
          `preset ${presetId} must not auto-enable nativeAllocatorTelemetry`);
+  assert(controls.behaviorLogprobs.checked === false,
+         `preset ${presetId} must not auto-enable behaviorLogprobs`);
 }
 
 // Unknown preset is a safe no-op.
@@ -1584,6 +1606,111 @@ const absentPills = formatTurnTelemetry({ ttftMs: 150, totalMs: 1100, nativeAllo
 assert(!absentPills.some((p) => p.kind === 'vram') &&
        JSON.stringify(absentPills.map((p) => p.label)) === '["TTFT 150 ms","Total 1.10 s"]',
        'absent telemetry must omit VRAM pill completely');
+
+// 4. Opt-in behavior.logprobs wire encoding & honest header/payload display (zero fabrication).
+const behaviorOffBody = applyBehaviorLogprobsOption({ ...baseBody }, false);
+assert(!Object.prototype.hasOwnProperty.call(behaviorOffBody, 'behavior') &&
+       JSON.stringify(behaviorOffBody) === JSON.stringify(baseBody),
+       'default OFF must omit behavior completely for byte-identical requests');
+const behaviorOnBody = applyBehaviorLogprobsOption({ ...baseBody }, true);
+assert(JSON.stringify(behaviorOnBody.behavior) === '{"logprobs":true}',
+       'opt-in ON must emit behavior: {logprobs: true}');
+
+// Case-insensitive header normalization.
+assert(normalizeBehaviorEvidenceHeader('  EXPOSED  ') === 'exposed', 'exposed header normalization mismatch');
+assert(normalizeBehaviorEvidenceHeader('Not_Exposed') === 'not_exposed', 'not_exposed header normalization mismatch');
+assert(normalizeBehaviorEvidenceHeader('') === '' && normalizeBehaviorEvidenceHeader(null) === '',
+       'empty/null header normalization mismatch');
+
+// Behavior payload extraction accepts valid structure and rejects malformed shapes.
+const sampleBehaviorPayload = {
+  format: 'umminfer-behavior-logprobs-v1',
+  tokenizer_sha256: '1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016',
+  token_ids: [101, 202, 303, 404, 505],
+  logprobs: [-0.1, -0.25, -0.05, -0.4, -0.01],
+  mask: [1, 0, 1, 0, 1],
+};
+const extractedBehavior = extractBehaviorEvidence({ behavior: sampleBehaviorPayload });
+assert(extractedBehavior && extractedBehavior.token_ids.length === 5 &&
+       extractedBehavior.mask.length === 5 && extractedBehavior.logprobs.length === 5,
+       'valid behavior payload was not extracted');
+for (const badPayload of [
+  null,
+  'exposed',
+  [],
+  { token_ids: [1, 2], mask: [1] },
+  { token_ids: [1, 2.5], mask: [1, 1] },
+  { token_ids: [1, 2], mask: [1, 2] },
+  { token_ids: [1, 2], mask: [1, 1], logprobs: [-0.1] },
+  { token_ids: [1, 2], mask: [1, 1], logprobs: [-0.1, Number.NaN] },
+]) {
+  assert(extractBehaviorEvidence({ behavior: badPayload }) === null,
+         'malformed behavior payload was accepted: ' + JSON.stringify(badPayload));
+}
+
+// Default OFF (unrequested, no header, no payload) omits behavior pill completely.
+const behaviorDefaultPills = formatTurnTelemetry({
+  ttftMs: 110, totalMs: 900,
+  behaviorRequested: false, behaviorEvidenceHeader: '', behaviorEvidence: null,
+});
+assert(!behaviorDefaultPills.some((p) => p.kind === 'behavior'),
+       'default OFF must omit behavior pill completely');
+
+// Exposed header + valid payload -> Behavior: N tok (M sup) with honest tooltip.
+const exposedBehaviorPills = formatTurnTelemetry({
+  ttftMs: 120, totalMs: 1050,
+  behaviorRequested: true,
+  behaviorEvidenceHeader: 'EXPOSED',
+  behaviorEvidence: sampleBehaviorPayload,
+});
+assert(JSON.stringify(exposedBehaviorPills.map((p) => p.label)) ===
+       '["TTFT 120 ms","Total 1.05 s","Behavior: 5 tok (3 sup)"]',
+       'exposed behavior pill mismatch: ' + JSON.stringify(exposedBehaviorPills));
+const exposedPill = exposedBehaviorPills.find((p) => p.kind === 'behavior');
+assert(exposedPill && exposedPill.status === 'exposed' &&
+       exposedPill.title.includes('umminfer-behavior-logprobs-v1') &&
+       exposedPill.title.includes('5 (3 supervised)') &&
+       exposedPill.title.includes('1dd1199e35f6cfb9'),
+       'exposed behavior tooltip mismatch: ' + exposedPill?.title);
+
+// not_exposed header -> Behavior: not_exposed with zero fabrication (even if stray payload present).
+for (const payload of [null, sampleBehaviorPayload]) {
+  const notExposedPills = formatTurnTelemetry({
+    ttftMs: 130, totalMs: 980,
+    behaviorRequested: true,
+    behaviorEvidenceHeader: 'not_exposed',
+    behaviorEvidence: payload,
+  });
+  const nePill = notExposedPills.find((p) => p.kind === 'behavior');
+  assert(nePill && nePill.label === 'Behavior: not_exposed' &&
+         nePill.status === 'not_exposed' &&
+         !nePill.label.includes('tok') && !nePill.label.includes('sup'),
+         'not_exposed must render Behavior: not_exposed without leaking token counts');
+}
+
+// exposed header without valid payload -> Behavior: not_exposed (never fabricates 0 tok).
+const exposedMissingPayload = formatTurnTelemetry({
+  ttftMs: 130, totalMs: 980,
+  behaviorRequested: true,
+  behaviorEvidenceHeader: 'exposed',
+  behaviorEvidence: null,
+});
+const missingPayloadPill = exposedMissingPayload.find((p) => p.kind === 'behavior');
+assert(missingPayloadPill && missingPayloadPill.label === 'Behavior: not_exposed' &&
+       !missingPayloadPill.label.includes('0 tok'),
+       'exposed header without payload must not fabricate token counts');
+
+// Requested with absent header -> Behavior: absent.
+const absentHeaderPills = formatTurnTelemetry({
+  ttftMs: 130, totalMs: 980,
+  behaviorRequested: true,
+  behaviorEvidenceHeader: '',
+  behaviorEvidence: null,
+});
+const absentBehaviorPill = absentHeaderPills.find((p) => p.kind === 'behavior');
+assert(absentBehaviorPill && absentBehaviorPill.label === 'Behavior: absent' &&
+       absentBehaviorPill.status === 'absent',
+       'requested behavior with missing header must render Behavior: absent');
 
 console.log('showcase and telemetry behavior passed');
 """

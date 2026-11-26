@@ -323,6 +323,10 @@ struct RootView: View {
                             .toggleStyle(.checkbox)
                             .help("Opt in to per-request native CUDA allocator peak telemetry (telemetry.native_allocator=true); omitted when off")
                             .accessibilityIdentifier("nativeAllocatorTelemetry")
+                        Toggle("Behavior logprobs", isOn: $model.behaviorLogprobs)
+                            .toggleStyle(.checkbox)
+                            .help("Opt in to per-request sampled behavior token/logprob evidence (behavior.logprobs=true; requires streaming); omitted when off")
+                            .accessibilityIdentifier("behaviorLogprobs")
                     }
                 }
                 .padding(.top, 4)

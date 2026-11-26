@@ -482,6 +482,7 @@
       <label title="Temporal motion score threshold in [0,1]">Motion ≥<input id="videoMotionThreshold" type="number" min="0" max="1" step="0.01" value="0.02" style="width:68px" disabled></label>
       <label title="Temporal scene-change score threshold in [0,1]">Scene ≥<input id="videoSceneThreshold" type="number" min="0" max="1" step="0.01" value="0.25" style="width:68px" disabled></label>
       <label class="check" title="Opt in to per-request native CUDA allocator peak telemetry (telemetry.native_allocator=true); omitted when off"><input type="checkbox" id="nativeAllocatorTelemetry"> Native VRAM telemetry</label>
+      <label class="check" title="Opt in to per-request sampled behavior token/logprob evidence (behavior.logprobs=true; requires streaming); omitted when off"><input type="checkbox" id="behaviorLogprobs"> Behavior logprobs</label>
     </div>
   </details>
 </section>
@@ -558,6 +559,7 @@ const ui = {
   videoGuidance: $('videoGuidance'), videoFramePolicy: $('videoFramePolicy'),
   videoMotionThreshold: $('videoMotionThreshold'), videoSceneThreshold: $('videoSceneThreshold'),
   nativeAllocatorTelemetry: $('nativeAllocatorTelemetry'),
+  behaviorLogprobs: $('behaviorLogprobs'),
   advanced: $('advanced'),
   transcript: $('transcript'), emptyState: $('emptyState'), showcasePresets: $('showcasePresets'),
   error: $('error'),
@@ -626,6 +628,7 @@ ui.narrative.checked = localStorage.getItem('ummweb.narrative') !== '0';
 ui.allowTextOnly.checked = localStorage.getItem('ummweb.allowTextOnly') !== '0';
 ui.fastVideo.checked = localStorage.getItem('ummweb.fastVideo') === '1';
 ui.nativeAllocatorTelemetry.checked = localStorage.getItem('ummweb.nativeAllocatorTelemetry') === '1';
+ui.behaviorLogprobs.checked = localStorage.getItem('ummweb.behaviorLogprobs') === '1';
 ui.realtimeEchoSuppression.checked = localStorage.getItem('ummweb.echoSuppression') !== '0';
 const saveSettings = () => {
   for (const key of SETTINGS) localStorage.setItem('ummweb.' + key, ui[key].value);
@@ -636,6 +639,7 @@ const saveSettings = () => {
   localStorage.setItem('ummweb.allowTextOnly', ui.allowTextOnly.checked ? '1' : '0');
   localStorage.setItem('ummweb.fastVideo', ui.fastVideo.checked ? '1' : '0');
   localStorage.setItem('ummweb.nativeAllocatorTelemetry', ui.nativeAllocatorTelemetry.checked ? '1' : '0');
+  localStorage.setItem('ummweb.behaviorLogprobs', ui.behaviorLogprobs.checked ? '1' : '0');
   localStorage.setItem('ummweb.echoSuppression', ui.realtimeEchoSuppression.checked ? '1' : '0');
 };
 
@@ -1074,6 +1078,101 @@ function applyNativeAllocatorTelemetryOption(body, enabled) {
   return body;
 }
 
+function applyBehaviorLogprobsOption(body, enabled) {
+  if (enabled === true) {
+    body.behavior = { logprobs: true };
+  }
+  return body;
+}
+
+function normalizeBehaviorEvidenceHeader(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim().toLowerCase();
+}
+
+function extractBehaviorEvidence(root) {
+  if (!root || typeof root !== 'object') return null;
+  const candidate = root.behavior;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+  if (!Array.isArray(candidate.token_ids) || !Array.isArray(candidate.mask)) return null;
+  if (candidate.token_ids.length !== candidate.mask.length) return null;
+  for (const id of candidate.token_ids) {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)) return null;
+  }
+  for (const m of candidate.mask) {
+    if (typeof m !== 'number' || (m !== 0 && m !== 1)) return null;
+  }
+  if (candidate.logprobs !== undefined && candidate.logprobs !== null) {
+    if (!Array.isArray(candidate.logprobs) || candidate.logprobs.length !== candidate.token_ids.length) {
+      return null;
+    }
+    for (const lp of candidate.logprobs) {
+      if (typeof lp !== 'number' || !Number.isFinite(lp)) return null;
+    }
+  }
+  return {
+    format: typeof candidate.format === 'string' ? candidate.format : '',
+    tokenizer_sha256: typeof candidate.tokenizer_sha256 === 'string' ? candidate.tokenizer_sha256 : '',
+    token_ids: candidate.token_ids,
+    logprobs: Array.isArray(candidate.logprobs) ? candidate.logprobs : null,
+    mask: candidate.mask,
+  };
+}
+
+function summarizeBehaviorEvidence({ requested = false, header = '', payload = null } = {}) {
+  const normHeader = normalizeBehaviorEvidenceHeader(header);
+  const validPayload = payload ? extractBehaviorEvidence({ behavior: payload }) : null;
+  if (!requested && !normHeader && !validPayload) return null;
+  if (normHeader === 'exposed' && validPayload) {
+    const totalTokens = validPayload.token_ids.length;
+    let supervisedTokens = 0;
+    for (const m of validPayload.mask) {
+      if (m === 1) supervisedTokens += 1;
+    }
+    const lines = ['Behavior logprobs: exposed'];
+    if (validPayload.format) lines.push(`Format: ${validPayload.format}`);
+    lines.push(`Tokens: ${totalTokens} (${supervisedTokens} supervised)`);
+    if (validPayload.tokenizer_sha256) {
+      lines.push(`Tokenizer SHA-256: ${validPayload.tokenizer_sha256}`);
+    }
+    return {
+      status: 'exposed',
+      tokenCount: totalTokens,
+      supervisedCount: supervisedTokens,
+      label: `Behavior: ${totalTokens} tok (${supervisedTokens} sup)`,
+      title: lines.join('\n'),
+    };
+  }
+  if (normHeader === 'not_exposed') {
+    return {
+      status: 'not_exposed',
+      tokenCount: null,
+      supervisedCount: null,
+      label: 'Behavior: not_exposed',
+      title: 'Behavior logprobs: not_exposed (no behavior payload)',
+    };
+  }
+  if (!normHeader) {
+    if (!requested) return null;
+    return {
+      status: 'absent',
+      tokenCount: null,
+      supervisedCount: null,
+      label: 'Behavior: absent',
+      title: 'Behavior logprobs requested, but X-UmmInfer-Behavior-Evidence header was absent',
+    };
+  }
+  return {
+    status: 'not_exposed',
+    tokenCount: null,
+    supervisedCount: null,
+    label: 'Behavior: not_exposed',
+    title: normHeader === 'exposed'
+      ? 'Behavior logprobs: exposed header received without a valid behavior payload'
+      : `Behavior logprobs: ${normHeader} (no valid exposed payload)`,
+  };
+}
+
 function extractNativeAllocatorTelemetry(root) {
   if (!root || typeof root !== 'object') return null;
   const candidate = (root.unified && typeof root.unified === 'object' &&
@@ -1181,6 +1280,19 @@ function formatTurnTelemetry(telemetry) {
       coverage: vram.coverage,
     });
   }
+  const behavior = summarizeBehaviorEvidence({
+    requested: telemetry.behaviorRequested === true,
+    header: telemetry.behaviorEvidenceHeader || '',
+    payload: telemetry.behaviorEvidence || null,
+  });
+  if (behavior !== null) {
+    pills.push({
+      kind: 'behavior',
+      label: behavior.label,
+      title: behavior.title,
+      status: behavior.status,
+    });
+  }
   return pills;
 }
 // TURN_TELEMETRY_END
@@ -1209,6 +1321,7 @@ function renderTurnTelemetry(targetTurn) {
     span.className = 'telemetry-pill' + (pill.kind === 'i2v' ? ' accent' : '');
     span.dataset.metric = pill.kind;
     if (pill.coverage) span.dataset.coverage = pill.coverage;
+    if (pill.status) span.dataset.status = pill.status;
     if (pill.title) span.title = pill.title;
     span.textContent = pill.label;
     frag.append(span);
@@ -1220,6 +1333,25 @@ function renderTurnTelemetry(targetTurn) {
 function recordNativeAllocatorTelemetry(targetTurn, rawTelemetry) {
   if (!targetTurn?.telemetry || !rawTelemetry || typeof rawTelemetry !== 'object') return;
   targetTurn.telemetry.nativeAllocator = rawTelemetry;
+  renderTurnTelemetry(targetTurn);
+}
+
+function recordBehaviorEvidence(targetTurn, requested, header, rawBehavior) {
+  if (!targetTurn?.telemetry || !rawBehavior || typeof rawBehavior !== 'object') return;
+  const normHeader = normalizeBehaviorEvidenceHeader(header);
+  targetTurn.telemetry.behaviorRequested = Boolean(requested);
+  targetTurn.telemetry.behaviorEvidenceHeader = normHeader;
+  targetTurn.telemetry.behaviorEvidence = normHeader === 'exposed' ? rawBehavior : null;
+  renderTurnTelemetry(targetTurn);
+}
+
+function finalizeBehaviorEvidence(targetTurn, requested, header) {
+  if (!targetTurn?.telemetry) return;
+  const normHeader = normalizeBehaviorEvidenceHeader(header);
+  if (!requested && !normHeader && !targetTurn.telemetry.behaviorEvidence) return;
+  targetTurn.telemetry.behaviorRequested = Boolean(requested);
+  targetTurn.telemetry.behaviorEvidenceHeader = normHeader;
+  if (normHeader !== 'exposed') targetTurn.telemetry.behaviorEvidence = null;
   renderTurnTelemetry(targetTurn);
 }
 
@@ -2834,6 +2966,8 @@ async function consume(payload, st) {
   try { root = JSON.parse(payload); } catch { throw new Error('An SSE event is not JSON.'); }
   const rawTelemetry = extractNativeAllocatorTelemetry(root);
   if (rawTelemetry) recordNativeAllocatorTelemetry(turn, rawTelemetry);
+  const rawBehavior = extractBehaviorEvidence(root);
+  if (rawBehavior) recordBehaviorEvidence(turn, st.behaviorRequested, st.behaviorEvidenceHeader, rawBehavior);
   if (root.error != null) throw new Error(errorDetail(root));
 
   const unified = root.unified;
@@ -2939,7 +3073,7 @@ function setBusy(busy) {
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
     ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly,
-    ui.narrativeContinuity, ui.styleAnchor, ui.fastVideo, ui.nativeAllocatorTelemetry,
+    ui.narrativeContinuity, ui.styleAnchor, ui.fastVideo, ui.nativeAllocatorTelemetry, ui.behaviorLogprobs,
     ui.videoFramePolicy, ui.videoMotionThreshold, ui.videoSceneThreshold]) {
     control.disabled = busy;
   }
@@ -2956,6 +3090,7 @@ ui.narrativeContinuity.addEventListener('change', saveSettings);
 ui.styleAnchor.addEventListener('change', saveSettings);
 ui.fastVideo.addEventListener('change', saveSettings);
 ui.nativeAllocatorTelemetry.addEventListener('change', saveSettings);
+ui.behaviorLogprobs.addEventListener('change', saveSettings);
 ui.videoFramePolicy.addEventListener('change', () => {
   saveSettings();
   syncVideoFrameControls();
@@ -3259,6 +3394,8 @@ async function send() {
   }
   if (modalities.size > 1) body.modalities = [...modalities];
   applyNativeAllocatorTelemetryOption(body, ui.nativeAllocatorTelemetry.checked);
+  const behaviorRequested = ui.behaviorLogprobs.checked;
+  applyBehaviorLogprobsOption(body, behaviorRequested);
 
   const userLabel = [
     text,
@@ -3308,11 +3445,17 @@ async function send() {
     hasExplicitAnchor: false,
     totalMs: null,
     nativeAllocator: null,
+    behaviorRequested: false,
+    behaviorEvidenceHeader: '',
+    behaviorEvidence: null,
   };
   if (body.audio?.stream) player.begin(ui.voiceWave);
 
   controller = new AbortController();
-  const st = { seq: 0, terminal: 0, sawUnified: false, done: false, text: '', finish: '', sessionID };
+  const st = {
+    seq: 0, terminal: 0, sawUnified: false, done: false, text: '', finish: '', sessionID,
+    behaviorRequested, behaviorEvidenceHeader: '',
+  };
   log('request', url.href, JSON.stringify({ ...body, messages: '[redacted media]' }));
 
   try {
@@ -3339,6 +3482,9 @@ async function send() {
     if (type !== 'text/event-stream') {
       throw new Error(`Expected text/event-stream, got ${type || 'no content type'}.`);
     }
+    st.behaviorEvidenceHeader = normalizeBehaviorEvidenceHeader(
+      res.headers.get('x-umminfer-behavior-evidence') || '',
+    );
 
     // One data line carries one event (docs/mixed-output-contract.md), the same
     // flush rule ChatClient.SSEParser uses.
@@ -3365,6 +3511,7 @@ async function send() {
     }
     history.push({ role: 'user', content: userLabel });
     history.push({ role: 'assistant', content: st.text });
+    finalizeBehaviorEvidence(turn, st.behaviorRequested, st.behaviorEvidenceHeader);
     recordTurnTotal(turn);
     turn.tailText?.classList.remove('caret');
     player.end();
@@ -3381,6 +3528,7 @@ async function send() {
         turn.el.remove();
         syncEmptyState();
       } else {
+        finalizeBehaviorEvidence(turn, st.behaviorRequested, st.behaviorEvidenceHeader);
         recordTurnTotal(turn);
       }
     } else {

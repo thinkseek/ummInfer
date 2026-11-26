@@ -225,6 +225,7 @@ struct TurnTelemetry: Equatable {
             case i2v
             case total
             case vram
+            case behavior
         }
         let kind: Kind
         let label: String
@@ -248,6 +249,14 @@ struct TurnTelemetry: Equatable {
     /// Real server-returned opt-in request-native CUDA allocator telemetry envelope.
     /// Remains nil unless requested and returned by the server.
     var nativeAllocator: NativeAllocatorTelemetryEnvelope? = nil
+    /// Whether opt-in behavior logprobs (`behavior.logprobs=true`) was requested.
+    var behaviorRequested: Bool = false
+    /// Case-insensitive normalized `X-UmmInfer-Behavior-Evidence` header
+    /// (`"exposed"`, `"not_exposed"`, or nil when absent).
+    var behaviorEvidenceHeader: String? = nil
+    /// Real server-returned opt-in final SSE `"behavior"` payload when exposed;
+    /// nil otherwise (never fabricated).
+    var behaviorEvidence: BehaviorLogprobsEvidence? = nil
 
     static func formatDuration(_ ms: Double) -> String? {
         guard ms.isFinite, ms >= 0 else { return nil }
@@ -284,6 +293,13 @@ struct TurnTelemetry: Equatable {
         if let nativeAllocator {
             let summary = nativeAllocator.summary
             pills.append(Pill(kind: .vram, label: summary.label, help: summary.help))
+        }
+        if let behaviorSummary = BehaviorLogprobsSummary.from(
+            requested: behaviorRequested,
+            header: behaviorEvidenceHeader,
+            evidence: behaviorEvidence
+        ) {
+            pills.append(Pill(kind: .behavior, label: behaviorSummary.label, help: behaviorSummary.help))
         }
         return pills
     }
@@ -373,6 +389,8 @@ final class ChatModel: ObservableObject {
     @Published var fastVideoMode = false
     /// Opt-in per-request native CUDA allocator peak telemetry (`telemetry.native_allocator=true`).
     @Published var nativeAllocatorTelemetry = false
+    /// Opt-in per-request sampled behavior token/log-probability evidence (`behavior.logprobs=true`).
+    @Published var behaviorLogprobs = false
     @Published var attachedImageURL: URL?
     @Published var attachedVideoURL: URL? {
         didSet {
@@ -619,6 +637,7 @@ final class ChatModel: ObservableObject {
         options.sessionID = requestSessionID
         options.videoFrameSelection = videoFrameSelection
         options.nativeAllocatorTelemetry = nativeAllocatorTelemetry
+        options.behaviorLogprobs = behaviorLogprobs
         if let maxTok = Int(maxTokensText.trimmingCharacters(in: .whitespaces)), maxTok > 0 {
             options.maxTokens = maxTok
         }
@@ -729,6 +748,7 @@ final class ChatModel: ObservableObject {
         receivedDelta = false
         status = "Connecting…"
         let requestStart = ContinuousClock.now
+        let behaviorRequested = options.behaviorLogprobs
 
         requestTask = Task { [weak self] in
             guard let self else { return }
@@ -844,6 +864,14 @@ final class ChatModel: ObservableObject {
                         return
                     }
                     self.turns[index].telemetry.nativeAllocator = envelope
+                } onBehaviorEvidence: { header, evidence in
+                    guard self.activeTurn == assistant.id,
+                          let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
+                        return
+                    }
+                    self.turns[index].telemetry.behaviorRequested = behaviorRequested
+                    self.turns[index].telemetry.behaviorEvidenceHeader = header
+                    self.turns[index].telemetry.behaviorEvidence = evidence
                 }
                 guard self.activeTurn == assistant.id,
                       let index = self.turns.firstIndex(where: { $0.id == assistant.id }) else {
@@ -854,6 +882,11 @@ final class ChatModel: ObservableObject {
                 if self.turns[index].telemetry.nativeAllocator == nil,
                    let telemetry = result.telemetry {
                     self.turns[index].telemetry.nativeAllocator = telemetry
+                }
+                if behaviorRequested || result.behaviorEvidenceHeader != nil {
+                    self.turns[index].telemetry.behaviorRequested = behaviorRequested
+                    self.turns[index].telemetry.behaviorEvidenceHeader = result.behaviorEvidenceHeader
+                    self.turns[index].telemetry.behaviorEvidence = result.behaviorEvidence
                 }
                 self.settleVisualSlots(at: index)
                 if self.turns[index].telemetry.totalMs == nil {

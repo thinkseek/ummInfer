@@ -272,6 +272,116 @@ struct NativeAllocatorTelemetrySummary: Equatable {
     }
 }
 
+/// Server-returned opt-in sampled behavior token/log-probability evidence from
+/// the final SSE chunk (`"behavior": {...}`). Never fabricated when omitted or
+/// `not_exposed`.
+struct BehaviorLogprobsEvidence: Equatable {
+    let format: String?
+    let tokenizerSha256: String?
+    let tokenIDs: [Int64]
+    let logprobs: [Double]?
+    let mask: [Int]
+
+    init(format: String? = nil, tokenizerSha256: String? = nil,
+         tokenIDs: [Int64], logprobs: [Double]? = nil, mask: [Int]) {
+        self.format = format
+        self.tokenizerSha256 = tokenizerSha256
+        self.tokenIDs = tokenIDs
+        self.logprobs = logprobs
+        self.mask = mask
+    }
+
+    var supervisedCount: Int {
+        mask.reduce(0) { $0 + ($1 == 1 ? 1 : 0) }
+    }
+}
+
+/// Honest summary of opt-in behavior logprobs evidence for display in the
+/// per-turn telemetry strip (`Behavior: N tok (M sup)` vs
+/// `Behavior: not_exposed` / `Behavior: absent`).
+struct BehaviorLogprobsSummary: Equatable {
+    let status: String
+    let tokenCount: Int?
+    let supervisedCount: Int?
+    let label: String
+    let help: String
+
+    static func normalizeHeader(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func from(
+        requested: Bool,
+        header: String?,
+        evidence: BehaviorLogprobsEvidence?
+    ) -> BehaviorLogprobsSummary? {
+        let normHeader = normalizeHeader(header)
+        let validEvidence: BehaviorLogprobsEvidence?
+        if let evidence,
+           evidence.tokenIDs.count == evidence.mask.count,
+           evidence.mask.allSatisfy({ $0 == 0 || $0 == 1 }),
+           evidence.logprobs.map({ $0.count == evidence.tokenIDs.count && $0.allSatisfy(\.isFinite) }) ?? true {
+            validEvidence = evidence
+        } else {
+            validEvidence = nil
+        }
+
+        if !requested && normHeader == nil && validEvidence == nil {
+            return nil
+        }
+        if normHeader == "exposed", let validEvidence {
+            let total = validEvidence.tokenIDs.count
+            let supervised = validEvidence.supervisedCount
+            var lines = ["Behavior logprobs: exposed"]
+            if let format = validEvidence.format, !format.isEmpty {
+                lines.append("Format: \(format)")
+            }
+            lines.append("Tokens: \(total) (\(supervised) supervised)")
+            if let sha = validEvidence.tokenizerSha256, !sha.isEmpty {
+                lines.append("Tokenizer SHA-256: \(sha)")
+            }
+            return BehaviorLogprobsSummary(
+                status: "exposed",
+                tokenCount: total,
+                supervisedCount: supervised,
+                label: "Behavior: \(total) tok (\(supervised) sup)",
+                help: lines.joined(separator: "\n")
+            )
+        }
+        if normHeader == "not_exposed" {
+            return BehaviorLogprobsSummary(
+                status: "not_exposed",
+                tokenCount: nil,
+                supervisedCount: nil,
+                label: "Behavior: not_exposed",
+                help: "Behavior logprobs: not_exposed (no behavior payload)"
+            )
+        }
+        guard let normHeader else {
+            guard requested else { return nil }
+            return BehaviorLogprobsSummary(
+                status: "absent",
+                tokenCount: nil,
+                supervisedCount: nil,
+                label: "Behavior: absent",
+                help: "Behavior logprobs requested, but X-UmmInfer-Behavior-Evidence header was absent"
+            )
+        }
+        let help = normHeader == "exposed"
+            ? "Behavior logprobs: exposed header received without a valid behavior payload"
+            : "Behavior logprobs: \(normHeader) (no valid exposed payload)"
+        return BehaviorLogprobsSummary(
+            status: "not_exposed",
+            tokenCount: nil,
+            supervisedCount: nil,
+            label: "Behavior: not_exposed",
+            help: help
+        )
+    }
+}
+
 struct UnifiedEvent {
     let kind: UnifiedKind
     let seq: Int
@@ -578,6 +688,66 @@ enum UnifiedDecode {
             lifecycleStatus: lifecycleStatus,
             stages: stages,
             truncated: truncated
+        )
+    }
+
+    static func decodeBehaviorLogprobsEvidence(
+        _ raw: [String: Any]
+    ) -> BehaviorLogprobsEvidence? {
+        guard let rawTokenIDs = raw["token_ids"] as? [Any],
+              let rawMask = raw["mask"] as? [Any],
+              rawTokenIDs.count == rawMask.count else {
+            return nil
+        }
+        var tokenIDs: [Int64] = []
+        tokenIDs.reserveCapacity(rawTokenIDs.count)
+        for item in rawTokenIDs {
+            guard let number = item as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  !CFNumberIsFloatType(number) else {
+                return nil
+            }
+            tokenIDs.append(number.int64Value)
+        }
+        var mask: [Int] = []
+        mask.reserveCapacity(rawMask.count)
+        for item in rawMask {
+            guard let number = item as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  !CFNumberIsFloatType(number) else {
+                return nil
+            }
+            let val = number.intValue
+            guard val == 0 || val == 1 else { return nil }
+            mask.append(val)
+        }
+        var logprobs: [Double]? = nil
+        if let rawLogprobs = raw["logprobs"], !(rawLogprobs is NSNull) {
+            guard let array = rawLogprobs as? [Any],
+                  array.count == tokenIDs.count else {
+                return nil
+            }
+            var parsed: [Double] = []
+            parsed.reserveCapacity(array.count)
+            for item in array {
+                guard let number = item as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                    return nil
+                }
+                let val = number.doubleValue
+                guard val.isFinite else { return nil }
+                parsed.append(val)
+            }
+            logprobs = parsed
+        }
+        let format = raw["format"] as? String
+        let tokenizerSha256 = raw["tokenizer_sha256"] as? String
+        return BehaviorLogprobsEvidence(
+            format: format,
+            tokenizerSha256: tokenizerSha256,
+            tokenIDs: tokenIDs,
+            logprobs: logprobs,
+            mask: mask
         )
     }
 

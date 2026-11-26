@@ -155,6 +155,7 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertEqual(model.videoMotionThresholdText, "0.02")
         XCTAssertEqual(model.videoSceneThresholdText, "0.25")
         XCTAssertFalse(model.nativeAllocatorTelemetry)
+        XCTAssertFalse(model.behaviorLogprobs)
         XCTAssertEqual(model.status, "Ready")
         XCTAssertEqual(model.prompt, "")
     }
@@ -277,6 +278,8 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertFalse(model.isRunning)
         XCTAssertFalse(model.nativeAllocatorTelemetry,
                        "Showcase presets must not auto-enable nativeAllocatorTelemetry")
+        XCTAssertFalse(model.behaviorLogprobs,
+                       "Showcase presets must not auto-enable behaviorLogprobs")
     }
 
     func testTurnTelemetryFormattingAndBounds() {
@@ -375,6 +378,72 @@ final class ShowcaseTelemetryTests: XCTestCase {
         )
         let ncVram = notCoveredTelemetry.formattedPills.first { $0.kind == .vram }
         XCTAssertTrue(ncVram?.help?.contains("batched_request_attribution_unavailable") == true)
+
+        // Behavior logprobs telemetry formatting: default OFF, exposed, not_exposed, and absent.
+        let sampleBehavior = BehaviorLogprobsEvidence(
+            format: "umminfer-behavior-logprobs-v1",
+            tokenizerSha256: "1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016",
+            tokenIDs: [101, 202, 303, 404],
+            logprobs: [-0.1, -0.2, -0.3, -0.05],
+            mask: [1, 0, 1, 0]
+        )
+        let defaultOffBehavior = TurnTelemetry(ttftMs: 110, totalMs: 900)
+        XCTAssertFalse(defaultOffBehavior.formattedPills.contains { $0.kind == .behavior })
+
+        let exposedBehavior = TurnTelemetry(
+            ttftMs: 115,
+            totalMs: 1020,
+            behaviorRequested: true,
+            behaviorEvidenceHeader: "EXPOSED",
+            behaviorEvidence: sampleBehavior
+        )
+        XCTAssertEqual(
+            exposedBehavior.formattedPills.map(\.label),
+            ["TTFT 115 ms", "Total 1.02 s", "Behavior: 4 tok (2 sup)"]
+        )
+        let exposedPill = exposedBehavior.formattedPills.first { $0.kind == .behavior }
+        XCTAssertTrue(exposedPill?.help?.contains("umminfer-behavior-logprobs-v1") == true)
+        XCTAssertTrue(exposedPill?.help?.contains("4 (2 supervised)") == true)
+        XCTAssertTrue(exposedPill?.help?.contains("1dd1199e35f6cfb9") == true)
+
+        // not_exposed never leaks or fabricates counts, even if stray evidence is attached.
+        let notExposedBehavior = TurnTelemetry(
+            ttftMs: 120,
+            totalMs: 980,
+            behaviorRequested: true,
+            behaviorEvidenceHeader: "not_exposed",
+            behaviorEvidence: sampleBehavior
+        )
+        XCTAssertEqual(
+            notExposedBehavior.formattedPills.map(\.label),
+            ["TTFT 120 ms", "Total 980 ms", "Behavior: not_exposed"]
+        )
+
+        // exposed header without valid evidence falls back to not_exposed (never 0 tok).
+        let exposedNoPayload = TurnTelemetry(
+            ttftMs: 120,
+            totalMs: 980,
+            behaviorRequested: true,
+            behaviorEvidenceHeader: "exposed",
+            behaviorEvidence: nil
+        )
+        XCTAssertEqual(
+            exposedNoPayload.formattedPills.map(\.label),
+            ["TTFT 120 ms", "Total 980 ms", "Behavior: not_exposed"]
+        )
+
+        // Requested with absent header -> Behavior: absent.
+        let absentHeaderBehavior = TurnTelemetry(
+            ttftMs: 120,
+            totalMs: 980,
+            behaviorRequested: true,
+            behaviorEvidenceHeader: nil,
+            behaviorEvidence: nil
+        )
+        XCTAssertEqual(
+            absentHeaderBehavior.formattedPills.map(\.label),
+            ["TTFT 120 ms", "Total 980 ms", "Behavior: absent"]
+        )
     }
 
     func testStreamRecordsObservedTelemetryForMultimodalI2VTurn() async {

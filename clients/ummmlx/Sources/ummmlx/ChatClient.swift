@@ -27,15 +27,21 @@ struct ChatCompletion {
     let sessionID: String
     let artifacts: [GeneratedArtifact]
     let telemetry: NativeAllocatorTelemetryEnvelope?
+    let behaviorEvidenceHeader: String?
+    let behaviorEvidence: BehaviorLogprobsEvidence?
 
     init(text: String, finishReason: String, sessionID: String,
          artifacts: [GeneratedArtifact],
-         telemetry: NativeAllocatorTelemetryEnvelope? = nil) {
+         telemetry: NativeAllocatorTelemetryEnvelope? = nil,
+         behaviorEvidenceHeader: String? = nil,
+         behaviorEvidence: BehaviorLogprobsEvidence? = nil) {
         self.text = text
         self.finishReason = finishReason
         self.sessionID = sessionID
         self.artifacts = artifacts
         self.telemetry = telemetry
+        self.behaviorEvidenceHeader = behaviorEvidenceHeader
+        self.behaviorEvidence = behaviorEvidence
     }
 }
 
@@ -191,6 +197,9 @@ struct ChatStreamOptions: Equatable {
     /// Opt-in per-request native CUDA allocator peak telemetry
     /// (`telemetry.native_allocator=true`). Omitted completely when false.
     var nativeAllocatorTelemetry = false
+    /// Opt-in per-request sampled behavior token/log-probability evidence
+    /// (`behavior.logprobs=true`; requires `stream=true`). Omitted completely when false.
+    var behaviorLogprobs = false
 
     var modalities: [String] {
         var values = ["text"]
@@ -541,6 +550,9 @@ final class ChatClient {
         if options.nativeAllocatorTelemetry {
             body["telemetry"] = ["native_allocator": true]
         }
+        if options.behaviorLogprobs {
+            body["behavior"] = ["logprobs": true]
+        }
         return body
     }
 
@@ -554,7 +566,8 @@ final class ChatClient {
                 onEvent: ((UnifiedEvent) -> Void)? = nil,
                 onArtifact: ((GeneratedArtifact) -> Void)? = nil,
                 onAudioChunk: ((AudioStreamChunk) -> Void)? = nil,
-                onTelemetry: ((NativeAllocatorTelemetryEnvelope) -> Void)? = nil) async throws -> ChatCompletion {
+                onTelemetry: ((NativeAllocatorTelemetryEnvelope) -> Void)? = nil,
+                onBehaviorEvidence: ((String?, BehaviorLogprobsEvidence?) -> Void)? = nil) async throws -> ChatCompletion {
         var shape = options
         var wire = messages
         var historyUnavailable = false
@@ -564,7 +577,8 @@ final class ChatClient {
                 return try await attempt(
                     base: base, model: model, messages: wire, options: shape,
                     onDelta: onDelta, onEvent: onEvent, onArtifact: onArtifact,
-                    onAudioChunk: onAudioChunk, onTelemetry: onTelemetry)
+                    onAudioChunk: onAudioChunk, onTelemetry: onTelemetry,
+                    onBehaviorEvidence: onBehaviorEvidence)
             } catch let ChatClientError.http(status, detail)
                         where status == 400 && attempts < 3 {
                 attempts += 1
@@ -644,7 +658,8 @@ final class ChatClient {
                          onEvent: ((UnifiedEvent) -> Void)?,
                          onArtifact: ((GeneratedArtifact) -> Void)?,
                          onAudioChunk: ((AudioStreamChunk) -> Void)?,
-                         onTelemetry: ((NativeAllocatorTelemetryEnvelope) -> Void)?) async throws -> ChatCompletion {
+                         onTelemetry: ((NativeAllocatorTelemetryEnvelope) -> Void)?,
+                         onBehaviorEvidence: ((String?, BehaviorLogprobsEvidence?) -> Void)?) async throws -> ChatCompletion {
         try options.videoFrameSelection?.validate()
         try options.narrative?.validate()
         let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -673,6 +688,9 @@ final class ChatClient {
             throw ChatClientError.invalidResponse("expected text/event-stream")
         }
 
+        let behaviorEvidenceHeader = BehaviorLogprobsSummary.normalizeHeader(
+            http.value(forHTTPHeaderField: "X-UmmInfer-Behavior-Evidence")
+        )
         let mixed = options.image != nil || options.audio != nil || options.video != nil
         let wireLimit = mixed ? mixedResponseLimit : textResponseLimit
         var parser = SSEParser()
@@ -684,6 +702,7 @@ final class ChatClient {
         var sessionID = ""
         var artifacts: [GeneratedArtifact] = []
         var latestTelemetry: NativeAllocatorTelemetryEnvelope? = nil
+        var latestBehaviorEvidence: BehaviorLogprobsEvidence? = nil
         var received = 0
         var done = false
         var unifiedSeen = false
@@ -757,9 +776,15 @@ final class ChatClient {
                 onEvent?(unified)
                 switch unified.kind {
                 case .error:
+                    if options.behaviorLogprobs || behaviorEvidenceHeader != nil {
+                        onBehaviorEvidence?(behaviorEvidenceHeader, nil)
+                    }
                     throw ChatClientError.unifiedError(
                         unified.error.isEmpty ? "the request failed" : unified.error)
                 case .cancelled:
+                    if options.behaviorLogprobs || behaviorEvidenceHeader != nil {
+                        onBehaviorEvidence?(behaviorEvidenceHeader, nil)
+                    }
                     throw ChatClientError.cancelled
                 default:
                     break
@@ -770,6 +795,12 @@ final class ChatClient {
                let envelope = UnifiedDecode.decodeNativeAllocatorTelemetry(rawTelemetry) {
                 latestTelemetry = envelope
                 onTelemetry?(envelope)
+            }
+            if let rawBehavior = root["behavior"] as? [String: Any],
+               let decoded = UnifiedDecode.decodeBehaviorLogprobsEvidence(rawBehavior),
+               behaviorEvidenceHeader == "exposed" {
+                latestBehaviorEvidence = decoded
+                onBehaviorEvidence?(behaviorEvidenceHeader, decoded)
             }
             if let rawChoices = root["choices"] {
                 guard let choices = rawChoices as? [Any] else {
@@ -838,9 +869,15 @@ final class ChatClient {
         guard !text.isEmpty || finishReason == "length" || !artifacts.isEmpty else {
             throw ChatClientError.invalidResponse("the model returned no text")
         }
+        let exposedBehavior = behaviorEvidenceHeader == "exposed" ? latestBehaviorEvidence : nil
+        if options.behaviorLogprobs || behaviorEvidenceHeader != nil {
+            onBehaviorEvidence?(behaviorEvidenceHeader, exposedBehavior)
+        }
         return ChatCompletion(text: text, finishReason: finishReason,
                               sessionID: sessionID, artifacts: artifacts,
-                              telemetry: latestTelemetry)
+                              telemetry: latestTelemetry,
+                              behaviorEvidenceHeader: behaviorEvidenceHeader,
+                              behaviorEvidence: exposedBehavior)
     }
 
     private func readLimited(_ bytes: URLSession.AsyncBytes, limit: Int) async throws -> Data {
