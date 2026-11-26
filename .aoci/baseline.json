@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T16:53:11Z",
+  "updated_at": "2026-11-26T16:55:49Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "0f54702e0181d6f1621324f0219d218d3766639eb3ce412ae55213897dd4ec71",
+      "sha256": "5ed92e5c0099595183e798c9525d70d04213c2cf3c64ecf5e78e6df114af48d3",
       "size": 277675,
-      "normalized_sha256": "0f54702e0181d6f1621324f0219d218d3766639eb3ce412ae55213897dd4ec71"
+      "normalized_sha256": "5ed92e5c0099595183e798c9525d70d04213c2cf3c64ecf5e78e6df114af48d3"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -701,9 +701,9 @@
     },
     "docs/architecture.md": {
       "role": "index",
-      "sha256": "05a5d15b51bea37dd284f8285870aec5a0d4aeda323dd959c7f8e79f83d91d53",
-      "size": 39755,
-      "normalized_sha256": "05a5d15b51bea37dd284f8285870aec5a0d4aeda323dd959c7f8e79f83d91d53"
+      "sha256": "0408708586feef4f7882d4c8826ab60a50e007fa548a9c0590646b80f0bd9594",
+      "size": 40863,
+      "normalized_sha256": "0408708586feef4f7882d4c8826ab60a50e007fa548a9c0590646b80f0bd9594"
     },
     "docs/batching.md": {
       "role": "index",
@@ -755,9 +755,9 @@
     },
     "docs/concurrency.md": {
       "role": "index",
-      "sha256": "c931aea246ba328b7c96e9a7b81fd37ce383e3bcf59a83f19d1878f756276370",
-      "size": 9541,
-      "normalized_sha256": "c931aea246ba328b7c96e9a7b81fd37ce383e3bcf59a83f19d1878f756276370"
+      "sha256": "5dd4765f7407fe55884943483303bdb365f4ab33daa411d2de3c4a2a75b7113c",
+      "size": 9812,
+      "normalized_sha256": "5dd4765f7407fe55884943483303bdb365f4ab33daa411d2de3c4a2a75b7113c"
     },
     "docs/cuda-ipc.md": {
       "role": "index",
@@ -849,6 +849,12 @@
       "size": 12020,
       "normalized_sha256": "a95a4240a57a1df8a8d4d37366931473f2e5cf8d9ecd8a70ad4f072315f01028"
     },
+    "docs/evidence/tts-continuation-determinism-sm90.json": {
+      "role": "index",
+      "sha256": "a34832621ce0a9b151257394284fb9476b04d451b118fa71ca6d0023556a0b47",
+      "size": 4878,
+      "normalized_sha256": "a34832621ce0a9b151257394284fb9476b04d451b118fa71ca6d0023556a0b47"
+    },
     "docs/evidence/video-temporal-motion-run-preregistration.json": {
       "role": "index",
       "sha256": "f62f2f8aa3f11db61fdda6a496ce41fd505304ea6c26fe51ffe795d6a5d8bd41",
@@ -881,9 +887,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "d29a423ac4aad5f58e6008c00e3765331dfbe21510d40eb0643ae2325269a6f3",
-      "size": 158116,
-      "normalized_sha256": "d29a423ac4aad5f58e6008c00e3765331dfbe21510d40eb0643ae2325269a6f3"
+      "sha256": "543e78de35ea94cc4bd92173437a6a0a9ee8dcdd2d8e8c82a0f42308390718ea",
+      "size": 158999,
+      "normalized_sha256": "543e78de35ea94cc4bd92173437a6a0a9ee8dcdd2d8e8c82a0f42308390718ea"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -1001,9 +1007,9 @@
     },
     "docs/realtime-first-audio.md": {
       "role": "index",
-      "sha256": "ce8d885831b4ab59ec96b8c914c4c997730d985fd4129dde993be226cadab6c8",
-      "size": 24996,
-      "normalized_sha256": "ce8d885831b4ab59ec96b8c914c4c997730d985fd4129dde993be226cadab6c8"
+      "sha256": "3d7eba68fe1934f893c7a79e44bfabd325ff8743c3e704494db1014a92f27ea7",
+      "size": 28150,
+      "normalized_sha256": "3d7eba68fe1934f893c7a79e44bfabd325ff8743c3e704494db1014a92f27ea7"
     },
     "docs/realtime-latency-audit.md": {
       "role": "index",
@@ -1031,9 +1037,9 @@
     },
     "docs/roadmap.md": {
       "role": "index",
-      "sha256": "5c82d8df6b2d24fbd3f2fb06c33df04e476fc3f31ac97457c23ab14952b82b42",
-      "size": 34093,
-      "normalized_sha256": "5c82d8df6b2d24fbd3f2fb06c33df04e476fc3f31ac97457c23ab14952b82b42"
+      "sha256": "7418c0c05b4c188f41453243447289b79b3eebf620d7aab2cc59234ada936fc9",
+      "size": 34827,
+      "normalized_sha256": "7418c0c05b4c188f41453243447289b79b3eebf620d7aab2cc59234ada936fc9"
     },
     "docs/showcase.md": {
       "role": "index",
@@ -1247,9 +1253,9 @@
     },
     "native/TTS_NATIVE.md": {
       "role": "index",
-      "sha256": "f92567f72989d3c504364a76d6d6bbcc5491d4e557ab4cf9555b0cb8dc60793b",
-      "size": 9011,
-      "normalized_sha256": "f92567f72989d3c504364a76d6d6bbcc5491d4e557ab4cf9555b0cb8dc60793b"
+      "sha256": "6814443965b6a05713c7686420176e50fcda349b682710283da1f37844887c0b",
+      "size": 9516,
+      "normalized_sha256": "6814443965b6a05713c7686420176e50fcda349b682710283da1f37844887c0b"
     },
     "native/cli/main.cpp": {
       "role": "index",
@@ -2099,15 +2105,15 @@
     },
     "native/tts/CMakeLists.txt": {
       "role": "index",
-      "sha256": "178de2fa214415a9829761f5c3f684c3f0f4582f0b822fab4e052efb04c433d0",
-      "size": 2869,
-      "normalized_sha256": "178de2fa214415a9829761f5c3f684c3f0f4582f0b822fab4e052efb04c433d0"
+      "sha256": "117f1bdc6733a4e6e009e1dd136d51c90b0e3911d7bb7272b7fcb276d6f1a29e",
+      "size": 3309,
+      "normalized_sha256": "117f1bdc6733a4e6e009e1dd136d51c90b0e3911d7bb7272b7fcb276d6f1a29e"
     },
     "native/tts/NOTICE": {
       "role": "index",
-      "sha256": "c582bf331d08c2a179a21a1db031422169fb482395280f78433bc423b71175fc",
-      "size": 3636,
-      "normalized_sha256": "c582bf331d08c2a179a21a1db031422169fb482395280f78433bc423b71175fc"
+      "sha256": "4640d1d8d28f66565102e4991a7009f309a40331ad26ad571ceb7e2b878d55b8",
+      "size": 3684,
+      "normalized_sha256": "4640d1d8d28f66565102e4991a7009f309a40331ad26ad571ceb7e2b878d55b8"
     },
     "native/tts/abort.hpp": {
       "role": "index",
@@ -2147,33 +2153,33 @@
     },
     "native/tts/cuda_kernels.cu": {
       "role": "index",
-      "sha256": "0624d0de5317b3f85e28d11c5ecf1c159590c3319ce5b378824cd9d2dc2f77ba",
-      "size": 79472,
-      "normalized_sha256": "0624d0de5317b3f85e28d11c5ecf1c159590c3319ce5b378824cd9d2dc2f77ba"
+      "sha256": "18e8ccf5dddcdee1968472811f22c72b854ea448c0d4c98a13486fe303c1079e",
+      "size": 80105,
+      "normalized_sha256": "18e8ccf5dddcdee1968472811f22c72b854ea448c0d4c98a13486fe303c1079e"
     },
     "native/tts/cuda_kernels.hpp": {
       "role": "index",
-      "sha256": "914cde6cf265f2c6764ebfdf689473e5af77ba937a23658c77f1dbc4aa1e1783",
-      "size": 12529,
-      "normalized_sha256": "914cde6cf265f2c6764ebfdf689473e5af77ba937a23658c77f1dbc4aa1e1783"
+      "sha256": "9af6bc74dfa779b1d581e2bd459a6a4f3db44d26befb62707cc05bde1518d146",
+      "size": 12622,
+      "normalized_sha256": "9af6bc74dfa779b1d581e2bd459a6a4f3db44d26befb62707cc05bde1518d146"
     },
     "native/tts/decode_helpers.hpp": {
       "role": "index",
-      "sha256": "2c89e769aad8700496effafb64c051ae2f5ce2f1aaede58c742f6c266b0e4a62",
-      "size": 4441,
-      "normalized_sha256": "2c89e769aad8700496effafb64c051ae2f5ce2f1aaede58c742f6c266b0e4a62"
+      "sha256": "5f8a274e84e4adea2645ceccc95923af351734c685a3f27e877a54573ad0090f",
+      "size": 5253,
+      "normalized_sha256": "5f8a274e84e4adea2645ceccc95923af351734c685a3f27e877a54573ad0090f"
     },
     "native/tts/engine.cpp": {
       "role": "index",
-      "sha256": "97a57843897f251cc0d04b857fc7790d389c934d333f3d72e73ac514a8277e34",
-      "size": 41672,
-      "normalized_sha256": "97a57843897f251cc0d04b857fc7790d389c934d333f3d72e73ac514a8277e34"
+      "sha256": "f9a2f01af3e0a52ec07c113b9a30c7971ccde58d7baa3780c9de7bf00375a6b9",
+      "size": 41689,
+      "normalized_sha256": "f9a2f01af3e0a52ec07c113b9a30c7971ccde58d7baa3780c9de7bf00375a6b9"
     },
     "native/tts/engine.hpp": {
       "role": "index",
-      "sha256": "fa322e82c912d5daec3379caeb996ece199bc98723524b44ffa80cb52f0eb5f3",
-      "size": 4827,
-      "normalized_sha256": "fa322e82c912d5daec3379caeb996ece199bc98723524b44ffa80cb52f0eb5f3"
+      "sha256": "6d127b1ecf6fb49b1f06be8cfc2142f34657ed4fed06339f9b5873d7092a5423",
+      "size": 4858,
+      "normalized_sha256": "6d127b1ecf6fb49b1f06be8cfc2142f34657ed4fed06339f9b5873d7092a5423"
     },
     "native/tts/model_config.hpp": {
       "sha256": "81ecc843f012f5990102ab14a28856332d06152266fc00c715f234412278cce8",
@@ -2245,11 +2251,17 @@
       "sha256": "d770d78ca40c9d70647f2429450c79b92bc95e8e94c10c30c673bc4147cf3e4c",
       "size": 5242
     },
+    "native/tts_tests/test_cuda_determinism.cpp": {
+      "role": "index",
+      "sha256": "7acbcea8cf1b3c6740d14950a99c7f87dc0a6494cceecbc363ce8abde91eb3a9",
+      "size": 4574,
+      "normalized_sha256": "7acbcea8cf1b3c6740d14950a99c7f87dc0a6494cceecbc363ce8abde91eb3a9"
+    },
     "native/tts_tests/test_host.cpp": {
       "role": "index",
-      "sha256": "48617c6466798346db587bf4b161c0252102b229ba25f92b9d75d912adcf8a9d",
-      "size": 20835,
-      "normalized_sha256": "48617c6466798346db587bf4b161c0252102b229ba25f92b9d75d912adcf8a9d"
+      "sha256": "d9af888c4c9165ffb28fdd5f30ed85dc9e9425a7711d1655df10be92099b7b2b",
+      "size": 21634,
+      "normalized_sha256": "d9af888c4c9165ffb28fdd5f30ed85dc9e9425a7711d1655df10be92099b7b2b"
     },
     "native/umm_asr_native/bf16.hpp": {
       "role": "index",
