@@ -1574,3 +1574,156 @@ or accepted baseline mid-run to make a candidate pass. Any new binary/model/data
 stack requires a newly reviewed run configuration and a fresh three-round
 execution. No real `STABILITY_PASS` is claimed until that execution actually
 produces three consecutive complete matching rounds.
+
+## 21. Frozen three-round preflight stopped on missing exact manifests, 2026-11-26
+
+Task 32 attempted the deferred real execution on newest main
+`c3bb5d2cdbf02e70f86a16bff85c815612f7311d` (tree
+`ff422666e0845bd5515a605ffee8d4c5dd6d5542`). The tracked working snapshot was
+verified clean before export. Its `git archive` SHA-256 was
+`6a1790b86abbb3dbde9695c7d8da855dee3a7c5cb54c3fe29a0d048029b744ee`.
+The accepted orchestrator, runner, auditor, manifest, frozen configuration, and
+accepted combined audit were not edited.
+
+### 21.1 Independently verified prerequisites
+
+The independent coverage auditor rebuilt the accepted 70-case combined audit
+from its three disjoint sealed sources and all pinned inputs. The new output was
+byte-identical to the accepted file: SHA-256
+`d4514acd07f280d9d7097dac45bd2b8caa85d9298f8caba22102ba28ead5f6a5`,
+70 real cases, 70 completed terminals, and original `BASELINE_REQUIRED` /
+`stability_pass_claim=false` labels. The resolved-input digest was
+`837b150a6a912edaf5351483169feb832e166c2680d1d613ad3d491931fe0d14`.
+
+The benchmark venv provided Python 3.12.3 and `jieba 0.42.1`. Running the
+benchmark downloader against the isolated cache completed:
+
+```text
+PASS data: 70 cases verified (manifest 2026-11-19.1)
+```
+
+The exact accepted binary and model identities matched the frozen config:
+
+| Object | SHA-256 |
+| --- | --- |
+| `umm-infer` | `d2bc15821190c043a734576c422e8dbed61134e79b219de0516b71a10777a5e4` |
+| `umm-native-stage-asr` | `cf8962464aa3c44ad0f3f812c9f756dc2939b4038c3da1376cece96e9f234a81` |
+| `umm-native-stage-qwen38` | `446661e9a99ebb00688a01f6e52f21dcfc20a995308f4f092664dae151fd3fc5` |
+| ASR `config.json` | `2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f` |
+| Qwen3.8 `config.json` | `191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab` |
+
+The retained accepted `model-SHA256SUMS` (SHA-256
+`ede4b0850c9d75f46225d1fc104d06a1de9b5ee6388513cb8f6d72334df8754a`)
+verified all 29 entries: five Qwen3.8 config/tokenizer/index files and 18
+Safetensors shards, plus four ASR config/tokenizer/index files and two
+Safetensors shards. Every entry returned `OK`. These checks establish that the
+actual model bytes are available and unchanged; they do not replace the frozen
+per-model manifest files below.
+
+### 21.2 Fail-closed result and evidence
+
+The accepted evidence contains the combined `model-SHA256SUMS` and
+`provenance.json`, but not the two exact standalone available-weight manifest
+files required by the frozen configuration:
+
+```text
+MISSING /tmp/umm-stability-sm90/provenance/asr-available-weights-SHA256SUMS
+MISSING /tmp/umm-stability-sm90/provenance/qwen38-available-weights-SHA256SUMS
+```
+
+Their required SHA-256 values remain
+`3b50bdd28d2c87395edfcc7bf111161bb6e9addae8f4f7afdc4aa168538c634b`
+and `b7a23bc59e1bbdba42ad309d484b319060d0c2623fbfb086778738fa6e461743`.
+Those values are recorded in the accepted provenance, but no retained
+standalone files with those exact bytes were available. No candidate manifests
+were generated, no paths were repointed, and the accepted combined manifest was
+not substituted for either frozen input.
+
+The exact preflight command was run from the clean exported source with the
+pinned benchmark Python:
+
+```sh
+python3 -I tools/multimodal_stability.py \
+  --config benchmarks/multimodal-stability-sm90.json --preflight-only
+```
+
+It returned **`FAIL`**, `real_execution=NOT_RUN`, `real_model_evidence=false`,
+`real_stability_pass_claim=false`, and **zero measured rounds**. The recorded
+reason was:
+
+```text
+ORCHESTRATION_ERROR: [Errno 2] No such file or directory:
+/tmp/umm-stability-sm90/provenance/asr-available-weights-SHA256SUMS
+```
+
+Consequently no server or GPU stage was started, no warmup or measured round
+was attempted, and there are no round hashes, new quality metrics, latency
+metrics, raw-SSE responses, or `STABILITY_PASS` claim. The preflight evidence is
+in `/tmp/umm-stability-sm90/evidence/`; its five-entry recursive seal passes.
+`summary.json` / `stability.json` SHA-256 is
+`641bdb8404777312ff744cab4f00ef3d410c49adb4923a3fcf4df4be72d54373`,
+`run-config.json` SHA-256 is
+`6fa8309280578e90e7ded0bc4a6a95599579a46f14f7eede6a2f7b882136edbc`,
+and the seal SHA-256 is
+`8a091b6ebd69b1ca81182a5478e4c935a41669b04acbbb23fe2abf67fcf4e103`.
+
+GPU 1 and GPU 7 remained at 3 MiB and loopback port 43399 was closed after the
+failed preflight. GPU 0 was initially idle but was subsequently occupied by a
+separate concurrent worker (56,361 MiB observed at final check); this task did
+not start, stop, or modify that worker. GPUs 2–6 and resident port 43301 were
+not used or contacted. All verified binaries, models, accepted evidence, source
+archives, and preflight logs were preserved.
+
+A future real execution needs the two exact accepted standalone manifest files
+(or a separately reviewed new frozen configuration and baseline). Until then,
+the real three-round gate remains **NOT_RUN**, not passed and not relaxed.
+
+## 22. Selected-line manifest reconstruction also fails closed, 2026-11-26
+
+After the supervisor review, current main
+`add37f56eef9517932f4f345e5a7921591353ff2` was merged with the task-32
+documentation in merge commit `fb3044b1578aa733df08cbe860d3517d4415ed3b`.
+Main is the merge's second parent. The AOCI and feature-map conflict regions
+retain both the new 194-row raw-SSE replay record and the task-32 failed-gate
+record. No trajectory-replay or native-telemetry implementation was edited by
+this task.
+
+The supervisor then authorized one exact reconstruction rule: select only the
+ASR or Qwen3.8 Safetensors lines from the retained accepted combined
+`model-SHA256SUMS`, preserve every selected line byte-for-byte in its original
+order, and write the two standalone files. This rule was applied without path
+rewriting, separator changes, reordering, or newline normalization.
+
+| Manifest | Entries | Bytes | Required SHA-256 | Exact selected-line SHA-256 |
+| --- | ---: | ---: | --- | --- |
+| ASR | 2 | 206 | `3b50bdd28d2c87395edfcc7bf111161bb6e9addae8f4f7afdc4aa168538c634b` | `9591b44b90a0792eed2d2fb5f82cc9947a4ff56899505c7c19f4b0da9c1af078` |
+| Qwen3.8 | 18 | 1,908 | `b7a23bc59e1bbdba42ad309d484b319060d0c2623fbfb086778738fa6e461743` | `f55c6f72fc493a36544b21ab006683e00679839a407775e5d1504efd662aeadb` |
+
+Both selected files were written to their configured paths and independently
+checked against the actual models from the parent model directory. All **2/2
+ASR** and **18/18 Qwen3.8** entries returned `OK`. The model bytes therefore
+remain valid, but the reconstructed manifest container bytes do not satisfy
+the frozen identities.
+
+The original failed-preflight evidence was preserved unchanged at
+`/tmp/umm-stability-sm90/failed-preflight-missing-evidence/`. A second preflight
+then returned **`FAIL`**, `real_execution=NOT_RUN`, and zero rounds with:
+
+```text
+MODEL_WEIGHT_MANIFEST_CHANGED: asr weight manifest changed
+expected=3b50bdd28d2c87395edfcc7bf111161bb6e9addae8f4f7afdc4aa168538c634b
+actual=9591b44b90a0792eed2d2fb5f82cc9947a4ff56899505c7c19f4b0da9c1af078
+```
+
+The Qwen3.8 expected/actual hashes above were independently hashed as well;
+preflight stops on the first ASR mismatch. The new five-file evidence seal
+passes. Its `summary.json` / `stability.json` SHA-256 is
+`cd745239985f001c6fa391c0405b464b0b42199ca8dd4b0800a106ef46ef09a1`, and its
+seal SHA-256 is
+`31674e79935064a0484c86d17e163bcabd177b318b57214fbcf11f91ebae8139`.
+There are no warmup or measured-round directories, round hashes, SSE responses,
+quality metrics, or latency metrics. No service or GPU stage was started and no
+`STABILITY_PASS` was emitted. GPUs 0, 1, and 7 were all at 3 MiB on the final
+check. The frozen config, baseline, runner, and expected hashes remain
+unchanged; exact accepted manifest bytes or a separately reviewed new frozen
+configuration and baseline are still required before real execution.
