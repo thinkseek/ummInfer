@@ -532,6 +532,15 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 40 Native C++ CLI `umm-infer chat --native-allocator-telemetry` (3-Client Parity):
+  - Completed 3-client parity (Web UI + macOS `ummmlx` + native C++ CLI
+    `umm-infer`) for Wave 37's `telemetry.native_allocator=true`: added
+    `ChatRequest::native_allocator_telemetry`, `ChatResponse::telemetry`,
+    default-omission request encoding, SSE/non-stream telemetry extraction,
+    and concise stderr `[telemetry] VRAM: <peak> peak` / `VRAM: N/C (<reasons>)`
+    reporting without altering stdout prose (`zig build test` PASS,
+    `tests/client_media_cli_e2e.py` **9/9 PASS**).
+
 - Wave 39 Web UI & macOS `ummmlx` Opt-In Native VRAM Allocator Telemetry Pills (`8319791`):
   - Exposed Wave 37's `telemetry.native_allocator=true` across Web UI
     (`web/index.html`) and macOS `ummmlx` (`UnifiedStream.swift`,
