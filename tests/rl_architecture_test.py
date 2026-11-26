@@ -491,8 +491,9 @@ class TrajectoryV2Tests(unittest.TestCase):
         for directory in (ROOT / "src", ROOT / "include"):
             for path in directory.rglob("*"):
                 if path.is_file():
-                    self.assertNotIn("umminfer_rl_", path.read_text(errors="ignore"),
-                                     str(path))
+                    text = path.read_text(errors="ignore")
+                    self.assertNotIn("umminfer_rl_", text, str(path))
+                    self.assertNotIn("umminfer_online_rollout", text, str(path))
         self.assertNotIn("torch", sys.modules)
         self.assertNotIn("transformers", sys.modules)
 

@@ -254,6 +254,7 @@ python3 -I tests/narrative_slot_reference_live.py --self-check
 python3 -I tests/joint_sft_live_test.py
 python3 -I tests/joint_dpo_live_test.py
 python3 -I tests/joint_grpo_live_test.py
+python3 -I tests/online_rollout_test.py
 ```
 
 | Capability | Status | Notes |
@@ -269,6 +270,143 @@ python3 -I tests/joint_grpo_live_test.py
 | Real joint-SFT optimizer gate | **PASS (SM90)** | Two real AdamW steps, changed finite parameters, exact resume equivalence, and invalid-input rejection; see measured record below |
 | Real joint-DPO optimizer gate | **PASS (SM90)** | Two real sigmoid-DPO AdamW steps, policy/reference log-probabilities, independent chosen/rejected masks, exact resume equivalence, and pre-import malformed/crossed-pair rejection |
 | Real joint-GRPO optimizer gate | **PASS (SM90)** | Two complete export-bound three-rollout groups, clipped policy ratios + KL, finite AdamW updates, exact fresh-process resume, and six pre-import rejection gates |
+| Online GRPO orchestration and validation | **COVERED (fake endpoint)** | Deterministic requests, exact response attestation, raw SSE, cancellation, bounded retry, complete groups, and fresh-process byte replay; no real-model claim |
+| Real online generation and online optimizer execution | **NOT_RUN** | Requires the isolated live gate below; the accepted frozen-offline GRPO result is unchanged |
+| Endpoint behavior log-probabilities and masks | **NOT_COVERED by the current public endpoint** | Null with `NOT_COVERED` when absent; complete endpoint-supplied arrays are structurally validated when exposed |
+
+## Online GRPO rollout generation and validation contract
+
+`python/umminfer_online_rollout.py` is a trainer-side HTTP orchestrator. It does
+not start a server, load a model, import an inference stack, or import Torch,
+NumPy, Transformers, or optimizer code. It reuses the public schema-v2 recorder,
+raw-SSE replay, export-only reward interface, CAS verification, and deterministic
+Stage C GRPO packer. No serving source imports this module or the dataset
+builder. The accepted frozen-offline adapter explicitly rejects rows and source
+trajectories carrying online provenance, including ordinary packs rebuilt from
+online JSONL, so the two evidence paths cannot be silently interchanged.
+
+The versioned plan (`umminfer-online-grpo-plan-v1`) fixes the batch id, exact
+messages and request template, explicit signed-int64 seed list per group, sampling
+parameters, behavior policy id/revision, model id/revision, model-weight-set and
+model-config SHA-256 values, export-only reward, split seed, and transport
+policy. A deterministic schedule derives group ids, rollout ids, per-request
+SHA-256, behavior-policy SHA-256, sampling SHA-256, and an overall schedule hash.
+Request hashes cover canonical compact key-sorted UTF-8 JSON objects, not
+unstable HTTP framing or header order.
+Candidate `rollout_index` is schedule order; the pack's contiguous `rank` remains
+the existing deterministic reward/provenance order. Both are retained, not
+conflated. `model_config_sha256` hashes the exact model `config.json` bytes;
+`model_sha256` uses the canonical relative-path/SHA-256/byte-length weight-file
+manifest convention used by the live adapters. The orchestrator cannot derive
+remote weights itself: it requires the planned values and endpoint attestation
+to match, while the later live gate must independently rehash the actual loaded
+model and config.
+
+### Endpoint attestation and response rules
+
+Every public `POST /v1/chat/completions` request is streaming and carries
+`X-UmmInfer-Online-Rollout-Contract: 1` and
+`X-UmmInfer-Rollout-Generation: fresh` plus batch/group/rollout/attempt,
+request-hash, behavior-policy-hash/revision, model-id/revision/hash,
+model-config-hash, and sampling-hash headers. A compatible endpoint must echo
+all of them, with `X-UmmInfer-Behavior-Evidence: not_exposed` or `exposed`, on
+**every** response, including a retryable HTTP error. Missing headers, changed
+model/config/policy/sampling identities, wrong attempt or request hash, and
+stale/cross-group responses fail closed. Raw chunks must also keep one unique
+request id and the planned model id throughout the stream.
+
+Only HTTP 200 `text/event-stream` responses with complete raw-SSE sidecars,
+one final terminal, completed state, verified artifacts, and a finite
+export-derived reward can enter an accepted bundle. Cancelled responses retain
+and replay their exact raw SSE and terminal legs but are never retried or packed.
+Malformed SSE/protocol responses are not retried. Timeouts, transport failures,
+and explicitly listed HTTP statuses retry only when their corresponding plan
+switch allows it, never beyond `max_attempts` (maximum 8), and every retry has a
+new bound attempt index. Default fixture policy is no retry.
+
+Behavior evidence is optional at the transport boundary, never synthesized. If
+`not_exposed`, exported `token_ids`, `logprobs`, and `mask` are null and coverage
+is `NOT_COVERED`. If `exposed`, the final SSE data frame must contain exactly one
+block:
+
+```json
+"behavior": {
+  "format": "umminfer-behavior-logprobs-v1",
+  "tokenizer_sha256": "<64-lowercase-hex>",
+  "token_ids": [11, 12, 13],
+  "logprobs": [-0.125, -0.25, -0.5],
+  "mask": [0, 1, 1]
+}
+```
+
+The arrays must be non-empty, equal-length, and contain non-negative integer
+ids, finite non-positive numeric log-probabilities, and binary integer masks with at least
+one supervised token. Their canonical hash and tokenizer hash are exported.
+This verifies endpoint evidence shape and raw-byte binding, not detokenization
+or numerical correctness against a trainer model. A future online optimizer
+must separately prove tokenizer/token/target alignment and behavior-model
+identity before consuming those values.
+
+### Accepted bundle and byte-identical replay
+
+```text
+<out>/
+  plan.json
+  attempts.jsonl             # diagnostic attempts; not the accepted pack input
+  trajectories.jsonl         # only completed, attested, rewarded rollouts
+  artifacts/                 # exact .sse sidecars and verified CAS media
+  rollout_manifest.json      # online mode, hashes, counts, explicit claims
+  rollout_manifest.json.sha256
+  pack/                      # existing deterministic DPO/GRPO layout
+    dpo_train.jsonl
+    dpo_eval.jsonl
+    grpo_train.jsonl         # additive online provenance on groups/members
+    grpo_eval.jsonl
+    manifest.json
+    manifest.json.sha256
+```
+
+The pack requires exactly one row per scheduled group, exactly the planned
+number of distinct rollout identities per group, no unknown/duplicate/missing
+or cross-group source, exact source targets and recomputed rewards, ordered
+membership-bound group ids, and recomputed baseline/std/advantages. The manifest
+continues to say `REAL_TRAINING: NOT_RUN` and `optimizer: NOT_RUN`; model identity
+is marked `ENDPOINT_ATTESTATION_ONLY` until the live gate independently rehashes it.
+
+Commands are:
+
+```text
+python3 -I python/umminfer_online_rollout.py run \
+  --plan configs/training/online_grpo_rollout_fixture.json \
+  --endpoint 127.0.0.1:<attesting-endpoint-port> --out <new-bundle>
+python3 -I python/umminfer_online_rollout.py replay \
+  --input <accepted-bundle> --out <new-replay-directory>
+python3 -I tests/online_rollout_test.py
+```
+
+Replay revalidates the plan, exact requests, response attestations, raw SSE/CAS,
+rewards, group membership, and behavior evidence in a fresh process, then
+requires byte-identical accepted JSON/JSONL, manifests, pack files, and artifact
+trees. `attempts.jsonl` is diagnostic and intentionally outside that accepted
+file set. The committed fixture uses only logical ticks and a deterministic fake
+endpoint; it is not real generation evidence.
+
+### Later isolated live gate
+
+Real online generation and optimizer/quality outcomes remain **NOT_RUN**. A later
+gate must use a separately approved, isolated endpoint and training process;
+record actual model/policy revision, model/config/weight hashes, exact requests,
+seeds and sampling; implement and verify every response attestation; capture
+observed monotonic raw-SSE ticks; reject cancellation/drift; and reproduce the
+accepted trajectories and groups byte-for-byte in fresh processes. It must keep
+serving free of trainer/optimizer imports and the trainer free of inference
+imports. If behavior log-probabilities are consumed, the gate must additionally
+prove model/tokenizer/token-target/mask alignment rather than treating the
+structural evidence check as sufficient. An online optimizer adapter, real
+model-quality evaluation, generalized improvement, and production-model training
+are separate later gates. The current public ummInfer endpoint does not emit the
+required attestation or behavior-evidence headers, so it is deliberately rejected
+rather than treated as compatible.
 
 ## Bounded real joint-SFT optimizer gate
 

@@ -1,0 +1,62 @@
+{
+  "schema": "umminfer-online-grpo-plan-v1",
+  "batch_id": "online-grpo-contract-fixture-v1",
+  "behavior_policy": {
+    "policy_id": "fixture-online-policy",
+    "revision": "fixture-policy-revision-001",
+    "model_id": "fixture-narrative-policy",
+    "model_revision": "fixture-model-revision-001",
+    "model_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "model_config_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "sampling": {
+    "max_tokens": 96,
+    "temperature": 0.0,
+    "top_p": 1.0
+  },
+  "request_template": {
+    "modalities": ["text", "image", "video"],
+    "narrative": {
+      "enabled": true,
+      "visual_mode": "auto",
+      "max_slots": 2,
+      "continuity_mode": "i2v_chain"
+    }
+  },
+  "reward": {
+    "spec": "umminfer_ablation_metrics:NarrativeRoutingReward"
+  },
+  "split_seed": "online-grpo-contract-split-v1",
+  "eval_ratio": 0.0,
+  "transport": {
+    "timeout_s": 1.0,
+    "max_attempts": 1,
+    "retry_statuses": [],
+    "retry_transport": false,
+    "retry_timeouts": false
+  },
+  "groups": [
+    {
+      "prompt_id": "lantern-interleaved",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain a lantern with a still image and a moving view."
+        }
+      ],
+      "expected_visual_modalities": ["image", "video"],
+      "seeds": [101, 102, 103]
+    },
+    {
+      "prompt_id": "accretion-interleaved",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show an accretion disk and its dynamic plasma motion."
+        }
+      ],
+      "expected_visual_modalities": ["image", "video"],
+      "seeds": [-201, -202, -203]
+    }
+  ]
+}

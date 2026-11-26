@@ -97,6 +97,9 @@ def _load_export_evidence(trajectory_paths, manifest, reward_config):
     reward_spec = reward_config.get("spec")
     if reward_spec != "umminfer_ablation_metrics:NarrativeRoutingReward":
         raise ValueError("bounded gate supports only NarrativeRoutingReward")
+    if manifest.get("provenance_mode") == "online" \
+            or "rollout_provenance" in manifest:
+        raise ValueError("frozen-offline GRPO gate refuses online export provenance")
     if manifest.get("mode") != "preference" \
             or manifest.get("reward") != {
                 "spec": reward_spec, "name": routing_metrics.REWARD_NAME}:
@@ -128,6 +131,10 @@ def _load_export_evidence(trajectory_paths, manifest, reward_config):
             raise ValueError("source trajectory is missing its CAS artifact directory")
         for line in lines:
             record = json.loads(line)
+            if "rollout_provenance" in record:
+                raise ValueError(
+                    "frozen-offline GRPO gate refuses online source trajectories, "
+                    "including rebuilt packs without online row annotations")
             ok, category, message, stats = dataset_builder.verify_record_integrity(
                 record, artifact_dir=artifact_dir, require_artifact_dir=True)
             if not ok:
@@ -200,6 +207,12 @@ def _audit_group(row, export_evidence, *, expected_group_size):
         raise ValueError("live gate accepts only grpo_group records")
     if row.get("schema_version") != 1:
         raise ValueError("unsupported Stage C GRPO record schema")
+    if "rollout_provenance" in row or any(
+            isinstance(rollout, dict) and "rollout_provenance" in rollout
+            for rollout in row.get("rollouts") or []):
+        raise ValueError(
+            "frozen-offline GRPO gate refuses online-provenance groups; "
+            "use a separately validated online optimizer gate")
     group_id = row.get("group_id")
     prompt_sha = row.get("prompt_sha256")
     if not isinstance(group_id, str) or not group_id \

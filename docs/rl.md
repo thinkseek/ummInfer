@@ -10,6 +10,7 @@ or transformers, and no second inference engine exists.
 | `python/umminfer_rl_trajectory.py` | Out-of-process recording, narrative normalization, media verification, CAS export |
 | `python/umminfer_sse_replay.py` | Exact raw-SSE/chunk capture, tick provenance, replay validation CLI, byte-identical offline replay |
 | `python/umminfer_token_export.py` | Optional tokenizer-backed token ids, UTF-8/source spans, SFT masks, and independent validation |
+| `python/umminfer_online_rollout.py` | Trainer-side online GRPO schedule, attested endpoint client, fail-closed group export, and byte-identical bundle replay |
 | `python/umminfer_rl_reward.py` | Export-only reward interface, deterministic composite UMM reward, and plugin loader |
 | `python/umminfer_rl_worker.py` | Independent v1/v2 validation, NDJSON worker protocol, checkpoint hash chain |
 | `tests/narrative_rl_fixtures.py` | Deterministic interleaved narrative, explicit-slot, failed-leg, and cancelled-response fixtures |
@@ -17,6 +18,7 @@ or transformers, and no second inference engine exists.
 | `tests/sse_replay_live.py` | Opt-in isolated real public-SSE capture, cancellation, fresh-process replay, framing, and tamper gate |
 | `docs/sse-replay-live.md` | SM90 live hashes, contract-media boundary, replay evidence, and cleanup record |
 | `tests/token_export_test.py` | Multilingual/UTF-8, visual-anchor, cancellation, mask-equivalence, malformed-input, and optional real-tokenizer contracts |
+| `tests/online_rollout_test.py` | Deterministic fake-endpoint online GRPO, cancellation/retry/drift/malformed-group, behavior-evidence, and fresh-process replay contracts |
 | `tests/narrative_slot_reference_live.py` | Explicit `source=slot-N` offline self-check and deferred real-model gate |
 | `tests/rl_architecture_test.py` | Deterministic schema-v2 recorder/validator/reward contracts |
 | `tests/rl_phase2_test.py` | Worker/checkpoint/protocol contracts; does not execute an optimizer |
@@ -385,6 +387,29 @@ explicit contract fixtures, not model-quality evidence. See
 [sse-replay-live.md](sse-replay-live.md) for exact hashes, scope, and cleanup.
 Model quality and generalized performance remain `NOT_RUN`.
 
+## Online GRPO provenance and replay
+
+The trainer-side `umminfer_online_rollout.py` contract adds
+`rollout_provenance` to schema-v2 records without changing the schema version.
+It binds the canonical request JSON object, deterministic
+group/candidate/attempt order, behavior-policy and model revisions,
+model/config/sampling hashes, and response
+attestation. The recorder's optional response/transport observers stay out of
+band; explicit turn indexes and additive fields are preserved by raw replay.
+Only completed raw-SSE-backed responses with finite export-derived rewards enter
+online GRPO groups. Cancelled and malformed responses never become zero-reward
+or empty candidates.
+
+The current public endpoint does not expose behavior log-probabilities or masks
+and does not emit the required online attestation headers. Those values stay
+`NOT_COVERED`/null unless a compatible endpoint provides a complete final-SSE
+`umminfer-behavior-logprobs-v1` block. The full header, retry, validation, export,
+fresh-process replay, and deferred isolated-live gate are specified in
+[joint-training.md](joint-training.md#online-grpo-rollout-generation-and-validation-contract).
+The accepted frozen-offline GRPO optimizer rejects online-provenance groups and
+source trajectories, even when an ordinary pack is rebuilt without row markers;
+online optimizer execution and real generation remain `NOT_RUN`.
+
 ## Rewards
 
 `Reward.score(record)` reads only the exported JSON object. It needs no serving
@@ -489,6 +514,7 @@ python3 -I tests/token_export_test.py
 python3 -I tests/joint_trainer_test.py
 python3 -I tests/joint_sft_live_test.py
 python3 -I tests/joint_dpo_live_test.py
+python3 -I tests/online_rollout_test.py
 python3 -I tests/narrative_live_e2e.py --self-check
 python3 -I tests/narrative_slot_reference_live.py --self-check
 python3 -I tests/multimodal_benchmark_test.py

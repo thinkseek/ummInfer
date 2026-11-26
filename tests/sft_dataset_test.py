@@ -973,11 +973,12 @@ class SftDatasetBuilderTests(unittest.TestCase):
                         str(path),
                     )
         # Also verify no serving Python runtime imports umminfer_sft_dataset.
-        # The bounded GRPO adapter is an explicitly offline dataset consumer;
-        # its own preflight tests forbid ML imports until source/CAS validation.
+        # The bounded GRPO adapter and online orchestrator are explicit offline
+        # dataset consumers; their preflights forbid ML imports until validation.
         offline_dataset_consumers = {
             "umminfer_sft_dataset.py",
             "umminfer_joint_grpo_live.py",
+            "umminfer_online_rollout.py",
         }
         for path in (ROOT / "python").glob("*.py"):
             if path.name in offline_dataset_consumers:

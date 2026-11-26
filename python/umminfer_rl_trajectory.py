@@ -676,8 +676,16 @@ def abort_request(base_url, request_id, *, headers=None, timeout=30.0):
 def record_chat_completion(base_url, body, recorder, session_id, *,
                            headers=None, timeout=30.0, on_request_id=None,
                            event_observer=None, capture_replay=False,
-                           replay_clock=None):
-    """Drive and record one public chat request, including transport failure."""
+                           replay_clock=None, response_observer=None,
+                           transport_observer=None, extra_fields=None,
+                           turn_index=None):
+    """Drive and record one public chat request, including transport failure.
+
+    Optional observers expose transport metadata out of band without changing
+    the legacy record shape. Additive ``extra_fields`` and an explicit
+    ``turn_index`` are forwarded to :meth:`TrajectoryRecorder.record` so replay
+    preserves the caller's provenance and deterministic schedule identity.
+    """
     headers = dict(headers or {})
     headers["Content-Type"] = "application/json"
     conn = _http_connection(base_url, timeout)
@@ -695,6 +703,12 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
             conn.request("POST", "/v1/chat/completions",
                          body=json.dumps(body), headers=headers)
             response = conn.getresponse()
+            if response_observer is not None:
+                response_observer({
+                    "status": response.status,
+                    "headers": {name.lower(): value
+                                for name, value in response.getheaders()},
+                })
             is_sse = response.getheader("Content-Type", "").startswith(
                 "text/event-stream")
             details = {}
@@ -723,6 +737,15 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
             capture = None
         except (OSError, http.client.HTTPException, json.JSONDecodeError,
                 UnicodeDecodeError, TypeError, KeyError, ValueError) as exc:
+            if transport_observer is not None:
+                kind = ("timeout" if isinstance(exc, TimeoutError)
+                        else "transport" if isinstance(
+                            exc, (OSError, http.client.HTTPException))
+                        else "protocol")
+                transport_observer({
+                    "kind": kind, "exception": type(exc).__name__,
+                    "message": str(exc),
+                })
             message = f"transport error: {exc}"
             events = [{"seq": 0, "type": "error", "server_seq": None,
                        "stage": None, "is_final": True, "text": message,
@@ -738,7 +761,8 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
         request_id=request_id or _synthetic_request_id(events),
         endpoint="/v1/chat/completions", inputs=inputs, params=params,
         events=events, terminal_state=state, error=error,
-        output_text=output_text, artifacts=artifacts, capture=capture)
+        output_text=output_text, artifacts=artifacts, capture=capture,
+        extra_fields=extra_fields, turn_index=turn_index)
 
 
 def record_realtime(recorder, session_id, request_id, observed_events, *,

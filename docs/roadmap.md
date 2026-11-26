@@ -332,6 +332,19 @@ AdamW updates on GPU 7. These architecture gates do not satisfy or substitute fo
 online rollout generation, model-quality, generalized-improvement, or
 production-model training gates.
 
+**Phase 6 online-rollout contract (2026-11-26).** A separate trainer-side
+orchestrator now defines deterministic online GRPO plans, seeds, group/candidate
+order, exact request and behavior-policy/model/config/sampling hashes, required
+endpoint attestation, raw-SSE/cancellation handling, bounded retry/no-retry,
+complete group validation, and fresh-process byte-identical replay. Deterministic
+fake-endpoint tests cover interleaved visual text and malformed/drifting groups
+without ML or serving imports. The accepted frozen-offline GRPO adapter rejects
+online-provenance groups. Real endpoint generation and online optimizer/quality
+outcomes remain `NOT_RUN`; behavior log-probabilities/masks are `NOT_COVERED`
+unless exposed with complete evidence by an endpoint. The current public server
+lacks the required response attestation, and the later isolated live gate is in
+[joint-training](joint-training.md#online-grpo-rollout-generation-and-validation-contract).
+
 ## Model support plan
 
 These entries are not current deliverables. Their acceptance procedure,
