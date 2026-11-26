@@ -523,6 +523,21 @@ is Wave 86 `27c584e`. Real optimizer execution, exact optimizer resume/update,
 new online generation, model quality, and generalized improvement remain
 `NOT_RUN`; no training-quality gain is claimed.
 
+**Phase 6 online-GRPO optimizer implementation and frozen final variance boundary
+(2026-11-27).** Task #64 adds a separate pre-ML-validated, bounded Qwen3.8 LoRA
+optimizer with sampled-behavior/current/reference packing, raw gradient/AdamW/
+parameter-delta verification, and exact repeat/resume controls. The frozen final
+R6 public plan produced six fresh attested `COVERED` rollouts and 43 supervised
+sampled tokens, but only one group had nonzero variance (`[1,1,0]`, population
+std `0.4714045207910317`); the other was `[0,0,0]`. The required two-group batch
+therefore failed before replay/export/preflight/training. No offline continuation
+or subgroup-repeat bypass is allowed. Real gradients, parameter deltas,
+checkpoints, and uninterrupted/resumed second updates are **NOT_RUN**. R1–R6 and
+their hashes remain negative evidence; deterministic tests and GPU 7 cleanup
+pass. Exact identities and scope are in
+[online-grpo-optimizer](online-grpo-optimizer.md). No quality or generalized
+improvement is claimed.
+
 ## Model support plan
 
 These entries are not current deliverables. Their acceptance procedure,

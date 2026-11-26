@@ -793,6 +793,28 @@ def narrative_reward(record):
             "score": float(f1 - redundancy)}
 
 
+def independent_reward(record, spec):
+    if spec == "umminfer_ablation_metrics:NarrativeRoutingReward":
+        return narrative_reward(record)
+    if spec == "umminfer_rl_reward:VerifiableArithmeticReward":
+        answers = {
+            "online-arithmetic-739x461": "340679",
+            "online-arithmetic-457x683": "312131",
+            "online-arithmetic-7389x4621": "34144569",
+            "online-arithmetic-4597x6839": "31438883",
+            "online-arithmetic-3274x8957": "29325218",
+            "online-arithmetic-8642x7351": "63527342",
+            "online-arithmetic-6287x5399": "33943513",
+        }
+        prompt_id = record["ablation"]["prompt_id"]
+        require(prompt_id in answers, "UNKNOWN_ARITHMETIC_PROMPT", "ablation.prompt_id")
+        clean = record.get("clean_text")
+        require(isinstance(clean, str), "ARITHMETIC_CLEAN_TEXT", "clean_text")
+        return {"schema_version": 1, "name": "verifiable-integer-arithmetic-v1",
+                "score": float(clean.strip() == answers[prompt_id])}
+    require(False, "UNSUPPORTED_INDEPENDENT_REWARD", "plan.reward.spec")
+
+
 def verify_online_record(record, item, plan, schedule_hash, artifact_root, path):
     require(isinstance(record, dict) and record.get("schema_version") == 2,
             "OFFLINE_OR_LEGACY_RECORD", path)
@@ -881,11 +903,11 @@ def verify_online_record(record, item, plan, schedule_hash, artifact_root, path)
     }
     same(provenance.get("behavior"), summary, "BEHAVIOR_SUMMARY_MISMATCH",
          path + ".rollout_provenance.behavior")
-    same(record.get("reward"), narrative_reward(record), "REWARD_MISMATCH",
-         path + ".reward")
+    same(record.get("reward"), independent_reward(record, plan["reward"]["spec"]),
+         "REWARD_MISMATCH", path + ".reward")
     return {"record": record, "item": item, "replay": replay,
             "behavior": raw_behavior, "behavior_summary": summary,
-            "reward": summary and narrative_reward(record)}
+            "reward": independent_reward(record, plan["reward"]["spec"])}
 
 
 def _candidate_tie(candidate):
@@ -1015,7 +1037,7 @@ def build_groups(plan, schedule_hash, records):
              "MISSING_GROUP_MEMBER", f"group[{group_index}]")
         candidates.sort(key=lambda item: (-item["score"], _candidate_tie(item)))
         first = candidates[0]
-        reward_name = "narrative-routing-f1-minus-redundancy-v1"
+        reward_name = first["audited"]["record"]["reward"]["name"]
         ordered_targets = [item["target_sha256"] for item in candidates]
         group_id = sha256_bytes((first["prompt_sha256"] + ":" + reward_name + ":"
                                  + ",".join(ordered_targets)).encode("utf-8"))[:32]
@@ -1117,8 +1139,10 @@ def audit_online_bundle(root, *, require_exports=None):
     require(plan_raw == canonical_bytes(plan) + b"\n", "NON_CANONICAL_PLAN",
             "plan.json")
     schedule, schedule_hash = build_schedule(plan)
-    same(plan["reward"]["spec"], "umminfer_ablation_metrics:NarrativeRoutingReward",
-         "UNSUPPORTED_INDEPENDENT_REWARD", "plan.reward.spec")
+    require(plan["reward"]["spec"] in (
+        "umminfer_ablation_metrics:NarrativeRoutingReward",
+        "umminfer_rl_reward:VerifiableArithmeticReward"),
+        "UNSUPPORTED_INDEPENDENT_REWARD", "plan.reward.spec")
     source_records = read_jsonl(root, "trajectories.jsonl", allow_empty=False)
     same(len(source_records), len(schedule), "ROLLOUT_COUNT_MISMATCH",
          "trajectories.jsonl")
@@ -1196,7 +1220,7 @@ def audit_online_bundle(root, *, require_exports=None):
                 len(audited["record"]["artifacts"]) for audited in records),
         },
         "reward": {"spec": plan["reward"]["spec"],
-                   "name": "narrative-routing-f1-minus-redundancy-v1"},
+                   "name": records[0]["record"]["reward"]["name"]},
         "split_audit": {
             "train_prompt_count": len(train_prompts),
             "eval_prompt_count": len(eval_prompts),
@@ -1241,7 +1265,7 @@ def audit_online_bundle(root, *, require_exports=None):
         "behavior_policy_sha256": canonical_hash(plan["behavior_policy"]),
         "sampling_sha256": canonical_hash(plan["sampling"]),
         "reward": {"spec": plan["reward"]["spec"],
-                   "name": "narrative-routing-f1-minus-redundancy-v1"},
+                   "name": records[0]["record"]["reward"]["name"]},
         "group_count": len(groups), "rollout_count": len(records),
         "group_size": len(schedule) // len(groups), "behavior_logprobs": coverage,
         "trajectory": {"path": "trajectories.jsonl",

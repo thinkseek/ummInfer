@@ -142,7 +142,8 @@ def health(base_url):
         conn.close()
 
 
-def start_stack(args, out_dir, plan_path, server_config_path, identity_path):
+def start_stack(args, out_dir, plan_path, server_config_path, identity_path, *,
+                plan_factory=None):
     port = behavior_tools.free_loopback_port()
     base_url = f"127.0.0.1:{port}"
     ipc = out_dir / "run/ipc"
@@ -185,7 +186,7 @@ def start_stack(args, out_dir, plan_path, server_config_path, identity_path):
             require(time.monotonic() < deadline, "native identity emission timed out")
             time.sleep(0.2)
         identity = json.loads(identity_path.read_text(encoding="utf-8"))
-        plan = frozen_plan(identity, args.source_commit, args.batch_id)
+        plan = (plan_factory or frozen_plan)(identity, args.source_commit, args.batch_id)
         (out_dir / "config").mkdir(exist_ok=True)
         plan_path.write_bytes(online._canonical_line(plan))
         require(plan_path.read_bytes() == online._canonical_line(plan),

@@ -664,6 +664,28 @@ attempts, tests, and cleanup are in
 exact resume/update, new online generation, model quality, and generalized
 improvement remain `NOT_RUN`.
 
+### Task #64 bounded online optimizer and frozen variance outcome
+
+A separate `umminfer_online_grpo_optimizer.py` now validates replayed online packs
+and preflight identities before Torch import and bounds execution to two
+whole-group Qwen3.8 rank-1 LoRA AdamW updates on one SM90 device. It preserves
+sampled behavior ids/logprobs/masks, computes real current and adapter-disabled
+reference terms, retains raw preclip/postclip gradients, AdamW moments and
+parameter deltas, and binds adapter/optimizer/RNG/cursor/source/model identities
+for deterministic repeat and fresh resume. The frozen-offline GRPO adapter is
+unchanged.
+
+The frozen final R6 plan nevertheless failed the real training gate before
+optimizer execution: six fresh attested `COVERED` rollouts and 43 supervised
+sampled tokens yielded one nonzero group (`[1,1,0]`, std `0.4714045207910317`) and
+one zero group (`[0,0,0]`). Both groups are required; no failed-source offline
+continuation or subgroup repetition is used. Actual real-model gradients,
+parameter deltas, checkpoints, and resumed second updates remain `NOT_RUN`.
+Nine focused CPU tests pass, including raw AdamW/tamper/zero-variance controls;
+R1–R6 negative evidence and cleanup are in
+[online-grpo-optimizer](online-grpo-optimizer.md). No quality or generalized
+improvement claim is made.
+
 ## Bounded real joint-SFT optimizer gate
 
 `python/umminfer_joint_sft_live.py` is a narrow execution adapter around the

@@ -1,0 +1,100 @@
+{
+  "schema": "umminfer-online-grpo-optimizer-sm90-evidence-v1",
+  "date": "2026-11-27",
+  "status": "BLOCKED",
+  "integration": {
+    "base_commit": "0ab22bc56e6c51d447a13ad59aef775c364f5126",
+    "execution_commits": ["d12a6d729b8ef774308784193614e7bf430a32c6", "0b5b4baeedbb628e6dfdf395ef58321fbedfd893", "0e8291863a594e19f527c51bf5de0b3214a37301", "23ed886f4429139bde83c51e1b201da94f9f3041", "6b1bf9651b2546ce6a61deeb4163ba8af95c3eda", "81d94af85cdb3e176ed50bf4194d2774c6b5073c", "d71072dd0f2195ca5c91fbb970ec8f717f07db98", "1603fa91525a90b07d0f1f16541151f55a960436"],
+    "rebased_commits": ["41e9f0c861175084c7fa674619f767d9f9e9aa68", "16fa34a17418ce5a437e73db23eaae0517ce943c", "2d30faf452d4e3d8907ea43cb44486ad75c90f91", "92856b6ce876d8932cbc0ee788749df13a9d661c", "6a0f5bb09d3c391a90385320f58bb50f6a49f319", "fceb68a4cfa02845920e6da3f95022e0bd8ca00c", "9762862802c5faa103043b5ba43348add0b45e17", "ee9f04be27288c43811a3022e317535c3f41dba4"]
+  },
+  "model": {
+    "model_id": "qwen3-native",
+    "upstream_model": "Qwen/Qwen3.8-27B",
+    "model_revision": "UNKNOWN",
+    "architecture": "Qwen3_5ForConditionalGeneration",
+    "weight_manifest_sha256": "e38893095032f8fb1115c76a2e264acb8a13c5233ee69ad3fd73d46c27386613",
+    "config_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+    "tokenizer_sha256": "1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016",
+    "weight_shards": 18
+  },
+  "frozen_final_attempt": {
+    "attempt": "R6",
+    "source_commit": "1603fa91525a90b07d0f1f16541151f55a960436",
+    "batch_id": "online-grpo-optimizer-task64-r6",
+    "group_count": 2,
+    "rollouts": 6,
+    "sampled_tokens": 43,
+    "supervised_tokens": 43,
+    "all_behavior_covered": true,
+    "reward": "verifiable-integer-arithmetic-v1",
+    "plan_sha256": "a05c3004f4732fc45ba7dae7907faa6de6b14ab89648717da0e4ea23c14c1c51",
+    "schedule_sha256": "e1fd317832a1f6fe79c398f81955471c4ba9ffb3271b3e2db1a355650ffe408d",
+    "behavior_policy_sha256": "f78b1c64cae290b808bc7222854d0fb831d56d59c73ede5f6ece84f7f0fd9d44",
+    "sampling_sha256": "ed8f05ad52e633737d5954f5446892383beab52d64db4ae26a8e72196be6d64a",
+    "trajectory_sha256": "1d7720778e227d764c41c950ddf025ca4a483fbdf5dfd2a77335815230b32382",
+    "rollout_manifest_sha256": "68b0e0509b11a3c507acbbb1f1aca21278edbe54c3982f9c254c5ea67ab9dcd2",
+    "pack_manifest_sha256": "66a5b6d7d6f459222e5d1e7e15f902119c46a0d8276d3aee91fb577c143dee22",
+    "summary_sha256": "62633511a8a456d212611760427d477a8e2777662b9488f819be94863cb3eeec",
+    "bundle_sha256sums_sha256": "ed1537b5f3829c8af96cd9a3f00b2a603ae8c58ccfdbbb5bab3a99b5e6afa910",
+    "bundle_file_count": 26,
+    "independent_source_file_set_sha256": "01bd8c7261f422c2800a0eb4bf792f58b41829eba4bfc944e9c9cd2997822047",
+    "raw_sse_sha256": ["009077250a7f1c6e42baeaee623b09e1e60390e488a068b7630b1e4e37d2796c", "f30ec18b5f1894e1303778767fd1e85a66bd5a51d71422de218c3204a13823bb", "cade2b853bea6f01eb717b56c020ac3d6875bd37211244ad1c8fdd2cc6858913", "83a192acfea74d9508fd3d2934714518a3bfa399f096510e136b6ddb6495fdf0", "6d0d765489be38639385280b1a0fd7465fae06e9d0ae0cb32f1b4e5e07f3d22b", "b5f71e4bf7d7b5502e53f866dc7a03c5e0ddbd56373c9ef4663eceaca8eb1dae"],
+    "groups": [
+      {"dataset_group_id": "f22f11813e1e5b0546f3ab9ab2b3a2b8", "schedule_group_id": "0536c05a44f2c7a159bcdd31d704c240", "prompt_id": "online-arithmetic-8642x7351", "rewards": [1.0, 1.0, 0.0], "group_mean": 0.6666666666666666, "group_std": 0.4714045207910317, "has_reward_variance": true, "rollout_ids": ["bc134b474b3fbd729e03029667b817cb", "aa1f7952d16733d3f388f20e071f3c37", "4d2bed0256239fb92968ca48c6cf5ae0"]},
+      {"dataset_group_id": "c75b9d21120dce7d7755e7e92905c54e", "schedule_group_id": "a301dac1e2ea98e08f581b32a806c70a", "prompt_id": "online-arithmetic-6287x5399", "rewards": [0.0, 0.0, 0.0], "group_mean": 0.0, "group_std": 0.0, "has_reward_variance": false, "rollout_ids": ["5a08d045632af3c3be573172b635e794", "35ffbe119b1257ea849d9a0568220c8a", "5860db0c4cd0580e3bc7c379a9a4bd5d"]}
+    ],
+    "eligible_two_group_nonzero_variance_batch": false,
+    "raw_attempt_retained_as_negative_evidence": true
+  },
+  "retained_attempts": [
+    {"attempt": "R1", "source_commit": "0b5b4baeedbb628e6dfdf395ef58321fbedfd893", "summary_sha256": "e11040ba14b4c659e3679b8329ddbb4454418487bd37daf6d3ce2fd8d8728a07", "bundle_sha256sums_sha256": "80c2083f2d4c1725ccb676e9f9c6069d8d8216edeeaa3d817462978e3a09a94d", "attempt_count": 3, "coverage": ["exposed", "exposed", "not_exposed"], "outcome": "FAIL_BEFORE_GROUP_EXPORT"},
+    {"attempt": "R2", "source_commit": "23ed886f4429139bde83c51e1b201da94f9f3041", "summary_sha256": "6f9d8d23d24b62212ba4fcbe31b120701028f76cc6ad1d032043beafffa7c803", "bundle_sha256sums_sha256": "3c7319fdd6b597bb557ff87c97f87f238f1d5fa45b193c027c104ee1b43001ce", "attempt_count": 1, "coverage": ["not_exposed"], "outcome": "FAIL_BEFORE_GROUP_EXPORT"},
+    {"attempt": "R3", "source_commit": "6b1bf9651b2546ce6a61deeb4163ba8af95c3eda", "summary_sha256": "82ac9d3e6e1d4aef8f1b9347dec0b8223d7598455771bc631f6e0e6c6f1534cc", "bundle_sha256sums_sha256": "648e780f6c04547ced27988cb55db27a3b454bbf9e1e261bfba9d0bd1e28f836", "trajectory_sha256": "2c0925463a0dd0d6819df1eafae394750ae52c9e20777fdd9832578f53b9d868", "independent_source_file_set_sha256": "685326db081c9e9bb49c0b92ed98cd66a00e04fc3201618c7eea1eb6eb45dc46", "attempt_count": 6, "outcome": "BOTH_GROUPS_ZERO_VARIANCE"},
+    {"attempt": "R4", "source_commit": "81d94af85cdb3e176ed50bf4194d2774c6b5073c", "summary_sha256": "0e4b7c2e21e898cfc30f470c1372ed3d152751578af743ec400eaf1994040ad4", "bundle_sha256sums_sha256": "febb27b96d3d973dd156a5e6a9168f7f160fcfdb87e81fdc66f63f969706986a", "trajectory_sha256": "2f3bd407e603f9ce157cc6bb594b2c2257ad71dfe4fd4445d7c1c783a949914f", "independent_source_file_set_sha256": "3c20c84a6d8caa16508cfe8f4e408fbe4cb61964236f4b0c4426a8765e6af16e", "attempt_count": 6, "outcome": "BOTH_GROUPS_ZERO_VARIANCE"},
+    {"attempt": "R5", "source_commit": "d71072dd0f2195ca5c91fbb970ec8f717f07db98", "summary_sha256": "b3e5da658d52ae3a4d26faa04740dc855f3d29e76666082c6641d483caa31ec1", "bundle_sha256sums_sha256": "6ad1cd5eb3f47c490e19074e7e52885e596f358d64cba7108fdb6080ea745f37", "trajectory_sha256": "93341b74816da0f2a1e01ad83c661b08c7a9c9146d9ae4c3adef3a21284da19c", "independent_source_file_set_sha256": "61b1a0b9e282c0f37ecdf61bbed3ce5d9deed26ce4523f6b37e519ea1dfcc6a4", "attempt_count": 6, "outcome": "ONE_GROUP_ZERO_VARIANCE_BATCH_REJECTED"},
+    {"attempt": "R6", "source_commit": "1603fa91525a90b07d0f1f16541151f55a960436", "summary_sha256": "62633511a8a456d212611760427d477a8e2777662b9488f819be94863cb3eeec", "bundle_sha256sums_sha256": "ed1537b5f3829c8af96cd9a3f00b2a603ae8c58ccfdbbb5bab3a99b5e6afa910", "trajectory_sha256": "1d7720778e227d764c41c950ddf025ca4a483fbdf5dfd2a77335815230b32382", "independent_source_file_set_sha256": "01bd8c7261f422c2800a0eb4bf792f58b41829eba4bfc944e9c9cd2997822047", "attempt_count": 6, "outcome": "FROZEN_FINAL_ONE_GROUP_ZERO_VARIANCE_BATCH_REJECTED"}
+  ],
+  "optimizer": {
+    "status": "NOT_RUN",
+    "REAL_TRAINING": "NOT_RUN",
+    "configured_trainable_parameters": 17408,
+    "configured_lora_target": "model.language_model.layers.3.self_attn.q_proj",
+    "actual_gradient": "NOT_RUN",
+    "actual_parameter_delta": "NOT_RUN",
+    "real_checkpoint": "NOT_RUN",
+    "uninterrupted_second_update_hash": "NOT_RUN",
+    "resumed_second_update_hash": "NOT_RUN",
+    "offline_R6_continuation": "REMOVED_NOT_PERMITTED",
+    "accepted_zero_variance_groups_used_as_optimizer_evidence": false
+  },
+  "deterministic_unit_evidence": {
+    "online_grpo_optimizer_tests": "9/9 PASS",
+    "adamw_torch_cpu_two_step_cross_check": "PASS",
+    "raw_gradient_delta_decimal_objective_controls": "PASS",
+    "consistently_rehashed_tamper_rejection": "PASS",
+    "norm_preserving_gradient_sign_rejection": "PASS",
+    "zero_variance_and_eval_pre_ML_rejection": "PASS",
+    "existing_output_non_overwrite": "PASS",
+    "real_model_checkpoint_or_resume_proof": "NOT_RUN"
+  },
+  "tests": {
+    "umm_test_local": "PASS_DEBUG_AND_RELEASEFAST_ON_REBASED_SOURCE",
+    "online_rollout": "13/13",
+    "online_preflight": "6/6",
+    "independent_online_audit": "12/12",
+    "real_model_cpu": "6/6",
+    "stage_c_pipeline": "16/16",
+    "frozen_offline_grpo": "4/4",
+    "rl_architecture": "16/16",
+    "raw_sse_replay": "10/10",
+    "token_export": "10 tests OK; optional real-tokenizer case skipped",
+    "behavior_alignment": "9 tests OK; optional real-tokenizer case skipped",
+    "sft_dataset": "8/8",
+    "joint_trainer": "6/6",
+    "standalone_online_attestation": "4/4 after local gateway build",
+    "behavior_harness": "PASS"
+  },
+  "cleanup": {"gpu": 7, "memory_used_mib": 3, "utilization_percent": 0, "task_processes_remaining": 0, "resident_service": "UNTOUCHED"},
+  "claims": {"model_quality": "NOT_RUN", "generalized_improvement": "NOT_RUN", "quality_gain": "NOT_CLAIMED", "production_training": "NOT_RUN", "aoci_cli": "NOT_AVAILABLE_MANUAL_ONLY"},
+  "limits": ["The frozen final plan failed the required two-group nonzero-variance gate, so no real optimizer claim is made.", "R1-R6 raw attempts and exact identities are retained separately as negative evidence.", "Text-only arithmetic fixtures do not establish multimodal training, quality, or generalized improvement.", "Upstream model revision remains UNKNOWN; exact file hashes define identity."]
+}

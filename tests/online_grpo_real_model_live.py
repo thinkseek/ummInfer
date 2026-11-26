@@ -429,8 +429,10 @@ def independent_forward(args, item, record, policy, out_dir):
         "--max-new-tokens", str(body["max_tokens"]),
         "--temperature", str(body["temperature"]), "--top-p", str(body["top_p"]),
         "--seed", str(body["seed"]), "--independent-behavior-evidence",
-        "--narrative-auto",
     ]
+    narrative = body.get("narrative")
+    if isinstance(narrative, dict) and narrative.get("enabled") is True:
+        command.append("--narrative-auto")
     env = os.environ.copy()
     env.pop("CUDA_VISIBLE_DEVICES", None)
     env["UMM_QWEN38_PREFIX_CACHE"] = "0"

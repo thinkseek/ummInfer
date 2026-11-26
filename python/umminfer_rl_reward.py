@@ -220,6 +220,36 @@ class CompositeUmmReward(Reward):
         return self.evaluate(record)[0]
 
 
+class VerifiableArithmeticReward(Reward):
+    """Exact integer-only answers for the bounded online optimizer fixture.
+
+    The prompt id selects a frozen arithmetic identity.  Only exported clean
+    text is read; serving state and model internals are never consulted.
+    """
+
+    name = "verifiable-integer-arithmetic-v1"
+    ANSWERS = {
+        "online-arithmetic-739x461": 340679,
+        "online-arithmetic-457x683": 312131,
+        "online-arithmetic-7389x4621": 34144569,
+        "online-arithmetic-4597x6839": 31438883,
+        "online-arithmetic-3274x8957": 29325218,
+        "online-arithmetic-8642x7351": 63527342,
+        "online-arithmetic-6287x5399": 33943513,
+    }
+
+    def score(self, record):
+        if record.get("schema_version") != 2:
+            raise ValueError("arithmetic reward requires trajectory schema v2")
+        metadata = record.get("ablation")
+        if not isinstance(metadata, dict) or metadata.get("prompt_id") not in self.ANSWERS:
+            return None
+        clean_text = record.get("clean_text")
+        if not isinstance(clean_text, str):
+            raise ValueError("arithmetic reward requires exported clean_text")
+        return float(clean_text.strip() == str(self.ANSWERS[metadata["prompt_id"]]))
+
+
 def apply_reward(trajectory_path, reward, *, output_path=None):
     """Score every record in a trajectory JSONL file.
 
