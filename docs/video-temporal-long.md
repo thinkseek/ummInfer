@@ -2,15 +2,22 @@
 
 ## Status and claim boundary
 
-This task added deterministic CPU fixtures, an independent selection oracle, a
+Task #39 added deterministic CPU fixtures, an independent selection oracle, a
 controlled-live harness, native scaled-RGB selection fingerprints, and offline
-fail-closed tests. **No GPU, remote service, deployment, model inference, or real
-SM90 run was executed.** In this task:
+fail-closed tests. Task #44 executed the R4 dual-stack SM90 gate on 2026-11-26
+at clean commit `77215cef16e68d4fa2703e25b00dffb5f7a1bd40`:
 
-- `REAL_GENERATION: NOT_RUN`
-- `LIVE_LATENCY: NOT_RUN`
+- `REAL_GENERATION: MEASURED_LIMITED_FIXTURE`
+- `LIVE_LATENCY: CONTROLLED_LIVE`
 - `PERCEPTUAL_QUALITY: NOT_RUN`
 - generalized quality claim: `false`
+
+The technical gate passed all 96 requests and all fail-closed evidence checks.
+It did **not** pass a perceptual-quality or generalized-improvement gate. The
+explicit expected-substring observations were only 6/24 for default, 6/24 for
+uniform, and 0/24 for temporal across both modes; every raw answer is retained
+and reproduced below. Earlier R1–R3 setup attempts failed before any model
+request and are retained in the R4 evidence bundle.
 
 The synthetic fake endpoint in `tests/long_video_temporal_test.py` is labelled
 `SYNTHETIC_FAKE_ENDPOINT_CONTRACT_ONLY`. Its answers and latency values are not
@@ -123,12 +130,22 @@ selection/temporal-2/mRoPE divergence, incomplete repetitions, or failed
 requests fails closed. Whole-device memory samples are kept separate from
 request-native allocator telemetry, which this task does not use or modify.
 
-### Exact future live command (NOT_RUN here)
+Docker can report NVIDIA compute PIDs in the host namespace while `/proc` and
+the running stage use container PIDs. Commit
+`77215cef16e68d4fa2703e25b00dffb5f7a1bd40` therefore accepts an additive
+`native_stage.compute_pid` alias. The container `pid` still proves the running
+`/proc/<pid>/exe` bytes and start identity; `compute_pid` is the sole allowed
+NVIDIA-visible process. Missing, malformed, duplicate, or foreign mappings fail
+closed. Without the alias, the original single-namespace behavior is unchanged.
 
-First launch the two fresh stacks from the clean source commit and write their
-new provenance files. The example requires **explicitly idle physical GPU 0 for
-serial and GPU 1 for batch-four**. GPUs 2–6 and the resident service must not be
-contacted. Then run exactly:
+### Accepted live command (executed as R4)
+
+R4 launched two fresh stacks from the clean source commit and wrote new
+provenance files. It used **explicitly idle physical GPU 0 for serial and GPU 1
+for batch-four**. GPU 7 was reserved for another task; GPUs 2–6 and the resident
+service were not contacted. The pinned FFmpeg 5.1.9/FFprobe binaries and their
+FFmpeg-only compatibility libraries were placed on the isolated stacks' media
+path. Then the accepted command ran with these R4 paths:
 
 ```sh
 UMMINFER_LIVE_OPT_IN=1 python3 -I tests/video_temporal_long_live.py \
@@ -136,17 +153,127 @@ UMMINFER_LIVE_OPT_IN=1 python3 -I tests/video_temporal_long_live.py \
   --budgets 8 \
   --serial-url http://127.0.0.1:43411 \
   --batch-url http://127.0.0.1:43412 \
-  --serial-native-log /tmp/umm-long-r1/serial-stage.log \
-  --batch-native-log /tmp/umm-long-r1/batch4-stage.log \
-  --serial-provenance /tmp/umm-long-r1/serial-provenance.json \
-  --batch-provenance /tmp/umm-long-r1/batch4-provenance.json \
+  --serial-native-log /tmp/umm-long-task44-r4/serial-stage.log \
+  --batch-native-log /tmp/umm-long-task44-r4/batch4-stage.log \
+  --serial-provenance /tmp/umm-long-task44-r4/serial-provenance.json \
+  --batch-provenance /tmp/umm-long-task44-r4/batch4-provenance.json \
   --source-root "$PWD" \
-  --run-id umm-long-sm90-r1 \
-  --out-dir /tmp/umm-long-r1/evidence
+  --run-id umm-long-sm90-task44-r4 \
+  --out-dir /tmp/umm-long-task44-r4/evidence
 ```
 
-This is a future command, not a recorded run. Do not reuse old stack PIDs,
-provenance, native logs, binaries, model manifests, or evidence directories.
+R1–R3 stack PIDs, provenance, native logs, binaries, model manifests, and
+evidence paths were not reused. R4 created a fresh clone, build, model manifest,
+process set, native logs, and evidence directory.
+
+## R4 SM90 measured evidence — 2026-11-26
+
+### Frozen identity and technical gate
+
+| Identity | R4 value |
+| --- | --- |
+| Source commit / Git tree | `77215cef16e68d4fa2703e25b00dffb5f7a1bd40` / `a6c8903a172323b07605eccfd1441ae77f385941` |
+| Harness source-state SHA-256 | `d1761d15c96c70863c1f6fe559d54f6a296396d753e0c12ea9ea3422253de37b` |
+| Gateway SHA-256 | `a18d593d9ade379276ba8ed8c1ac33bbd21ec59ad0632f4d822d6ed9f0b2f77a` |
+| Native stage SHA-256 | `06e1b0368ac93948e780d9e776d51d8f167adc935de6aeedc16ff14e9cd8801c` |
+| Model / revision | `qwen3-native` Qwen3.8-27B / `UNKNOWN_LOCAL_NO_GIT` |
+| Model `config.json` SHA-256 | `191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab` |
+| Complete 29-file model manifest SHA-256 | `1dbf82809d9e8f3a0f1897f6eead5623f5752ae8585e8214d28e561076db68df` |
+| Fixture manifest SHA-256 | `642ce61e4983cd47d549b0315e0d6f92f01495f936e109487ea2407592a28980` |
+| Pinned FFmpeg SHA-256 | `0dafc1360bb07743f76abeb1e4ae16b0aaa1331e9041a0e8d6a8524111dc0cbb` |
+
+Serial used container/native compute PIDs `2352881` / `791130` on physical GPU
+0; batch-four used `2352913` / `791163` on physical GPU 1. The gateway PIDs were
+`2352890` and `2352922`. All process start identities and `/proc` executable
+hashes are in `support/launch-identities.json`. Device exclusivity passed before
+and after the schedule with zero foreign compute processes.
+
+The schedule completed **96/96 requests: 24 warmup + 72 measured**, with 12
+measured requests per arm per mode. All 96 native records were valid, every
+`prefix_reused=0`, and `/health.in_flight=0` after every schedule step. The
+independent parity results were:
+
+- default versus explicit uniform: **32/32 PASS** for request projection, raw
+  answer bytes, selected content, temporal-2 packing, and MRoPE;
+- serial versus batch-four: **48/48 PASS** for requests, answers, and native
+  selection/temporal-2/MRoPE;
+- within-mode warmup+measured repetitions: **24/24 PASS**.
+
+Independent full-decode FNV source-content binding, exact temporal source
+indices/PTS/order, and temporal-2/mRoPE parity passed for every request. This is
+a technical selection/transport/reproducibility result, not perceptual
+validation.
+
+### Raw answer observations and misses
+
+The following answers were identical in serial and batch-four and across all
+three measured repetitions (and the warmup). “Hit” refers only to the manifest's
+explicit expected substrings, not to human perceptual quality.
+
+| Case | Default / uniform raw answer | Hit | Temporal raw answer | Hit |
+| --- | --- | :---: | --- | :---: |
+| `separated-motion` | `green` | no | `green` | no |
+| `scene-static` | `蓝色` | yes | `绿色` | no |
+| `near-duplicate` | `緑` | no | `緑` | no |
+| `bframe-anchors` | `El primer cuadro es de color verde y el último es de color morado.` | no | `El primer cuadro es de color verde y el último es de color blanco.` | no |
+
+Per mode, default and uniform each had **3/12 hits and 9/12 misses**; temporal
+had **0/12 hits and 12/12 misses**. Across both modes the counts are 6/24,
+6/24, and 0/24 respectively. In particular, temporal selected the independently
+verified intended frames but did not produce the expected answers on these four
+clips. No temporal-quality improvement, generalized video understanding, or
+perceptual-quality claim is made. Raw responses and every repetition remain in
+`records/` and `report.json`.
+
+### Latency with actual sample counts
+
+Each row aggregates the 12 valid measured requests across four clips and three
+repetitions. Values are milliseconds, median / nearest-rank p95. Batch-four
+includes real concurrency-four scheduling/queueing and is not presented as a
+serial speedup ratio.
+
+| Mode / arm | n | TTFT median / p95 | Total median / p95 | Native elapsed median / p95 |
+| --- | ---: | ---: | ---: | ---: |
+| serial / default | 12 | 469.5 / 474.8 | 489.5 / 768.4 | 488.0 / 765.0 |
+| serial / uniform | 12 | 467.3 / 474.0 | 487.9 / 767.1 | 486.0 / 764.0 |
+| serial / temporal | 12 | 524.7 / 551.1 | 545.4 / 807.9 | 542.5 / 804.0 |
+| batch4 / default | 12 | 961.6 / 1419.5 | 1443.6 / 1718.8 | 1441.0 / 1704.0 |
+| batch4 / uniform | 12 | 954.3 / 1414.5 | 1435.8 / 1714.3 | 1433.0 / 1700.0 |
+| batch4 / temporal | 12 | 1001.7 / 1460.3 | 1482.7 / 1746.7 | 1480.0 / 1732.0 |
+
+Native vision medians were 20.75–21.0 ms and native prefill medians were
+282.95–283.35 ms across the six groups, each with n=12. Temporal was slower than
+uniform in these measurements; no latency improvement is claimed.
+
+### Whole-device resources, cleanup, and independent verification
+
+| Mode | Schedule steps | NVML samples | Whole-device peak | Final during-service range | Post-stop memory |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| serial GPU 0 | 12 | 326 | 55,657 MiB | 55,657–55,657 MiB | 3 MiB |
+| batch4 GPU 1 | 12 | 250 | 57,861 MiB | 57,783–57,861 MiB | 3 MiB |
+
+These are whole-device NVML observations at 50 ms polling, shared by the four
+clips in each schedule step. The declared during-service ceiling was 61,440
+MiB. Request-native allocator telemetry was `NOT_USED`, not zero and not
+inferred from NVML. All six task-owned processes accepted SIGTERM; no SIGKILL
+was needed. Post-cleanup compute-PID lists were empty and both devices returned
+to 3 MiB.
+
+The final evidence bundle contains 96 records and 232 `SHA256SUMS` entries;
+`SHA256SUMS` SHA-256 is
+`354e29c3e98fa39210de45abd1e13b4625bb274cbc46717b9f55e9ff8a14ed45`.
+It includes raw SSE/answers/failures, native diagnostics, schedules, prompts,
+process identities and clocks, complete model/media/binary/fixture manifests,
+all setup failures, native test logs, and the stdlib-independent summary.
+`--check-evidence` passed in fresh remote and local processes, independent
+aggregate recomputation and parity-count audit matched, and all 232 local `sha256sum -c` checks
+passed. R4 also passed `long_video_temporal_test.py` 14/14,
+`controlled_measurement_test.py` 38/38, Qwen host/video-input CTest 2/2, and
+native-stage CTest 5/5 independently. Evidence remains outside tracked files at
+`/tmp/umm-long-task44-r4/evidence` with a locally verified copy at
+`/tmp/umm-long-task44-r4-evidence/evidence`.
+
+Budgets 4 and 16 remain CPU-oracle-only. R4 made no live request for them.
 
 ## Evidence and independent validation
 

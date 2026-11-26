@@ -130,6 +130,11 @@ def validate_provenance(path, *, mode, run_id, source_root, rehash=True,
         pid = provenance[name].get("pid")
         if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
             raise ValueError(f"{mode}: {name} PID is missing")
+        compute_pid = provenance[name].get("compute_pid")
+        if compute_pid is not None and (
+                isinstance(compute_pid, bool) or not isinstance(compute_pid, int)
+                or compute_pid <= 0):
+            raise ValueError(f"{mode}: {name} compute PID is malformed")
         if rehash:
             binary_path = _file_digest(provenance[name], f"{mode} {name}")
             digest = process_digest(pid, binary_path) if process_digest else \
@@ -243,11 +248,15 @@ class ResourceMonitor:
 
 def exclusive_check(provenance, compute_apps_sampler, memory_sampler):
     gpu = provenance["physical_gpu"]
+    native_pid = provenance["native_stage"]["pid"]
+    compute_pid = provenance["native_stage"].get("compute_pid", native_pid)
+    if isinstance(compute_pid, bool) or not isinstance(compute_pid, int) or compute_pid <= 0:
+        raise ValueError("native-stage compute PID is malformed")
     contract = controlled.parse_contract({
         "schema_version": 1, "warmup_repetitions": 0, "measured_repetitions": 1,
         "arm_order": "interleaved", "seed": 0,
         "exclusive_device": {"required": True, "gpu_indexes": [gpu],
-                             "allowed_pids": [provenance["native_stage"]["pid"]],
+                             "allowed_pids": [compute_pid],
                              "max_other_compute_processes": 0},
         "cleanup": {"require_in_flight_zero": True,
                     "max_residual_memory_mib": provenance["max_residual_memory_mib"]},
@@ -255,9 +264,11 @@ def exclusive_check(provenance, compute_apps_sampler, memory_sampler):
     baseline = memory_sampler([gpu])
     record = controlled.check_exclusive_device(contract, compute_apps_sampler, baseline)
     observed = compute_apps_sampler([gpu])
-    if provenance["native_stage"]["pid"] not in [app["pid"] for app in observed[gpu]]:
+    if compute_pid not in [app["pid"] for app in observed[gpu]]:
         record["passed"] = False
-        record["problems"].append("recorded native-stage PID is absent from the device")
+        record["problems"].append("recorded native-stage compute PID is absent from the device")
+    record["native_stage_pid"] = native_pid
+    record["native_stage_compute_pid"] = compute_pid
     return record, contract, baseline
 
 
@@ -673,8 +684,10 @@ def execute_live(args, short):
         left = public_provenance(provenances["serial"][field])
         right = public_provenance(provenances["batch4"][field])
         if field in ("gateway", "native_stage"):
-            left = {key: value for key, value in left.items() if key != "pid"}
-            right = {key: value for key, value in right.items() if key != "pid"}
+            left = {key: value for key, value in left.items()
+                    if key not in ("pid", "compute_pid")}
+            right = {key: value for key, value in right.items()
+                     if key not in ("pid", "compute_pid")}
         if left != right:
             raise ValueError(f"frozen serial/batch4 {field} identity differs")
     if any(not row["passed"] for row in exclusive):

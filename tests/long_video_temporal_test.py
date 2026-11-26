@@ -450,6 +450,32 @@ class ProvenanceGateTests(unittest.TestCase):
                                          for index in indexes}, lambda indexes: {0: 100})
         self.assertFalse(foreign["passed"])
 
+    def test_exclusive_gate_binds_namespaced_compute_pid_without_weakening(self):
+        provenance = {"physical_gpu": 0,
+                      "native_stage": {"pid": 42, "compute_pid": 5042},
+                      "max_residual_memory_mib": 128}
+        record, _, _ = live.exclusive_check(
+            provenance, lambda indexes: {index: [{"pid": 5042, "used_mib": 100}]
+                                         for index in indexes}, lambda indexes: {0: 100})
+        self.assertTrue(record["passed"])
+        self.assertEqual(record["native_stage_pid"], 42)
+        self.assertEqual(record["native_stage_compute_pid"], 5042)
+        for observed in ([], [{"pid": 42, "used_mib": 100}],
+                         [{"pid": 5042, "used_mib": 100}, {"pid": 99, "used_mib": 10}]):
+            with self.subTest(observed=observed):
+                failed, _, _ = live.exclusive_check(
+                    provenance, lambda indexes: {index: observed for index in indexes},
+                    lambda indexes: {0: 100})
+                self.assertFalse(failed["passed"])
+        for malformed in (True, 0, -1, "5042"):
+            with self.subTest(malformed=malformed):
+                changed = {"physical_gpu": 0,
+                           "native_stage": {"pid": 42, "compute_pid": malformed},
+                           "max_residual_memory_mib": 128}
+                with self.assertRaises(ValueError):
+                    live.exclusive_check(changed, lambda indexes: {0: []},
+                                         lambda indexes: {0: 100})
+
 
 class CliBoundaryTests(unittest.TestCase):
     def test_self_check_and_default_not_run(self):

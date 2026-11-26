@@ -55,7 +55,10 @@ security hash. The long-video extension adds `selected_frame_content_fnv1a64`
 for independent scaled-RGB source binding without changing default uniform
 pixels or historical nominal timestamps. Its 449-frame fixtures, budgets,
 seeded repetitions, and two-stack controlled contract are documented in
-[video-temporal-long.md](video-temporal-long.md); no long live run has executed.
+[video-temporal-long.md](video-temporal-long.md); the later Task #44 R4 SM90
+run completed 96/96 requests with `CONTROLLED_LIVE`, while reporting only 6/24,
+6/24, and 0/24 expected-substring hits for default, uniform, and temporal and
+making no perceptual-quality claim.
 
 ## Clip provenance and explicit expectations
 

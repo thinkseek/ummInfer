@@ -568,6 +568,29 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 56 Task #44 Long-Video Temporal Controlled Dual-Stack SM90 Gate (`77215ce`):
+  - Added fail-closed host/container PID-namespace binding to the accepted
+    long-video harness (`native_stage.compute_pid` for NVIDIA exclusivity;
+    container `pid` retained for `/proc` binary/start identity), with 14/14
+    long-video and 38/38 controlled-measurement tests plus native CTest 2/2 and
+    stage CTest 5/5. R1–R3 made zero model requests and failed closed on media
+    toolchain/provenance/PID-namespace setup; their records are retained.
+  - Fresh R4 used isolated physical GPU 0 serial and GPU 1 batch-four, pinned
+    SM90/CUDA 12.4 and FFmpeg 5.1.9 toolchains, the same Qwen3.8-27B 29-file
+    manifest, budget 8, disabled prefix cache, seeded/interleaved 24 warmups +
+    72 measured requests. All 96 native records were valid, all prefix reuse was
+    zero, default/uniform parity was 32/32, serial/batch parity 48/48, repeated
+    parity 24/24, source-content/PTS/temporal-2/MRoPE checks passed, and
+    `/health.in_flight=0` after every step. Both GPUs returned to 3 MiB with no
+    compute processes after SIGTERM cleanup.
+  - Result: **`CONTROLLED_LIVE`**, 232/232 local and remote evidence checksums,
+    `SHA256SUMS` SHA-256 `354e29c3…`. Raw answers are not hidden: default and
+    uniform each had 6/24 expected-substring hits across both modes; temporal
+    had 0/24. `PERCEPTUAL_QUALITY: NOT_RUN`, generalized improvement `false`,
+    budgets 4/16 remain CPU-oracle-only. Exact identities, answers, n=12
+    latency/resource aggregates, and evidence paths are in
+    [video-temporal-long.md](video-temporal-long.md).
+
 - Wave 51 Stage C Opt-In Exported-Token Joint-DPO Data/Preflight Path & Fresh-Process Bundle Verifier (`8122604`):
   - Harvested accepted Task #43 (`revisions=0`, CPU-only DPO data/preflight
     contract): landed `--token-source legacy|token_export`, `--preflight-only`,
@@ -615,8 +638,8 @@ and `--web-root`:
     **13/13 PASS** (including byte-identical H.264 regeneration and deep oracle),
     short & long `--self-check` PASS, `controlled_measurement_test.py`
     **38/38 PASS**, `benchmarks/video-temporal-long/SHA256SUMS` **13/13 OK**.
-    Real SM90 generation, live latency, and perceptual quality remain
-    explicitly `NOT_RUN`.
+    Real SM90 generation, live latency, and perceptual quality were explicitly
+    `NOT_RUN` in Wave 49; the later Task #44 gate is Wave 56 above.
 
 - Wave 48 Stage C Opt-In Exported-Token Joint-SFT Path & SM90 GPU 7 Dual-Path Equivalence Gate (`f344d1d`):
   - Harvested accepted Task #40 (`revisions=0`, isolated SM90 GPU 7 real

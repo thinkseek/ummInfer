@@ -120,9 +120,12 @@ live 仍只支持 8，其他预算在发请求前拒绝。`tests/video_temporal_
 与 batch-four、冻结源码/二进制/模型/数据/请求拓扑，并强制冷前缀、设备独占、
 默认 uniform 兼容、精确源内容/PTS、temporal-2/mRoPE、完整产物与 SHA-256 门禁。
 新增的 `selected_frame_content_fnv1a64` 仅用于诊断 native 输入与独立解码内容的
-一致性，不改变默认 uniform 像素或历史 nominal mRoPE 时间戳。详见
-[video-temporal-long.md](video-temporal-long.md)；本轮真实生成、线上时延和感知
-质量均 `NOT_RUN`，fake endpoint 只验证合同。
+一致性，不改变默认 uniform 像素或历史 nominal mRoPE 时间戳。Task #44 R4 已在
+`77215ce` 用隔离 SM90 GPU 0/1 完成 96/96 请求、冷前缀、serial/batch-four、源内容/
+PTS/temporal-2/mRoPE 与完整证据门禁，获 `CONTROLLED_LIVE`；default/uniform/temporal
+显式答案命中分别仅 6/24、6/24、0/24，感知质量与泛化提升仍 `NOT_RUN`，预算 4/16
+仍为 CPU-oracle-only。详见 [video-temporal-long.md](video-temporal-long.md)；fake
+endpoint 只验证合同。
 
 ---
 
