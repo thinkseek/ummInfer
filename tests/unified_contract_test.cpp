@@ -12205,6 +12205,177 @@ void test_public_http_request_native_allocator_telemetry() {
                 std::string::npos,
         "internal stage telemetry leaked through a nonstream artifact");
 
+  // TTS off/on requests preserve the complete public JSON/SSE shape and exact
+  // audio bytes. The fake native terminal intentionally models a warm TTS
+  // request: no new direct allocations, covered zero bytes, and zero events.
+  struct AudioTelemetryRun {
+    test_http::HttpResponse response;
+    std::string media_bytes;
+    json normalized;
+  };
+  std::string pcm_bytes(4096, '\0');
+  for (size_t i = 0; i < pcm_bytes.size(); ++i) {
+    pcm_bytes[i] = static_cast<char>((i * 37 + 11) & 0xff);
+  }
+  const std::string wav_bytes = audio::wav_from_pcm16(pcm_bytes, 24000);
+  auto run_tts_audio = [&](bool enabled, bool streamed) {
+    json body = {
+        {"model", "qwen3-unified"}, {"messages", messages},
+        {"stream", streamed},
+        {"modalities", json::array({"text", "audio"})},
+        {"audio", {{"voice", "vivian"}, {"format", "wav"},
+                   {"stream", streamed}}}};
+    if (enabled) body["telemetry"] = {{"native_allocator", true}};
+    auto future = post(body);
+    auto vlm_submit = h.next_submit(h.vlm_recv);
+    check(vlm_submit.has_value(), "TTS telemetry request did not reach VLM");
+    StagePayload vlm_payload = StagePayload::from_value(vlm_submit->data);
+    check(obs::native_allocator_telemetry_requested(vlm_payload.request.params) ==
+              enabled,
+          "TTS request changed the VLM telemetry opt-in");
+    Value vlm_result = text_result("PCM parity.");
+    if (enabled) {
+      vlm_result[obs::kRequestTelemetryResultKey] =
+          native_stage_telemetry(vlm_submit->request_id);
+    }
+    h.complete(vlm_submit->request_id, "vlm", true, std::move(vlm_result));
+
+    auto tts_submit = h.next_submit(h.tts_recv);
+    check(tts_submit.has_value(), "TTS telemetry request did not reach TTS");
+    StagePayload tts_payload = StagePayload::from_value(tts_submit->data);
+    check(obs::native_allocator_telemetry_requested(tts_payload.request.params) ==
+              enabled,
+          "TTS output leg did not preserve its telemetry opt-in");
+    if (streamed) {
+      Value::Map chunk;
+      chunk["audio"] = Value::bin(pcm_bytes);
+      chunk["index"] = Value(int64_t{0});
+      chunk["first_frame"] = Value(int64_t{0});
+      chunk["frames"] = Value(int64_t{1});
+      chunk["sample_rate"] = Value(int64_t{24000});
+      chunk["channels"] = Value(int64_t{1});
+      chunk["format"] = Value("pcm16");
+      h.stream(tts_submit->request_id, "tts", Value(std::move(chunk)));
+    }
+    Value::Map extra;
+    extra["sample_rate"] = Value(int64_t{24000});
+    extra["channels"] = Value(int64_t{1});
+    extra["streamed"] = Value(streamed);
+    Value tts_result = artifact_result("audio", "audio/wav", wav_bytes,
+                                       std::move(extra));
+    if (enabled) {
+      Value raw = native_stage_telemetry(tts_submit->request_id);
+      raw["stage"] = Value("tts");
+      raw["backend"] = Value("tts");
+      for (const char* key : {"allocated_bytes_peak", "reserved_bytes_peak",
+                              "allocated_bytes_final", "reserved_bytes_final"}) {
+        raw[key] = Value(int64_t{0});
+      }
+      raw["sample_coverage"] = Value(Value::Map{
+          {"allocation_events", Value(int64_t{0})},
+          {"free_events", Value(int64_t{0})},
+          {"terminal_snapshots", Value(int64_t{1})}});
+      tts_result[obs::kRequestTelemetryResultKey] = std::move(raw);
+    }
+    h.complete(tts_submit->request_id, "tts", true, std::move(tts_result));
+    const auto response = future.get();
+    check(response.status == 200, "TTS off/on public request failed");
+
+    AudioTelemetryRun out{response, {}, {}};
+    json public_body;
+    std::string public_id;
+    if (streamed) {
+      public_body = json::array();
+      for (const std::string& payload : sse_data_payloads(response.body)) {
+        if (payload == "[DONE]") continue;
+        json frame = json::parse(payload);
+        if (public_id.empty() && frame.contains("id")) {
+          public_id = frame["id"].get<std::string>();
+        }
+        if (frame.contains("unified") &&
+            frame["unified"].value("kind", "") == "artifact") {
+          const json& artifact = frame["unified"]["artifact"];
+          if (artifact.value("mime_type", "") == "audio/pcm") {
+            out.media_bytes += util::base64_decode(
+                artifact["data"].get<std::string>(), pcm_bytes.size() + 16);
+          }
+        }
+        public_body.push_back(std::move(frame));
+      }
+      check(out.media_bytes == pcm_bytes,
+            "streamed public PCM changed under telemetry");
+    } else {
+      public_body = json::parse(response.body);
+      public_id = public_body["id"].get<std::string>();
+      check(public_body["artifacts"].size() == 1 &&
+                !public_body["artifacts"][0].contains(
+                    obs::kRequestTelemetryResultKey),
+            "nonstream TTS telemetry leaked into its artifact");
+      out.media_bytes = util::base64_decode(
+          public_body["artifacts"][0]["data"].get<std::string>(),
+          wav_bytes.size() + 16);
+      check(out.media_bytes == wav_bytes, "nonstream TTS WAV changed");
+    }
+    check((response.body.find("\"telemetry\"") != std::string::npos) == enabled,
+          "TTS telemetry field presence differs from its opt-in");
+    if (enabled) {
+      check(response.body.find("\"native_stage\":\"tts\"") != std::string::npos &&
+                response.body.find("\"allocated_bytes_peak\":0") !=
+                    std::string::npos,
+            "covered warm TTS terminal telemetry is missing");
+    }
+
+    std::function<json(const json&)> normalize = [&](const json& value) -> json {
+      if (value.is_object()) {
+        json object = json::object();
+        for (auto it = value.begin(); it != value.end(); ++it) {
+          if (it.key() == "created" || it.key() == "session_id" ||
+              it.key() == "telemetry") {
+            continue;
+          }
+          object[it.key()] = normalize(it.value());
+        }
+        return object;
+      }
+      if (value.is_array()) {
+        json array = json::array();
+        for (const json& item : value) array.push_back(normalize(item));
+        return array;
+      }
+      if (value.is_string()) {
+        std::string text = value.get<std::string>();
+        for (const std::string& id : {public_id, vlm_submit->request_id}) {
+          if (id.empty()) continue;
+          size_t at = 0;
+          while ((at = text.find(id, at)) != std::string::npos) {
+            text.replace(at, id.size(), "<request>");
+            at += 9;
+          }
+        }
+        return text;
+      }
+      return value;
+    };
+    out.normalized = normalize(public_body);
+    return out;
+  };
+
+  const auto audio_off = run_tts_audio(false, false);
+  const auto audio_on = run_tts_audio(true, false);
+  const auto audio_warm = run_tts_audio(true, false);
+  check(audio_off.normalized == audio_on.normalized &&
+            audio_on.normalized == audio_warm.normalized &&
+            audio_off.media_bytes == audio_on.media_bytes &&
+            audio_on.media_bytes == audio_warm.media_bytes,
+        "TTS JSON/repeated-warm protocol or audio parity failed");
+  const auto pcm_off = run_tts_audio(false, true);
+  const auto pcm_on = run_tts_audio(true, true);
+  check(pcm_off.normalized == pcm_on.normalized &&
+            pcm_off.media_bytes == pcm_on.media_bytes &&
+            util::sha256_hex(pcm_off.media_bytes) ==
+                util::sha256_hex(pcm_on.media_bytes),
+        "TTS SSE/PCM off-on protocol parity failed");
+
   api.stop();
   server_thread.join();
 }

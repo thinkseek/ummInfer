@@ -69,6 +69,8 @@ if(UMM_TTS_CUDA)
     tail_trim.cpp
     cuda_kernels.cu
   )
+  target_include_directories(umm-tts-native PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..)
   target_link_libraries(umm-tts-native PRIVATE umm_tts_host CUDA::cudart)
   set_target_properties(umm-tts-native PROPERTIES CUDA_ARCHITECTURES 90)
 endif()

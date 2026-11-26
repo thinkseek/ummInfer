@@ -10,6 +10,9 @@ profile. Every request is opt-in through UMMINFER_LIVE_OPT_IN=1.
 Suites:
   serial        Qwen3.8 and Wan2.2 serial covered paths, protocol parity,
                 prefix/VAE-cache repeats, failure/cancel, and uninstrumented ASR
+  tts           real Qwen3.8 + CustomVoice TTS serial requests, two prompts,
+                warm repeats, off/on JSON/SSE/PCM parity, failure/cancel, and
+                independent 50 ms whole-device NVML (isolated stack required)
   batched       Qwen3.8 --batch-size>1 must be NOT_COVERED with null peaks
   contract-stub Wan2.2 contract-stub must be NOT_COVERED with null peaks
 
@@ -23,6 +26,7 @@ import base64
 import copy
 import hashlib
 import http.client
+import io
 import json
 import os
 from pathlib import Path
@@ -34,6 +38,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import wave
 
 
 class GateFailure(RuntimeError):
@@ -59,7 +64,8 @@ def normalize(value, request_id=None):
     if isinstance(value, dict):
         return {key: normalize(item, request_id) for key, item in value.items()
                 if key not in ("created", "session_id", "telemetry",
-                               "denoise_ms", "encode_ms")}
+                               "denoise_ms", "encode_ms", "first_frame_ms",
+                               "total_ms", "first_audio_ms", "elapsed_ms")}
     if isinstance(value, list):
         return [normalize(item, request_id) for item in value]
     if isinstance(value, str) and request_id:
@@ -195,6 +201,7 @@ class Gate:
         self.epochs = {}
         self.peaks = {}
         self.terminal_files = []
+        self.media_hashes = {}
         self.monitor = NvmlMonitor(args.device)
 
     def save_json(self, name, value):
@@ -236,7 +243,8 @@ class Gate:
         parsed = json.loads(raw)
         return status, parsed, path
 
-    def stream(self, name, body, abort_first_frame=False):
+    def stream(self, name, body, abort_first_frame=False,
+               abort_first_audio=False):
         raw_request = canonical(body)
         (self.evidence / f"{name}.request.json").write_bytes(raw_request + b"\n")
         parts = urllib.parse.urlsplit(self.base)
@@ -262,6 +270,15 @@ class Gate:
                     break
                 frame = json.loads(data)
                 frames.append(frame)
+                if abort_first_audio and abort_result is None:
+                    unified = frame.get("unified", {})
+                    artifact = unified.get("artifact", {})
+                    if (unified.get("kind") == "artifact" and
+                            artifact.get("mime_type") == "audio/pcm"):
+                        request_id = frame.get("id") or unified.get("request_id")
+                        require(isinstance(request_id, str) and request_id,
+                                "audio SSE frame has no request id")
+                        abort_result = self.abort(request_id)
                 if abort_first_frame and abort_result is None:
                     request_id = frame.get("id")
                     require(isinstance(request_id, str) and request_id,
@@ -321,6 +338,262 @@ class Gate:
             "guidance_scale": 5.0, "seed": 42, "output_format": "mp4",
         }
         return body
+
+    def tts_body(self, telemetry=False, stream=False, prompt_index=0,
+                 max_tokens=32):
+        prompts = (
+            "Reply with exactly this sentence and nothing else: "
+            "Allocator telemetry remains optional for every voice request.",
+            "Reply with exactly this sentence and nothing else: "
+            "A different prompt exercises the same warmed native speech pools.",
+        )
+        body = self.text_body(telemetry=telemetry, stream=stream,
+                              max_tokens=max_tokens)
+        body["messages"] = [{"role": "user", "content": prompts[prompt_index]}]
+        body["modalities"] = ["text", "audio"]
+        body["audio"] = {
+            "voice": "vivian", "format": "wav", "stream": stream,
+            "sample_rate": 24000,
+        }
+        return body
+
+    def save_wav_and_pcm(self, name, body):
+        artifacts = [item for item in body.get("artifacts", [])
+                     if item.get("media_type") == "audio"]
+        require(len(artifacts) == 1, f"{name} did not return one audio artifact")
+        artifact = artifacts[0]
+        require("request_telemetry" not in artifact,
+                "internal TTS telemetry leaked into an artifact")
+        wav = base64.b64decode(artifact["data"], validate=True)
+        require(sha256_bytes(wav) == artifact.get("sha256"),
+                f"{name} WAV SHA-256 mismatch")
+        with wave.open(io.BytesIO(wav), "rb") as source:
+            require(source.getnchannels() == 1 and source.getsampwidth() == 2 and
+                    source.getframerate() == 24000,
+                    f"{name} is not 24 kHz mono PCM16")
+            pcm = source.readframes(source.getnframes())
+        require(len(pcm) > 0 and len(pcm) % 2 == 0, f"{name} has invalid PCM")
+        (self.evidence / f"{name}.wav").write_bytes(wav)
+        (self.evidence / f"{name}.pcm").write_bytes(pcm)
+        digest = sha256_bytes(pcm)
+        self.media_hashes[name] = {"pcm_sha256": digest, "pcm_bytes": len(pcm),
+                                   "wav_sha256": sha256_bytes(wav)}
+        return digest
+
+    def save_stream_pcm(self, name, frames):
+        chunks = {}
+        expected = {}
+        combined = bytearray()
+        for frame in frames:
+            unified = frame.get("unified", {})
+            if unified.get("kind") != "artifact":
+                continue
+            artifact = unified.get("artifact", {})
+            if artifact.get("mime_type") != "audio/pcm":
+                continue
+            require(artifact.get("format") == "pcm16" and
+                    artifact.get("sample_rate") == 24000 and
+                    artifact.get("channels") == 1,
+                    f"{name} streamed non-PCM16/24k/mono audio")
+            identity = artifact["artifact_id"]
+            data = base64.b64decode(artifact["data"], validate=True)
+            chunks.setdefault(identity, bytearray()).extend(data)
+            combined.extend(data)
+            if "sha256" in artifact:
+                expected[identity] = (artifact["sha256"], artifact["bytes"])
+        require(chunks and expected.keys() == chunks.keys(),
+                f"{name} did not stream complete PCM artifacts")
+        for identity, (digest, size) in expected.items():
+            require(size == len(chunks[identity]) and
+                    digest == sha256_bytes(chunks[identity]),
+                    f"{name} streamed PCM digest/size mismatch for {identity}")
+        pcm = bytes(combined)
+        require(len(pcm) > 0 and len(pcm) % 2 == 0, f"{name} has invalid PCM")
+        (self.evidence / f"{name}.pcm").write_bytes(pcm)
+        self.media_hashes[name] = {
+            "pcm_sha256": sha256_bytes(pcm), "pcm_bytes": len(pcm),
+            "artifact_count": len(chunks),
+            "artifact_sha256": {identity: sha256_bytes(data)
+                                for identity, data in chunks.items()},
+        }
+        return sha256_bytes(pcm)
+
+    def require_tts_warm_covered(self, envelope, lifecycle="completed"):
+        rows = [row for row in envelope.get("stages", [])
+                if row.get("native_stage") == "tts"]
+        require(rows, "missing native TTS telemetry stage")
+        covered = []
+        for row in rows:
+            single = dict(envelope)
+            single["stages"] = [row]
+            stage = require_covered(single, "tts", self.args.device,
+                                    lifecycle=lifecycle)
+            samples = stage["sample_coverage"]
+            require(stage["allocated_bytes_peak"] == 0 and
+                    stage["reserved_bytes_peak"] == 0 and
+                    stage["allocated_bytes_final"] == 0 and
+                    stage["reserved_bytes_final"] == 0 and
+                    samples["allocation_events"] == 0 and
+                    samples["free_events"] == 0,
+                    "TTS pre-request pools were incorrectly attributed to a request")
+            covered.append(stage)
+        return covered
+
+    def tts(self):
+        status, health = self.get_json("/health")
+        require(status == 200 and health.get("in_flight") == 0,
+                f"initial health is not idle: {health}")
+        status, ready = self.get_json("/ready")
+        require(status == 200 and ready.get("status") == "ready",
+                "Qwen/TTS stack is not ready")
+        log_offset = 0
+        if self.args.tts_log:
+            log_offset = Path(self.args.tts_log).stat().st_size
+
+        nonstream = {}
+        for name, enabled, prompt_index in (
+                ("tts-cold-on", True, 0), ("tts-off", False, 0),
+                ("tts-warm-on", True, 0), ("tts-second-prompt-on", True, 1)):
+            body = self.tts_body(telemetry=enabled, prompt_index=prompt_index)
+            status, response, path = self.chat(name, body)
+            require(status == 200, f"{name} HTTP {status}: {response}")
+            envelope = response_telemetry(response)
+            if enabled:
+                require_covered(envelope, "qwen38", self.args.device)
+                self.require_tts_warm_covered(envelope)
+                self.note_epochs(envelope)
+                self.remember_terminal(path)
+            else:
+                require(envelope is None and "telemetry" not in response,
+                        "default TTS JSON emitted telemetry")
+            self.save_wav_and_pcm(name, response)
+            nonstream[name] = response
+        parity = self.compare(nonstream["tts-off"], nonstream["tts-cold-on"],
+                              nonstream["tts-off"].get("id"),
+                              nonstream["tts-cold-on"].get("id"))
+        self.record("tts-json-off-on-protocol-parity", "PASS", parity)
+        require(self.media_hashes["tts-off"]["pcm_sha256"] ==
+                self.media_hashes["tts-cold-on"]["pcm_sha256"] ==
+                self.media_hashes["tts-warm-on"]["pcm_sha256"],
+                "TTS off/on/warm PCM bytes differ")
+        self.record("tts-off-on-warm-pcm-parity", "PASS",
+                    self.media_hashes["tts-off"]["pcm_sha256"])
+
+        streamed = {}
+        for name, enabled in (("tts-sse-off", False), ("tts-sse-on", True)):
+            status, frames, _ = self.stream(
+                name, self.tts_body(telemetry=enabled, stream=True))
+            require(status == 200 and frames, f"{name} SSE failed")
+            envelopes = [frame_telemetry(frame) for frame in frames
+                         if frame_telemetry(frame) is not None]
+            if enabled:
+                require(len(envelopes) == 1,
+                        "TTS SSE did not emit one terminal envelope")
+                require_covered(envelopes[0], "qwen38", self.args.device)
+                self.require_tts_warm_covered(envelopes[0])
+                self.note_epochs(envelopes[0])
+            else:
+                require(not envelopes and
+                        all("telemetry" not in frame for frame in frames),
+                        "default TTS SSE emitted telemetry")
+            self.save_stream_pcm(name, frames)
+            streamed[name] = frames
+        first_id = streamed["tts-sse-off"][0].get("id")
+        second_id = streamed["tts-sse-on"][0].get("id")
+        parity = self.compare(streamed["tts-sse-off"],
+                              streamed["tts-sse-on"], first_id, second_id)
+        self.record("tts-sse-off-on-protocol-parity", "PASS", parity)
+        require(self.media_hashes["tts-sse-off"]["pcm_sha256"] ==
+                self.media_hashes["tts-sse-on"]["pcm_sha256"],
+                "TTS off/on streamed PCM bytes differ")
+        self.record("tts-sse-off-on-pcm-parity", "PASS",
+                    self.media_hashes["tts-sse-off"]["pcm_sha256"])
+
+        # A valid reference WAV is a deterministic native-stage failure for a
+        # CustomVoice checkpoint, after public validation and VLM completion.
+        reference = io.BytesIO()
+        with wave.open(reference, "wb") as target:
+            target.setnchannels(1)
+            target.setsampwidth(2)
+            target.setframerate(24000)
+            target.writeframes(b"\x01\x00" * 240)
+        failed_body = self.tts_body(telemetry=True)
+        failed_body["audio"]["ref_audio"] = base64.b64encode(
+            reference.getvalue()).decode()
+        status, failed, path = self.chat("tts-failed", failed_body)
+        require(status == 200, f"TTS optional-leg failure became HTTP {status}")
+        require(any(leg.get("stage") == "tts" and leg.get("state") == "failed"
+                    for leg in failed.get("legs", [])),
+                f"TTS failure was not reported in legs: {failed}")
+        envelope = response_telemetry(failed)
+        self.require_tts_warm_covered(envelope, lifecycle="failed")
+        self.note_epochs(envelope)
+        self.remember_terminal(path)
+
+        # Cancel only after native streaming PCM proves the TTS leg is running.
+        cancel_body = self.tts_body(telemetry=True, stream=True, max_tokens=160)
+        cancel_body["messages"] = [{"role": "user", "content":
+            "Write one continuous sixty-word sentence about a calm mountain "
+            "lake at sunrise, without lists or headings."}]
+        status, frames, abort = self.stream(
+            "tts-cancelled", cancel_body, abort_first_audio=True)
+        require(status == 200 and abort and abort.get("status") == 200,
+                f"TTS in-flight abort failed: {abort}")
+        envelopes = [frame_telemetry(frame) for frame in frames
+                     if frame_telemetry(frame) is not None]
+        require(len(envelopes) == 1 and
+                envelopes[0].get("lifecycle_status") == "cancelled",
+                "TTS cancellation did not emit one cancelled envelope")
+        tts_rows = [row for row in envelopes[0].get("stages", [])
+                    if row.get("stage") == "tts"]
+        if tts_rows:
+            saw_native_tts = False
+            for row in tts_rows:
+                if row.get("native_stage") == "tts":
+                    single = dict(envelopes[0])
+                    single["stages"] = [row]
+                    self.require_tts_warm_covered(
+                        single, lifecycle=row.get("lifecycle_status"))
+                    saw_native_tts = True
+                else:
+                    require_not_covered(row, "stage_terminal_snapshot_missing")
+            if saw_native_tts:
+                self.note_epochs(envelopes[0])
+        self.save_json("tts-cancelled-boundary.json", {
+            "abort": abort, "telemetry": envelopes[0],
+            "boundary": "public cancellation after first native audio/pcm artifact",
+        })
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            _, health = self.get_json("/health")
+            if health.get("in_flight") == 0:
+                break
+            time.sleep(0.1)
+        require(health.get("in_flight") == 0, f"in_flight did not drain: {health}")
+        if self.args.tts_log:
+            # Public cancellation is intentionally immediate; the native abort
+            # marker can be appended just after the terminal SSE envelope.
+            native_log = b""
+            marker = "request_id=" + envelopes[0]["request_id"] + ":tts"
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                native_log = Path(self.args.tts_log).read_bytes()[log_offset:]
+                if (b"tts request aborted" in native_log and
+                        b"aborted at frame" in native_log and
+                        marker.encode() in native_log):
+                    break
+                time.sleep(0.05)
+            (self.evidence / "tts-native-log-tail.txt").write_bytes(native_log)
+            require(b"tts request aborted" in native_log and
+                    b"aborted at frame" in native_log and
+                    marker.encode() in native_log,
+                    "native TTS log did not retain this request's cancellation")
+        for path, digest in self.terminal_files:
+            require(sha256_bytes(path.read_bytes()) == digest,
+                    f"terminal response was rewritten: {path.name}")
+        require(len(self.epochs.get("tts", [])) >= 5,
+                "insufficient unique TTS request epochs")
 
     def compare(self, off, on, off_id=None, on_id=None):
         left = canonical(normalize(off, off_id))
@@ -526,6 +799,8 @@ class Gate:
                 self.serial()
             elif self.args.suite == "batched":
                 self.batched()
+            elif self.args.suite == "tts":
+                self.tts()
             else:
                 self.contract_stub()
         finally:
@@ -540,6 +815,7 @@ class Gate:
             "results": self.results, "failures": self.failures,
             "covered_epochs": self.epochs,
             "allocated_bytes_peaks": self.peaks,
+            "media_hashes": self.media_hashes,
             "whole_device_nvml": "independent 50 ms samples; never request-only peaks",
         }
         self.save_json("summary.json", summary)
@@ -558,10 +834,11 @@ def main(argv=None):
     parser.add_argument("--model", default="qwen3-native")
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--suite", choices=("serial", "batched", "contract-stub"),
+    parser.add_argument("--suite", choices=("serial", "batched", "contract-stub", "tts"),
                         default="serial")
     parser.add_argument("--audio", help="optional real PCM16 WAV for uninstrumented ASR")
     parser.add_argument("--qwen-log", help="optional stage log for prefix_reused evidence")
+    parser.add_argument("--tts-log", help="fresh native TTS log for cancellation evidence")
     parser.add_argument("--timeout-s", type=float, default=600)
     args = parser.parse_args(argv)
     parsed = urllib.parse.urlsplit(args.base_url)

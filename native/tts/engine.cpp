@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "codec.hpp"
+#include "common/cuda_request_allocator.hpp"
 #include "cuda_kernels.hpp"
 #include "model_config.hpp"
 #include "prompt.hpp"
@@ -383,7 +384,7 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
       im.speaker_encoder = std::make_unique<SpeakerEncoder>(st, cfg);
     const size_t start = st.data_region_offset();
     const size_t bytes = st.bytes().size() - start;
-    UMM_CUDA_CHECK(cudaMalloc(&im.d_bf, bytes));
+    UMM_CUDA_CHECK(request_cuda_malloc(&im.d_bf, bytes));
     UMM_CUDA_CHECK(cudaMemcpy(im.d_bf, st.bytes().data() + start, bytes,
                               cudaMemcpyHostToDevice));
     for (const auto& [name, info] : st.tensors()) {
@@ -397,7 +398,7 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
     SafeTensors st(read_file(model_dir + "/speech_tokenizer/model.safetensors"));
     const size_t start = st.data_region_offset();
     const size_t bytes = st.bytes().size() - start;
-    UMM_CUDA_CHECK(cudaMalloc(&im.d_f32, bytes));
+    UMM_CUDA_CHECK(request_cuda_malloc(&im.d_f32, bytes));
     UMM_CUDA_CHECK(cudaMemcpy(im.d_f32, st.bytes().data() + start, bytes,
                               cudaMemcpyHostToDevice));
     for (const auto& [name, info] : st.tensors()) {
@@ -454,7 +455,7 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
     host_frame_tables[j + 1] = im.cp_codec_emb_w[j];
   }
   UMM_CUDA_CHECK(
-      cudaMalloc(&im.d_frame_emb_tables, cfg.code_groups * sizeof(const Bf16*)));
+      request_cuda_malloc(&im.d_frame_emb_tables, cfg.code_groups * sizeof(const Bf16*)));
   UMM_CUDA_CHECK(cudaMemcpy(im.d_frame_emb_tables, host_frame_tables.data(),
                             cfg.code_groups * sizeof(const Bf16*),
                             cudaMemcpyHostToDevice));
@@ -462,7 +463,7 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
   // Workspaces (prefill scratch sized for kMaxPrefillRows; decode uses 1-row
   // im.decode_x).
   auto mk = [&](Bf16*& p, size_t n) {
-    UMM_CUDA_CHECK(cudaMalloc(&p, n * sizeof(Bf16)));
+    UMM_CUDA_CHECK(request_cuda_malloc(&p, n * sizeof(Bf16)));
   };
   const size_t W = kMaxPrefillRows;
   mk(im.hidden, W * H);
@@ -492,25 +493,25 @@ TtsEngine::TtsEngine(const std::string& model_dir, int gpu_id) {
   im.cp = {im.cp_norm, im.cp_q,    im.cp_k,    im.cp_v,
            im.cp_attn, im.cp_gate, im.cp_up};
 
-  UMM_CUDA_CHECK(cudaMalloc(&im.logits, cfg.codec_vocab * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_ids, W * sizeof(int)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_pos, W * sizeof(int)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_codes, cfg.code_groups * sizeof(int)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_hist, kMaxSlots * sizeof(int)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_step_pos, sizeof(int)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.logits, cfg.codec_vocab * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_ids, W * sizeof(int)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_pos, W * sizeof(int)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_codes, cfg.code_groups * sizeof(int)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_hist, kMaxSlots * sizeof(int)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_step_pos, sizeof(int)));
   UMM_CUDA_CHECK(
       cudaMallocHost(&im.h_codes_pinned, cfg.code_groups * sizeof(int)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_inv, (HD / 2) * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_pad, H * sizeof(Bf16)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_bos, H * sizeof(Bf16)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_eos, H * sizeof(Bf16)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_inv, (HD / 2) * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_pad, H * sizeof(Bf16)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_bos, H * sizeof(Bf16)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_eos, H * sizeof(Bf16)));
   if (cfg.is_base())
-    UMM_CUDA_CHECK(cudaMalloc(&im.d_xvector, H * sizeof(Bf16)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.cp_past, H * sizeof(Bf16)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.talker_kv,
+    UMM_CUDA_CHECK(request_cuda_malloc(&im.d_xvector, H * sizeof(Bf16)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.cp_past, H * sizeof(Bf16)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.talker_kv,
                             sizeof(Bf16) * cfg.layers * 2 * kMaxSlots * KVW));
   UMM_CUDA_CHECK(
-      cudaMalloc(&im.cp_kv, sizeof(Bf16) * cfg.cp_layers * 2 * kCpSlots * CPKVW));
+      request_cuda_malloc(&im.cp_kv, sizeof(Bf16) * cfg.cp_layers * 2 * kCpSlots * CPKVW));
 
   std::vector<float> inv(HD / 2);
   for (int i = 0; i < HD / 2; ++i)
@@ -591,44 +592,44 @@ TtsEngine::~TtsEngine() {
   if (im.talker_graph_exec) cudaGraphExecDestroy(im.talker_graph_exec);
   if (im.cp_graph_exec) cudaGraphExecDestroy(im.cp_graph_exec);
   if (im.h_codes_pinned) cudaFreeHost(im.h_codes_pinned);
-  cudaFree(im.d_step_pos);
-  cudaFree(im.d_frame_emb_tables);
-  cudaFree(im.decode_x);
-  cudaFree(im.cp_up);
-  cudaFree(im.cp_gate);
-  cudaFree(im.cp_attn);
-  cudaFree(im.cp_v);
-  cudaFree(im.cp_k);
-  cudaFree(im.cp_q);
-  cudaFree(im.cp_norm);
-  cudaFree(im.cp_x);
-  cudaFree(im.cp_kv);
-  cudaFree(im.talker_kv);
-  cudaFree(im.d_eos);
-  cudaFree(im.d_bos);
-  cudaFree(im.d_pad);
-  cudaFree(im.d_xvector);
-  cudaFree(im.cp_past);
-  cudaFree(im.d_inv);
-  cudaFree(im.d_codes);
-  cudaFree(im.d_hist);
-  cudaFree(im.d_pos);
-  cudaFree(im.d_ids);
-  cudaFree(im.logits);
-  cudaFree(im.text_out);
-  cudaFree(im.text_fc);
-  cudaFree(im.text_in);
-  cudaFree(im.proj);
-  cudaFree(im.up);
-  cudaFree(im.gate);
-  cudaFree(im.attn);
-  cudaFree(im.v);
-  cudaFree(im.k);
-  cudaFree(im.q);
-  cudaFree(im.norm);
-  cudaFree(im.hidden);
-  cudaFree(im.d_f32);
-  cudaFree(im.d_bf);
+  request_cuda_free(im.d_step_pos);
+  request_cuda_free(im.d_frame_emb_tables);
+  request_cuda_free(im.decode_x);
+  request_cuda_free(im.cp_up);
+  request_cuda_free(im.cp_gate);
+  request_cuda_free(im.cp_attn);
+  request_cuda_free(im.cp_v);
+  request_cuda_free(im.cp_k);
+  request_cuda_free(im.cp_q);
+  request_cuda_free(im.cp_norm);
+  request_cuda_free(im.cp_x);
+  request_cuda_free(im.cp_kv);
+  request_cuda_free(im.talker_kv);
+  request_cuda_free(im.d_eos);
+  request_cuda_free(im.d_bos);
+  request_cuda_free(im.d_pad);
+  request_cuda_free(im.d_xvector);
+  request_cuda_free(im.cp_past);
+  request_cuda_free(im.d_inv);
+  request_cuda_free(im.d_codes);
+  request_cuda_free(im.d_hist);
+  request_cuda_free(im.d_pos);
+  request_cuda_free(im.d_ids);
+  request_cuda_free(im.logits);
+  request_cuda_free(im.text_out);
+  request_cuda_free(im.text_fc);
+  request_cuda_free(im.text_in);
+  request_cuda_free(im.proj);
+  request_cuda_free(im.up);
+  request_cuda_free(im.gate);
+  request_cuda_free(im.attn);
+  request_cuda_free(im.v);
+  request_cuda_free(im.k);
+  request_cuda_free(im.q);
+  request_cuda_free(im.norm);
+  request_cuda_free(im.hidden);
+  request_cuda_free(im.d_f32);
+  request_cuda_free(im.d_bf);
   if (im.stream) cudaStreamDestroy(im.stream);
 }
 

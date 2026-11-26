@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 
+#include "common/cuda_request_allocator.hpp"
 #include "cuda_kernels.hpp"
 #include "decode_helpers.hpp"
 
@@ -238,7 +239,7 @@ CodecDecoder::CodecDecoder(std::unordered_map<std::string, const float*> weights
   im.dec6_b = wt("decoder.decoder.6.conv.bias");
 
   // Dequantize the 16 RVQ codebooks once.
-  UMM_CUDA_CHECK(cudaMalloc(&im.codebooks,
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.codebooks,
                             static_cast<size_t>(kGroups) * kCodebook * kVqDim *
                                 sizeof(float)));
   auto dequant = [&](const std::string& qname, int layer, float* dst) {
@@ -263,37 +264,37 @@ CodecDecoder::CodecDecoder(std::unordered_map<std::string, const float*> weights
   // Fixed bounded scratch buffers for chunks of up to kCodecChunk frames.
   const size_t peak = codec_peak_scratch_elems(kCodecChunk);
   for (float** p : {&im.a, &im.b, &im.c, &im.d, &im.e}) {
-    UMM_CUDA_CHECK(cudaMalloc(p, peak * sizeof(float)));
+    UMM_CUDA_CHECK(request_cuda_malloc(p, peak * sizeof(float)));
   }
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_codes_all,
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_codes_all,
                             static_cast<size_t>(kCodecChunk) * kGroups * sizeof(int)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.rvq_first,
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.rvq_first,
                             static_cast<size_t>(kCodecChunk) * kLatent * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.rvq_rest,
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.rvq_rest,
                             static_cast<size_t>(kCodecChunk) * kLatent * sizeof(float)));
   const size_t tr_q_elems = static_cast<size_t>(kCodecChunk) * kTrHeads * kHeadDim;
-  UMM_CUDA_CHECK(cudaMalloc(&im.q, tr_q_elems * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.k, tr_q_elems * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.v, tr_q_elems * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.attn, tr_q_elems * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.q, tr_q_elems * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.k, tr_q_elems * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.v, tr_q_elems * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.attn, tr_q_elems * sizeof(float)));
   // upsample.1 pwconv1 outputs [4*kCodecChunk, 4*kHidden] floats.
   const size_t gate_elems = static_cast<size_t>(4 * kCodecChunk) * (4 * kHidden);
-  UMM_CUDA_CHECK(cudaMalloc(&im.gate, gate_elems * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.up,
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.gate, gate_elems * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.up,
                             static_cast<size_t>(kCodecChunk) * (2 * kTrHidden) *
                                 sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.ffn_out,
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.ffn_out,
                             static_cast<size_t>(kCodecChunk) * kHidden * sizeof(float)));
 
   // Pre-transformer rolling KV cache and RoPE inv_freq.
   const size_t kv_elems = static_cast<size_t>(kTrLayers) * 2u * kTrKvCap *
                           (kTrKvHeads * kHeadDim);
-  UMM_CUDA_CHECK(cudaMalloc(&im.tr_kv, kv_elems * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.tr_kv, kv_elems * sizeof(float)));
 
   std::vector<float> inv(kHeadDim / 2);
   for (int i = 0; i < kHeadDim / 2; ++i)
     inv[i] = 1.0f / std::pow(10000.0f, 2.0f * i / kHeadDim);
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_inv, inv.size() * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_inv, inv.size() * sizeof(float)));
   UMM_CUDA_CHECK(cudaMemcpyAsync(im.d_inv, inv.data(), inv.size() * sizeof(float),
                                  cudaMemcpyHostToDevice, stream));
 
@@ -322,7 +323,7 @@ CodecDecoder::CodecDecoder(std::unordered_map<std::string, const float*> weights
   }
   const size_t off_dec6 = reserve(96u * 6u);
   im.hist_floats = off;
-  UMM_CUDA_CHECK(cudaMalloc(&im.hist_buf, im.hist_floats * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.hist_buf, im.hist_floats * sizeof(float)));
   im.h_pre_conv = im.hist_buf + off_pre_conv;
   im.h_upsample_dw[0] = im.hist_buf + off_up_dw0;
   im.h_upsample_dw[1] = im.hist_buf + off_up_dw1;
@@ -359,21 +360,21 @@ CodecDecoder::~CodecDecoder() {
   Impl& im = *impl_;
   if (im.h_pcm_pinned) cudaFreeHost(im.h_pcm_pinned);
   if (im.h_codes_pinned) cudaFreeHost(im.h_codes_pinned);
-  cudaFree(im.hist_buf);
-  cudaFree(im.d_inv);
-  cudaFree(im.tr_kv);
-  cudaFree(im.ffn_out);
-  cudaFree(im.up);
-  cudaFree(im.gate);
-  cudaFree(im.attn);
-  cudaFree(im.v);
-  cudaFree(im.k);
-  cudaFree(im.q);
-  cudaFree(im.d_codes_all);
-  cudaFree(im.rvq_first);
-  cudaFree(im.rvq_rest);
-  cudaFree(im.codebooks);
-  for (float* p : {im.a, im.b, im.c, im.d, im.e}) cudaFree(p);
+  request_cuda_free(im.hist_buf);
+  request_cuda_free(im.d_inv);
+  request_cuda_free(im.tr_kv);
+  request_cuda_free(im.ffn_out);
+  request_cuda_free(im.up);
+  request_cuda_free(im.gate);
+  request_cuda_free(im.attn);
+  request_cuda_free(im.v);
+  request_cuda_free(im.k);
+  request_cuda_free(im.q);
+  request_cuda_free(im.d_codes_all);
+  request_cuda_free(im.rvq_first);
+  request_cuda_free(im.rvq_rest);
+  request_cuda_free(im.codebooks);
+  for (float* p : {im.a, im.b, im.c, im.d, im.e}) request_cuda_free(p);
 }
 
 void CodecDecoder::reset_stream() {

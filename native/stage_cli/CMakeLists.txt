@@ -144,6 +144,18 @@ if(UMM_STAGE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
 
+  add_executable(tts_request_allocator_test
+    tts_request_allocator_test.cpp
+    ${NATIVE_DIR}/common/cuda_request_allocator.cpp
+  )
+  target_include_directories(tts_request_allocator_test PRIVATE ${NATIVE_DIR})
+  target_compile_definitions(tts_request_allocator_test PRIVATE
+    UMM_NATIVE_REQUEST_ALLOCATOR=1)
+  target_link_libraries(tts_request_allocator_test PRIVATE
+    umm_stage_core CUDA::cudart)
+  set_target_properties(tts_request_allocator_test PROPERTIES CUDA_ARCHITECTURES 90)
+  add_test(NAME tts_request_allocator_test COMMAND tts_request_allocator_test)
+
   target_sources(umm-native-stage-video PRIVATE
     ${NATIVE_DIR}/common/cuda_request_allocator.cpp
     ${NATIVE_DIR}/video/safetensors_mmap.cpp
@@ -224,6 +236,7 @@ if(UMM_STAGE_CUDA)
 
   add_executable(umm-native-stage-tts
     main.cpp tts_stage.cpp
+    ${NATIVE_DIR}/common/cuda_request_allocator.cpp
     ${NATIVE_DIR}/tts/wav_io.cpp
     ${NATIVE_DIR}/tts/safetensors.cpp
     ${NATIVE_DIR}/tts/bpe_tokenizer.cpp
@@ -233,7 +246,10 @@ if(UMM_STAGE_CUDA)
     ${NATIVE_DIR}/tts/tail_trim.cpp
     ${NATIVE_DIR}/tts/cuda_kernels.cu
   )
-  target_include_directories(umm-native-stage-tts PRIVATE ${NATIVE_DIR}/tts)
+  target_include_directories(umm-native-stage-tts PRIVATE
+    ${NATIVE_DIR} ${NATIVE_DIR}/tts)
+  target_compile_definitions(umm-native-stage-tts PRIVATE
+    UMM_NATIVE_REQUEST_ALLOCATOR=1)
   target_link_libraries(umm-native-stage-tts PRIVATE
     umm_stage_common ICU::uc ICU::i18n CUDA::cudart)
   set_target_properties(umm-native-stage-tts PROPERTIES CUDA_ARCHITECTURES 90)

@@ -154,11 +154,22 @@ Current coverage is deliberately narrow:
 | --- | --- |
 | Qwen3.8 native stage, `--batch-size 1` | Instrumented explicit native `cudaMalloc`/`cudaFree`; `COVERED` when attribution invariants hold |
 | Wan2.2 native stage, `cuda` or `cuda-scaffold`, serial | Instrumented explicit native runtime allocations in UMT5, DiT, VAE, and scaffold paths |
+| Qwen3-TTS native stage, serial CustomVoice | Every explicit native device `cudaMalloc`/`cudaFree` in Talker, Code Predictor, codec/KV, control buffers, and scratch is owner-routed; `COVERED` with truthful zero events when a request only uses pre-request pools |
 | Qwen3.8 `--batch-size > 1` | `NOT_COVERED`, reason `batched_request_attribution_unavailable`; configured capacity and request identity remain attached |
 | Concurrent/shared execution or overlapping serial epochs | `NOT_COVERED`; no peer subtraction or shared-counter split |
-| Native ASR, Omni, Image, and TTS stages | `NOT_COVERED`, `backend_not_instrumented` |
+| Native ASR, Omni, and Image stages | `NOT_COVERED`, `backend_not_instrumented` |
 | Video `contract-stub` | `NOT_COVERED`, `contract_stub_has_no_cuda_allocator` |
 | Python/Diffusers/FLUX stages and fixed external proxies | No truthful native epoch is inferred; absent/missing terminal data is normalized to `NOT_COVERED` |
+
+TTS allocates its model regions, Talker/Code Predictor workspaces and KV,
+causal-codec state, control buffers, and both CUDA graphs in the engine
+constructor, before any request epoch. Those resident allocations are excluded.
+The graph bodies perform no direct allocation; CUDA Graph runtime internals and
+pinned host staging are not direct device blocks in this metric. A covered TTS
+request that only reuses these pools therefore reports zero bytes **and zero
+allocation/free events**. This differs from an unsupported path's null bytes.
+The standalone `umm-tts-native` build retains direct CUDA calls and emits no
+request telemetry.
 
 Success and failure completions carry their native terminal snapshot. The
 scheduler also retains a covered cancelled snapshot when compute observes the
@@ -239,9 +250,58 @@ with no compute process.
   `COVERED`, independent 50 ms whole-device NVML `88,656 MiB` baseline/final and
   `88,806 MiB` Wan peak, **52/52 `SHA256SUMS` PASS**).
 
-Batched/concurrent/shared attribution, native Image/Omni/TTS, Python/external
+Batched/concurrent/shared attribution, native Image/Omni, Python/external
 backends, and production deployment remain `NOT_COVERED` or `NOT_RUN` as
 declared above.
+
+### SM90 TTS validation gate — PASS (2026-11-26)
+
+Task #56 (`89708c8`, live-harness completion `6afd197`) ran an isolated serial
+Qwen3.8 + Qwen3-TTS-12Hz-1.7B-CustomVoice stack on explicitly idle physical
+GPU 7. ASR was resident only because the gateway requires a distinct entry for
+readiness; it was not used for synthesis and remains uninstrumented. The
+resident service was not contacted. Only task-owned processes were stopped.
+
+- Every explicit TTS device allocation/free in `engine.cpp` and `codec.cpp`
+  uses the existing request-owner adapter. Load-time weights, fixed Talker and
+  Code Predictor workspaces/KV, causal-codec/KV state, control/scratch buffers,
+  and both graph captures are excluded as pre-request allocations. Seven
+  covered TTS terminal records had unique monotonically increasing epochs
+  `12..18`, allocated/reserved peaks and finals of **0 bytes**, and zero
+  allocation/free events. These are measured pool-reuse results, not zeroes
+  substituted for missing coverage. The separate real-CUDA fixture observed a
+  nonzero **768-byte peak**, 512-byte final, two allocations and one free before
+  validating late-free ownership and warm-epoch isolation.
+- Two different prompts and a warm repeat passed. Telemetry-off/on normalized
+  nonstream JSON and streamed SSE projections matched; default responses had no
+  telemetry field. Nonstream off/on/warm PCM was exactly **222,720 bytes** with
+  SHA-256 `60b980a07dc0307bbb4f4657739c8a0f54338d791851c0a9b444d5ccc5cbed5b`.
+  Streamed off/on PCM was exactly **261,120 bytes** across 12 artifacts with
+  SHA-256 `3dff9c15a5b637229a6ca1f8498e69e37ac383cca3bb3cf27900106132f693f7`.
+  The second prompt produced different retained audio (`48e36a05…`), rather
+  than reusing the parity fixture.
+- A valid `ref_audio` sent to CustomVoice produced a covered native `failed`
+  TTS leg with zero pool-reuse events. Cancellation after the first streamed
+  PCM artifact returned the documented immediate public `cancelled` /
+  `stage_terminal_snapshot_missing` boundary with null bytes; it did not invent
+  a late TTS terminal. The native log independently records request
+  `http-21:tts:0` aborting at frame 2. `/health` retained `in_flight=0`.
+- Independent whole-device NVML sampling remained separate: **83 samples** with
+  the 50 ms monitor all reported **67,310 MiB** while the three model stages
+  were resident. No request peak was inferred from NVML. After stopping only
+  the task-owned gateway/stages, GPU 7 returned to **3 MiB** with no compute
+  process.
+- Evidence in `/tmp/umminfer-task56-r3-evidence/` retains raw JSON/SSE/PCM/WAV,
+  request identities, native logs, commands, 56 model-file hashes, binary and
+  source/config hashes, build/CTest logs, lifecycle records, NVML samples,
+  cleanup/health records, and `SHA256SUMS` (SHA-256
+  `06f795cecc9cc70caa24c20d8b08292a0821c91829142ab95e8613d3b98bf312`).
+  Independent hash/lifecycle/media/cleanup verification passed. Native stage
+  CTest was 10/10 and standalone TTS CTest 2/2.
+
+This is allocator/protocol coverage only. Audio quality, perceptual latency,
+production deployment, batched/overlapping TTS attribution, Base-model live
+telemetry, and other-stage expansion are not claimed.
 
 ## Operate
 
