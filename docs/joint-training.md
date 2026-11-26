@@ -145,9 +145,11 @@ schema-v1/v2 JSONL trajectories directly through `python/umminfer_sft_dataset.py
 and `python/umminfer_joint_trainer.py` in a single content-addressed, stdlib-only
 pass (100% decoupled from C++ serving code under `src/`):
 
-1. **Strict trajectory & CAS validation**: fails closed on malformed JSON,
-   unsupported `schema_version`, tampered text/event digests, or missing/tampered
-   content-addressed media artifacts.
+1. **Strict trajectory, raw-replay & CAS validation**: fails closed on malformed
+   JSON, unsupported `schema_version`, tampered text/event/source-frame/tick
+   digests or sequences, and missing/tampered content-addressed media or `.sse`
+   sidecars. Replay-enabled records report `replay_records` and
+   `verified_replay_refs` in the input audit.
 2. **Dataset packing & leakage audit**: builds `sft/`, `preference/` (DPO + GRPO
    with pluggable `--reward`, defaulting to
    `umminfer_rl_reward:CompositeUmmReward`), and cross-verified `joint/` packs,
@@ -174,10 +176,14 @@ python3 -I tools/umminfer_stage_c_pipeline.py \
 Opt-in live capture bridge (`--capture-live <base_url>`): sends a deterministic
 multimodal prompt suite (pure-text with `allow_text_only: true`, visual-scene
 image, visual-scene video/auto, and mixed narrative beats, 2 contrasting rollouts
-per prompt) to `POST /v1/chat/completions` (`stream: true`), parses the live SSE
-stream into verified schema-v2 JSONL records with local CAS media artifacts, and
-executes the identical SFT -> Preference -> Leakage Audit -> Joint Trainer
-pipeline end-to-end (`source_mode: "live_capture"`, `REAL_TRAINING: "NOT_RUN"`):
+per prompt) to `POST /v1/chat/completions` (`stream: true`), captures exact raw
+SSE chunks/frames plus observed monotonic arrival ticks into versioned `.sse`
+sidecars, parses verified schema-v2 JSONL records with local CAS media artifacts,
+and executes the identical SFT -> Preference -> Leakage Audit -> Joint Trainer
+pipeline end-to-end (`source_mode: "live_capture"`, `REAL_TRAINING: "NOT_RUN"`).
+TTFT/TTFA use the captured arrival ticks, not the deferred normalization time.
+Offline replay is `python3 -I python/umminfer_sse_replay.py INPUT --out OUTPUT`;
+the complete schema and clock contract are in [rl.md](rl.md#raw-sse-byte-replay-sidecar-format-v1).
 
 ```text
 python3 -I tools/umminfer_stage_c_pipeline.py \
@@ -194,6 +200,8 @@ Run the offline CPU-only contract tests:
 
 ```text
 python3 -m unittest tests/stage_c_pipeline_test.py tests/sft_dataset_test.py tests/joint_trainer_test.py
+python3 -I tests/sse_replay_test.py
+python3 -I tests/narrative_slot_reference_live.py --self-check
 python3 -I tests/joint_sft_live_test.py
 python3 -I tests/joint_dpo_live_test.py
 python3 -I tests/joint_grpo_live_test.py
@@ -202,6 +210,8 @@ python3 -I tests/joint_grpo_live_test.py
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Offline v1/v2 trajectory integrity & CAS audit | **COVERED** | Deterministic CPU-only unit tests |
+| Raw-SSE live-versus-replay byte identity | **COVERED (loopback fixture)** | Exact raw/chunk/frame/[DONE], logical ticks, normalized JSONL and source hashes; no model claim |
+| Real resident-service raw capture + fresh-process replay | **NOT_RUN** | Later live gate must use observed `monotonic_ns` ticks and actual model service |
 | SFT interleaved beat-marker reconstruction & dedup | **COVERED** | Byte-identical across repeated runs |
 | Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")` |
 | Zero train/eval prompt leakage & manifest sidecar | **COVERED** | Verified at build time and `--audit-only` |

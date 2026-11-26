@@ -305,6 +305,18 @@ training architecture, not a business model-training result. The measured
 evidence, scope, limits, and replay precision boundary are in
 [rl-phase2](rl-phase2.md).
 
+**Phase 6 recorded raw-SSE replay (2026-11-26).** Schema-v2 exports can now bind
+normalized events to exact source-frame hashes and monotonic arrival/logical
+ticks, with content-addressed raw `.sse` bytes and transport chunk/frame
+boundaries outside JSONL. Deterministic CPU loopback fixtures prove
+live-versus-replay byte identity, source hashes, cancellation, explicit
+`source=slot-N` anchors, framing variants, and tamper rejection; schema v1 and
+older v2 records remain readable. This satisfies the recorded-transport replay
+contract only. Real resident-service capture, observed-clock live replay, and
+model-quality outcomes are `NOT_RUN` here and retain the later live gate in
+[rl.md](rl.md#raw-sse-byte-replay-sidecar-format-v1). Sampled token ids and the
+phase-2 boundary-token precision limit are unchanged.
+
 The Stage C joint-SFT, joint-DPO, and joint-GRPO optimizer gates are separately
 bounded to deterministic schema-v2 text/visual-slot fixtures and one small local
 Qwen2 model. Their commands, fail-closed input/mask contracts, checkpoint

@@ -31,6 +31,7 @@ acceptance criteria name is measured from real tensors and real processes.
 | `python/umminfer_rl_policy_serve.py` | Small-model OpenAI-compatible SSE policy server (separate process) |
 | `python/umminfer_rl_train.py` | REINFORCE trainer: group-relative advantage, AdamW, measured metrics |
 | `python/umminfer_rl_worker.py` | Adds the `train_step` verb; phase-1 `train` is unchanged |
+| `python/umminfer_sse_replay.py` | Exact recorded-SSE replay and source/tick/hash validation; no optimizer role |
 | `python/umminfer_rl_eval.py` | Separate-process greedy evaluation, with or without checkpoint weights |
 | `python/umminfer_rl_run.py` | End-to-end orchestrator; itself imports no torch |
 | `tests/rl_phase2_test.py` | Restored deterministic worker, rejection-gate, NDJSON, and checkpoint-chain contracts (CPU-only) |
@@ -65,8 +66,10 @@ The trajectory export stores completion **text**, while the trainer
 re-tokenizes that text to recompute log probabilities. Token boundaries at the
 prompt/completion join can differ from the sampled token ids by at most one
 token. Schema v2 retains this rule; it adds narrative/media records but no
-token-id field. The limit affects one boundary token per rollout, not the
-reward or the optimizer mechanics.
+token-id field. Raw-SSE replay reproduces recorded transport bytes and
+normalized records exactly; it does not recover sampled token ids or change this
+boundary. The limit affects one boundary token per rollout, not the reward or
+the optimizer mechanics.
 
 ## Worker protocol additions
 
@@ -154,11 +157,13 @@ split is reproducible either way.
 ```text
 python3 -I tests/rl_architecture_test.py
 python3 -I tests/rl_phase2_test.py
+python3 -I tests/sse_replay_test.py
 ```
 
 The restored suites need no model, GPU, torch, or transformers. They validate
-schema v1/v2 reads, narrative/media integrity, rejection before trainer import,
-protocol behavior, and checkpoint-chain tamper detection. They do not issue a
+schema v1/v2 reads, narrative/media integrity, raw-SSE live/replay byte identity,
+source timing/hash/sequence and raw-byte tamper rejection, rejection before
+trainer import, protocol behavior, and checkpoint-chain tamper detection. They do not issue a
 valid `train_step`, do not simulate an optimizer success, and print
 `REAL OPTIMIZER: NOT_RUN` plus `REAL MODEL QUALITY RESULT: NOT_RUN`.
 
@@ -223,5 +228,6 @@ mechanics end to end; it does not show the model improved.
   [joint-training.md](joint-training.md); they are not phase-2 worker results,
   online rollout generation, or business-reward validation.
 - Training the shared 30B model or any production serving model.
-- Bit-exact deterministic replay across hosts.
+- Bit-exact deterministic regeneration/model inference across hosts. Recorded
+  raw-SSE replay is deterministic, but no cross-host live-inference claim is made.
 - A token-id field in the trajectory export (the boundary-token limit above).

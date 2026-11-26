@@ -13,11 +13,16 @@ import base64
 import copy
 import hashlib
 import http.client
+import io
 import json
 import os
 from pathlib import Path
 import re
 from urllib.parse import unquote_to_bytes
+
+from umminfer_sse_replay import (
+    PerfCounterClock, RawSSECapture, ReplayError, validate_replay_metadata,
+)
 
 TRAJECTORY_SCHEMA_VERSION = 2
 SUPPORTED_TRAJECTORY_SCHEMA_VERSIONS = frozenset((1, 2))
@@ -206,7 +211,7 @@ def _normalize_unified(unified, seq, artifact_groups):
 
 
 def parse_sse_stream(response, *, on_request_id=None, artifact_dir=None,
-                     details=None, event_observer=None):
+                     details=None, event_observer=None, capture=None):
     """Parse SSE into the legacy five-tuple plus optional v2 ``details``.
 
     ``details`` receives ``artifacts`` and ``clean_text`` when supplied. The
@@ -222,8 +227,16 @@ def parse_sse_stream(response, *, on_request_id=None, artifact_dir=None,
     error = TRUNCATED_MESSAGE
     request_id = None
     unified_terminal = None
+    current_source = None
 
     def publish(event):
+        if capture is not None:
+            if current_source is None:
+                raise ReplayError("normalized event has no raw SSE source frame")
+            frame = capture.public_metadata()["frames"][current_source]
+            event["source_event_index"] = current_source
+            event["source_event_sha256"] = frame["sha256"]
+            event["source_event_tick"] = frame["tick"]
         events.append(event)
         if event_observer is not None:
             event_observer(event)
@@ -233,7 +246,10 @@ def parse_sse_stream(response, *, on_request_id=None, artifact_dir=None,
         event.update(fields)
         publish(event)
 
-    for payload in iter_sse_payloads(response):
+    payloads = capture.payload_frames if capture is not None else (
+        (None, payload) for payload in iter_sse_payloads(response))
+    for source_index, payload in payloads:
+        current_source = source_index
         if payload == "[DONE]":
             if unified_terminal is not None:
                 terminal_state = unified_terminal
@@ -243,7 +259,20 @@ def parse_sse_stream(response, *, on_request_id=None, artifact_dir=None,
                 terminal_state = TERMINAL_COMPLETED
                 error = None
             break
-        chunk = json.loads(payload)
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            if capture is not None:
+                raise ReplayError(
+                    f"invalid JSON in SSE frame {source_index}: {exc}") from exc
+            raise
+        if not isinstance(chunk, dict):
+            message = "SSE JSON payload must be an object"
+            if source_index is not None:
+                message += f" in frame {source_index}"
+            if capture is not None:
+                raise ReplayError(message)
+            raise ValueError(message)
         if chunk.get("id"):
             if request_id is None and on_request_id is not None:
                 on_request_id(chunk["id"])
@@ -519,6 +548,24 @@ def _derived_clean_text(events, output_text):
             for event in events) else "")
 
 
+def capture_sse_response(response, *, clock=None, read_size=65536):
+    """Capture exact response reads, frame boundaries, and arrival ticks."""
+    if not isinstance(read_size, int) or isinstance(read_size, bool) \
+            or read_size <= 0:
+        raise ValueError("read_size must be a positive integer")
+    capture = RawSSECapture(clock=clock or PerfCounterClock())
+    while True:
+        if hasattr(response, "read1"):
+            chunk = response.read1(read_size)
+        else:
+            chunk = response.read(read_size)
+        if not chunk:
+            break
+        capture.feed(chunk)
+    capture.finish()
+    return capture
+
+
 class TrajectoryRecorder:
     """Append schema-v2 records to one JSONL file (one writer only)."""
 
@@ -536,18 +583,36 @@ class TrajectoryRecorder:
 
     def record(self, *, session_id, request_id, endpoint, inputs, params,
                events, terminal_state, error=None, output_text="",
-               artifacts=None):
+               artifacts=None, turn_index=None, capture=None, extra_fields=None):
         if terminal_state not in TERMINAL_STATES:
             raise ValueError(f"invalid terminal state: {terminal_state}")
         events = list(events)
         terminal_seq, terminal_legs = _terminal_parts(
             events, terminal_state, error, output_text)
+        if turn_index is None:
+            turn_index = self.next_turn(session_id)
+        else:
+            if not _integer(turn_index) or turn_index < 0:
+                raise ValueError("turn_index must be a non-negative integer")
+            self._turns[session_id] = max(
+                self._turns.get(session_id, 0), turn_index + 1)
+        if capture is not None:
+            frame = capture.public_metadata()["frames"][
+                capture.public_metadata()["done_frame"]]
+            for index, event in enumerate(events):
+                if "source_event_index" in event:
+                    continue
+                if index != terminal_seq:
+                    raise ReplayError(f"event {index} lacks a raw SSE source binding")
+                event["source_event_index"] = frame["index"]
+                event["source_event_sha256"] = frame["sha256"]
+                event["source_event_tick"] = frame["tick"]
         clean_text = _derived_clean_text(events, output_text)
         record = {
             "schema_version": TRAJECTORY_SCHEMA_VERSION,
             "session_id": session_id,
             "request_id": request_id,
-            "turn_index": self.next_turn(session_id),
+            "turn_index": turn_index,
             "endpoint": endpoint,
             "inputs": inputs,
             "request_params": params,
@@ -564,6 +629,26 @@ class TrajectoryRecorder:
             "leg_errors": _leg_error_records(events),
             "artifacts": list(artifacts or []),
         }
+        if capture is not None:
+            replay = capture.public_metadata()
+            replay["raw_ref"] = _store_artifact(
+                self.artifact_dir, replay["raw_sha256"], ".sse",
+                capture.raw_bytes)
+            replay["event_count"] = len(events)
+            replay["normalized_events_sha256"] = sha256_bytes(
+                canonical_json(events))
+            replay["terminal_state"] = terminal_state
+            replay["terminal_event_seq"] = terminal_seq
+            record["sse_replay"] = replay
+        if extra_fields:
+            overlap = set(record) & set(extra_fields)
+            if overlap:
+                raise ValueError(
+                    "extra_fields cannot replace trajectory keys: "
+                    + ", ".join(sorted(overlap)))
+            record.update(copy.deepcopy(extra_fields))
+        if capture is not None:
+            validate_replay_metadata(record)
         with self.jsonl_path.open("ab") as handle:
             handle.write(canonical_json(record) + b"\n")
         return record
@@ -590,7 +675,8 @@ def abort_request(base_url, request_id, *, headers=None, timeout=30.0):
 
 def record_chat_completion(base_url, body, recorder, session_id, *,
                            headers=None, timeout=30.0, on_request_id=None,
-                           event_observer=None):
+                           event_observer=None, capture_replay=False,
+                           replay_clock=None):
     """Drive and record one public chat request, including transport failure."""
     headers = dict(headers or {})
     headers["Content-Type"] = "application/json"
@@ -599,6 +685,7 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
     inputs = []
     params = {}
     artifacts = []
+    capture = None
     try:
         try:
             params, option_inputs = request_parameter_references(
@@ -612,10 +699,14 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
                 "text/event-stream")
             details = {}
             if body.get("stream") and is_sse:
+                if capture_replay:
+                    capture = capture_sse_response(
+                        response, clock=replay_clock)
+                    response = io.BytesIO(capture.raw_bytes)
                 request_id, events, output_text, state, error = parse_sse_stream(
                     response, on_request_id=on_request_id,
                     artifact_dir=recorder.artifact_dir, details=details,
-                    event_observer=event_observer)
+                    event_observer=event_observer, capture=capture)
             else:
                 payload = json.loads(response.read().decode("utf-8"))
                 request_id = payload.get("id")
@@ -629,6 +720,7 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
                        "error": message}]
             output_text, state, error = "", TERMINAL_FAILED, message
             artifacts = []
+            capture = None
         except (OSError, http.client.HTTPException, json.JSONDecodeError,
                 UnicodeDecodeError, TypeError, KeyError, ValueError) as exc:
             message = f"transport error: {exc}"
@@ -637,6 +729,7 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
                        "error": message}]
             output_text, state, error = "", TERMINAL_FAILED, message
             artifacts = []
+            capture = None
     finally:
         conn.close()
 
@@ -645,7 +738,7 @@ def record_chat_completion(base_url, body, recorder, session_id, *,
         request_id=request_id or _synthetic_request_id(events),
         endpoint="/v1/chat/completions", inputs=inputs, params=params,
         events=events, terminal_state=state, error=error,
-        output_text=output_text, artifacts=artifacts)
+        output_text=output_text, artifacts=artifacts, capture=capture)
 
 
 def record_realtime(recorder, session_id, request_id, observed_events, *,

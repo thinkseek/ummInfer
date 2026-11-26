@@ -14,6 +14,8 @@ import json
 import math
 from pathlib import Path
 
+from umminfer_sse_replay import validate_replay_metadata
+
 REWARD_SCHEMA_VERSION = 1
 
 
@@ -185,6 +187,7 @@ class CompositeUmmReward(Reward):
         return 2.0 * prose * visual_count / (prose + visual_count)
 
     def evaluate(self, record):
+        validate_replay_metadata(record)
         if record.get("schema_version") != 2:
             raise ValueError("composite UMM reward requires trajectory schema v2")
         predicted, expected, routing_f1 = self._routing(record)
@@ -230,6 +233,9 @@ def apply_reward(trajectory_path, reward, *, output_path=None):
         if not line:
             continue
         record = json.loads(line)
+        validate_replay_metadata(
+            record, artifact_dir=source.parent / "artifacts",
+            require_raw=record.get("sse_replay") is not None)
         score, components = reward.evaluate(record)
         record["reward"] = {
             "schema_version": REWARD_SCHEMA_VERSION,

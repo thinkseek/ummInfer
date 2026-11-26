@@ -47,6 +47,7 @@ if str(PYTHON_DIR) not in sys.path:
 import umminfer_joint_trainer as trainer  # noqa: E402
 import umminfer_rl_trajectory as traj  # noqa: E402
 import umminfer_sft_dataset as ds  # noqa: E402
+from umminfer_sse_replay import LogicalTickClock  # noqa: E402
 
 PIPELINE_SCHEMA_VERSION = 1
 DEFAULT_REWARD_SPEC = "umminfer_rl_reward:CompositeUmmReward"
@@ -358,6 +359,8 @@ def validate_trajectory_inputs(
     total_records = 0
     verified_input_media = 0
     verified_output_media = 0
+    verified_replay_refs = 0
+    replay_records = 0
     any_disk_verified = False
 
     for path in resolved_files:
@@ -419,6 +422,8 @@ def validate_trajectory_inputs(
                 any_disk_verified = True
             verified_input_media += stats["checked_input_media_refs"]
             verified_output_media += stats["checked_output_media_refs"]
+            verified_replay_refs += stats.get("checked_replay_refs", 0)
+            replay_records += 1 if record.get("sse_replay") is not None else 0
 
         if file_record_count == 0:
             raise ValueError(f"{path.name}: trajectory file contains zero records")
@@ -443,6 +448,8 @@ def validate_trajectory_inputs(
         ),
         "verified_input_media_refs": verified_input_media,
         "verified_output_media_refs": verified_output_media,
+        "replay_records": replay_records,
+        "verified_replay_refs": verified_replay_refs,
         "files": file_entries,
     }
     return resolved_files, summary
@@ -481,6 +488,9 @@ def sse_stream_to_v2_record(
     session_id: str,
     ablation_metadata: dict | None = None,
     event_observer=None,
+    capture_replay: bool = True,
+    replay_clock=None,
+    chunk_size: int = 65536,
 ) -> dict:
     """Convert an HTTP/SSE response stream into a verified schema-v2 record.
 
@@ -496,11 +506,17 @@ def sse_stream_to_v2_record(
     ) + option_inputs
 
     details: dict = {}
+    capture = None
+    if capture_replay:
+        capture = traj.capture_sse_response(
+            response, clock=replay_clock, read_size=chunk_size)
+        response = io.BytesIO(capture.raw_bytes)
     request_id, events, output_text, terminal_state, error = traj.parse_sse_stream(
         response,
         artifact_dir=recorder.artifact_dir,
         details=details,
         event_observer=event_observer,
+        capture=capture,
     )
     artifacts = details.get("artifacts", [])
     record = recorder.record(
@@ -514,6 +530,7 @@ def sse_stream_to_v2_record(
         error=error,
         output_text=output_text,
         artifacts=artifacts,
+        capture=capture,
     )
 
     sanitized_ablation = _sanitize_ablation_metadata(ablation_metadata)
@@ -542,8 +559,10 @@ def sse_bytes_to_v2_record(
     recorder: traj.TrajectoryRecorder,
     session_id: str,
     ablation_metadata: dict | None = None,
+    chunk_size: int = 65536,
+    replay_clock=None,
 ) -> dict:
-    """Convert raw SSE frame bytes into a verified schema-v2 trajectory record."""
+    """Convert bytes with explicit logical ticks and replayable raw capture."""
     if not isinstance(sse_payload, (bytes, bytearray)):
         raise TypeError("sse_payload must be bytes")
     return sse_stream_to_v2_record(
@@ -552,6 +571,8 @@ def sse_bytes_to_v2_record(
         recorder=recorder,
         session_id=session_id,
         ablation_metadata=ablation_metadata,
+        replay_clock=replay_clock or LogicalTickClock(),
+        chunk_size=chunk_size,
     )
 
 
@@ -637,14 +658,21 @@ def capture_live_trajectories(
                 headers=headers,
             )
 
-            started = time.perf_counter()
+            started_ns = time.perf_counter_ns()
+            started = started_ns / 1_000_000_000.0
+            replay_clock = traj.PerfCounterClock(origin_ns=started_ns)
             timings: dict[str, float | None] = {
                 "ttft_ms": None,
                 "ttfa_ms": None,
             }
 
             def _observer(event):
-                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                # Raw capture records arrival before deferred normalization;
+                # use that observation instead of the later parse time.
+                if "source_event_tick" in event:
+                    elapsed_ms = event["source_event_tick"] / 1_000_000.0
+                else:
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
                 etype = event.get("type")
                 if timings["ttft_ms"] is None and etype in ("vlm_delta", "output_delta"):
                     timings["ttft_ms"] = elapsed_ms
@@ -669,6 +697,7 @@ def capture_live_trajectories(
                         session_id=session_id,
                         ablation_metadata=None,
                         event_observer=_observer,
+                        replay_clock=replay_clock,
                     )
             except (urllib.error.URLError, OSError, RuntimeError, ValueError) as exc:
                 terminal_ms = (time.perf_counter() - started) * 1000.0

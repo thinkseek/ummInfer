@@ -8,9 +8,12 @@ or transformers, and no second inference engine exists.
 | File | Responsibility |
 | --- | --- |
 | `python/umminfer_rl_trajectory.py` | Out-of-process recording, narrative normalization, media verification, CAS export |
+| `python/umminfer_sse_replay.py` | Exact raw-SSE/chunk capture, tick provenance, replay validation CLI, byte-identical offline replay |
 | `python/umminfer_rl_reward.py` | Export-only reward interface, deterministic composite UMM reward, and plugin loader |
 | `python/umminfer_rl_worker.py` | Independent v1/v2 validation, NDJSON worker protocol, checkpoint hash chain |
-| `tests/narrative_rl_fixtures.py` | Deterministic interleaved narrative, failed-leg, and cancelled-response fixtures |
+| `tests/narrative_rl_fixtures.py` | Deterministic interleaved narrative, explicit-slot, failed-leg, and cancelled-response fixtures |
+| `tests/sse_replay_test.py` | Loopback live/replay byte identity, framing, timing, CAS, and tamper contracts |
+| `tests/narrative_slot_reference_live.py` | Explicit `source=slot-N` offline self-check and deferred real-model gate |
 | `tests/rl_architecture_test.py` | Deterministic schema-v2 recorder/validator/reward contracts |
 | `tests/rl_phase2_test.py` | Worker/checkpoint/protocol contracts; does not execute an optimizer |
 
@@ -33,6 +36,14 @@ schema 2, including a mixed-version JSONL export. This is backward-compatible
 read support, not an up-conversion: v1 records keep their original fields and
 validation semantics, and the reader does not invent empty narrative fields for
 them. Unsupported, missing, boolean, or non-integer versions are rejected.
+
+Raw replay is an **additive schema-v2 extension**, not a v3 migration. Records
+without `sse_replay` retain their exact old validation behavior. Replay-enabled
+records still have `schema_version: 2`; their sidecar declares
+`format: "umminfer-raw-sse-replay-v1"` and `format_version: 1`, so a future
+incompatible sidecar can be rejected explicitly without invalidating old JSONL.
+Source-binding fields on normalized events are likewise additive. The replay
+CLI requires replay-enabled v2 records; it does not invent bytes for old ones.
 
 V2 retains the phase-1 keys used by the GSM8K trainer (`output_text`,
 `output_sha256`, `events`, `request_params`, `inputs`, `terminal_state`, reward
@@ -150,18 +161,98 @@ Transport failures and EOF without `[DONE]` remain failed records; the EOF text
 is `stream ended before [DONE]`. A previously observed unified terminal keeps
 its authoritative state.
 
+## Raw SSE byte replay (sidecar format v1)
+
+Enable raw capture for a normal recorder call with
+`record_chat_completion(..., capture_replay=True)`. Stage C
+`sse_stream_to_v2_record()` enables it by default, so `--capture-live` also
+writes replayable streams. The recorder observes the public HTTP response only;
+it neither imports nor instruments the serving process.
+
+The exact response byte string is stored as `artifacts/<raw-sha256>.sse`. This
+sidecar necessarily contains the original base64 artifact frames, which is why
+it is separate from JSONL. Decoded media continue to use their existing CAS
+files and the JSONL still contains no media `data` payload. A replay read copies
+verified input/output CAS objects and the raw sidecar into the destination and
+refuses conflicting destination bytes.
+
+The additive `sse_replay` object contains:
+
+- `raw_ref`, `raw_bytes`, and `raw_sha256`, binding the complete sidecar;
+- `chunks[]`: zero-based `index`, contiguous `offset`, `bytes`, `sha256`, and
+  arrival `tick` for every actual response read;
+- `frames[]`: the same identity fields plus `kind` (`event`, `done`, `comment`,
+  `keepalive`, or `control`) and `data_sha256` for data frames. Frames cover the
+  raw byte string exactly, retain LF/CRLF spelling and multi-line data, and the
+  final frame must be `[DONE]`;
+- `clock`, `done_frame`, `event_count`, `normalized_events_sha256`,
+  `terminal_state`, and `terminal_event_seq`.
+
+Every normalized event adds `source_event_index`, `source_event_sha256`, and
+`source_event_tick`. Multiple normalized events may bind one data frame (for
+example, content plus finish); a synthetic plain-OpenAI terminal binds the final
+`[DONE]` frame. Source indices and ticks are nondecreasing, server sequences
+must be gap-free from zero, and exactly one final normalized terminal is
+required. `normalized_events_sha256` is over the canonical event array including
+these bindings. Worker, Stage C, replay, and reward validation reject modified
+frame/chunk hashes, event bindings, timing, sequences, or terminal state rather
+than repairing them. Whenever `sse_replay` is present its raw sidecar is
+required, re-hashed, and re-normalized without writes for comparison with the
+source-bound event array. Records without replay retain the old behavior,
+including reward scoring with CAS hidden; replay-bearing records never silently
+drop that byte-level verification.
+
+### Clock and provenance contract
+
+Ticks are relative observations, not UTC timestamps. Two explicit clock kinds
+are supported:
+
+| `clock.kind` | Source / unit | Meaning |
+| --- | --- | --- |
+| `monotonic_ns` | `python.time.perf_counter_ns`, `ns` | Observed chunk-arrival tick relative to `capture_start`; this is the live default |
+| `logical_tick` | `caller_supplied_logical_ticks`, `tick` | Deterministic test/fixture ordering only; `observation` is `deterministic_fixture_not_measured_time` |
+
+Both use `origin: "capture_start"`. Chunk ticks are sampled before incremental
+frame parsing and a completed frame inherits the current chunk's tick.
+Coalesced events may share a tick. Replay never calls a clock: it reuses the
+recorded descriptors, so replayed JSONL is byte-identical. No wall-clock value,
+hostname, UUID, or random id is introduced. Stage C aligns its live monotonic
+origin with request start and derives TTFT/TTFA from source arrival ticks, not
+from the later normalization pass.
+
+### Offline replay
+
+```text
+python3 -I python/umminfer_sse_replay.py \
+  path/to/trajectories.jsonl --out replayed/trajectories.jsonl
+```
+
+The input's sibling `artifacts/` is used by default; `--artifact-dir` selects
+another source CAS. The output path must be new and different from the input.
+Success requires byte-identical canonical JSONL and exact raw-SSE reproduction,
+and prints `RAW_SSE_REPLAY: PASS`. Malformed JSON/SSE, truncated frames, missing
+`[DONE]`, bytes after `[DONE]`, invalid UTF-8 data, duplicate/out-of-order server
+sequences, hash/timing/terminal tampering, and CAS mismatches produce a concise
+`replay error:` and nonzero exit. Cancellation and incomplete artifact groups
+follow the existing v2 cancellation rules and replay identically.
+
 ## Determinism
 
-There are no timestamps, UUIDs, host names, or random ids. JSON is key-sorted,
-compact UTF-8 with `allow_nan=False`. Turn indexes start at zero per recorder
-and session. One JSONL file has one writer. Two recordings of the same request
-and canned response bytes are asserted byte-identical, including the CAS file
-names and bytes.
+JSON is key-sorted, compact UTF-8 with `allow_nan=False`. Turn indexes start at
+zero per recorder and session, or retain the recorded index during replay. One
+JSONL file has one writer. Legacy recordings without replay remain deterministic
+for identical canned response bytes. Replay-enabled recordings are deterministic
+when supplied the same logical tick sequence; independently observed live
+arrival ticks naturally differ, while replay of one capture is byte-identical,
+including CAS names and bytes.
 
-The export stores normalized events, not raw SSE bytes. Byte-level raw-stream
-replay therefore remains unimplemented, and the roadmap Replay gate is not
-claimed. Per-event timestamps also remain absent because wall-clock values
-would break byte determinism.
+This closes the **recorded transport** portion of the roadmap Replay gate. It
+does not make model inference deterministic and does not add sampled token ids.
+Real-time capture against a resident model service and model-quality outcomes
+are `NOT_RUN` for this change. The later live gate must record raw bytes and
+observed monotonic ticks from an actual service, replay them in a fresh process,
+verify byte-identical JSONL/raw SSE and CAS hashes, and keep model quality as a
+separate evaluation.
 
 ## Rewards
 
@@ -188,8 +279,9 @@ observation inside that same object:
 
 These fields are offline analysis metadata, not new serving response fields and
 not measurements invented by the reward. Latency keys are `ttft_ms`, `ttfa_ms`,
-`terminal_ms`, and `barge_in_ms`; values must be finite and non-negative. The
-raw recorder remains timestamp-free, so an enrichment step must copy recorded
+`terminal_ms`, and `barge_in_ms`; values must be finite and non-negative. Raw
+replay ticks are transport ordering/timing evidence, not automatically an
+ablation label or budget measurement; an enrichment step must copy explicit
 observations into the JSONL before scoring. Missing labels or latency coverage
 produce `score: null`. Schema v1, malformed labels, malformed events, and
 invalid observations are rejected rather than silently scored.
@@ -261,16 +353,19 @@ in [joint-training.md](joint-training.md#bounded-real-joint-dpo-optimizer-gate).
 python3 -I tests/ablation_runner_test.py
 python3 -I tests/rl_architecture_test.py
 python3 -I tests/rl_phase2_test.py
+python3 -I tests/sse_replay_test.py
 python3 -I tests/joint_trainer_test.py
 python3 -I tests/joint_sft_live_test.py
 python3 -I tests/joint_dpo_live_test.py
 python3 -I tests/narrative_live_e2e.py --self-check
+python3 -I tests/narrative_slot_reference_live.py --self-check
 python3 -I tests/multimodal_benchmark_test.py
 ```
 
-The first two suites are deterministic and CPU-only. They use canned contract
-fixtures, never real-model evidence. They cover byte reproducibility, CAS
-reassembly and verification, no-media JSONL, leg errors, terminal legs,
+These suites are deterministic and CPU-only. They use canned contract
+fixtures, never real-model evidence. They cover raw/live replay byte identity,
+split/coalesced framing, tick provenance, CAS reassembly and verification,
+no-media JSONL, explicit slot anchors, leg errors, terminal legs,
 cancellation, tamper rejection, v1 reads, export-only rewards, NDJSON,
 checkpoint reopen/tamper checks, and the no-optimizer gate. The phase-2 suite
 prints `REAL OPTIMIZER: NOT_RUN`; no new real optimizer or model-quality result

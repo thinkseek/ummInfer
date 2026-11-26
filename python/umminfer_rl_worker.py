@@ -19,6 +19,8 @@ from pathlib import Path
 # Some interpreters' -I mode omits the script directory from sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from umminfer_sse_replay import validate_replay_metadata  # noqa: E402
+
 WORKER_PROTOCOL_VERSION = 1
 CHECKPOINT_SCHEMA_VERSION = 1
 SUPPORTED_TRAJECTORY_SCHEMA_VERSIONS = frozenset((1, 2))
@@ -431,6 +433,9 @@ def _validate_v2(record, artifact_root):
     slots = _validate_slots(record)
     _validate_artifacts(record, artifact_root, slots)
     _validate_linkages(record, slots)
+    validate_replay_metadata(
+        record, artifact_dir=artifact_root,
+        require_raw=record.get("sse_replay") is not None)
 
 
 def validate_trajectory(path, *, artifact_dir=None):
