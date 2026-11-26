@@ -565,13 +565,23 @@ All four owned processes exited, isolated IPC/SHM directories were removed, and
 | --- | ---: |
 | Concurrent isolated sessions / repeated rounds | 6 / 3 |
 | Real WebSocket connections (including reconnects) | 15 |
-| Real ASR -> VLM -> streaming-TTS responses | 41 |
-| Exact next-turn native VLM prompts checked | 30 |
+| Connection-scoped response-ID entries (30 server responses + 11 ACK-only non-server entries) | 41 |
+| Exact next-turn native VLM prompts checked / actual server responses | 30 / 30 |
 | Completed/cancelled history turns checked | 21 |
 | User terminal callbacks (exactly once per callback kind) | 27 |
 | Stale events / cross-session leaks / duplicate callback kinds | 0 / 0 / 0 |
 | Accepted decreasing cursors / final in-flight | 0 / 0 |
 | Evidence files verified by `SHA256SUMS` | 44 |
+
+The retained verifier's original `responses=41` is a connection-scoped count of
+RX and TX response identities, not 41 real ASR -> VLM -> TTS responses. Its 11
+non-server entries comprise eight foreign-ACK-only connection entries and three
+stale old-response ACK entries after reconnect. There are 38 globally unique
+response IDs and 30 actual server responses, matching all 30 native VLM prompts.
+The independent CPU timing audit re-decodes and reconciles this distinction,
+all exact timings, ACK/cancel schedules, PCM hashes, prompts, history, resource
+samples, and outliers without changing the runtime; see
+[realtime-latency-audit.md](realtime-latency-audit.md).
 
 Each scenario occurred three times: full final ACK, immediate barge-in, delayed
 barge-in after an acknowledged sentence prefix, reconnect during playback,
