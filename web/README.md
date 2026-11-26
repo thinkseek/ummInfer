@@ -39,6 +39,23 @@ Settings: base URL, model, image output, audio output, voice. Image size is
 fixed at `512x512`, PNG. Theme follows `prefers-color-scheme` and can be
 overridden with the System / Light / Dark selector.
 
+## Native video input frames
+
+For **+ Vid** attachments, **Input frames: Uniform** and **Frame budget: Default
+(8, omitted)** preserve the legacy `video_url` object with no `frame_selection`.
+Temporal enables validated Motion/Scene thresholds. Explicit **4**, **8**, or
+**16** emits exactly that integer in `frame_selection.max_frames` under either
+policy; explicit 8 is distinct from omission. The selector describes
+lower/higher selection, prefill, and ViT cost, not answer quality.
+
+New chats and Showcase preset changes restore default frame controls. Invalid
+persisted values fail before fetch instead of being clamped. JSON session
+exports carry optional root `video_frame_selection` only when non-default;
+legacy imports reset it to default, explicit 4/8/16 configurations round-trip,
+and malformed values (including `4.0` and `4e0`) reject without network traffic
+or mutation. Run `python3 -I tests/web_ui_contract_test.py` for the offline wire,
+reset, reconnect, and session contract gates.
+
 ## Protocol source
 
 Every field sent or read has a source in this repository:

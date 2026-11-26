@@ -503,6 +503,12 @@
         <option value="uniform" selected>Uniform</option>
         <option value="temporal">Temporal</option>
       </select></label>
+      <label title="Optional decoded-frame budget for attached video understanding. 4 lowers prefill/ViT cost; 16 increases it. Budget controls selection cost and coverage, not answer quality. Default omits max_frames (native default 8).">Frame budget<select id="videoFrameBudget">
+        <option value="" selected>Default (8, omitted)</option>
+        <option value="4">4 · lower cost</option>
+        <option value="8">8 · explicit</option>
+        <option value="16">16 · higher cost</option>
+      </select></label>
       <label title="Temporal motion score threshold in [0,1]">Motion ≥<input id="videoMotionThreshold" type="number" min="0" max="1" step="0.01" value="0.02" style="width:68px" disabled></label>
       <label title="Temporal scene-change score threshold in [0,1]">Scene ≥<input id="videoSceneThreshold" type="number" min="0" max="1" step="0.01" value="0.25" style="width:68px" disabled></label>
       <label class="check" title="Opt in to per-request native CUDA allocator peak telemetry (telemetry.native_allocator=true); omitted when off"><input type="checkbox" id="nativeAllocatorTelemetry"> Native VRAM telemetry</label>
@@ -581,6 +587,7 @@ const ui = {
   refAudio: $('refAudio'), videoSize: $('videoSize'), videoSeconds: $('videoSeconds'),
   videoFrames: $('videoFrames'), videoSteps: $('videoSteps'),
   videoGuidance: $('videoGuidance'), videoFramePolicy: $('videoFramePolicy'),
+  videoFrameBudget: $('videoFrameBudget'),
   videoMotionThreshold: $('videoMotionThreshold'), videoSceneThreshold: $('videoSceneThreshold'),
   nativeAllocatorTelemetry: $('nativeAllocatorTelemetry'),
   behaviorLogprobs: $('behaviorLogprobs'),
@@ -633,14 +640,26 @@ const SAME_ORIGIN_ENDPOINT =
   (location.protocol === 'http:' || location.protocol === 'https:')
     ? (location.origin + '/v1') : '';
 
+let videoFrameBudgetPersistenceError = null;
 const SETTINGS = ['endpoint', 'realtimeEndpoint', 'model', 'voice', 'maxTokens', 'temperature', 'topP',
                   'seed', 'imageSize', 'imageSteps', 'videoSize', 'videoSeconds',
-                  'videoFrames', 'videoSteps', 'videoGuidance', 'videoFramePolicy',
+                  'videoFrames', 'videoSteps', 'videoGuidance', 'videoFramePolicy', 'videoFrameBudget',
                   'videoMotionThreshold', 'videoSceneThreshold', 'visualMode', 'maxSlots',
                   'narrativeContinuity', 'styleAnchor'];
 for (const key of SETTINGS) {
   const saved = localStorage.getItem('ummweb.' + key);
-  if (saved !== null) ui[key].value = saved;
+  if (saved === null) continue;
+  if (key === 'videoFrameBudget') {
+    try {
+      parseVideoFrameBudget(saved);
+      ui[key].value = saved;
+    } catch {
+      videoFrameBudgetPersistenceError =
+        'Saved frame budget is invalid; select Default, 4, 8, or 16 before sending.';
+    }
+    continue;
+  }
+  ui[key].value = saved;
 }
 // When served by `umm-infer serve --web-root`, default to same-origin /v1 and
 // heal any stale default endpoint saved before the page was hosted here.
@@ -657,7 +676,10 @@ ui.nativeAllocatorTelemetry.checked = localStorage.getItem('ummweb.nativeAllocat
 ui.behaviorLogprobs.checked = localStorage.getItem('ummweb.behaviorLogprobs') === '1';
 ui.realtimeEchoSuppression.checked = localStorage.getItem('ummweb.echoSuppression') !== '0';
 const saveSettings = () => {
-  for (const key of SETTINGS) localStorage.setItem('ummweb.' + key, ui[key].value);
+  for (const key of SETTINGS) {
+    if (key === 'videoFrameBudget' && videoFrameBudgetPersistenceError) continue;
+    localStorage.setItem('ummweb.' + key, ui[key].value);
+  }
   localStorage.setItem('ummweb.image', ui.image.checked ? '1' : '0');
   localStorage.setItem('ummweb.audio', ui.audio.checked ? '1' : '0');
   localStorage.setItem('ummweb.video', ui.video.checked ? '1' : '0');
@@ -1035,6 +1057,7 @@ function applyShowcasePresetToControls(presetId, controls, hooks = {}) {
   controls.narrativeContinuity.value = preset.continuityMode;
   controls.styleAnchor.value = preset.styleAnchor;
   controls.fastVideo.checked = preset.fastVideo;
+  if (controls.videoFrameBudget) controls.videoFrameBudget.value = '';
   if (controls.videoFramePolicy) {
     controls.videoFramePolicy.value = preset.videoFramePolicy;
   }
@@ -3274,7 +3297,7 @@ function setBusy(busy) {
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
     ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.importSession, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly,
     ui.narrativeContinuity, ui.styleAnchor, ui.fastVideo, ui.nativeAllocatorTelemetry, ui.behaviorLogprobs,
-    ui.videoFramePolicy, ui.videoMotionThreshold, ui.videoSceneThreshold]) {
+    ui.videoFramePolicy, ui.videoFrameBudget, ui.videoMotionThreshold, ui.videoSceneThreshold]) {
     control.disabled = busy;
   }
   syncNarrativeControls();
@@ -3295,6 +3318,10 @@ ui.behaviorLogprobs.addEventListener('change', saveSettings);
 ui.videoFramePolicy.addEventListener('change', () => {
   saveSettings();
   syncVideoFrameControls();
+});
+ui.videoFrameBudget.addEventListener('change', () => {
+  videoFrameBudgetPersistenceError = null;
+  saveSettings();
 });
 ui.videoMotionThreshold.addEventListener('change', saveSettings);
 ui.videoSceneThreshold.addEventListener('change', saveSettings);
@@ -3333,9 +3360,22 @@ function videoConfig() {
 }
 
 // VIDEO_FRAME_SELECTION_BEGIN
-function parseVideoFrameSelection(policy, motionText, sceneText) {
-  if (policy === 'uniform') return undefined;
-  if (policy !== 'temporal') throw new Error('Input frame policy must be Uniform or Temporal.');
+function parseVideoFrameBudget(value) {
+  if (value === '' || value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || !['4', '8', '16'].includes(value)) {
+    throw new Error('Frame budget must be Default, 4, 8, or 16.');
+  }
+  return Number(value);
+}
+
+function parseVideoFrameSelection(policy, motionText, sceneText, budgetText = '') {
+  const maxFrames = parseVideoFrameBudget(budgetText);
+  if (policy !== 'uniform' && policy !== 'temporal') {
+    throw new Error('Input frame policy must be Uniform or Temporal.');
+  }
+  if (policy === 'uniform') {
+    return maxFrames === undefined ? undefined : { policy: 'uniform', max_frames: maxFrames };
+  }
   const threshold = (text, name) => {
     const normalized = String(text).trim();
     const value = Number(normalized);
@@ -3344,21 +3384,103 @@ function parseVideoFrameSelection(policy, motionText, sceneText) {
     }
     return value;
   };
-  return {
+  const selection = {
     policy: 'temporal',
     motion_threshold: threshold(motionText, 'Motion threshold'),
     scene_threshold: threshold(sceneText, 'Scene threshold'),
   };
+  if (maxFrames !== undefined) selection.max_frames = maxFrames;
+  return selection;
+}
+
+function validateVideoFrameBudgetJson(text) {
+  // JSON.parse erases the 4 vs 4.0 distinction. Inspect only property tokens,
+  // skipping arbitrary string content, so floats/exponents cannot slip through.
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] !== '"') { index += 1; continue; }
+    const start = index;
+    index += 1;
+    while (index < text.length) {
+      if (text[index] === '\\') { index += 2; continue; }
+      if (text[index] === '"') { index += 1; break; }
+      index += 1;
+    }
+    let key;
+    try { key = JSON.parse(text.slice(start, index)); } catch { continue; }
+    let cursor = index;
+    while (/\s/.test(text[cursor] || '')) cursor += 1;
+    if (key !== 'max_frames' || text[cursor] !== ':') continue;
+    cursor += 1;
+    while (/\s/.test(text[cursor] || '')) cursor += 1;
+    const valueStart = cursor;
+    while (cursor < text.length && !/[,\]}\s]/.test(text[cursor])) cursor += 1;
+    const literal = text.slice(valueStart, cursor);
+    if (!/^-?(?:0|[1-9]\d*)$/.test(literal)) {
+      throw new Error('video_frame_selection.max_frames must be an integer.');
+    }
+    index = cursor;
+  }
+}
+
+function normalizeVideoFrameSelectionConfig(raw) {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('video_frame_selection must be an object.');
+  }
+  const allowed = new Set(['policy', 'motion_threshold', 'scene_threshold', 'max_frames']);
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) throw new Error(`Unsupported video_frame_selection field: ${key}.`);
+  }
+  if (typeof raw.policy !== 'string') {
+    throw new Error('video_frame_selection.policy must be Uniform or Temporal.');
+  }
+  let budgetText = '';
+  if (raw.max_frames !== undefined && raw.max_frames !== null) {
+    if (typeof raw.max_frames !== 'number' || !Number.isSafeInteger(raw.max_frames) ||
+        ![4, 8, 16].includes(raw.max_frames)) {
+      throw new Error('video_frame_selection.max_frames must be exactly 4, 8, or 16.');
+    }
+    budgetText = String(raw.max_frames);
+  }
+  if (raw.policy === 'uniform') {
+    if (raw.motion_threshold !== undefined || raw.scene_threshold !== undefined) {
+      throw new Error('Uniform video_frame_selection does not accept temporal thresholds.');
+    }
+    return parseVideoFrameSelection('uniform', '', '', budgetText);
+  }
+  if (raw.policy !== 'temporal') {
+    throw new Error('video_frame_selection.policy must be Uniform or Temporal.');
+  }
+  for (const key of ['motion_threshold', 'scene_threshold']) {
+    if (typeof raw[key] !== 'number' || !Number.isFinite(raw[key]) || raw[key] < 0 || raw[key] > 1) {
+      throw new Error(`video_frame_selection.${key} must be a finite number in [0,1].`);
+    }
+  }
+  return parseVideoFrameSelection(
+    'temporal', String(raw.motion_threshold), String(raw.scene_threshold), budgetText);
+}
+
+function applyVideoFrameSelectionToControls(controls, selection) {
+  controls.videoFramePolicy.value = selection?.policy || 'uniform';
+  controls.videoMotionThreshold.value = String(selection?.motion_threshold ?? 0.02);
+  controls.videoSceneThreshold.value = String(selection?.scene_threshold ?? 0.25);
+  controls.videoFrameBudget.value = selection?.max_frames === undefined
+    ? '' : String(selection.max_frames);
 }
 
 function videoURLPart(dataURL, frameSelection) {
   const video = { url: dataURL };
   if (frameSelection) {
-    video.frame_selection = {
-      policy: 'temporal',
-      motion_threshold: frameSelection.motion_threshold,
-      scene_threshold: frameSelection.scene_threshold,
-    };
+    const selection = { policy: frameSelection.policy };
+    if (frameSelection.policy === 'temporal') {
+      selection.motion_threshold = frameSelection.motion_threshold;
+      selection.scene_threshold = frameSelection.scene_threshold;
+    }
+    if (frameSelection.max_frames !== undefined) {
+      selection.max_frames = frameSelection.max_frames;
+    }
+    video.frame_selection = selection;
   }
   return { type: 'video_url', video_url: video };
 }
@@ -3495,10 +3617,12 @@ async function send() {
 
   let frameSelection;
   try {
+    if (videoFrameBudgetPersistenceError) throw new Error(videoFrameBudgetPersistenceError);
     frameSelection = attachedVideo
       ? parseVideoFrameSelection(ui.videoFramePolicy.value,
                                  ui.videoMotionThreshold.value,
-                                 ui.videoSceneThreshold.value)
+                                 ui.videoSceneThreshold.value,
+                                 ui.videoFrameBudget.value)
       : undefined;
   } catch (err) {
     setStatus('Configuration error', false);
@@ -3773,6 +3897,7 @@ ui.prompt.addEventListener('keydown', (event) => {
 function applyShowcasePreset(presetId) {
   if (running) return;
   clearError();
+  videoFrameBudgetPersistenceError = null;
   applyShowcasePresetToControls(presetId, ui, {
     setAudioEnabled(enabled) {
       voiceOn = Boolean(enabled);
@@ -4055,7 +4180,7 @@ function buildSessionExportJson(state = {}) {
     turns.push(turnOut);
   }
 
-  return {
+  const report = {
     schema: SESSION_EXPORT_SCHEMA,
     exported_at: exportedAt,
     session_id: sessionId || null,
@@ -4063,6 +4188,10 @@ function buildSessionExportJson(state = {}) {
     turn_count: turns.length,
     turns,
   };
+  const frameSelection = normalizeVideoFrameSelectionConfig(
+    safeState.video_frame_selection ?? safeState.videoFrameSelection);
+  if (frameSelection) report.video_frame_selection = frameSelection;
+  return report;
 }
 
 function buildSessionExportMarkdown(state = {}) {
@@ -4425,6 +4554,7 @@ function parseImportedSessionJson(text) {
     throw new Error('Imported session JSON exceeds the 2 MiB size limit.');
   }
   let root;
+  validateVideoFrameBudgetJson(text);
   try {
     root = JSON.parse(text);
   } catch {
@@ -4440,6 +4570,7 @@ function parseImportedSessionJson(text) {
   const sessionId = parseOptionalStringField(root, 'session_id', 'root');
   const model = parseOptionalStringField(root, 'model', 'root');
   const exportedAt = parseOptionalStringField(root, 'exported_at', 'root');
+  const frameSelection = normalizeVideoFrameSelectionConfig(root.video_frame_selection);
 
   if (!Array.isArray(root.turns)) {
     throw new Error('Imported session JSON must contain a turns array.');
@@ -4523,6 +4654,7 @@ function parseImportedSessionJson(text) {
     model,
     turn_count: turns.length,
     turns,
+    video_frame_selection: frameSelection,
   };
 }
 
@@ -4551,6 +4683,7 @@ function applyImportedSessionWithContext(parsed, ctx) {
   }
   ctx.stopActiveAudio?.();
   ctx.resetState(parsed.session_id || '');
+  ctx.applyVideoFrameSelection?.(parsed.video_frame_selection);
   ctx.clearTranscript();
   ctx.clearError?.();
 
@@ -4625,6 +4758,12 @@ function applyImportedSession(parsed) {
       sessionTurns.length = 0;
       sessionID = nextSessionId;
     },
+    applyVideoFrameSelection(selection) {
+      applyVideoFrameSelectionToControls(ui, selection);
+      videoFrameBudgetPersistenceError = null;
+      saveSettings();
+      syncVideoFrameControls();
+    },
     clearTranscript() {
       ui.transcript.replaceChildren(ui.emptyState);
     },
@@ -4683,6 +4822,9 @@ function collectSessionExportState(exportedAt = new Date().toISOString()) {
     session_id: sessionID || '',
     model: ui.model.value.trim() || '',
     exported_at: exportedAt,
+    video_frame_selection: parseVideoFrameSelection(
+      ui.videoFramePolicy.value, ui.videoMotionThreshold.value,
+      ui.videoSceneThreshold.value, ui.videoFrameBudget.value),
     turns: sessionTurns.map((entry) => {
       const u = entry.userTurn;
       const a = entry.assistantTurn;
@@ -4776,6 +4918,10 @@ ui.newChat.addEventListener('click', () => {
   syncEmptyState();
   sessionID = '';
   ui.session.hidden = true;
+  applyVideoFrameSelectionToControls(ui, undefined);
+  videoFrameBudgetPersistenceError = null;
+  saveSettings();
+  syncVideoFrameControls();
   clearError();
   setStatus('Ready', false);
 });

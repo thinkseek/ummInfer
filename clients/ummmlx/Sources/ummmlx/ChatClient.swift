@@ -77,35 +77,92 @@ struct VideoOptions: Equatable {
     var teaCacheThresh: Double? = nil
 }
 
-enum VideoFramePolicy: String, Equatable {
+enum VideoFramePolicy: String, Equatable, Sendable {
     case uniform
     case temporal
 }
 
-/// Opt-in temporal keyframe selection for a native video_url input. Uniform is
-/// represented by nil, so legacy requests do not grow a frame_selection field.
-struct VideoFrameSelectionOptions: Equatable {
-    let policy = VideoFramePolicy.temporal
-    var motionThreshold: Double
-    var sceneThreshold: Double
+/// Optional keyframe selection for a native video_url input. Uniform with no
+/// explicit budget is represented by nil, preserving the legacy request bytes.
+struct VideoFrameSelectionOptions: Equatable, Encodable, Sendable {
+    static let allowedFrameBudgets: Set<Int> = [4, 8, 16]
+
+    let policy: VideoFramePolicy
+    var motionThreshold: Double?
+    var sceneThreshold: Double?
+    var maxFrames: Int?
+
+    init(policy: VideoFramePolicy = .temporal,
+         motionThreshold: Double? = nil,
+         sceneThreshold: Double? = nil,
+         maxFrames: Int? = nil) {
+        self.policy = policy
+        self.motionThreshold = motionThreshold
+        self.sceneThreshold = sceneThreshold
+        self.maxFrames = maxFrames
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case policy
+        case motionThreshold = "motion_threshold"
+        case sceneThreshold = "scene_threshold"
+        case maxFrames = "max_frames"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(policy.rawValue, forKey: .policy)
+        try container.encodeIfPresent(motionThreshold, forKey: .motionThreshold)
+        try container.encodeIfPresent(sceneThreshold, forKey: .sceneThreshold)
+        try container.encodeIfPresent(maxFrames, forKey: .maxFrames)
+    }
 
     func validate() throws {
-        guard motionThreshold.isFinite, (0...1).contains(motionThreshold) else {
+        if let maxFrames, !Self.allowedFrameBudgets.contains(maxFrames) {
             throw ChatClientError.invalidEndpoint(
-                "Motion threshold must be a finite number in [0,1].")
+                "Frame budget must be Default, 4, 8, or 16.")
         }
-        guard sceneThreshold.isFinite, (0...1).contains(sceneThreshold) else {
-            throw ChatClientError.invalidEndpoint(
-                "Scene threshold must be a finite number in [0,1].")
+        switch policy {
+        case .uniform:
+            guard motionThreshold == nil, sceneThreshold == nil else {
+                throw ChatClientError.invalidEndpoint(
+                    "Uniform frame selection does not accept temporal thresholds.")
+            }
+        case .temporal:
+            guard let motionThreshold, motionThreshold.isFinite,
+                  (0...1).contains(motionThreshold) else {
+                throw ChatClientError.invalidEndpoint(
+                    "Motion threshold must be a finite number in [0,1].")
+            }
+            guard let sceneThreshold, sceneThreshold.isFinite,
+                  (0...1).contains(sceneThreshold) else {
+                throw ChatClientError.invalidEndpoint(
+                    "Scene threshold must be a finite number in [0,1].")
+            }
         }
     }
 
     static func parse(policy: String, motionText: String,
-                      sceneText: String) throws -> VideoFrameSelectionOptions? {
-        if policy == VideoFramePolicy.uniform.rawValue { return nil }
-        guard policy == VideoFramePolicy.temporal.rawValue else {
+                      sceneText: String, budgetText: String = "") throws -> VideoFrameSelectionOptions? {
+        let maxFrames: Int?
+        if budgetText.isEmpty {
+            maxFrames = nil
+        } else if let parsed = Int(budgetText), allowedFrameBudgets.contains(parsed),
+                  String(parsed) == budgetText {
+            maxFrames = parsed
+        } else {
+            throw ChatClientError.invalidEndpoint(
+                "Frame budget must be Default, 4, 8, or 16.")
+        }
+        guard let parsedPolicy = VideoFramePolicy(rawValue: policy) else {
             throw ChatClientError.invalidEndpoint(
                 "Input frame policy must be Uniform or Temporal.")
+        }
+        if parsedPolicy == .uniform {
+            guard let maxFrames else { return nil }
+            let selection = VideoFrameSelectionOptions(policy: .uniform, maxFrames: maxFrames)
+            try selection.validate()
+            return selection
         }
         guard let motion = Double(motionText.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scene = Double(sceneText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
@@ -113,7 +170,8 @@ struct VideoFrameSelectionOptions: Equatable {
                 "Temporal thresholds must be finite numbers in [0,1].")
         }
         let selection = VideoFrameSelectionOptions(
-            motionThreshold: motion, sceneThreshold: scene)
+            policy: .temporal, motionThreshold: motion,
+            sceneThreshold: scene, maxFrames: maxFrames)
         try selection.validate()
         return selection
     }
@@ -457,11 +515,19 @@ final class ChatClient {
                 }
                 var videoObject: [String: Any] = ["url": videoURL]
                 if let selection = options.videoFrameSelection {
-                    videoObject["frame_selection"] = [
-                        "policy": selection.policy.rawValue,
-                        "motion_threshold": selection.motionThreshold,
-                        "scene_threshold": selection.sceneThreshold
-                    ]
+                    var frameSelection: [String: Any] = ["policy": selection.policy.rawValue]
+                    if selection.policy == .temporal {
+                        if let motion = selection.motionThreshold {
+                            frameSelection["motion_threshold"] = motion
+                        }
+                        if let scene = selection.sceneThreshold {
+                            frameSelection["scene_threshold"] = scene
+                        }
+                    }
+                    if let maxFrames = selection.maxFrames {
+                        frameSelection["max_frames"] = maxFrames
+                    }
+                    videoObject["frame_selection"] = frameSelection
                 }
                 parts.append(["type": "video_url", "video_url": videoObject])
                 return ["role": message.role, "content": parts]

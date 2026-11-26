@@ -376,6 +376,15 @@ struct RootView: View {
                         .frame(width: 190)
                         .help("Frame selection for attached video understanding, not generated-video Fast Video")
                         .accessibilityIdentifier("videoFramePolicy")
+                        Picker("Budget", selection: $model.videoFrameBudget) {
+                            Text("Default (8, omitted)").tag("")
+                            Text("4 · lower cost").tag("4")
+                            Text("8 · explicit").tag("8")
+                            Text("16 · higher cost").tag("16")
+                        }
+                        .frame(width: 190)
+                        .help("Optional decoded-frame budget for attached video understanding. 4 lowers prefill/ViT cost; 16 increases it. Budget controls selection cost and coverage, not answer quality.")
+                        .accessibilityIdentifier("videoFrameBudget")
                         labeledField("Motion ≥", text: $model.videoMotionThresholdText,
                                      width: 52, placeholder: "0.02")
                             .disabled(model.videoFramePolicy != "temporal")
@@ -384,7 +393,7 @@ struct RootView: View {
                                      width: 52, placeholder: "0.25")
                             .disabled(model.videoFramePolicy != "temporal")
                             .accessibilityIdentifier("videoSceneThreshold")
-                        Text("Temporal thresholds are finite values in [0,1].")
+                        Text("Budget changes selection cost, not quality; thresholds are finite values in [0,1].")
                             .font(.system(size: theme.captionSize))
                             .foregroundStyle(theme.tertiary)
                     }

@@ -1047,6 +1047,41 @@ final class ChatClientUnifiedTests: XCTestCase {
     }
 
     @MainActor
+    func testVideoFrameBudgetWireForms() throws {
+        let videoURL = "data:video/mp4;base64,AAAAIGZ0eXBpc29t"
+        let message = ChatMessage(role: "user", content: "describe motion",
+                                  videoDataURL: videoURL)
+        for policy in [VideoFramePolicy.uniform, .temporal] {
+            for budget in [4, 8, 16] {
+                let parsed = try XCTUnwrap(VideoFrameSelectionOptions.parse(
+                    policy: policy.rawValue, motionText: "0.02",
+                    sceneText: "0.25", budgetText: String(budget)))
+                var options = ChatStreamOptions()
+                options.videoFrameSelection = parsed
+                let body = ChatClient.requestBody(
+                    model: "qwen3-native", messages: [message], options: options)
+                let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+                let parts = try XCTUnwrap(messages.first?["content"] as? [[String: Any]])
+                let video = try XCTUnwrap(parts[1]["video_url"] as? [String: Any])
+                let selection = try XCTUnwrap(video["frame_selection"] as? [String: Any])
+                XCTAssertEqual(selection["policy"] as? String, policy.rawValue)
+                XCTAssertEqual(selection["max_frames"] as? Int, budget)
+                XCTAssertFalse(selection["max_frames"] is String)
+                XCTAssertFalse(selection["max_frames"] is Bool)
+                if policy == .uniform {
+                    XCTAssertEqual(selection.count, 2)
+                    XCTAssertNil(selection["motion_threshold"])
+                    XCTAssertNil(selection["scene_threshold"])
+                } else {
+                    XCTAssertEqual(selection.count, 4)
+                    XCTAssertEqual(selection["motion_threshold"] as? Double, 0.02)
+                    XCTAssertEqual(selection["scene_threshold"] as? Double, 0.25)
+                }
+            }
+        }
+    }
+
+    @MainActor
     func testVideoFrameSelectionThresholdBoundariesAndInvalidInput() throws {
         let boundaries = try XCTUnwrap(VideoFrameSelectionOptions.parse(
             policy: "temporal", motionText: "0", sceneText: "1"))
@@ -1066,6 +1101,16 @@ final class ChatClientUnifiedTests: XCTestCase {
         }
         XCTAssertThrowsError(try VideoFrameSelectionOptions.parse(
             policy: "scene-only", motionText: "0.02", sceneText: "0.25"))
+        for budget in ["0", "1", "3", "5", "12", "17", "-4", "4.0", "04",
+                       "8.5", " 4", "4 ", "true", "NaN", "Infinity", "abc"] {
+            XCTAssertThrowsError(try VideoFrameSelectionOptions.parse(
+                policy: "uniform", motionText: "", sceneText: "", budgetText: budget),
+                "invalid frame budget was accepted: \(budget)")
+        }
+        XCTAssertThrowsError(try VideoFrameSelectionOptions(
+            policy: .uniform, maxFrames: 12).validate())
+        XCTAssertThrowsError(try VideoFrameSelectionOptions(
+            policy: .uniform, motionThreshold: 0.02, maxFrames: 4).validate())
         XCTAssertThrowsError(try VideoFrameSelectionOptions(
             motionThreshold: Double.nan, sceneThreshold: 0.25).validate())
         XCTAssertThrowsError(try VideoFrameSelectionOptions(
@@ -1087,6 +1132,25 @@ final class ChatClientUnifiedTests: XCTestCase {
             XCTFail("a non-finite threshold must fail before transport")
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("[0,1]"))
+        }
+        XCTAssertTrue(UnifiedSSEProtocol.bodies().isEmpty)
+    }
+
+    @MainActor
+    func testClientRejectsInvalidFrameBudgetBeforeTransport() async {
+        UnifiedSSEProtocol.resetBodies()
+        var options = ChatStreamOptions()
+        options.videoFrameSelection = VideoFrameSelectionOptions(
+            policy: .uniform, maxFrames: 12)
+        do {
+            _ = try await makeClient().stream(
+                base: "http://10.1.2.1/v1", model: "m",
+                messages: [ChatMessage(role: "user", content: "video",
+                                       videoDataURL: "data:video/mp4;base64,AAAA")],
+                options: options) { _ in }
+            XCTFail("an unsupported frame budget must fail before transport")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("4, 8, or 16"))
         }
         XCTAssertTrue(UnifiedSSEProtocol.bodies().isEmpty)
     }
@@ -1118,9 +1182,17 @@ final class ChatClientUnifiedTests: XCTestCase {
         XCTAssertTrue(UnifiedSSEProtocol.bodies().isEmpty,
                       "invalid temporal values must not reach URLSession")
 
-        // Correcting the values and reconnecting uses fresh options and accepts
-        // both inclusive boundaries on the exact video_url wire object.
+        // A malformed persisted/programmatic budget also fails before URLSession.
         model.videoMotionThresholdText = "0"
+        model.videoFrameBudget = "4.0"
+        model.send()
+        XCTAssertEqual(model.status, "Configuration error")
+        XCTAssertTrue(model.error?.contains("4, 8, or 16") == true)
+        XCTAssertTrue(UnifiedSSEProtocol.bodies().isEmpty)
+
+        // Correcting the values and reconnecting uses fresh options and accepts
+        // both inclusive boundaries plus the exact integer budget on the wire.
+        model.videoFrameBudget = "16"
         model.videoSceneThresholdText = "1"
         model.send()
         for _ in 0..<200 where model.isRunning {
@@ -1139,10 +1211,15 @@ final class ChatClientUnifiedTests: XCTestCase {
         XCTAssertEqual(temporalSelection["policy"] as? String, "temporal")
         XCTAssertEqual(temporalSelection["motion_threshold"] as? Double, 0)
         XCTAssertEqual(temporalSelection["scene_threshold"] as? Double, 1)
+        XCTAssertEqual(temporalSelection["max_frames"] as? Int, 16)
 
         // New chat + reset to Uniform restores legacy bytes. Fast Video still
         // controls only generated video and malformed disabled fields are inert.
         model.newChat()
+        XCTAssertEqual(model.videoFramePolicy, "uniform")
+        XCTAssertEqual(model.videoFrameBudget, "")
+        XCTAssertEqual(model.videoMotionThresholdText, "0.02")
+        XCTAssertEqual(model.videoSceneThresholdText, "0.25")
         model.videoFramePolicy = "uniform"
         model.videoMotionThresholdText = "not-a-number"
         model.videoSceneThresholdText = ""

@@ -261,7 +261,7 @@ def check_markdown(html, script):
 
 
 def check_video_input(html, script):
-    # Wave 13 native video input upload (+ Vid -> video_url content part).
+    # Native video input upload (+ Vid -> video_url content part).
     require('id="askVideo"' in html and 'id="pickVideo"' in html,
             "composer must expose askVideo file input and pickVideo button")
     require("type: 'video_url'" in script,
@@ -270,20 +270,33 @@ def check_video_input(html, script):
             "composer must track attachedVideo state")
     require("videoURLPart(attachedVideo.dataURL, frameSelection)" in script,
             "attached video must use the shared frame-selection serializer")
-    require("parseVideoFrameSelection(ui.videoFramePolicy.value" in script,
-            "temporal settings must be validated while building the request")
-    require("video.frame_selection = {" in script
-            and "motion_threshold: frameSelection.motion_threshold" in script
-            and "scene_threshold: frameSelection.scene_threshold" in script,
-            "temporal mode must emit the accepted video_url.frame_selection schema")
-    require("if (policy === 'uniform') return undefined;" in script,
-            "Uniform must omit frame_selection to preserve legacy request bytes")
-    for key in ('videoFramePolicy', 'videoMotionThreshold', 'videoSceneThreshold'):
+    require("parseVideoFrameSelection(ui.videoFramePolicy.value" in script
+            and "ui.videoFrameBudget.value" in script,
+            "frame policy, thresholds, and budget must be validated while building the request")
+    require("selection.motion_threshold = frameSelection.motion_threshold" in script
+            and "selection.scene_threshold = frameSelection.scene_threshold" in script
+            and "selection.max_frames = frameSelection.max_frames" in script,
+            "frame selection must emit accepted policy/threshold/max_frames fields")
+    require("maxFrames === undefined ? undefined" in script,
+            "Uniform without a budget must preserve legacy request bytes")
+    require('id="videoFrameBudget"' in html
+            and '<option value="" selected>Default (8, omitted)</option>' in html
+            and '<option value="4">4 · lower cost</option>' in html
+            and '<option value="8">8 · explicit</option>' in html
+            and '<option value="16">16 · higher cost</option>' in html,
+            "frame budget must expose omission and exact 4/8/16 choices")
+    require("not answer quality" in html and "prefill/ViT cost" in html,
+            "budget tooltip must explain selection cost without promising quality")
+    for key in ('videoFramePolicy', 'videoFrameBudget',
+                'videoMotionThreshold', 'videoSceneThreshold'):
         require(f"'{key}'" in script, f"{key} must persist with existing settings")
         require(f"ui.{key}" in script.split("function setBusy(busy)", 1)[1].split("])", 1)[0],
                 f"{key} must be disabled while a request is running")
     require("syncVideoFrameControls()" in script,
             "threshold controls must synchronize with Uniform/Temporal and busy state")
+    require("parseVideoFrameBudget(saved)" in script
+            and "if (videoFrameBudgetPersistenceError) throw new Error" in script,
+            "invalid persisted budgets must fail closed before fetch")
 
 
 def check_video_frame_selection_behavior(script):
@@ -319,6 +332,52 @@ assert(parseVideoFrameSelection('uniform', 'not-a-number', '') === undefined,
 assert(JSON.stringify(videoURLPart(
   dataURL, parseVideoFrameSelection('uniform', '0.02', '0.25'))) === legacy,
        'reset to Uniform did not restore the legacy request');
+
+// Explicit 4/8/16 budgets emit JSON integers under either policy. Explicit 8
+// remains distinguishable from omission even though native decode is equivalent.
+for (const budget of [4, 8, 16]) {
+  const uniform = videoURLPart(
+    dataURL, parseVideoFrameSelection('uniform', 'ignored', '', String(budget)));
+  assert(JSON.stringify(uniform) ===
+    `{"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAA","frame_selection":{"policy":"uniform","max_frames":${budget}}}}`,
+    `uniform ${budget} wire schema mismatch`);
+  assert(uniform.video_url.frame_selection.max_frames === budget &&
+         Number.isInteger(uniform.video_url.frame_selection.max_frames),
+         `uniform ${budget} was not an integer`);
+  const temporalBudget = videoURLPart(
+    dataURL, parseVideoFrameSelection('temporal', '0.02', '0.25', String(budget)));
+  assert(JSON.stringify(temporalBudget) ===
+    `{"type":"video_url","video_url":{"url":"data:video/mp4;base64,AAAA","frame_selection":{"policy":"temporal","motion_threshold":0.02,"scene_threshold":0.25,"max_frames":${budget}}}}`,
+    `temporal ${budget} wire schema mismatch`);
+}
+
+const invalidBudgets = ['0', '1', '3', '5', '15', '17', '-4', '4.0', '04',
+                        '8.5', 'true', ' 4', '4 ', 'NaN', 'Infinity', 'abc'];
+for (const budget of invalidBudgets) {
+  let rejected = false;
+  try { parseVideoFrameSelection('uniform', '', '', budget); }
+  catch (error) { rejected = /Default, 4, 8, or 16/.test(error.message); }
+  assert(rejected, `invalid persisted budget was accepted: ${budget}`);
+}
+for (const budget of [true, false, 4, 8.0, 16.0, {}, []]) {
+  let rejected = false;
+  try { parseVideoFrameSelection('uniform', '', '', budget); }
+  catch { rejected = true; }
+  assert(rejected, `non-string UI budget was not rejected: ${String(budget)}`);
+}
+
+const lifecycleControls = {
+  videoFramePolicy: { value: 'temporal' },
+  videoMotionThreshold: { value: '0.5' },
+  videoSceneThreshold: { value: '0.75' },
+  videoFrameBudget: { value: '16' },
+};
+applyVideoFrameSelectionToControls(lifecycleControls, undefined);
+assert(lifecycleControls.videoFramePolicy.value === 'uniform' &&
+       lifecycleControls.videoMotionThreshold.value === '0.02' &&
+       lifecycleControls.videoSceneThreshold.value === '0.25' &&
+       lifecycleControls.videoFrameBudget.value === '',
+       'new-chat/default reset retained a stale frame budget');
 
 // Temporal opt-in emits exactly the accepted schema, including 0/1 bounds.
 const temporal = parseVideoFrameSelection('temporal', '0.02', '0.25');
@@ -356,10 +415,13 @@ let reconnectRejected = false;
 try { parseVideoFrameSelection('temporal', 'oops', '0.25'); }
 catch { reconnectRejected = true; }
 assert(reconnectRejected, 'invalid pre-reconnect value was not rejected');
-const reconnected = parseVideoFrameSelection('temporal', '1', '0');
+const reconnected = parseVideoFrameSelection('temporal', '1', '0', '16');
 assert(reconnected.motion_threshold === 1 && reconnected.scene_threshold === 0 &&
+       reconnected.max_frames === 16 && temporal.max_frames === undefined &&
        temporal.motion_threshold === 0.02 && temporal.scene_threshold === 0.25,
        'reconnect reused or mutated stale temporal settings');
+assert(parseVideoFrameSelection('uniform', '', '', '') === undefined,
+       'reconnect/default reset silently retained the previous 16-frame budget');
 
 // Existing generated-video controls and opt-in Fast Video stay independent.
 const normalGeneration = videoConfig();
@@ -1780,8 +1842,10 @@ def check_session_export_behavior(script):
         "// REALTIME_AUDIO_METER_END", 1)[0]
     export_src = script.split("// SESSION_EXPORT_BEGIN", 1)[1].split(
         "// SESSION_EXPORT_END", 1)[0]
+    frame_src = script.split("// VIDEO_FRAME_SELECTION_BEGIN", 1)[1].split(
+        "// VIDEO_FRAME_SELECTION_END", 1)[0]
     harness = (
-        telemetry_src + "\n" + continuity_src + "\n" +
+        frame_src + "\n" + telemetry_src + "\n" + continuity_src + "\n" +
         realtime_meter_src + "\n" + export_src + r"""
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -1808,6 +1872,17 @@ assert(emptyJson.session_id === null, 'empty session_id must serialize as null')
 assert(emptyJson.model === 'qwen3-native', 'model mismatch');
 assert(emptyJson.turn_count === 0 && Array.isArray(emptyJson.turns) && emptyJson.turns.length === 0,
        'empty session must report 0 turns');
+assert(!Object.hasOwn(emptyJson, 'video_frame_selection'),
+       'default session export must omit video_frame_selection');
+const explicitBudgetExport = buildSessionExportJson({
+  session_id: 'budget-session', model: 'qwen3-native', exported_at: fixedTs, turns: [],
+  video_frame_selection: {
+    policy: 'temporal', motion_threshold: 0.02, scene_threshold: 0.25, max_frames: 16,
+  },
+});
+assert(explicitBudgetExport.video_frame_selection.max_frames === 16 &&
+       explicitBudgetExport.video_frame_selection.policy === 'temporal',
+       'explicit temporal budget was not preserved in session export');
 
 const emptyMd = buildSessionExportMarkdown({
   session_id: '',
@@ -2217,8 +2292,10 @@ def check_session_import_behavior(script):
         "// SESSION_EXPORT_END", 1)[0]
     import_src = script.split("// SESSION_IMPORT_BEGIN", 1)[1].split(
         "// SESSION_IMPORT_END", 1)[0]
+    frame_src = script.split("// VIDEO_FRAME_SELECTION_BEGIN", 1)[1].split(
+        "// VIDEO_FRAME_SELECTION_END", 1)[0]
     harness = (
-        telemetry_src + "\n" + continuity_src + "\n" +
+        frame_src + "\n" + telemetry_src + "\n" + continuity_src + "\n" +
         realtime_meter_src + "\n" + export_src + "\n" + import_src + r"""
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -2242,6 +2319,9 @@ function createMockRuntime(initialBusy = false) {
     error: '',
     audioStopped: 0,
     syncCount: 0,
+    frameSelection: {
+      policy: 'temporal', motion_threshold: 0.9, scene_threshold: 0.8, max_frames: 16,
+    },
   };
   const ctx = {
     isBusy: () => state.busy,
@@ -2251,6 +2331,7 @@ function createMockRuntime(initialBusy = false) {
       state.history = [];
       state.turns = [];
     },
+    applyVideoFrameSelection(selection) { state.frameSelection = selection; },
     clearTranscript() {},
     clearError() { state.error = ''; },
     addTurn(role, text) {
@@ -2385,6 +2466,8 @@ assert(webRt.state.sessionChip.text === 'imported a1b2c3d4' &&
 assert(webRt.state.history.length === 6 &&
        webRt.state.history[0].role === 'user' && webRt.state.history[1].role === 'assistant',
        'restored history pairs mismatch');
+assert(webRt.state.frameSelection === undefined,
+       'legacy import silently retained the previous 16-frame budget');
 
 // Check restored Turn 1 telemetry, behavior, continuity, and omitted media (zero fabrication).
 const rt1 = webRt.state.turns[0].assistantTurn;
@@ -2435,6 +2518,31 @@ assert(reExportMd.includes('`VRAM: 128.4 MiB peak`') &&
        reExportMd.includes('`Behavior: not_exposed`') &&
        reExportMd.includes('### Assistant · Interrupted · 24 B spoken'),
        'round-trip re-export Markdown telemetry mismatch:\n' + reExportMd);
+
+// Explicit Uniform/Temporal 4/8/16 configurations survive export -> import ->
+// apply -> re-export as integer max_frames values, never as coerced strings.
+for (const policy of ['uniform', 'temporal']) {
+  for (const budget of [4, 8, 16]) {
+    const selection = policy === 'uniform'
+      ? { policy, max_frames: budget }
+      : { policy, motion_threshold: 0.02, scene_threshold: 0.25, max_frames: budget };
+    const exported = buildSessionExportJson({
+      session_id: `budget-${policy}-${budget}`, model: 'qwen3-native',
+      exported_at: fixedTs, turns: [], video_frame_selection: selection,
+    });
+    const parsed = parseImportedSessionJson(JSON.stringify(exported));
+    const runtime = createMockRuntime(false);
+    applyImportedSessionWithContext(parsed, runtime.ctx);
+    assert(JSON.stringify(runtime.state.frameSelection) === JSON.stringify(selection),
+           `${policy} ${budget} import did not restore the exact selection`);
+    const reexported = buildSessionExportJson({
+      session_id: parsed.session_id, model: parsed.model, exported_at: fixedTs,
+      turns: [], video_frame_selection: runtime.state.frameSelection,
+    });
+    assert(JSON.stringify(reexported) === JSON.stringify(exported),
+           `${policy} ${budget} session round trip diverged`);
+  }
+}
 
 // 2. Cross-client import of macOS ummmlx export (exact SessionExport.swift schema).
 const macOSExportJson = JSON.stringify({
@@ -2572,6 +2680,14 @@ const invalidCases = [
   ['unsupported schema', JSON.stringify({ schema: 'umminfer-session-export-v2', turns: [] }), /Unsupported session export schema/],
   ['missing turns', JSON.stringify({ schema: 'umminfer-web-session-export-v1', messages: [] }), /turns array/],
   ['non-array turns', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turns: {} }), /turns array/],
+  ['string frame budget', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turns: [], video_frame_selection: { policy: 'uniform', max_frames: '4' } }), /max_frames must be an integer/],
+  ['boolean frame budget', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turns: [], video_frame_selection: { policy: 'uniform', max_frames: true } }), /max_frames must be an integer/],
+  ['float frame budget', '{"schema":"umminfer-web-session-export-v1","turns":[],"video_frame_selection":{"policy":"uniform","max_frames":4.0}}', /max_frames must be an integer/],
+  ['exponent frame budget', '{"schema":"umminfer-web-session-export-v1","turns":[],"video_frame_selection":{"policy":"uniform","max_frames":4e0}}', /max_frames must be an integer/],
+  ['unsupported frame budget', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turns: [], video_frame_selection: { policy: 'uniform', max_frames: 12 } }), /exactly 4, 8, or 16/],
+  ['unknown frame-selection field', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turns: [], video_frame_selection: { policy: 'uniform', max_frames: 4, quality: 'high' } }), /Unsupported video_frame_selection field/],
+  ['uniform temporal threshold', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turns: [], video_frame_selection: { policy: 'uniform', max_frames: 4, motion_threshold: 0.02 } }), /does not accept temporal thresholds/],
+  ['temporal string threshold', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turns: [], video_frame_selection: { policy: 'temporal', motion_threshold: '0.02', scene_threshold: 0.25, max_frames: 4 } }), /motion_threshold must be a finite number/],
   ['turn_count mismatch', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turn_count: 2, turns: [] }), /turn_count/],
   ['invalid role system', JSON.stringify({
     schema: 'umminfer-web-session-export-v1',

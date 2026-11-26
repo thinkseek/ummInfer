@@ -32,21 +32,34 @@ No third-party runtime dependencies.
 
 Attach an MP4, WebM, or QuickTime video with **+ Vid**. Image and video inputs
 remain mutually exclusive and video uploads retain the 32 MiB limit. The default
-**Input frames: Uniform** setting omits `video_url.frame_selection`, so existing
-request bodies are unchanged. **Temporal** enables Motion and Scene fields and
-sends `frame_selection` with `policy: "temporal"` and numeric
+**Input frames: Uniform** and **Budget: Default (8, omitted)** settings omit
+`video_url.frame_selection`, so existing request bodies are unchanged.
+**Temporal** enables Motion and Scene fields and sends numeric
 `motion_threshold`/`scene_threshold` values. Both are required, finite, and in
 `[0,1]`; invalid input is reported before any request and does not discard the
-attachment. Returning to Uniform removes the object again after reset or
-reconnect.
+attachment.
 
-Temporal input selection is unrelated to generated-video **Fast Video**, which
-continues to send only `video.teacache_thresh: 0.05` when enabled. Existing
-frames, steps, CFG, model, narrative, and realtime settings are independent.
-Swift tests cover default omission, exact opt-in serialization, inclusive 0/1
-bounds, invalid input, reset/reconnect, and Fast Video interaction. Physical
-macOS UI validation and real video-quality/latency runs are `NOT_RUN` on a
-CPU-only Linux host.
+Explicit **4**, **8**, or **16** emits exactly that integer as
+`frame_selection.max_frames` under either policy. Uniform+budget sends only
+`policy`/`max_frames`; Temporal+budget retains both thresholds. Explicit 8 is
+not the same wire form as omission. The budget labels describe lower/higher
+selection, prefill, and ViT cost, not an answer-quality guarantee. New chats and
+preset changes restore the default controls; reconnects validate fresh current
+values.
+
+JSON session exports include optional root `video_frame_selection` only when
+non-default. All six Uniform/Temporal 4/8/16 forms survive export, import, and
+re-export. Missing fields reset to defaults, while strings, booleans, floats,
+unsupported integers, and unknown fields reject the import without changing the
+existing conversation or controls.
+
+Input selection is unrelated to generated-video **Fast Video**, which continues
+to send only `video.teacache_thresh: 0.05` when enabled. Existing frames, steps,
+CFG, model, narrative, and realtime settings are independent. Swift tests cover
+default omission, exact opt-in serialization, inclusive 0/1 bounds, invalid
+input, reset/reconnect, rejected-import immutability, and session round trips.
+Physical macOS UI validation, Swift execution on this Linux host, and real
+video-quality/latency runs are `NOT_RUN`.
 
 ## Local speech input
 

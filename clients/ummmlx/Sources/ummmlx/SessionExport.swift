@@ -232,6 +232,7 @@ struct SessionExportReport: Equatable, Encodable, Sendable {
     let model: String?
     let turnCount: Int
     let turns: [SessionExportTurn]
+    let videoFrameSelection: VideoFrameSelectionOptions?
 
     enum CodingKeys: String, CodingKey {
         case schema
@@ -240,6 +241,7 @@ struct SessionExportReport: Equatable, Encodable, Sendable {
         case model
         case turnCount = "turn_count"
         case turns
+        case videoFrameSelection = "video_frame_selection"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -250,6 +252,7 @@ struct SessionExportReport: Equatable, Encodable, Sendable {
         try container.encode(model, forKey: .model)
         try container.encode(turnCount, forKey: .turnCount)
         try container.encode(turns, forKey: .turns)
+        try container.encodeIfPresent(videoFrameSelection, forKey: .videoFrameSelection)
     }
 }
 
@@ -302,6 +305,7 @@ struct ImportedSession {
     let turnCount: Int
     let turns: [ChatTurn]
     let messages: [ChatMessage]
+    let videoFrameSelection: VideoFrameSelectionOptions?
 }
 
 enum SessionExporter {
@@ -374,13 +378,17 @@ enum SessionExporter {
         sessionID: String,
         model: String,
         turns: [ChatTurn],
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        videoFrameSelection: VideoFrameSelectionOptions? = nil
     ) -> Data {
         switch format {
         case .json:
-            return buildJSONData(sessionID: sessionID, model: model, turns: turns, exportedAt: exportedAt)
+            return buildJSONData(sessionID: sessionID, model: model, turns: turns,
+                                 exportedAt: exportedAt, videoFrameSelection: videoFrameSelection)
         case .markdown:
-            return Data(buildMarkdown(sessionID: sessionID, model: model, turns: turns, exportedAt: exportedAt).utf8)
+            return Data(buildMarkdown(sessionID: sessionID, model: model, turns: turns,
+                                      exportedAt: exportedAt,
+                                      videoFrameSelection: videoFrameSelection).utf8)
         }
     }
 
@@ -388,13 +396,15 @@ enum SessionExporter {
         sessionID: String,
         model: String,
         turns: [ChatTurn],
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        videoFrameSelection: VideoFrameSelectionOptions? = nil
     ) -> Data {
         let (report, _) = buildReportWithPills(
             sessionID: sessionID,
             model: model,
             turns: turns,
-            exportedAt: exportedAt
+            exportedAt: exportedAt,
+            videoFrameSelection: videoFrameSelection
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -407,13 +417,15 @@ enum SessionExporter {
         sessionID: String,
         model: String,
         turns: [ChatTurn],
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        videoFrameSelection: VideoFrameSelectionOptions? = nil
     ) -> String {
         let (report, perTurnPills) = buildReportWithPills(
             sessionID: sessionID,
             model: model,
             turns: turns,
-            exportedAt: exportedAt
+            exportedAt: exportedAt,
+            videoFrameSelection: videoFrameSelection
         )
 
         var lines: [String] = [
@@ -706,7 +718,8 @@ enum SessionExporter {
         sessionID: String,
         model: String,
         turns: [ChatTurn],
-        exportedAt: Date
+        exportedAt: Date,
+        videoFrameSelection: VideoFrameSelectionOptions?
     ) -> (SessionExportReport, [[TurnTelemetry.Pill]]) {
         let trimmedSession = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -752,7 +765,8 @@ enum SessionExporter {
             sessionID: trimmedSession.isEmpty ? nil : trimmedSession,
             model: trimmedModel.isEmpty ? nil : trimmedModel,
             turnCount: exportedTurns.count,
-            turns: exportedTurns
+            turns: exportedTurns,
+            videoFrameSelection: videoFrameSelection
         )
         return (report, perTurnPills)
     }
@@ -793,6 +807,7 @@ enum SessionExporter {
         let exportedAt = try optionalTrimmedString(root["exported_at"], field: "exported_at")
         let sessionID = try optionalTrimmedString(root["session_id"], field: "session_id")
         let model = try optionalTrimmedString(root["model"], field: "model")
+        let videoFrameSelection = try parseVideoFrameSelection(root["video_frame_selection"])
         let declaredTurnCount = try optionalNonNegativeInt(root["turn_count"], field: "turn_count")
 
         let hasTurnsKey = root["turns"] != nil
@@ -854,11 +869,63 @@ enum SessionExporter {
             model: model,
             turnCount: logicalTurnCount,
             turns: restoredTurns,
-            messages: restoredMessages
+            messages: restoredMessages,
+            videoFrameSelection: videoFrameSelection
         )
     }
 
     // MARK: - Strict JSON decoding helpers
+
+    private static func parseVideoFrameSelection(_ value: Any?) throws -> VideoFrameSelectionOptions? {
+        guard let value, !(value is NSNull) else { return nil }
+        guard let object = value as? [String: Any] else {
+            throw SessionImportError.invalidField("video_frame_selection must be an object")
+        }
+        let allowed: Set<String> = ["policy", "motion_threshold", "scene_threshold", "max_frames"]
+        for key in object.keys where !allowed.contains(key) {
+            throw SessionImportError.invalidField("unsupported video_frame_selection field: \(key)")
+        }
+        guard let policyText = object["policy"] as? String,
+              let policy = VideoFramePolicy(rawValue: policyText) else {
+            throw SessionImportError.invalidField(
+                "video_frame_selection.policy must be uniform or temporal")
+        }
+        let rawMaxFrames = object["max_frames"]
+        if rawMaxFrames is NSNull {
+            throw SessionImportError.invalidField(
+                "video_frame_selection.max_frames must be an integer")
+        }
+        let maxFrames = try optionalNonNegativeInt(
+            rawMaxFrames, field: "video_frame_selection.max_frames")
+        if let maxFrames, !VideoFrameSelectionOptions.allowedFrameBudgets.contains(maxFrames) {
+            throw SessionImportError.invalidField(
+                "video_frame_selection.max_frames must be exactly 4, 8, or 16")
+        }
+        let hasMotion = object["motion_threshold"] != nil && !(object["motion_threshold"] is NSNull)
+        let hasScene = object["scene_threshold"] != nil && !(object["scene_threshold"] is NSNull)
+        if policy == .uniform {
+            guard !hasMotion, !hasScene else {
+                throw SessionImportError.invalidField(
+                    "uniform video_frame_selection does not accept temporal thresholds")
+            }
+            guard let maxFrames else { return nil }
+            return VideoFrameSelectionOptions(policy: .uniform, maxFrames: maxFrames)
+        }
+        guard let motion = try optionalNonNegativeDouble(
+                  object["motion_threshold"], field: "video_frame_selection.motion_threshold"),
+              motion <= 1,
+              let scene = try optionalNonNegativeDouble(
+                  object["scene_threshold"], field: "video_frame_selection.scene_threshold"),
+              scene <= 1 else {
+            throw SessionImportError.invalidField(
+                "temporal video_frame_selection thresholds must be finite numbers in [0,1]")
+        }
+        let selection = VideoFrameSelectionOptions(
+            policy: .temporal, motionThreshold: motion,
+            sceneThreshold: scene, maxFrames: maxFrames)
+        try selection.validate()
+        return selection
+    }
 
     private static func strictBool(_ value: Any?, field: String) throws -> Bool? {
         guard let value, !(value is NSNull) else { return nil }

@@ -180,9 +180,41 @@ and Scene threshold fields (defaults `0.02` and `0.25`) and sends:
 Both clients require the two thresholds to be finite numbers in the inclusive
 range `[0,1]` before starting transport. Empty, malformed, non-finite, and
 out-of-range values leave the attachment intact and produce no HTTP request.
-Returning to Uniform removes the field again, including after a new chat or
-reconnect. These controls apply only to attached video understanding; the
-existing generated-video size/frame/step/CFG controls and opt-in **Fast video**
+Returning to Uniform without an explicit budget removes the object again.
+
+The independent **Frame budget** selector defaults to **Default (8, omitted)**.
+Explicit **4**, **8**, or **16** emits exactly that JSON integer in
+`video_url.frame_selection.max_frames`; explicit 8 is therefore different on the
+wire from omission even though native decoding is equivalent. Uniform+budget
+sends only `policy` and `max_frames`; Temporal+budget retains both thresholds.
+For example:
+
+```json
+{
+  "type": "video_url",
+  "video_url": {
+    "url": "data:video/mp4;base64,...",
+    "frame_selection": { "policy": "uniform", "max_frames": 4 }
+  }
+}
+```
+
+The labels and tooltips describe lower/higher decode, prefill, and ViT cost, not
+a quality guarantee. Strings, booleans, floats, arbitrary integers, and unknown
+fields are rejected rather than coerced or clamped. Invalid persisted browser
+settings and invalid imported values fail before transport; JavaScript import
+also checks the original JSON token so `4.0` and `4e0` cannot masquerade as `4`.
+New chats and Showcase preset changes restore default frame controls, while a
+reconnect uses freshly validated current controls rather than stale state.
+
+JSON session exports add optional root `video_frame_selection` only for a
+non-default configuration. Export → import → re-export preserves all six
+Uniform/Temporal 4/8/16 forms. A legacy export without the field resets these
+controls to Uniform/default budget instead of retaining a previous budget, and
+a rejected import leaves the existing conversation and controls unchanged.
+
+These controls apply only to attached video understanding; the existing
+generated-video size/frame/step/CFG controls and opt-in **Fast video**
 (`video.teacache_thresh`) remain independent, and image/video input exclusivity,
 the 32 MiB upload budget, model selection, chat history, and realtime voice are
 unchanged. Physical browser/macOS layout and real temporal-model quality remain

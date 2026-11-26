@@ -227,6 +227,7 @@ final class ShowcaseTelemetryTests: XCTestCase {
         // and sets a subtle non-blocking status hint without throwing an error or sending.
         model.videoMotionThresholdText = "0.99"
         model.videoSceneThresholdText = "0.88"
+        model.videoFrameBudget = "16"
         model.applyShowcasePreset(.temporalVideoQA)
         XCTAssertTrue(model.narrativeMode)
         XCTAssertEqual(model.narrativeVisualMode, "auto")
@@ -238,6 +239,7 @@ final class ShowcaseTelemetryTests: XCTestCase {
         XCTAssertFalse(model.fastVideoMode)
         XCTAssertFalse(model.audioOutput)
         XCTAssertEqual(model.videoFramePolicy, "temporal")
+        XCTAssertEqual(model.videoFrameBudget, "")
         XCTAssertEqual(model.videoMotionThresholdText, "0.02")
         XCTAssertEqual(model.videoSceneThresholdText, "0.25")
         XCTAssertNil(model.error)
@@ -262,6 +264,7 @@ final class ShowcaseTelemetryTests: XCTestCase {
             model.applyShowcasePreset(.temporalVideoQA)
             model.videoMotionThresholdText = "0.15"
             model.videoSceneThresholdText = "0.45"
+            model.videoFrameBudget = "16"
             XCTAssertEqual(model.videoFramePolicy, "temporal")
 
             model.applyShowcasePreset(other)
@@ -269,6 +272,7 @@ final class ShowcaseTelemetryTests: XCTestCase {
                            "switching from temporalVideoQA to \(other.rawValue) must reset to uniform")
             XCTAssertEqual(model.videoMotionThresholdText, "0.02")
             XCTAssertEqual(model.videoSceneThresholdText, "0.25")
+            XCTAssertEqual(model.videoFrameBudget, "")
             XCTAssertEqual(model.status, "Ready")
             XCTAssertNil(model.error)
         }

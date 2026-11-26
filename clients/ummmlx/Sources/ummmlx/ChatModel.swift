@@ -421,6 +421,7 @@ final class ChatModel: ObservableObject {
     @Published var videoGuidanceText = "5.0"
     /// Attached-video understanding controls, independent of Fast Video output.
     @Published var videoFramePolicy = "uniform"
+    @Published var videoFrameBudget = ""
     @Published var videoMotionThresholdText = "0.02"
     @Published var videoSceneThresholdText = "0.25"
     @Published var fastVideoMode = false
@@ -571,6 +572,7 @@ final class ChatModel: ObservableObject {
         stopping = false
         receivedDelta = false
         onFirstDelta = nil
+        applyVideoFrameSelectionToControls(imported.videoFrameSelection)
 
         turns = imported.turns
         if let importedModel = imported.model, !importedModel.isEmpty {
@@ -602,12 +604,18 @@ final class ChatModel: ObservableObject {
     /// conversation without contacting the server.
     func exportSessionData(format: SessionExportFormat,
                            exportedAt: Date = Date()) -> Data {
-        SessionExporter.buildData(
+        let selection = try? VideoFrameSelectionOptions.parse(
+            policy: videoFramePolicy,
+            motionText: videoMotionThresholdText,
+            sceneText: videoSceneThresholdText,
+            budgetText: videoFrameBudget)
+        return SessionExporter.buildData(
             format: format,
             sessionID: sessionID,
             model: model,
             turns: turns,
-            exportedAt: exportedAt
+            exportedAt: exportedAt,
+            videoFrameSelection: selection
         )
     }
 
@@ -665,6 +673,7 @@ final class ChatModel: ObservableObject {
         fastVideoMode = preset.fastVideo
         audioOutput = preset.enableAudio
         videoFramePolicy = preset.videoFramePolicy.rawValue
+        videoFrameBudget = ""
         videoMotionThresholdText = preset.videoMotionThresholdText
         videoSceneThresholdText = preset.videoSceneThresholdText
         prompt = preset.prompt
@@ -709,7 +718,8 @@ final class ChatModel: ObservableObject {
             videoFrameSelection = sentVideoURL == nil ? nil : try VideoFrameSelectionOptions.parse(
                 policy: videoFramePolicy,
                 motionText: videoMotionThresholdText,
-                sceneText: videoSceneThresholdText)
+                sceneText: videoSceneThresholdText,
+                budgetText: videoFrameBudget)
         } catch {
             self.error = error.localizedDescription
             status = "Configuration error"
@@ -1683,6 +1693,13 @@ final class ChatModel: ObservableObject {
         requestTask?.cancel()
     }
 
+    private func applyVideoFrameSelectionToControls(_ selection: VideoFrameSelectionOptions?) {
+        videoFramePolicy = selection?.policy.rawValue ?? VideoFramePolicy.uniform.rawValue
+        videoMotionThresholdText = selection?.motionThreshold.map { String($0) } ?? "0.02"
+        videoSceneThresholdText = selection?.sceneThreshold.map { String($0) } ?? "0.25"
+        videoFrameBudget = selection?.maxFrames.map { String($0) } ?? ""
+    }
+
     func newChat() {
         stopLiveVoice()
         stopStreamingAudio()
@@ -1699,6 +1716,7 @@ final class ChatModel: ObservableObject {
         sessionID = ""
         requestSessionID = Self.newSessionID()
         onFirstDelta = nil
+        applyVideoFrameSelectionToControls(nil)
     }
 
     private func finish(_ id: UUID) {

@@ -658,6 +658,118 @@ final class SessionExportTests: XCTestCase {
         XCTAssertTrue(imported.messages.isEmpty)
     }
 
+    func testVideoFrameBudgetSessionRoundTrips() throws {
+        for policy in [VideoFramePolicy.uniform, .temporal] {
+            for budget in [4, 8, 16] {
+                let selection = policy == .uniform
+                    ? VideoFrameSelectionOptions(policy: .uniform, maxFrames: budget)
+                    : VideoFrameSelectionOptions(
+                        policy: .temporal, motionThreshold: 0.02,
+                        sceneThreshold: 0.25, maxFrames: budget)
+                let exported = SessionExporter.buildJSONData(
+                    sessionID: "budget-\(policy.rawValue)-\(budget)",
+                    model: "qwen3-native", turns: [], exportedAt: fixedDate,
+                    videoFrameSelection: selection)
+                let root = try XCTUnwrap(
+                    try JSONSerialization.jsonObject(with: exported) as? [String: Any])
+                let wire = try XCTUnwrap(root["video_frame_selection"] as? [String: Any])
+                XCTAssertEqual(wire["policy"] as? String, policy.rawValue)
+                XCTAssertEqual(wire["max_frames"] as? Int, budget)
+                XCTAssertFalse(wire["max_frames"] is String)
+                XCTAssertFalse(wire["max_frames"] is Bool)
+                if policy == .uniform {
+                    XCTAssertEqual(wire.count, 2)
+                } else {
+                    XCTAssertEqual(wire.count, 4)
+                }
+
+                let imported = try SessionExporter.importJSON(exported)
+                XCTAssertEqual(imported.videoFrameSelection, selection)
+                let reexported = SessionExporter.buildJSONData(
+                    sessionID: imported.sessionID ?? "", model: imported.model ?? "",
+                    turns: imported.turns, exportedAt: fixedDate,
+                    videoFrameSelection: imported.videoFrameSelection)
+                XCTAssertEqual(reexported, exported)
+            }
+        }
+    }
+
+    @MainActor
+    func testChatModelVideoFrameBudgetExportImportAndDefaultReset() throws {
+        let model = ChatModel(audioStream: NoOpAudioStreamPlayer())
+        model.model = "qwen3-native"
+        model.videoFramePolicy = "temporal"
+        model.videoMotionThresholdText = "0.02"
+        model.videoSceneThresholdText = "0.25"
+        model.videoFrameBudget = "16"
+        let exported = model.exportSessionData(format: .json, exportedAt: fixedDate)
+
+        model.videoFramePolicy = "uniform"
+        model.videoMotionThresholdText = "0.9"
+        model.videoSceneThresholdText = "0.8"
+        model.videoFrameBudget = "4"
+        _ = try model.importSessionJSON(exported)
+        XCTAssertEqual(model.videoFramePolicy, "temporal")
+        XCTAssertEqual(model.videoMotionThresholdText, "0.02")
+        XCTAssertEqual(model.videoSceneThresholdText, "0.25")
+        XCTAssertEqual(model.videoFrameBudget, "16")
+        XCTAssertEqual(model.exportSessionData(format: .json, exportedAt: fixedDate), exported)
+
+        let legacy = SessionExporter.buildJSONData(
+            sessionID: "legacy", model: "qwen3-native", turns: [], exportedAt: fixedDate)
+        let legacyRoot = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: legacy) as? [String: Any])
+        XCTAssertNil(legacyRoot["video_frame_selection"])
+        _ = try model.importSessionJSON(legacy)
+        XCTAssertEqual(model.videoFramePolicy, "uniform")
+        XCTAssertEqual(model.videoMotionThresholdText, "0.02")
+        XCTAssertEqual(model.videoSceneThresholdText, "0.25")
+        XCTAssertEqual(model.videoFrameBudget, "")
+    }
+
+    @MainActor
+    func testRejectedFrameBudgetImportLeavesModelControlsUnchanged() throws {
+        let model = ChatModel(audioStream: NoOpAudioStreamPlayer())
+        model.videoFramePolicy = "temporal"
+        model.videoMotionThresholdText = "0.02"
+        model.videoSceneThresholdText = "0.25"
+        model.videoFrameBudget = "16"
+        let invalid = "{\"schema\":\"umminfer-session-export-v1\",\"turns\":[],"
+            + "\"video_frame_selection\":{\"policy\":\"uniform\",\"max_frames\":4.0}}"
+        XCTAssertThrowsError(try model.importSessionJSON(Data(invalid.utf8)))
+        XCTAssertEqual(model.videoFramePolicy, "temporal")
+        XCTAssertEqual(model.videoMotionThresholdText, "0.02")
+        XCTAssertEqual(model.videoSceneThresholdText, "0.25")
+        XCTAssertEqual(model.videoFrameBudget, "16")
+        XCTAssertEqual(model.status, "Import error")
+    }
+
+    func testInvalidVideoFrameBudgetImportsFailClosed() throws {
+        let invalidValues: [Any] = [
+            "4", true, 0, 3, 4.5, 12, -4, NSNull(),
+        ]
+        for value in invalidValues {
+            let root: [String: Any] = [
+                "schema": "umminfer-session-export-v1",
+                "turn_count": 0,
+                "turns": [],
+                "video_frame_selection": ["policy": "uniform", "max_frames": value],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: root)
+            XCTAssertThrowsError(try SessionExporter.importJSON(data),
+                                 "invalid imported budget was accepted: \(value)")
+        }
+        for literal in ["4.0", "4e0", "16.0"] {
+            let text = "{\"schema\":\"umminfer-session-export-v1\",\"turns\":[],"
+                + "\"video_frame_selection\":{\"policy\":\"uniform\",\"max_frames\":\(literal)}}"
+            XCTAssertThrowsError(try SessionExporter.importJSONString(text),
+                                 "non-integer JSON budget was accepted: \(literal)")
+        }
+        let unknown = "{\"schema\":\"umminfer-session-export-v1\",\"turns\":[],"
+            + "\"video_frame_selection\":{\"policy\":\"uniform\",\"max_frames\":4,\"quality\":true}}"
+        XCTAssertThrowsError(try SessionExporter.importJSONString(unknown))
+    }
+
     func testCrossClientImportWebSchemaV1() throws {
         let slot0SHA = "abcdef01" + String(repeating: "23456789", count: 7)
         let anchorSHA = "3a9d5bbe" + String(repeating: "4f12c890", count: 7)
