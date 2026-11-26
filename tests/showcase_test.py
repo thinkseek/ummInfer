@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import base64
 import copy
+from http.server import ThreadingHTTPServer
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import wave
 
@@ -797,6 +801,472 @@ class ShowcaseSuiteTest(unittest.TestCase):
                 native_allocator_telemetry=True,
                 telemetry_factory=_j3_mismatch_factory,
             )
+
+    def _start_mock_server(self) -> tuple[ThreadingHTTPServer, threading.Thread, str]:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), showcase._MockShowcaseHandler)
+        server.chat_requests = []
+        server.render_requests = []
+        server.telemetry_factory = None
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_port}"
+
+    def _stop_mock_server(self, server: ThreadingHTTPServer, thread: threading.Thread) -> None:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+    def test_video_frame_selection_default_off_omits_field_and_preserves_report(self) -> None:
+        manifest = showcase.load_manifest(MANIFEST_PATH)
+        j3_spec = manifest["journeys"]["journey_3_multiturn_video_qa"]
+        server, thread, base_url = self._start_mock_server()
+        try:
+            j3 = showcase.run_journey_3(
+                base_url,
+                "qwen3-native",
+                j3_spec,
+                video_bytes=showcase.MOCK_MP4_J2,
+                timeout=15.0,
+            )
+            self.assertEqual(len(server.chat_requests), 3)
+            expected_url = (
+                "data:video/mp4;base64,"
+                + base64.b64encode(showcase.MOCK_MP4_J2).decode("ascii")
+            )
+            for req in server.chat_requests:
+                video_part = req["messages"][0]["content"][0]
+                self.assertEqual(video_part["type"], "video_url")
+                self.assertEqual(video_part["video_url"], {"url": expected_url})
+                self.assertNotIn("frame_selection", video_part["video_url"])
+            self.assertNotIn("video_frame_selection", j3)
+        finally:
+            self._stop_mock_server(server, thread)
+
+        with tempfile.TemporaryDirectory(prefix="showcase-j3-default-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("1/1 journeys passed", proc.stdout)
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertNotIn("video_frame_selection", report["journeys"]["journey_3"])
+            self.assertNotIn("Video Frame Selection", md_text)
+            self.assertNotIn("frame_selection=", md_text)
+            self.assertEqual(
+                showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS"),
+                2,
+            )
+
+    def test_video_frame_selection_uniform_opt_in(self) -> None:
+        manifest = showcase.load_manifest(MANIFEST_PATH)
+        j3_spec = manifest["journeys"]["journey_3_multiturn_video_qa"]
+        server, thread, base_url = self._start_mock_server()
+        try:
+            j3 = showcase.run_journey_3(
+                base_url,
+                "qwen3-native",
+                j3_spec,
+                video_bytes=showcase.MOCK_MP4_J2,
+                timeout=15.0,
+                video_frame_selection={"policy": "uniform"},
+            )
+            self.assertEqual(len(server.chat_requests), 3)
+            turn1_video_url = server.chat_requests[0]["messages"][0]["content"][0]["video_url"]
+            self.assertEqual(turn1_video_url["frame_selection"], {"policy": "uniform"})
+            self.assertEqual(j3["video_frame_selection"], {"policy": "uniform"})
+        finally:
+            self._stop_mock_server(server, thread)
+
+        with tempfile.TemporaryDirectory(prefix="showcase-j3-uniform-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--video-frame-policy",
+                    "uniform",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("1/1 journeys passed", proc.stdout)
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                report["journeys"]["journey_3"]["video_frame_selection"],
+                {"policy": "uniform"},
+            )
+            self.assertIn("frame_selection=policy=uniform", md_text)
+            self.assertIn("- **Video Frame Selection**: `policy=uniform`", md_text)
+            self.assertNotIn("motion_threshold", md_text)
+            self.assertNotIn("scene_threshold", md_text)
+            self.assertEqual(
+                showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS"),
+                2,
+            )
+
+    def test_video_frame_selection_temporal_opt_in(self) -> None:
+        manifest = showcase.load_manifest(MANIFEST_PATH)
+        j3_spec = manifest["journeys"]["journey_3_multiturn_video_qa"]
+
+        # Exact thresholds sent on Turn 1; single-threshold omits null keys.
+        server, thread, base_url = self._start_mock_server()
+        try:
+            j3_both = showcase.run_journey_3(
+                base_url,
+                "qwen3-native",
+                j3_spec,
+                video_bytes=showcase.MOCK_MP4_J2,
+                timeout=15.0,
+                video_frame_selection={
+                    "policy": "temporal",
+                    "motion_threshold": 0.25,
+                    "scene_threshold": 0.4,
+                },
+            )
+            self.assertEqual(
+                server.chat_requests[0]["messages"][0]["content"][0]["video_url"]["frame_selection"],
+                {"policy": "temporal", "motion_threshold": 0.25, "scene_threshold": 0.4},
+            )
+            self.assertEqual(
+                j3_both["video_frame_selection"],
+                {"policy": "temporal", "motion_threshold": 0.25, "scene_threshold": 0.4},
+            )
+
+            server.chat_requests.clear()
+            j3_motion_only = showcase.run_journey_3(
+                base_url,
+                "qwen3-native",
+                j3_spec,
+                video_bytes=showcase.MOCK_MP4_J2,
+                timeout=15.0,
+                video_frame_selection={"policy": "temporal", "motion_threshold": 0.0},
+            )
+            sent_sel = server.chat_requests[0]["messages"][0]["content"][0]["video_url"]["frame_selection"]
+            self.assertEqual(sent_sel, {"policy": "temporal", "motion_threshold": 0.0})
+            self.assertNotIn("scene_threshold", sent_sel)
+            self.assertEqual(
+                j3_motion_only["video_frame_selection"],
+                {"policy": "temporal", "motion_threshold": 0.0},
+            )
+        finally:
+            self._stop_mock_server(server, thread)
+
+        # CLI E2E with --mock --journey 3 and both thresholds
+        with tempfile.TemporaryDirectory(prefix="showcase-j3-temporal-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-motion-threshold",
+                    "0.25",
+                    "--video-scene-threshold",
+                    "0.4",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("1/1 journeys passed", proc.stdout)
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                report["journeys"]["journey_3"]["video_frame_selection"],
+                {"policy": "temporal", "motion_threshold": 0.25, "scene_threshold": 0.4},
+            )
+            self.assertIn(
+                "frame_selection=policy=temporal, motion_threshold=0.25, scene_threshold=0.4",
+                md_text,
+            )
+            self.assertIn(
+                "- **Video Frame Selection**: `policy=temporal, motion_threshold=0.25, scene_threshold=0.4`",
+                md_text,
+            )
+            self.assertEqual(
+                showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS"),
+                2,
+            )
+
+        # CLI E2E with --mock --journey all and single threshold (boundary 1.0)
+        with tempfile.TemporaryDirectory(prefix="showcase-all-temporal-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--mock",
+                    "--journey",
+                    "all",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-scene-threshold",
+                    "1.0",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("5/5 journeys passed", proc.stdout)
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                report["journeys"]["journey_3"]["video_frame_selection"],
+                {"policy": "temporal", "scene_threshold": 1.0},
+            )
+
+    def test_video_frame_selection_cli_rejects_invalid_flags_fail_closed(self) -> None:
+        # Unit checks on build_video_frame_selection
+        self.assertIsNone(showcase.build_video_frame_selection(None))
+        self.assertEqual(
+            showcase.build_video_frame_selection("uniform"),
+            {"policy": "uniform"},
+        )
+        self.assertEqual(
+            showcase.build_video_frame_selection("temporal"),
+            {"policy": "temporal"},
+        )
+        self.assertEqual(
+            showcase.build_video_frame_selection(
+                "temporal", motion_threshold=0.0, scene_threshold=1.0
+            ),
+            {"policy": "temporal", "motion_threshold": 0.0, "scene_threshold": 1.0},
+        )
+        for bad_kwargs in (
+            {"policy": None, "motion_threshold": 0.2},
+            {"policy": None, "scene_threshold": 0.3},
+            {"policy": "uniform", "motion_threshold": 0.2},
+            {"policy": "uniform", "scene_threshold": 0.3},
+            {"policy": "temporal", "motion_threshold": -0.01},
+            {"policy": "temporal", "motion_threshold": 1.01},
+            {"policy": "temporal", "scene_threshold": math.nan},
+            {"policy": "temporal", "scene_threshold": math.inf},
+            {"policy": "temporal", "motion_threshold": -math.inf},
+            {"policy": "temporal", "motion_threshold": True},
+            {"policy": "adaptive"},
+        ):
+            with self.assertRaises(ValueError, msg=f"expected ValueError for {bad_kwargs}"):
+                showcase.build_video_frame_selection(**bad_kwargs)
+
+        # CLI fail-closed checks
+        cli_cases = [
+            (["--mock", "--journey", "3", "--video-motion-threshold", "0.2"], "temporal"),
+            (["--mock", "--journey", "3", "--video-scene-threshold", "0.35"], "temporal"),
+            (
+                [
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--video-frame-policy",
+                    "uniform",
+                    "--video-motion-threshold",
+                    "0.2",
+                ],
+                "temporal",
+            ),
+            (
+                [
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--video-frame-policy",
+                    "uniform",
+                    "--video-scene-threshold",
+                    "0.35",
+                ],
+                "temporal",
+            ),
+            (
+                [
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-motion-threshold",
+                    "-0.1",
+                ],
+                "[0.0, 1.0]",
+            ),
+            (
+                [
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-scene-threshold",
+                    "1.5",
+                ],
+                "[0.0, 1.0]",
+            ),
+            (
+                [
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-motion-threshold",
+                    "nan",
+                ],
+                "[0.0, 1.0]",
+            ),
+            (
+                [
+                    "--mock",
+                    "--journey",
+                    "3",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-scene-threshold",
+                    "inf",
+                ],
+                "[0.0, 1.0]",
+            ),
+            (
+                ["--mock", "--journey", "3", "--video-frame-policy", "adaptive"],
+                "invalid choice",
+            ),
+        ]
+        for extra_args, expected_substr in cli_cases:
+            proc = subprocess.run(
+                [sys.executable, "-I", str(SCRIPT_PATH), *extra_args],
+                capture_output=True,
+                text=True,
+                timeout=15.0,
+                check=False,
+            )
+            self.assertNotEqual(
+                proc.returncode,
+                0,
+                f"expected non-zero exit for {extra_args}; stdout={proc.stdout}",
+            )
+            self.assertIn(
+                expected_substr,
+                proc.stderr,
+                f"missing {expected_substr!r} in stderr for {extra_args}: {proc.stderr}",
+            )
+
+    def test_mock_server_rejects_malformed_video_frame_selection_http_400(self) -> None:
+        video_data_url = (
+            "data:video/mp4;base64,"
+            + base64.b64encode(showcase.MOCK_MP4_J2).decode("ascii")
+        )
+
+        def _chat_body(frame_selection_value, include_field: bool = True) -> dict:
+            video_url: dict = {"url": video_data_url}
+            if include_field:
+                video_url["frame_selection"] = frame_selection_value
+            return {
+                "model": "qwen3-native",
+                "stream": False,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "video_url", "video_url": video_url},
+                        {"type": "text", "text": "Describe the clip."},
+                    ],
+                }],
+            }
+
+        server, thread, base_url = self._start_mock_server()
+        try:
+            endpoint = base_url + "/v1/chat/completions"
+
+            # Valid requests return HTTP 200 (default OFF, uniform, temporal, temporal + thresholds)
+            for valid_body in (
+                _chat_body(None, include_field=False),
+                _chat_body({"policy": "uniform"}),
+                _chat_body({"policy": "temporal"}),
+                _chat_body({"policy": "temporal", "motion_threshold": 0.2, "scene_threshold": 0.35}),
+            ):
+                status, _, _ = showcase.http_request(endpoint, valid_body, timeout=10.0)
+                self.assertEqual(status, 200, f"expected 200 for valid body {valid_body}")
+
+            # Malformed frame_selection payloads return HTTP 400
+            bad_selections = [
+                "temporal",
+                123,
+                None,
+                [],
+                {},
+                {"policy": "adaptive"},
+                {"policy": "temporal", "max_frames": 16},
+                {"policy": "uniform", "motion_threshold": 0.2},
+                {"policy": "uniform", "scene_threshold": 0.3},
+                {"policy": "temporal", "motion_threshold": -0.01},
+                {"policy": "temporal", "scene_threshold": 1.01},
+                {"policy": "temporal", "motion_threshold": "0.2"},
+                {"policy": "temporal", "motion_threshold": True},
+                {"policy": "temporal", "scene_threshold": None},
+            ]
+            for bad in bad_selections:
+                status, _, raw = showcase.http_request(endpoint, _chat_body(bad), timeout=10.0)
+                self.assertEqual(
+                    status,
+                    400,
+                    f"expected HTTP 400 for frame_selection={bad!r}, got {status}: {raw!r}",
+                )
+                err = json.loads(raw)
+                self.assertIn("error", err)
+
+            # Non-finite NaN / Infinity in raw JSON also rejected with HTTP 400
+            for raw_num in ("NaN", "Infinity", "-Infinity"):
+                raw_payload = (
+                    '{"model":"qwen3-native","stream":false,"messages":[{"role":"user","content":['
+                    '{"type":"video_url","video_url":{"url":"'
+                    + video_data_url
+                    + '","frame_selection":{"policy":"temporal","motion_threshold":'
+                    + raw_num
+                    + '}}},{"type":"text","text":"Describe the clip."}]}]}'
+                ).encode("utf-8")
+                status, _, raw = showcase.http_request(endpoint, raw_payload, timeout=10.0)
+                self.assertEqual(
+                    status,
+                    400,
+                    f"expected HTTP 400 for raw {raw_num}, got {status}: {raw!r}",
+                )
+        finally:
+            self._stop_mock_server(server, thread)
 
 
 if __name__ == "__main__":

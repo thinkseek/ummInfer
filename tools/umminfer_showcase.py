@@ -63,6 +63,7 @@ PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 MARKER_RE = re.compile(r"\[\[\s*(?:image|video|visual)\s*:", re.IGNORECASE)
 TERMINAL_KINDS = {"complete", "error", "cancelled"}
 ALL_JOURNEYS = (1, 2, 3, 4, 5)
+VIDEO_FRAME_POLICIES = ("uniform", "temporal")
 NATIVE_ALLOCATOR_SCOPE = "request-native-allocator"
 TELEMETRY_STAGE_COVERAGES = ("COVERED", "NOT_COVERED")
 TELEMETRY_ENVELOPE_COVERAGES = ("COVERED", "PARTIAL", "NOT_COVERED")
@@ -75,6 +76,78 @@ def require(condition: object, message: str) -> None:
 
 def is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def build_video_frame_selection(
+    policy: str | None,
+    *,
+    motion_threshold: float | None = None,
+    scene_threshold: float | None = None,
+) -> dict | None:
+    """Validate CLI video frame selection flags (parity with src/client/cli.cpp)."""
+    has_motion = motion_threshold is not None
+    has_scene = scene_threshold is not None
+    if policy is None:
+        if has_motion or has_scene:
+            raise ValueError("video thresholds require --video-frame-policy temporal")
+        return None
+    if not isinstance(policy, str) or policy not in VIDEO_FRAME_POLICIES:
+        raise ValueError("--video-frame-policy must be uniform or temporal")
+    if (has_motion or has_scene) and policy != "temporal":
+        raise ValueError("video thresholds require --video-frame-policy temporal")
+
+    selection: dict = {"policy": policy}
+    for flag_name, key, raw_val in (
+        ("--video-motion-threshold", "motion_threshold", motion_threshold),
+        ("--video-scene-threshold", "scene_threshold", scene_threshold),
+    ):
+        if raw_val is None:
+            continue
+        if isinstance(raw_val, bool) or not isinstance(raw_val, (int, float)):
+            raise ValueError(f"invalid {flag_name}: must be a finite number in [0.0, 1.0]")
+        val = float(raw_val)
+        if not math.isfinite(val) or val < 0.0 or val > 1.0:
+            raise ValueError(
+                f"invalid {flag_name}: must be a finite number in [0.0, 1.0], got {raw_val!r}"
+            )
+        selection[key] = val
+    return selection
+
+
+def validate_video_frame_selection(selection: object) -> dict:
+    """Validate a wire video_url.frame_selection object (parity with server schema)."""
+    if not isinstance(selection, dict):
+        raise ValueError("video_url.frame_selection must be an object")
+    policy = selection.get("policy")
+    if not isinstance(policy, str) or policy not in VIDEO_FRAME_POLICIES:
+        raise ValueError("video_url.frame_selection.policy must be uniform or temporal")
+    for key in selection:
+        if key not in ("policy", "motion_threshold", "scene_threshold"):
+            raise ValueError(f"unsupported video_url.frame_selection field: {key}")
+    if policy == "uniform" and len(selection) != 1:
+        raise ValueError("uniform video frame_selection does not accept temporal thresholds")
+    normalized: dict = {"policy": policy}
+    for key in ("motion_threshold", "scene_threshold"):
+        if key not in selection:
+            continue
+        raw_val = selection[key]
+        if isinstance(raw_val, bool) or not isinstance(raw_val, (int, float)):
+            raise ValueError(f"video_url.frame_selection.{key} must be a number")
+        val = float(raw_val)
+        if not math.isfinite(val) or val < 0.0 or val > 1.0:
+            raise ValueError(f"video_url.frame_selection.{key} must be in [0,1]")
+        normalized[key] = val
+    return normalized
+
+
+def format_video_frame_selection(selection: dict) -> str:
+    """Format a validated video_frame_selection dict for Markdown summaries."""
+    parts = [f"policy={selection['policy']}"]
+    if "motion_threshold" in selection:
+        parts.append(f"motion_threshold={selection['motion_threshold']:g}")
+    if "scene_threshold" in selection:
+        parts.append(f"scene_threshold={selection['scene_threshold']:g}")
+    return ", ".join(parts)
 
 
 def format_telemetry_bytes(num_bytes: int) -> str:
@@ -1238,6 +1311,7 @@ def run_journey_3(
     timeout: float,
     extra_headers: dict[str, str] | None = None,
     native_allocator_telemetry: bool = False,
+    video_frame_selection: dict | None = None,
 ) -> dict:
     """Journey 3: 3-Turn OpenAI Multi-Turn Native Video Understanding (Prefix KV-Cache)."""
     require(
@@ -1246,6 +1320,12 @@ def run_journey_3(
     )
     turns_prompts = spec["turns"]
     require(len(turns_prompts) == 3, "Journey 3 requires exactly 3 turns")
+
+    validated_selection = (
+        validate_video_frame_selection(video_frame_selection)
+        if video_frame_selection is not None
+        else None
+    )
 
     video_sha = sha256_bytes(video_bytes)
     video_data_url = (
@@ -1257,10 +1337,13 @@ def run_journey_3(
     turn_telemetries: list[dict] = []
     for idx, question in enumerate(turns_prompts, start=1):
         if idx == 1:
+            video_url_obj: dict = {"url": video_data_url}
+            if validated_selection is not None:
+                video_url_obj["frame_selection"] = copy.deepcopy(validated_selection)
             messages.append({
                 "role": "user",
                 "content": [
-                    {"type": "video_url", "video_url": {"url": video_data_url}},
+                    {"type": "video_url", "video_url": video_url_obj},
                     {"type": "text", "text": question},
                 ],
             })
@@ -1335,6 +1418,8 @@ def run_journey_3(
         "turn3_speedup_vs_turn1": t3_speedup,
         "turns": turn_results,
     }
+    if validated_selection is not None:
+        result["video_frame_selection"] = copy.deepcopy(validated_selection)
     if native_allocator_telemetry:
         result["native_allocator_telemetry"] = aggregate_native_allocator_telemetry(
             turn_telemetries
@@ -1636,10 +1721,15 @@ def render_markdown_report(report: dict) -> str:
         )
     if "journey_3" in journeys:
         j3 = journeys["journey_3"]
+        fs_suffix = (
+            f", frame_selection={format_video_frame_selection(j3['video_frame_selection'])}"
+            if "video_frame_selection" in j3
+            else ""
+        )
         lines.append(
             f"| 3. 3-Turn Multi-Turn Native Video QA | PASS | "
             f"t1={j3['t1_s']:.3f}s, t2={j3['t2_s']:.3f}s ({j3['turn2_speedup_vs_turn1']}x), "
-            f"t3={j3['t3_s']:.3f}s ({j3['turn3_speedup_vs_turn1']}x) |"
+            f"t3={j3['t3_s']:.3f}s ({j3['turn3_speedup_vs_turn1']}x){fs_suffix} |"
         )
     if "journey_4" in journeys:
         j4 = journeys["journey_4"]
@@ -1716,6 +1806,10 @@ def render_markdown_report(report: dict) -> str:
             f"- **Turn Latencies**: `t1={j3['t1_s']:.6f}s`, `t2={j3['t2_s']:.6f}s`, `t3={j3['t3_s']:.6f}s`",
             f"- **Prefix KV-Cache Speedups**: Turn 2 = `{j3['turn2_speedup_vs_turn1']}x`, Turn 3 = `{j3['turn3_speedup_vs_turn1']}x`",
         ]
+        if "video_frame_selection" in j3:
+            j3_lines.append(
+                f"- **Video Frame Selection**: `{format_video_frame_selection(j3['video_frame_selection'])}`"
+            )
         if "native_allocator_telemetry" in j3:
             j3_lines.append(
                 f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j3['native_allocator_telemetry'])}`"
@@ -2382,11 +2476,25 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
                         if idx != 0 or msg.get("role") != "user":
                             self._error("video_url must remain anchored on Turn 0 user message")
                             return
-                        url = part.get("video_url", {}).get("url", "")
-                        if not url.startswith("data:video/") or ";base64," not in url:
+                        video_url = part.get("video_url")
+                        if not isinstance(video_url, dict):
+                            self._error("video_url part requires a video_url object")
+                            return
+                        if "frame_selection" in video_url:
+                            try:
+                                validate_video_frame_selection(video_url["frame_selection"])
+                            except ValueError as exc:
+                                self._error(str(exc), 400)
+                                return
+                        url = video_url.get("url", "")
+                        if not isinstance(url, str) or not url.startswith("data:video/") or ";base64," not in url:
                             self._error("video_url must be data:video/...;base64,...")
                             return
-                        decoded = base64.b64decode(url.split(";base64,", 1)[1], validate=True)
+                        try:
+                            decoded = base64.b64decode(url.split(";base64,", 1)[1], validate=True)
+                        except (binascii.Error, ValueError):
+                            self._error("invalid video_url base64")
+                            return
                         if len(decoded) < 12 or decoded[4:8] != b"ftyp":
                             self._error("video_url payload lacks ftyp header")
                             return
@@ -2474,6 +2582,9 @@ def execute_showcase(
     extra_headers: dict[str, str] | None = None,
     sanitized_server_url: str | None = None,
     native_allocator_telemetry: bool = False,
+    video_frame_selection: dict | None = None,
+    fallback_image_bytes: bytes | None = None,
+    fallback_video_bytes: bytes | None = None,
 ) -> tuple[dict, dict[str, Path]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     health = check_health(base_url, extra_headers=extra_headers)
@@ -2504,6 +2615,9 @@ def execute_showcase(
         elif image_path is not None:
             src_img = image_path.read_bytes()
             src_prompt = None
+        elif fallback_image_bytes is not None:
+            src_img = fallback_image_bytes
+            src_prompt = None
         else:
             raise ValueError(
                 "Journey 2 requires a PNG from Journey 1 or an explicit --image-path"
@@ -2528,6 +2642,8 @@ def execute_showcase(
             vid_bytes = j2_handoff["video_bytes"]
         elif j1_handoff.get("first_video"):
             vid_bytes = j1_handoff["first_video"]["bytes"]
+        elif fallback_video_bytes is not None:
+            vid_bytes = fallback_video_bytes
         else:
             raise ValueError(
                 "Journey 3 requires an MP4 from Journey 2/1 or an explicit --video-path"
@@ -2540,6 +2656,7 @@ def execute_showcase(
             timeout=timeout,
             extra_headers=extra_headers,
             native_allocator_telemetry=native_allocator_telemetry,
+            video_frame_selection=video_frame_selection,
         )
         results["journey_3"] = j3_metrics
 
@@ -2646,7 +2763,15 @@ def run_self_check(
     *,
     native_allocator_telemetry: bool = False,
     telemetry_factory=None,
+    video_frame_selection: dict | None = None,
+    image_path: Path | None = None,
+    video_path: Path | None = None,
 ) -> dict:
+    validated_selection = (
+        validate_video_frame_selection(video_frame_selection)
+        if video_frame_selection is not None
+        else None
+    )
     manifest = load_manifest(manifest_path)
     selected_journeys = list(ALL_JOURNEYS) if journeys is None else list(journeys)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _MockShowcaseHandler)
@@ -2677,8 +2802,13 @@ def run_self_check(
             timeout=30.0,
             allow_ffprobe=False,
             strict_zero_text_slots=True,
+            image_path=image_path,
+            video_path=video_path,
             sanitized_server_url="http://127.0.0.1:0 (offline-self-check)",
             native_allocator_telemetry=native_allocator_telemetry,
+            video_frame_selection=validated_selection,
+            fallback_image_bytes=MOCK_PNG_J1,
+            fallback_video_bytes=MOCK_MP4_J2,
         )
         verified_count = verify_sha256sums_file(work_dir, paths["sha256sums"])
         require(report["evidence_class"] == "OFFLINE_SELF_CHECK", "wrong self-check evidence_class")
@@ -2734,6 +2864,23 @@ def run_self_check(
                     "telemetry" not in req,
                     f"/v1/chat/completions must omit telemetry by default: {req}",
                 )
+            if not req.get("stream"):
+                msg0_content = req["messages"][0].get("content")
+                if isinstance(msg0_content, list):
+                    for part in msg0_content:
+                        if isinstance(part, dict) and part.get("type") == "video_url":
+                            vurl = part["video_url"]
+                            if validated_selection is not None:
+                                require(
+                                    vurl.get("frame_selection") == validated_selection,
+                                    f"Journey 3 video_url.frame_selection mismatch: "
+                                    f"{vurl.get('frame_selection')!r} != {validated_selection!r}",
+                                )
+                            else:
+                                require(
+                                    "frame_selection" not in vurl,
+                                    f"Journey 3 default video_url must omit frame_selection: {vurl}",
+                                )
 
         print(
             "SELF-CHECK PASS [OFFLINE_SELF_CHECK | REAL_MODEL: NOT_RUN]: "
@@ -2756,6 +2903,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--self-check",
+        "--mock",
+        dest="self_check",
         action="store_true",
         help="Run deterministic offline loopback server verification across selected journeys (default: all 5)",
     )
@@ -2828,22 +2977,61 @@ def main(argv: list[str] | None = None) -> int:
             "requests and strictly validate/report request-native allocator telemetry"
         ),
     )
+    parser.add_argument(
+        "--video-frame-policy",
+        choices=VIDEO_FRAME_POLICIES,
+        default=None,
+        help=(
+            "Opt-in Journey 3 video_url.frame_selection.policy (uniform or temporal); "
+            "omitted by default to keep video_url byte-compatible"
+        ),
+    )
+    parser.add_argument(
+        "--video-motion-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Optional finite float in [0.0, 1.0] for Journey 3 temporal motion threshold "
+            "(requires --video-frame-policy temporal)"
+        ),
+    )
+    parser.add_argument(
+        "--video-scene-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Optional finite float in [0.0, 1.0] for Journey 3 temporal scene threshold "
+            "(requires --video-frame-policy temporal)"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    try:
+        video_frame_selection = build_video_frame_selection(
+            args.video_frame_policy,
+            motion_threshold=args.video_motion_threshold,
+            scene_threshold=args.video_scene_threshold,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.self_check:
         if args.url:
-            parser.error("--self-check and --url are mutually exclusive")
+            parser.error("--self-check/--mock and --url are mutually exclusive")
         journeys = parse_journeys(args.journeys)
         run_self_check(
             args.manifest,
             out_dir=args.out_dir,
             journeys=journeys,
             native_allocator_telemetry=args.native_allocator_telemetry,
+            video_frame_selection=video_frame_selection,
+            image_path=args.image_path,
+            video_path=args.video_path,
         )
         return 0
 
     if not args.url:
-        parser.error("Specify either --self-check or --url <server-url>")
+        parser.error("Specify either --self-check/--mock or --url <server-url>")
     if args.out_dir is None:
         parser.error("--out-dir is required when running against a live --url")
 
@@ -2868,6 +3056,7 @@ def main(argv: list[str] | None = None) -> int:
         video_path=args.video_path,
         extra_headers=extra_headers,
         native_allocator_telemetry=args.native_allocator_telemetry,
+        video_frame_selection=video_frame_selection,
     )
     verified = verify_sha256sums_file(args.out_dir, paths["sha256sums"])
     print(
