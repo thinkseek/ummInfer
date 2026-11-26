@@ -332,10 +332,84 @@ final class RealtimeWireTests: XCTestCase {
         let turn = try XCTUnwrap(session["turn_detection"] as? [String: Any])
         XCTAssertEqual(turn["type"] as? String, "server_vad")
         XCTAssertEqual(turn["silence_ms"] as? Int, 400)
+        XCTAssertNil(turn["echo_suppression"], "Default echoSuppression=true must omit echo_suppression on wire")
 
         let audio = try XCTUnwrap(session["audio_output"] as? [String: Any])
         XCTAssertEqual(audio["voice"] as? String, "vivian")
         XCTAssertEqual(audio["playback_ack"] as? Bool, true)
+    }
+
+    func testEncodesSessionUpdateWithEchoSuppressionDisabled() throws {
+        let raw = try RealtimeWire.encodeSessionUpdate(RealtimeSessionConfig(
+            voice: "vivian",
+            silenceMs: 400,
+            playbackAck: true,
+            maxNewTokens: 256,
+            echoSuppression: false
+        ))
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any]
+        )
+        let session = try XCTUnwrap(root["session"] as? [String: Any])
+        let turn = try XCTUnwrap(session["turn_detection"] as? [String: Any])
+        XCTAssertEqual(turn["type"] as? String, "server_vad")
+        XCTAssertEqual(turn["silence_ms"] as? Int, 400)
+        XCTAssertEqual(turn["echo_suppression"] as? Bool, false)
+    }
+
+    func testEncodesNarrowEchoSuppressionToggleUpdate() throws {
+        for enabled in [false, true] {
+            let raw = try RealtimeWire.encodeEchoSuppressionUpdate(enabled: enabled, silenceMs: 650)
+            let root = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any]
+            )
+            XCTAssertEqual(root["type"] as? String, "session.update")
+            let session = try XCTUnwrap(root["session"] as? [String: Any])
+            XCTAssertEqual(Set(session.keys), ["turn_detection"])
+            XCTAssertNil(session["input_audio_format"])
+            XCTAssertNil(session["audio_output"])
+            XCTAssertNil(session["max_new_tokens"])
+
+            let turn = try XCTUnwrap(session["turn_detection"] as? [String: Any])
+            XCTAssertEqual(Set(turn.keys), ["type", "silence_ms", "echo_suppression"])
+            XCTAssertEqual(turn["type"] as? String, "server_vad")
+            XCTAssertEqual(turn["silence_ms"] as? Int, 650)
+            XCTAssertEqual(turn["echo_suppression"] as? Bool, enabled)
+        }
+    }
+
+    func testDecodesEchoSuppressionFromSessionUpdated() throws {
+        let omitted = try RealtimeWire.decodeServerEvent(#"""
+        {"type":"transcription_session.updated","session":{"input_audio_format":"pcm16","turn_detection":{"type":"server_vad","silence_ms":400},"audio_output":{"voice":"vivian","playback_ack":true}}}
+        """#)
+        if case .sessionUpdated(let snap) = omitted {
+            XCTAssertTrue(snap.echoSuppression)
+        } else {
+            XCTFail("Expected sessionUpdated")
+        }
+
+        let explicitFalse = try RealtimeWire.decodeServerEvent(#"""
+        {"type":"transcription_session.updated","session":{"input_audio_format":"pcm16","turn_detection":{"type":"server_vad","silence_ms":500,"echo_suppression":false},"audio_output":{"voice":"vivian","playback_ack":true}}}
+        """#)
+        if case .sessionUpdated(let snap) = explicitFalse {
+            XCTAssertFalse(snap.echoSuppression)
+            XCTAssertEqual(snap.serverVADSilenceMs, 500)
+        } else {
+            XCTFail("Expected sessionUpdated")
+        }
+
+        let explicitTrue = try RealtimeWire.decodeServerEvent(#"""
+        {"type":"transcription_session.updated","session":{"input_audio_format":"pcm16","turn_detection":{"type":"server_vad","silence_ms":400,"echo_suppression":true},"audio_output":{"voice":"vivian","playback_ack":true}}}
+        """#)
+        if case .sessionUpdated(let snap) = explicitTrue {
+            XCTAssertTrue(snap.echoSuppression)
+        } else {
+            XCTFail("Expected sessionUpdated")
+        }
+
+        XCTAssertThrowsError(try RealtimeWire.decodeServerEvent(#"""
+        {"type":"transcription_session.updated","session":{"input_audio_format":"pcm16","turn_detection":{"type":"server_vad","silence_ms":400,"echo_suppression":"off"}}}
+        """#))
     }
 
     func testEncodesAudioAppendAndRejectsOddByteCount() throws {
@@ -849,6 +923,8 @@ final class RealtimeChatModelIntegrationTests: XCTestCase {
         XCTAssertEqual(model.turns.last?.role, .assistant)
         XCTAssertEqual(model.turns.last?.text, "Sounds like ")
         XCTAssertEqual(model.turns.last?.state, .stopped)
+        XCTAssertEqual(model.liveVoiceBargeInCount, 1)
+        XCTAssertEqual(model.liveVoiceBargeInStatusText, "Barge-ins: 1")
 
         // Follow-up turn req-2 works cleanly after barge-in.
         transport.pushServerJSON(["type": "transcription.completed", "segment_id": 1, "text": "Stop and summarize."])
@@ -860,6 +936,116 @@ final class RealtimeChatModelIntegrationTests: XCTestCase {
         XCTAssertEqual(model.turns.count, 4)
 
         model.stopLiveVoice()
+        XCTAssertEqual(model.liveVoiceBargeInCount, 0)
+        XCTAssertNil(model.liveVoiceConfirmedEchoSuppression)
+    }
+
+    func testEchoSuppressionOptOutLiveMidResponseToggleAndBargeInCountReset() async throws {
+        let transport = MockRealtimeTransport()
+        let capturer = MockAudioCapturer()
+        let player = ControllableAudioStreamPlayer()
+        let realtime = RealtimeClient(
+            transportFactory: { transport },
+            audioCapturer: capturer
+        )
+        let model = ChatModel(audioStream: player, realtime: realtime)
+        model.endpoint = "http://127.0.0.1:43301/v1"
+        model.model = "qwen3-asr"
+        model.liveVoiceSilenceMs = 600
+
+        // Default is ON; toggling OFF before connect updates initial session.update payload.
+        XCTAssertTrue(model.liveVoiceEchoSuppression)
+        XCTAssertNil(model.liveVoiceConfirmedEchoSuppression)
+        XCTAssertNil(model.liveVoiceEchoSuppressionStatusText)
+        model.setLiveVoiceEchoSuppression(false)
+        XCTAssertFalse(model.liveVoiceEchoSuppression)
+
+        model.startLiveVoice()
+        XCTAssertNil(model.liveVoiceConfirmedEchoSuppression)
+        XCTAssertEqual(model.liveVoiceBargeInCount, 0)
+
+        await waitUntil { !transport.sentMessages.isEmpty }
+        let initial = try XCTUnwrap(transport.sentJSONObjects().first)
+        XCTAssertEqual(initial["type"] as? String, "session.update")
+        let initialSession = try XCTUnwrap(initial["session"] as? [String: Any])
+        let initialTurn = try XCTUnwrap(initialSession["turn_detection"] as? [String: Any])
+        XCTAssertEqual(initialTurn["type"] as? String, "server_vad")
+        XCTAssertEqual(initialTurn["silence_ms"] as? Int, 600)
+        XCTAssertEqual(initialTurn["echo_suppression"] as? Bool, false)
+
+        // Server confirms echo_suppression: false with silence_ms: 600.
+        transport.pushServerJSON([
+            "type": "transcription_session.updated",
+            "session": [
+                "input_audio_format": "pcm16",
+                "turn_detection": [
+                    "type": "server_vad",
+                    "silence_ms": 600,
+                    "echo_suppression": false,
+                ],
+                "audio_output": ["voice": "vivian", "playback_ack": true],
+            ],
+        ])
+        await waitUntil { model.liveVoiceConfirmedEchoSuppression == false }
+        XCTAssertEqual(model.liveVoiceEchoSuppressionStatusText, "Echo suppression: Off (A/B)")
+
+        // Enter active assistant response and toggle echo suppression ON mid-response.
+        transport.pushServerJSON([
+            "type": "response.text.delta", "response_id": "req-mid", "segment_id": 0,
+            "text": "Speaking live now.", "text_cursor": 18,
+        ])
+        transport.pushServerJSON([
+            "type": "audio.delta", "response_id": "req-mid", "segment_id": 0,
+            "format": "pcm16", "sample_rate": 24_000, "channels": 1,
+            "audio": pcm.base64EncodedString(), "text_cursor": 0, "text_end_cursor": 18,
+        ])
+        await waitUntil { model.liveVoiceState == .responding }
+
+        let beforeToggleCount = transport.sentJSONObjects().count
+        model.setLiveVoiceEchoSuppression(true)
+        await waitUntil { transport.sentJSONObjects().count > beforeToggleCount }
+
+        let narrowToggle = try XCTUnwrap(transport.sentJSONObjects().last)
+        XCTAssertEqual(narrowToggle["type"] as? String, "session.update")
+        let narrowSession = try XCTUnwrap(narrowToggle["session"] as? [String: Any])
+        XCTAssertEqual(Set(narrowSession.keys), ["turn_detection"])
+        let narrowTurn = try XCTUnwrap(narrowSession["turn_detection"] as? [String: Any])
+        XCTAssertEqual(narrowTurn["type"] as? String, "server_vad")
+        XCTAssertEqual(narrowTurn["silence_ms"] as? Int, 600)
+        XCTAssertEqual(narrowTurn["echo_suppression"] as? Bool, true)
+
+        // Server confirms ON by omitting echo_suppression (exact server wire shape).
+        transport.pushServerJSON([
+            "type": "transcription_session.updated",
+            "session": [
+                "input_audio_format": "pcm16",
+                "turn_detection": ["type": "server_vad", "silence_ms": 600],
+                "audio_output": ["voice": "vivian", "playback_ack": true],
+            ],
+        ])
+        await waitUntil { model.liveVoiceConfirmedEchoSuppression == true }
+        XCTAssertEqual(model.liveVoiceEchoSuppressionStatusText, "Echo suppression: On")
+        XCTAssertEqual(model.liveVoiceState, .responding,
+                       "Mid-response session.updated must preserve active responding state")
+
+        // Observe two barge-in cancellations during the same voice session.
+        transport.pushServerJSON([
+            "type": "response.cancelled", "response_id": "req-mid",
+            "segment_id": 0, "reason": "barge_in",
+        ])
+        transport.pushServerJSON([
+            "type": "response.cancelled", "response_id": "req-mid-2",
+            "segment_id": 1, "reason": "barge_in",
+        ])
+        await waitUntil { model.liveVoiceBargeInCount == 2 }
+        XCTAssertEqual(model.liveVoiceBargeInStatusText, "Barge-ins: 2")
+
+        // Server disconnect resets barge-in count and confirmed echo state.
+        transport.finishServerStream()
+        await waitUntil { !model.isLiveVoiceActive }
+        XCTAssertEqual(model.liveVoiceBargeInCount, 0)
+        XCTAssertNil(model.liveVoiceConfirmedEchoSuppression)
+        XCTAssertNil(model.liveVoiceEchoSuppressionStatusText)
     }
 
     func testUnsafeEndpointRejectsStartLiveVoiceWithoutActivatingSession() {

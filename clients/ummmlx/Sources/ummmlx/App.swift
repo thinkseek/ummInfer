@@ -57,6 +57,12 @@ struct RootView: View {
             set: { automatedAppearance = $0 }
         )
     }
+    private var liveVoiceEchoSuppressionBinding: Binding<Bool> {
+        Binding(
+            get: { model.liveVoiceEchoSuppression },
+            set: { model.setLiveVoiceEchoSuppression($0) }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -128,6 +134,13 @@ struct RootView: View {
             .disabled(model.isRunning || model.isListening)
             .help("Opt-in full-duplex WebSocket voice session with server VAD, playback ack, and barge-in")
             .accessibilityIdentifier("live-voice")
+            Toggle(isOn: liveVoiceEchoSuppressionBinding) {
+                Text("Echo suppression").font(.system(size: theme.captionSize))
+            }
+            .toggleStyle(.checkbox)
+            .disabled(model.isRunning || model.isListening)
+            .help("Server-side echo suppression for Full-Duplex Live Voice (works before connecting and live mid-response)")
+            .accessibilityIdentifier("live-voice-echo-suppression")
             if model.isStreamingAudioPlaying {
                 HStack(spacing: 5) {
                     Image(systemName: "waveform")
@@ -752,23 +765,51 @@ struct RootView: View {
     private var composer: some View {
         VStack(spacing: 8) {
             if model.isLiveVoiceActive {
-                HStack(spacing: 8) {
-                    Image(systemName: "waveform.and.mic")
-                        .foregroundStyle(theme.accent)
-                        .accessibilityHidden(true)
-                    Text(model.liveVoicePartialTranscript.isEmpty
-                         ? "Live Voice active — speak anytime to interrupt."
-                         : model.liveVoicePartialTranscript)
-                        .font(.system(size: theme.bodySize))
-                        .foregroundStyle(theme.secondary)
-                        .lineLimit(2)
-                        .accessibilityIdentifier("live-voice-transcript")
-                    Spacer()
-                    Button("End") { model.stopLiveVoice() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .tint(theme.danger)
-                        .accessibilityIdentifier("live-voice-end")
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform.and.mic")
+                            .foregroundStyle(theme.accent)
+                            .accessibilityHidden(true)
+                        Text(model.liveVoicePartialTranscript.isEmpty
+                             ? "Live Voice active — speak anytime to interrupt."
+                             : model.liveVoicePartialTranscript)
+                            .font(.system(size: theme.bodySize))
+                            .foregroundStyle(theme.secondary)
+                            .lineLimit(2)
+                            .accessibilityIdentifier("live-voice-transcript")
+                        Spacer()
+                        Button("End") { model.stopLiveVoice() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .tint(theme.danger)
+                            .accessibilityIdentifier("live-voice-end")
+                    }
+                    HStack(spacing: 8) {
+                        if let echoText = model.liveVoiceEchoSuppressionStatusText {
+                            let echoOn = model.liveVoiceConfirmedEchoSuppression == true
+                            Text(echoText)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(echoOn ? theme.accent : theme.danger)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background((echoOn ? theme.accent : theme.danger).opacity(0.12))
+                                .clipShape(Capsule())
+                                .overlay(Capsule().stroke((echoOn ? theme.accent : theme.danger).opacity(0.4)))
+                                .accessibilityIdentifier("live-voice-echo-status")
+                        }
+                        Text(model.liveVoiceBargeInStatusText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(theme.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(theme.background)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(theme.line))
+                            .accessibilityIdentifier("live-voice-barge-in-count")
+                        Spacer()
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("live-voice-status-strip")
                 }
             }
             if model.isListening || !model.partialTranscript.isEmpty {

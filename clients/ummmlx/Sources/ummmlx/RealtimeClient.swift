@@ -20,6 +20,7 @@ struct RealtimeSessionConfig: Equatable, Sendable {
     var silenceMs: Int = 400
     var playbackAck: Bool = true
     var maxNewTokens: Int? = nil
+    var echoSuppression: Bool = true
 }
 
 struct RealtimeSessionSnapshot: Equatable, Sendable {
@@ -28,6 +29,23 @@ struct RealtimeSessionSnapshot: Equatable, Sendable {
     let voice: String?
     let playbackAck: Bool
     let maxNewTokens: Int?
+    let echoSuppression: Bool
+
+    init(
+        inputAudioFormat: String,
+        serverVADSilenceMs: Int?,
+        voice: String?,
+        playbackAck: Bool,
+        maxNewTokens: Int?,
+        echoSuppression: Bool = true
+    ) {
+        self.inputAudioFormat = inputAudioFormat
+        self.serverVADSilenceMs = serverVADSilenceMs
+        self.voice = voice
+        self.playbackAck = playbackAck
+        self.maxNewTokens = maxNewTokens
+        self.echoSuppression = echoSuppression
+    }
 }
 
 struct RealtimeAudioDelta: Equatable, Sendable {
@@ -112,12 +130,18 @@ enum RealtimeWire {
         if config.playbackAck {
             audioOutput["playback_ack"] = true
         }
+        var turnDetection: [String: Any] = [
+            "type": "server_vad",
+            "silence_ms": clampedSilence,
+        ]
+        // Keep the default session.update wire shape unchanged when echo
+        // suppression is enabled; only emit explicit false on opt-out.
+        if !config.echoSuppression {
+            turnDetection["echo_suppression"] = false
+        }
         var session: [String: Any] = [
             "input_audio_format": "pcm16",
-            "turn_detection": [
-                "type": "server_vad",
-                "silence_ms": clampedSilence,
-            ],
+            "turn_detection": turnDetection,
             "audio_output": audioOutput,
         ]
         if let maxTokens = config.maxNewTokens, (1...4096).contains(maxTokens) {
@@ -126,6 +150,24 @@ enum RealtimeWire {
         return try serialize([
             "type": "session.update",
             "session": session,
+        ])
+    }
+
+    /// Encodes the narrow active `session.update` permitted mid-session / mid-response
+    /// by `src/serve/realtime_api.cpp`: only `turn_detection` with `server_vad`,
+    /// unchanged `silence_ms`, and explicit boolean `echo_suppression`.
+    static func encodeEchoSuppressionUpdate(enabled: Bool, silenceMs: Int = 400) throws -> String {
+        let clampedSilence = min(max(silenceMs, 100), 5000)
+        let turnDetection: [String: Any] = [
+            "type": "server_vad",
+            "silence_ms": clampedSilence,
+            "echo_suppression": enabled,
+        ]
+        return try serialize([
+            "type": "session.update",
+            "session": [
+                "turn_detection": turnDetection,
+            ],
         ])
     }
 
@@ -172,8 +214,14 @@ enum RealtimeWire {
             }
             let inputFormat = try optionalString(session["input_audio_format"], "session.input_audio_format") ?? "pcm16"
             var silenceMs: Int?
+            var echoSuppression = true
             if let turn = session["turn_detection"] as? [String: Any] {
                 silenceMs = try optionalInt(turn["silence_ms"], "session.turn_detection.silence_ms")
+                if let parsedEcho = try optionalBool(
+                    turn["echo_suppression"], "session.turn_detection.echo_suppression"
+                ) {
+                    echoSuppression = parsedEcho
+                }
             }
             var voice: String?
             var playbackAck = false
@@ -187,7 +235,8 @@ enum RealtimeWire {
                 serverVADSilenceMs: silenceMs,
                 voice: voice,
                 playbackAck: playbackAck,
-                maxNewTokens: maxTokens
+                maxNewTokens: maxTokens,
+                echoSuppression: echoSuppression
             ))
 
         case "input_audio_buffer.speech_started":
@@ -396,6 +445,8 @@ enum RealtimeAction: Equatable, Sendable {
 struct RealtimeStateMachine: Equatable, Sendable {
     private(set) var sessionReady = false
     private(set) var playbackAckEnabled = false
+    private(set) var negotiatedSilenceMs = 400
+    private(set) var echoSuppressionEnabled = true
     private(set) var activeResponseID: String?
     private(set) var audioStreamStarted = false
     private(set) var issuedCursors: Set<Int> = []
@@ -416,6 +467,10 @@ struct RealtimeStateMachine: Equatable, Sendable {
         case .sessionUpdated(let snapshot):
             sessionReady = true
             playbackAckEnabled = snapshot.playbackAck
+            if let silence = snapshot.serverVADSilenceMs, (100...5000).contains(silence) {
+                negotiatedSilenceMs = silence
+            }
+            echoSuppressionEnabled = snapshot.echoSuppression
             return [.forward(event)]
 
         case .speechStarted(_, let interruptedResponseID):
@@ -899,6 +954,7 @@ final class RealtimeClient {
     private(set) var stateMachine = RealtimeStateMachine()
     private(set) var droppedStaleEventCount = 0
     private(set) var isActive = false
+    private(set) var negotiatedSilenceMs = 400
 
     private var onEventHandler: ((RealtimeServerEvent) -> Void)?
     private var onErrorHandler: ((Error) -> Void)?
@@ -978,6 +1034,7 @@ final class RealtimeClient {
         self.audioStream = audioStream
         self.stateMachine = RealtimeStateMachine()
         self.droppedStaleEventCount = 0
+        self.negotiatedSilenceMs = min(max(config.silenceMs, 100), 5000)
         self.captureStarted = false
         self.isActive = true
         self.onEventHandler = onEvent
@@ -1023,6 +1080,19 @@ final class RealtimeClient {
         try await transport.send(text: frame)
     }
 
+    /// Toggles server-side `turn_detection.echo_suppression` on an active session
+    /// (including mid-turn / mid-response) using the narrow `session.update` shape.
+    func setEchoSuppression(_ enabled: Bool) async throws {
+        guard isActive, let transport else {
+            throw RealtimeClientError.notConnected
+        }
+        let frame = try RealtimeWire.encodeEchoSuppressionUpdate(
+            enabled: enabled,
+            silenceMs: negotiatedSilenceMs
+        )
+        try await transport.send(text: frame)
+    }
+
     func stop() {
         sessionToken += 1
         let oldTransport = transport
@@ -1037,6 +1107,7 @@ final class RealtimeClient {
         audioStream?.stop()
         audioStream = nil
         captureStarted = false
+        negotiatedSilenceMs = 400
         isActive = false
         onEventHandler = nil
         onErrorHandler = nil
@@ -1049,6 +1120,10 @@ final class RealtimeClient {
     private func handleServerEvent(_ event: RealtimeServerEvent, token: Int) {
         guard sessionToken == token else { return }
         let actions = stateMachine.receive(event)
+        if case .sessionUpdated(let snapshot) = event,
+           let silence = snapshot.serverVADSilenceMs, (100...5000).contains(silence) {
+            negotiatedSilenceMs = silence
+        }
         execute(actions, token: token)
         if case .sessionUpdated = event, !captureStarted {
             startMicrophoneStreaming(token: token)

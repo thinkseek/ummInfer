@@ -54,7 +54,10 @@ def check_markup(html):
                 'id="prompt"', 'id="send"', 'id="stop"',
                 'id="voiceToggle"', 'id="voiceWave"', 'id="voiceStatus"',
                 'id="voiceMute"', 'id="voiceStop"', 'id="realtimeToggle"',
-                'id="realtimeStatus"', 'id="narrative"',
+                'id="realtimeEchoSuppression"', 'id="realtimeStatus"',
+                'id="realtimeStrip"', 'id="realtimeStripPhase"',
+                'id="realtimeEchoState"', 'id="realtimeBargeInCount"',
+                'id="narrative"',
                 'id="visualMode"', 'id="maxSlots"', 'id="allowTextOnly"',
                 'id="narrativeContinuity"', 'id="styleAnchor"',
                 'id="fastVideo"', 'id="videoFramePolicy"',
@@ -67,6 +70,8 @@ def check_markup(html):
             "narrativeContinuity must expose prompt_anchor and i2v_chain options")
     require('<input type="checkbox" id="fastVideo">' in html,
             "fastVideo checkbox must default to unchecked")
+    require('<input type="checkbox" id="realtimeEchoSuppression" checked>' in html,
+            "realtimeEchoSuppression checkbox must default to checked (ON)")
     require('<option value="uniform" selected>Uniform</option>' in html,
             "video frame selection must default to Uniform")
     for control in ('videoMotionThreshold', 'videoSceneThreshold'):
@@ -607,6 +612,22 @@ def check_realtime(html, script):
     # Session negotiation and full-duplex microphone input.
     require("type: 'session.update'" in script,
             "realtime must negotiate session.update")
+    require("buildRealtimeInitialSessionUpdate(" in script and
+            "buildRealtimeEchoSuppressionUpdate(" in script and
+            "parseRealtimeSessionUpdated(" in script and
+            "sendRealtimeEchoSuppressionToggle(" in script,
+            "realtime must wire echo-suppression session.update helpers")
+    require("ui.realtimeEchoSuppression.addEventListener('change'" in script,
+            "realtime echo suppression toggle must listen for live changes")
+    require("ui.realtimeEchoSuppression" not in
+            script.split("function setBusy(busy)", 1)[1].split("}", 1)[0],
+            "realtime echo suppression toggle must stay usable without setBusy disabling it")
+    require("recordRealtimeBargeIn(realtime);" in script,
+            "response.cancelled must increment the observed barge-in counter")
+    require("resetRealtimeTelemetry(realtime);" in script,
+            "disconnect/reconnect must reset realtime echo and barge-in telemetry")
+    require("Echo suppression: On" in script and "Echo suppression: Off (A/B)" in script,
+            "live voice status strip must format confirmed echo suppression states")
     require("input_audio_format: 'pcm16'" in script and
             "type: 'server_vad'" in script,
             "realtime must select PCM16 input and server VAD")
@@ -797,6 +818,165 @@ console.log('realtime playback behavior passed');
             f"realtime behavior failed: {(result.stderr or result.stdout).strip()[:1000]}")
     require("realtime playback behavior passed" in result.stdout,
             "realtime behavior harness did not reach its success assertion")
+
+
+def check_realtime_echo_suppression_behavior(script):
+    """Execute realtime echo-suppression wire helpers and barge-in status formatting in Node."""
+    node = shutil.which("node")
+    if not node:
+        print("skip realtime echo-suppression behavior: node is not installed", flush=True)
+        return
+    require("// REALTIME_ECHO_SUPPRESSION_BEGIN" in script and
+            "// REALTIME_ECHO_SUPPRESSION_END" in script,
+            "missing realtime echo-suppression behavior-test markers")
+    helpers = script.split("// REALTIME_ECHO_SUPPRESSION_BEGIN", 1)[1].split(
+        "// REALTIME_ECHO_SUPPRESSION_END", 1)[0]
+    harness = helpers + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+
+// 1. Default initial session.update (echoSuppression=true) OMITS echo_suppression.
+const defaultInit = buildRealtimeInitialSessionUpdate({
+  voice: 'vivian', maxTokens: 256, silenceMs: 400, echoSuppression: true,
+});
+assert(defaultInit.type === 'session.update', 'initial type mismatch');
+assert(JSON.stringify(defaultInit.session.turn_detection) ===
+  '{"type":"server_vad","silence_ms":400}',
+  'default echoSuppression=true must omit echo_suppression on the wire: ' +
+  JSON.stringify(defaultInit.session.turn_detection));
+assert(!Object.prototype.hasOwnProperty.call(defaultInit.session.turn_detection, 'echo_suppression'),
+  'echo_suppression key must be absent when default true');
+assert(defaultInit.session.input_audio_format === 'pcm16' &&
+  defaultInit.session.audio_output.playback_ack === true &&
+  defaultInit.session.audio_output.voice === 'vivian' &&
+  defaultInit.session.max_new_tokens === 256,
+  'initial session.update base fields regressed');
+
+// 2. Opt-out initial session.update (echoSuppression=false) emits explicit false.
+const optOutInit = buildRealtimeInitialSessionUpdate({
+  voice: 'vivian', maxTokens: 256, silenceMs: 400, echoSuppression: false,
+});
+assert(JSON.stringify(optOutInit.session.turn_detection) ===
+  '{"type":"server_vad","silence_ms":400,"echo_suppression":false}',
+  'opt-out echoSuppression=false must include echo_suppression:false');
+
+// 3. Narrow active mid-session toggle sends ONLY turn_detection (no format/audio/max_tokens).
+const narrowOff = buildRealtimeEchoSuppressionUpdate(false, 600);
+assert(narrowOff.type === 'session.update', 'narrow update type mismatch');
+assert(JSON.stringify(Object.keys(narrowOff.session)) === '["turn_detection"]',
+  'narrow active update must contain ONLY turn_detection, got ' +
+  JSON.stringify(Object.keys(narrowOff.session)));
+assert(JSON.stringify(narrowOff.session.turn_detection) ===
+  '{"type":"server_vad","silence_ms":600,"echo_suppression":false}',
+  'narrow active OFF payload mismatch');
+
+const narrowOn = buildRealtimeEchoSuppressionUpdate(true, 600);
+assert(JSON.stringify(Object.keys(narrowOn.session)) === '["turn_detection"]',
+  'narrow active ON update must contain ONLY turn_detection');
+assert(JSON.stringify(narrowOn.session.turn_detection) ===
+  '{"type":"server_vad","silence_ms":600,"echo_suppression":true}',
+  'narrow active ON payload mismatch');
+
+// 4. sendRealtimeEchoSuppressionToggle sends only on an OPEN socket.
+const sentFrames = [];
+const closedSocket = { readyState: 0, send(frame) { sentFrames.push(frame); } };
+assert(sendRealtimeEchoSuppressionToggle(false, 400, closedSocket) === null,
+  'must not send toggle on non-open socket');
+assert(sentFrames.length === 0, 'closed socket received unexpected frame');
+
+const openSocket = { readyState: 1, send(frame) { sentFrames.push(frame); } };
+const sentPayload = sendRealtimeEchoSuppressionToggle(false, 450, openSocket);
+assert(sentPayload && sentFrames.length === 1, 'open socket did not receive narrow toggle');
+assert(sentFrames[0] ===
+  '{"type":"session.update","session":{"turn_detection":{"type":"server_vad","silence_ms":450,"echo_suppression":false}}}',
+  'sent narrow toggle wire bytes mismatch: ' + sentFrames[0]);
+
+// 5. parseRealtimeSessionUpdated handles omitted=>true, false=>false, true=>true, and rejects bad types.
+const parsedOmitted = parseRealtimeSessionUpdated({
+  type: 'transcription_session.updated',
+  session: {
+    input_audio_format: 'pcm16',
+    turn_detection: { type: 'server_vad', silence_ms: 400 },
+    audio_output: { voice: 'vivian', playback_ack: true },
+  },
+});
+assert(parsedOmitted.echoSuppression === true && parsedOmitted.silenceMs === 400 &&
+  parsedOmitted.playbackAck === true,
+  'omitted echo_suppression must parse as true');
+
+const parsedFalse = parseRealtimeSessionUpdated({
+  type: 'transcription_session.updated',
+  session: {
+    turn_detection: { type: 'server_vad', silence_ms: 550, echo_suppression: false },
+    audio_output: { voice: 'vivian', playback_ack: true },
+  },
+});
+assert(parsedFalse.echoSuppression === false && parsedFalse.silenceMs === 550,
+  'explicit false echo_suppression must parse as false');
+
+const parsedTrue = parseRealtimeSessionUpdated({
+  type: 'transcription_session.updated',
+  session: {
+    turn_detection: { type: 'server_vad', silence_ms: 400, echo_suppression: true },
+    audio_output: { voice: 'vivian', playback_ack: true },
+  },
+});
+assert(parsedTrue.echoSuppression === true,
+  'explicit true echo_suppression must parse as true');
+
+let badEchoRejected = false;
+try {
+  parseRealtimeSessionUpdated({
+    type: 'transcription_session.updated',
+    session: { turn_detection: { type: 'server_vad', silence_ms: 400, echo_suppression: 'no' } },
+  });
+} catch { badEchoRejected = true; }
+assert(badEchoRejected, 'non-boolean echo_suppression must be rejected');
+
+// 6. Status strip labels (zero fabrication when unconfirmed).
+assert(formatRealtimeEchoSuppressionLabel(null) === '',
+  'unconfirmed echo suppression must render empty string');
+assert(formatRealtimeEchoSuppressionLabel(undefined) === '',
+  'undefined echo suppression must render empty string');
+assert(formatRealtimeEchoSuppressionLabel(true) === 'Echo suppression: On',
+  'confirmed true label mismatch');
+assert(formatRealtimeEchoSuppressionLabel(false) === 'Echo suppression: Off (A/B)',
+  'confirmed false label mismatch');
+
+// 7. Barge-in counter increment, formatting, and disconnect/reconnect reset semantics.
+const sessionState = resetRealtimeTelemetry({});
+assert(sessionState.negotiatedSilenceMs === 400 &&
+  sessionState.confirmedEchoSuppression === null &&
+  sessionState.bargeInCount === 0,
+  'fresh telemetry state must start unconfirmed with zero barge-ins');
+assert(formatRealtimeBargeInLabel(sessionState.bargeInCount) === 'Barge-ins: 0',
+  'zero barge-in label mismatch');
+assert(recordRealtimeBargeIn(sessionState) === 1, 'first barge-in must increment to 1');
+assert(recordRealtimeBargeIn(sessionState) === 2, 'second barge-in must increment to 2');
+assert(formatRealtimeBargeInLabel(sessionState.bargeInCount) === 'Barge-ins: 2',
+  'observed barge-in label mismatch');
+sessionState.confirmedEchoSuppression = false;
+sessionState.negotiatedSilenceMs = 600;
+resetRealtimeTelemetry(sessionState);
+assert(sessionState.bargeInCount === 0 &&
+  sessionState.confirmedEchoSuppression === null &&
+  sessionState.negotiatedSilenceMs === 400,
+  'disconnect/reconnect reset must clear barge-in count and confirmed echo state');
+assert(formatRealtimeBargeInLabel(-1) === 'Barge-ins: 0',
+  'invalid negative barge-in count must clamp to 0');
+
+console.log('realtime echo-suppression behavior passed');
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "realtime-echo-suppression.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"realtime echo-suppression behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
+    require("realtime echo-suppression behavior passed" in result.stdout,
+            "realtime echo-suppression harness did not reach its success assertion")
 
 
 def check_showcase_and_telemetry(html, script):
@@ -1090,6 +1270,9 @@ class WebUIContractTest(unittest.TestCase):
     def test_realtime_behavior(self):
         check_realtime_behavior(self.script)
 
+    def test_realtime_echo_suppression_behavior(self):
+        check_realtime_echo_suppression_behavior(self.script)
+
     def test_showcase_and_telemetry(self):
         check_showcase_and_telemetry(self.html, self.script)
 
@@ -1118,6 +1301,7 @@ def main():
         ("narrative_continuity_behavior", lambda: check_narrative_continuity_behavior(script)),
         ("realtime", lambda: check_realtime(html, script)),
         ("realtime_behavior", lambda: check_realtime_behavior(script)),
+        ("realtime_echo_suppression_behavior", lambda: check_realtime_echo_suppression_behavior(script)),
         ("showcase_and_telemetry", lambda: check_showcase_and_telemetry(html, script)),
         ("showcase_and_telemetry_behavior", lambda: check_showcase_and_telemetry_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),

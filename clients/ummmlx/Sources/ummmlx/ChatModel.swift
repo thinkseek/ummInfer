@@ -323,6 +323,22 @@ final class ChatModel: ObservableObject {
     @Published private(set) var liveVoicePartialTranscript = ""
     @Published private(set) var liveVoiceLastAckCursor = 0
     @Published var liveVoiceSilenceMs = 400
+    /// Server-side full-duplex `turn_detection.echo_suppression` preference (default ON).
+    @Published var liveVoiceEchoSuppression = true
+    /// Server-confirmed `turn_detection.echo_suppression` state from `transcription_session.updated`.
+    /// Nil while disconnected or before the server confirms the session.
+    @Published private(set) var liveVoiceConfirmedEchoSuppression: Bool? = nil
+    /// Real observed count of `response.cancelled` events in the current Live Voice session.
+    @Published private(set) var liveVoiceBargeInCount = 0
+
+    var liveVoiceEchoSuppressionStatusText: String? {
+        guard let confirmed = liveVoiceConfirmedEchoSuppression else { return nil }
+        return confirmed ? "Echo suppression: On" : "Echo suppression: Off (A/B)"
+    }
+
+    var liveVoiceBargeInStatusText: String {
+        "Barge-ins: \(liveVoiceBargeInCount)"
+    }
 
     let speech: SpeechController
     let audioStream: AudioStreamPlaying
@@ -1150,7 +1166,8 @@ final class ChatModel: ObservableObject {
             voice: trimmedVoice.isEmpty ? "vivian" : trimmedVoice,
             silenceMs: liveVoiceSilenceMs,
             playbackAck: true,
-            maxNewTokens: parsedMaxTokens.flatMap { $0 > 0 ? $0 : nil }
+            maxNewTokens: parsedMaxTokens.flatMap { $0 > 0 ? $0 : nil },
+            echoSuppression: liveVoiceEchoSuppression
         )
 
         do {
@@ -1167,6 +1184,8 @@ final class ChatModel: ObservableObject {
                     self.isLiveVoiceActive = false
                     self.liveVoiceState = .error(err.localizedDescription)
                     self.liveVoicePartialTranscript = ""
+                    self.liveVoiceConfirmedEchoSuppression = nil
+                    self.liveVoiceBargeInCount = 0
                     self.liveVoiceAssistantTurns.removeAll()
                     self.streamingAudioTurnID = nil
                     self.isStreamingAudioPlaying = false
@@ -1178,6 +1197,8 @@ final class ChatModel: ObservableObject {
                     self.isLiveVoiceActive = false
                     self.liveVoiceState = .idle
                     self.liveVoicePartialTranscript = ""
+                    self.liveVoiceConfirmedEchoSuppression = nil
+                    self.liveVoiceBargeInCount = 0
                     self.liveVoiceAssistantTurns.removeAll()
                     self.streamingAudioTurnID = nil
                     self.isStreamingAudioPlaying = false
@@ -1200,8 +1221,24 @@ final class ChatModel: ObservableObject {
         liveVoiceState = .connecting
         liveVoicePartialTranscript = ""
         liveVoiceLastAckCursor = 0
+        liveVoiceConfirmedEchoSuppression = nil
+        liveVoiceBargeInCount = 0
         liveVoiceAssistantTurns.removeAll()
         status = "Live Voice · Connecting…"
+    }
+
+    func setLiveVoiceEchoSuppression(_ enabled: Bool) {
+        liveVoiceEchoSuppression = enabled
+        guard isLiveVoiceActive, realtime.isActive else { return }
+        Task { @MainActor [weak self] in
+            guard let self, self.isLiveVoiceActive, self.realtime.isActive else { return }
+            do {
+                try await self.realtime.setEchoSuppression(enabled)
+            } catch {
+                guard self.isLiveVoiceActive else { return }
+                self.error = error.localizedDescription
+            }
+        }
     }
 
     func stopLiveVoice() {
@@ -1211,6 +1248,8 @@ final class ChatModel: ObservableObject {
         isLiveVoiceActive = false
         liveVoiceState = .idle
         liveVoicePartialTranscript = ""
+        liveVoiceConfirmedEchoSuppression = nil
+        liveVoiceBargeInCount = 0
         liveVoiceAssistantTurns.removeAll()
         if error == nil {
             status = "Ready"
@@ -1230,9 +1269,12 @@ final class ChatModel: ObservableObject {
 
     private func handleRealtimeEvent(_ event: RealtimeServerEvent) {
         switch event {
-        case .sessionUpdated:
-            liveVoiceState = .listening
-            status = "Live Voice · Listening"
+        case .sessionUpdated(let snapshot):
+            liveVoiceConfirmedEchoSuppression = snapshot.echoSuppression
+            if liveVoiceState == .connecting || liveVoiceState == .idle {
+                liveVoiceState = .listening
+                status = "Live Voice · Listening"
+            }
 
         case .speechStarted:
             liveVoiceState = .userSpeaking
@@ -1293,6 +1335,7 @@ final class ChatModel: ObservableObject {
             }
 
         case .responseCancelled(let cancellation):
+            liveVoiceBargeInCount += 1
             streamingAudioTurnID = nil
             isStreamingAudioPlaying = false
             if let turnID = liveVoiceAssistantTurns.removeValue(forKey: cancellation.responseID),

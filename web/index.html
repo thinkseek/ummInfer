@@ -30,7 +30,7 @@
   }
 
   header {
-    display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 16px;
     background: var(--surface);
   }
   header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
@@ -56,6 +56,36 @@
   #voiceToggle.on, #realtimeToggle.on { background: var(--accent); color: #fff; }
   #voiceStatus, #realtimeStatus { font-size: var(--f-caption); color: var(--secondary); min-width: 68px; }
   #voiceMute, #voiceStop { padding: 3px 9px; font-size: var(--f-caption); }
+  .realtime-echo-toggle {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: var(--f-caption); color: var(--secondary);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  .realtime-strip {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 6px 16px; background: var(--surface);
+    border-top: 1px solid var(--line); font-size: var(--f-caption);
+    color: var(--secondary);
+  }
+  .realtime-pill {
+    display: inline-flex; align-items: center;
+    font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--secondary); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 2px 8px;
+  }
+  .realtime-pill.echo-on {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    font-weight: 600;
+  }
+  .realtime-pill.echo-off {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    font-weight: 600;
+  }
 
   #settings {
     display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
@@ -359,6 +389,11 @@
     <button id="voiceToggle" type="button" aria-pressed="true">Voice ON</button>
     <button id="realtimeToggle" type="button" aria-pressed="false"
             title="Opt in to full-duplex microphone audio over WebSocket">Realtime OFF</button>
+    <label class="realtime-echo-toggle"
+           title="Server-side echo suppression for full-duplex voice (toggle before connecting or live mid-response)">
+      <input type="checkbox" id="realtimeEchoSuppression" checked>
+      <span>Echo suppression</span>
+    </label>
     <span id="realtimeStatus" role="status">Realtime off</span>
     <div class="wave" id="voiceWave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
     <span id="voiceStatus" role="status">Voice ready</span>
@@ -448,6 +483,11 @@
 </main>
 <div id="error" hidden></div>
 
+<div class="realtime-strip" id="realtimeStrip" role="status" aria-live="polite" hidden>
+  <span class="realtime-pill" id="realtimeStripPhase"></span>
+  <span class="realtime-pill" id="realtimeEchoState" hidden></span>
+  <span class="realtime-pill" id="realtimeBargeInCount"></span>
+</div>
 <div class="attach-bar" id="attachBar" hidden></div>
 <footer>
   <input id="askImage" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -491,6 +531,9 @@ const ui = {
   voiceToggle: $('voiceToggle'), voiceWave: $('voiceWave'),
   voiceStatus: $('voiceStatus'), voiceMute: $('voiceMute'), voiceStop: $('voiceStop'),
   realtimeToggle: $('realtimeToggle'), realtimeStatus: $('realtimeStatus'),
+  realtimeEchoSuppression: $('realtimeEchoSuppression'),
+  realtimeStrip: $('realtimeStrip'), realtimeStripPhase: $('realtimeStripPhase'),
+  realtimeEchoState: $('realtimeEchoState'), realtimeBargeInCount: $('realtimeBargeInCount'),
 };
 
 const log = (...args) => console.log('[umm]', ...args);
@@ -541,6 +584,7 @@ ui.video.checked = localStorage.getItem('ummweb.video') === '1';
 ui.narrative.checked = localStorage.getItem('ummweb.narrative') !== '0';
 ui.allowTextOnly.checked = localStorage.getItem('ummweb.allowTextOnly') !== '0';
 ui.fastVideo.checked = localStorage.getItem('ummweb.fastVideo') === '1';
+ui.realtimeEchoSuppression.checked = localStorage.getItem('ummweb.echoSuppression') !== '0';
 const saveSettings = () => {
   for (const key of SETTINGS) localStorage.setItem('ummweb.' + key, ui[key].value);
   localStorage.setItem('ummweb.image', ui.image.checked ? '1' : '0');
@@ -549,6 +593,7 @@ const saveSettings = () => {
   localStorage.setItem('ummweb.narrative', ui.narrative.checked ? '1' : '0');
   localStorage.setItem('ummweb.allowTextOnly', ui.allowTextOnly.checked ? '1' : '0');
   localStorage.setItem('ummweb.fastVideo', ui.fastVideo.checked ? '1' : '0');
+  localStorage.setItem('ummweb.echoSuppression', ui.realtimeEchoSuppression.checked ? '1' : '0');
 };
 
 function apiURL(base, suffix) {
@@ -1590,6 +1635,103 @@ const player = {
 // This controller and player are deliberately independent of the HTTP/SSE
 // player above. Realtime is never connected until the user presses its toggle.
 
+// REALTIME_ECHO_SUPPRESSION_BEGIN
+function buildRealtimeInitialSessionUpdate({
+  voice = 'vivian',
+  maxTokens = 256,
+  silenceMs = 400,
+  echoSuppression = true,
+} = {}) {
+  const resolvedSilence = Number.isInteger(silenceMs) && silenceMs >= 100 && silenceMs <= 5000
+    ? silenceMs : 400;
+  const turnDetection = { type: 'server_vad', silence_ms: resolvedSilence };
+  // Keep default session.update wire shape unchanged when echo suppression is ON.
+  if (echoSuppression === false) turnDetection.echo_suppression = false;
+  const resolvedVoice = typeof voice === 'string' && voice.trim() ? voice.trim() : 'vivian';
+  const resolvedMaxTokens = Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 256;
+  return {
+    type: 'session.update',
+    session: {
+      input_audio_format: 'pcm16',
+      turn_detection: turnDetection,
+      max_new_tokens: resolvedMaxTokens,
+      audio_output: {
+        voice: resolvedVoice,
+        playback_ack: true,
+      },
+    },
+  };
+}
+
+function buildRealtimeEchoSuppressionUpdate(enabled, silenceMs = 400) {
+  const resolvedSilence = Number.isInteger(silenceMs) && silenceMs >= 100 && silenceMs <= 5000
+    ? silenceMs : 400;
+  return {
+    type: 'session.update',
+    session: {
+      turn_detection: {
+        type: 'server_vad',
+        silence_ms: resolvedSilence,
+        echo_suppression: Boolean(enabled),
+      },
+    },
+  };
+}
+
+function parseRealtimeSessionUpdated(event) {
+  const session = event?.session;
+  const turn = session && typeof session.turn_detection === 'object' ? session.turn_detection : null;
+  const rawSilence = turn?.silence_ms;
+  const silenceMs = Number.isInteger(rawSilence) && rawSilence >= 100 && rawSilence <= 5000
+    ? rawSilence : 400;
+  let echoSuppression = true;
+  if (turn && Object.prototype.hasOwnProperty.call(turn, 'echo_suppression') &&
+      turn.echo_suppression !== undefined && turn.echo_suppression !== null) {
+    if (typeof turn.echo_suppression !== 'boolean') {
+      throw new Error('session.turn_detection.echo_suppression must be a boolean.');
+    }
+    echoSuppression = turn.echo_suppression;
+  }
+  return {
+    silenceMs,
+    echoSuppression,
+    playbackAck: session?.audio_output?.playback_ack === true,
+  };
+}
+
+function formatRealtimeEchoSuppressionLabel(confirmed) {
+  if (confirmed === true) return 'Echo suppression: On';
+  if (confirmed === false) return 'Echo suppression: Off (A/B)';
+  return '';
+}
+
+function formatRealtimeBargeInLabel(count) {
+  const n = Number.isInteger(count) && count >= 0 ? count : 0;
+  return `Barge-ins: ${n}`;
+}
+
+function resetRealtimeTelemetry(state) {
+  state.negotiatedSilenceMs = 400;
+  state.confirmedEchoSuppression = null;
+  state.bargeInCount = 0;
+  return state;
+}
+
+function recordRealtimeBargeIn(state) {
+  state.bargeInCount = (Number.isInteger(state.bargeInCount) && state.bargeInCount >= 0
+    ? state.bargeInCount : 0) + 1;
+  return state.bargeInCount;
+}
+
+function sendRealtimeEchoSuppressionToggle(enabled, silenceMs, socket) {
+  const openState = typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1;
+  if (!socket || socket.readyState !== openState) return null;
+  const payload = buildRealtimeEchoSuppressionUpdate(enabled, silenceMs);
+  socket.send(JSON.stringify(payload));
+  return payload;
+}
+// REALTIME_ECHO_SUPPRESSION_END
+
 const realtime = {
   ws: null,
   enabled: false,
@@ -1600,13 +1742,39 @@ const realtime = {
   activeResponseId: '',
   cancelledResponses: new Set(),
   turns: new Map(),
+  phase: 'Realtime off',
+  echoSuppression: ui.realtimeEchoSuppression.checked,
+  negotiatedSilenceMs: 400,
+  confirmedEchoSuppression: null,
+  bargeInCount: 0,
 };
 
+function renderRealtimeStrip() {
+  ui.realtimeStrip.hidden = !realtime.enabled;
+  if (!realtime.enabled) {
+    ui.realtimeStripPhase.textContent = '';
+    ui.realtimeEchoState.hidden = true;
+    ui.realtimeEchoState.textContent = '';
+    ui.realtimeEchoState.classList.remove('echo-on', 'echo-off');
+    ui.realtimeBargeInCount.textContent = '';
+    return;
+  }
+  ui.realtimeStripPhase.textContent = realtime.phase;
+  const echoLabel = formatRealtimeEchoSuppressionLabel(realtime.confirmedEchoSuppression);
+  ui.realtimeEchoState.hidden = !echoLabel;
+  ui.realtimeEchoState.textContent = echoLabel;
+  ui.realtimeEchoState.classList.toggle('echo-on', realtime.confirmedEchoSuppression === true);
+  ui.realtimeEchoState.classList.toggle('echo-off', realtime.confirmedEchoSuppression === false);
+  ui.realtimeBargeInCount.textContent = formatRealtimeBargeInLabel(realtime.bargeInCount);
+}
+
 function setRealtimeStatus(text) {
+  realtime.phase = text;
   ui.realtimeToggle.classList.toggle('on', realtime.enabled);
   ui.realtimeToggle.setAttribute('aria-pressed', realtime.enabled ? 'true' : 'false');
   ui.realtimeToggle.textContent = realtime.enabled ? 'Realtime ON' : 'Realtime OFF';
   ui.realtimeStatus.textContent = text;
+  renderRealtimeStrip();
 }
 
 function markRealtimeStale(responseId) {
@@ -1909,12 +2077,20 @@ async function handleRealtimeEvent(event, generation) {
       realtime.cancelledResponses.has(responseId)) return;
 
   switch (event.type) {
-    case 'transcription_session.updated':
+    case 'transcription_session.updated': {
       if (event.session?.audio_output?.playback_ack !== true) {
         throw new Error('Server did not negotiate audio_output.playback_ack=true.');
       }
-      await startRealtimeMic(generation);
+      const negotiated = parseRealtimeSessionUpdated(event);
+      realtime.negotiatedSilenceMs = negotiated.silenceMs;
+      realtime.confirmedEchoSuppression = negotiated.echoSuppression;
+      if (!realtime.mic && !realtime.micStarting) {
+        await startRealtimeMic(generation);
+      } else {
+        renderRealtimeStrip();
+      }
       break;
+    }
     case 'input_audio_buffer.speech_started':
       setRealtimeStatus('Listening');
       break;
@@ -1961,6 +2137,7 @@ async function handleRealtimeEvent(event, generation) {
     case 'response.cancelled': {
       // Mark stale before touching Web Audio so any already queued onended or
       // late audio/text/completion frame for this response becomes inert.
+      recordRealtimeBargeIn(realtime);
       cancelRealtimeResponse(responseId);
       setRealtimeStatus('Interrupted · Listening');
       break;
@@ -1985,6 +2162,7 @@ function stopRealtime(status = 'Realtime off') {
   realtime.ready = false;
   realtime.micStarting = false;
   realtime.activeResponseId = '';
+  resetRealtimeTelemetry(realtime);
   realtime.cancelledResponses.clear();
   realtime.turns.clear();
   const socket = realtime.ws;
@@ -2022,6 +2200,8 @@ async function startRealtime() {
   const generation = realtime.generation;
   realtime.enabled = true;
   realtime.ready = false;
+  realtime.echoSuppression = ui.realtimeEchoSuppression.checked;
+  resetRealtimeTelemetry(realtime);
   realtime.cancelledResponses.clear();
   clearError();
   setRealtimeStatus('Connecting…');
@@ -2033,18 +2213,12 @@ async function startRealtime() {
     socket.onopen = () => {
       if (!realtime.enabled || realtime.generation !== generation || realtime.ws !== socket) return;
       const maxTokens = Number.parseInt(ui.maxTokens.value.trim(), 10);
-      socket.send(JSON.stringify({
-        type: 'session.update',
-        session: {
-          input_audio_format: 'pcm16',
-          turn_detection: { type: 'server_vad', silence_ms: 400 },
-          max_new_tokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 256,
-          audio_output: {
-            voice: ui.voice.value.trim() || 'vivian',
-            playback_ack: true,
-          },
-        },
-      }));
+      socket.send(JSON.stringify(buildRealtimeInitialSessionUpdate({
+        voice: ui.voice.value.trim() || 'vivian',
+        maxTokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 256,
+        silenceMs: 400,
+        echoSuppression: realtime.echoSuppression,
+      })));
       setRealtimeStatus('Negotiating…');
     };
     socket.onmessage = (message) => {
@@ -2107,6 +2281,14 @@ ui.voiceStop.addEventListener('click', () => {
 ui.realtimeToggle.addEventListener('click', () => {
   if (realtime.enabled) stopRealtime();
   else startRealtime();
+});
+ui.realtimeEchoSuppression.addEventListener('change', () => {
+  const enabled = ui.realtimeEchoSuppression.checked;
+  realtime.echoSuppression = enabled;
+  localStorage.setItem('ummweb.echoSuppression', enabled ? '1' : '0');
+  if (realtime.enabled && realtime.ws) {
+    sendRealtimeEchoSuppressionToggle(enabled, realtime.negotiatedSilenceMs, realtime.ws);
+  }
 });
 
 function pcmBuffer(ctx, bytes, rate, channels) {

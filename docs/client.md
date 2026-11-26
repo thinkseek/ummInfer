@@ -591,8 +591,30 @@ refuse the field. `transcription_session.updated` and `transcription.completed`
 therefore carry no language. Any other session field returns an `error` event.
 
 `turn_detection` accepts `null` (no server endpointing) or
-`{"type": "server_vad", "silence_ms": N}` with N between 100 and 5000. See
-[full duplex](full-duplex.md) for the measured behavior and its limits.
+`{"type": "server_vad", "silence_ms": N}` with N between 100 and 5000, plus an
+optional boolean `echo_suppression` (default `true`, omitted on the wire when
+enabled so default payloads stay unchanged; explicit `false` opts into the A/B
+baseline without server-side echo suppression). While a turn or spoken response
+is active, a narrow `session.update` carrying only `turn_detection` with
+`type="server_vad"`, unchanged `silence_ms`, and boolean `echo_suppression`
+toggles echo suppression live without resetting `playback_ack` or response
+ownership. See [full duplex](full-duplex.md) for the measured behavior and its
+limits.
+
+#### Web UI and macOS ummmlx full-duplex voice controls
+
+Both the Web UI (`web/index.html`) and macOS `ummmlx` expose an **Echo
+suppression** toggle (default ON) alongside their full-duplex voice controls.
+Toggling it before connecting sets the initial `session.update` payload (omitting
+`echo_suppression` when ON and sending `"echo_suppression": false` when OFF);
+toggling it while connected or mid-response sends the narrow active
+`turn_detection`-only `session.update` with the negotiated `silence_ms`. When a
+voice session is active, both clients render a live status strip showing the
+server-confirmed echo-suppression state (`Echo suppression: On` or
+`Echo suppression: Off (A/B)`, omitted until confirmed by
+`transcription_session.updated`) and the real observed barge-in count
+(`Barge-ins: N`, counting `response.cancelled` events in the current session and
+resetting on disconnect or reconnect).
 
 The bundled server submits a preview request for every 200 ms of new audio.
 Each completed preview sends one `transcription.segment` with `is_final: false`
