@@ -7,6 +7,7 @@ Zero network calls, zero GPU/torch/numpy, zero serving processes.
 """
 
 from contextlib import contextmanager
+import ast
 import copy
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +34,7 @@ import umminfer_stage_c_pipeline as pipeline  # noqa: E402
 import umminfer_token_export as token_export  # noqa: E402
 
 REAL_TASK42_BUNDLE = ROOT / "tests" / "fixtures" / "behavior_token_alignment" / "task42"
+REAL_TASK42_ACCEPTED = ROOT / "docs" / "evidence" / "behavior-token-alignment-real-cpu.json"
 
 # Assembled dynamically so literal internal tokens never appear in source.
 FORBIDDEN_TOKENS = (
@@ -865,12 +867,35 @@ class StageCPipelineTest(unittest.TestCase):
             self.assertNotIn("behavior_token_alignment", report)
             self.assertNotIn("dpo_export_preflight", report)
             self.assertNotIn("online_grpo_preflight", report)
+            self.assertNotIn("independent_online_audit", report)
+            self.assertNotIn("independent_online_audit_task42", report)
+            self.assertFalse((out_dir / "independent_online_audit").exists())
+            self.assertNotIn("umminfer_online_evidence_audit", sys.modules)
             self.assertNotIn("torch", sys.modules)
             self.assertNotIn("transformers", sys.modules)
             self.assertNotIn("numpy", sys.modules)
             self.assertNotIn("mlx", sys.modules)
 
-            # Isolated fresh process: default-off must not import online-GRPO or ML modules.
+            # Static AST check: pipeline must NEVER import umminfer_online_evidence_audit or ML libs.
+            tree = ast.parse(
+                (ROOT / "tools" / "umminfer_stage_c_pipeline.py").read_text(encoding="utf-8")
+            )
+            imported = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported.update(alias.name.split(".")[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module.split(".")[0])
+            for forbidden_mod in (
+                "umminfer_online_evidence_audit",
+                "torch",
+                "transformers",
+                "numpy",
+                "mlx",
+            ):
+                self.assertNotIn(forbidden_mod, imported)
+
+            # Isolated fresh process: default-off must not import online-GRPO, auditor, or ML modules.
             probe = (
                 "import json, sys\n"
                 f"sys.path.insert(0, {str(ROOT / 'tools')!r})\n"
@@ -880,9 +905,13 @@ class StageCPipelineTest(unittest.TestCase):
                 f"ablation_matrix_path={str(ROOT / 'configs/training/ablation_matrix.json')!r}, "
                 "ablation_override='joint_full', execution_mode='dry_run_micro_step', "
                 "dry_run_steps=1)\n"
-                "blocked = [m for m in ('umminfer_online_grpo_preflight', 'torch', "
+                "blocked = [m for m in ('umminfer_online_grpo_preflight', "
+                "'umminfer_online_evidence_audit', 'torch', "
                 "'transformers', 'numpy', 'mlx') if m in sys.modules]\n"
-                "print(json.dumps({'has_key': 'online_grpo_preflight' in r, 'blocked': blocked}))\n"
+                "print(json.dumps({'has_key': 'online_grpo_preflight' in r, "
+                "'has_audit': 'independent_online_audit' in r, "
+                "'has_audit_task42': 'independent_online_audit_task42' in r, "
+                "'blocked': blocked}))\n"
             )
             proc = subprocess.run(
                 [sys.executable, "-I", "-c", probe],
@@ -893,6 +922,8 @@ class StageCPipelineTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             probe_res = json.loads(proc.stdout)
             self.assertFalse(probe_res["has_key"])
+            self.assertFalse(probe_res["has_audit"])
+            self.assertFalse(probe_res["has_audit_task42"])
             self.assertEqual(probe_res["blocked"], [])
 
     def test_capture_behavior_logprobs_fail_closed_and_mock_live_server(self):
@@ -1740,6 +1771,450 @@ class StageCPipelineTest(unittest.TestCase):
             )
             self.assertEqual(proc_wrong_src.returncode, 2, proc_wrong_src.stdout)
             self.assertFalse((wrong_src_out / "stage_c_e2e_report.json").exists())
+
+    def test_independent_online_audit_task42_standalone_cli_and_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # 1. Standalone CLI with --independent-online-audit-accepted (python3 -I)
+            cli_out = root / "task42_cli_accepted"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--independent-online-audit-task42",
+                    str(REAL_TASK42_BUNDLE),
+                    "--independent-online-audit-accepted",
+                    str(REAL_TASK42_ACCEPTED),
+                    "--out",
+                    str(cli_out),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            cli_report = json.loads(proc.stdout)
+            self.assertEqual(cli_report["status"], "COMPLETED")
+            self.assertEqual(
+                cli_report["source_mode"], "independent_online_audit_task42_only"
+            )
+            self.assertEqual(cli_report["REAL_TRAINING"], "NOT_RUN")
+            self.assertNotIn("independent_online_audit", cli_report)
+
+            audit = cli_report["independent_online_audit_task42"]
+            self.assertEqual(audit["status"], "PASS")
+            self.assertEqual(audit["sampled_token_count"], 61)
+            self.assertEqual(audit["supervised_token_count"], 49)
+            self.assertTrue(audit["process_isolated"])
+            self.assertTrue(audit["accepted_evidence_checked"])
+            self.assertEqual(
+                audit["report_path"], "independent_online_audit/task42_audit.json"
+            )
+            audit_file = cli_out / "independent_online_audit" / "task42_audit.json"
+            self.assertTrue(audit_file.is_file())
+            self.assertEqual(audit["report_sha256"], ds.sha256_file(audit_file))
+            raw_audit = json.loads(audit_file.read_text(encoding="utf-8"))
+            self.assertEqual(raw_audit["status"], "PASS")
+            self.assertEqual(raw_audit["sampled_token_count"], 61)
+            self.assertEqual(raw_audit["supervised_token_count"], 49)
+
+            for claim_key in (
+                "new_model_inference",
+                "new_logprob_recomputation",
+                "online_optimizer",
+                "gpu",
+                "serving",
+                "model_quality",
+            ):
+                self.assertEqual(audit["claims"][claim_key], "NOT_RUN", claim_key)
+
+            report_file = cli_out / "stage_c_e2e_report.json"
+            self.assertNotIn(str(root), report_file.read_text(encoding="utf-8"))
+
+            # 2. Standalone Python API with accepted evidence -> byte-identical determinism
+            api_out = root / "task42_api_accepted"
+            api_report = pipeline.run_stage_c_pipeline(
+                output_dir=api_out,
+                independent_online_audit_task42=REAL_TASK42_BUNDLE,
+                independent_online_audit_accepted=REAL_TASK42_ACCEPTED,
+            )
+            self.assertEqual(api_report, cli_report)
+            self.assertEqual(
+                audit_file.read_bytes(),
+                (api_out / "independent_online_audit" / "task42_audit.json").read_bytes(),
+            )
+            self.assertNotIn("umminfer_online_evidence_audit", sys.modules)
+            for mod in ("torch", "transformers", "numpy", "mlx"):
+                self.assertNotIn(mod, sys.modules)
+
+            # 3. Standalone Python API without accepted evidence
+            api_no_acc = pipeline.run_stage_c_pipeline(
+                output_dir=root / "task42_api_no_accepted",
+                independent_online_audit_task42=REAL_TASK42_BUNDLE,
+            )
+            audit_no_acc = api_no_acc["independent_online_audit_task42"]
+            self.assertEqual(audit_no_acc["status"], "PASS")
+            self.assertEqual(audit_no_acc["sampled_token_count"], 61)
+            self.assertEqual(audit_no_acc["supervised_token_count"], 49)
+            self.assertTrue(audit_no_acc["process_isolated"])
+            self.assertFalse(audit_no_acc["accepted_evidence_checked"])
+            self.assertEqual(
+                audit_no_acc["report_sha256"],
+                ds.sha256_file(
+                    root
+                    / "task42_api_no_accepted"
+                    / "independent_online_audit"
+                    / "task42_audit.json"
+                ),
+            )
+
+    def test_independent_online_audit_preflight_e2e_pass(self):
+        import online_grpo_preflight_test as grpo_fixture  # noqa: PLC0415
+        import umminfer_online_grpo_preflight as online_grpo  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_bundle, tok_dir = grpo_fixture.make_online_bundle(
+                root / "src_exports", version=2, exports=True
+            )
+            cfg = grpo_fixture.make_config(source_bundle, tok_dir)
+            preflight_bundle = root / "preflight_bundle"
+            prep = online_grpo.prepare_preflight(
+                source_bundle, preflight_bundle, cfg, tokenizer_dir=tok_dir
+            )
+            before_bundle_bytes = _tree_bytes(preflight_bundle)
+            before_source_bytes = _tree_bytes(source_bundle)
+
+            # 1. Standalone CLI: --verify-online-grpo-preflight + --independent-online-audit
+            out_cli = root / "preflight_audit_cli"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--verify-online-grpo-preflight",
+                    str(preflight_bundle),
+                    "--online-grpo-source-dir",
+                    str(source_bundle),
+                    "--online-grpo-tokenizer-dir",
+                    str(tok_dir),
+                    "--independent-online-audit",
+                    "--out",
+                    str(out_cli),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            cli_report = json.loads(proc.stdout)
+            self.assertEqual(cli_report["status"], "COMPLETED")
+            self.assertEqual(cli_report["source_mode"], "online_grpo_preflight_only")
+            self.assertEqual(cli_report["REAL_TRAINING"], "NOT_RUN")
+
+            og = cli_report["online_grpo_preflight"]
+            ind = cli_report["independent_online_audit"]
+            self.assertEqual(og["status"], "PASS")
+            self.assertEqual(ind["status"], "PASS")
+            self.assertEqual(ind["checkpoint_disagreements_count"], 0)
+            self.assertEqual(ind["run_id"], og["run_id"])
+            self.assertEqual(ind["run_id"], prep["run_id"])
+            self.assertTrue(ind["process_isolated"])
+            self.assertFalse(ind["accepted_evidence_checked"])
+            self.assertEqual(
+                ind["report_path"], "independent_online_audit/preflight_audit.json"
+            )
+            audit_file = out_cli / "independent_online_audit" / "preflight_audit.json"
+            self.assertTrue(audit_file.is_file())
+            self.assertEqual(ind["report_sha256"], ds.sha256_file(audit_file))
+            raw_audit = json.loads(audit_file.read_text(encoding="utf-8"))
+            self.assertEqual(raw_audit["status"], "PASS")
+            self.assertEqual(raw_audit["checkpoint_disagreements"], [])
+            self.assertEqual(raw_audit["run_id"], prep["run_id"])
+            self.assertEqual(ind["claims"]["REAL_TRAINING"], "NOT_RUN")
+            self.assertEqual(ind["claims"]["optimizer"], "NOT_RUN")
+            self.assertEqual(ind["claims"]["gpu"], "NOT_RUN")
+            self.assertFalse(ind["claims"]["model_weights_updated"])
+            self.assertFalse(ind["claims"]["torch_imported"])
+            self.assertEqual(ind["boundaries"]["optimizer"], "NOT_RUN")
+            self.assertNotIn(
+                str(root), (out_cli / "stage_c_e2e_report.json").read_text(encoding="utf-8")
+            )
+
+            # 2. Combined trajectories + producer preflight + independent preflight + task42
+            file_a, dir_b = _build_fixture_trajectories(root)
+            out_combined = root / "combined_both_audits"
+            combined = pipeline.run_stage_c_pipeline(
+                output_dir=out_combined,
+                trajectory_paths=[file_a, dir_b],
+                config_path=ROOT / "configs" / "training" / "joint_sft_default.json",
+                execution_mode="dry_run_micro_step",
+                dry_run_steps=1,
+                verify_online_grpo_preflight=preflight_bundle,
+                online_grpo_source_dir=source_bundle,
+                online_grpo_tokenizer_dir=tok_dir,
+                independent_online_audit=True,
+                independent_online_audit_task42=REAL_TASK42_BUNDLE,
+            )
+            self.assertEqual(combined["status"], "COMPLETED")
+            self.assertEqual(combined["source_mode"], "offline_trajectories")
+            self.assertEqual(combined["independent_online_audit"]["status"], "PASS")
+            self.assertEqual(
+                combined["independent_online_audit"]["checkpoint_disagreements_count"], 0
+            )
+            self.assertEqual(
+                combined["independent_online_audit"]["run_id"],
+                combined["online_grpo_preflight"]["run_id"],
+            )
+            self.assertTrue(combined["independent_online_audit"]["process_isolated"])
+            self.assertEqual(
+                combined["independent_online_audit_task42"]["status"], "PASS"
+            )
+            self.assertEqual(
+                combined["independent_online_audit_task42"]["sampled_token_count"], 61
+            )
+            self.assertEqual(
+                combined["independent_online_audit_task42"]["supervised_token_count"], 49
+            )
+            self.assertTrue(
+                combined["independent_online_audit_task42"]["process_isolated"]
+            )
+            self.assertTrue(
+                (out_combined / "independent_online_audit" / "preflight_audit.json").is_file()
+            )
+            self.assertTrue(
+                (out_combined / "independent_online_audit" / "task42_audit.json").is_file()
+            )
+
+            # Input bundles untouched and auditor never imported in-process.
+            self.assertEqual(_tree_bytes(preflight_bundle), before_bundle_bytes)
+            self.assertEqual(_tree_bytes(source_bundle), before_source_bytes)
+            self.assertNotIn("umminfer_online_evidence_audit", sys.modules)
+            for mod in ("torch", "transformers", "numpy", "mlx"):
+                self.assertNotIn(mod, sys.modules)
+
+    def test_independent_online_audit_fail_closed_flags_and_tampering(self):
+        import online_grpo_preflight_test as grpo_fixture  # noqa: PLC0415
+        import umminfer_online_grpo_preflight as online_grpo  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            file_a, _ = _build_fixture_trajectories(root)
+            source_bundle, tok_dir = grpo_fixture.make_online_bundle(
+                root / "src_fail", version=1, exports=True
+            )
+            cfg = grpo_fixture.make_config(source_bundle, tok_dir)
+            preflight_bundle = root / "preflight_valid"
+            online_grpo.prepare_preflight(
+                source_bundle, preflight_bundle, cfg, tokenizer_dir=tok_dir
+            )
+
+            # 1. Invalid flag combinations must fail BEFORE creating output_dir
+            invalid_api_cases = [
+                (
+                    "audit_without_preflight",
+                    dict(trajectory_paths=[file_a], independent_online_audit=True),
+                    "--independent-online-audit requires --verify-online-grpo-preflight",
+                ),
+                (
+                    "audit_without_source_dir",
+                    dict(
+                        verify_online_grpo_preflight=preflight_bundle,
+                        independent_online_audit=True,
+                    ),
+                    "--verify-online-grpo-preflight requires --online-grpo-source-dir",
+                ),
+                (
+                    "accepted_without_audit",
+                    dict(
+                        trajectory_paths=[file_a],
+                        independent_online_audit_accepted=REAL_TASK42_ACCEPTED,
+                    ),
+                    "--independent-online-audit-accepted requires",
+                ),
+                (
+                    "accepted_with_both_audits",
+                    dict(
+                        verify_online_grpo_preflight=preflight_bundle,
+                        online_grpo_source_dir=source_bundle,
+                        online_grpo_tokenizer_dir=tok_dir,
+                        independent_online_audit=True,
+                        independent_online_audit_task42=REAL_TASK42_BUNDLE,
+                        independent_online_audit_accepted=REAL_TASK42_ACCEPTED,
+                    ),
+                    "cannot be combined with both",
+                ),
+            ]
+            for label, kwargs, pattern in invalid_api_cases:
+                with self.subTest(invalid_api=label):
+                    out_dir = root / f"invalid_api_{label}"
+                    with self.assertRaisesRegex(ValueError, pattern):
+                        pipeline.run_stage_c_pipeline(output_dir=out_dir, **kwargs)
+                    self.assertFalse(out_dir.exists())
+
+            invalid_cli_cases = [
+                (
+                    "audit_without_preflight",
+                    ["--from-trajectories", str(file_a), "--independent-online-audit"],
+                ),
+                (
+                    "accepted_without_audit",
+                    [
+                        "--from-trajectories",
+                        str(file_a),
+                        "--independent-online-audit-accepted",
+                        str(REAL_TASK42_ACCEPTED),
+                    ],
+                ),
+                (
+                    "accepted_with_both_audits",
+                    [
+                        "--verify-online-grpo-preflight",
+                        str(preflight_bundle),
+                        "--online-grpo-source-dir",
+                        str(source_bundle),
+                        "--online-grpo-tokenizer-dir",
+                        str(tok_dir),
+                        "--independent-online-audit",
+                        "--independent-online-audit-task42",
+                        str(REAL_TASK42_BUNDLE),
+                        "--independent-online-audit-accepted",
+                        str(REAL_TASK42_ACCEPTED),
+                    ],
+                ),
+            ]
+            for label, extra_args in invalid_cli_cases:
+                with self.subTest(invalid_cli=label):
+                    out_dir = root / f"invalid_cli_{label}"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                            *extra_args,
+                            "--out",
+                            str(out_dir),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(proc.returncode, 2, proc.stdout)
+                    self.assertFalse(out_dir.exists())
+
+            # 2. Tampered Task #42 fixture rejected fail-closed before creating output_dir
+            tampered_task42 = root / "tampered_task42"
+            shutil.copytree(REAL_TASK42_BUNDLE, tampered_task42)
+            sse_file = next((tampered_task42 / "live" / "artifacts").glob("*.sse"))
+            raw_sse = bytearray(sse_file.read_bytes())
+            raw_sse[12] ^= 1
+            sse_file.write_bytes(raw_sse)
+
+            out_tampered_t42_api = root / "out_tampered_t42_api"
+            with self.assertRaisesRegex(ValueError, "independent online Task #42 audit"):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=out_tampered_t42_api,
+                    independent_online_audit_task42=tampered_task42,
+                )
+            self.assertFalse(out_tampered_t42_api.exists())
+
+            out_tampered_t42_cli = root / "out_tampered_t42_cli"
+            proc_t42 = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--independent-online-audit-task42",
+                    str(tampered_task42),
+                    "--out",
+                    str(out_tampered_t42_cli),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_t42.returncode, 2, proc_t42.stdout)
+            self.assertFalse(out_tampered_t42_cli.exists())
+
+            # 3. Mismatched accepted evidence for Task #42 -> auditor returns FAIL (exit 1) -> fail closed
+            bad_accepted = root / "bad_task42_accepted.json"
+            bad_doc = json.loads(REAL_TASK42_ACCEPTED.read_text(encoding="utf-8"))
+            bad_doc["accepted_cases"][0]["raw_sha256"] = "0" * 64
+            bad_accepted.write_text(json.dumps(bad_doc) + "\n", encoding="utf-8")
+
+            out_bad_acc = root / "out_bad_acc_t42"
+            with self.assertRaisesRegex(ValueError, "independent online Task #42 audit"):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=out_bad_acc,
+                    independent_online_audit_task42=REAL_TASK42_BUNDLE,
+                    independent_online_audit_accepted=bad_accepted,
+                )
+            self.assertFalse(out_bad_acc.exists())
+
+            # 4. Tampered preflight bundle rejected fail-closed before creating output_dir
+            tampered_preflight = root / "tampered_preflight"
+            shutil.copytree(preflight_bundle, tampered_preflight)
+            sched_path = tampered_preflight / "schedule.json"
+            sched_doc = json.loads(sched_path.read_text(encoding="utf-8"))
+            sched_doc["checkpoints"][0]["remaining_group_exports_sha256"] = "0" * 64
+            grpo_fixture.write_json(sched_path, sched_doc)
+            grpo_fixture.refresh_checksums_for_consistent_tamper(tampered_preflight)
+
+            out_tampered_pf = root / "out_tampered_pf"
+            with self.assertRaisesRegex(ValueError, "online-GRPO preflight"):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=out_tampered_pf,
+                    verify_online_grpo_preflight=tampered_preflight,
+                    online_grpo_source_dir=source_bundle,
+                    online_grpo_tokenizer_dir=tok_dir,
+                    independent_online_audit=True,
+                )
+            self.assertFalse(out_tampered_pf.exists())
+
+            # 5. Valid preflight bundle + mismatched accepted evidence -> producer passes,
+            #    independent subprocess fails closed with exit 1 before creating output_dir!
+            bad_pf_accepted = root / "bad_pf_accepted.json"
+            bad_pf_accepted.write_text(
+                json.dumps({"run_id": "0" * 64}) + "\n", encoding="utf-8"
+            )
+            out_bad_pf_acc = root / "out_bad_pf_acc"
+            with self.assertRaisesRegex(ValueError, "independent online preflight audit"):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=out_bad_pf_acc,
+                    verify_online_grpo_preflight=preflight_bundle,
+                    online_grpo_source_dir=source_bundle,
+                    online_grpo_tokenizer_dir=tok_dir,
+                    independent_online_audit=True,
+                    independent_online_audit_accepted=bad_pf_accepted,
+                )
+            self.assertFalse(out_bad_pf_acc.exists())
+
+            out_bad_pf_acc_cli = root / "out_bad_pf_acc_cli"
+            proc_bad_pf = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--verify-online-grpo-preflight",
+                    str(preflight_bundle),
+                    "--online-grpo-source-dir",
+                    str(source_bundle),
+                    "--online-grpo-tokenizer-dir",
+                    str(tok_dir),
+                    "--independent-online-audit",
+                    "--independent-online-audit-accepted",
+                    str(bad_pf_accepted),
+                    "--out",
+                    str(out_bad_pf_acc_cli),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_bad_pf.returncode, 2, proc_bad_pf.stdout)
+            self.assertFalse(out_bad_pf_acc_cli.exists())
 
 
 if __name__ == "__main__":

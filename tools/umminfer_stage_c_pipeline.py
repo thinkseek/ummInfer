@@ -35,7 +35,9 @@ import json
 import math
 import os
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -1092,6 +1094,293 @@ def _run_online_grpo_preflight(
     return summary
 
 
+_INDEPENDENT_AUDITOR_SCRIPT = PYTHON_DIR / "umminfer_online_evidence_audit.py"
+_INDEPENDENT_AUDIT_SCHEMA = "umminfer-online-evidence-audit-v1"
+
+
+def _run_independent_audit_subprocess(
+    subcommand_args: list[str],
+    *,
+    report_filename: str,
+    label: str,
+) -> tuple[dict, bytes, str]:
+    """Execute python/umminfer_online_evidence_audit.py in a fresh `python3 -I` process.
+
+    Preserves strict process-level independence: never imports the auditor module
+    in-process and never allows ML modules to be loaded.
+    """
+    forbidden_loaded = sorted(
+        m for m in (_FORBIDDEN_ML_MODULES | {"umminfer_online_evidence_audit"})
+        if m in sys.modules
+    )
+    if forbidden_loaded:
+        raise RuntimeError(
+            f"forbidden modules already loaded before {label}: "
+            + ",".join(forbidden_loaded)
+        )
+    if (
+        not _INDEPENDENT_AUDITOR_SCRIPT.is_file()
+        or _INDEPENDENT_AUDITOR_SCRIPT.is_symlink()
+    ):
+        raise FileNotFoundError(
+            f"independent auditor script not found: {_INDEPENDENT_AUDITOR_SCRIPT}"
+        )
+
+    with tempfile.TemporaryDirectory(
+        prefix="umm-stage-c-independent-audit-"
+    ) as tmp:
+        tmp_report = Path(tmp) / report_filename
+        cmd = [
+            sys.executable,
+            "-I",
+            str(_INDEPENDENT_AUDITOR_SCRIPT),
+            *subcommand_args,
+            "--report",
+            str(tmp_report),
+        ]
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            if not detail and tmp_report.is_file():
+                try:
+                    failed_doc = json.loads(tmp_report.read_text(encoding="utf-8"))
+                    detail = (
+                        f"status={failed_doc.get('status')!r}, "
+                        f"checkpoint_disagreements="
+                        f"{len(failed_doc.get('checkpoint_disagreements') or [])}, "
+                        f"accepted_evidence_mismatches="
+                        f"{len(failed_doc.get('accepted_evidence_mismatches') or [])}"
+                    )
+                except (OSError, json.JSONDecodeError):
+                    detail = "non-zero exit with unreadable audit report"
+            if len(detail) > 600:
+                detail = detail[:597] + "..."
+            raise ValueError(
+                f"{label} failed in isolated subprocess (exit {proc.returncode}): "
+                f"{detail or 'no diagnostic output'}"
+            )
+        if not tmp_report.is_file() or tmp_report.is_symlink():
+            raise ValueError(
+                f"{label} exited 0 without writing report file {report_filename}"
+            )
+        raw_bytes = tmp_report.read_bytes()
+
+    if "umminfer_online_evidence_audit" in sys.modules:
+        raise RuntimeError(
+            "umminfer_online_evidence_audit must never be imported in-process"
+        )
+    loaded_after = sorted(m for m in _FORBIDDEN_ML_MODULES if m in sys.modules)
+    if loaded_after:
+        raise RuntimeError(
+            f"forbidden ML modules loaded during {label}: "
+            + ",".join(loaded_after)
+        )
+
+    try:
+        audit_report = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} emitted invalid JSON report: {exc}") from exc
+    if not isinstance(audit_report, dict):
+        raise ValueError(f"{label} report must be a JSON object")
+    if audit_report.get("schema") != _INDEPENDENT_AUDIT_SCHEMA:
+        raise ValueError(
+            f"{label} emitted unexpected schema {audit_report.get('schema')!r}"
+        )
+    if audit_report.get("status") != "PASS":
+        raise ValueError(
+            f"{label} returned non-PASS status: {audit_report.get('status')!r}"
+        )
+    if audit_report.get("accepted_evidence_mismatches"):
+        raise ValueError(f"{label} reported accepted_evidence_mismatches")
+
+    return audit_report, raw_bytes, traj.sha256_bytes(raw_bytes)
+
+
+def _run_independent_online_audit_preflight(
+    bundle_dir: str | Path,
+    source_dir: str | Path,
+    *,
+    tokenizer_dir: str | Path | None = None,
+    accepted_evidence: str | Path | None = None,
+    expected_run_id: str | None = None,
+) -> tuple[dict, bytes]:
+    """Run independent preflight auditor in a fresh isolated `python3 -I` process."""
+    raw_bundle = Path(bundle_dir)
+    if not raw_bundle.is_dir():
+        raise FileNotFoundError(
+            f"online-GRPO preflight bundle directory not found: {bundle_dir}"
+        )
+    raw_source = Path(source_dir)
+    if not raw_source.is_dir():
+        raise FileNotFoundError(
+            f"online-GRPO source directory not found: {source_dir}"
+        )
+    sub_args = [
+        "preflight",
+        "--online-pack",
+        str(raw_source.resolve()),
+        "--preflight-bundle",
+        str(raw_bundle.resolve()),
+        "--repo-root",
+        str(REPO_ROOT),
+    ]
+    if tokenizer_dir is not None:
+        raw_tok = Path(tokenizer_dir)
+        if not raw_tok.is_dir():
+            raise FileNotFoundError(
+                f"online-GRPO tokenizer directory not found: {tokenizer_dir}"
+            )
+        sub_args.extend(["--tokenizer-dir", str(raw_tok.resolve())])
+    if accepted_evidence is not None:
+        raw_acc = Path(accepted_evidence)
+        if not raw_acc.is_file() or raw_acc.is_symlink():
+            raise FileNotFoundError(
+                f"independent online audit accepted evidence file not found: "
+                f"{accepted_evidence}"
+            )
+        sub_args.extend(["--accepted-evidence", str(raw_acc.resolve())])
+
+    audit_report, raw_bytes, report_sha256 = _run_independent_audit_subprocess(
+        sub_args,
+        report_filename="preflight_audit.json",
+        label="independent online preflight audit",
+    )
+    if audit_report.get("mode") != "online_grpo_preflight":
+        raise ValueError(
+            "independent online preflight audit returned unexpected mode: "
+            f"{audit_report.get('mode')!r}"
+        )
+    disagreements = audit_report.get("checkpoint_disagreements")
+    if not isinstance(disagreements, list) or len(disagreements) != 0:
+        raise ValueError(
+            "independent online preflight audit reported checkpoint disagreements: "
+            f"{len(disagreements) if isinstance(disagreements, list) else disagreements!r}"
+        )
+    run_id = audit_report.get("run_id")
+    if (
+        not isinstance(run_id, str)
+        or len(run_id) != 64
+        or (set(run_id) - _HEX_CHARS)
+    ):
+        raise ValueError(
+            "independent online preflight audit run_id must be 64 lowercase hex chars"
+        )
+    if expected_run_id is not None and run_id != expected_run_id:
+        raise ValueError(
+            f"independent online preflight audit run_id {run_id} disagrees with "
+            f"producer verification run_id {expected_run_id}"
+        )
+    claims = audit_report.get("claims") or {}
+    boundaries = audit_report.get("boundaries") or {}
+    if (
+        claims.get("REAL_TRAINING") != "NOT_RUN"
+        or claims.get("optimizer") != "NOT_RUN"
+        or claims.get("gpu") != "NOT_RUN"
+        or claims.get("model_weights_updated") is not False
+        or claims.get("torch_imported") is not False
+        or boundaries.get("optimizer") != "NOT_RUN"
+        or boundaries.get("gpu") != "NOT_RUN"
+    ):
+        raise ValueError(
+            "independent online preflight audit violated NOT_RUN honesty boundary"
+        )
+
+    summary = {
+        "schema": audit_report["schema"],
+        "mode": audit_report["mode"],
+        "status": "PASS",
+        "run_id": run_id,
+        "checkpoint_disagreements_count": 0,
+        "group_count": int(audit_report["group_count"]),
+        "rollout_count": int(audit_report["rollout_count"]),
+        "manifest_sha256": audit_report["manifest_sha256"],
+        "accepted_evidence_checked": accepted_evidence is not None,
+        "report_path": "independent_online_audit/preflight_audit.json",
+        "report_sha256": report_sha256,
+        "process_isolated": True,
+        "claims": copy.deepcopy(claims),
+        "boundaries": copy.deepcopy(boundaries),
+    }
+    return summary, raw_bytes
+
+
+def _run_independent_online_audit_task42(
+    fixture_dir: str | Path,
+    *,
+    accepted_evidence: str | Path | None = None,
+) -> tuple[dict, bytes]:
+    """Run independent Task #42 auditor in a fresh isolated `python3 -I` process."""
+    raw_fixture = Path(fixture_dir)
+    if not raw_fixture.is_dir():
+        raise FileNotFoundError(
+            f"independent Task #42 audit fixture directory not found: {fixture_dir}"
+        )
+    sub_args = ["task42", str(raw_fixture.resolve())]
+    if accepted_evidence is not None:
+        raw_acc = Path(accepted_evidence)
+        if not raw_acc.is_file() or raw_acc.is_symlink():
+            raise FileNotFoundError(
+                f"independent online audit accepted evidence file not found: "
+                f"{accepted_evidence}"
+            )
+        sub_args.extend(["--accepted-evidence", str(raw_acc.resolve())])
+
+    audit_report, raw_bytes, report_sha256 = _run_independent_audit_subprocess(
+        sub_args,
+        report_filename="task42_audit.json",
+        label="independent online Task #42 audit",
+    )
+    if audit_report.get("mode") != "retained_task42_alignment":
+        raise ValueError(
+            "independent online Task #42 audit returned unexpected mode: "
+            f"{audit_report.get('mode')!r}"
+        )
+    sampled_token_count = audit_report.get("sampled_token_count")
+    supervised_token_count = audit_report.get("supervised_token_count")
+    if not _is_int(sampled_token_count) or sampled_token_count <= 0:
+        raise ValueError(
+            "independent online Task #42 audit missing valid sampled_token_count"
+        )
+    if not _is_int(supervised_token_count) or supervised_token_count <= 0:
+        raise ValueError(
+            "independent online Task #42 audit missing valid supervised_token_count"
+        )
+    claims = audit_report.get("claims") or {}
+    if (
+        claims.get("new_model_inference") != "NOT_RUN"
+        or claims.get("new_logprob_recomputation") != "NOT_RUN"
+        or claims.get("online_optimizer") != "NOT_RUN"
+        or claims.get("gpu") != "NOT_RUN"
+        or claims.get("serving") != "NOT_RUN"
+        or claims.get("model_quality") != "NOT_RUN"
+    ):
+        raise ValueError(
+            "independent online Task #42 audit violated NOT_RUN honesty boundary"
+        )
+
+    summary = {
+        "schema": audit_report["schema"],
+        "mode": audit_report["mode"],
+        "status": "PASS",
+        "evidence_class": audit_report["evidence_class"],
+        "validation_level": audit_report["validation_level"],
+        "sampled_token_count": int(sampled_token_count),
+        "supervised_token_count": int(supervised_token_count),
+        "accepted_evidence_checked": accepted_evidence is not None,
+        "report_path": "independent_online_audit/task42_audit.json",
+        "report_sha256": report_sha256,
+        "process_isolated": True,
+        "claims": copy.deepcopy(claims),
+    }
+    return summary, raw_bytes
+
+
 def _build_live_request_body(
     case: dict,
     rollout: dict,
@@ -1610,6 +1899,9 @@ def run_stage_c_pipeline(
     verify_online_grpo_preflight: str | Path | None = None,
     online_grpo_source_dir: str | Path | None = None,
     online_grpo_tokenizer_dir: str | Path | None = None,
+    independent_online_audit: bool = False,
+    independent_online_audit_task42: str | Path | None = None,
+    independent_online_audit_accepted: str | Path | None = None,
     overwrite: bool = False,
 ) -> dict:
     """Run the complete Stage C serving-export -> dataset -> trainer E2E pipeline."""
@@ -1664,6 +1956,22 @@ def run_stage_c_pipeline(
             "--online-grpo-source-dir and --online-grpo-tokenizer-dir require "
             "--verify-online-grpo-preflight"
         )
+    if independent_online_audit and verify_online_grpo_preflight is None:
+        raise ValueError(
+            "--independent-online-audit requires --verify-online-grpo-preflight "
+            "and --online-grpo-source-dir"
+        )
+    if independent_online_audit_accepted is not None:
+        if not independent_online_audit and independent_online_audit_task42 is None:
+            raise ValueError(
+                "--independent-online-audit-accepted requires "
+                "--independent-online-audit or --independent-online-audit-task42"
+            )
+        if independent_online_audit and independent_online_audit_task42 is not None:
+            raise ValueError(
+                "--independent-online-audit-accepted cannot be combined with both "
+                "--independent-online-audit and --independent-online-audit-task42"
+            )
 
     if source_count > 1:
         raise ValueError(
@@ -1671,7 +1979,11 @@ def run_stage_c_pipeline(
             "token_export_file (--token-export-file), or capture_live_url (--capture-live)"
         )
     if source_count == 0:
-        if verify_behavior_alignment is None and verify_online_grpo_preflight is None:
+        if (
+            verify_behavior_alignment is None
+            and verify_online_grpo_preflight is None
+            and independent_online_audit_task42 is None
+        ):
             raise ValueError(
                 "specify exactly one of trajectory_paths (--from-trajectories) or "
                 "capture_live_url (--capture-live)"
@@ -1696,13 +2008,51 @@ def run_stage_c_pipeline(
                 online_grpo_source_dir,
                 tokenizer_dir=online_grpo_tokenizer_dir,
             )
+        independent_preflight_summary = None
+        independent_preflight_bytes = None
+        if independent_online_audit:
+            independent_preflight_summary, independent_preflight_bytes = (
+                _run_independent_online_audit_preflight(
+                    verify_online_grpo_preflight,
+                    online_grpo_source_dir,
+                    tokenizer_dir=online_grpo_tokenizer_dir,
+                    accepted_evidence=independent_online_audit_accepted,
+                    expected_run_id=online_grpo_summary["run_id"],
+                )
+            )
+        independent_task42_summary = None
+        independent_task42_bytes = None
+        if independent_online_audit_task42 is not None:
+            independent_task42_summary, independent_task42_bytes = (
+                _run_independent_online_audit_task42(
+                    independent_online_audit_task42,
+                    accepted_evidence=independent_online_audit_accepted,
+                )
+            )
         out_path = _prepare_out_dir(Path(output_dir), overwrite=overwrite)
-        if alignment_summary is not None and online_grpo_summary is not None:
+        if independent_preflight_bytes is not None:
+            _write_bytes_atomic(
+                out_path / "independent_online_audit" / "preflight_audit.json",
+                independent_preflight_bytes,
+            )
+        if independent_task42_bytes is not None:
+            _write_bytes_atomic(
+                out_path / "independent_online_audit" / "task42_audit.json",
+                independent_task42_bytes,
+            )
+        active_standalone = (
+            int(alignment_summary is not None)
+            + int(online_grpo_summary is not None)
+            + int(independent_task42_summary is not None)
+        )
+        if active_standalone > 1:
             standalone_mode = "standalone_verification_only"
         elif alignment_summary is not None:
             standalone_mode = "behavior_alignment_only"
-        else:
+        elif online_grpo_summary is not None:
             standalone_mode = "online_grpo_preflight_only"
+        else:
+            standalone_mode = "independent_online_audit_task42_only"
         report = {
             "pipeline_schema_version": PIPELINE_SCHEMA_VERSION,
             "status": "COMPLETED",
@@ -1720,6 +2070,10 @@ def run_stage_c_pipeline(
             report["behavior_token_alignment"] = alignment_summary
         if online_grpo_summary is not None:
             report["online_grpo_preflight"] = online_grpo_summary
+        if independent_preflight_summary is not None:
+            report["independent_online_audit"] = independent_preflight_summary
+        if independent_task42_summary is not None:
+            report["independent_online_audit_task42"] = independent_task42_summary
         report_bytes = traj.canonical_json(report) + b"\n"
         report_sha = traj.sha256_bytes(report_bytes)
         _write_bytes_atomic(out_path / "stage_c_e2e_report.json", report_bytes)
@@ -1748,11 +2102,45 @@ def run_stage_c_pipeline(
             tokenizer_dir=online_grpo_tokenizer_dir,
         )
 
+    # Optional fresh-process independent online-evidence audits (fail-closed before writes).
+    independent_preflight_summary = None
+    independent_preflight_bytes = None
+    if independent_online_audit:
+        independent_preflight_summary, independent_preflight_bytes = (
+            _run_independent_online_audit_preflight(
+                verify_online_grpo_preflight,
+                online_grpo_source_dir,
+                tokenizer_dir=online_grpo_tokenizer_dir,
+                accepted_evidence=independent_online_audit_accepted,
+                expected_run_id=online_grpo_summary["run_id"],
+            )
+        )
+
+    independent_task42_summary = None
+    independent_task42_bytes = None
+    if independent_online_audit_task42 is not None:
+        independent_task42_summary, independent_task42_bytes = (
+            _run_independent_online_audit_task42(
+                independent_online_audit_task42,
+                accepted_evidence=independent_online_audit_accepted,
+            )
+        )
+
     # Default to the full ablation matrix when neither --config nor --ablation-matrix is set.
     if config_path is None and ablation_matrix_path is None:
         ablation_matrix_path = DEFAULT_ABLATION_MATRIX
 
     out_path = _prepare_out_dir(Path(output_dir), overwrite=overwrite)
+    if independent_preflight_bytes is not None:
+        _write_bytes_atomic(
+            out_path / "independent_online_audit" / "preflight_audit.json",
+            independent_preflight_bytes,
+        )
+    if independent_task42_bytes is not None:
+        _write_bytes_atomic(
+            out_path / "independent_online_audit" / "task42_audit.json",
+            independent_task42_bytes,
+        )
 
     # 0. Optional live SSE capture -> verified schema-v2 JSONL + local CAS dir.
     live_summary = None
@@ -2015,6 +2403,10 @@ def run_stage_c_pipeline(
         report["dpo_export_preflight"] = dpo_preflight_summary
     if online_grpo_summary is not None:
         report["online_grpo_preflight"] = online_grpo_summary
+    if independent_preflight_summary is not None:
+        report["independent_online_audit"] = independent_preflight_summary
+    if independent_task42_summary is not None:
+        report["independent_online_audit_task42"] = independent_task42_summary
 
     report_bytes = traj.canonical_json(report) + b"\n"
     report_sha = traj.sha256_bytes(report_bytes)
@@ -2200,6 +2592,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional local tokenizer directory forwarded to online-GRPO preflight verification",
     )
     parser.add_argument(
+        "--independent-online-audit",
+        action="store_true",
+        help=(
+            "Opt-in (requires --verify-online-grpo-preflight and --online-grpo-source-dir): "
+            "run python/umminfer_online_evidence_audit.py preflight in a fresh isolated python3 -I subprocess"
+        ),
+    )
+    parser.add_argument(
+        "--independent-online-audit-task42",
+        default=None,
+        help=(
+            "Opt-in: run python/umminfer_online_evidence_audit.py task42 PATH "
+            "in a fresh isolated python3 -I subprocess"
+        ),
+    )
+    parser.add_argument(
+        "--independent-online-audit-accepted",
+        default=None,
+        help=(
+            "Optional accepted evidence JSON passed via --accepted-evidence to "
+            "--independent-online-audit or --independent-online-audit-task42 (not both)"
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Allow writing into an existing non-empty --out directory",
@@ -2244,6 +2660,9 @@ def main(argv=None) -> int:
             verify_online_grpo_preflight=args.verify_online_grpo_preflight,
             online_grpo_source_dir=args.online_grpo_source_dir,
             online_grpo_tokenizer_dir=args.online_grpo_tokenizer_dir,
+            independent_online_audit=args.independent_online_audit,
+            independent_online_audit_task42=args.independent_online_audit_task42,
+            independent_online_audit_accepted=args.independent_online_audit_accepted,
             overwrite=args.overwrite,
         )
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:

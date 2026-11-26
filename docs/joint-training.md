@@ -298,6 +298,28 @@ the exact default schema, digests, and zero-ML stdlib-only behavior):
   `report_sha256`, and explicit `NOT_RUN` claims for `real_online_generation`,
   `current_reference_forward`, `online_optimizer`, `gpu_execution`, and
   `model_quality`).
+- `--independent-online-audit` (requires `--verify-online-grpo-preflight` and
+  `--online-grpo-source-dir`): after producer preflight verification passes,
+  invokes `python/umminfer_online_evidence_audit.py preflight` in a fresh
+  isolated `python3 -I` subprocess (never imported in-process), writes the
+  auditor report to `<out>/independent_online_audit/preflight_audit.json`,
+  requires exit `0`, `status == "PASS"`, `checkpoint_disagreements == []`, and
+  `run_id` agreement with producer verification, and records
+  `independent_online_audit` (`status`, `run_id`,
+  `checkpoint_disagreements_count`, `report_path`, `report_sha256`,
+  `process_isolated: true`, and `NOT_RUN` boundaries) in
+  `stage_c_e2e_report.json`. Fails closed before creating `--out` on any invalid
+  flag combination, non-zero exit, disagreement, or tamper.
+- `--independent-online-audit-task42 <fixture_dir>` (standalone with `--out` or
+  alongside other gates) and optional `--independent-online-audit-accepted <json>`:
+  runs `python/umminfer_online_evidence_audit.py task42 <fixture_dir>` in a fresh
+  isolated `python3 -I` subprocess, writes
+  `<out>/independent_online_audit/task42_audit.json`, and records
+  `independent_online_audit_task42` (`status`, `sampled_token_count`,
+  `supervised_token_count`, `report_path`, `report_sha256`,
+  `process_isolated: true`). `--independent-online-audit-accepted` forwards
+  `--accepted-evidence` to either `--independent-online-audit` or
+  `--independent-online-audit-task42` (rejected if neither or both are enabled).
 
 ```text
 python3 -I tools/umminfer_stage_c_pipeline.py \
@@ -313,7 +335,13 @@ python3 -I tools/umminfer_stage_c_pipeline.py \
   --verify-online-grpo-preflight path/to/online-grpo-preflight-bundle \
   --online-grpo-source-dir path/to/online-rollout-bundle \
   --online-grpo-tokenizer-dir path/to/local/tokenizer \
+  --independent-online-audit \
   --out path/to/online-grpo-preflight-check
+
+python3 -I tools/umminfer_stage_c_pipeline.py \
+  --independent-online-audit-task42 tests/fixtures/behavior_token_alignment/task42 \
+  --independent-online-audit-accepted docs/evidence/behavior-token-alignment-real-cpu.json \
+  --out path/to/independent-task42-audit
 ```
 
 ## Verification & Claim Boundary
