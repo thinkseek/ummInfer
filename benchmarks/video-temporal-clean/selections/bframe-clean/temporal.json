@@ -1,0 +1,45 @@
+{
+  "video_id": "bframe-clean",
+  "arm": "temporal",
+  "source_frame_indices": [
+    0,
+    120,
+    168,
+    232,
+    280,
+    392,
+    440,
+    448
+  ],
+  "source_timestamps_seconds": [
+    0.0,
+    60.0,
+    84.0,
+    116.0,
+    140.0,
+    196.0,
+    220.0,
+    224.0
+  ],
+  "decoded_native_rgb_sha256": [
+    "6f892215241dfe7d57a7eefcc4f2e5fe21c479032c7b70f4239b891a10f00227",
+    "5b58ab798278938a440b2ffe9573dba456d4ea5a1382a62e6ac68fef5675abb6",
+    "63dda32727d666891c9e0f71424f458243e348db30918790e3cd3f4bfab72459",
+    "c2b9d974d8859301455ca442f8e1c599b89e2601462bb1ff72b0e125aadc580a",
+    "537e2e4ec17c4e3ff7513d99e003c65bc2f51f3189f4b93c5240faf7f42d843d",
+    "4363c96aed36472a140a3e9195b7e0ee6ff451836fd27828ea8ea5c4fae781f5",
+    "045608c96a1f3c4f163e1dad9f479e0ec94a40ca9d0c58a30da168abfce80717",
+    "93c7cc9644cee4f84584aee9987c89611866ec8dea564254f00f601c12f13c9a"
+  ],
+  "content_fnv1a64": [
+    "8cc274d268c373f7",
+    "4e9fad8e67b43734",
+    "ee9da56e3dd4a6cd",
+    "9d6f3f43225b4159",
+    "dcf5a0c1881be0a2",
+    "7d14e53d9e05fd5f",
+    "27630284dbd68b88",
+    "d7288482c92d0f56"
+  ],
+  "contact_sheet_layout": "4 columns x 2 rows; presentation order left-to-right, top-to-bottom"
+}

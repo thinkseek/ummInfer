@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "temporal-clean-r1",
+  "preregistered_on": "2026-11-26",
+  "purpose": "Clean long-video temporal-understanding fixture addressing the accepted Task47 R4 oracle defects without changing R4/R5 fixtures, answers, scoring, native serving, or online rollout work.",
+  "freeze_contract": {
+    "required_before_any_model_response": true,
+    "freeze_receipt": "benchmarks/video-temporal-clean.freeze.json",
+    "receipt_binds": [
+      "preregistration.json",
+      "manifest.json",
+      "SHA256SUMS"
+    ],
+    "post_freeze_prompt_or_answer_changes": "forbidden",
+    "observed_answer_aliases": "forbidden",
+    "runtime_changes_require_separate_defect_proof": true
+  },
+  "source": {
+    "video_count": 4,
+    "frames_per_video": 449,
+    "fps": 2,
+    "width": 96,
+    "height": 64,
+    "native_width": 224,
+    "native_height": 160,
+    "codec": "H.264 libx264 with two B-frames",
+    "semantic_channels": [
+      "shape",
+      "binary pattern",
+      "luminance"
+    ],
+    "chromatic_semantics": false,
+    "source_binding_markers": "low-area binary-luminance barcode outside the central semantic-anchor region; first 64 frames only",
+    "independent_anchor_references": "separately rendered 40x40 grayscale geometry, not crops from source or decoded video"
+  },
+  "selection": {
+    "cpu_oracle_budgets": [
+      4,
+      8,
+      16
+    ],
+    "native_live_budget": 8,
+    "motion_threshold": 0.02,
+    "scene_threshold": 0.25,
+    "candidate_stride": 8,
+    "candidate_count": 57,
+    "first_and_last_source_anchors": [
+      0,
+      448
+    ]
+  },
+  "anchor_visibility": {
+    "reference_size": [
+      40,
+      40
+    ],
+    "decoded_region_of_interest": "native x=64..159,y=30..129, area-averaged to 40x40 luma",
+    "minimum_normalized_cross_correlation": 0.45,
+    "minimum_luma_contrast": 48,
+    "quality_scored_rule": "at least one independently rendered expected answer anchor must pass visibility in each of default, uniform, and temporal selected-frame sets",
+    "selection_control_rule": "default and uniform must contain no declared late answer-anchor source frame; temporal must contain at least one visible declared answer anchor"
+  },
+  "scoring": {
+    "metric": "preregistered_casefold_substring_accuracy",
+    "quality_scored_cases_only": true,
+    "selection_miss_controls_in_quality_accuracy": false,
+    "raw_answers_and_misses_retained_for_all_cases": true,
+    "expect_all_semantics": "every preregistered term must occur in the casefolded raw answer",
+    "expect_any_group_semantics": "at least one preregistered canonical-language term must occur in the casefolded raw answer",
+    "quality_misses_fail_transport_gate": false,
+    "generalized_perceptual_quality_claim": false,
+    "limitations": [
+      "substring matching can over- or under-count linguistic variants",
+      "four quality-scored synthetic cases are fixture evidence only",
+      "selection-miss controls are diagnostics and are never relabelled as perceptual failures or successes"
+    ]
+  },
+  "request_contract": {
+    "content_order": [
+      "video_url",
+      "text_question"
+    ],
+    "question_after_context": true,
+    "model": "qwen3-native",
+    "stream": true,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "seed": 510051,
+    "max_tokens": 64,
+    "arms": [
+      "default",
+      "uniform",
+      "temporal"
+    ],
+    "only_frame_selection_changes_between_arms": true
+  },
+  "measurement": {
+    "schema_version": 1,
+    "warmup_repetitions": 1,
+    "measured_repetitions": 3,
+    "arm_order": "interleaved",
+    "seed": 510051,
+    "cooldown_ms": 0,
+    "modes": {
+      "serial": {
+        "physical_gpu": 0,
+        "concurrency": 1,
+        "batch_size": 1
+      },
+      "batch4": {
+        "physical_gpu": 1,
+        "concurrency": 4,
+        "batch_size": 4
+      }
+    },
+    "prefix_cache": "disabled; prefix_reused=0 for every request including warmup",
+    "allowed_physical_gpus": [
+      0,
+      1
+    ],
+    "forbidden_physical_gpus": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "forbidden_resident_port": 43301,
+    "native_evidence": "exact selected RGB fingerprints, source frame indices, source PTS and presentation order, temporal-2 pair-first timestamps, mRoPE digest, serial/batch parity, complete binary/model/source provenance"
+  },
+  "claims_before_live": {
+    "real_generation": "NOT_RUN",
+    "live_latency": "NOT_RUN",
+    "fixture_substring_accuracy": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "generalized_quality_claim": false
+  },
+  "cases": [
+    {
+      "id": "motion-first-en",
+      "video_id": "motion-clean",
+      "language": "en",
+      "evaluation_role": "quality_scored",
+      "question": "Which shape moves first in the video? Answer with one shape name.",
+      "expect_all": [
+        "triangle"
+      ],
+      "expect_any_group": false,
+      "answer_anchor": {
+        "marker": "triangle",
+        "source_intervals": [
+          [
+            8,
+            31
+          ]
+        ]
+      }
+    },
+    {
+      "id": "scene-cut-zh",
+      "video_id": "scene-clean",
+      "language": "zh",
+      "evaluation_role": "quality_scored",
+      "question": "第一次画面切换后，中央出现什么图案？只回答图案名称。",
+      "expect_all": [
+        "三角"
+      ],
+      "expect_any_group": false,
+      "answer_anchor": {
+        "marker": "triangle",
+        "source_intervals": [
+          [
+            24,
+            111
+          ]
+        ]
+      }
+    },
+    {
+      "id": "near-static-ja",
+      "video_id": "near-clean",
+      "language": "ja",
+      "evaluation_role": "quality_scored",
+      "question": "長い静止区間で中央に保たれている記号は何ですか？記号名だけで答えてください。",
+      "expect_all": [
+        "ring",
+        "リング",
+        "輪"
+      ],
+      "expect_any_group": true,
+      "answer_anchor": {
+        "marker": "ring",
+        "source_intervals": [
+          [
+            0,
+            287
+          ],
+          [
+            352,
+            448
+          ]
+        ]
+      }
+    },
+    {
+      "id": "bframe-first-es",
+      "video_id": "bframe-clean",
+      "language": "es",
+      "evaluation_role": "quality_scored",
+      "question": "¿Qué símbolo aparece dentro del marco central al principio del video? Responde solo con el nombre del símbolo.",
+      "expect_all": [
+        "cross",
+        "cruz"
+      ],
+      "expect_any_group": true,
+      "answer_anchor": {
+        "marker": "cross",
+        "source_intervals": [
+          [
+            0,
+            63
+          ]
+        ]
+      }
+    },
+    {
+      "id": "motion-late-control",
+      "video_id": "motion-clean",
+      "language": "en",
+      "evaluation_role": "selection_miss_control",
+      "question": "Which shape moves after the long middle static interval? Answer with one shape name.",
+      "expect_all": [
+        "ring"
+      ],
+      "expect_any_group": false,
+      "answer_anchor": {
+        "marker": "ring",
+        "source_intervals": [
+          [
+            320,
+            335
+          ]
+        ]
+      }
+    },
+    {
+      "id": "scene-late-control",
+      "video_id": "scene-clean",
+      "language": "zh",
+      "evaluation_role": "selection_miss_control",
+      "question": "第三次画面切换后，中央出现什么图案？只回答图案名称。",
+      "expect_all": [
+        "条纹"
+      ],
+      "expect_any_group": false,
+      "answer_anchor": {
+        "marker": "stripes",
+        "source_intervals": [
+          [
+            336,
+            448
+          ]
+        ]
+      }
+    },
+    {
+      "id": "near-late-control",
+      "video_id": "near-clean",
+      "language": "ja",
+      "evaluation_role": "selection_miss_control",
+      "question": "後半の短い変化で中央に現れる記号は何ですか？記号名だけで答えてください。",
+      "expect_all": [
+        "cross",
+        "十字"
+      ],
+      "expect_any_group": true,
+      "answer_anchor": {
+        "marker": "cross",
+        "source_intervals": [
+          [
+            288,
+            295
+          ]
+        ]
+      }
+    },
+    {
+      "id": "bframe-last-control",
+      "video_id": "bframe-clean",
+      "language": "es",
+      "evaluation_role": "selection_miss_control",
+      "question": "¿Qué símbolo aparece en el último cuadro? Responde solo con el nombre del símbolo.",
+      "expect_all": [
+        "ring",
+        "anillo"
+      ],
+      "expect_any_group": true,
+      "answer_anchor": {
+        "marker": "ring",
+        "source_intervals": [
+          [
+            448,
+            448
+          ]
+        ]
+      }
+    }
+  ]
+}

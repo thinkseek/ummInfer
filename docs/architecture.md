@@ -127,6 +127,16 @@ PTS/temporal-2/mRoPE 与完整证据门禁，获 `CONTROLLED_LIVE`；default/uni
 仍为 CPU-oracle-only。详见 [video-temporal-long.md](video-temporal-long.md)；fake
 endpoint 只验证合同。
 
+Task #47 的官方根因审计进一步证明：R4 default/uniform 选择缺少原预期答案锚点、
+彩色 source-binding tag 会污染颜色问题、部分 prompt 直接泄露答案；像素/PTS/mRoPE
+对照未证明 native 实现缺陷。Task #51 新增独立的 `temporal-clean-r1` 夹具，不改冻结
+R4/R5 或 native runtime：仅用 shape/pattern/luminance 语义，预注册并 hash-freeze
+问题、答案与评分，独立渲染锚点并把 late-anchor selection-miss controls 排除在质量
+准确率之外。隔离 SM90 GPU 0 serial / GPU 1 batch-four 完成 192/192 请求和 208/208
+parity；default/uniform/temporal 质量用例命中为 18/24、18/24、12/24，所有 miss 与
+control 原始答案均保留且未新增别名。证据支持有界模型局限，未证明运行时缺陷；
+`PERCEPTUAL_QUALITY: NOT_RUN`。详见 [video-temporal-clean.md](video-temporal-clean.md)。
+
 ---
 
 ### 2.2 显式叙事图像槽位 → I2V 引用与内容寻址绑定

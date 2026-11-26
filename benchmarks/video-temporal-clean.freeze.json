@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "temporal-clean-r1",
+  "frozen_on": "2026-11-26",
+  "frozen_before_any_model_response": true,
+  "model_response_inspected": false,
+  "preregistration_sha256": "96608dc793d54f64f55a7c46862d1b1737cbf807a8807d1b22b2fcd0502d2a77",
+  "manifest_sha256": "62f475a74732fa3504850ebe4517dc98903ba39202dce457441c52133a6c96c0",
+  "sha256sums_sha256": "7cbe369ea8dff27da49dca5472f2436a5ea9693bf4c3beeaa3d71a4c18f4616d",
+  "quality_case_ids": [
+    "motion-first-en",
+    "scene-cut-zh",
+    "near-static-ja",
+    "bframe-first-es"
+  ],
+  "selection_miss_control_ids": [
+    "motion-late-control",
+    "scene-late-control",
+    "near-late-control",
+    "bframe-last-control"
+  ],
+  "post_freeze_prompt_answer_or_scoring_changes": "forbidden"
+}
