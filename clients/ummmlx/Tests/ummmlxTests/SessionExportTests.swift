@@ -1115,6 +1115,703 @@ final class SessionExportTests: XCTestCase {
         XCTAssertEqual(model.model, "incoming-model")
         XCTAssertEqual(model.turns.count, 2)
     }
+
+    // MARK: - End-to-end umminfer-showcase cross-client import tests
+
+    func testShowcaseJourney1NarrativeVoiceImportAndRoundTrip() throws {
+        let json = """
+        {
+          "client": "umminfer-showcase",
+          "exported_at": "2025-11-24T16:00:00.000Z",
+          "model": "qwen3-native",
+          "schema": "umminfer-session-export-v1",
+          "session_id": "showcase-journey_1",
+          "turn_count": 1,
+          "turns": [
+            {
+              "asr_text": null,
+              "index": 1,
+              "interrupted": false,
+              "prompt": "Explain how a supermassive black hole accretion disk produces gravitational lensing in two vivid narrative beats. Include one still visual for the glowing accretion disk schematic and one motion visual for orbiting light bending around the event horizon.",
+              "response": "Around a supermassive black hole, superheated plasma forms a luminous accretion disk that glows brighter than an entire galaxy. Intense spacetime curvature bends light from the far side of the disk over and under the shadow, producing a double-arched Einstein ring.",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": {
+                  "label": "Behavior: not_exposed",
+                  "status": "not_exposed",
+                  "supervised_count": null,
+                  "token_count": null
+                },
+                "first_visual_ms": 4.345,
+                "i2v_count": 0,
+                "native_allocator": {
+                  "coverage": "COVERED",
+                  "covered": true,
+                  "covered_stage_count": 4,
+                  "details": [
+                    "vlm: 256.0 MiB peak",
+                    "image: 192.0 MiB peak",
+                    "video: 288.0 MiB peak",
+                    "tts: 64.0 MiB peak"
+                  ],
+                  "label": "VRAM: 288.0 MiB peak",
+                  "peak_bytes": 301989888,
+                  "total_stage_count": 4
+                },
+                "total_ms": 32.032,
+                "ttfa_ms": 7.401,
+                "ttft_ms": 1.129,
+                "visual_slots": 2
+              },
+              "visual_slots": [
+                {
+                  "bytes": 74,
+                  "id": "slot-0",
+                  "kind": "image",
+                  "prompt": "Glowing golden relativistic black hole accretion disk schematic with crisp photon ring",
+                  "sha256": "ffa60c760e1bdc3bedb4894e57e46c086698160b7029a6871c0cb2a360ce1cd7",
+                  "slot_id": "slot-0",
+                  "slot_index": 0
+                },
+                {
+                  "bytes": 50,
+                  "id": "slot-1",
+                  "kind": "video",
+                  "prompt": "Slow orbital camera sweep showing light bending across a black hole event horizon",
+                  "sha256": "0560512a1ac5b71abf29ed2c7b0aedcbfc1374e6ad0468c66db73281d2ec08ee",
+                  "slot_id": "slot-1",
+                  "slot_index": 1
+                }
+              ]
+            }
+          ]
+        }
+        """
+
+        let imported = try SessionExporter.importJSONString(json)
+        XCTAssertEqual(imported.schema, SessionExporter.schema)
+        XCTAssertEqual(imported.exportedAt, "2025-11-24T16:00:00.000Z")
+        XCTAssertEqual(imported.sessionID, "showcase-journey_1")
+        XCTAssertEqual(imported.model, "qwen3-native")
+        XCTAssertEqual(imported.turnCount, 1)
+        XCTAssertEqual(imported.turns.count, 2)
+
+        let assistant = imported.turns[1]
+        XCTAssertEqual(assistant.state, .complete)
+        XCTAssertFalse(assistant.isInterrupted)
+        XCTAssertNil(assistant.interruptedSpokenBytes)
+        XCTAssertTrue(assistant.artifacts.isEmpty, "Showcase import must never fabricate binary artifacts")
+
+        let slots = assistant.blocks.compactMap(\.visualSlot)
+        XCTAssertEqual(slots.count, 2)
+        XCTAssertEqual(slots[0].slotID, "slot-0")
+        XCTAssertEqual(slots[0].slotIndex, 0)
+        XCTAssertEqual(slots[0].activeKind, "image")
+        XCTAssertEqual(slots[0].importedBytes, 74)
+        XCTAssertEqual(slots[0].importedSha256, "ffa60c760e1bdc3bedb4894e57e46c086698160b7029a6871c0cb2a360ce1cd7")
+        XCTAssertEqual(slots[1].slotID, "slot-1")
+        XCTAssertEqual(slots[1].slotIndex, 1)
+        XCTAssertEqual(slots[1].activeKind, "video")
+        XCTAssertEqual(slots[1].importedBytes, 50)
+        XCTAssertEqual(slots[1].importedSha256, "0560512a1ac5b71abf29ed2c7b0aedcbfc1374e6ad0468c66db73281d2ec08ee")
+
+        XCTAssertEqual(assistant.telemetry.ttftMs, 1.129)
+        XCTAssertEqual(assistant.telemetry.ttfaMs, 7.401)
+        XCTAssertEqual(assistant.telemetry.firstVisualMs, 4.345)
+        XCTAssertEqual(assistant.telemetry.totalMs, 32.032)
+        XCTAssertEqual(assistant.telemetry.importedNativeAllocator?.coverage, "COVERED")
+        XCTAssertEqual(assistant.telemetry.importedNativeAllocator?.covered, true)
+        XCTAssertEqual(assistant.telemetry.importedNativeAllocator?.coveredStageCount, 4)
+        XCTAssertEqual(assistant.telemetry.importedNativeAllocator?.totalStageCount, 4)
+        XCTAssertEqual(assistant.telemetry.importedNativeAllocator?.peakBytes, 301_989_888)
+        XCTAssertEqual(assistant.telemetry.importedNativeAllocator?.details.count, 4)
+        XCTAssertEqual(assistant.telemetry.importedBehaviorLogprobs?.status, "not_exposed")
+        XCTAssertNil(assistant.telemetry.importedBehaviorLogprobs?.tokenCount)
+        XCTAssertNil(assistant.telemetry.importedBehaviorLogprobs?.supervisedCount)
+
+        // Round-trip re-export preserves metadata with zero base64 leaks and honest null behavior counts.
+        let reexported = SessionExporter.buildJSONData(
+            sessionID: imported.sessionID ?? "",
+            model: imported.model ?? "",
+            turns: imported.turns,
+            exportedAt: fixedDate
+        )
+        let reexportedText = String(decoding: reexported, as: UTF8.self)
+        XCTAssertFalse(reexportedText.contains(";base64,"))
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: reexported) as? [String: Any])
+        XCTAssertEqual(root["turn_count"] as? Int, 1)
+        let turnsOut = try XCTUnwrap(root["turns"] as? [[String: Any]])
+        let telOut = try XCTUnwrap(turnsOut[0]["telemetry"] as? [String: Any])
+        let behOut = try XCTUnwrap(telOut["behavior_logprobs"] as? [String: Any])
+        XCTAssertEqual(behOut["status"] as? String, "not_exposed")
+        XCTAssertTrue(behOut["token_count"] is NSNull)
+        XCTAssertTrue(behOut["supervised_count"] is NSNull)
+        let vramOut = try XCTUnwrap(telOut["native_allocator"] as? [String: Any])
+        XCTAssertEqual(vramOut["peak_bytes"] as? Int, 301_989_888)
+        XCTAssertEqual(vramOut["covered_stage_count"] as? Int, 4)
+        let slotsOut = try XCTUnwrap(turnsOut[0]["visual_slots"] as? [[String: Any]])
+        XCTAssertEqual(slotsOut.count, 2)
+        XCTAssertEqual(slotsOut[0]["sha256"] as? String, "ffa60c760e1bdc3bedb4894e57e46c086698160b7029a6871c0cb2a360ce1cd7")
+        XCTAssertEqual(slotsOut[1]["sha256"] as? String, "0560512a1ac5b71abf29ed2c7b0aedcbfc1374e6ad0468c66db73281d2ec08ee")
+    }
+
+    func testShowcaseJourney2I2VRenderNullTelemetryImportAndRoundTrip() throws {
+        let json = """
+        {
+          "client": "umminfer-showcase",
+          "exported_at": "2025-11-24T16:00:00.000Z",
+          "model": "qwen3-native",
+          "schema": "umminfer-session-export-v1",
+          "session_id": "showcase-journey_2",
+          "turn_count": 1,
+          "turns": [
+            {
+              "asr_text": null,
+              "index": 1,
+              "interrupted": false,
+              "prompt": "Glowing golden relativistic black hole accretion disk schematic with crisp photon ring",
+              "response": "",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": null,
+                "first_visual_ms": 18.181,
+                "i2v_count": 1,
+                "native_allocator": null,
+                "total_ms": 18.181,
+                "ttfa_ms": null,
+                "ttft_ms": null,
+                "visual_slots": 1
+              },
+              "visual_slots": [
+                {
+                  "anchor_explicit": true,
+                  "anchor_sha256": "ffa60c760e1bdc3bedb4894e57e46c086698160b7029a6871c0cb2a360ce1cd7",
+                  "bytes": 58,
+                  "continuity_mode": "i2v_chain",
+                  "id": "slot-0",
+                  "kind": "video",
+                  "prompt": "Glowing golden relativistic black hole accretion disk schematic with crisp photon ring",
+                  "sha256": "be3028585fd79431b31df0ee0ae01784f35609e3e199e7a848b606d5aba053db",
+                  "slot_id": "slot-0",
+                  "slot_index": 0
+                }
+              ]
+            }
+          ]
+        }
+        """
+
+        let imported = try SessionExporter.importJSONString(json)
+        XCTAssertEqual(imported.sessionID, "showcase-journey_2")
+        XCTAssertEqual(imported.turnCount, 1)
+        XCTAssertEqual(imported.turns.count, 2)
+        XCTAssertEqual(
+            imported.turns[0].text,
+            "Glowing golden relativistic black hole accretion disk schematic with crisp photon ring"
+        )
+
+        let assistant = imported.turns[1]
+        XCTAssertEqual(assistant.text, "")
+        XCTAssertEqual(assistant.blocks.count, 1, "Empty response should not create an empty text block")
+        let slot = try XCTUnwrap(assistant.blocks.first?.visualSlot)
+        XCTAssertEqual(slot.slotID, "slot-0")
+        XCTAssertEqual(slot.slotIndex, 0)
+        XCTAssertEqual(slot.activeKind, "video")
+        XCTAssertEqual(slot.continuityMode, "i2v_chain")
+        XCTAssertNil(slot.anchorSlotIndex)
+        XCTAssertTrue(slot.anchorExplicit)
+        XCTAssertEqual(slot.anchorSha256, "ffa60c760e1bdc3bedb4894e57e46c086698160b7029a6871c0cb2a360ce1cd7")
+        XCTAssertEqual(slot.importedBytes, 58)
+        XCTAssertEqual(slot.importedSha256, "be3028585fd79431b31df0ee0ae01784f35609e3e199e7a848b606d5aba053db")
+        XCTAssertNil(slot.videoArtifact)
+
+        // Honest null chat/audio/VRAM/behavior telemetry remains nil (never fabricated).
+        XCTAssertNil(assistant.telemetry.ttftMs)
+        XCTAssertNil(assistant.telemetry.ttfaMs)
+        XCTAssertEqual(assistant.telemetry.firstVisualMs, 18.181)
+        XCTAssertEqual(assistant.telemetry.totalMs, 18.181)
+        XCTAssertEqual(assistant.telemetry.visualSettledCount, 1)
+        XCTAssertTrue(assistant.telemetry.hasI2VChain)
+        XCTAssertTrue(assistant.telemetry.hasExplicitAnchor)
+        XCTAssertNil(assistant.telemetry.importedNativeAllocator)
+        XCTAssertNil(assistant.telemetry.importedBehaviorLogprobs)
+
+        // Round-trip JSON + Markdown preserve explicit I2V anchor metadata without fabricating null metrics.
+        let reexported = SessionExporter.buildJSONData(
+            sessionID: imported.sessionID ?? "",
+            model: imported.model ?? "",
+            turns: imported.turns,
+            exportedAt: fixedDate
+        )
+        XCTAssertFalse(String(decoding: reexported, as: UTF8.self).contains(";base64,"))
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: reexported) as? [String: Any])
+        let turnOut = try XCTUnwrap((root["turns"] as? [[String: Any]])?.first)
+        XCTAssertEqual(turnOut["response"] as? String, "")
+        let slotOut = try XCTUnwrap((turnOut["visual_slots"] as? [[String: Any]])?.first)
+        XCTAssertEqual(slotOut["anchor_explicit"] as? Bool, true)
+        XCTAssertEqual(slotOut["anchor_sha256"] as? String, "ffa60c760e1bdc3bedb4894e57e46c086698160b7029a6871c0cb2a360ce1cd7")
+        XCTAssertEqual(slotOut["sha256"] as? String, "be3028585fd79431b31df0ee0ae01784f35609e3e199e7a848b606d5aba053db")
+        XCTAssertEqual(slotOut["bytes"] as? Int, 58)
+        let telOut = try XCTUnwrap(turnOut["telemetry"] as? [String: Any])
+        XCTAssertNil(telOut["ttft_ms"])
+        XCTAssertNil(telOut["ttfa_ms"])
+        XCTAssertNil(telOut["native_allocator"])
+        XCTAssertNil(telOut["behavior_logprobs"])
+        XCTAssertEqual(telOut["i2v_count"] as? Int, 1)
+
+        let md = SessionExporter.buildMarkdown(
+            sessionID: imported.sessionID ?? "",
+            model: imported.model ?? "",
+            turns: imported.turns,
+            exportedAt: fixedDate
+        )
+        XCTAssertTrue(md.contains("`Explicit I2V · ffa60c76`"), "Standalone explicit I2V render must retain explicit anchor digest badge in Markdown")
+        XCTAssertTrue(md.contains("`sha256: be302858`"))
+    }
+
+    func testShowcaseJourney3MultiTurnVideoQAImportAndRoundTrip() throws {
+        let json = """
+        {
+          "client": "umminfer-showcase",
+          "exported_at": "2025-11-24T16:00:00.000Z",
+          "model": "qwen3-native",
+          "schema": "umminfer-session-export-v1",
+          "session_id": "showcase-journey_3",
+          "turn_count": 3,
+          "turns": [
+            {
+              "asr_text": null,
+              "index": 1,
+              "interrupted": false,
+              "prompt": "Describe the primary visual subject, dominant colors, and lighting in this video clip in two concise sentences.",
+              "response": "The clip centers on a glowing golden accretion disk encircling a dark central shadow. Warm amber highlights contrast sharply against the deep black cosmic background.",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": {
+                  "label": "Behavior: not_exposed",
+                  "status": "not_exposed",
+                  "supervised_count": null,
+                  "token_count": null
+                },
+                "first_visual_ms": null,
+                "i2v_count": 0,
+                "native_allocator": {
+                  "coverage": "COVERED",
+                  "covered": true,
+                  "covered_stage_count": 1,
+                  "details": ["vlm: 224.0 MiB peak"],
+                  "label": "VRAM: 224.0 MiB peak",
+                  "peak_bytes": 234881024,
+                  "total_stage_count": 1
+                },
+                "total_ms": 56.917,
+                "ttfa_ms": null,
+                "ttft_ms": null,
+                "visual_slots": 0
+              },
+              "visual_slots": []
+            },
+            {
+              "asr_text": null,
+              "index": 2,
+              "interrupted": false,
+              "prompt": "How does the motion or camera movement evolve from the beginning of the clip to the end?",
+              "response": "The camera pushes smoothly inward while luminous plasma arcs orbit steadily around the core.",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": {
+                  "label": "Behavior: not_exposed",
+                  "status": "not_exposed",
+                  "supervised_count": null,
+                  "token_count": null
+                },
+                "first_visual_ms": null,
+                "i2v_count": 0,
+                "native_allocator": {
+                  "coverage": "COVERED",
+                  "covered": true,
+                  "covered_stage_count": 1,
+                  "details": ["vlm: 160.0 MiB peak"],
+                  "label": "VRAM: 160.0 MiB peak",
+                  "peak_bytes": 167772160,
+                  "total_stage_count": 1
+                },
+                "total_ms": 16.276,
+                "ttfa_ms": null,
+                "ttft_ms": null,
+                "visual_slots": 0
+              },
+              "visual_slots": []
+            },
+            {
+              "asr_text": null,
+              "index": 3,
+              "interrupted": false,
+              "prompt": "Summarize the visual mood in one short sentence and name the two most prominent elements.",
+              "response": "The mood is dramatic and serene, anchored by the golden accretion ring and the dark event horizon.",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": {
+                  "label": "Behavior: not_exposed",
+                  "status": "not_exposed",
+                  "supervised_count": null,
+                  "token_count": null
+                },
+                "first_visual_ms": null,
+                "i2v_count": 0,
+                "native_allocator": {
+                  "coverage": "COVERED",
+                  "covered": true,
+                  "covered_stage_count": 1,
+                  "details": ["vlm: 160.0 MiB peak"],
+                  "label": "VRAM: 160.0 MiB peak",
+                  "peak_bytes": 167772160,
+                  "total_stage_count": 1
+                },
+                "total_ms": 19.409,
+                "ttfa_ms": null,
+                "ttft_ms": null,
+                "visual_slots": 0
+              },
+              "visual_slots": []
+            }
+          ]
+        }
+        """
+
+        let imported = try SessionExporter.importJSONString(json)
+        XCTAssertEqual(imported.sessionID, "showcase-journey_3")
+        XCTAssertEqual(imported.turnCount, 3)
+        XCTAssertEqual(imported.turns.count, 6)
+        XCTAssertEqual(imported.messages.count, 6)
+
+        for idx in [1, 3, 5] {
+            let assistant = imported.turns[idx]
+            XCTAssertTrue(assistant.blocks.isEmpty)
+            XCTAssertTrue(assistant.artifacts.isEmpty)
+            XCTAssertNil(assistant.telemetry.ttftMs)
+            XCTAssertNil(assistant.telemetry.ttfaMs)
+            XCTAssertNil(assistant.telemetry.firstVisualMs)
+            XCTAssertEqual(assistant.telemetry.importedBehaviorLogprobs?.status, "not_exposed")
+            XCTAssertNil(assistant.telemetry.importedBehaviorLogprobs?.tokenCount)
+        }
+        XCTAssertEqual(imported.turns[1].telemetry.totalMs, 56.917)
+        XCTAssertEqual(imported.turns[3].telemetry.totalMs, 16.276)
+        XCTAssertEqual(imported.turns[5].telemetry.totalMs, 19.409)
+        XCTAssertEqual(imported.turns[1].telemetry.importedNativeAllocator?.peakBytes, 234_881_024)
+        XCTAssertEqual(imported.turns[3].telemetry.importedNativeAllocator?.peakBytes, 167_772_160)
+
+        let reexported = SessionExporter.buildJSONData(
+            sessionID: imported.sessionID ?? "",
+            model: imported.model ?? "",
+            turns: imported.turns,
+            exportedAt: fixedDate
+        )
+        XCTAssertFalse(String(decoding: reexported, as: UTF8.self).contains(";base64,"))
+        let reimported = try SessionExporter.importJSON(reexported)
+        XCTAssertEqual(reimported.turnCount, 3)
+        XCTAssertEqual(reimported.turns.count, 6)
+        XCTAssertEqual(reimported.turns[5].text, imported.turns[5].text)
+    }
+
+    func testShowcaseJourney4AbstentionBehaviorLogprobsAndNotCoveredVRAMImportAndRoundTrip() throws {
+        let json = """
+        {
+          "client": "umminfer-showcase",
+          "exported_at": "2025-11-24T16:00:00.000Z",
+          "model": "qwen3-native",
+          "schema": "umminfer-session-export-v1",
+          "session_id": "showcase-journey_4",
+          "turn_count": 2,
+          "turns": [
+            {
+              "asr_text": null,
+              "index": 1,
+              "interrupted": false,
+              "prompt": "Prove concisely in four numbered lines that the square root of 2 is irrational using integer parity. Pure symbolic math prose only; do not insert any visual illustrations.",
+              "response": "1. Assume sqrt(2) = a/b in lowest terms with integers a, b.\\n2. Then a^2 = 2b^2, so a^2 and therefore a is even (a = 2k).\\n3. Substituting gives 4k^2 = 2b^2, so b^2 = 2k^2 and b is also even.\\n4. Both a and b share factor 2, contradicting lowest terms; hence sqrt(2) is irrational.",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": {
+                  "format": "umminfer-behavior-logprobs-v1",
+                  "label": "Behavior: 8 tok (8 sup)",
+                  "status": "exposed",
+                  "supervised_count": 8,
+                  "token_count": 8,
+                  "tokenizer_sha256": "1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016"
+                },
+                "first_visual_ms": null,
+                "i2v_count": 0,
+                "native_allocator": {
+                  "coverage": "COVERED",
+                  "covered": true,
+                  "covered_stage_count": 1,
+                  "details": ["vlm: 128.0 MiB peak"],
+                  "label": "VRAM: 128.0 MiB peak",
+                  "peak_bytes": 134217728,
+                  "total_stage_count": 1
+                },
+                "total_ms": 10.425,
+                "ttfa_ms": null,
+                "ttft_ms": 1.716,
+                "visual_slots": 0
+              },
+              "visual_slots": []
+            },
+            {
+              "asr_text": null,
+              "index": 2,
+              "interrupted": false,
+              "prompt": "Narrate a two-beat documentary vignette of a sunlit coral reef transitioning into a bioluminescent night tide. Include one still frame for the sunlit reef and one motion clip for the glowing night current.",
+              "response": "At noon, shafts of turquoise sunlight illuminate a dense coral reef teeming with drifting anthias. After dusk, bioluminescent dinoflagellates ignite along the rolling tide in ribbons of electric blue.",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": {
+                  "label": "Behavior: not_exposed",
+                  "status": "not_exposed",
+                  "supervised_count": null,
+                  "token_count": null
+                },
+                "first_visual_ms": 4.211,
+                "i2v_count": 0,
+                "native_allocator": {
+                  "coverage": "NOT_COVERED",
+                  "covered": false,
+                  "covered_stage_count": 0,
+                  "details": ["vlm: N/C (batched_request_attribution_unavailable)"],
+                  "label": "VRAM: N/C",
+                  "peak_bytes": null,
+                  "total_stage_count": 1
+                },
+                "total_ms": 20.153,
+                "ttfa_ms": null,
+                "ttft_ms": 1.106,
+                "visual_slots": 2
+              },
+              "visual_slots": [
+                {
+                  "bytes": 74,
+                  "id": "slot-0",
+                  "kind": "image",
+                  "prompt": "Sunlit shallow coral reef with clear turquoise shafts of light and vivid coral formations",
+                  "sha256": "149847e7a73da8a4790587cb5809c0d6c82ba7d395f9f7ba82112b00e43ff284",
+                  "slot_id": "slot-0",
+                  "slot_index": 0
+                },
+                {
+                  "bytes": 57,
+                  "id": "slot-1",
+                  "kind": "video",
+                  "prompt": "Slow underwater tracking shot of bioluminescent blue ocean currents pulsing at night",
+                  "sha256": "1744bda279e0d1e59ea30abde852082ee44ad8132463e526c3fefbca3443a32b",
+                  "slot_id": "slot-1",
+                  "slot_index": 1
+                }
+              ]
+            }
+          ]
+        }
+        """
+
+        let imported = try SessionExporter.importJSONString(json)
+        XCTAssertEqual(imported.sessionID, "showcase-journey_4")
+        XCTAssertEqual(imported.turnCount, 2)
+        XCTAssertEqual(imported.turns.count, 4)
+
+        // Turn 1: abstention (0 visuals) + exposed behavior_logprobs + COVERED VRAM.
+        let abstention = imported.turns[1]
+        XCTAssertTrue(abstention.blocks.isEmpty)
+        XCTAssertEqual(abstention.telemetry.visualSettledCount, 0)
+        XCTAssertEqual(abstention.telemetry.importedBehaviorLogprobs?.status, "exposed")
+        XCTAssertEqual(abstention.telemetry.importedBehaviorLogprobs?.tokenCount, 8)
+        XCTAssertEqual(abstention.telemetry.importedBehaviorLogprobs?.supervisedCount, 8)
+        XCTAssertEqual(abstention.telemetry.importedBehaviorLogprobs?.format, "umminfer-behavior-logprobs-v1")
+        XCTAssertEqual(
+            abstention.telemetry.importedBehaviorLogprobs?.tokenizerSha256,
+            "1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016"
+        )
+        XCTAssertEqual(abstention.telemetry.importedNativeAllocator?.peakBytes, 134_217_728)
+
+        // Turn 2: visual scene (2 slots) + not_exposed behavior + NOT_COVERED VRAM (null peak).
+        let visualTurn = imported.turns[3]
+        XCTAssertEqual(visualTurn.blocks.compactMap(\.visualSlot).count, 2)
+        XCTAssertEqual(visualTurn.telemetry.importedBehaviorLogprobs?.status, "not_exposed")
+        XCTAssertNil(visualTurn.telemetry.importedBehaviorLogprobs?.tokenCount)
+        XCTAssertNil(visualTurn.telemetry.importedBehaviorLogprobs?.supervisedCount)
+        XCTAssertEqual(visualTurn.telemetry.importedNativeAllocator?.coverage, "NOT_COVERED")
+        XCTAssertEqual(visualTurn.telemetry.importedNativeAllocator?.covered, false)
+        XCTAssertNil(visualTurn.telemetry.importedNativeAllocator?.peakBytes)
+        XCTAssertTrue(visualTurn.telemetry.formattedPills.map(\.label).contains("VRAM: N/C"))
+        XCTAssertTrue(visualTurn.telemetry.formattedPills.map(\.label).contains("Behavior: not_exposed"))
+
+        // Round-trip re-export preserves exposed behavior metadata AND honest null NOT_COVERED peak.
+        let reexported = SessionExporter.buildJSONData(
+            sessionID: imported.sessionID ?? "",
+            model: imported.model ?? "",
+            turns: imported.turns,
+            exportedAt: fixedDate
+        )
+        XCTAssertFalse(String(decoding: reexported, as: UTF8.self).contains(";base64,"))
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: reexported) as? [String: Any])
+        let turnsOut = try XCTUnwrap(root["turns"] as? [[String: Any]])
+        let t1Beh = try XCTUnwrap((turnsOut[0]["telemetry"] as? [String: Any])?["behavior_logprobs"] as? [String: Any])
+        XCTAssertEqual(t1Beh["status"] as? String, "exposed")
+        XCTAssertEqual(t1Beh["token_count"] as? Int, 8)
+        XCTAssertEqual(t1Beh["supervised_count"] as? Int, 8)
+        XCTAssertEqual(t1Beh["format"] as? String, "umminfer-behavior-logprobs-v1")
+        let t2Vram = try XCTUnwrap((turnsOut[1]["telemetry"] as? [String: Any])?["native_allocator"] as? [String: Any])
+        XCTAssertEqual(t2Vram["coverage"] as? String, "NOT_COVERED")
+        XCTAssertEqual(t2Vram["covered"] as? Bool, false)
+        XCTAssertTrue(t2Vram["peak_bytes"] is NSNull, "NOT_COVERED peak_bytes must re-export as null, never 0")
+    }
+
+    func testShowcaseJourney5StoryboardI2VChainAndExplicitAnchorImportAndRoundTrip() throws {
+        // Exact Showcase self-check Journey 5 payload (implicit anchor) + explicit anchor variant.
+        let slot0SHA = "956d46eb3091eedbb03dab3b88cba834759f43f7c4fb8476877c44356190e49c"
+        let slot1SHA = "b5fd908639925342fe50faef81fe7a838242b6b26e4fc802367b32841820d9a8"
+
+        let implicitJSON = """
+        {
+          "client": "umminfer-showcase",
+          "exported_at": "2025-11-24T16:00:00.000Z",
+          "model": "qwen3-native",
+          "schema": "umminfer-session-export-v1",
+          "session_id": "showcase-journey_5",
+          "turn_count": 1,
+          "turns": [
+            {
+              "asr_text": null,
+              "index": 1,
+              "interrupted": false,
+              "prompt": "Write a crisp two-sentence coastal twilight storyboard. Place one [[image: ...]] directive after the first sentence for an opening keyframe of a lone wooden lighthouse glowing above misty cliffs, and one [[video: ...]] directive after the second sentence for an animated continuation as amber beam light sweeps over rolling waves.",
+              "response": "Above the misty coastal cliffs, a lone wooden lighthouse glows with warm golden amber light. Moments later, the lantern beam sweeps steadily across rolling twilight waves in a smooth cinematic pan.",
+              "role": "turn",
+              "spoken_bytes": null,
+              "telemetry": {
+                "behavior_logprobs": {
+                  "label": "Behavior: not_exposed",
+                  "status": "not_exposed",
+                  "supervised_count": null,
+                  "token_count": null
+                },
+                "first_visual_ms": 5.336,
+                "i2v_count": 2,
+                "native_allocator": {
+                  "coverage": "COVERED",
+                  "covered": true,
+                  "covered_stage_count": 4,
+                  "details": [
+                    "vlm: 256.0 MiB peak",
+                    "image: 192.0 MiB peak",
+                    "video: 320.0 MiB peak",
+                    "tts: 64.0 MiB peak"
+                  ],
+                  "label": "VRAM: 320.0 MiB peak",
+                  "peak_bytes": 335544320,
+                  "total_stage_count": 4
+                },
+                "total_ms": 33.612,
+                "ttfa_ms": 8.532,
+                "ttft_ms": 2.232,
+                "visual_slots": 2
+              },
+              "visual_slots": [
+                {
+                  "bytes": 74,
+                  "continuity_mode": "i2v_chain",
+                  "id": "slot-0",
+                  "kind": "image",
+                  "prompt": "Lone wooden lighthouse glowing above misty coastal cliffs, cinematic warm golden glow, 35mm film",
+                  "sha256": "\(slot0SHA)",
+                  "slot_id": "slot-0",
+                  "slot_index": 0
+                },
+                {
+                  "anchor_explicit": false,
+                  "anchor_slot_index": 0,
+                  "bytes": 67,
+                  "continuity_mode": "i2v_chain",
+                  "id": "slot-1",
+                  "kind": "video",
+                  "prompt": "Amber lighthouse beam sweeping steadily across rolling misty twilight coastal waves",
+                  "sha256": "\(slot1SHA)",
+                  "slot_id": "slot-1",
+                  "slot_index": 1
+                }
+              ]
+            }
+          ]
+        }
+        """
+
+        let importedImplicit = try SessionExporter.importJSONString(implicitJSON)
+        XCTAssertEqual(importedImplicit.sessionID, "showcase-journey_5")
+        XCTAssertEqual(importedImplicit.turnCount, 1)
+        let implicitSlots = importedImplicit.turns[1].blocks.compactMap(\.visualSlot)
+        XCTAssertEqual(implicitSlots.count, 2)
+        XCTAssertEqual(implicitSlots[0].continuityMode, "i2v_chain")
+        XCTAssertNil(implicitSlots[0].anchorSlotIndex)
+        XCTAssertFalse(implicitSlots[0].anchorExplicit)
+        XCTAssertNil(implicitSlots[0].continuityBadgeText, "Source image slot-0 must not display an incoming I2V chain badge")
+        XCTAssertEqual(implicitSlots[1].continuityMode, "i2v_chain")
+        XCTAssertEqual(implicitSlots[1].anchorSlotIndex, 0)
+        XCTAssertFalse(implicitSlots[1].anchorExplicit)
+        XCTAssertEqual(implicitSlots[1].continuityBadgeText, "I2V ← Slot 1")
+        XCTAssertTrue(importedImplicit.turns[1].telemetry.hasI2VChain)
+        XCTAssertFalse(importedImplicit.turns[1].telemetry.hasExplicitAnchor)
+
+        // Explicit-anchor Showcase Journey 5 variant (`source=slot-0` + `anchor_sha256`).
+        let explicitJSON = implicitJSON.replacingOccurrences(
+            of: #""anchor_explicit": false,"#,
+            with: """
+            "anchor_explicit": true,
+                  "anchor_sha256": "\(slot0SHA)",
+            """
+        )
+        let importedExplicit = try SessionExporter.importJSONString(explicitJSON)
+        let explicitSlots = importedExplicit.turns[1].blocks.compactMap(\.visualSlot)
+        XCTAssertEqual(explicitSlots.count, 2)
+        XCTAssertTrue(explicitSlots[1].anchorExplicit)
+        XCTAssertEqual(explicitSlots[1].anchorSlotIndex, 0)
+        XCTAssertEqual(explicitSlots[1].anchorSha256, slot0SHA)
+        XCTAssertEqual(explicitSlots[1].continuityBadgeText, "Explicit I2V ← Slot 1 · 956d46eb")
+        XCTAssertTrue(importedExplicit.turns[1].telemetry.hasExplicitAnchor)
+
+        // Round-trip JSON + Markdown for explicit-anchor storyboard.
+        let reexported = SessionExporter.buildJSONData(
+            sessionID: importedExplicit.sessionID ?? "",
+            model: importedExplicit.model ?? "",
+            turns: importedExplicit.turns,
+            exportedAt: fixedDate
+        )
+        XCTAssertFalse(String(decoding: reexported, as: UTF8.self).contains(";base64,"))
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: reexported) as? [String: Any])
+        let turnOut = try XCTUnwrap((root["turns"] as? [[String: Any]])?.first)
+        let telOut = try XCTUnwrap(turnOut["telemetry"] as? [String: Any])
+        XCTAssertEqual(telOut["i2v_count"] as? Int, 2)
+        let slotsOut = try XCTUnwrap(turnOut["visual_slots"] as? [[String: Any]])
+        XCTAssertEqual(slotsOut[1]["anchor_slot_index"] as? Int, 0)
+        XCTAssertEqual(slotsOut[1]["anchor_explicit"] as? Bool, true)
+        XCTAssertEqual(slotsOut[1]["anchor_sha256"] as? String, slot0SHA)
+
+        let md = SessionExporter.buildMarkdown(
+            sessionID: importedExplicit.sessionID ?? "",
+            model: importedExplicit.model ?? "",
+            turns: importedExplicit.turns,
+            exportedAt: fixedDate
+        )
+        XCTAssertTrue(md.contains("`Explicit I2V ← Slot 1 · 956d46eb`"))
+        XCTAssertTrue(md.contains("`Explicit I2V`"))
+        XCTAssertTrue(md.contains("`VRAM: 320 MiB peak`"))
+        XCTAssertTrue(md.contains("`Behavior: not_exposed`"))
+    }
 }
 
 // MARK: - Test doubles for zero-network & busy-state import tests

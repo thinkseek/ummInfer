@@ -63,6 +63,12 @@ struct SessionExportVisualSlot: Equatable, Encodable, Sendable {
             }
             return "I2V ← \(slotLabel)"
         }
+        if anchorExplicit == true {
+            if let sha = UnifiedDecode.normalizedAnchorSHA256(anchorSha256) {
+                return "Explicit I2V · \(sha.prefix(8))"
+            }
+            return "Explicit I2V"
+        }
         if continuityMode == NarrativeContinuityMode.promptAnchor.rawValue {
             return "Anchor"
         }

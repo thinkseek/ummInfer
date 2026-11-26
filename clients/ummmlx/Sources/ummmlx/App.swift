@@ -17,6 +17,87 @@ struct UmmMLXApp: App {
         }
         .defaultSize(width: 900, height: 680)
         .windowResizability(.contentMinSize)
+        .commands {
+            SessionCommands(model: model)
+        }
+    }
+}
+
+struct SessionCommands: Commands {
+    @ObservedObject var model: ChatModel
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New chat") {
+                model.newChat()
+            }
+            .keyboardShortcut("n", modifiers: .command)
+        }
+        CommandGroup(replacing: .importExport) {
+            Button("Import JSON…") {
+                SessionFilePanels.importSession(into: model)
+            }
+            .keyboardShortcut("o", modifiers: .command)
+            .disabled(model.isSessionImportBlocked)
+            Divider()
+            Button("Export JSON…") {
+                SessionFilePanels.exportSession(from: model, format: .json)
+            }
+            .keyboardShortcut("e", modifiers: .command)
+            .disabled(model.turns.isEmpty || model.isStreaming)
+            Button("Export Markdown…") {
+                SessionFilePanels.exportSession(from: model, format: .markdown)
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(model.turns.isEmpty || model.isStreaming)
+        }
+    }
+}
+
+@MainActor
+enum SessionFilePanels {
+    static func importSession(into model: ChatModel) {
+        guard !model.isSessionImportBlocked else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            if let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+               fileSize > SessionExporter.maxImportBytes {
+                let err = SessionImportError.payloadTooLarge(
+                    bytes: fileSize,
+                    limit: SessionExporter.maxImportBytes
+                )
+                model.noteSessionImportFailed(err.localizedDescription)
+                return
+            }
+            let data = try Data(contentsOf: url)
+            _ = try model.importSessionJSON(data, filename: url.lastPathComponent)
+        } catch is SessionImportError {
+            // ChatModel.importSessionJSON already surfaced the validation error.
+        } catch {
+            model.noteSessionImportFailed(error.localizedDescription)
+        }
+    }
+
+    static func exportSession(from model: ChatModel, format: SessionExportFormat) {
+        guard !model.turns.isEmpty, !model.isStreaming else { return }
+        let data = model.exportSessionData(format: format)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = model.exportSessionFilename(format: format)
+        let markdownType = UTType(filenameExtension: "md") ?? .plainText
+        panel.allowedContentTypes = [format == .json ? .json : markdownType]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try data.write(to: url, options: .atomic)
+            model.noteSessionExported(filename: url.lastPathComponent)
+        } catch {
+            model.noteSessionExportFailed(error.localizedDescription)
+        }
     }
 }
 
@@ -167,6 +248,7 @@ struct RootView: View {
                 importSession()
             }
             .fixedSize()
+            .keyboardShortcut("o", modifiers: .command)
             .disabled(model.isSessionImportBlocked)
             .help("Import a previously exported ummInfer macOS or Web session JSON file without contacting the server")
             .accessibilityIdentifier("importSessionJSON")
@@ -174,10 +256,14 @@ struct RootView: View {
                 Button("Export JSON…") {
                     exportSession(format: .json)
                 }
+                .keyboardShortcut("e", modifiers: .command)
+                .disabled(model.turns.isEmpty || model.isStreaming)
                 .accessibilityIdentifier("exportSessionJSON")
                 Button("Export Markdown…") {
                     exportSession(format: .markdown)
                 }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(model.turns.isEmpty || model.isStreaming)
                 .accessibilityIdentifier("exportSessionMarkdown")
             }
             .fixedSize()
@@ -185,6 +271,7 @@ struct RootView: View {
             .help("Export session transcript, visual metadata, and observed telemetry as JSON or Markdown")
             .accessibilityIdentifier("exportSession")
             Button("New chat") { model.newChat() }
+                .keyboardShortcut("n", modifiers: .command)
                 .accessibilityIdentifier("new-chat")
         }
         .padding(16)
@@ -389,47 +476,11 @@ struct RootView: View {
     }
 
     private func importSession() {
-        guard !model.isSessionImportBlocked else { return }
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            if let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-               fileSize > SessionExporter.maxImportBytes {
-                let err = SessionImportError.payloadTooLarge(
-                    bytes: fileSize,
-                    limit: SessionExporter.maxImportBytes
-                )
-                model.noteSessionImportFailed(err.localizedDescription)
-                return
-            }
-            let data = try Data(contentsOf: url)
-            _ = try model.importSessionJSON(data, filename: url.lastPathComponent)
-        } catch is SessionImportError {
-            // ChatModel.importSessionJSON already surfaced the validation error.
-        } catch {
-            model.noteSessionImportFailed(error.localizedDescription)
-        }
+        SessionFilePanels.importSession(into: model)
     }
 
     private func exportSession(format: SessionExportFormat) {
-        guard !model.turns.isEmpty, !model.isStreaming else { return }
-        let data = model.exportSessionData(format: format)
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = model.exportSessionFilename(format: format)
-        let markdownType = UTType(filenameExtension: "md") ?? .plainText
-        panel.allowedContentTypes = [format == .json ? .json : markdownType]
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try data.write(to: url, options: .atomic)
-            model.noteSessionExported(filename: url.lastPathComponent)
-        } catch {
-            model.noteSessionExportFailed(error.localizedDescription)
-        }
+        SessionFilePanels.exportSession(from: model, format: format)
     }
 
     private var transcript: some View {
