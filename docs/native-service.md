@@ -410,6 +410,21 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 34 Web UI & macOS `ummmlx` Per-Turn Barge-In Cut-Point Badges & Real PCM16 Mic Level Meter (`e6d7291`):
+  - Exposed real server-acknowledged spoken prefix cut-point badges
+    (`Interrupted · <N> B spoken` / `Interrupted before audio` from observed
+    `response.playback_ack` / `response.cancelled` `text_cursor`, never shown on
+    completed turns) and real captured 16 kHz PCM16 RMS mic level meters (zero
+    synthetic animation, reset strictly to `0` on disconnect/stop) across both
+    Web UI (`web/index.html`) and macOS `ummmlx`:
+    - `web_ui_contract_test.py`: **17/17 PASS** (including Node behavioral check
+      `realtime_audio_meter_and_barge_in_behavior`).
+    - macOS `ummmlx`: `swift test` **134/134 PASS**; Release `ummmlx.app` rebuilt
+      (`9.20 s`, zero `_AVKit_SwiftUI`).
+    - Zero-restart hot-deployed `web/index.html` (`.wave32` backup) live onto
+      SM90 `43301` (`id="realtimeMicMeter"` & `computePcm16RmsLevel` verified
+      live, `/health in_flight=0`).
+
 - Wave 33 Native C++ CLI `umm-infer voice` Echo-Suppression & Barge-In Telemetry (`9147b84`):
   - Completed 3-client parity (Web UI + macOS `ummmlx` + C++ CLI `umm-infer voice`)
     for Wave 31's server-side `turn_detection.echo_suppression`: added
