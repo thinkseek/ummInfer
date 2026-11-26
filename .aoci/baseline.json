@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T04:53:09Z",
+  "updated_at": "2026-11-26T05:09:10Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "b76709eab317e57dc5b998bd78518581b9dca6c718607ff0b0e31f913b5d797b",
+      "sha256": "1709e024856bab092e8eb6db7935e71e0ddc2bdc4b859e34de4e031cf0e72e4b",
       "size": 240416,
-      "normalized_sha256": "b76709eab317e57dc5b998bd78518581b9dca6c718607ff0b0e31f913b5d797b"
+      "normalized_sha256": "1709e024856bab092e8eb6db7935e71e0ddc2bdc4b859e34de4e031cf0e72e4b"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -539,9 +539,9 @@
     },
     "docs/client.md": {
       "role": "index",
-      "sha256": "58372257d4a2024e5d4da8e6455c8908198099e73905e1837cf4ad1dc0f327a2",
-      "size": 44010,
-      "normalized_sha256": "58372257d4a2024e5d4da8e6455c8908198099e73905e1837cf4ad1dc0f327a2"
+      "sha256": "677a4bc904a7940945b418e94a3f40041c358829463d8f679694a5dd9755d884",
+      "size": 45840,
+      "normalized_sha256": "677a4bc904a7940945b418e94a3f40041c358829463d8f679694a5dd9755d884"
     },
     "docs/concurrency.md": {
       "role": "index",
@@ -581,9 +581,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "b298d4c9175519e781d37eb096336a8ccbbcbb96b8d8401fcacae99cc7db7da8",
-      "size": 138074,
-      "normalized_sha256": "b298d4c9175519e781d37eb096336a8ccbbcbb96b8d8401fcacae99cc7db7da8"
+      "sha256": "a30eca45cb1cbb8aee8eddf0e99be9e2d8ba1dcafc2993708044b3b21ec95b7a",
+      "size": 138543,
+      "normalized_sha256": "a30eca45cb1cbb8aee8eddf0e99be9e2d8ba1dcafc2993708044b3b21ec95b7a"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -761,9 +761,9 @@
     },
     "include/umminfer/client/client.hpp": {
       "role": "index",
-      "sha256": "006680e871cbad497385ee10f45dbe2ad264858144398912c18a61a313f62621",
-      "size": 11584,
-      "normalized_sha256": "006680e871cbad497385ee10f45dbe2ad264858144398912c18a61a313f62621"
+      "sha256": "158c40b6a371cc2fb0d89252f76d5d25e83bfcfa7ca2661992f7c911ab4d98f2",
+      "size": 12455,
+      "normalized_sha256": "158c40b6a371cc2fb0d89252f76d5d25e83bfcfa7ca2661992f7c911ab4d98f2"
     },
     "include/umminfer/comm/comm.hpp": {
       "role": "index",
@@ -2371,9 +2371,9 @@
     },
     "src/client/cli.cpp": {
       "role": "index",
-      "sha256": "a64150bec9b3ace317346bde29bd6428511494d6585aed96e798f97dd2135ed6",
-      "size": 50690,
-      "normalized_sha256": "a64150bec9b3ace317346bde29bd6428511494d6585aed96e798f97dd2135ed6"
+      "sha256": "396da3bb7825d7234b3e80ba2c18f7d9726a2c0766c26e027c9b757eec02134a",
+      "size": 54217,
+      "normalized_sha256": "396da3bb7825d7234b3e80ba2c18f7d9726a2c0766c26e027c9b757eec02134a"
     },
     "src/client/cli.hpp": {
       "role": "index",
@@ -2395,9 +2395,9 @@
     },
     "src/client/openai.cpp": {
       "role": "index",
-      "sha256": "ca171a417af4de5849b14bc922028fb6998d1667251b750256342f81cc3675c5",
-      "size": 55687,
-      "normalized_sha256": "ca171a417af4de5849b14bc922028fb6998d1667251b750256342f81cc3675c5"
+      "sha256": "4b76818517dbf4b672e15c41b7404bde6f8d326d56391be5d0c1d25cb9e98f7c",
+      "size": 59227,
+      "normalized_sha256": "4b76818517dbf4b672e15c41b7404bde6f8d326d56391be5d0c1d25cb9e98f7c"
     },
     "src/client/realtime.cpp": {
       "role": "index",
@@ -2623,9 +2623,9 @@
     },
     "tests/client_media_cli_e2e.py": {
       "role": "observe",
-      "sha256": "eaeaf99ba92b2f4a2ba80e2472303451fd562edec018db0399fd6b6eddad7434",
-      "size": 34202,
-      "normalized_sha256": "eaeaf99ba92b2f4a2ba80e2472303451fd562edec018db0399fd6b6eddad7434"
+      "sha256": "30638542c8e3fc8934ff57bb4de30d51d20a9a7c31f03201b03870a8b3c87ee3",
+      "size": 42965,
+      "normalized_sha256": "30638542c8e3fc8934ff57bb4de30d51d20a9a7c31f03201b03870a8b3c87ee3"
     },
     "tests/client_retry_e2e.py": {
       "role": "observe",
@@ -2929,9 +2929,9 @@
     },
     "tests/unified_contract_test.cpp": {
       "role": "observe",
-      "sha256": "af039e81745615af5833cbe8813712358a5f6b0b89f4f2ac6867c21a40788e47",
-      "size": 536735,
-      "normalized_sha256": "af039e81745615af5833cbe8813712358a5f6b0b89f4f2ac6867c21a40788e47"
+      "sha256": "1dd6a791f14cc4c66558eeb07a06545617f374346faeddb88201a45eef8cb288",
+      "size": 545618,
+      "normalized_sha256": "1dd6a791f14cc4c66558eeb07a06545617f374346faeddb88201a45eef8cb288"
     },
     "tests/video_live_e2e.py": {
       "role": "observe",
