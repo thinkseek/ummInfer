@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T10:27:07Z",
+  "updated_at": "2026-11-26T10:43:01Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "707c3cb3636d04946ba6d7509ab9a47efc4914538f5917adf86764b63f2c5df8",
-      "size": 273702,
-      "normalized_sha256": "707c3cb3636d04946ba6d7509ab9a47efc4914538f5917adf86764b63f2c5df8"
+      "sha256": "09da543a1a4da1a26c30a55dacf969a1e568d86d1dd0cc873d361bbf66e4888e",
+      "size": 273703,
+      "normalized_sha256": "09da543a1a4da1a26c30a55dacf969a1e568d86d1dd0cc873d361bbf66e4888e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -455,9 +455,9 @@
     },
     "clients/ummmlx/Sources/ummmlx/App.swift": {
       "role": "index",
-      "sha256": "ebd73162076b510b3230709459c7912be774db77fec3ac84ddfaca4685c1c4dc",
-      "size": 56899,
-      "normalized_sha256": "ebd73162076b510b3230709459c7912be774db77fec3ac84ddfaca4685c1c4dc"
+      "sha256": "7c802d1fc28dee8cc40660d89642a0122e89f9dd0c4bc2e3f832bfcff8c3f296",
+      "size": 58790,
+      "normalized_sha256": "7c802d1fc28dee8cc40660d89642a0122e89f9dd0c4bc2e3f832bfcff8c3f296"
     },
     "clients/ummmlx/Sources/ummmlx/AudioPlayback.swift": {
       "role": "index",
@@ -503,9 +503,9 @@
     },
     "clients/ummmlx/Sources/ummmlx/SessionExport.swift": {
       "role": "index",
-      "sha256": "10a8260715ede1da6fac429363bea0e6640f4c758ab9eeb003e15f512c4d9a0e",
-      "size": 55953,
-      "normalized_sha256": "10a8260715ede1da6fac429363bea0e6640f4c758ab9eeb003e15f512c4d9a0e"
+      "sha256": "9be9a4699149b08b918e4a5a38dcfd377cc7d8edf268318a9c49ffa01160101a",
+      "size": 56183,
+      "normalized_sha256": "9be9a4699149b08b918e4a5a38dcfd377cc7d8edf268318a9c49ffa01160101a"
     },
     "clients/ummmlx/Sources/ummmlx/Speech.swift": {
       "role": "index",
@@ -575,9 +575,9 @@
     },
     "clients/ummmlx/Tests/ummmlxTests/SessionExportTests.swift": {
       "role": "index",
-      "sha256": "f7fb6d9f2ef6f3e77985a3eb83552cb36fc0cd47cd47f1c83057d1178b4fa548",
-      "size": 52523,
-      "normalized_sha256": "f7fb6d9f2ef6f3e77985a3eb83552cb36fc0cd47cd47f1c83057d1178b4fa548"
+      "sha256": "da5788407ef5c779b435a1e0412655069d0ac3bb771712763b45c250dd37f613",
+      "size": 86584,
+      "normalized_sha256": "da5788407ef5c779b435a1e0412655069d0ac3bb771712763b45c250dd37f613"
     },
     "clients/ummmlx/Tests/ummmlxTests/ShowcaseTelemetryTests.swift": {
       "role": "index",
@@ -851,9 +851,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "17f16d9168872e63102baf899cf68bffc03795af6950999a75c8a5b472ca5290",
-      "size": 151927,
-      "normalized_sha256": "17f16d9168872e63102baf899cf68bffc03795af6950999a75c8a5b472ca5290"
+      "sha256": "f91a182472b60de31e0b2120401b0911a222c94399266a6f3c5d1c700880562c",
+      "size": 152006,
+      "normalized_sha256": "f91a182472b60de31e0b2120401b0911a222c94399266a6f3c5d1c700880562c"
     },
     "docs/full-duplex.md": {
       "role": "index",
