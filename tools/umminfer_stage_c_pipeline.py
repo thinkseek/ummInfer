@@ -914,6 +914,184 @@ def _run_dpo_export_preflight(
     return summary
 
 
+_FORBIDDEN_ML_MODULES = frozenset(("torch", "transformers", "numpy", "mlx"))
+
+
+def _run_online_grpo_preflight(
+    bundle_dir: str | Path,
+    source_dir: str | Path,
+    *,
+    tokenizer_dir: str | Path | None = None,
+) -> dict:
+    """Verify a prepared online-GRPO preflight bundle read-only via fresh reconstruction.
+
+    Runs inside an isolated temporary directory so the input bundle is never mutated,
+    blocks torch/transformers/numpy/mlx imports before and during verification, and
+    fails closed on any missing, tampered, stale, or consistently-rehashed artifact.
+    """
+    loaded_before = sorted(m for m in _FORBIDDEN_ML_MODULES if m in sys.modules)
+    if loaded_before:
+        raise RuntimeError(
+            "forbidden ML modules already loaded before online-GRPO preflight: "
+            + ",".join(loaded_before)
+        )
+
+    bundle_path = Path(bundle_dir)
+    if not bundle_path.is_dir():
+        raise FileNotFoundError(
+            f"online-GRPO preflight bundle directory not found: {bundle_path}"
+        )
+    source_path = Path(source_dir)
+    if not source_path.is_dir():
+        raise FileNotFoundError(
+            f"online-GRPO source directory not found: {source_path}"
+        )
+    tok_path = Path(tokenizer_dir) if tokenizer_dir is not None else None
+    if tok_path is not None and not tok_path.is_dir():
+        raise FileNotFoundError(
+            f"online-GRPO tokenizer directory not found: {tok_path}"
+        )
+
+    real_import = builtins.__import__
+    real_find_spec = importlib.util.find_spec
+
+    def _forbid_ml_spec(name, *args, **kwargs):
+        if name.split(".", 1)[0] in _FORBIDDEN_ML_MODULES:
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    def _forbid_ml_import(name, *args, **kwargs):
+        root_mod = name.split(".", 1)[0]
+        if root_mod in _FORBIDDEN_ML_MODULES:
+            raise ImportError(
+                f"{root_mod} import is forbidden in Stage C online-GRPO preflight verification"
+            )
+        return real_import(name, *args, **kwargs)
+
+    builtins.__import__ = _forbid_ml_import
+    importlib.util.find_spec = _forbid_ml_spec
+    try:
+        import tempfile  # noqa: PLC0415
+        import umminfer_online_grpo_preflight as online_grpo  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory(
+            prefix="umm-stage-c-online-grpo-verify-"
+        ) as tmp:
+            verify_out_dir = Path(tmp) / "reconstructed"
+            try:
+                verify_result = online_grpo.verify_preflight(
+                    bundle_path,
+                    source_path,
+                    verify_out_dir,
+                    tokenizer_dir=tok_path,
+                )
+            except (
+                ValueError,
+                KeyError,
+                IndexError,
+                TypeError,
+                OSError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise ValueError(
+                    f"online-GRPO preflight verification failed: {exc}"
+                ) from exc
+
+            if verify_result.get("status") != "PASS":
+                raise ValueError(
+                    "online-GRPO preflight returned non-PASS status: "
+                    f"{verify_result.get('status')!r}"
+                )
+            if verify_result.get("fresh_process_reconstruction") != "BYTE_IDENTICAL":
+                raise ValueError(
+                    "online-GRPO preflight reconstruction was not BYTE_IDENTICAL: "
+                    f"{verify_result.get('fresh_process_reconstruction')!r}"
+                )
+            if verify_result.get("torch_imported") is not False:
+                raise RuntimeError(
+                    "online-GRPO preflight reported torch_imported != False"
+                )
+            upstream_claims = verify_result.get("claims") or {}
+            if (
+                upstream_claims.get("REAL_TRAINING") != "NOT_RUN"
+                or upstream_claims.get("optimizer") != "NOT_RUN"
+                or upstream_claims.get("gpu") != "NOT_RUN"
+                or upstream_claims.get("model_quality") != "NOT_RUN"
+                or upstream_claims.get("model_weights_updated") is not False
+            ):
+                raise ValueError(
+                    "online-GRPO preflight claims violated NOT_RUN honesty boundary"
+                )
+
+            reconstructed_files = {}
+            for path in sorted(
+                (p for p in verify_out_dir.rglob("*") if p.is_file()),
+                key=lambda p: p.relative_to(verify_out_dir).as_posix(),
+            ):
+                if path.is_symlink():
+                    raise ValueError(
+                        "reconstructed online-GRPO preflight bundle contains symlink"
+                    )
+                rel = path.relative_to(verify_out_dir).as_posix()
+                if Path(rel).name != rel:
+                    raise ValueError(
+                        f"unexpected nested path in reconstructed online-GRPO bundle: {rel}"
+                    )
+                reconstructed_files[rel] = ds.sha256_file(path)
+
+            if "manifest.json" not in reconstructed_files:
+                raise ValueError(
+                    "reconstructed online-GRPO preflight bundle missing manifest.json"
+                )
+            if len(reconstructed_files) != int(verify_result.get("file_count", -1)):
+                raise ValueError(
+                    "reconstructed online-GRPO preflight file count mismatch"
+                )
+            manifest_sha256 = reconstructed_files["manifest.json"]
+            run_id = verify_result.get("run_id")
+            if (
+                not isinstance(run_id, str)
+                or len(run_id) != 64
+                or (set(run_id) - _HEX_CHARS)
+            ):
+                raise ValueError("online-GRPO preflight run_id must be 64 lowercase hex chars")
+
+        loaded_after = sorted(m for m in _FORBIDDEN_ML_MODULES if m in sys.modules)
+        if loaded_after:
+            raise RuntimeError(
+                "forbidden ML modules loaded during online-GRPO preflight: "
+                + ",".join(loaded_after)
+            )
+    finally:
+        builtins.__import__ = real_import
+        importlib.util.find_spec = real_find_spec
+
+    summary = {
+        "schema": verify_result["schema"],
+        "status": "PASS",
+        "verification": "BYTE_IDENTICAL",
+        "tamper_rejection": verify_result.get("tamper_rejection", "HASH_THEN_REBUILD"),
+        "run_id": run_id,
+        "manifest_sha256": manifest_sha256,
+        "reconstructed_file_count": len(reconstructed_files),
+        "reconstructed_files": reconstructed_files,
+        "torch_imported": False,
+        "tokenizer_dir_provided": tok_path is not None,
+        "claims": {
+            "real_online_generation": "NOT_RUN",
+            "current_reference_forward": "NOT_RUN",
+            "online_optimizer": "NOT_RUN",
+            "gpu_execution": "NOT_RUN",
+            "model_quality": "NOT_RUN",
+            "REAL_TRAINING": "NOT_RUN",
+            "model_weights_updated": False,
+            "torch_imported": False,
+        },
+    }
+    summary["report_sha256"] = traj.sha256_bytes(traj.canonical_json(summary))
+    return summary
+
+
 def _build_live_request_body(
     case: dict,
     rollout: dict,
@@ -1429,6 +1607,9 @@ def run_stage_c_pipeline(
     dpo_export_preflight: bool = False,
     dpo_preflight_tokenizer_dir: str | Path | None = None,
     dpo_preflight_tokenizer=None,
+    verify_online_grpo_preflight: str | Path | None = None,
+    online_grpo_source_dir: str | Path | None = None,
+    online_grpo_tokenizer_dir: str | Path | None = None,
     overwrite: bool = False,
 ) -> dict:
     """Run the complete Stage C serving-export -> dataset -> trainer E2E pipeline."""
@@ -1471,6 +1652,18 @@ def run_stage_c_pipeline(
         raise ValueError(
             "--dpo-preflight-tokenizer-dir requires --dpo-export-preflight"
         )
+    if verify_online_grpo_preflight is not None and online_grpo_source_dir is None:
+        raise ValueError(
+            "--verify-online-grpo-preflight requires --online-grpo-source-dir"
+        )
+    if (
+        online_grpo_source_dir is not None
+        or online_grpo_tokenizer_dir is not None
+    ) and verify_online_grpo_preflight is None:
+        raise ValueError(
+            "--online-grpo-source-dir and --online-grpo-tokenizer-dir require "
+            "--verify-online-grpo-preflight"
+        )
 
     if source_count > 1:
         raise ValueError(
@@ -1478,7 +1671,7 @@ def run_stage_c_pipeline(
             "token_export_file (--token-export-file), or capture_live_url (--capture-live)"
         )
     if source_count == 0:
-        if verify_behavior_alignment is None:
+        if verify_behavior_alignment is None and verify_online_grpo_preflight is None:
             raise ValueError(
                 "specify exactly one of trajectory_paths (--from-trajectories) or "
                 "capture_live_url (--capture-live)"
@@ -1488,17 +1681,32 @@ def run_stage_c_pipeline(
                 "--dpo-export-preflight requires trajectory inputs "
                 "(--from-trajectories or --token-export-file)"
             )
-        alignment_summary = _run_behavior_token_alignment(
-            verify_behavior_alignment,
-            tokenizer_dir=alignment_tokenizer_dir,
-            reencode=alignment_reencode,
-            tokenizer=alignment_tokenizer,
-        )
+        alignment_summary = None
+        if verify_behavior_alignment is not None:
+            alignment_summary = _run_behavior_token_alignment(
+                verify_behavior_alignment,
+                tokenizer_dir=alignment_tokenizer_dir,
+                reencode=alignment_reencode,
+                tokenizer=alignment_tokenizer,
+            )
+        online_grpo_summary = None
+        if verify_online_grpo_preflight is not None:
+            online_grpo_summary = _run_online_grpo_preflight(
+                verify_online_grpo_preflight,
+                online_grpo_source_dir,
+                tokenizer_dir=online_grpo_tokenizer_dir,
+            )
         out_path = _prepare_out_dir(Path(output_dir), overwrite=overwrite)
+        if alignment_summary is not None and online_grpo_summary is not None:
+            standalone_mode = "standalone_verification_only"
+        elif alignment_summary is not None:
+            standalone_mode = "behavior_alignment_only"
+        else:
+            standalone_mode = "online_grpo_preflight_only"
         report = {
             "pipeline_schema_version": PIPELINE_SCHEMA_VERSION,
             "status": "COMPLETED",
-            "source_mode": "behavior_alignment_only",
+            "source_mode": standalone_mode,
             "REAL_TRAINING": "NOT_RUN",
             "claims": {
                 "REAL_TRAINING": "NOT_RUN",
@@ -1507,8 +1715,11 @@ def run_stage_c_pipeline(
                 "real_gpu_training_executed": False,
                 "decoupled_from_cpp_serving": True,
             },
-            "behavior_token_alignment": alignment_summary,
         }
+        if alignment_summary is not None:
+            report["behavior_token_alignment"] = alignment_summary
+        if online_grpo_summary is not None:
+            report["online_grpo_preflight"] = online_grpo_summary
         report_bytes = traj.canonical_json(report) + b"\n"
         report_sha = traj.sha256_bytes(report_bytes)
         _write_bytes_atomic(out_path / "stage_c_e2e_report.json", report_bytes)
@@ -1526,6 +1737,15 @@ def run_stage_c_pipeline(
             tokenizer_dir=alignment_tokenizer_dir,
             reencode=alignment_reencode,
             tokenizer=alignment_tokenizer,
+        )
+
+    # Optional read-only online-GRPO preflight verification (fail-closed before writes).
+    online_grpo_summary = None
+    if verify_online_grpo_preflight is not None:
+        online_grpo_summary = _run_online_grpo_preflight(
+            verify_online_grpo_preflight,
+            online_grpo_source_dir,
+            tokenizer_dir=online_grpo_tokenizer_dir,
         )
 
     # Default to the full ablation matrix when neither --config nor --ablation-matrix is set.
@@ -1793,6 +2013,8 @@ def run_stage_c_pipeline(
         report["behavior_token_alignment"] = alignment_summary
     if dpo_preflight_summary is not None:
         report["dpo_export_preflight"] = dpo_preflight_summary
+    if online_grpo_summary is not None:
+        report["online_grpo_preflight"] = online_grpo_summary
 
     report_bytes = traj.canonical_json(report) + b"\n"
     report_sha = traj.sha256_bytes(report_bytes)
@@ -1963,6 +2185,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional local tokenizer directory to verify available_files during --dpo-export-preflight",
     )
     parser.add_argument(
+        "--verify-online-grpo-preflight",
+        default=None,
+        help="Opt-in: verify a prepared online-GRPO preflight bundle read-only via fresh reconstruction (no torch/ML)",
+    )
+    parser.add_argument(
+        "--online-grpo-source-dir",
+        default=None,
+        help="Accepted umminfer_online_rollout source bundle directory (required with --verify-online-grpo-preflight)",
+    )
+    parser.add_argument(
+        "--online-grpo-tokenizer-dir",
+        default=None,
+        help="Optional local tokenizer directory forwarded to online-GRPO preflight verification",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Allow writing into an existing non-empty --out directory",
@@ -2004,6 +2241,9 @@ def main(argv=None) -> int:
             alignment_reencode=args.alignment_reencode,
             dpo_export_preflight=args.dpo_export_preflight,
             dpo_preflight_tokenizer_dir=args.dpo_preflight_tokenizer_dir,
+            verify_online_grpo_preflight=args.verify_online_grpo_preflight,
+            online_grpo_source_dir=args.online_grpo_source_dir,
+            online_grpo_tokenizer_dir=args.online_grpo_tokenizer_dir,
             overwrite=args.overwrite,
         )
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:

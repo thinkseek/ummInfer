@@ -284,6 +284,20 @@ the exact default schema, digests, and zero-ML stdlib-only behavior):
   export/source/tokenizer identity binding with zero legacy fallback), and
   records `dpo_export_preflight` with explicit `EXPORT_DPO_OPTIMIZER: "NOT_RUN"`
   and `REAL_TRAINING: "NOT_RUN"`.
+- `--verify-online-grpo-preflight <bundle_dir>` (requires
+  `--online-grpo-source-dir <source_dir>`, plus optional
+  `--online-grpo-tokenizer-dir <dir>`): invokes
+  `umminfer_online_grpo_preflight.verify_preflight(...)` inside an isolated
+  scratch directory (never mutating the input bundle, blocking
+  `torch`/`transformers`/`numpy`/`mlx` imports, standalone or alongside
+  trajectory/live/alignment/DPO-preflight runs), fails closed (exit 2, no report
+  written) on any tampered, stale, missing, or consistently-rehashed artifact or
+  source mismatch, and records a path-free, content-addressed
+  `online_grpo_preflight` section (`verification: "BYTE_IDENTICAL"`, `run_id`,
+  `manifest_sha256`, `reconstructed_files`, `torch_imported: false`,
+  `report_sha256`, and explicit `NOT_RUN` claims for `real_online_generation`,
+  `current_reference_forward`, `online_optimizer`, `gpu_execution`, and
+  `model_quality`).
 
 ```text
 python3 -I tools/umminfer_stage_c_pipeline.py \
@@ -294,6 +308,12 @@ python3 -I tools/umminfer_stage_c_pipeline.py \
   --token-export-file path/to/trajectories.tokens.jsonl \
   --dpo-export-preflight \
   --out path/to/stage-c-dpo-preflight
+
+python3 -I tools/umminfer_stage_c_pipeline.py \
+  --verify-online-grpo-preflight path/to/online-grpo-preflight-bundle \
+  --online-grpo-source-dir path/to/online-rollout-bundle \
+  --online-grpo-tokenizer-dir path/to/local/tokenizer \
+  --out path/to/online-grpo-preflight-check
 ```
 
 ## Verification & Claim Boundary

@@ -864,8 +864,36 @@ class StageCPipelineTest(unittest.TestCase):
             self.assertNotIn("behavior_logprobs_capture", report)
             self.assertNotIn("behavior_token_alignment", report)
             self.assertNotIn("dpo_export_preflight", report)
+            self.assertNotIn("online_grpo_preflight", report)
             self.assertNotIn("torch", sys.modules)
             self.assertNotIn("transformers", sys.modules)
+            self.assertNotIn("numpy", sys.modules)
+            self.assertNotIn("mlx", sys.modules)
+
+            # Isolated fresh process: default-off must not import online-GRPO or ML modules.
+            probe = (
+                "import json, sys\n"
+                f"sys.path.insert(0, {str(ROOT / 'tools')!r})\n"
+                "import umminfer_stage_c_pipeline as p\n"
+                f"r = p.run_stage_c_pipeline(output_dir={str(root / 'probe_out')!r}, "
+                f"trajectory_paths=[{str(file_a)!r}, {str(dir_b)!r}], "
+                f"ablation_matrix_path={str(ROOT / 'configs/training/ablation_matrix.json')!r}, "
+                "ablation_override='joint_full', execution_mode='dry_run_micro_step', "
+                "dry_run_steps=1)\n"
+                "blocked = [m for m in ('umminfer_online_grpo_preflight', 'torch', "
+                "'transformers', 'numpy', 'mlx') if m in sys.modules]\n"
+                "print(json.dumps({'has_key': 'online_grpo_preflight' in r, 'blocked': blocked}))\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", probe],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            probe_res = json.loads(proc.stdout)
+            self.assertFalse(probe_res["has_key"])
+            self.assertEqual(probe_res["blocked"], [])
 
     def test_capture_behavior_logprobs_fail_closed_and_mock_live_server(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1368,6 +1396,350 @@ class StageCPipelineTest(unittest.TestCase):
                     dpo_export_preflight=True,
                 )
             self.assertFalse((root / "dpo_partial_fail" / "stage_c_e2e_report.json").exists())
+
+    def test_online_grpo_preflight_cli_validation_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dummy_bundle = root / "bundle"
+            dummy_source = root / "source"
+            dummy_tok = root / "tok"
+            for d in (dummy_bundle, dummy_source, dummy_tok):
+                d.mkdir()
+
+            # 1. --verify-online-grpo-preflight without --online-grpo-source-dir
+            with self.assertRaisesRegex(
+                ValueError, "--verify-online-grpo-preflight requires --online-grpo-source-dir"
+            ):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=root / "api_no_src",
+                    verify_online_grpo_preflight=dummy_bundle,
+                )
+            self.assertFalse((root / "api_no_src" / "stage_c_e2e_report.json").exists())
+
+            proc_no_src = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--verify-online-grpo-preflight",
+                    str(dummy_bundle),
+                    "--out",
+                    str(root / "cli_no_src"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_no_src.returncode, 2, proc_no_src.stdout)
+            self.assertFalse((root / "cli_no_src" / "stage_c_e2e_report.json").exists())
+
+            # 2. --online-grpo-source-dir without --verify-online-grpo-preflight
+            file_a, _ = _build_fixture_trajectories(root)
+            with self.assertRaisesRegex(
+                ValueError, "--online-grpo-source-dir and --online-grpo-tokenizer-dir require"
+            ):
+                pipeline.run_stage_c_pipeline(
+                    output_dir=root / "api_src_only",
+                    trajectory_paths=[file_a],
+                    online_grpo_source_dir=dummy_source,
+                )
+            self.assertFalse((root / "api_src_only" / "stage_c_e2e_report.json").exists())
+
+            proc_src_only = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--from-trajectories",
+                    str(file_a),
+                    "--online-grpo-source-dir",
+                    str(dummy_source),
+                    "--out",
+                    str(root / "cli_src_only"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_src_only.returncode, 2, proc_src_only.stdout)
+            self.assertFalse((root / "cli_src_only" / "stage_c_e2e_report.json").exists())
+
+            # 3. --online-grpo-tokenizer-dir without --verify-online-grpo-preflight
+            proc_tok_only = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--from-trajectories",
+                    str(file_a),
+                    "--online-grpo-tokenizer-dir",
+                    str(dummy_tok),
+                    "--out",
+                    str(root / "cli_tok_only"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_tok_only.returncode, 2, proc_tok_only.stdout)
+            self.assertFalse((root / "cli_tok_only" / "stage_c_e2e_report.json").exists())
+
+    def test_online_grpo_preflight_standalone_and_combined_pass(self):
+        import online_grpo_preflight_test as grpo_fixture  # noqa: PLC0415
+        import umminfer_online_grpo_preflight as online_grpo  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_bundle, tok_dir = grpo_fixture.make_online_bundle(
+                root / "src_exports", version=1, exports=True
+            )
+            cfg = grpo_fixture.make_config(source_bundle, tok_dir)
+            preflight_bundle = root / "preflight_bundle"
+            prep = online_grpo.prepare_preflight(
+                source_bundle, preflight_bundle, cfg, tokenizer_dir=tok_dir
+            )
+
+            before_bundle_bytes = _tree_bytes(preflight_bundle)
+            before_source_bytes = _tree_bytes(source_bundle)
+
+            # 1. Standalone CLI pass with --online-grpo-tokenizer-dir (python3 -I)
+            out_standalone_1 = root / "standalone_1"
+            proc1 = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--verify-online-grpo-preflight",
+                    str(preflight_bundle),
+                    "--online-grpo-source-dir",
+                    str(source_bundle),
+                    "--online-grpo-tokenizer-dir",
+                    str(tok_dir),
+                    "--out",
+                    str(out_standalone_1),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc1.returncode, 0, proc1.stderr)
+            report1 = json.loads(proc1.stdout)
+            self.assertEqual(report1["status"], "COMPLETED")
+            self.assertEqual(report1["source_mode"], "online_grpo_preflight_only")
+            self.assertEqual(report1["REAL_TRAINING"], "NOT_RUN")
+
+            og = report1["online_grpo_preflight"]
+            self.assertEqual(og["status"], "PASS")
+            self.assertEqual(og["verification"], "BYTE_IDENTICAL")
+            self.assertEqual(og["run_id"], prep["run_id"])
+            self.assertEqual(
+                og["manifest_sha256"], ds.sha256_file(preflight_bundle / "manifest.json")
+            )
+            self.assertEqual(og["reconstructed_file_count"], 7)
+            self.assertEqual(len(og["reconstructed_files"]), 7)
+            self.assertFalse(og["torch_imported"])
+            self.assertTrue(og["tokenizer_dir_provided"])
+            self.assertEqual(len(og["report_sha256"]), 64)
+            for fname, digest in og["reconstructed_files"].items():
+                self.assertNotIn("/", fname)
+                self.assertEqual(digest, ds.sha256_file(preflight_bundle / fname))
+
+            claims = og["claims"]
+            for key in (
+                "real_online_generation",
+                "current_reference_forward",
+                "online_optimizer",
+                "gpu_execution",
+                "model_quality",
+                "REAL_TRAINING",
+            ):
+                self.assertEqual(claims[key], "NOT_RUN", key)
+            self.assertFalse(claims["model_weights_updated"])
+            self.assertFalse(claims["torch_imported"])
+
+            # Path-free check & sidecar verification
+            report1_path = out_standalone_1 / "stage_c_e2e_report.json"
+            report1_sha_path = out_standalone_1 / "stage_c_e2e_report.json.sha256"
+            self.assertTrue(report1_path.is_file())
+            self.assertTrue(report1_sha_path.is_file())
+            self.assertEqual(
+                report1_sha_path.read_text(encoding="utf-8").strip(),
+                ds.sha256_file(report1_path),
+            )
+            self.assertNotIn(str(root), report1_path.read_text(encoding="utf-8"))
+
+            # Determinism across repeated standalone runs
+            out_standalone_2 = root / "standalone_2"
+            report2 = pipeline.run_stage_c_pipeline(
+                output_dir=out_standalone_2,
+                verify_online_grpo_preflight=preflight_bundle,
+                online_grpo_source_dir=source_bundle,
+                online_grpo_tokenizer_dir=tok_dir,
+            )
+            self.assertEqual(report1, report2)
+            self.assertEqual(
+                report1_path.read_bytes(),
+                (out_standalone_2 / "stage_c_e2e_report.json").read_bytes(),
+            )
+
+            # Input bundles must NEVER be mutated
+            self.assertEqual(_tree_bytes(preflight_bundle), before_bundle_bytes)
+            self.assertEqual(_tree_bytes(source_bundle), before_source_bytes)
+
+            # 2. Standalone without --online-grpo-tokenizer-dir (exports=False bundle)
+            no_exp_src, no_exp_tok = grpo_fixture.make_online_bundle(
+                root / "src_no_exports", version=1, exports=False
+            )
+            no_exp_cfg = grpo_fixture.make_config(no_exp_src, no_exp_tok)
+            no_exp_bundle = root / "preflight_no_exports"
+            no_exp_prep = online_grpo.prepare_preflight(
+                no_exp_src, no_exp_bundle, no_exp_cfg
+            )
+            report_no_tok = pipeline.run_stage_c_pipeline(
+                output_dir=root / "standalone_no_tok",
+                verify_online_grpo_preflight=no_exp_bundle,
+                online_grpo_source_dir=no_exp_src,
+            )
+            self.assertEqual(report_no_tok["online_grpo_preflight"]["status"], "PASS")
+            self.assertEqual(
+                report_no_tok["online_grpo_preflight"]["run_id"], no_exp_prep["run_id"]
+            )
+            self.assertFalse(
+                report_no_tok["online_grpo_preflight"]["tokenizer_dir_provided"]
+            )
+
+            # 3. Combined trajectory + behavior-alignment + online-GRPO preflight run
+            file_a, dir_b = _build_fixture_trajectories(root)
+            combined_report = pipeline.run_stage_c_pipeline(
+                output_dir=root / "combined_all",
+                trajectory_paths=[file_a, dir_b],
+                config_path=ROOT / "configs" / "training" / "joint_sft_default.json",
+                execution_mode="dry_run_micro_step",
+                dry_run_steps=1,
+                verify_behavior_alignment=REAL_TASK42_BUNDLE,
+                verify_online_grpo_preflight=preflight_bundle,
+                online_grpo_source_dir=source_bundle,
+                online_grpo_tokenizer_dir=tok_dir,
+            )
+            self.assertEqual(combined_report["status"], "COMPLETED")
+            self.assertEqual(combined_report["source_mode"], "offline_trajectories")
+            self.assertEqual(combined_report["behavior_token_alignment"]["status"], "PASS")
+            self.assertEqual(combined_report["online_grpo_preflight"]["status"], "PASS")
+            self.assertEqual(
+                combined_report["online_grpo_preflight"]["verification"], "BYTE_IDENTICAL"
+            )
+            self.assertEqual(
+                combined_report["online_grpo_preflight"]["run_id"], prep["run_id"]
+            )
+            self.assertEqual(_tree_bytes(preflight_bundle), before_bundle_bytes)
+            for mod in ("torch", "transformers", "numpy", "mlx"):
+                self.assertNotIn(mod, sys.modules)
+
+    def test_online_grpo_preflight_tampered_bundle_rejected_fail_closed(self):
+        import online_grpo_preflight_test as grpo_fixture  # noqa: PLC0415
+        import umminfer_online_grpo_preflight as online_grpo  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_bundle, tok_dir = grpo_fixture.make_online_bundle(
+                root / "src_tamper", version=2, exports=True
+            )
+            cfg = grpo_fixture.make_config(source_bundle, tok_dir)
+            preflight_bundle = root / "preflight_valid"
+            online_grpo.prepare_preflight(
+                source_bundle, preflight_bundle, cfg, tokenizer_dir=tok_dir
+            )
+
+            # 1. Both raw-hash tamper and consistently-rehashed tamper must fail closed!
+            for consistent in (False, True):
+                label = "consistent_rehash" if consistent else "raw_hash"
+                with self.subTest(tamper=label):
+                    tampered = root / f"tampered_{label}"
+                    shutil.copytree(preflight_bundle, tampered)
+                    obj_path = tampered / "objective_fixtures.json"
+                    data = json.loads(obj_path.read_text(encoding="utf-8"))
+                    data["groups"][0]["members"][0]["current_policy"]["logprobs"][0] -= 0.01
+                    grpo_fixture.write_json(obj_path, data)
+                    if consistent:
+                        grpo_fixture.refresh_checksums_for_consistent_tamper(tampered)
+
+                    api_out = root / f"api_out_{label}"
+                    with self.assertRaisesRegex(ValueError, "online-GRPO preflight"):
+                        pipeline.run_stage_c_pipeline(
+                            output_dir=api_out,
+                            verify_online_grpo_preflight=tampered,
+                            online_grpo_source_dir=source_bundle,
+                            online_grpo_tokenizer_dir=tok_dir,
+                        )
+                    self.assertFalse((api_out / "stage_c_e2e_report.json").exists())
+
+                    cli_out = root / f"cli_out_{label}"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                            "--verify-online-grpo-preflight",
+                            str(tampered),
+                            "--online-grpo-source-dir",
+                            str(source_bundle),
+                            "--online-grpo-tokenizer-dir",
+                            str(tok_dir),
+                            "--out",
+                            str(cli_out),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(proc.returncode, 2, proc.stdout)
+                    self.assertFalse((cli_out / "stage_c_e2e_report.json").exists())
+
+            # 2. Missing --online-grpo-tokenizer-dir when source has token_export -> exit 2
+            missing_tok_out = root / "cli_missing_tok"
+            proc_missing_tok = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--verify-online-grpo-preflight",
+                    str(preflight_bundle),
+                    "--online-grpo-source-dir",
+                    str(source_bundle),
+                    "--out",
+                    str(missing_tok_out),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_missing_tok.returncode, 2, proc_missing_tok.stdout)
+            self.assertFalse((missing_tok_out / "stage_c_e2e_report.json").exists())
+
+            # 3. Mismatched source bundle -> exit 2, no report written
+            wrong_source = root / "wrong_source"
+            wrong_source.mkdir()
+            wrong_src_out = root / "cli_wrong_src"
+            proc_wrong_src = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "tools" / "umminfer_stage_c_pipeline.py"),
+                    "--verify-online-grpo-preflight",
+                    str(preflight_bundle),
+                    "--online-grpo-source-dir",
+                    str(wrong_source),
+                    "--online-grpo-tokenizer-dir",
+                    str(tok_dir),
+                    "--out",
+                    str(wrong_src_out),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc_wrong_src.returncode, 2, proc_wrong_src.stdout)
+            self.assertFalse((wrong_src_out / "stage_c_e2e_report.json").exists())
 
 
 if __name__ == "__main__":
