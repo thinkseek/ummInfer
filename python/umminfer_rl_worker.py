@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from umminfer_sse_replay import validate_replay_metadata  # noqa: E402
+from umminfer_token_export import validate_record_token_export  # noqa: E402
 
 WORKER_PROTOCOL_VERSION = 1
 CHECKPOINT_SCHEMA_VERSION = 1
@@ -436,6 +437,7 @@ def _validate_v2(record, artifact_root):
     validate_replay_metadata(
         record, artifact_dir=artifact_root,
         require_raw=record.get("sse_replay") is not None)
+    validate_record_token_export(record)
 
 
 def validate_trajectory(path, *, artifact_dir=None):
@@ -479,6 +481,8 @@ def validate_trajectory(path, *, artifact_dir=None):
                 raise ValueError("output_sha256 does not recompute")
             if version == 2:
                 _validate_v2(record, artifact_root)
+            else:
+                validate_record_token_export(record)
         except ValueError as exc:
             raise ValueError(prefix + str(exc)) from exc
     return records

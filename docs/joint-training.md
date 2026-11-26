@@ -19,6 +19,11 @@ post-training described in [vision.md](vision.md), [rl.md](rl.md), and
 - **No optimizer execution**: this tool builds and audits training packs only.
   Every generated manifest explicitly marks `REAL_TRAINING: NOT_RUN`,
   `optimizer: NOT_RUN`, and `model_weights_updated: false`.
+- **Optional token/span sidecar in the v2 record**:
+  `python/umminfer_token_export.py` is a separate stdlib-first offline utility,
+  not a trainer or serving dependency. It adds exact tokenizer ids, UTF-8 byte
+  spans, raw-source mappings, and `joint_full` mask weights only when explicitly
+  invoked; records without `token_export` retain their previous behavior.
 
 ## Integrity Verification & Filtering
 
@@ -33,6 +38,9 @@ Every input line is verified before entering dataset construction:
      matching narrative deltas, validated `visual_slots` and `leg_errors`,
      complete chunk hash chains (`chunks_sha256`), no embedded base64 media
      payloads, and valid relative CAS references bound to their SHA-256.
+     When `token_export` is present, its source-record binding, tokenizer/file
+     identity, ids, exact offsets, source mappings, spans, masks, and hashes are
+     also validated; malformed exports are rejected as `token_export_tampered`.
 2. **Content-addressed media verification**:
    - When an artifact directory is present (either via `--artifact-dir` or the
      default sibling `artifacts/` next to the JSONL file), every referenced
@@ -64,6 +72,46 @@ Outputs `sft_train.jsonl` and `sft_eval.jsonl`.
 - **Deduplication & determinism**: candidates are deduplicated by canonical
   `(prompt_sha256, target_sha256)` in deterministic tie-breaker order and
   emitted as key-sorted compact UTF-8 JSONL (`allow_nan=False`).
+
+#### Optional exact tokenizer ids and structured target spans
+
+After all trajectory enrichment is final, the token-export CLI can create a new
+JSONL with additive v2 `token_export` blocks while leaving v1 rows untouched:
+
+```text
+python3 -I python/umminfer_token_export.py trajectories.jsonl \
+  --out trajectories.tokens.jsonl \
+  --tokenizer-dir /path/to/local/tokenizer \
+  --tokenizer-id org/model-or-fixture-id \
+  --tokenizer-revision immutable-revision-or-local-fixture-version \
+  --tokenization-version transformers-and-tokenization-version
+```
+
+The four tokenizer options are mandatory together. The utility hashes every
+available regular tokenizer file, uses no network or model inference, disables
+special-token insertion, padding, and truncation, and rejects unknown or
+non-byte-exact tokens. It exports both `clean_text` and the reconstructed
+`assistant_target`. Every token has an exact half-open UTF-8 byte range and
+normalized source event indices; replay-enabled records also carry exact raw SSE
+frame indices. Synthesized route headers, prompt bodies, explicit-anchor
+suffixes, and closing delimiters map to their source `visual_slot` frame.
+
+The target stream's typed spans and per-token weights are bound to the same
+`joint_full` contract used by `build_span_loss_mask` and the bounded real SFT
+adapter. The export stores both byte and codepoint offsets: bytes provide exact
+source reconstruction, while codepoint-overlap weighting preserves the existing
+SFT mask when a token crosses span types. Deterministic tests compare this
+export against `reconstruct_director_target`, `parse_interleaved_spans`, and the
+real adapter's `_token_loss_mask`, including route/body/closing coverage and
+multibyte text. The full schema, strong re-encode/decode validation command, and
+hash/tamper rules are in [rl.md](rl.md#optional-token-id-and-source-span-export-format-v1).
+
+This export does not change dataset JSONL version 1, dataset deduplication,
+splitting, or preference packing. The existing worker and dataset integrity
+checks reject a malformed block whenever present. Structural validation without
+a tokenizer is not a proof of tokenizer identity; the optional real-tokenizer
+fixture gate performs that re-encoding and remains `NOT_RUN` when no explicit
+local fixture is supplied.
 
 ### 2. Preference (DPO) & GRPO Group Pack (`--mode preference`)
 
@@ -201,6 +249,7 @@ Run the offline CPU-only contract tests:
 ```text
 python3 -m unittest tests/stage_c_pipeline_test.py tests/sft_dataset_test.py tests/joint_trainer_test.py
 python3 -I tests/sse_replay_test.py
+python3 -I tests/token_export_test.py
 python3 -I tests/narrative_slot_reference_live.py --self-check
 python3 -I tests/joint_sft_live_test.py
 python3 -I tests/joint_dpo_live_test.py
@@ -213,6 +262,7 @@ python3 -I tests/joint_grpo_live_test.py
 | Raw-SSE live-versus-replay byte identity | **COVERED (loopback fixture)** | Exact raw/chunk/frame/[DONE], logical ticks, normalized JSONL and source hashes; no model claim |
 | Isolated real-service raw capture + fresh-process replay | **PASS (SM90 GPU 0)** | Real text/visual-contract/cancelled streams, observed `monotonic_ns`, byte-identical JSONL/CAS and tamper rejection; visual media are contract fixtures. See [sse-replay-live.md](sse-replay-live.md) |
 | SFT interleaved beat-marker reconstruction & dedup | **COVERED** | Byte-identical across repeated runs |
+| Optional token-id/UTF-8/source-span export & SFT mask equivalence | **COVERED (fixture tokenizer)** | Additive v2 blocks, fail-closed structural validation, deterministic independent decode; real-tokenizer fixture `NOT_RUN` unless explicitly supplied |
 | Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")` |
 | Zero train/eval prompt leakage & manifest sidecar | **COVERED** | Verified at build time and `--audit-only` |
 | End-to-end trajectory -> pack -> ablation-matrix dry-run driver | **COVERED** | `tools/umminfer_stage_c_pipeline.py` + `tests/stage_c_pipeline_test.py` |
@@ -234,7 +284,10 @@ recipe and does not execute DPO, GRPO, vision/media forward passes, or serving.
 The adapter performs all model-independent validation before importing `torch`
 or `transformers`.  It then uses an offline fast tokenizer's character offsets
 to mask every prompt token and assign the existing Stage C span weights to each
-assistant token.  Scheduled fixtures must include both text-only and structured
+assistant token. Optional `token_export` stores the equivalent target-only ids,
+exact UTF-8 byte offsets, and codepoint-overlap weights; its tests require the
+same labels, weights, span types, and closing-delimiter annotations. Scheduled
+fixtures must include both text-only and structured
 visual targets.  Each visual slot must bind to its reconstructed marker,
 verified CAS artifact, and completed terminal leg; route headers, prompt bodies,
 and closing `]]` delimiters must all receive positive target loss weight.

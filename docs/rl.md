@@ -9,12 +9,14 @@ or transformers, and no second inference engine exists.
 | --- | --- |
 | `python/umminfer_rl_trajectory.py` | Out-of-process recording, narrative normalization, media verification, CAS export |
 | `python/umminfer_sse_replay.py` | Exact raw-SSE/chunk capture, tick provenance, replay validation CLI, byte-identical offline replay |
+| `python/umminfer_token_export.py` | Optional tokenizer-backed token ids, UTF-8/source spans, SFT masks, and independent validation |
 | `python/umminfer_rl_reward.py` | Export-only reward interface, deterministic composite UMM reward, and plugin loader |
 | `python/umminfer_rl_worker.py` | Independent v1/v2 validation, NDJSON worker protocol, checkpoint hash chain |
 | `tests/narrative_rl_fixtures.py` | Deterministic interleaved narrative, explicit-slot, failed-leg, and cancelled-response fixtures |
 | `tests/sse_replay_test.py` | Loopback live/replay byte identity, framing, timing, CAS, chunked HTTP, and tamper contracts |
 | `tests/sse_replay_live.py` | Opt-in isolated real public-SSE capture, cancellation, fresh-process replay, framing, and tamper gate |
 | `docs/sse-replay-live.md` | SM90 live hashes, contract-media boundary, replay evidence, and cleanup record |
+| `tests/token_export_test.py` | Multilingual/UTF-8, visual-anchor, cancellation, mask-equivalence, malformed-input, and optional real-tokenizer contracts |
 | `tests/narrative_slot_reference_live.py` | Explicit `source=slot-N` offline self-check and deferred real-model gate |
 | `tests/rl_architecture_test.py` | Deterministic schema-v2 recorder/validator/reward contracts |
 | `tests/rl_phase2_test.py` | Worker/checkpoint/protocol contracts; does not execute an optimizer |
@@ -47,11 +49,19 @@ incompatible sidecar can be rejected explicitly without invalidating old JSONL.
 Source-binding fields on normalized events are likewise additive. The replay
 CLI requires replay-enabled v2 records; it does not invent bytes for old ones.
 
+Token/span export follows the same additive rule. `token_export` is optional,
+has its own `format: "umminfer-trajectory-token-export-v1"` and
+`format_version: 1`, and never changes `schema_version`. V2 records without it
+and v1 records retain their old fields and validation behavior; a v1 record may
+not carry the block. The offline file exporter leaves v1 records untouched.
+
 V2 retains the phase-1 keys used by the GSM8K trainer (`output_text`,
 `output_sha256`, `events`, `request_params`, `inputs`, `terminal_state`, reward
 blocks, and the later `messages`/`prompt_id` enrichment). The phase-2 REINFORCE
-consumer therefore reads either version. Token ids are still absent; the
-boundary-token limitation in [rl-phase2.md](rl-phase2.md) is unchanged.
+consumer therefore reads either version. Optional post-hoc token ids are now
+available through `token_export`; they are re-encoded training/export ids, not
+the model's sampled decode ids. The phase-2 boundary-token limitation in
+[rl-phase2.md](rl-phase2.md) is unchanged.
 
 ## V2 record
 
@@ -238,6 +248,123 @@ sequences, hash/timing/terminal tampering, and CAS mismatches produce a concise
 `replay error:` and nonzero exit. Cancellation and incomplete artifact groups
 follow the existing v2 cancellation rules and replay identically.
 
+## Optional token-id and source-span export (format v1)
+
+`python/umminfer_token_export.py` adds exact tokenizer-backed supervision data
+after recording. It is an offline utility, not a recorder hook: serving and raw
+capture do not construct a tokenizer, and the module imports no serving,
+trainer, torch, numpy, or transformers code on its structural path. Only an
+explicit real-tokenizer CLI invocation lazily loads `transformers` with
+`local_files_only=True`, `use_fast=True`, and `trust_remote_code=False`. No model
+is loaded and no inference runs.
+
+### Opt-in identity and file provenance
+
+Export requires all four identity options together:
+
+```text
+python3 -I python/umminfer_token_export.py trajectories.jsonl \
+  --out trajectories.tokens.jsonl \
+  --tokenizer-dir /path/to/local/tokenizer \
+  --tokenizer-id org/model-or-fixture-id \
+  --tokenizer-revision immutable-revision-or-local-fixture-version \
+  --tokenization-version transformers-and-tokenization-version
+```
+
+The output must be new; input JSONL and its CAS are read-only. The additive
+`token_export.tokenizer` object records the explicit id, revision, tokenization
+version, complete token-id-space size, unknown-token id (or null), and a sorted
+`available_files` list containing every regular file below the selected
+directory, each with relative POSIX path, exact bytes, and SHA-256. Absolute
+paths and symlinks are not exported. `available_files_sha256` binds the complete
+list. `config_sha256` binds identity plus policy, `source_record_sha256` binds
+the entire record except `token_export`, and `export_sha256` binds the rest of
+the export block. Apply reward/ablation enrichment before token export; later
+source-record changes intentionally make the block stale.
+
+### Streams, offsets, spans, and masks
+
+Two streams are always present for an exported v2 record:
+
+- `clean_text`: the recorded clean assistant text, including cancelled prefixes;
+- `sft_target`: the canonical director target with visual markers reconstructed
+  exactly as in the SFT dataset builder, including an explicit
+  `| source=slot-N` suffix when its verified artifact binding is present.
+
+Each stream stores `text_bytes`, `text_sha256`, ordered `token_ids`, and one
+entry per token with `index`, `token_id`, half-open UTF-8 byte `start`/`end`,
+codepoint `char_start`/`char_end`, `piece_sha256`, `source_event_indices`, and
+`source_frame_indices`. Byte offsets start at zero, are contiguous, non-empty,
+and cover the complete stream exactly. They may not split a UTF-8 codepoint.
+This covers route headers such as `[[image: `, visual-prompt bodies, closing
+`]]`, multilingual text, emoji, combining characters, and spoken spans.
+
+Source events are zero-based normalized event indices. When raw replay metadata
+is present, source frames are the corresponding zero-based raw SSE frame
+indices. A token crossing coalesced clean deltas can name several events/frames.
+A synthesized route header, prompt body, explicit-anchor suffix, or closing
+delimiter maps to its originating `visual_slot` event/frame. Records without raw
+capture use empty `source_frame_indices` but still have exact normalized source
+events and byte offsets. The validator recomputes these mappings rather than
+accepting caller annotations.
+
+`spans[]` uses the existing Stage C types `narrative_prose`,
+`visual_route_tag`, `visual_prompt_body`, and `spoken_style`, with byte and
+codepoint ranges, token ranges, modality, and text SHA-256. Spans are contiguous,
+non-overlapping, and cover the target. `sft_mask` records the `joint_full` span
+weights and per-token positive weights. A token crossing span types receives the
+same codepoint-overlap-weighted mean as the real SFT adapter; byte offsets never
+change that established weighting rule. Tests compare ids, labels, weights,
+span types, and closing-delimiter annotations against
+`umminfer_joint_sft_live._token_loss_mask`. This format fixes the mask contract
+to `joint_full`; other ablation profiles require a later versioned extension.
+
+The fixed policy records `add_special_tokens=false`, `padding="none"`,
+`truncation="none"`, `unknown_tokens="reject"`, exact contiguous UTF-8 offsets,
+and per-token decode with special-token skipping and cleanup disabled. Unknown,
+negative, boolean, out-of-range, zero-width, gap/overlap, normalizing, or
+non-byte-exact tokenizer output is rejected rather than repaired. The
+`decoded_sha256` binds concatenated per-token decode output to the original
+UTF-8 byte string.
+
+### Independent validation and compatibility
+
+The worker and SFT integrity verifier automatically validate `token_export`
+whenever present and otherwise preserve legacy behavior. Structural validation
+needs no tokenizer or ML package: it recomputes source-record/config/export
+hashes, target reconstruction, ids/ranges, source mappings, typed spans, masks,
+and all stream digests. It rejects invalid ids, unknown tokens, offset/span gaps,
+overlaps and out-of-range values, noncanonical concatenation, changed policy or
+identity fields, stale records, and hash tampering. Structural validation alone
+does not prove that ids belong to the declared tokenizer.
+
+For that stronger check, pass the same explicitly identified local tokenizer to
+`validate_record_token_export(..., tokenizer=...)`, or run:
+
+```text
+python3 -I python/umminfer_token_export.py trajectories.tokens.jsonl \
+  --validate-only \
+  --tokenizer-dir /path/to/local/tokenizer \
+  --tokenizer-id org/model-or-fixture-id \
+  --tokenizer-revision immutable-revision-or-local-fixture-version \
+  --tokenization-version transformers-and-tokenization-version
+```
+
+Strong validation rehashes every available file, verifies the expected explicit
+id/revision/version and token-id space, re-encodes both streams, compares every
+id and byte offset, decodes every token independently, and reconstructs both
+UTF-8 texts byte-for-byte. `--validate-only` without tokenizer options is the
+stdlib structural mode and reports `tokenizer_reencoded: 0`.
+
+`tests/token_export_test.py` exercises deterministic re-export, independent
+fixture-tokenizer decode, multilingual/emoji/combining input, visual anchors,
+source-frame mapping, cancellation, SFT mask equivalence, legacy absence, CLI
+validation, and malformed/tampered inputs. Its optional local real-fast-
+tokenizer fixture gate requires four `--real-tokenizer-*` options and prints
+`REAL_TOKENIZER_FIXTURE: NOT_RUN` when unavailable. No real tokenizer, model
+quality, sampled-token identity, or optimizer outcome is claimed by the default
+CPU run.
+
 ## Determinism
 
 JSON is key-sorted, compact UTF-8 with `allow_nan=False`. Turn indexes start at
@@ -358,6 +485,7 @@ python3 -I tests/ablation_runner_test.py
 python3 -I tests/rl_architecture_test.py
 python3 -I tests/rl_phase2_test.py
 python3 -I tests/sse_replay_test.py
+python3 -I tests/token_export_test.py
 python3 -I tests/joint_trainer_test.py
 python3 -I tests/joint_sft_live_test.py
 python3 -I tests/joint_dpo_live_test.py
@@ -370,8 +498,9 @@ These suites are deterministic and CPU-only. They use canned contract
 fixtures, never real-model evidence. They cover raw/live replay byte identity,
 split/coalesced framing, tick provenance, CAS reassembly and verification,
 no-media JSONL, explicit slot anchors, leg errors, terminal legs,
-cancellation, tamper rejection, v1 reads, export-only rewards, NDJSON,
-checkpoint reopen/tamper checks, and the no-optimizer gate. The phase-2 suite
+cancellation, optional exact token/span export, SFT mask equivalence, tokenizer
+and hash tamper rejection, v1 reads, export-only rewards, NDJSON, checkpoint
+reopen/tamper checks, and the no-optimizer gate. The phase-2 suite
 prints `REAL OPTIMIZER: NOT_RUN`; no new real optimizer or model-quality result
 is claimed by this schema work.  The separately bounded Stage C joint-SFT and
 joint-DPO optimizer gates and their resume/invalid-input contracts are specified

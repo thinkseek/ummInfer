@@ -41,6 +41,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from umminfer_rl_reward import load_reward  # noqa: E402
 from umminfer_sse_replay import ReplayError, validate_replay_metadata  # noqa: E402
+from umminfer_token_export import (  # noqa: E402
+    TokenExportError,
+    validate_record_token_export,
+)
 from umminfer_rl_trajectory import (  # noqa: E402
     SUPPORTED_TRAJECTORY_SCHEMA_VERSIONS,
     TERMINAL_CANCELLED,
@@ -561,6 +565,7 @@ def verify_record_integrity(record, *, artifact_dir=None,
         "checked_input_media_refs": 0,
         "checked_output_media_refs": 0,
         "checked_replay_refs": 0,
+        "checked_token_exports": 0,
     }
     try:
         if not isinstance(record, dict):
@@ -597,6 +602,7 @@ def verify_record_integrity(record, *, artifact_dir=None,
         if version == 1:
             stats["checked_input_media_refs"] = _validate_inputs(
                 record, artifact_root, check_disk=check_disk, strict_v2=False)
+            validate_record_token_export(record)
             return True, None, None, stats
 
         server_seqs = [event.get("server_seq") for event in events
@@ -635,11 +641,15 @@ def verify_record_integrity(record, *, artifact_dir=None,
             validate_replay_metadata(
                 record, artifact_dir=artifact_root, require_raw=True)
             stats["checked_replay_refs"] = 1
+        token_result = validate_record_token_export(record)
+        stats["checked_token_exports"] = int(token_result["present"])
         return True, None, None, stats
     except _IntegrityError as exc:
         return False, exc.category, str(exc), stats
     except ReplayError as exc:
         return False, "replay_tampered", str(exc), stats
+    except TokenExportError as exc:
+        return False, "token_export_tampered", str(exc), stats
 
 
 def _canonical_slot_prompt(prompt):
