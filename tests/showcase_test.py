@@ -524,11 +524,15 @@ class ShowcaseSuiteTest(unittest.TestCase):
             listed_names = [line.split("  ", 1)[1] for line in sums_a.strip().splitlines()]
             self.assertEqual(listed_names, sorted(listed_names))
 
-            # Default OFF must not inject telemetry keys or Native Allocator Telemetry markdown
+            # Default OFF must not inject telemetry or behavior keys or sections
             self.assertNotIn("native_allocator_telemetry", report)
+            self.assertNotIn("behavior_logprobs", report)
             for jkey in ("journey_1", "journey_2", "journey_3", "journey_4", "journey_5"):
                 self.assertNotIn("native_allocator_telemetry", report["journeys"][jkey])
+                self.assertNotIn("behavior_logprobs", report["journeys"][jkey])
             self.assertNotIn("## Native Allocator Telemetry", md_a)
+            self.assertNotIn("## Behavior Logprobs Evidence", md_a)
+            self.assertNotIn("Behavior:", md_a)
 
     def test_native_allocator_telemetry_opt_in_cli_covered(self) -> None:
         with tempfile.TemporaryDirectory(prefix="showcase-tel-covered-") as tmp:
@@ -807,6 +811,7 @@ class ShowcaseSuiteTest(unittest.TestCase):
         server.chat_requests = []
         server.render_requests = []
         server.telemetry_factory = None
+        server.behavior_factory = None
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return server, thread, f"http://127.0.0.1:{server.server_port}"
@@ -1265,6 +1270,289 @@ class ShowcaseSuiteTest(unittest.TestCase):
                     400,
                     f"expected HTTP 400 for raw {raw_num}, got {status}: {raw!r}",
                 )
+        finally:
+            self._stop_mock_server(server, thread)
+
+    def test_validate_behavior_logprobs_evidence_unit_and_fail_closed(self) -> None:
+        valid_payload = {
+            "format": "umminfer-behavior-logprobs-v1",
+            "tokenizer_sha256": showcase.MOCK_TOKENIZER_SHA256,
+            "token_ids": [101, 202, 303, 404, 505],
+            "logprobs": [-0.1, -0.25, -0.05, -0.4, -0.01],
+            "mask": [1, 0, 1, 0, 1],
+        }
+
+        # Valid exposed (case-insensitive header + whitespace)
+        for header in ("exposed", "EXPOSED", "  Exposed  "):
+            res = showcase.validate_behavior_logprobs_evidence(header, valid_payload)
+            self.assertEqual(res["status"], "exposed")
+            self.assertEqual(res["format"], "umminfer-behavior-logprobs-v1")
+            self.assertEqual(res["tokenizer_sha256"], showcase.MOCK_TOKENIZER_SHA256)
+            self.assertEqual(res["token_count"], 5)
+            self.assertEqual(res["supervised_count"], 3)
+            self.assertEqual(
+                showcase.format_behavior_logprobs_summary(res),
+                "Behavior: 5 tok (3 sup)",
+            )
+
+        # Valid not_exposed (case-insensitive header, None payload)
+        for header in ("not_exposed", "Not_Exposed", "  NOT_EXPOSED "):
+            res = showcase.validate_behavior_logprobs_evidence(header, None)
+            self.assertEqual(res["status"], "not_exposed")
+            self.assertIsNone(res["format"])
+            self.assertIsNone(res["tokenizer_sha256"])
+            self.assertIsNone(res["token_count"])
+            self.assertIsNone(res["supervised_count"])
+            self.assertEqual(
+                showcase.format_behavior_logprobs_summary(res),
+                "Behavior: not_exposed",
+            )
+
+        # Valid absent (None, empty string, whitespace, literal "absent")
+        for header in (None, "", "   ", "absent", "ABSENT"):
+            res = showcase.validate_behavior_logprobs_evidence(header, None)
+            self.assertEqual(res["status"], "absent")
+            self.assertIsNone(res["format"])
+            self.assertIsNone(res["tokenizer_sha256"])
+            self.assertIsNone(res["token_count"])
+            self.assertIsNone(res["supervised_count"])
+            self.assertEqual(
+                showcase.format_behavior_logprobs_summary(res),
+                "Behavior: absent",
+            )
+
+        # Invalid header values fail closed
+        for bad_header in ("partial", "true", "unknown", 123, True):
+            with self.assertRaises(AssertionError):
+                showcase.validate_behavior_logprobs_evidence(bad_header, None)
+
+        # exposed with missing / malformed payloads fails closed
+        bad_exposed_payloads = [
+            None,
+            "exposed",
+            [],
+            {**valid_payload, "format": "other-v1"},
+            {**valid_payload, "format": None},
+            {**valid_payload, "tokenizer_sha256": ""},
+            {**valid_payload, "tokenizer_sha256": "   "},
+            {**valid_payload, "tokenizer_sha256": 12345},
+            {**valid_payload, "token_ids": []},
+            {**valid_payload, "token_ids": [1, 2.5, 3, 4, 5]},
+            {**valid_payload, "token_ids": [1, True, 3, 4, 5]},
+            {**valid_payload, "token_ids": [1, -1, 3, 4, 5]},
+            {**valid_payload, "logprobs": [-0.1, -0.2]},
+            {**valid_payload, "logprobs": [-0.1, math.nan, -0.05, -0.4, -0.01]},
+            {**valid_payload, "logprobs": [-0.1, math.inf, -0.05, -0.4, -0.01]},
+            {**valid_payload, "logprobs": [-0.1, -math.inf, -0.05, -0.4, -0.01]},
+            {**valid_payload, "logprobs": [-0.1, True, -0.05, -0.4, -0.01]},
+            {**valid_payload, "logprobs": [-0.1, "-0.2", -0.05, -0.4, -0.01]},
+            {**valid_payload, "mask": [1, 0, 1]},
+            {**valid_payload, "mask": [1, 2, 1, 0, 1]},
+            {**valid_payload, "mask": [1, -1, 1, 0, 1]},
+            {**valid_payload, "mask": [1, True, 1, 0, 1]},
+            {**valid_payload, "mask": [1, False, 1, 0, 1]},
+        ]
+        for bad_payload in bad_exposed_payloads:
+            with self.assertRaises(AssertionError, msg=f"accepted bad exposed payload: {bad_payload!r}"):
+                showcase.validate_behavior_logprobs_evidence("exposed", bad_payload)
+
+        # not_exposed and absent must reject stray behavior payloads (zero fabrication/mismatch)
+        for header in ("not_exposed", None, "", "absent"):
+            with self.assertRaises(AssertionError, msg=f"accepted stray payload for header={header!r}"):
+                showcase.validate_behavior_logprobs_evidence(header, valid_payload)
+
+        # Non-final SSE frame carrying behavior payload fails closed
+        bad_stream = self._sample_stream()
+        bad_stream["observations"][0]["frame"]["behavior"] = copy.deepcopy(valid_payload)
+        bad_stream["behavior_evidence_header"] = "exposed"
+        with self.assertRaisesRegex(AssertionError, "non-final SSE frame"):
+            showcase.validate_narrative_stream(
+                bad_stream,
+                require_audio=True,
+                require_mid_stream_slot=True,
+                require_behavior_logprobs=True,
+            )
+
+    def test_behavior_logprobs_opt_in_cli_and_default_off_wire_contract(self) -> None:
+        # 1. Opt-in CLI --self-check --behavior-logprobs exercises exposed + not_exposed + Journey 2 N/A
+        with tempfile.TemporaryDirectory(prefix="showcase-beh-cli-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--behavior-logprobs",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("SELF-CHECK PASS", proc.stdout)
+            self.assertIn("5/5 journeys passed", proc.stdout)
+
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            verified = showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS")
+            self.assertGreaterEqual(verified, 11)
+
+            top_beh = report["behavior_logprobs"]
+            self.assertTrue(top_beh["enabled"])
+            self.assertEqual(top_beh["status"], "partial")
+            self.assertEqual(top_beh["requests"], 7)
+            self.assertEqual(top_beh["exposed_requests"], 1)
+            self.assertEqual(top_beh["not_exposed_requests"], 6)
+            self.assertEqual(top_beh["absent_requests"], 0)
+            self.assertEqual(top_beh["token_count"], 8)
+            self.assertEqual(top_beh["supervised_count"], 8)
+
+            # Journey 1, 3, 4, 5 carry validated behavior_logprobs; Journey 2 does not.
+            self.assertEqual(report["journeys"]["journey_1"]["behavior_logprobs"]["status"], "not_exposed")
+            self.assertIsNone(report["journeys"]["journey_1"]["behavior_logprobs"]["token_count"])
+            self.assertNotIn("behavior_logprobs", report["journeys"]["journey_2"])
+
+            j3 = report["journeys"]["journey_3"]
+            self.assertEqual(j3["behavior_logprobs"]["status"], "not_exposed")
+            self.assertEqual(j3["behavior_logprobs"]["requests"], 3)
+            self.assertIsNone(j3["behavior_logprobs"]["token_count"])
+            for turn in j3["turns"]:
+                self.assertEqual(turn["behavior_logprobs"]["status"], "not_exposed")
+                self.assertIsNone(turn["behavior_logprobs"]["token_count"])
+
+            j4 = report["journeys"]["journey_4"]
+            self.assertEqual(j4["pure_text"]["behavior_logprobs"]["status"], "exposed")
+            self.assertEqual(j4["pure_text"]["behavior_logprobs"]["token_count"], 8)
+            self.assertEqual(j4["pure_text"]["behavior_logprobs"]["supervised_count"], 8)
+            self.assertEqual(j4["visual_scene"]["behavior_logprobs"]["status"], "not_exposed")
+            self.assertIsNone(j4["visual_scene"]["behavior_logprobs"]["token_count"])
+            self.assertEqual(j4["behavior_logprobs"]["status"], "partial")
+
+            self.assertEqual(report["journeys"]["journey_5"]["behavior_logprobs"]["status"], "not_exposed")
+
+            self.assertIn("## Behavior Logprobs Evidence", md_text)
+            self.assertIn("Behavior: 8 tok (8 sup)", md_text)
+            self.assertIn("Behavior: not_exposed", md_text)
+            self.assertIn("N/A (non-chat endpoint)", md_text)
+            self.assertNotIn("0 tok", md_text)
+
+        # 2. Combined --native-allocator-telemetry + --behavior-logprobs works across all 5 journeys
+        with tempfile.TemporaryDirectory(prefix="showcase-beh-tel-") as tmp:
+            report = showcase.run_self_check(
+                MANIFEST_PATH,
+                out_dir=Path(tmp),
+                native_allocator_telemetry=True,
+                behavior_logprobs=True,
+            )
+            self.assertTrue(report["summary"]["all_passed"])
+            self.assertEqual(report["native_allocator_telemetry"]["coverage"], "COVERED")
+            self.assertEqual(report["behavior_logprobs"]["status"], "partial")
+            self.assertEqual(report["journeys"]["journey_3"]["native_allocator_telemetry"]["requests"], 3)
+            self.assertEqual(report["journeys"]["journey_3"]["behavior_logprobs"]["requests"], 3)
+
+    def test_behavior_logprobs_exposed_absent_and_fail_closed_mock_server(self) -> None:
+        # 1. All-exposed with mixed 0/1 mask
+        mixed_payload = showcase._mock_behavior_payload(
+            token_ids=[11, 22, 33, 44, 55],
+            logprobs=[-0.1, -0.2, -0.3, -0.4, -0.5],
+            mask=[1, 0, 1, 1, 0],
+        )
+        with tempfile.TemporaryDirectory(prefix="showcase-beh-exposed-") as tmp:
+            out_dir = Path(tmp)
+            report = showcase.run_self_check(
+                MANIFEST_PATH,
+                out_dir=out_dir,
+                journeys=[1, 3, 4, 5],
+                behavior_logprobs=True,
+                behavior_factory=lambda _req, _default: ("EXPOSED", copy.deepcopy(mixed_payload)),
+            )
+            top_beh = report["behavior_logprobs"]
+            self.assertEqual(top_beh["status"], "exposed")
+            self.assertEqual(top_beh["requests"], 7)
+            self.assertEqual(top_beh["exposed_requests"], 7)
+            self.assertEqual(top_beh["token_count"], 35)
+            self.assertEqual(top_beh["supervised_count"], 21)
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertIn("Behavior: 5 tok (3 sup)", md_text)
+            self.assertIn("Behavior: 35 tok (21 sup)", md_text)
+
+        # 2. All-absent header reports honest Behavior: absent with null counts
+        with tempfile.TemporaryDirectory(prefix="showcase-beh-absent-") as tmp:
+            out_dir = Path(tmp)
+            report = showcase.run_self_check(
+                MANIFEST_PATH,
+                out_dir=out_dir,
+                journeys=[1, 3],
+                behavior_logprobs=True,
+                behavior_factory=lambda _req, _default: (None, None),
+            )
+            top_beh = report["behavior_logprobs"]
+            self.assertEqual(top_beh["status"], "absent")
+            self.assertEqual(top_beh["absent_requests"], 4)
+            self.assertIsNone(top_beh["token_count"])
+            self.assertIsNone(top_beh["supervised_count"])
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertIn("Behavior: absent", md_text)
+            self.assertNotIn("0 tok", md_text)
+
+        # 3. End-to-end fail-closed rejections on mismatched/malformed server responses
+        fail_cases = [
+            ("exposed", None, "omitted or returned non-object"),
+            ("exposed", {**mixed_payload, "format": "wrong-v1"}, "behavior.format"),
+            ("exposed", {**mixed_payload, "mask": [1, 2, 1, 1, 0]}, "behavior.mask"),
+            ("not_exposed", copy.deepcopy(mixed_payload), "not_exposed"),
+            (None, copy.deepcopy(mixed_payload), "absent"),
+        ]
+        for hdr, payload, expected_re in fail_cases:
+            with self.assertRaisesRegex(AssertionError, expected_re):
+                showcase.run_self_check(
+                    MANIFEST_PATH,
+                    journeys=[1],
+                    behavior_logprobs=True,
+                    behavior_factory=lambda _req, _default, h=hdr, p=payload: (h, p),
+                )
+
+        # 4. Mock server rejects invalid request-side behavior objects & non-stream behavior.logprobs with HTTP 400
+        video_data_url = (
+            "data:video/mp4;base64,"
+            + base64.b64encode(showcase.MOCK_MP4_J2).decode("ascii")
+        )
+        server, thread, base_url = self._start_mock_server()
+        try:
+            endpoint = base_url + "/v1/chat/completions"
+            bad_bodies = [
+                {
+                    "model": "qwen3-native",
+                    "stream": False,
+                    "behavior": {"logprobs": True},
+                    "messages": [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": video_data_url}}, {"type": "text", "text": "hi"}]}],
+                },
+                {
+                    "model": "qwen3-native",
+                    "stream": True,
+                    "behavior": "logprobs",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                {
+                    "model": "qwen3-native",
+                    "stream": True,
+                    "behavior": {"logprobs": True, "extra": 1},
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                {
+                    "model": "qwen3-native",
+                    "stream": True,
+                    "behavior": {"logprobs": "yes"},
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            ]
+            for bad_body in bad_bodies:
+                status, _, raw = showcase.http_request(endpoint, bad_body, timeout=10.0)
+                self.assertEqual(status, 400, f"expected HTTP 400 for {bad_body!r}, got {status}: {raw!r}")
         finally:
             self._stop_mock_server(server, thread)
 

@@ -80,3 +80,15 @@ When enabled, `video_frame_selection` is attached to Turn 1's `video_url` object
 ## Optional Native Allocator Telemetry
 
 Pass `--native-allocator-telemetry` to send `"telemetry": {"native_allocator": true}` on `/v1/chat/completions` requests and strictly validate/report request-native allocator telemetry (`COVERED`, `PARTIAL`, or `NOT_COVERED` / `N/C`). Default OFF omits the `telemetry` field completely.
+
+## Optional Behavior Logprobs Evidence
+
+Pass `--behavior-logprobs` (default OFF) to opt into sampled behavior-token logprobs evidence on `/v1/chat/completions` journeys:
+
+- **Default OFF (strict wire compatibility)**: when omitted, requests never include `"behavior"` and `showcase_report.json` / `showcase_report.md` omit `behavior_logprobs` completely.
+- **Opt-in ON**: sends `"behavior": {"logprobs": true}` with `stream: true` on `/v1/chat/completions` across Journeys 1, 3, 4, and 5 (Journey 2 uses `/v1/visual/render`, so it is left unchanged and reported honestly as `N/A`).
+- **Fail-closed honest reporting (zero fabrication)**: captures the case-insensitive `X-UmmInfer-Behavior-Evidence` HTTP response header (`exposed`, `not_exposed`, or `absent`) and the final SSE `"behavior"` block (`umminfer-behavior-logprobs-v1`). When `exposed`, strictly validates `format`, `tokenizer_sha256`, `token_ids`, finite `logprobs`, and `0`/`1` `mask` of matching non-zero length and renders `Behavior: N tok (M sup)`. When `not_exposed` or `absent`, rejects stray payloads and renders `Behavior: not_exposed` or `Behavior: absent` with `null` counts.
+
+```sh
+python3 -I tools/umminfer_showcase.py --self-check --behavior-logprobs --out-dir /tmp/showcase-behavior-check
+```

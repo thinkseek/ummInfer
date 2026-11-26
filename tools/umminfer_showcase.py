@@ -67,6 +67,9 @@ VIDEO_FRAME_POLICIES = ("uniform", "temporal")
 NATIVE_ALLOCATOR_SCOPE = "request-native-allocator"
 TELEMETRY_STAGE_COVERAGES = ("COVERED", "NOT_COVERED")
 TELEMETRY_ENVELOPE_COVERAGES = ("COVERED", "PARTIAL", "NOT_COVERED")
+BEHAVIOR_LOGPROBS_FORMAT = "umminfer-behavior-logprobs-v1"
+BEHAVIOR_EVIDENCE_HEADER = "X-UmmInfer-Behavior-Evidence"
+BEHAVIOR_EVIDENCE_STATUSES = ("exposed", "not_exposed", "absent")
 
 
 def require(condition: object, message: str) -> None:
@@ -436,6 +439,223 @@ def format_native_allocator_summary(summary: dict) -> str:
     return "N/C"
 
 
+def validate_behavior_logprobs_evidence(
+    header_value: object,
+    raw_behavior_payload: object,
+) -> dict:
+    """Strictly validate X-UmmInfer-Behavior-Evidence header and behavior payload (fail-closed)."""
+    if header_value is None:
+        status = "absent"
+    else:
+        require(
+            isinstance(header_value, str),
+            f"{BEHAVIOR_EVIDENCE_HEADER} header must be a string or None, got {header_value!r}",
+        )
+        normalized = header_value.strip().lower()
+        if not normalized or normalized == "absent":
+            status = "absent"
+        elif normalized in ("exposed", "not_exposed"):
+            status = normalized
+        else:
+            raise AssertionError(
+                f"invalid {BEHAVIOR_EVIDENCE_HEADER} header value: {header_value!r}; "
+                f"expected exposed, not_exposed, or absent"
+            )
+
+    if status == "absent":
+        require(
+            raw_behavior_payload is None,
+            f"stray behavior payload received when {BEHAVIOR_EVIDENCE_HEADER} header is absent",
+        )
+        return {
+            "status": "absent",
+            "format": None,
+            "tokenizer_sha256": None,
+            "token_count": None,
+            "supervised_count": None,
+        }
+
+    if status == "not_exposed":
+        require(
+            raw_behavior_payload is None,
+            f"behavior payload must not be present when {BEHAVIOR_EVIDENCE_HEADER} is not_exposed",
+        )
+        return {
+            "status": "not_exposed",
+            "format": None,
+            "tokenizer_sha256": None,
+            "token_count": None,
+            "supervised_count": None,
+        }
+
+    require(
+        isinstance(raw_behavior_payload, dict),
+        f"{BEHAVIOR_EVIDENCE_HEADER} is exposed, but response omitted or returned non-object behavior payload",
+    )
+    fmt = raw_behavior_payload.get("format")
+    require(
+        fmt == BEHAVIOR_LOGPROBS_FORMAT,
+        f"behavior.format must be {BEHAVIOR_LOGPROBS_FORMAT!r}, got {fmt!r}",
+    )
+    tokenizer_sha256 = raw_behavior_payload.get("tokenizer_sha256")
+    require(
+        isinstance(tokenizer_sha256, str) and bool(tokenizer_sha256.strip()),
+        f"behavior.tokenizer_sha256 must be a non-empty string, got {tokenizer_sha256!r}",
+    )
+    token_ids = raw_behavior_payload.get("token_ids")
+    require(
+        isinstance(token_ids, list) and len(token_ids) > 0,
+        "behavior.token_ids must be a non-empty list of integers",
+    )
+    for idx, tid in enumerate(token_ids):
+        require(
+            is_int(tid) and tid >= 0,
+            f"behavior.token_ids[{idx}] must be a non-negative integer (not bool), got {tid!r}",
+        )
+    logprobs = raw_behavior_payload.get("logprobs")
+    require(
+        isinstance(logprobs, list) and len(logprobs) == len(token_ids),
+        f"behavior.logprobs length mismatch: expected {len(token_ids)}, got "
+        f"{len(logprobs) if isinstance(logprobs, list) else type(logprobs).__name__}",
+    )
+    for idx, lp in enumerate(logprobs):
+        require(
+            not isinstance(lp, bool)
+            and isinstance(lp, (int, float))
+            and math.isfinite(float(lp)),
+            f"behavior.logprobs[{idx}] must be a finite number (not bool), got {lp!r}",
+        )
+    mask = raw_behavior_payload.get("mask")
+    require(
+        isinstance(mask, list) and len(mask) == len(token_ids),
+        f"behavior.mask length mismatch: expected {len(token_ids)}, got "
+        f"{len(mask) if isinstance(mask, list) else type(mask).__name__}",
+    )
+    supervised_count = 0
+    for idx, mval in enumerate(mask):
+        require(
+            is_int(mval) and mval in (0, 1),
+            f"behavior.mask[{idx}] must be integer 0 or 1 (not bool), got {mval!r}",
+        )
+        supervised_count += mval
+
+    return {
+        "status": "exposed",
+        "format": BEHAVIOR_LOGPROBS_FORMAT,
+        "tokenizer_sha256": tokenizer_sha256,
+        "token_count": len(token_ids),
+        "supervised_count": supervised_count,
+    }
+
+
+def aggregate_behavior_logprobs(summaries: list[dict]) -> dict:
+    """Aggregate validated behavior logprobs summaries without fabricating counts."""
+    require(bool(summaries), "cannot aggregate empty behavior logprobs summaries")
+    requests = 0
+    exposed_requests = 0
+    not_exposed_requests = 0
+    absent_requests = 0
+    token_total = 0
+    supervised_total = 0
+    tokenizers: set[str] = set()
+
+    for item in summaries:
+        item_reqs = item.get("requests", 1)
+        requests += item_reqs
+        if "exposed_requests" in item:
+            exposed_requests += item["exposed_requests"]
+            not_exposed_requests += item["not_exposed_requests"]
+            absent_requests += item["absent_requests"]
+        else:
+            st = item["status"]
+            if st == "exposed":
+                exposed_requests += 1
+            elif st == "not_exposed":
+                not_exposed_requests += 1
+            elif st == "absent":
+                absent_requests += 1
+        if item.get("token_count") is not None:
+            token_total += item["token_count"]
+        if item.get("supervised_count") is not None:
+            supervised_total += item["supervised_count"]
+        tok_sha = item.get("tokenizer_sha256")
+        if isinstance(tok_sha, str) and tok_sha.strip():
+            tokenizers.add(tok_sha)
+
+    if exposed_requests == requests and requests > 0:
+        status = "exposed"
+    elif exposed_requests > 0:
+        status = "partial"
+    elif not_exposed_requests > 0:
+        status = "not_exposed"
+    else:
+        status = "absent"
+
+    return {
+        "status": status,
+        "requests": requests,
+        "exposed_requests": exposed_requests,
+        "not_exposed_requests": not_exposed_requests,
+        "absent_requests": absent_requests,
+        "format": BEHAVIOR_LOGPROBS_FORMAT if exposed_requests > 0 else None,
+        "tokenizer_sha256": next(iter(tokenizers)) if len(tokenizers) == 1 else None,
+        "token_count": token_total if exposed_requests > 0 else None,
+        "supervised_count": supervised_total if exposed_requests > 0 else None,
+    }
+
+
+def format_behavior_logprobs_summary(summary: dict) -> str:
+    """Format a validated behavior logprobs summary honestly (zero fabrication)."""
+    status = summary["status"]
+    if status == "exposed":
+        tok = summary["token_count"]
+        sup = summary["supervised_count"]
+        require(
+            is_int(tok) and is_int(sup),
+            f"exposed behavior summary missing integer counts: {summary!r}",
+        )
+        return f"Behavior: {tok} tok ({sup} sup)"
+    if status == "partial":
+        tok = summary["token_count"]
+        sup = summary["supervised_count"]
+        exp = summary.get("exposed_requests", 0)
+        reqs = summary.get("requests", 0)
+        require(
+            is_int(tok) and is_int(sup),
+            f"partial behavior summary missing integer counts: {summary!r}",
+        )
+        return f"Behavior: {tok} tok ({sup} sup) [exposed={exp}/{reqs}]"
+    if status == "not_exposed":
+        return "Behavior: not_exposed"
+    if status == "absent":
+        return "Behavior: absent"
+    if status == "not_applicable":
+        return "Behavior: N/A"
+    raise AssertionError(f"unknown behavior logprobs summary status: {status!r}")
+
+
+def _extract_stream_behavior_payload(stream: dict) -> object:
+    """Extract optional top-level behavior block from the final SSE frame (fail-closed if non-final)."""
+    frames = stream.get("frames")
+    if frames is None:
+        frames = [
+            obs["frame"]
+            for obs in stream.get("observations", [])
+            if isinstance(obs, dict) and isinstance(obs.get("frame"), dict)
+        ]
+    if not frames:
+        return None
+    for idx, frame in enumerate(frames[:-1]):
+        if isinstance(frame, dict) and "behavior" in frame and frame["behavior"] is not None:
+            raise AssertionError(
+                f"behavior payload appeared on non-final SSE frame index {idx}"
+            )
+    final_frame = frames[-1]
+    if isinstance(final_frame, dict) and "behavior" in final_frame:
+        return final_frame["behavior"]
+    return None
+
+
 def sha256_bytes(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -603,7 +823,9 @@ def stream_chat(
     )
     started = time.perf_counter()
     observations: list[dict] = []
+    frames: list[dict] = []
     payloads: list[str] = []
+    behavior_header: str | None = None
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
@@ -616,6 +838,7 @@ def stream_chat(
             resp.headers.get_content_type() == "text/event-stream",
             f"chat response is not text/event-stream: {resp.headers.get_content_type()}",
         )
+        behavior_header = resp.headers.get(BEHAVIOR_EVIDENCE_HEADER)
         for raw_line in resp:
             line = raw_line.decode("utf-8").rstrip("\r\n")
             if not line.startswith("data:"):
@@ -627,6 +850,7 @@ def stream_chat(
             frame = json.loads(payload)
             if "error" in frame and isinstance(frame["error"], dict):
                 raise AssertionError(f"stream error frame: {frame['error']}")
+            frames.append(frame)
             unified = frame.get("unified")
             if isinstance(unified, dict):
                 observations.append({
@@ -637,7 +861,9 @@ def stream_chat(
 
     return {
         "observations": observations,
+        "frames": frames,
         "payloads": payloads,
+        "behavior_evidence_header": behavior_header,
         "total_s": time.perf_counter() - started,
     }
 
@@ -743,6 +969,7 @@ def validate_narrative_stream(
     require_audio: bool = False,
     require_mid_stream_slot: bool = False,
     require_native_allocator_telemetry: bool = False,
+    require_behavior_logprobs: bool = False,
 ) -> tuple[dict, list[dict], list[dict]]:
     """Validate SSE narrative stream invariants, seq monotonicity, clean prose, and SHA-256."""
     observations = stream["observations"]
@@ -1018,6 +1245,11 @@ def validate_narrative_stream(
             terminal_event.get("telemetry"),
             expected_request_id=stream_request_id,
         )
+    if require_behavior_logprobs:
+        metrics["behavior_logprobs"] = validate_behavior_logprobs_evidence(
+            stream.get("behavior_evidence_header"),
+            _extract_stream_behavior_payload(stream),
+        )
     return metrics, visual, audio
 
 
@@ -1121,6 +1353,7 @@ def run_journey_1(
     timeout: float,
     extra_headers: dict[str, str] | None = None,
     native_allocator_telemetry: bool = False,
+    behavior_logprobs: bool = False,
 ) -> tuple[dict, list[dict], dict]:
     """Journey 1: Interleaved Narrative + Global Streaming Voice."""
     body = {
@@ -1138,6 +1371,8 @@ def run_journey_1(
     }
     if native_allocator_telemetry:
         body["telemetry"] = {"native_allocator": True}
+    if behavior_logprobs:
+        body["behavior"] = {"logprobs": True}
     stream = stream_chat(base_url, body, timeout=timeout, extra_headers=extra_headers)
     metrics, visual, audio = validate_narrative_stream(
         stream,
@@ -1146,6 +1381,7 @@ def run_journey_1(
         require_audio=True,
         require_mid_stream_slot=True,
         require_native_allocator_telemetry=native_allocator_telemetry,
+        require_behavior_logprobs=behavior_logprobs,
     )
 
     saved_artifacts: list[dict] = []
@@ -1311,6 +1547,7 @@ def run_journey_3(
     timeout: float,
     extra_headers: dict[str, str] | None = None,
     native_allocator_telemetry: bool = False,
+    behavior_logprobs: bool = False,
     video_frame_selection: dict | None = None,
 ) -> dict:
     """Journey 3: 3-Turn OpenAI Multi-Turn Native Video Understanding (Prefix KV-Cache)."""
@@ -1335,6 +1572,7 @@ def run_journey_3(
     messages: list[dict] = []
     turn_results: list[dict] = []
     turn_telemetries: list[dict] = []
+    turn_behaviors: list[dict] = []
     for idx, question in enumerate(turns_prompts, start=1):
         if idx == 1:
             video_url_obj: dict = {"url": video_data_url}
@@ -1352,7 +1590,7 @@ def run_journey_3(
 
         body = {
             "model": model,
-            "stream": False,
+            "stream": True if behavior_logprobs else False,
             "temperature": spec["temperature"],
             "max_tokens": spec["max_tokens"],
             "seed": spec["seed"],
@@ -1360,6 +1598,66 @@ def run_journey_3(
         }
         if native_allocator_telemetry:
             body["telemetry"] = {"native_allocator": True}
+        if behavior_logprobs:
+            body["behavior"] = {"logprobs": True}
+            stream = stream_chat(
+                base_url,
+                body,
+                timeout=timeout,
+                extra_headers=extra_headers,
+            )
+            elapsed_s = stream["total_s"]
+            require(
+                stream["payloads"].count("[DONE]") == 1 and stream["payloads"][-1] == "[DONE]",
+                f"Journey 3 turn {idx} stream must terminate with exactly one [DONE] marker",
+            )
+            frames = stream.get("frames") or []
+            require(bool(frames), f"Journey 3 turn {idx} stream returned no JSON frames")
+            answer_parts: list[str] = []
+            resp_id: str | None = None
+            telemetry_raw: object = None
+            for frame in frames:
+                if resp_id is None and isinstance(frame.get("id"), str) and frame["id"].strip():
+                    resp_id = frame["id"]
+                choices = frame.get("choices")
+                if isinstance(choices, list) and choices:
+                    delta = choices[0].get("delta")
+                    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                        answer_parts.append(delta["content"])
+                if isinstance(frame.get("telemetry"), dict):
+                    telemetry_raw = frame["telemetry"]
+                unified = frame.get("unified")
+                if isinstance(unified, dict) and isinstance(unified.get("telemetry"), dict):
+                    telemetry_raw = unified["telemetry"]
+            answer = "".join(answer_parts)
+            require(
+                isinstance(answer, str) and bool(answer.strip()),
+                f"Journey 3 turn {idx} returned empty answer",
+            )
+            messages.append({"role": "assistant", "content": answer})
+            turn_record = {
+                "turn": idx,
+                "question": question,
+                "answer": answer,
+                "latency_s": round(elapsed_s, 6),
+                "message_count_sent": len(body["messages"]),
+            }
+            turn_beh = validate_behavior_logprobs_evidence(
+                stream.get("behavior_evidence_header"),
+                _extract_stream_behavior_payload(stream),
+            )
+            turn_record["behavior_logprobs"] = turn_beh
+            turn_behaviors.append(turn_beh)
+            if native_allocator_telemetry:
+                turn_tel = validate_native_allocator_telemetry(
+                    telemetry_raw,
+                    expected_request_id=resp_id,
+                )
+                turn_record["native_allocator_telemetry"] = turn_tel
+                turn_telemetries.append(turn_tel)
+            turn_results.append(turn_record)
+            continue
+
         started = time.perf_counter()
         status, _, raw = http_request(
             base_url.rstrip("/") + "/v1/chat/completions",
@@ -1424,6 +1722,8 @@ def run_journey_3(
         result["native_allocator_telemetry"] = aggregate_native_allocator_telemetry(
             turn_telemetries
         )
+    if behavior_logprobs:
+        result["behavior_logprobs"] = aggregate_behavior_logprobs(turn_behaviors)
     return result
 
 
@@ -1437,6 +1737,7 @@ def run_journey_4(
     strict_zero_text_slots: bool = False,
     extra_headers: dict[str, str] | None = None,
     native_allocator_telemetry: bool = False,
+    behavior_logprobs: bool = False,
 ) -> tuple[dict, list[dict]]:
     """Journey 4: Autonomous Modality Routing Contrast under visual_mode=auto."""
     shared = spec["shared_options"]
@@ -1457,6 +1758,8 @@ def run_journey_4(
         }
         if native_allocator_telemetry:
             body["telemetry"] = {"native_allocator": True}
+        if behavior_logprobs:
+            body["behavior"] = {"logprobs": True}
         stream = stream_chat(base_url, body, timeout=timeout, extra_headers=extra_headers)
         metrics, visual, _ = validate_narrative_stream(
             stream,
@@ -1465,6 +1768,7 @@ def run_journey_4(
             require_audio=False,
             require_mid_stream_slot=False,
             require_native_allocator_telemetry=native_allocator_telemetry,
+            require_behavior_logprobs=behavior_logprobs,
         )
         slot_by_id = {slot["slot_id"]: slot for slot in metrics["slots"]}
         for item in visual:
@@ -1496,6 +1800,8 @@ def run_journey_4(
         }
         if native_allocator_telemetry:
             case_out["native_allocator_telemetry"] = metrics["native_allocator_telemetry"]
+        if behavior_logprobs:
+            case_out["behavior_logprobs"] = metrics["behavior_logprobs"]
         return case_out
 
     pure_text = _run_case(spec["pure_text_case"], min_slots=0)
@@ -1533,6 +1839,11 @@ def run_journey_4(
             pure_text["native_allocator_telemetry"],
             visual_scene["native_allocator_telemetry"],
         ])
+    if behavior_logprobs:
+        metrics["behavior_logprobs"] = aggregate_behavior_logprobs([
+            pure_text["behavior_logprobs"],
+            visual_scene["behavior_logprobs"],
+        ])
     return metrics, saved_artifacts
 
 
@@ -1541,6 +1852,7 @@ def validate_journey_5_stream(
     *,
     max_slots: int = 2,
     require_native_allocator_telemetry: bool = False,
+    require_behavior_logprobs: bool = False,
 ) -> tuple[dict, list[dict], list[dict]]:
     """Validate Journey 5 (storyboard_i2v_chain) SSE stream and cross-slot I2V continuity."""
     metrics, visual, audio = validate_narrative_stream(
@@ -1550,6 +1862,7 @@ def validate_journey_5_stream(
         require_audio=True,
         require_mid_stream_slot=True,
         require_native_allocator_telemetry=require_native_allocator_telemetry,
+        require_behavior_logprobs=require_behavior_logprobs,
     )
     slots = metrics["slots"]
     require(len(slots) >= 2, f"Journey 5 requires at least 2 visual slots, got {len(slots)}")
@@ -1605,6 +1918,7 @@ def run_journey_5(
     allow_ffprobe: bool,
     extra_headers: dict[str, str] | None = None,
     native_allocator_telemetry: bool = False,
+    behavior_logprobs: bool = False,
 ) -> tuple[dict, list[dict]]:
     """Journey 5: Native Cross-Slot Storyboard I2V Chain (continuity_mode=i2v_chain)."""
     body = {
@@ -1622,11 +1936,14 @@ def run_journey_5(
     }
     if native_allocator_telemetry:
         body["telemetry"] = {"native_allocator": True}
+    if behavior_logprobs:
+        body["behavior"] = {"logprobs": True}
     stream = stream_chat(base_url, body, timeout=timeout, extra_headers=extra_headers)
     metrics, visual, audio = validate_journey_5_stream(
         stream,
         max_slots=spec["narrative"]["max_slots"],
         require_native_allocator_telemetry=native_allocator_telemetry,
+        require_behavior_logprobs=behavior_logprobs,
     )
 
     saved_artifacts: list[dict] = []
@@ -1768,6 +2085,10 @@ def render_markdown_report(report: dict) -> str:
             j1_lines.append(
                 f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j1['native_allocator_telemetry'])}`"
             )
+        if "behavior_logprobs" in j1:
+            j1_lines.append(
+                f"- **Behavior Logprobs**: `{format_behavior_logprobs_summary(j1['behavior_logprobs'])}`"
+            )
         j1_lines.extend([
             "",
             "| Slot | Media | Slot Arrival (s) | Artifact Arrival (s) | Render Latency (s) | Bytes | SHA-256 |",
@@ -1814,6 +2135,10 @@ def render_markdown_report(report: dict) -> str:
             j3_lines.append(
                 f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j3['native_allocator_telemetry'])}`"
             )
+        if "behavior_logprobs" in j3:
+            j3_lines.append(
+                f"- **Behavior Logprobs**: `{format_behavior_logprobs_summary(j3['behavior_logprobs'])}`"
+            )
         j3_lines.extend([
             "",
             "| Turn | Messages Sent | Latency (s) | Question | Answer |",
@@ -1856,6 +2181,10 @@ def render_markdown_report(report: dict) -> str:
             lines.append(
                 f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j4['native_allocator_telemetry'])}`"
             )
+        if "behavior_logprobs" in j4:
+            lines.append(
+                f"- **Behavior Logprobs**: `{format_behavior_logprobs_summary(j4['behavior_logprobs'])}`"
+            )
 
     if "journey_5" in journeys:
         j5 = journeys["journey_5"]
@@ -1875,6 +2204,10 @@ def render_markdown_report(report: dict) -> str:
         if "native_allocator_telemetry" in j5:
             j5_lines.append(
                 f"- **Native Allocator Telemetry**: `{format_native_allocator_summary(j5['native_allocator_telemetry'])}`"
+            )
+        if "behavior_logprobs" in j5:
+            j5_lines.append(
+                f"- **Behavior Logprobs**: `{format_behavior_logprobs_summary(j5['behavior_logprobs'])}`"
             )
         j5_lines.extend([
             "",
@@ -1951,6 +2284,59 @@ def render_markdown_report(report: dict) -> str:
                     f"| {label} | `{tel['coverage']}` | "
                     f"{tel['covered_stages']}/{tel['total_stages']} | "
                     f"{alloc_cell} | {res_cell} | {reasons_cell} |"
+                )
+
+    behavior_rows: list[tuple[str, dict | None]] = []
+    if "journey_1" in journeys and "behavior_logprobs" in journeys["journey_1"]:
+        behavior_rows.append(("1. Interleaved Narrative", journeys["journey_1"]["behavior_logprobs"]))
+    if "journey_2" in journeys and "behavior_logprobs" in report:
+        behavior_rows.append(("2. In-Place I2V Animation (`/v1/visual/render`)", None))
+    if "journey_3" in journeys and "behavior_logprobs" in journeys["journey_3"]:
+        behavior_rows.append(("3. Multi-Turn Video QA (3 turns)", journeys["journey_3"]["behavior_logprobs"]))
+    if "journey_4" in journeys and "behavior_logprobs" in journeys["journey_4"]:
+        j4 = journeys["journey_4"]
+        if "behavior_logprobs" in j4.get("pure_text", {}):
+            behavior_rows.append((
+                f"4a. Routing Contrast Pure-Text (`{j4['pure_text']['case_id']}`)",
+                j4["pure_text"]["behavior_logprobs"],
+            ))
+        if "behavior_logprobs" in j4.get("visual_scene", {}):
+            behavior_rows.append((
+                f"4b. Routing Contrast Visual Scene (`{j4['visual_scene']['case_id']}`)",
+                j4["visual_scene"]["behavior_logprobs"],
+            ))
+    if "journey_5" in journeys and "behavior_logprobs" in journeys["journey_5"]:
+        behavior_rows.append(("5. Storyboard I2V Chain", journeys["journey_5"]["behavior_logprobs"]))
+
+    if behavior_rows or "behavior_logprobs" in report:
+        top_beh = report.get("behavior_logprobs")
+        lines.extend([
+            "",
+            "## Behavior Logprobs Evidence",
+            "",
+            f"- **Header**: `{BEHAVIOR_EVIDENCE_HEADER}` (`format`: `{BEHAVIOR_LOGPROBS_FORMAT}`)",
+        ])
+        if isinstance(top_beh, dict):
+            lines.append(
+                f"- **Overall**: `{format_behavior_logprobs_summary(top_beh)}`"
+            )
+        if behavior_rows:
+            lines.extend([
+                "",
+                "| Journey / Case | Status | Summary | Tokenizer SHA-256 |",
+                "| --- | --- | --- | --- |",
+            ])
+            for label, beh in behavior_rows:
+                if beh is None:
+                    lines.append(
+                        f"| {label} | `N/A` | N/A (non-chat endpoint) | - |"
+                    )
+                    continue
+                tok_sha = beh.get("tokenizer_sha256")
+                tok_cell = f"`{tok_sha}`" if isinstance(tok_sha, str) and tok_sha else "-"
+                lines.append(
+                    f"| {label} | `{beh['status']}` | "
+                    f"`{format_behavior_logprobs_summary(beh)}` | {tok_cell} |"
                 )
 
     lines.extend([
@@ -2170,6 +2556,38 @@ def _mock_telemetry_envelope(
     }
 
 
+MOCK_TOKENIZER_SHA256 = (
+    "1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016"
+)
+
+
+def _mock_behavior_payload(
+    *,
+    token_ids: list[int] | None = None,
+    logprobs: list[float] | None = None,
+    mask: list[int] | None = None,
+    tokenizer_sha256: str = MOCK_TOKENIZER_SHA256,
+) -> dict:
+    tids = (
+        [101, 202, 303, 404, 505, 606, 707, 808]
+        if token_ids is None
+        else list(token_ids)
+    )
+    lps = (
+        [-0.12, -0.05, -0.34, -0.08, -0.21, -0.03, -0.15, -0.02]
+        if logprobs is None
+        else list(logprobs)
+    )
+    msk = [1] * len(tids) if mask is None else list(mask)
+    return {
+        "format": BEHAVIOR_LOGPROBS_FORMAT,
+        "tokenizer_sha256": tokenizer_sha256,
+        "token_ids": tids,
+        "logprobs": lps,
+        "mask": msk,
+    }
+
+
 class _MockShowcaseHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -2287,6 +2705,36 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
         ]
         return _mock_telemetry_envelope(request_id, stages)
 
+    def _parse_behavior_request(self, req: dict) -> bool | None:
+        if "behavior" not in req or req["behavior"] is None:
+            return False
+        beh = req["behavior"]
+        if not isinstance(beh, dict):
+            self._error("behavior must be an object")
+            return None
+        extra_keys = set(beh) - {"logprobs"}
+        if extra_keys:
+            self._error(f"unsupported behavior field: {sorted(extra_keys)[0]}")
+            return None
+        val = beh.get("logprobs")
+        if not isinstance(val, bool):
+            self._error("behavior.logprobs must be a boolean")
+            return None
+        if val and not req.get("stream"):
+            self._error("behavior.logprobs requires stream=true")
+            return None
+        return val
+
+    def _build_mock_behavior(
+        self, req: dict, *, default_exposed: bool
+    ) -> tuple[str | None, object]:
+        factory = getattr(self.server, "behavior_factory", None)
+        if factory is not None:
+            return factory(req, default_exposed)
+        if default_exposed:
+            return ("exposed", _mock_behavior_payload())
+        return ("not_exposed", None)
+
     def _handle_chat(self, raw: bytes) -> None:
         req = json.loads(raw)
         self.server.chat_requests.append(req)
@@ -2297,12 +2745,32 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
         telemetry_requested = self._parse_telemetry_request(req)
         if telemetry_requested is None:
             return
-        if req.get("stream"):
-            self._handle_narrative_stream(req, telemetry_requested=telemetry_requested)
+        behavior_requested = self._parse_behavior_request(req)
+        if behavior_requested is None:
+            return
+        has_narrative = isinstance(req.get("narrative"), dict) and bool(
+            req["narrative"].get("enabled")
+        )
+        if req.get("stream") and has_narrative:
+            self._handle_narrative_stream(
+                req,
+                telemetry_requested=telemetry_requested,
+                behavior_requested=behavior_requested,
+            )
         else:
-            self._handle_multiturn_video(req, telemetry_requested=telemetry_requested)
+            self._handle_multiturn_video(
+                req,
+                telemetry_requested=telemetry_requested,
+                behavior_requested=behavior_requested,
+            )
 
-    def _handle_narrative_stream(self, req: dict, *, telemetry_requested: bool = False) -> None:
+    def _handle_narrative_stream(
+        self,
+        req: dict,
+        *,
+        telemetry_requested: bool = False,
+        behavior_requested: bool = False,
+    ) -> None:
         narrative = req.get("narrative") or {}
         if not narrative.get("enabled"):
             self._error("expected narrative.enabled=true for streaming showcase request")
@@ -2451,10 +2919,20 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
                 _mock_envelope(seq, "complete", part1 + part2, finish="stop", legs=legs, **complete_extra)
             )
 
+        behavior_header: str | None = None
+        if behavior_requested:
+            behavior_header, behavior_payload = self._build_mock_behavior(
+                req, default_exposed=is_pure_text
+            )
+            if behavior_payload is not None:
+                events[-1]["behavior"] = behavior_payload
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
+        if behavior_header is not None:
+            self.send_header(BEHAVIOR_EVIDENCE_HEADER, behavior_header)
         self.end_headers()
         for ev in events:
             frame = json.dumps(ev, separators=(",", ":")).encode("utf-8")
@@ -2465,7 +2943,13 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
         self.close_connection = True
 
-    def _handle_multiturn_video(self, req: dict, *, telemetry_requested: bool = False) -> None:
+    def _handle_multiturn_video(
+        self,
+        req: dict,
+        *,
+        telemetry_requested: bool = False,
+        behavior_requested: bool = False,
+    ) -> None:
         messages = req["messages"]
         video_parts = 0
         for idx, msg in enumerate(messages):
@@ -2520,6 +3004,65 @@ class _MockShowcaseHandler(BaseHTTPRequestHandler):
             answer = (
                 "The mood is dramatic and serene, anchored by the golden accretion ring and the dark event horizon."
             )
+
+        if req.get("stream"):
+            req_id = f"showcase-video-t{turn_num}"
+            model_name = req.get("model", "qwen3-native")
+            chunks: list[dict] = [
+                {
+                    "id": req_id,
+                    "object": "chat.completion.chunk",
+                    "created": 1764000000,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                },
+                {
+                    "id": req_id,
+                    "object": "chat.completion.chunk",
+                    "created": 1764000000,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {"content": answer}, "finish_reason": None}],
+                },
+            ]
+            final_chunk: dict = {
+                "id": req_id,
+                "object": "chat.completion.chunk",
+                "created": 1764000000,
+                "model": model_name,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            if telemetry_requested:
+                tel = self._build_mock_telemetry(
+                    req,
+                    req_id,
+                    [("vlm", 234881024 if turn_num == 1 else 167772160)],
+                )
+                if tel is not None:
+                    final_chunk["telemetry"] = tel
+            behavior_header: str | None = None
+            if behavior_requested:
+                behavior_header, behavior_payload = self._build_mock_behavior(
+                    req, default_exposed=False
+                )
+                if behavior_payload is not None:
+                    final_chunk["behavior"] = behavior_payload
+            chunks.append(final_chunk)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            if behavior_header is not None:
+                self.send_header(BEHAVIOR_EVIDENCE_HEADER, behavior_header)
+            self.end_headers()
+            for chunk in chunks:
+                frame = json.dumps(chunk, separators=(",", ":")).encode("utf-8")
+                self.wfile.write(b"data: " + frame + b"\n\n")
+                self.wfile.flush()
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            self.close_connection = True
+            return
 
         body = {
             "id": f"showcase-video-t{turn_num}",
@@ -2582,6 +3125,7 @@ def execute_showcase(
     extra_headers: dict[str, str] | None = None,
     sanitized_server_url: str | None = None,
     native_allocator_telemetry: bool = False,
+    behavior_logprobs: bool = False,
     video_frame_selection: dict | None = None,
     fallback_image_bytes: bytes | None = None,
     fallback_video_bytes: bytes | None = None,
@@ -2604,6 +3148,7 @@ def execute_showcase(
             timeout=timeout,
             extra_headers=extra_headers,
             native_allocator_telemetry=native_allocator_telemetry,
+            behavior_logprobs=behavior_logprobs,
         )
         results["journey_1"] = j1_metrics
         all_artifacts.extend(j1_arts)
@@ -2656,6 +3201,7 @@ def execute_showcase(
             timeout=timeout,
             extra_headers=extra_headers,
             native_allocator_telemetry=native_allocator_telemetry,
+            behavior_logprobs=behavior_logprobs,
             video_frame_selection=video_frame_selection,
         )
         results["journey_3"] = j3_metrics
@@ -2670,6 +3216,7 @@ def execute_showcase(
             strict_zero_text_slots=strict_zero_text_slots,
             extra_headers=extra_headers,
             native_allocator_telemetry=native_allocator_telemetry,
+            behavior_logprobs=behavior_logprobs,
         )
         results["journey_4"] = j4_metrics
         all_artifacts.extend(j4_arts)
@@ -2684,6 +3231,7 @@ def execute_showcase(
             allow_ffprobe=allow_ffprobe,
             extra_headers=extra_headers,
             native_allocator_telemetry=native_allocator_telemetry,
+            behavior_logprobs=behavior_logprobs,
         )
         results["journey_5"] = j5_metrics
         all_artifacts.extend(j5_arts)
@@ -2734,6 +3282,29 @@ def execute_showcase(
                 "stages": [],
                 "whole_device_nvml": "separate_measurement_resources",
             }
+    if behavior_logprobs:
+        chat_behavior_summaries = [
+            results[key]["behavior_logprobs"]
+            for key in ("journey_1", "journey_3", "journey_4", "journey_5")
+            if key in results and "behavior_logprobs" in results[key]
+        ]
+        if chat_behavior_summaries:
+            agg_beh = aggregate_behavior_logprobs(chat_behavior_summaries)
+            agg_beh["enabled"] = True
+            report["behavior_logprobs"] = agg_beh
+        else:
+            report["behavior_logprobs"] = {
+                "enabled": True,
+                "status": "not_applicable",
+                "requests": 0,
+                "exposed_requests": 0,
+                "not_exposed_requests": 0,
+                "absent_requests": 0,
+                "format": None,
+                "tokenizer_sha256": None,
+                "token_count": None,
+                "supervised_count": None,
+            }
     report_paths = write_reports(out_dir, report)
     return report, report_paths
 
@@ -2763,6 +3334,8 @@ def run_self_check(
     *,
     native_allocator_telemetry: bool = False,
     telemetry_factory=None,
+    behavior_logprobs: bool = False,
+    behavior_factory=None,
     video_frame_selection: dict | None = None,
     image_path: Path | None = None,
     video_path: Path | None = None,
@@ -2778,6 +3351,7 @@ def run_self_check(
     server.chat_requests = []
     server.render_requests = []
     server.telemetry_factory = telemetry_factory
+    server.behavior_factory = behavior_factory
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
@@ -2806,6 +3380,7 @@ def run_self_check(
             video_path=video_path,
             sanitized_server_url="http://127.0.0.1:0 (offline-self-check)",
             native_allocator_telemetry=native_allocator_telemetry,
+            behavior_logprobs=behavior_logprobs,
             video_frame_selection=validated_selection,
             fallback_image_bytes=MOCK_PNG_J1,
             fallback_video_bytes=MOCK_MP4_J2,
@@ -2853,6 +3428,10 @@ def run_self_check(
                 "telemetry" not in req,
                 f"/v1/visual/render must never include telemetry: {req}",
             )
+            require(
+                "behavior" not in req,
+                f"/v1/visual/render must never include behavior: {req}",
+            )
         for req in server.chat_requests:
             if native_allocator_telemetry:
                 require(
@@ -2864,23 +3443,36 @@ def run_self_check(
                     "telemetry" not in req,
                     f"/v1/chat/completions must omit telemetry by default: {req}",
                 )
-            if not req.get("stream"):
-                msg0_content = req["messages"][0].get("content")
-                if isinstance(msg0_content, list):
-                    for part in msg0_content:
-                        if isinstance(part, dict) and part.get("type") == "video_url":
-                            vurl = part["video_url"]
-                            if validated_selection is not None:
-                                require(
-                                    vurl.get("frame_selection") == validated_selection,
-                                    f"Journey 3 video_url.frame_selection mismatch: "
-                                    f"{vurl.get('frame_selection')!r} != {validated_selection!r}",
-                                )
-                            else:
-                                require(
-                                    "frame_selection" not in vurl,
-                                    f"Journey 3 default video_url must omit frame_selection: {vurl}",
-                                )
+            if behavior_logprobs:
+                require(
+                    req.get("behavior") == {"logprobs": True},
+                    f"/v1/chat/completions missing opt-in behavior: {req}",
+                )
+                require(
+                    req.get("stream") is True,
+                    f"/v1/chat/completions with behavior.logprobs must set stream=True: {req}",
+                )
+            else:
+                require(
+                    "behavior" not in req,
+                    f"/v1/chat/completions must omit behavior by default: {req}",
+                )
+            msg0_content = req["messages"][0].get("content")
+            if isinstance(msg0_content, list):
+                for part in msg0_content:
+                    if isinstance(part, dict) and part.get("type") == "video_url":
+                        vurl = part["video_url"]
+                        if validated_selection is not None:
+                            require(
+                                vurl.get("frame_selection") == validated_selection,
+                                f"Journey 3 video_url.frame_selection mismatch: "
+                                f"{vurl.get('frame_selection')!r} != {validated_selection!r}",
+                            )
+                        else:
+                            require(
+                                "frame_selection" not in vurl,
+                                f"Journey 3 default video_url must omit frame_selection: {vurl}",
+                            )
 
         print(
             "SELF-CHECK PASS [OFFLINE_SELF_CHECK | REAL_MODEL: NOT_RUN]: "
@@ -2978,6 +3570,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--behavior-logprobs",
+        action="store_true",
+        help=(
+            "Opt-in: send behavior.logprobs=true on streaming /v1/chat/completions "
+            "requests and strictly validate/report X-UmmInfer-Behavior-Evidence and "
+            "umminfer-behavior-logprobs-v1 payloads"
+        ),
+    )
+    parser.add_argument(
         "--video-frame-policy",
         choices=VIDEO_FRAME_POLICIES,
         default=None,
@@ -3024,6 +3625,7 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out_dir,
             journeys=journeys,
             native_allocator_telemetry=args.native_allocator_telemetry,
+            behavior_logprobs=args.behavior_logprobs,
             video_frame_selection=video_frame_selection,
             image_path=args.image_path,
             video_path=args.video_path,
@@ -3056,6 +3658,7 @@ def main(argv: list[str] | None = None) -> int:
         video_path=args.video_path,
         extra_headers=extra_headers,
         native_allocator_telemetry=args.native_allocator_telemetry,
+        behavior_logprobs=args.behavior_logprobs,
         video_frame_selection=video_frame_selection,
     )
     verified = verify_sha256sums_file(args.out_dir, paths["sha256sums"])
