@@ -132,10 +132,19 @@
   }
   button:hover { background: var(--hover); }
   button:active { transform: scale(.97); }
-  button:disabled { opacity: .45; cursor: default; transform: none; }
+  button:disabled, select:disabled { opacity: .45; cursor: default; transform: none; }
   button.primary { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
   button.primary:hover { opacity: .88; }
   button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .export-group { display: inline-flex; align-items: stretch; }
+  .export-group select {
+    border-top-right-radius: 0; border-bottom-right-radius: 0;
+    border-right: none; padding: 6px 8px; font-size: var(--f-caption);
+  }
+  .export-group button {
+    border-top-left-radius: 0; border-bottom-left-radius: 0;
+    padding: 6px 11px; font-size: var(--f-caption);
+  }
 
   #transcript { flex: 1; overflow-y: auto; padding: 20px; }
   .empty-state {
@@ -432,6 +441,14 @@
     <option value="light">Light</option>
     <option value="dark">Dark</option>
   </select>
+  <div class="export-group" role="group" aria-label="Export session">
+    <select id="exportFormat" aria-label="Export format" disabled>
+      <option value="json" selected>JSON</option>
+      <option value="markdown">Markdown</option>
+    </select>
+    <button id="exportSession" type="button" disabled
+            title="Export session transcript and observed telemetry (Shift-click for alternate format)">Export</button>
+  </div>
   <button id="new">New chat</button>
 </header>
 
@@ -567,6 +584,7 @@ const ui = {
   askAudio: $('askAudio'), pickImage: $('pickImage'), pickVideo: $('pickVideo'),
   pickAudio: $('pickAudio'), mic: $('mic'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
+  exportFormat: $('exportFormat'), exportSession: $('exportSession'),
   narrative: $('narrative'), visualMode: $('visualMode'), maxSlots: $('maxSlots'),
   allowTextOnly: $('allowTextOnly'), narrativeContinuity: $('narrativeContinuity'),
   styleAnchor: $('styleAnchor'), fastVideo: $('fastVideo'),
@@ -898,6 +916,7 @@ let sessionID = '';
 let turn = null;          // current assistant turn
 let inflight = new Map(); // artifact_id -> partial chunks
 const history = [];       // completed {role, content} pairs
+const sessionTurns = [];  // ordered { userTurn, assistantTurn } records for export
 
 const GLOBAL_VOICE_KEY = 'ummweb.voiceOn';
 let voiceOn = localStorage.getItem(GLOBAL_VOICE_KEY) !== '0';
@@ -1297,9 +1316,16 @@ function formatTurnTelemetry(telemetry) {
 }
 // TURN_TELEMETRY_END
 
+function syncExportControls() {
+  const disabled = !canExportSession(sessionTurns.length, running);
+  if (ui.exportSession) ui.exportSession.disabled = disabled;
+  if (ui.exportFormat) ui.exportFormat.disabled = disabled;
+}
+
 function syncEmptyState() {
   const turnCount = ui.transcript.querySelectorAll('.turn').length;
   updateEmptyStateVisibility(ui.emptyState, turnCount);
+  syncExportControls();
 }
 
 function elapsedTelemetryMs(targetTurn) {
@@ -1393,7 +1419,9 @@ function addTurn(role, text) {
   scrollToEnd();
   return {
     el, meta, asrEl, flow, artifacts, legs, telemetryEl, text,
-    tailText: null, interruptedBadgeEl: null, slots: new Map(), telemetry: null,
+    asrText: '', tailText: null, interruptedBadgeEl: null,
+    interrupted: false, spokenBytes: null,
+    slots: new Map(), nonSlotVisuals: [], telemetry: null,
   };
 }
 
@@ -1713,7 +1741,8 @@ function createSlot(id, prompt, kind, continuity = null) {
 
   const slot = { id, prompt, kind, el, head, caption, continuityEl,
                  continuityMeta: null, media, badge, swap, regen, dl,
-                 url: '', cache: {}, loading: false, hasError: false };
+                 url: '', cache: {}, loading: false, hasError: false,
+                 error: '', bytes: null, sha256: '' };
   swap.addEventListener('click', () => {
     renderSlot(slot, slot.kind === 'video' ? 'image' : 'video');
   });
@@ -1726,6 +1755,7 @@ function createSlot(id, prompt, kind, continuity = null) {
 
 function showSlotLoading(slot) {
   slot.hasError = false;
+  slot.error = '';
   if (slot.el?.dataset) delete slot.el.dataset.error;
   slot.el?.classList?.remove('has-error');
   const shimmer = document.createElement('div');
@@ -1738,6 +1768,7 @@ function showSlotLoading(slot) {
 
 function showSlotError(slot, message) {
   slot.hasError = true;
+  slot.error = typeof message === 'string' ? message : '';
   if (slot.el?.dataset) slot.el.dataset.error = 'true';
   slot.el?.classList?.add('has-error');
   const overlay = document.createElement('div');
@@ -1751,6 +1782,7 @@ function showSlotError(slot, message) {
 
 function setSlotMedia(slot, kind, url) {
   slot.hasError = false;
+  slot.error = '';
   if (slot.el?.dataset) delete slot.el.dataset.error;
   slot.el?.classList?.remove('has-error');
   slot.kind = kind;
@@ -1870,6 +1902,8 @@ async function renderSlot(slot, kind) {
     const actual = hinted === 'video' ? 'video' : 'image';
     const blob = await res.blob();
     const bytes = new Uint8Array(await blob.arrayBuffer());
+    slot.bytes = bytes.length;
+    slot.sha256 = '';
     if (actual === 'image') {
       slot.imageDataURL = dataURLFor(type || blob.type || 'image/png', bytes);
     }
@@ -2480,6 +2514,13 @@ function ensureRealtimeResponseTurn(responseId) {
   if (!responseTurn) {
     responseTurn = addTurn('assistant', '');
     realtime.turns.set(responseId, responseTurn);
+    const last = sessionTurns[sessionTurns.length - 1];
+    if (last && last.userTurn && !last.assistantTurn) {
+      last.assistantTurn = responseTurn;
+    } else {
+      sessionTurns.push({ userTurn: null, assistantTurn: responseTurn });
+    }
+    syncExportControls();
   }
   return responseTurn;
 }
@@ -2552,7 +2593,9 @@ async function handleRealtimeEvent(event, generation) {
       break;
     case 'transcription.completed':
       if (typeof event.text === 'string' && event.text.trim()) {
-        addTurn('user', event.text.trim());
+        const rtUserTurn = addTurn('user', event.text.trim());
+        sessionTurns.push({ userTurn: rtUserTurn, assistantTurn: null });
+        syncExportControls();
       }
       setRealtimeStatus('Thinking…');
       break;
@@ -2602,6 +2645,8 @@ async function handleRealtimeEvent(event, generation) {
         const result = recordRealtimeTurnCancelled(realtime.turnTracker, targetId, event.text_cursor);
         const responseTurn = realtime.turns.get(targetId);
         if (responseTurn && result) {
+          responseTurn.interrupted = true;
+          responseTurn.spokenBytes = result.acknowledgedBytes;
           if (typeof event.acknowledged_text === 'string') {
             responseTurn.text = event.acknowledged_text;
             if (responseTurn.tailText) {
@@ -2870,6 +2915,9 @@ function deliver(chunk, bytes) {
   const kindHint = chunk.media_type === 'video' || mime === 'video/mp4' ? 'video' : 'image';
   if (chunk.slot_id && turn?.slots?.has(chunk.slot_id)) {
     const slot = turn.slots.get(chunk.slot_id);
+    slot.bytes = bytes.length;
+    const artifactSha = normalizeAnchorSha256(chunk.sha256);
+    if (artifactSha) slot.sha256 = artifactSha;
     if (kindHint === 'image' && mime.startsWith('image/')) {
       slot.imageDataURL = dataURLFor(mime, bytes);
     }
@@ -2902,7 +2950,14 @@ function deliver(chunk, bytes) {
     img.alt = 'Generated image';
     link.append(img);
     wrapCard(link, 'image.png');
-    recordVisualSettled(chunk.artifact_id || `image-${turn.telemetry?.settledSlotIds?.size ?? 0}`);
+    const id = chunk.artifact_id || `image-${turn.telemetry?.settledSlotIds?.size ?? 0}`;
+    turn.nonSlotVisuals.push({
+      id,
+      kind: 'image',
+      bytes: bytes.length,
+      sha256: normalizeAnchorSha256(chunk.sha256),
+    });
+    recordVisualSettled(id);
   } else if (mime === 'audio/wav') {
     recordFirstAudio();
     const audio = document.createElement('audio');
@@ -2914,7 +2969,14 @@ function deliver(chunk, bytes) {
     video.controls = true;
     video.src = url;
     wrapCard(video, 'video.mp4');
-    recordVisualSettled(chunk.artifact_id || `video-${turn.telemetry?.settledSlotIds?.size ?? 0}`);
+    const id = chunk.artifact_id || `video-${turn.telemetry?.settledSlotIds?.size ?? 0}`;
+    turn.nonSlotVisuals.push({
+      id,
+      kind: 'video',
+      bytes: bytes.length,
+      sha256: normalizeAnchorSha256(chunk.sha256),
+    });
+    recordVisualSettled(id);
   } else {
     const note = document.createElement('div');
     note.className = 'legs';
@@ -2982,7 +3044,10 @@ async function consume(payload, st) {
     log('event', unified.kind, unified.seq, unified.stage);
     switch (unified.kind) {
       case 'asr_final':
-        if (unified.text) turn.asrEl.textContent = `ASR: ${unified.text}`;
+        if (unified.text) {
+          turn.asrText = unified.text;
+          turn.asrEl.textContent = `ASR: ${unified.text}`;
+        }
         break;
       case 'visual_slot': onVisualSlot(unified); break;
       case 'artifact': await ingestArtifact(unified.artifact); break;
@@ -3079,6 +3144,7 @@ function setBusy(busy) {
   }
   syncNarrativeControls();
   syncVideoFrameControls();
+  syncExportControls();
   ui.dot.classList.toggle('busy', busy);
 }
 ui.narrative.addEventListener('change', () => {
@@ -3434,6 +3500,9 @@ async function send() {
     userTurn.artifacts.append(preview);
   }
   turn = addTurn('assistant', '');
+  const sessionEntry = { userTurn, assistantTurn: turn };
+  sessionTurns.push(sessionEntry);
+  syncExportControls();
   turn.telemetry = {
     startedAt: performance.now(),
     ttftMs: null,
@@ -3526,6 +3595,7 @@ async function send() {
       setStatus('Stopped');
       if (!turn.text && !turn.flow.querySelector('.slot') && !turn.artifacts.childElementCount) {
         turn.el.remove();
+        sessionEntry.assistantTurn = null;
         syncEmptyState();
       } else {
         finalizeBehaviorEvidence(turn, st.behaviorRequested, st.behaviorEvidenceHeader);
@@ -3588,6 +3658,422 @@ ui.showcasePresets?.addEventListener('click', (event) => {
   if (!card) return;
   applyShowcasePreset(card.dataset.preset);
 });
+// SESSION_EXPORT_BEGIN
+const SESSION_EXPORT_SCHEMA = 'umminfer-web-session-export-v1';
+
+function canExportSession(turnCount, busy = false) {
+  return !busy && Number.isInteger(turnCount) && turnCount > 0;
+}
+
+function sanitizeSessionIdForFilename(sessionId) {
+  const raw = typeof sessionId === 'string' ? sessionId.trim() : '';
+  const cleaned = raw
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 64)
+    .replace(/[-_]+$/, '');
+  return cleaned || 'untitled';
+}
+
+function buildSessionExportFilename(sessionId, format = 'json') {
+  const ext = format === 'markdown' || format === 'md' ? 'md' : 'json';
+  return `umminfer-session-${sanitizeSessionIdForFilename(sessionId)}.${ext}`;
+}
+
+function scrubInlineDataUri(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/gi, '[omitted-base64]');
+}
+
+function normalizeVisualSlotForExport(rawSlot, fallbackIndex = 0) {
+  if (!rawSlot || typeof rawSlot !== 'object') return null;
+  const meta = rawSlot.continuityMeta && typeof rawSlot.continuityMeta === 'object'
+    ? rawSlot.continuityMeta : {};
+  const id = typeof rawSlot.id === 'string' && rawSlot.id.trim()
+    ? rawSlot.id.trim()
+    : (typeof rawSlot.slot_id === 'string' && rawSlot.slot_id.trim()
+      ? rawSlot.slot_id.trim() : `slot-${fallbackIndex}`);
+  const kind = (rawSlot.kind || rawSlot.media_type) === 'video' ? 'video' : 'image';
+  const out = { id, kind };
+  const prompt = scrubInlineDataUri(typeof rawSlot.prompt === 'string' ? rawSlot.prompt.trim() : '');
+  if (prompt) out.prompt = prompt;
+  if (typeof rawSlot.bytes === 'number' && Number.isSafeInteger(rawSlot.bytes) && rawSlot.bytes >= 0) {
+    out.bytes = rawSlot.bytes;
+  }
+  const sha256 = normalizeAnchorSha256(rawSlot.sha256);
+  if (sha256) out.sha256 = sha256;
+
+  const continuityMode = typeof rawSlot.continuity_mode === 'string' && rawSlot.continuity_mode
+    ? rawSlot.continuity_mode
+    : (typeof meta.continuity_mode === 'string' && meta.continuity_mode ? meta.continuity_mode : '');
+  if (continuityMode) out.continuity_mode = continuityMode;
+
+  const rawAnchorIdx = rawSlot.anchor_slot_index !== undefined
+    ? rawSlot.anchor_slot_index : meta.anchor_slot_index;
+  const hasAnchorIdx = Number.isInteger(rawAnchorIdx) && rawAnchorIdx >= 0;
+  if (hasAnchorIdx) out.anchor_slot_index = rawAnchorIdx;
+
+  const rawExplicit = rawSlot.anchor_explicit !== undefined
+    ? rawSlot.anchor_explicit : meta.anchor_explicit;
+  if (rawExplicit === true) {
+    out.anchor_explicit = true;
+  } else if (hasAnchorIdx) {
+    out.anchor_explicit = false;
+  }
+
+  const anchorSha256 = normalizeAnchorSha256(
+    rawSlot.anchor_sha256 !== undefined ? rawSlot.anchor_sha256 : meta.anchor_sha256,
+  );
+  if (anchorSha256) out.anchor_sha256 = anchorSha256;
+
+  const errorText = typeof rawSlot.error === 'string' && rawSlot.error.trim()
+    ? rawSlot.error.trim() : '';
+  if (errorText) out.error = errorText;
+
+  return out;
+}
+
+function normalizeObservedMs(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function normalizeTurnTelemetryForExport(rawTelemetry, normalizedSlots) {
+  const src = rawTelemetry && typeof rawTelemetry === 'object' ? rawTelemetry : null;
+  const slots = Array.isArray(normalizedSlots) ? normalizedSlots : [];
+
+  const ttftMs = src ? normalizeObservedMs(src.ttftMs ?? src.ttft_ms) : null;
+  const ttfaMs = src ? normalizeObservedMs(src.ttfaMs ?? src.ttfa_ms) : null;
+  const firstVisualMs = src ? normalizeObservedMs(src.firstVisualMs ?? src.first_visual_ms) : null;
+  const totalMs = src ? normalizeObservedMs(src.totalMs ?? src.total_ms) : null;
+
+  const rawVisualCount = src
+    ? (src.visualSettledCount ?? src.visual_slots) : undefined;
+  const parsedVisualCount = Number.isInteger(rawVisualCount) && rawVisualCount >= 0
+    ? rawVisualCount : 0;
+  const visualSlotsCount = Math.max(parsedVisualCount, slots.length);
+
+  let slotI2VCount = 0;
+  let slotHasExplicitAnchor = false;
+  for (const s of slots) {
+    const isI2V = (Number.isInteger(s.anchor_slot_index) && s.anchor_slot_index >= 0) ||
+                  s.continuity_mode === 'i2v_chain';
+    if (isI2V) slotI2VCount += 1;
+    if (s.anchor_explicit === true) slotHasExplicitAnchor = true;
+  }
+  const rawI2VCount = src && Number.isInteger(src.i2v_count) && src.i2v_count >= 0
+    ? src.i2v_count : null;
+  const hasI2VFlag = Boolean(src && (src.hasI2VChain === true || src.has_i2v_chain === true));
+  const hasExplicitFlag = slotHasExplicitAnchor ||
+    Boolean(src && (src.hasExplicitAnchor === true || src.has_explicit_anchor === true));
+  const i2vCount = rawI2VCount !== null
+    ? Math.max(rawI2VCount, slotI2VCount)
+    : (slotI2VCount > 0 ? slotI2VCount : ((hasI2VFlag || hasExplicitFlag) ? 1 : 0));
+
+  const rawNativeAllocator = src ? (src.nativeAllocator ?? src.native_allocator ?? null) : null;
+  const vramSummary = summarizeNativeAllocatorTelemetry(rawNativeAllocator);
+
+  const rawBehaviorRequested = Boolean(src && (src.behaviorRequested === true || src.behavior_requested === true));
+  const rawBehaviorHeader = src
+    ? (src.behaviorEvidenceHeader ?? src.behavior_evidence_header ?? '') : '';
+  const rawBehaviorPayload = src
+    ? (src.behaviorEvidence ?? src.behavior_evidence ?? null) : null;
+  const behaviorSummary = summarizeBehaviorEvidence({
+    requested: rawBehaviorRequested,
+    header: rawBehaviorHeader,
+    payload: rawBehaviorPayload,
+  });
+
+  const hasAnyMetric = ttftMs !== null || ttfaMs !== null || firstVisualMs !== null ||
+    totalMs !== null || visualSlotsCount > 0 || i2vCount > 0 ||
+    vramSummary !== null || behaviorSummary !== null;
+  if (!hasAnyMetric) {
+    return { json: null, formatInput: null };
+  }
+
+  const json = {};
+  if (ttftMs !== null) json.ttft_ms = ttftMs;
+  if (ttfaMs !== null) json.ttfa_ms = ttfaMs;
+  if (firstVisualMs !== null) json.first_visual_ms = firstVisualMs;
+  if (totalMs !== null) json.total_ms = totalMs;
+  json.visual_slots = visualSlotsCount;
+  json.i2v_count = i2vCount;
+
+  if (vramSummary !== null) {
+    const details = vramSummary.title.split('\n').slice(1);
+    json.native_allocator = {
+      coverage: vramSummary.coverage,
+      covered: vramSummary.covered,
+      covered_stage_count: vramSummary.coveredStageCount,
+      total_stage_count: vramSummary.totalStageCount,
+      peak_bytes: vramSummary.covered ? vramSummary.peakBytes : null,
+      label: vramSummary.label,
+      details,
+    };
+  }
+
+  if (behaviorSummary !== null) {
+    const behaviorOut = {
+      status: behaviorSummary.status,
+      token_count: behaviorSummary.status === 'exposed' ? behaviorSummary.tokenCount : null,
+      supervised_count: behaviorSummary.status === 'exposed' ? behaviorSummary.supervisedCount : null,
+      label: behaviorSummary.label,
+    };
+    if (behaviorSummary.status === 'exposed') {
+      const validPayload = extractBehaviorEvidence({ behavior: rawBehaviorPayload });
+      if (validPayload?.format) behaviorOut.format = validPayload.format;
+      if (validPayload?.tokenizer_sha256) behaviorOut.tokenizer_sha256 = validPayload.tokenizer_sha256;
+    }
+    json.behavior_logprobs = behaviorOut;
+  }
+
+  const formatInput = {
+    ttftMs,
+    ttfaMs,
+    visualSettledCount: visualSlotsCount,
+    firstVisualMs,
+    hasI2VChain: i2vCount > 0 || hasI2VFlag,
+    hasExplicitAnchor: hasExplicitFlag,
+    totalMs,
+    nativeAllocator: rawNativeAllocator,
+    behaviorRequested: rawBehaviorRequested,
+    behaviorEvidenceHeader: rawBehaviorHeader,
+    behaviorEvidence: rawBehaviorPayload,
+  };
+
+  return { json, formatInput };
+}
+
+function buildSessionExportJson(state = {}) {
+  const safeState = state && typeof state === 'object' ? state : {};
+  const sessionId = typeof (safeState.session_id ?? safeState.sessionId) === 'string'
+    ? (safeState.session_id ?? safeState.sessionId).trim() : '';
+  const model = typeof safeState.model === 'string' ? safeState.model.trim() : '';
+  const rawExportedAt = safeState.exported_at ?? safeState.exportedAt;
+  const exportedAt = typeof rawExportedAt === 'string' && rawExportedAt.trim()
+    ? rawExportedAt.trim() : new Date().toISOString();
+  const rawTurns = Array.isArray(safeState.turns) ? safeState.turns : [];
+
+  const turns = [];
+  for (let i = 0; i < rawTurns.length; i += 1) {
+    const rawTurn = rawTurns[i];
+    if (!rawTurn || typeof rawTurn !== 'object') continue;
+    const rawSlots = rawTurn.visual_slots ?? rawTurn.slots ?? [];
+    const slotList = rawSlots instanceof Map
+      ? [...rawSlots.values()]
+      : (Array.isArray(rawSlots) ? rawSlots : []);
+    const visualSlots = [];
+    for (let j = 0; j < slotList.length; j += 1) {
+      const normalizedSlot = normalizeVisualSlotForExport(slotList[j], j);
+      if (normalizedSlot) visualSlots.push(normalizedSlot);
+    }
+
+    const prompt = scrubInlineDataUri(
+      typeof rawTurn.prompt === 'string'
+        ? rawTurn.prompt
+        : (rawTurn.role === 'user' && typeof rawTurn.content === 'string' ? rawTurn.content : ''),
+    );
+    const response = scrubInlineDataUri(
+      typeof rawTurn.response === 'string'
+        ? rawTurn.response
+        : (rawTurn.role === 'assistant' && typeof rawTurn.content === 'string' ? rawTurn.content : ''),
+    );
+    const role = typeof rawTurn.role === 'string' && rawTurn.role.trim()
+      ? rawTurn.role.trim()
+      : (prompt && response ? 'turn' : (response ? 'assistant' : (prompt ? 'user' : 'turn')));
+
+    const { json: telemetryJson } = normalizeTurnTelemetryForExport(rawTurn.telemetry, visualSlots);
+
+    const turnOut = {
+      index: turns.length + 1,
+      role,
+      prompt,
+      response,
+    };
+    const asrText = typeof (rawTurn.asr_text ?? rawTurn.asrText) === 'string'
+      ? (rawTurn.asr_text ?? rawTurn.asrText).trim() : '';
+    if (asrText) turnOut.asr_text = asrText;
+    if (rawTurn.interrupted === true) {
+      turnOut.interrupted = true;
+      const spoken = parseNonNegativeCursor(
+        rawTurn.spoken_bytes ?? rawTurn.spokenBytes ?? rawTurn.acknowledgedBytes,
+      );
+      if (spoken !== null) turnOut.spoken_bytes = spoken;
+    }
+    turnOut.visual_slots = visualSlots;
+    if (telemetryJson !== null) turnOut.telemetry = telemetryJson;
+    turns.push(turnOut);
+  }
+
+  return {
+    schema: SESSION_EXPORT_SCHEMA,
+    exported_at: exportedAt,
+    session_id: sessionId || null,
+    model: model || null,
+    turn_count: turns.length,
+    turns,
+  };
+}
+
+function buildSessionExportMarkdown(state = {}) {
+  const safeState = state && typeof state === 'object' ? state : {};
+  const report = buildSessionExportJson(safeState);
+  const rawTurns = Array.isArray(safeState.turns) ? safeState.turns : [];
+  const validRawTurns = rawTurns.filter((t) => t && typeof t === 'object');
+
+  const lines = [
+    '# ummInfer Session Export',
+    '',
+    `- **Session ID:** ${report.session_id ? `\`${report.session_id}\`` : '_none_'}`,
+  ];
+  if (report.model) lines.push(`- **Model:** \`${report.model}\``);
+  lines.push(`- **Exported at:** \`${report.exported_at}\``);
+  lines.push(`- **Turns:** ${report.turn_count}`);
+
+  if (report.turn_count === 0) {
+    lines.push('', '_No turns recorded._');
+    return lines.join('\n') + '\n';
+  }
+
+  for (let i = 0; i < report.turns.length; i += 1) {
+    const turnItem = report.turns[i];
+    const rawTurn = validRawTurns[i] || {};
+    lines.push('', '---', '', `## Turn ${turnItem.index}`);
+
+    if (turnItem.prompt) {
+      lines.push('', '### User', '', turnItem.prompt);
+    }
+    if (turnItem.asr_text) {
+      lines.push('', `> _ASR:_ ${turnItem.asr_text}`);
+    }
+
+    const hasAssistantSection = Boolean(turnItem.response) || turnItem.interrupted === true ||
+      turnItem.visual_slots.length > 0 || Boolean(turnItem.telemetry);
+    if (hasAssistantSection) {
+      let heading = '### Assistant';
+      if (turnItem.interrupted === true) {
+        const badge = formatInterruptedBadge(turnItem.spoken_bytes);
+        heading += ` · ${badge || 'Interrupted'}`;
+      }
+      lines.push('', heading);
+      if (turnItem.response) {
+        lines.push('', turnItem.response);
+      }
+    }
+
+    if (turnItem.visual_slots.length > 0) {
+      lines.push('', '#### Visual Slots', '');
+      for (const slot of turnItem.visual_slots) {
+        const kindLabel = slot.kind === 'video' ? 'Video' : 'Image';
+        const badge = visualSlotContinuityBadge(slot);
+        const headerParts = [`**${kindLabel}**`];
+        if (badge) headerParts.push(`\`${badge.text}\``);
+        const metaParts = [];
+        const formattedBytes = formatAllocatorBytes(slot.bytes);
+        if (formattedBytes !== null) metaParts.push(`\`${formattedBytes}\``);
+        if (slot.sha256) metaParts.push(`\`sha256: ${slot.sha256.slice(0, 8)}\``);
+        if (slot.error) metaParts.push(`error: ${slot.error}`);
+        let item = `- \`${slot.id}\` (${headerParts.join(', ')})`;
+        if (slot.prompt) item += ` — ${slot.prompt}`;
+        if (metaParts.length) item += ` (${metaParts.join(', ')})`;
+        lines.push(item);
+      }
+    }
+
+    const { formatInput } = normalizeTurnTelemetryForExport(rawTurn.telemetry, turnItem.visual_slots);
+    const pills = formatInput ? formatTurnTelemetry(formatInput) : [];
+    if (pills.length > 0) {
+      const pillText = pills.map((p) => `\`${p.label}\``).join(' · ');
+      lines.push('', `**Telemetry:** ${pillText}`);
+    }
+  }
+
+  return lines.join('\n') + '\n';
+}
+
+function triggerSessionExportDownload(state, format = 'json') {
+  const isMarkdown = format === 'markdown' || format === 'md';
+  const content = isMarkdown
+    ? buildSessionExportMarkdown(state)
+    : JSON.stringify(buildSessionExportJson(state), null, 2) + '\n';
+  const mime = isMarkdown ? 'text/markdown;charset=utf-8' : 'application/json;charset=utf-8';
+  const filename = buildSessionExportFilename(
+    state?.session_id ?? state?.sessionId ?? '',
+    isMarkdown ? 'markdown' : 'json',
+  );
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.rel = 'noopener';
+  if (document.body && typeof document.body.append === 'function') {
+    document.body.append(link);
+  }
+  try {
+    link.click();
+  } finally {
+    if (typeof link.remove === 'function') link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+  return { filename, mime, bytes: blob.size };
+}
+// SESSION_EXPORT_END
+
+function collectSessionExportState(exportedAt = new Date().toISOString()) {
+  return {
+    session_id: sessionID || '',
+    model: ui.model.value.trim() || '',
+    exported_at: exportedAt,
+    turns: sessionTurns.map((entry) => {
+      const u = entry.userTurn;
+      const a = entry.assistantTurn;
+      const slots = [];
+      if (a?.slots) {
+        for (const slot of a.slots.values()) {
+          slots.push({
+            id: slot.id,
+            kind: slot.kind,
+            prompt: slot.prompt || '',
+            bytes: slot.bytes,
+            sha256: slot.sha256,
+            continuity_mode: slot.continuityMeta?.continuity_mode || '',
+            anchor_slot_index: slot.continuityMeta?.anchor_slot_index,
+            anchor_explicit: slot.continuityMeta?.anchor_explicit === true,
+            anchor_sha256: slot.continuityMeta?.anchor_sha256 || '',
+            error: slot.hasError ? (slot.error || 'Generation failed') : '',
+          });
+        }
+      }
+      if (Array.isArray(a?.nonSlotVisuals)) {
+        for (const visual of a.nonSlotVisuals) slots.push(visual);
+      }
+      const record = {
+        prompt: u?.text || '',
+        response: a?.text || '',
+        visual_slots: slots,
+        telemetry: a?.telemetry || null,
+      };
+      if (a?.asrText) record.asr_text = a.asrText;
+      if (a?.interrupted === true) {
+        record.interrupted = true;
+        if (parseNonNegativeCursor(a.spokenBytes) !== null) {
+          record.spoken_bytes = a.spokenBytes;
+        }
+      }
+      return record;
+    }),
+  };
+}
+
+ui.exportSession.addEventListener('click', (event) => {
+  if (!canExportSession(sessionTurns.length, running)) return;
+  const selected = ui.exportFormat.value === 'markdown' ? 'markdown' : 'json';
+  const format = event?.shiftKey ? (selected === 'markdown' ? 'json' : 'markdown') : selected;
+  const result = triggerSessionExportDownload(collectSessionExportState(), format);
+  setStatus(`Exported ${result.filename}`, false);
+});
+
 syncEmptyState();
 
 ui.newChat.addEventListener('click', () => {
@@ -3595,6 +4081,7 @@ ui.newChat.addEventListener('click', () => {
   stopRealtime();
   player.stop();
   history.length = 0;
+  sessionTurns.length = 0;
   ui.transcript.replaceChildren(ui.emptyState);
   syncEmptyState();
   sessionID = '';

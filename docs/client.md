@@ -446,6 +446,18 @@ Sub-second durations format as `<N> ms` (e.g. `265 ms`) and values at or above
 `1000 ms` format as `<X.XX> s` (e.g. `1.42 s`). Both clients adapt the cards and
 telemetry pills cleanly across light and dark themes.
 
+The Web UI (`web/index.html`) also provides a pure client-side **Export**
+control (`#exportFormat` + `#exportSession`, disabled when the session has zero
+turns or while streaming) next to **New chat**. Exporting downloads a
+sanitized `umminfer-session-<session_id>.json` (`umminfer-web-session-export-v1`)
+or `.md` report containing clean per-turn prompts/prose, visual slot metadata
+(`id`, `kind`, observed `bytes`/`sha256`, and I2V `anchor_slot_index` /
+`anchor_explicit` badges with zero base64 media bloat), real voice barge-in
+cut-points (`interrupted` / `spoken_bytes`, omitted on uninterrupted turns),
+and exact observed per-turn telemetry (`ttft_ms`, `ttfa_ms`, `total_ms`,
+`visual_slots`, `i2v_count`, `native_allocator`, and `behavior_logprobs`,
+preserving `null` / `N/C` / `not_exposed` with zero fabricated numbers).
+
 ## Direct Speech (`POST /v1/audio/speech`)
 
 `OpenAIClient::speech(const SpeechRequest&)` and the `umm-infer speech`

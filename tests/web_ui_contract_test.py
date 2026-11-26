@@ -63,7 +63,8 @@ def check_markup(html):
                 'id="narrativeContinuity"', 'id="styleAnchor"',
                 'id="fastVideo"', 'id="videoFramePolicy"',
                 'id="videoMotionThreshold"', 'id="videoSceneThreshold"',
-                'id="nativeAllocatorTelemetry"', 'id="behaviorLogprobs"'):
+                'id="nativeAllocatorTelemetry"', 'id="behaviorLogprobs"',
+                'id="exportFormat"', 'id="exportSession"'):
         require(tag in html, f"missing element: {tag}")
     require('<option value="off" selected>Off</option>' in html,
             "narrativeContinuity must default to Off")
@@ -1725,6 +1726,433 @@ console.log('showcase and telemetry behavior passed');
             "showcase/telemetry harness did not reach its success assertion")
 
 
+def check_session_export(html, script):
+    """Pure client-side Export Session (JSON + Markdown) markup and script hooks."""
+    for snippet in (
+        'class="export-group"',
+        'id="exportFormat"',
+        '<option value="json" selected>JSON</option>',
+        '<option value="markdown">Markdown</option>',
+        'id="exportSession"',
+        '.export-group',
+    ):
+        require(snippet in html, f"missing session export markup or CSS: {snippet}")
+    for control in ('exportFormat', 'exportSession'):
+        require(re.search(rf'id="{control}"[^>]*\bdisabled\b', html) is not None,
+                f"{control} must start disabled when the session has zero turns")
+    for hook in (
+        'SESSION_EXPORT_SCHEMA',
+        'canExportSession(',
+        'sanitizeSessionIdForFilename(',
+        'buildSessionExportFilename(',
+        'buildSessionExportJson(',
+        'buildSessionExportMarkdown(',
+        'triggerSessionExportDownload(',
+        'collectSessionExportState(',
+        'syncExportControls(',
+        'URL.createObjectURL(',
+        'URL.revokeObjectURL(',
+        'sessionTurns',
+        "ui.exportSession.addEventListener('click'",
+    ):
+        require(hook in script, f"missing session export script hook: {hook}")
+
+
+def check_session_export_behavior(script):
+    """Execute pure session export JSON/Markdown/filename/download helpers in Node."""
+    node = shutil.which("node")
+    if not node:
+        print("skip session export behavior: node is not installed", flush=True)
+        return
+    for marker in (
+        "// TURN_TELEMETRY_BEGIN", "// TURN_TELEMETRY_END",
+        "// NARRATIVE_CONTINUITY_BEGIN", "// NARRATIVE_CONTINUITY_END",
+        "// REALTIME_AUDIO_METER_BEGIN", "// REALTIME_AUDIO_METER_END",
+        "// SESSION_EXPORT_BEGIN", "// SESSION_EXPORT_END",
+    ):
+        require(marker in script, f"missing session export behavior-test marker: {marker}")
+    telemetry_src = script.split("// TURN_TELEMETRY_BEGIN", 1)[1].split(
+        "// TURN_TELEMETRY_END", 1)[0]
+    continuity_src = script.split("// NARRATIVE_CONTINUITY_BEGIN", 1)[1].split(
+        "// NARRATIVE_CONTINUITY_END", 1)[0]
+    realtime_meter_src = script.split("// REALTIME_AUDIO_METER_BEGIN", 1)[1].split(
+        "// REALTIME_AUDIO_METER_END", 1)[0]
+    export_src = script.split("// SESSION_EXPORT_BEGIN", 1)[1].split(
+        "// SESSION_EXPORT_END", 1)[0]
+    harness = (
+        telemetry_src + "\n" + continuity_src + "\n" +
+        realtime_meter_src + "\n" + export_src + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+
+// 1. Export button gating: disabled on 0 turns or while busy; enabled with >=1 turn & idle.
+assert(canExportSession(0, false) === false, 'export must be disabled when turnCount is 0');
+assert(canExportSession(0, true) === false, 'export must be disabled when turnCount is 0 and busy');
+assert(canExportSession(2, true) === false, 'export must be disabled while streaming/busy');
+assert(canExportSession(1, false) === true, 'export must be enabled when >= 1 turn and idle');
+assert(canExportSession(-1, false) === false, 'negative turnCount must stay disabled');
+
+// 2. Empty session produces safe deterministic JSON & Markdown with zero turns.
+const fixedTs = '2026-11-26T09:00:00.000Z';
+const emptyJson = buildSessionExportJson({
+  session_id: '',
+  model: 'qwen3-native',
+  exported_at: fixedTs,
+  turns: [],
+});
+assert(emptyJson.schema === 'umminfer-web-session-export-v1', 'schema version mismatch');
+assert(emptyJson.exported_at === fixedTs, 'injectable exported_at mismatch');
+assert(emptyJson.session_id === null, 'empty session_id must serialize as null');
+assert(emptyJson.model === 'qwen3-native', 'model mismatch');
+assert(emptyJson.turn_count === 0 && Array.isArray(emptyJson.turns) && emptyJson.turns.length === 0,
+       'empty session must report 0 turns');
+
+const emptyMd = buildSessionExportMarkdown({
+  session_id: '',
+  model: 'qwen3-native',
+  exported_at: fixedTs,
+  turns: [],
+});
+assert(emptyMd.includes('# ummInfer Session Export') &&
+       emptyMd.includes('**Turns:** 0') &&
+       emptyMd.includes('_No turns recorded._'),
+       'empty Markdown export mismatch: ' + emptyMd);
+
+// 3. Rich multi-turn session: text, I2V explicit anchor, interrupted voice barge-in,
+//    COVERED & N/C native allocator, exposed & not_exposed behavior logprobs, zero base64 bloat.
+const sampleSha = '3a9d5bbe' + '4f12c890'.repeat(7);
+const slot0Sha = 'abcdef01' + '23456789'.repeat(7);
+const fakeBase64Blob = 'data:image/png;base64,' + 'A'.repeat(200000);
+const coveredEnvelope = {
+  schema_version: 1,
+  coverage: 'COVERED',
+  stages: [
+    {
+      stage: 'vlm',
+      native_stage: 'qwen38',
+      coverage: 'COVERED',
+      allocated_bytes_peak: Math.round(128.4 * 1024 * 1024),
+      epoch: { id: 17, reset: true },
+    },
+  ],
+};
+const notCoveredEnvelope = {
+  schema_version: 1,
+  coverage: 'NOT_COVERED',
+  stages: [
+    {
+      stage: 'vlm',
+      native_stage: 'qwen38',
+      coverage: 'NOT_COVERED',
+      allocated_bytes_peak: null,
+      reason: 'batched_request_attribution_unavailable',
+    },
+  ],
+};
+const exposedBehaviorPayload = {
+  format: 'umminfer-behavior-logprobs-v1',
+  tokenizer_sha256: '1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016',
+  token_ids: [101, 202, 303, 404, 505],
+  logprobs: [-0.1, -0.25, -0.05, -0.4, -0.01],
+  mask: [1, 0, 1, 0, 1],
+};
+
+const richState = {
+  session_id: 'ummweb-a1b2c3d4e5f60708',
+  model: 'qwen3-native',
+  exported_at: fixedTs,
+  turns: [
+    {
+      prompt: 'Create a two-beat storyboard of a glowing lantern.',
+      response: 'A warm lantern floats above the misty river.',
+      visual_slots: [
+        {
+          id: 'slot-0',
+          kind: 'image',
+          prompt: 'establishing keyframe of glowing paper lantern',
+          bytes: 131072,
+          sha256: slot0Sha,
+          // Simulate raw live slot fields that must NEVER leak into export.
+          imageDataURL: fakeBase64Blob,
+          url: 'blob:http://127.0.0.1:30000/slot-0',
+          cache: { image: 'blob:http://127.0.0.1:30000/slot-0' },
+        },
+        {
+          id: 'slot-1',
+          kind: 'video',
+          prompt: 'animate river breeze and reflections',
+          bytes: 1572864,
+          continuity_mode: 'i2v_chain',
+          anchor_slot_index: 0,
+          anchor_explicit: true,
+          anchor_sha256: sampleSha,
+        },
+      ],
+      telemetry: {
+        ttftMs: 210,
+        ttfaMs: 380,
+        visualSettledCount: 2,
+        firstVisualMs: 3200,
+        hasI2VChain: true,
+        hasExplicitAnchor: true,
+        totalMs: 9100,
+        nativeAllocator: coveredEnvelope,
+        behaviorRequested: true,
+        behaviorEvidenceHeader: 'EXPOSED',
+        behaviorEvidence: exposedBehaviorPayload,
+      },
+    },
+    {
+      prompt: 'Prove why sqrt(2) is irrational.',
+      response: 'Assume sqrt(2) = p/q in lowest terms; then both p and q are even.',
+      interrupted: false,
+      spoken_bytes: 0, // Must be ignored when interrupted !== true!
+      visual_slots: [],
+      telemetry: {
+        ttftMs: 120,
+        ttfaMs: null,
+        visualSettledCount: 0,
+        firstVisualMs: null,
+        hasI2VChain: false,
+        hasExplicitAnchor: false,
+        totalMs: 950,
+        nativeAllocator: notCoveredEnvelope,
+        behaviorRequested: true,
+        behaviorEvidenceHeader: 'not_exposed',
+        behaviorEvidence: exposedBehaviorPayload, // Stray payload must never leak!
+      },
+    },
+    {
+      prompt: 'Tell me about ocean tides.',
+      response: 'Ocean tides are driven by',
+      interrupted: true,
+      spoken_bytes: 24,
+      visual_slots: [],
+      telemetry: null,
+    },
+    {
+      prompt: 'Quick follow-up with inline ' + fakeBase64Blob,
+      response: '',
+      interrupted: true,
+      spoken_bytes: 0,
+      visual_slots: [],
+      telemetry: null,
+    },
+  ],
+};
+
+const richJson = buildSessionExportJson(richState);
+const richJsonText = JSON.stringify(richJson);
+assert(richJson.schema === 'umminfer-web-session-export-v1', 'rich schema mismatch');
+assert(richJson.session_id === 'ummweb-a1b2c3d4e5f60708', 'rich session_id mismatch');
+assert(richJson.turn_count === 4 && richJson.turns.length === 4, 'rich turn_count mismatch');
+
+// Zero raw base64 bloat in JSON export.
+assert(!richJsonText.includes('data:image/') && !richJsonText.includes('A'.repeat(200)),
+       'base64 media blob leaked into JSON export');
+assert(richJsonText.length < 8192,
+       `JSON export unexpectedly large (${richJsonText.length} bytes)`);
+
+// Turn 1 assertions: visual slots + explicit I2V + COVERED VRAM + exposed behavior.
+const t1 = richJson.turns[0];
+assert(t1.index === 1 && t1.prompt.includes('glowing lantern') &&
+       t1.response.includes('warm lantern floats'),
+       'turn 1 text mismatch');
+assert(!Object.prototype.hasOwnProperty.call(t1, 'interrupted') &&
+       !Object.prototype.hasOwnProperty.call(t1, 'spoken_bytes'),
+       'non-interrupted turn 1 must omit interrupted and spoken_bytes');
+assert(t1.visual_slots.length === 2, 'turn 1 visual_slots count mismatch');
+assert(t1.visual_slots[0].id === 'slot-0' && t1.visual_slots[0].kind === 'image' &&
+       t1.visual_slots[0].bytes === 131072 && t1.visual_slots[0].sha256 === slot0Sha &&
+       !Object.prototype.hasOwnProperty.call(t1.visual_slots[0], 'imageDataURL') &&
+       !Object.prototype.hasOwnProperty.call(t1.visual_slots[0], 'url') &&
+       !Object.prototype.hasOwnProperty.call(t1.visual_slots[0], 'cache'),
+       'turn 1 slot-0 metadata mismatch or leaked raw media fields');
+assert(t1.visual_slots[1].id === 'slot-1' && t1.visual_slots[1].kind === 'video' &&
+       t1.visual_slots[1].continuity_mode === 'i2v_chain' &&
+       t1.visual_slots[1].anchor_slot_index === 0 &&
+       t1.visual_slots[1].anchor_explicit === true &&
+       t1.visual_slots[1].anchor_sha256 === sampleSha &&
+       t1.visual_slots[1].bytes === 1572864,
+       'turn 1 slot-1 I2V explicit anchor metadata mismatch');
+assert(t1.telemetry.ttft_ms === 210 && t1.telemetry.ttfa_ms === 380 &&
+       t1.telemetry.first_visual_ms === 3200 && t1.telemetry.total_ms === 9100 &&
+       t1.telemetry.visual_slots === 2 && t1.telemetry.i2v_count === 1,
+       'turn 1 telemetry numbers mismatch: ' + JSON.stringify(t1.telemetry));
+assert(t1.telemetry.native_allocator.coverage === 'COVERED' &&
+       t1.telemetry.native_allocator.covered === true &&
+       t1.telemetry.native_allocator.peak_bytes === Math.round(128.4 * 1024 * 1024) &&
+       t1.telemetry.native_allocator.label === 'VRAM: 128.4 MiB peak',
+       'turn 1 COVERED native_allocator mismatch');
+assert(t1.telemetry.behavior_logprobs.status === 'exposed' &&
+       t1.telemetry.behavior_logprobs.token_count === 5 &&
+       t1.telemetry.behavior_logprobs.supervised_count === 3 &&
+       t1.telemetry.behavior_logprobs.format === 'umminfer-behavior-logprobs-v1' &&
+       t1.telemetry.behavior_logprobs.label === 'Behavior: 5 tok (3 sup)',
+       'turn 1 exposed behavior_logprobs mismatch');
+
+// Turn 2 assertions: zero fabrication for null ttfa/first_visual, N/C VRAM, not_exposed behavior.
+const t2 = richJson.turns[1];
+assert(!Object.prototype.hasOwnProperty.call(t2, 'interrupted') &&
+       !Object.prototype.hasOwnProperty.call(t2, 'spoken_bytes'),
+       'turn 2 with interrupted:false must omit interrupted and spoken_bytes');
+assert(t2.telemetry.ttft_ms === 120 && t2.telemetry.total_ms === 950 &&
+       !Object.prototype.hasOwnProperty.call(t2.telemetry, 'ttfa_ms') &&
+       !Object.prototype.hasOwnProperty.call(t2.telemetry, 'first_visual_ms') &&
+       t2.telemetry.visual_slots === 0 && t2.telemetry.i2v_count === 0,
+       'turn 2 must omit unobserved ttfa_ms / first_visual_ms without fabricating 0');
+assert(t2.telemetry.native_allocator.coverage === 'NOT_COVERED' &&
+       t2.telemetry.native_allocator.covered === false &&
+       t2.telemetry.native_allocator.peak_bytes === null &&
+       t2.telemetry.native_allocator.label === 'VRAM: N/C',
+       'turn 2 N/C native_allocator must keep peak_bytes=null, never 0');
+assert(t2.telemetry.behavior_logprobs.status === 'not_exposed' &&
+       t2.telemetry.behavior_logprobs.token_count === null &&
+       t2.telemetry.behavior_logprobs.supervised_count === null &&
+       t2.telemetry.behavior_logprobs.label === 'Behavior: not_exposed',
+       'turn 2 not_exposed behavior must keep counts null, never 0');
+
+// Turn 3 assertions: interrupted voice barge-in with spoken_bytes=24 and no fabricated telemetry.
+const t3 = richJson.turns[2];
+assert(t3.interrupted === true && t3.spoken_bytes === 24,
+       'turn 3 interrupted spoken_bytes mismatch');
+assert(!Object.prototype.hasOwnProperty.call(t3, 'telemetry'),
+       'turn 3 with null telemetry must omit telemetry rather than fabricate zeros');
+
+// Turn 4 assertions: interrupted before audio (spoken_bytes=0) + scrubbed inline data URI.
+const t4 = richJson.turns[3];
+assert(t4.interrupted === true && t4.spoken_bytes === 0,
+       'turn 4 zero-byte interruption mismatch');
+assert(t4.prompt.includes('[omitted-base64]') && !t4.prompt.includes('data:image/'),
+       'turn 4 did not scrub inline base64 data URI');
+
+// 4. Markdown export assertions: matches formatTurnTelemetry() and badges with zero base64 bloat.
+const richMd = buildSessionExportMarkdown(richState);
+assert(!richMd.includes('data:image/') && !richMd.includes('A'.repeat(200)),
+       'base64 media blob leaked into Markdown export');
+assert(richMd.includes('# ummInfer Session Export') &&
+       richMd.includes('`ummweb-a1b2c3d4e5f60708`') &&
+       richMd.includes('`qwen3-native`') &&
+       richMd.includes('**Turns:** 4'),
+       'Markdown session header mismatch');
+assert(richMd.includes('#### Visual Slots') &&
+       richMd.includes('`slot-0` (**Image**)') &&
+       richMd.includes('`128 KiB`') &&
+       richMd.includes('`sha256: abcdef01`') &&
+       richMd.includes('`slot-1` (**Video**, `Explicit I2V ← Slot 1 · 3a9d5bbe`)') &&
+       richMd.includes('`1.5 MiB`'),
+       'Markdown visual slot metadata mismatch:\n' + richMd);
+const expectedT1Telemetry = formatTurnTelemetry(richState.turns[0].telemetry)
+  .map((p) => '`' + p.label + '`').join(' · ');
+assert(richMd.includes(`**Telemetry:** ${expectedT1Telemetry}`),
+       'Markdown turn 1 telemetry line does not match formatTurnTelemetry():\n' + richMd);
+const expectedT2Telemetry = formatTurnTelemetry(richState.turns[1].telemetry)
+  .map((p) => '`' + p.label + '`').join(' · ');
+assert(richMd.includes(`**Telemetry:** ${expectedT2Telemetry}`) &&
+       richMd.includes('`VRAM: N/C`') && richMd.includes('`Behavior: not_exposed`'),
+       'Markdown turn 2 telemetry line mismatch:\n' + richMd);
+assert(richMd.includes('### Assistant · Interrupted · 24 B spoken'),
+       'Markdown turn 3 interrupted cut-point badge mismatch');
+assert(richMd.includes('### Assistant · Interrupted before audio'),
+       'Markdown turn 4 zero-byte interrupted badge mismatch');
+// Turn 1 and Turn 2 are NOT interrupted; Turn 3 has no telemetry line.
+const t3Section = richMd.split('## Turn 3')[1].split('## Turn 4')[0];
+assert(!t3Section.includes('**Telemetry:**'),
+       'turn 3 with no telemetry must not emit a Telemetry line');
+
+// 5. Filename sanitization strips path traversal, control chars, and unsafe punctuation.
+assert(buildSessionExportFilename('ummweb-a1b2c3d4', 'json') === 'umminfer-session-ummweb-a1b2c3d4.json',
+       'clean JSON filename mismatch');
+assert(buildSessionExportFilename('ummweb-a1b2c3d4', 'markdown') === 'umminfer-session-ummweb-a1b2c3d4.md',
+       'clean Markdown filename mismatch');
+for (const unsafe of [
+  '../../etc/passwd',
+  'bad\x00name<script>alert(1)</script>',
+  'session: 2026/11/26 *?"|<>\\',
+  '  ---..__  ',
+  '',
+  null,
+  'a'.repeat(120),
+]) {
+  const fnJson = buildSessionExportFilename(unsafe, 'json');
+  const fnMd = buildSessionExportFilename(unsafe, 'markdown');
+  assert(/^umminfer-session-[A-Za-z0-9_-]{1,64}\.json$/.test(fnJson),
+         `unsafe JSON filename leaked: ${fnJson}`);
+  assert(/^umminfer-session-[A-Za-z0-9_-]{1,64}\.md$/.test(fnMd),
+         `unsafe MD filename leaked: ${fnMd}`);
+  assert(!fnJson.includes('..') && !fnJson.includes('/') && !fnJson.includes('\\'),
+         `path separator/traversal survived sanitization: ${fnJson}`);
+}
+assert(buildSessionExportFilename('', 'json') === 'umminfer-session-untitled.json',
+       'empty session id must fall back to untitled');
+assert(buildSessionExportFilename('///...', 'markdown') === 'umminfer-session-untitled.md',
+       'symbol-only session id must fall back to untitled');
+
+// 6. triggerSessionExportDownload uses URL.createObjectURL(new Blob(...)) and revokes URL cleanly.
+const createdBlobs = [];
+const revokedUrls = [];
+const clickedLinks = [];
+const pendingTimers = [];
+const origCreateObjectURL = URL.createObjectURL;
+const origRevokeObjectURL = URL.revokeObjectURL;
+const origSetTimeout = globalThis.setTimeout;
+URL.createObjectURL = (blob) => {
+  const id = `blob:mock-${createdBlobs.length + 1}`;
+  createdBlobs.push({ id, blob });
+  return id;
+};
+URL.revokeObjectURL = (url) => { revokedUrls.push(url); };
+globalThis.setTimeout = (fn) => { pendingTimers.push(fn); return pendingTimers.length; };
+globalThis.document = {
+  body: { append() {} },
+  createElement(tag) {
+    assert(tag === 'a', 'expected anchor element for download');
+    const el = {
+      href: '', download: '', rel: '', removed: false,
+      click() { clickedLinks.push({ href: this.href, download: this.download, rel: this.rel }); },
+      remove() { this.removed = true; },
+    };
+    return el;
+  },
+};
+try {
+  const jsonDl = triggerSessionExportDownload(richState, 'json');
+  const mdDl = triggerSessionExportDownload(richState, 'markdown');
+  while (pendingTimers.length) pendingTimers.shift()();
+  assert(jsonDl.filename === 'umminfer-session-ummweb-a1b2c3d4e5f60708.json' &&
+         jsonDl.mime === 'application/json;charset=utf-8' && jsonDl.bytes > 0,
+         'JSON download result mismatch');
+  assert(mdDl.filename === 'umminfer-session-ummweb-a1b2c3d4e5f60708.md' &&
+         mdDl.mime === 'text/markdown;charset=utf-8' && mdDl.bytes > 0,
+         'Markdown download result mismatch');
+  assert(clickedLinks.length === 2 &&
+         clickedLinks[0].download === jsonDl.filename &&
+         clickedLinks[1].download === mdDl.filename,
+         'download click dispatch mismatch');
+  assert(revokedUrls.length === 2 &&
+         revokedUrls[0] === 'blob:mock-1' && revokedUrls[1] === 'blob:mock-2',
+         'object URLs were not revoked cleanly');
+} finally {
+  URL.createObjectURL = origCreateObjectURL;
+  URL.revokeObjectURL = origRevokeObjectURL;
+  globalThis.setTimeout = origSetTimeout;
+}
+
+console.log('session export behavior passed');
+"""
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "session-export.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"session export behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
+    require("session export behavior passed" in result.stdout,
+            "session export harness did not reach its success assertion")
+
+
 def check_theme_tokens(html):
     """The CSS palette mirrors Theme.swift; both files must agree."""
     theme = THEME.read_text(encoding="utf-8")
@@ -1814,6 +2242,12 @@ class WebUIContractTest(unittest.TestCase):
     def test_showcase_and_telemetry_behavior(self):
         check_showcase_and_telemetry_behavior(self.script)
 
+    def test_session_export(self):
+        check_session_export(self.html, self.script)
+
+    def test_session_export_behavior(self):
+        check_session_export_behavior(self.script)
+
     def test_theme(self):
         check_theme_tokens(self.html)
 
@@ -1840,6 +2274,8 @@ def main():
         ("realtime_audio_meter_and_barge_in_behavior", lambda: check_realtime_audio_meter_and_barge_in_behavior(script)),
         ("showcase_and_telemetry", lambda: check_showcase_and_telemetry(html, script)),
         ("showcase_and_telemetry_behavior", lambda: check_showcase_and_telemetry_behavior(script)),
+        ("session_export", lambda: check_session_export(html, script)),
+        ("session_export_behavior", lambda: check_session_export_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0
