@@ -85,6 +85,7 @@ struct RealtimeSession {
   // session.update enables audio_output and a unified engine is attached.
   bool audio_output = false;
   bool playback_ack = false;
+  bool echo_suppression = true;
   std::string voice = "vivian";
   std::string unified_session;
   std::string response_request_id;
@@ -154,6 +155,9 @@ json effective_session(const RealtimeSession& session) {
   json turn = nullptr;
   if (session.vad) {
     turn = {{"type", "server_vad"}, {"silence_ms", session.vad->silence_ms()}};
+    // Keep the default session.updated wire shape unchanged. The explicit
+    // false value is the opt-in A/B baseline used by the live echo gate.
+    if (!session.echo_suppression) turn["echo_suppression"] = false;
   }
   json effective = {{"input_audio_format", "pcm16"},
                     {"turn_detection", turn},
@@ -687,9 +691,49 @@ class RealtimeApi::Impl {
   // Accepts only fields this server actually applies. Validation completes
   // before any state changes, so a rejected update leaves the session intact.
   void update_session(lws* wsi, RealtimeSession* session, const json& settings) {
-    if (!session->request_id.empty() || !session->response_request_id.empty()) {
-      throw ProtocolError(
-          "session.update is not accepted while a turn or response is active");
+    const bool active =
+        !session->request_id.empty() || !session->response_request_id.empty();
+    if (active) {
+      // The live echo A/B gate must replay identical microphone PCM against
+      // the same real TTS response. Permit only an echo_suppression toggle with
+      // otherwise identical server_vad settings; every other active update is
+      // still rejected. This never changes playback_ack or response ownership.
+      const json& turn = settings.contains("turn_detection")
+                             ? settings["turn_detection"]
+                             : json();
+      const bool narrow_shape = settings.size() == 1 && turn.is_object() &&
+                                session->vad != nullptr &&
+                                turn.contains("echo_suppression") &&
+                                turn["echo_suppression"].is_boolean() &&
+                                (!turn.contains("type") ||
+                                 (turn["type"].is_string() &&
+                                  turn["type"].get<std::string>() == "server_vad"));
+      bool known_keys = true;
+      for (auto it = turn.begin(); turn.is_object() && it != turn.end(); ++it) {
+        known_keys &= it.key() == "type" || it.key() == "silence_ms" ||
+                      it.key() == "echo_suppression";
+      }
+      bool same_silence = true;
+      if (session->vad != nullptr && turn.is_object() &&
+          turn.contains("silence_ms")) {
+        const json& silence = turn["silence_ms"];
+        same_silence = silence.is_number_integer() &&
+                       silence.get<int64_t>() == session->vad->silence_ms();
+      }
+      if (!narrow_shape || !known_keys || !same_silence) {
+        throw ProtocolError(
+            "active session.update may only toggle turn_detection.echo_suppression "
+            "with otherwise unchanged server_vad settings");
+      }
+      const bool enabled = turn["echo_suppression"].get<bool>();
+      if (session->echo_suppression != enabled) {
+        session->echo_suppression = enabled;
+        session->vad->reset_reference();
+      }
+      send(wsi, session,
+           {{"type", "transcription_session.updated"},
+            {"session", effective_session(*session)}});
+      return;
     }
     static const std::set<std::string> kAllowed = {
         "input_audio_format", "turn_detection", "max_new_tokens", "audio_output"};
@@ -723,6 +767,7 @@ class RealtimeApi::Impl {
     // current setting, so a max_new_tokens-only update does not turn VAD off.
     const bool apply_turn_detection = settings.contains("turn_detection");
     bool vad_enabled = false;
+    bool echo_suppression = session->echo_suppression;
     serve_detail::VadConfig vad_config;
     if (apply_turn_detection && !settings["turn_detection"].is_null()) {
       const json& turn = settings["turn_detection"];
@@ -730,13 +775,20 @@ class RealtimeApi::Impl {
         throw ProtocolError("turn_detection must be null or a server_vad object");
       }
       for (auto it = turn.begin(); it != turn.end(); ++it) {
-        if (it.key() != "type" && it.key() != "silence_ms") {
+        if (it.key() != "type" && it.key() != "silence_ms" &&
+            it.key() != "echo_suppression") {
           throw ProtocolError("unsupported turn_detection field: " + it.key());
         }
       }
       if (!turn.contains("type") || !turn["type"].is_string() ||
           turn["type"].get<std::string>() != "server_vad") {
         throw ProtocolError("turn_detection type must be server_vad");
+      }
+      if (turn.contains("echo_suppression")) {
+        if (!turn["echo_suppression"].is_boolean()) {
+          throw ProtocolError("turn_detection echo_suppression must be a boolean");
+        }
+        echo_suppression = turn["echo_suppression"].get<bool>();
       }
       if (turn.contains("silence_ms")) {
         const json& silence = turn["silence_ms"];
@@ -820,6 +872,7 @@ class RealtimeApi::Impl {
     session->max_tokens = max_tokens;
     session->audio_output = audio_output;
     session->playback_ack = audio_output && playback_ack;
+    session->echo_suppression = echo_suppression;
     session->voice = voice;
     if (apply_turn_detection) {
       if (vad_enabled) {
@@ -1089,7 +1142,8 @@ class RealtimeApi::Impl {
         delta["text_end_cursor"] = text_end_cursor;
         session->response_issued_cursors.insert(text_cursor);
       }
-      if (send(wsi, session, delta) && session->vad) {
+      if (send(wsi, session, delta) && session->vad &&
+          session->echo_suppression) {
         session->vad->push_reference(pcm.data() + offset, step,
                                      static_cast<int>(sample_rate),
                                      static_cast<int>(channels));

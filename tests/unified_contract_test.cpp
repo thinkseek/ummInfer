@@ -5208,6 +5208,9 @@ void run_realtime_spoken_audio_format_and_leg_error_subtest(
   check(updated.has_value() &&
             (*updated)["type"] == "transcription_session.updated",
         "realtime session.update did not echo transcription_session.updated");
+  check(updated.has_value() &&
+            !(*updated)["session"]["turn_detection"].contains("echo_suppression"),
+        "default echo protection changed the session.updated wire shape");
 
   // 120 ms voiced 440 Hz PCM16 at 16 kHz (3840 bytes, < 6400 preview window)
   // followed by 150 ms digital silence (4800 bytes) to commit one VAD turn.
@@ -5462,6 +5465,111 @@ void run_realtime_spoken_audio_format_and_leg_error_subtest(
                  "double_talk_cancel=PASS\n";
   } else {
     check(false, "turn 3 echo-robustness turn did not submit to TTS");
+  }
+
+  // Turn 4: the real-model A/B harness toggles only echo_suppression while an
+  // acknowledged response remains active. Prove that this narrow update keeps
+  // the response alive, reports the effective baseline, and replays exactly the
+  // same PCM into the old energy-VAD behavior. Default suppression stayed on
+  // for the first half and no other active-session setting is changed.
+  if (auto tts_req = send_utterance()) {
+    auto bytes_of = [](const std::vector<int16_t>& samples) {
+      std::string bytes(samples.size() * 2, '\0');
+      for (size_t i = 0; i < samples.size(); ++i) {
+        const auto value = static_cast<uint16_t>(samples[i]);
+        bytes[i * 2] = static_cast<char>(value & 0xff);
+        bytes[i * 2 + 1] = static_cast<char>((value >> 8) & 0xff);
+      }
+      return bytes;
+    };
+    auto append_pcm = [&](const std::string& pcm) {
+      ws.send_text(json{{"type", "input_audio_buffer.append"},
+                        {"audio", util::base64_encode(pcm)}}
+                       .dump());
+    };
+    constexpr size_t kFrames = 50;
+    constexpr size_t kDelay = 800;
+    std::vector<int16_t> reference(kFrames * 160);
+    std::vector<int16_t> echo(kFrames * 160, 0);
+    for (size_t i = 0; i < reference.size(); ++i) {
+      reference[i] = static_cast<int16_t>(
+          7000.0 * std::sin(2.0 * 3.14159265358979323846 * 397.0 * i / 16000.0) +
+          4000.0 * std::sin(2.0 * 3.14159265358979323846 * 1153.0 * i / 16000.0));
+      if (i >= kDelay) echo[i] = static_cast<int16_t>(0.6 * reference[i - kDelay]);
+    }
+    Value::Map chunk;
+    chunk["audio"] = Value::bin(bytes_of(reference));
+    chunk["index"] = Value(int64_t{0});
+    chunk["sample_rate"] = Value(int64_t{16000});
+    chunk["channels"] = Value(int64_t{1});
+    chunk["format"] = Value("pcm16");
+    h.stream(tts_req->request_id, "tts", Value(std::move(chunk)));
+    bool delivered = false;
+    while (auto event = next_ws_event()) {
+      if (event->value("type", "") == "audio.delta") {
+        delivered = true;
+        break;
+      }
+    }
+    check(delivered, "A/B real-response fixture did not emit audio.delta");
+    const std::string echo_bytes = bytes_of(echo);
+    for (size_t frame = 0; frame < kFrames; ++frame) {
+      append_pcm(echo_bytes.substr(frame * 320, 320));
+    }
+    bool protected_cutin = false;
+    while (auto event = next_ws_event(0.25)) {
+      const std::string type = event->value("type", "");
+      protected_cutin |= type == "input_audio_buffer.speech_started" ||
+                         type == "response.cancelled";
+    }
+    check(!protected_cutin, "protected A/B echo cut into its own response");
+
+    ws.send_text(json{{"type", "session.update"},
+                      {"session",
+                       {{"turn_detection",
+                         {{"type", "server_vad"}, {"silence_ms", 100},
+                          {"echo_suppression", false}}}}}}
+                     .dump());
+    std::optional<json> baseline_update;
+    while (auto event = next_ws_event()) {
+      if (event->value("type", "") == "transcription_session.updated") {
+        baseline_update = *event;
+        break;
+      }
+    }
+    check(baseline_update.has_value() &&
+              (*baseline_update)["session"]["turn_detection"].value(
+                  "echo_suppression", true) == false,
+          "active echo-only A/B update was not applied and reported");
+
+    for (size_t frame = 0; frame < kFrames; ++frame) {
+      append_pcm(echo_bytes.substr(frame * 320, 320));
+    }
+    bool baseline_start = false;
+    bool baseline_cancel = false;
+    for (int i = 0; i < 16 && !(baseline_start && baseline_cancel); ++i) {
+      auto event = next_ws_event();
+      if (!event) break;
+      baseline_start |=
+          event->value("type", "") == "input_audio_buffer.speech_started";
+      baseline_cancel |= event->value("type", "") == "response.cancelled";
+    }
+    check(baseline_start && baseline_cancel,
+          "identical PCM did not exercise the echo-disabled A/B baseline");
+    append_pcm(quiet);
+    bool drained_final = false;
+    while (auto req = h.next_submit(h.asr_recv)) {
+      h.complete(req->request_id, "asr", true, text_result(""));
+      if (req->request_id.rfind("realtime-preview-", 0) != 0) {
+        drained_final = true;
+        break;
+      }
+    }
+    check(drained_final, "echo A/B baseline did not endpoint and drain ASR");
+    std::cout << "REALTIME_ECHO_ACTIVE_AB same_pcm=1 protected_cutins=0 "
+                 "baseline_cutins=1 default_unchanged=1\n";
+  } else {
+    check(false, "turn 4 active echo A/B turn did not submit to TTS");
   }
 
   wait_until([&] { return engine.in_flight() == 0; },

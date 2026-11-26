@@ -264,6 +264,17 @@ PCM cannot suppress speech against a later response. A normally completed
 response keeps only its bounded tail until the next response boundary. The
 original microphone PCM, not the VAD residual, is submitted to ASR.
 
+`turn_detection.echo_suppression` is an optional boolean A/B control. It
+**defaults to true**, and the default `transcription_session.updated` wire shape
+is unchanged. Setting it to false stops feeding that session's emitted PCM to
+the reference ring, so the existing `EnergyVad` sees the original microphone
+signal; the effective reply explicitly reports `echo_suppression: false`.
+While a turn or response is active, the only permitted configuration change is
+this boolean with otherwise identical `server_vad` type and `silence_ms`. This
+narrow exception lets the validation harness replay byte-identical microphone
+PCM against the same active real-TTS response. It cannot change `playback_ack`,
+response ownership, history, sampling, voice, or endpoint settings.
+
 Deterministic CPU coverage in `tests/unified_contract_test.cpp` reports:
 
 | Synthetic check | Result |
@@ -284,7 +295,7 @@ single gain cannot represent, severe nonlinear distortion, client playout lead
 or lag beyond the bounded history/search, and unrelated loud noise can still
 cause a missed or false interruption.
 
-**Required physical live gate — `NOT_RUN` in this CPU-only change.** Before
+**Required physical live gate — `NOT_RUN`.** Before
 claiming physical AEC or deploying this as acoustic protection, run real TTS
 through the actual speaker and microphone on each supported client topology.
 Cover device-buffer delay and jitter, speaker/mic gain, clipping, silence,
@@ -316,8 +327,10 @@ the explicit opt-in during `session.update`:
 ```
 
 The accepted `transcription_session.updated` echoes `playback_ack: true`.
-Configuration changes are rejected while a turn or response is active, so the
-mode cannot change between emission, playback acknowledgement, and cancellation.
+Except for the isolated `echo_suppression` A/B toggle above, configuration
+changes are rejected while a turn or response is active. That toggle never
+changes acknowledgement state, so the mode cannot change between emission,
+playback acknowledgement, and cancellation.
 Leaving `playback_ack` absent or false preserves the old wire behavior: no playback ack is
 required, ordinary completed realtime turns can enter history at completion,
 and cancelled or failed turns never do. `realtime_playback_ack` is an internal
@@ -540,6 +553,84 @@ its cursor. Raw evidence is
 This validates the protocol and real model cancellation path, including a
 partially consumed multi-sentence answer. It is not a listening test and does
 not establish acoustic text alignment inside a TTS sentence.
+
+## Measured on SM90, 2026-11-26 (real echo/double-talk PCM gate)
+
+This is **real-model server/PCM validation**, not physical acoustic echo
+cancellation proof. Implementation commit `97d77b4bb5bade11e7ed38d2711eafd6e450505f`
+used native Qwen3-ASR-1.7B on physical GPU 0, Qwen3.8-27B on GPU 1, and
+Qwen3-TTS-12Hz-1.7B-CustomVoice on GPU 7. Model revisions stayed `UNKNOWN`;
+config SHA-256 values were respectively
+`2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f`,
+`191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab`, and
+`17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9`.
+The ASR and VLM indexes identified 2 and 18 distinct shards. The resident
+service on 43301 and GPUs 2-6 were not used.
+
+```sh
+python3 -I tests/full_duplex_echo_live.py --self-check
+python3 -I tests/full_duplex_echo_live.py \
+  --bin-dir "$UMM_BIN_DIR" --asr-model "$UMM_ASR_MODEL" \
+  --vlm-model "$UMM_VLM_MODEL" --tts-model "$UMM_TTS_MODEL" \
+  --audio "$UMM_ASR_AUDIO" --out "$UMM_OUT_DIR" --log-dir "$UMM_LOG_DIR" \
+  --gpu-asr 0 --gpu-vlm 1 --gpu-tts 7 --source-commit "$UMM_SOURCE_COMMIT"
+```
+
+The fixed corpus contains six echo-only cases. Each protected arm captures real
+`audio.delta` PCM and constructs a deterministic 16 kHz microphone stream with
+500 ms of active echo followed by 600 ms of digital silence. Its oldest
+referenced sample is exactly 500 ms old (490 ms including the current 10 ms
+frame), leaving delay headroom inside the production search window. The disabled
+arm then replays the **same bytes against the same still-active real response**
+with `echo_suppression=false`. Thus the A/B comparison does not depend on TTS
+cross-request bit reproducibility. The recorded microphone hashes are distinct
+across cases and bind both arms.
+
+| Echo-only case | Protected cut-ins / ASR turns | Disabled cut-ins | Disabled cancel from first append | Endpoint from last above-floor frame |
+| --- | ---: | ---: | ---: | ---: |
+| 0 ms, gain 0.35 | 0 / 0 | 1 | 0.478 ms | 341.339 ms |
+| 73 ms, gain 0.55 | 0 / 0 | 1 | 0.497 ms | 341.188 ms |
+| 249 ms, gain 1.40 | 0 / 0 | 1 | 0.509 ms | 331.368 ms |
+| 499 ms, gain 0.08 | 0 / 0 | 1 | 0.470 ms | 381.281 ms |
+| 117 ms, 491 clipped samples | 0 / 0 | 1 | 0.445 ms | 331.368 ms |
+| delay jumps 13/117/249/499/73 ms | 0 / 0 | 1 | 200.765 ms | 301.018 ms |
+
+Every disabled arm emitted `speech_started`, cancelled the old response,
+endpointed, and returned a real ASR final for the echo turn. Those transcripts
+are evidence that the fixture actually crosses the old energy-VAD boundary, not
+an ASR-quality result. Every protected arm had zero cut-ins, endpoints, and
+transcription events. Each cancellation retained the exact acknowledged UTF-8
+prefix; echo cases used a 10-byte proper prefix `It sounds ` and no stale output
+followed cancellation.
+
+| Additional real scenario | Result |
+| --- | --- |
+| Near-end-only A/B | Same microphone SHA-256 `2d8879b7cb71808f249434643225d6873496e2b7d3e03c7b6d546338d13e819f`; protected onset/cancel 3.355/3.347 ms, disabled 0.498/0.490 ms; identical final transcript and no onset regression |
+| Simultaneous double-talk, two responses | 3.375 ms and 3.256 ms from input to `response.cancelled`, both within the one-second L1 bound; each ended with a real ASR final |
+| Stale reference across responses | Response `req-17`'s echo cancelled `req-18` in 0.323 ms before `req-18` emitted any audio; empty acknowledged prefix stayed empty, proving the old ring was not reused |
+| Two sessions | Session A's own echo caused 0 cut-ins; the same PCM on reference-less session B started once in 0.313 ms and endpointed without cancelling A |
+| Server resource bound | p95 CPU 19.923%, maximum CPU 59.754%, maximum RSS 44,466,176 B, observed RSS growth 17,948,672 B; all inside the declared 200% / 512 MiB / 128 MiB bounds |
+| Terminal state and cleanup | `/health` `in_flight=0`; all task processes exited; isolated IPC/SHM directories removed; GPUs 0/1/7 each ended at 3 MiB, 0%, no compute process |
+
+Binary SHA-256 values were `umm-infer`
+`6119b0ca5746576d644f7c594136820ad5c734a060c17adff87a3e15f4dfe348`, ASR
+`4f56591272c4d76b92c32ccca4ab3191b46c40bce674652261eb8f4c34f5e22b`,
+Qwen3.8 `eb6fd4dc4d47c8f2ecb64702e44dd38be23cb82987ff59da8ae84965f6fb2f38`,
+and TTS `c4f9321cff7e50d8acacdb6dccc633a61d230da05d05015340186684a7e28782`.
+Harness SHA-256 was
+`e8171f4787568d9d85156ef653ac16b148569dc4b24d5e18a6b719a80ce0ab1b`.
+Raw far-end PCM, every microphone stream, raw WebSocket payloads, client transmit
+timing, 50 ms CPU/RSS samples, and all four server/stage logs are uncommitted
+artifacts under `$UMM_OUT_DIR` / `$UMM_LOG_DIR`. `sha256sum -c SHA256SUMS`
+verified all 63 files. The summary SHA-256 was
+`030abef978faca8ed362f9d1e0dede8c1b302bdce570d2851e3e5ab73d93d78c`;
+`SHA256SUMS` SHA-256 was
+`39a770f36dd92a4ceecdf0be3141430fc82771bf2ff14543fdf6a71840e21154`.
+
+Physical speaker/microphone topology, device delay/jitter, acoustic path,
+playback artifacts, and listening quality remain **NOT_RUN**. This gate
+establishes the real server and deterministic PCM contract only; it does not
+satisfy the physical gate below or justify an acoustic-AEC claim.
 
 ## What L2 still needs
 
