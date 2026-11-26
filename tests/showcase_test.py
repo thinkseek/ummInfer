@@ -1219,12 +1219,23 @@ class ShowcaseSuiteTest(unittest.TestCase):
         try:
             endpoint = base_url + "/v1/chat/completions"
 
-            # Valid requests return HTTP 200 (default OFF, uniform, temporal, temporal + thresholds)
+            # Valid requests return HTTP 200 (default OFF, uniform/temporal + optional max_frames/thresholds)
             for valid_body in (
                 _chat_body(None, include_field=False),
                 _chat_body({"policy": "uniform"}),
+                _chat_body({"policy": "uniform", "max_frames": 4}),
+                _chat_body({"policy": "uniform", "max_frames": 8}),
+                _chat_body({"policy": "uniform", "max_frames": 16}),
                 _chat_body({"policy": "temporal"}),
+                _chat_body({"policy": "temporal", "max_frames": 4}),
+                _chat_body({"policy": "temporal", "max_frames": 16}),
                 _chat_body({"policy": "temporal", "motion_threshold": 0.2, "scene_threshold": 0.35}),
+                _chat_body({
+                    "policy": "temporal",
+                    "motion_threshold": 0.2,
+                    "scene_threshold": 0.35,
+                    "max_frames": 16,
+                }),
             ):
                 status, _, _ = showcase.http_request(endpoint, valid_body, timeout=10.0)
                 self.assertEqual(status, 200, f"expected 200 for valid body {valid_body}")
@@ -1237,9 +1248,29 @@ class ShowcaseSuiteTest(unittest.TestCase):
                 [],
                 {},
                 {"policy": "adaptive"},
-                {"policy": "temporal", "max_frames": 16},
+                {"policy": "temporal", "unknown_field": 16},
                 {"policy": "uniform", "motion_threshold": 0.2},
                 {"policy": "uniform", "scene_threshold": 0.3},
+                {"policy": "uniform", "max_frames": 8, "motion_threshold": 0.2},
+                {"policy": "uniform", "max_frames": 16, "scene_threshold": 0.3},
+                {"policy": "uniform", "max_frames": 0},
+                {"policy": "uniform", "max_frames": -4},
+                {"policy": "uniform", "max_frames": 6},
+                {"policy": "uniform", "max_frames": 12},
+                {"policy": "uniform", "max_frames": 32},
+                {"policy": "uniform", "max_frames": True},
+                {"policy": "uniform", "max_frames": False},
+                {"policy": "uniform", "max_frames": 8.0},
+                {"policy": "uniform", "max_frames": "8"},
+                {"policy": "uniform", "max_frames": None},
+                {"policy": "temporal", "max_frames": 0},
+                {"policy": "temporal", "max_frames": -4},
+                {"policy": "temporal", "max_frames": 6},
+                {"policy": "temporal", "max_frames": 12},
+                {"policy": "temporal", "max_frames": 32},
+                {"policy": "temporal", "max_frames": True},
+                {"policy": "temporal", "max_frames": 8.0},
+                {"policy": "temporal", "max_frames": "8"},
                 {"policy": "temporal", "motion_threshold": -0.01},
                 {"policy": "temporal", "scene_threshold": 1.01},
                 {"policy": "temporal", "motion_threshold": "0.2"},
@@ -2050,6 +2081,313 @@ process.stdout.write(JSON.stringify(summaries));
             showcase.build_gui_session_export({"passed": True}, model="qwen3-native")
         with self.assertRaises(ValueError):
             showcase.build_gui_session_export(j5_result, model="qwen3-native", exported_at="   ")
+
+    def test_video_frame_budget_omission_valid_combinations_and_gui_export(self) -> None:
+        # 1. Default omission invariance
+        self.assertIsNone(showcase.build_video_frame_selection(None))
+        self.assertIsNone(showcase.build_video_frame_selection(None, max_frames=None))
+        self.assertEqual(
+            showcase.build_video_frame_selection("uniform", max_frames=None),
+            {"policy": "uniform"},
+        )
+        self.assertNotIn("max_frames", showcase.build_video_frame_selection("uniform"))
+        self.assertNotIn("max_frames", showcase.build_video_frame_selection("temporal"))
+
+        # 2. Valid uniform + 4/8/16 and temporal + 4/8/16 payload construction
+        for budget in (4, 8, 16):
+            self.assertEqual(
+                showcase.build_video_frame_selection(None, max_frames=budget),
+                {"policy": "uniform", "max_frames": budget},
+            )
+            self.assertEqual(
+                showcase.build_video_frame_selection("uniform", max_frames=budget),
+                {"policy": "uniform", "max_frames": budget},
+            )
+            self.assertEqual(
+                showcase.build_video_frame_selection("temporal", max_frames=budget),
+                {"policy": "temporal", "max_frames": budget},
+            )
+            self.assertEqual(
+                showcase.build_video_frame_selection(
+                    "temporal",
+                    motion_threshold=0.2,
+                    scene_threshold=0.35,
+                    max_frames=budget,
+                ),
+                {
+                    "policy": "temporal",
+                    "motion_threshold": 0.2,
+                    "scene_threshold": 0.35,
+                    "max_frames": budget,
+                },
+            )
+
+        # 3. Wire payloads on Journey 3 across uniform + temporal budgets
+        manifest = showcase.load_manifest(MANIFEST_PATH)
+        j3_spec = manifest["journeys"]["journey_3_multiturn_video_qa"]
+        server, thread, base_url = self._start_mock_server()
+        try:
+            for selection in (
+                {"policy": "uniform", "max_frames": 4},
+                {"policy": "uniform", "max_frames": 8},
+                {"policy": "uniform", "max_frames": 16},
+                {"policy": "temporal", "max_frames": 4},
+                {"policy": "temporal", "motion_threshold": 0.2, "scene_threshold": 0.35, "max_frames": 16},
+            ):
+                server.chat_requests.clear()
+                j3 = showcase.run_journey_3(
+                    base_url,
+                    "qwen3-native",
+                    j3_spec,
+                    video_bytes=showcase.MOCK_MP4_J2,
+                    timeout=15.0,
+                    video_frame_selection=selection,
+                )
+                self.assertEqual(len(server.chat_requests), 3)
+                for req in server.chat_requests:
+                    sent = req["messages"][0]["content"][0]["video_url"]["frame_selection"]
+                    self.assertEqual(sent, selection)
+                self.assertEqual(j3["video_frame_selection"], selection)
+        finally:
+            self._stop_mock_server(server, thread)
+
+        # 4. CLI --self-check --video-frame-budget 16 (defaults to uniform)
+        with tempfile.TemporaryDirectory(prefix="showcase-budget-16-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--video-frame-budget",
+                    "16",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("SELF-CHECK PASS", proc.stdout)
+            self.assertIn("5/5 journeys passed", proc.stdout)
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                report["journeys"]["journey_3"]["video_frame_selection"],
+                {"policy": "uniform", "max_frames": 16},
+            )
+            self.assertIn("frame_selection=policy=uniform, max_frames=16", md_text)
+            self.assertIn("- **Video Frame Selection**: `policy=uniform, max_frames=16`", md_text)
+            self.assertGreaterEqual(
+                showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS"),
+                11,
+            )
+
+        # 5. CLI --self-check --video-frame-policy temporal --video-frame-budget 4
+        with tempfile.TemporaryDirectory(prefix="showcase-budget-t4-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-frame-budget",
+                    "4",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("SELF-CHECK PASS", proc.stdout)
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                report["journeys"]["journey_3"]["video_frame_selection"],
+                {"policy": "temporal", "max_frames": 4},
+            )
+            self.assertIn("frame_selection=policy=temporal, max_frames=4", md_text)
+            self.assertIn("- **Video Frame Selection**: `policy=temporal, max_frames=4`", md_text)
+            self.assertGreaterEqual(
+                showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS"),
+                11,
+            )
+
+        # 6. CLI --self-check with temporal + thresholds + budget + --export-gui-sessions
+        with tempfile.TemporaryDirectory(prefix="showcase-budget-gui-") as tmp:
+            out_dir = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT_PATH),
+                    "--self-check",
+                    "--video-frame-policy",
+                    "temporal",
+                    "--video-frame-budget",
+                    "16",
+                    "--video-motion-threshold",
+                    "0.2",
+                    "--video-scene-threshold",
+                    "0.35",
+                    "--export-gui-sessions",
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, f"stderr={proc.stderr}\nstdout={proc.stdout}")
+            self.assertIn("SELF-CHECK PASS", proc.stdout)
+            report = json.loads((out_dir / "showcase_report.json").read_text(encoding="utf-8"))
+            md_text = (out_dir / "showcase_report.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                report["journeys"]["journey_3"]["video_frame_selection"],
+                {
+                    "policy": "temporal",
+                    "motion_threshold": 0.2,
+                    "scene_threshold": 0.35,
+                    "max_frames": 16,
+                },
+            )
+            self.assertIn(
+                "- **Video Frame Selection**: `policy=temporal, motion_threshold=0.2, scene_threshold=0.35, max_frames=16`",
+                md_text,
+            )
+            self.assertGreaterEqual(
+                showcase.verify_sha256sums_file(out_dir, out_dir / "SHA256SUMS"),
+                16,
+            )
+            session_paths = [out_dir / item["path"] for item in report["gui_sessions"]]
+            for sp in session_paths:
+                doc = json.loads(sp.read_text(encoding="utf-8"))
+                self._assert_macos_session_export_invariants(doc)
+                self.assertNotIn(";base64,", sp.read_text(encoding="utf-8").lower())
+            web_results = self._validate_sessions_with_web_ui_node(session_paths)
+            self.assertEqual(len(web_results), 5)
+            self.assertEqual(web_results[2]["turn_count"], 3)
+
+    def test_video_frame_budget_fail_closed_before_transport_and_output_creation(self) -> None:
+        # 1. Unit fail-closed checks for build_video_frame_selection and validate_video_frame_selection
+        bad_budgets = (0, -4, 6, 12, 32, True, False, 8.0, "8")
+        for bad_val in bad_budgets:
+            for policy in (None, "uniform", "temporal"):
+                with self.assertRaises(
+                    ValueError,
+                    msg=f"expected ValueError for policy={policy!r}, max_frames={bad_val!r}",
+                ):
+                    showcase.build_video_frame_selection(policy, max_frames=bad_val)
+            for policy in ("uniform", "temporal"):
+                with self.assertRaises(
+                    ValueError,
+                    msg=f"expected ValueError validating policy={policy!r}, max_frames={bad_val!r}",
+                ):
+                    showcase.validate_video_frame_selection({"policy": policy, "max_frames": bad_val})
+
+        # Uniform + thresholds + budget still rejected fail-closed
+        for bad_kwargs in (
+            {"policy": None, "max_frames": 8, "motion_threshold": 0.2},
+            {"policy": None, "max_frames": 16, "scene_threshold": 0.3},
+            {"policy": "uniform", "max_frames": 4, "motion_threshold": 0.2},
+            {"policy": "uniform", "max_frames": 16, "scene_threshold": 0.3},
+        ):
+            with self.assertRaises(ValueError, msg=f"expected ValueError for {bad_kwargs}"):
+                showcase.build_video_frame_selection(**bad_kwargs)
+            sel = {
+                "policy": "uniform",
+                "max_frames": bad_kwargs["max_frames"],
+                **{k: v for k, v in bad_kwargs.items() if k in ("motion_threshold", "scene_threshold")},
+            }
+            with self.assertRaises(ValueError, msg=f"expected ValueError validating {sel}"):
+                showcase.validate_video_frame_selection(sel)
+
+        # 2. Direct Python run_journey_3 / run_self_check reject before HTTP or out_dir creation
+        manifest = showcase.load_manifest(MANIFEST_PATH)
+        j3_spec = manifest["journeys"]["journey_3_multiturn_video_qa"]
+        server, thread, base_url = self._start_mock_server()
+        try:
+            with self.assertRaises(ValueError):
+                showcase.run_journey_3(
+                    base_url,
+                    "qwen3-native",
+                    j3_spec,
+                    video_bytes=showcase.MOCK_MP4_J2,
+                    timeout=15.0,
+                    video_frame_selection={"policy": "uniform", "max_frames": 6},
+                )
+            self.assertEqual(len(server.chat_requests), 0)
+        finally:
+            self._stop_mock_server(server, thread)
+
+        with tempfile.TemporaryDirectory(prefix="showcase-budget-no-dir-") as tmp:
+            never_created = Path(tmp) / "should_not_exist"
+            with self.assertRaises(ValueError):
+                showcase.run_self_check(
+                    MANIFEST_PATH,
+                    out_dir=never_created,
+                    video_frame_selection={"policy": "temporal", "max_frames": True},
+                )
+            self.assertFalse(never_created.exists())
+
+        # 3. CLI fail-closed: exit code 2 before any HTTP request or output directory creation
+        cli_bad_cases = [
+            ["--self-check", "--video-frame-budget", "0"],
+            ["--self-check", "--video-frame-budget", "-4"],
+            ["--self-check", "--video-frame-budget", "6"],
+            ["--self-check", "--video-frame-budget", "12"],
+            ["--self-check", "--video-frame-budget", "32"],
+            ["--self-check", "--video-frame-budget", "True"],
+            ["--self-check", "--video-frame-budget", "8.0"],
+            ["--self-check", "--video-frame-budget", '"8"'],
+            ["--self-check", "--video-frame-budget", "8", "--video-motion-threshold", "0.2"],
+            [
+                "--self-check",
+                "--video-frame-policy",
+                "uniform",
+                "--video-frame-budget",
+                "16",
+                "--video-scene-threshold",
+                "0.3",
+            ],
+        ]
+        with tempfile.TemporaryDirectory(prefix="showcase-budget-cli-bad-") as tmp:
+            for idx, extra_args in enumerate(cli_bad_cases):
+                out_dir = Path(tmp) / f"bad_case_{idx}"
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        "-I",
+                        str(SCRIPT_PATH),
+                        *extra_args,
+                        "--out-dir",
+                        str(out_dir),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15.0,
+                    check=False,
+                )
+                self.assertEqual(
+                    proc.returncode,
+                    2,
+                    f"expected exit 2 for {extra_args}, got {proc.returncode}: "
+                    f"stderr={proc.stderr}\nstdout={proc.stdout}",
+                )
+                self.assertFalse(
+                    out_dir.exists(),
+                    f"output directory was created despite invalid flags {extra_args}",
+                )
 
 
 if __name__ == "__main__":

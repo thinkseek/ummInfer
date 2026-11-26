@@ -65,6 +65,7 @@ MARKER_RE = re.compile(r"\[\[\s*(?:image|video|visual)\s*:", re.IGNORECASE)
 TERMINAL_KINDS = {"complete", "error", "cancelled"}
 ALL_JOURNEYS = (1, 2, 3, 4, 5)
 VIDEO_FRAME_POLICIES = ("uniform", "temporal")
+VIDEO_FRAME_BUDGETS = (4, 8, 16)
 NATIVE_ALLOCATOR_SCOPE = "request-native-allocator"
 TELEMETRY_STAGE_COVERAGES = ("COVERED", "NOT_COVERED")
 TELEMETRY_ENVELOPE_COVERAGES = ("COVERED", "PARTIAL", "NOT_COVERED")
@@ -97,20 +98,23 @@ def build_video_frame_selection(
     *,
     motion_threshold: float | None = None,
     scene_threshold: float | None = None,
+    max_frames: int | None = None,
 ) -> dict | None:
     """Validate CLI video frame selection flags (parity with src/client/cli.cpp)."""
     has_motion = motion_threshold is not None
     has_scene = scene_threshold is not None
-    if policy is None:
+    has_budget = max_frames is not None
+    if policy is None and not has_budget:
         if has_motion or has_scene:
             raise ValueError("video thresholds require --video-frame-policy temporal")
         return None
-    if not isinstance(policy, str) or policy not in VIDEO_FRAME_POLICIES:
+    effective_policy = "uniform" if policy is None else policy
+    if not isinstance(effective_policy, str) or effective_policy not in VIDEO_FRAME_POLICIES:
         raise ValueError("--video-frame-policy must be uniform or temporal")
-    if (has_motion or has_scene) and policy != "temporal":
+    if (has_motion or has_scene) and effective_policy != "temporal":
         raise ValueError("video thresholds require --video-frame-policy temporal")
 
-    selection: dict = {"policy": policy}
+    selection: dict = {"policy": effective_policy}
     for flag_name, key, raw_val in (
         ("--video-motion-threshold", "motion_threshold", motion_threshold),
         ("--video-scene-threshold", "scene_threshold", scene_threshold),
@@ -125,6 +129,16 @@ def build_video_frame_selection(
                 f"invalid {flag_name}: must be a finite number in [0.0, 1.0], got {raw_val!r}"
             )
         selection[key] = val
+    if has_budget:
+        if not is_int(max_frames):
+            raise ValueError(
+                f"invalid --video-frame-budget: must be an integer in (4, 8, 16), got {max_frames!r}"
+            )
+        if max_frames not in VIDEO_FRAME_BUDGETS:
+            raise ValueError(
+                f"--video-frame-budget must be exactly 4, 8, or 16, got {max_frames!r}"
+            )
+        selection["max_frames"] = max_frames
     return selection
 
 
@@ -136,9 +150,11 @@ def validate_video_frame_selection(selection: object) -> dict:
     if not isinstance(policy, str) or policy not in VIDEO_FRAME_POLICIES:
         raise ValueError("video_url.frame_selection.policy must be uniform or temporal")
     for key in selection:
-        if key not in ("policy", "motion_threshold", "scene_threshold"):
+        if key not in ("policy", "motion_threshold", "scene_threshold", "max_frames"):
             raise ValueError(f"unsupported video_url.frame_selection field: {key}")
-    if policy == "uniform" and len(selection) != 1:
+    if policy == "uniform" and (
+        "motion_threshold" in selection or "scene_threshold" in selection
+    ):
         raise ValueError("uniform video frame_selection does not accept temporal thresholds")
     normalized: dict = {"policy": policy}
     for key in ("motion_threshold", "scene_threshold"):
@@ -151,6 +167,13 @@ def validate_video_frame_selection(selection: object) -> dict:
         if not math.isfinite(val) or val < 0.0 or val > 1.0:
             raise ValueError(f"video_url.frame_selection.{key} must be in [0,1]")
         normalized[key] = val
+    if "max_frames" in selection:
+        raw_budget = selection["max_frames"]
+        if not is_int(raw_budget):
+            raise ValueError("video_url.frame_selection.max_frames must be an integer")
+        if raw_budget not in VIDEO_FRAME_BUDGETS:
+            raise ValueError("video_url.frame_selection.max_frames must be exactly 4, 8, or 16")
+        normalized["max_frames"] = raw_budget
     return normalized
 
 
@@ -161,6 +184,8 @@ def format_video_frame_selection(selection: dict) -> str:
         parts.append(f"motion_threshold={selection['motion_threshold']:g}")
     if "scene_threshold" in selection:
         parts.append(f"scene_threshold={selection['scene_threshold']:g}")
+    if "max_frames" in selection:
+        parts.append(f"max_frames={selection['max_frames']}")
     return ", ".join(parts)
 
 
@@ -3640,6 +3665,11 @@ def execute_showcase(
     fallback_video_bytes: bytes | None = None,
     export_gui_sessions: bool = False,
 ) -> tuple[dict, dict[str, Path]]:
+    validated_selection = (
+        validate_video_frame_selection(video_frame_selection)
+        if video_frame_selection is not None
+        else None
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     health = check_health(base_url, extra_headers=extra_headers)
     journey_specs = manifest["journeys"]
@@ -3716,7 +3746,7 @@ def execute_showcase(
             extra_headers=extra_headers,
             native_allocator_telemetry=native_allocator_telemetry,
             behavior_logprobs=behavior_logprobs,
-            video_frame_selection=video_frame_selection,
+            video_frame_selection=validated_selection,
         )
         results["journey_3"] = j3_metrics
 
@@ -4117,6 +4147,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--video-frame-budget",
+        type=int,
+        choices=VIDEO_FRAME_BUDGETS,
+        default=None,
+        help=(
+            "Opt-in Journey 3 video_url.frame_selection.max_frames budget (4, 8, or 16); "
+            "defaults to uniform policy when --video-frame-policy is omitted, "
+            "and omitted by default to keep video_url byte-compatible"
+        ),
+    )
+    parser.add_argument(
         "--video-motion-threshold",
         type=float,
         default=None,
@@ -4150,6 +4191,7 @@ def main(argv: list[str] | None = None) -> int:
             args.video_frame_policy,
             motion_threshold=args.video_motion_threshold,
             scene_threshold=args.video_scene_threshold,
+            max_frames=args.video_frame_budget,
         )
     except ValueError as exc:
         parser.error(str(exc))

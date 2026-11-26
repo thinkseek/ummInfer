@@ -36,32 +36,44 @@ Journey 3 supports the same opt-in `video_url.frame_selection` CLI flags and fai
 
 | Flag | Values | Default | Notes |
 | --- | --- | --- | --- |
-| `--video-frame-policy` | `uniform` \| `temporal` | omitted (`None`) | When omitted, Turn 1 `video_url` stays byte-compatible (`{"url": "data:video/mp4;base64,..."}` with no `frame_selection` key) and `showcase_report.json` / `showcase_report.md` omit `video_frame_selection`. |
+| `--video-frame-policy` | `uniform` \| `temporal` | omitted (`None`) | When both policy and budget are omitted, Turn 1 `video_url` stays byte-compatible (`{"url": "data:video/mp4;base64,..."}` with no `frame_selection` key) and `showcase_report.json` / `showcase_report.md` omit `video_frame_selection`. |
+| `--video-frame-budget` | `4` \| `8` \| `16` | omitted (`None`) | Sets `video_url.frame_selection.max_frames`. Defaults to `policy="uniform"` when `--video-frame-policy` is omitted, and is omitted from JSON when unset so default runs remain byte-identical. |
 | `--video-motion-threshold` | finite float in `[0.0, 1.0]` | omitted (`None`) | Requires `--video-frame-policy temporal`. Omitted from JSON when unset (never serialized as `null`). |
 | `--video-scene-threshold` | finite float in `[0.0, 1.0]` | omitted (`None`) | Requires `--video-frame-policy temporal`. Omitted from JSON when unset (never serialized as `null`). |
 
 ### Fail-Closed Validation Rules
 
-- Passing `--video-motion-threshold` or `--video-scene-threshold` without `--video-frame-policy temporal` (including when omitted or paired with `uniform`) exits with a non-zero CLI error.
+- Passing `--video-motion-threshold` or `--video-scene-threshold` without `--video-frame-policy temporal` (including when omitted, paired with `uniform`, or paired only with `--video-frame-budget`) exits with CLI code `2` before any HTTP request or output directory creation.
+- Passing `--video-frame-budget` with booleans, floats, non-integer strings, `0`, negative numbers, or any integer outside `{4, 8, 16}` exits with CLI code `2` before any HTTP request or output directory creation.
 - Non-finite (`NaN`, `inf`, `-inf`) or out-of-range (`< 0.0` or `> 1.0`) threshold values exit with a non-zero CLI error.
 - Unknown `--video-frame-policy` values exit with a non-zero CLI error.
-- The offline mock server (`--mock` / `--self-check`) enforces the same `video_url.frame_selection` schema as the native server and rejects malformed objects, unknown fields, thresholds under `uniform`, or out-of-range/non-numeric thresholds with HTTP `400`.
+- The offline mock server (`--mock` / `--self-check`) enforces the same `video_url.frame_selection` schema as the native server and rejects malformed objects, unknown fields, thresholds under `uniform`, non-integer or out-of-allowlist `max_frames`, or out-of-range/non-numeric thresholds with HTTP `400`.
 
 ### Examples
 
-Offline mock verification of Journey 3 with temporal frame selection:
+Offline mock verification of Journey 3 with uniform frame budget (`max_frames=4`):
+
+```sh
+python3 -I tools/umminfer_showcase.py \
+  --self-check \
+  --video-frame-budget 4 \
+  --out-dir /tmp/showcase-budget-check
+```
+
+Offline mock verification of Journey 3 with temporal frame selection and frame budget (`max_frames=16`):
 
 ```sh
 python3 -I tools/umminfer_showcase.py \
   --mock \
   --journey 3 \
   --video-frame-policy temporal \
+  --video-frame-budget 16 \
   --video-motion-threshold 0.2 \
   --video-scene-threshold 0.35 \
   --out-dir /tmp/showcase-temporal-check
 ```
 
-Live Journey 3 run against an explicit MP4 with temporal frame selection:
+Live Journey 3 run against an explicit MP4 with temporal frame selection and budget:
 
 ```sh
 python3 -I tools/umminfer_showcase.py \
@@ -70,12 +82,13 @@ python3 -I tools/umminfer_showcase.py \
   --journey 3 \
   --video-path /tmp/sample.mp4 \
   --video-frame-policy temporal \
+  --video-frame-budget 16 \
   --video-motion-threshold 0.02 \
   --video-scene-threshold 0.25 \
   --out-dir /tmp/showcase-j3-temporal
 ```
 
-When enabled, `video_frame_selection` is attached to Turn 1's `video_url` object (preserved in the conversation history for Turns 2–3), recorded under `journeys.journey_3.video_frame_selection` in `showcase_report.json`, and displayed in both the Executive Summary table and the Journey 3 section of `showcase_report.md`.
+When enabled, `video_frame_selection` (including `max_frames` when `--video-frame-budget` is set) is attached to Turn 1's `video_url` object (preserved in the conversation history for Turns 2–3), recorded under `journeys.journey_3.video_frame_selection` in `showcase_report.json`, and displayed in both the Executive Summary table and the Journey 3 section of `showcase_report.md`.
 
 ## Optional Native Allocator Telemetry
 
