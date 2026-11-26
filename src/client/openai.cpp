@@ -323,6 +323,23 @@ void read_legs_field(const json& root, ChatResponse& out, std::string_view raw,
   out.legs = *it;
 }
 
+// Extracts an opt-in server telemetry envelope when present. Prefers
+// unified.telemetry over top-level telemetry when both are objects.
+void read_telemetry_field(const json& root, ChatResponse& out) {
+  const auto unified = root.find("unified");
+  if (unified != root.end() && unified->is_object()) {
+    const auto nested = unified->find("telemetry");
+    if (nested != unified->end() && nested->is_object()) {
+      out.telemetry = *nested;
+      return;
+    }
+  }
+  const auto top = root.find("telemetry");
+  if (top != root.end() && top->is_object()) {
+    out.telemetry = *top;
+  }
+}
+
 detail::HttpRequest media_request(const OpenAIConfig& config, const std::string& base_url,
                                   const std::string& path, detail::HttpMethod method,
                                   Milliseconds timeout, CancelFlag cancel) {
@@ -633,6 +650,9 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
     if (!request.stop.empty()) body["stop"] = request.stop;
     if (request.seed) body["seed"] = *request.seed;
     if (!request.response_format.is_null()) body["response_format"] = request.response_format;
+    if (request.native_allocator_telemetry) {
+      body["telemetry"] = {{"native_allocator", true}};
+    }
     if (stream) {
       body["stream"] = true;
     } else {
@@ -720,6 +740,7 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                              config_.api_key);
             read_artifacts_field(root, out, response.body, config_.api_key);
             read_legs_field(root, out, response.body, config_.api_key);
+            read_telemetry_field(root, out);
             const std::string refusal =
                 response_string(*message, "refusal", response.body, config_.api_key);
             const std::string reason =
@@ -923,6 +944,7 @@ ChatResponse OpenAIClient::chat(const ChatRequest& request) const {
                 }
               }
             }
+            read_telemetry_field(root, out);
             return true;
           };
           http.on_body = [&](std::string_view bytes) { return parser.feed(bytes, event); };

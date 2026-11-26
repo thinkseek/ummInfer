@@ -140,8 +140,88 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/chat/completions":
             import hashlib
+            req = json.loads(body)
+            messages = req.get("messages") or []
+            last_content = messages[-1].get("content", "") if messages else ""
+            if req.get("stream"):
+                chunks = [
+                    {
+                        "id": "chat-tel-sse",
+                        "object": "chat.completion.chunk",
+                        "model": req.get("model", "m"),
+                        "choices": [{"index": 0, "delta": {"content": "hello "},
+                                     "finish_reason": None}],
+                    },
+                    {
+                        "id": "chat-tel-sse",
+                        "object": "chat.completion.chunk",
+                        "model": req.get("model", "m"),
+                        "choices": [{"index": 0, "delta": {"content": "world"},
+                                     "finish_reason": None}],
+                    },
+                ]
+                if last_content == "telemetry covered sse":
+                    chunks.append({
+                        "id": "chat-tel-sse",
+                        "object": "chat.completion.chunk",
+                        "model": req.get("model", "m"),
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "unified": {
+                            "seq": 0,
+                            "kind": "complete",
+                            "request_id": "chat-tel-sse",
+                            "telemetry": {
+                                "schema_version": 1,
+                                "coverage": "COVERED",
+                                "scope": "request",
+                                "request_id": "chat-tel-sse",
+                                "lifecycle_status": "completed",
+                                "stages": [{
+                                    "stage": "vlm",
+                                    "native_stage": "qwen3_vl",
+                                    "backend": "cuda_native",
+                                    "coverage": "COVERED",
+                                    "allocated_bytes_peak": 134217728,
+                                    "reserved_bytes_peak": 268435456,
+                                }],
+                                "truncated": False,
+                            },
+                        },
+                    })
+                elif last_content == "telemetry malformed top-level sse":
+                    chunks.append({
+                        "id": "chat-tel-sse",
+                        "object": "chat.completion.chunk",
+                        "model": req.get("model", "m"),
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "telemetry": {
+                            "schema_version": 1,
+                            "coverage": "COVERED",
+                            "scope": "request",
+                            "request_id": "chat-tel-sse",
+                            "lifecycle_status": "completed",
+                            "stages": [{
+                                "stage": "vlm",
+                                "coverage": "COVERED",
+                                "allocated_bytes_peak": False,
+                                "reason": "malformed_peak_rejected",
+                            }],
+                            "truncated": False,
+                        },
+                    })
+                else:
+                    chunks.append({
+                        "id": "chat-tel-sse",
+                        "object": "chat.completion.chunk",
+                        "model": req.get("model", "m"),
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    })
+                sse = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+                sse += "data: [DONE]\n\n"
+                self.reply(200, sse.encode(), "text/event-stream")
+                return
             artifacts = []
-            mods = set(json.loads(body).get("modalities", []))
+            mods = set(req.get("modalities", []))
             if "image" in mods:
                 artifacts.append({
                     "artifact_id": "art-img", "media_type": "image",
@@ -167,12 +247,29 @@ class Handler(BaseHTTPRequestHandler):
                     "sha256": hashlib.sha256(MP4).hexdigest(),
                     "data": base64.b64encode(MP4).decode(),
                 })
-            self.json(200, {
+            payload = {
                 "id": "chat-w9", "object": "chat.completion", "model": "m",
                 "choices": [{"index": 0, "finish_reason": "stop",
                              "message": {"role": "assistant", "content": "done"}}],
                 "artifacts": artifacts,
-            })
+            }
+            if last_content == "telemetry not covered":
+                payload["telemetry"] = {
+                    "schema_version": 1,
+                    "coverage": "NOT_COVERED",
+                    "scope": "request",
+                    "request_id": "chat-w9",
+                    "lifecycle_status": "completed",
+                    "stages": [{
+                        "stage": "vlm",
+                        "native_stage": "qwen3_vl",
+                        "coverage": "NOT_COVERED",
+                        "allocated_bytes_peak": None,
+                        "reason": "batched_request_attribution_unavailable",
+                    }],
+                    "truncated": False,
+                }
+            self.json(200, payload)
             return
         self.json(404, {"error": "not found"})
 
@@ -529,6 +626,76 @@ def test_chat_video_input(binary, base, workdir):
     require(not take(), "unsupported video type must be rejected before HTTP")
 
 
+def test_chat_native_allocator_telemetry(binary, base, _workdir):
+    # (a) Default (without --native-allocator-telemetry): omit telemetry from request and stderr.
+    default_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "telemetry default off",
+    ])
+    require(default_res.returncode == 0, f"default chat failed: {default_res.stderr}")
+    [default_entry] = take()
+    default_req = json.loads(default_entry["body"])
+    require("telemetry" not in default_req,
+            f"default chat must omit telemetry key: {default_req}")
+    require(default_res.stdout == "done\n", f"default stdout: {default_res.stdout!r}")
+    require("[telemetry]" not in default_res.stderr and default_res.stderr == "",
+            f"default chat must emit no telemetry stderr: {default_res.stderr!r}")
+
+    # (b) Opt-in on SSE stream with unified.telemetry COVERED stage (128.0 MiB).
+    covered_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "telemetry covered sse", "--stream",
+        "--native-allocator-telemetry",
+    ])
+    require(covered_res.returncode == 0, f"covered SSE chat failed: {covered_res.stderr}")
+    [covered_entry] = take()
+    covered_req = json.loads(covered_entry["body"])
+    require(covered_req.get("stream") is True, f"expected stream=true: {covered_req}")
+    require(covered_req.get("telemetry") == {"native_allocator": True},
+            f"opt-in must send telemetry.native_allocator=true: {covered_req}")
+    require(covered_res.stdout == "hello world\n",
+            f"SSE stdout must stay clean prose: {covered_res.stdout!r}")
+    require("[telemetry] VRAM: 128.0 MiB peak (covered=1/1)" in covered_res.stderr,
+            f"expected covered VRAM summary on stderr: {covered_res.stderr!r}")
+
+    # (c) Opt-in on non-stream JSON with NOT_COVERED (allocated_bytes_peak: null).
+    nc_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "telemetry not covered",
+        "--native-allocator-telemetry",
+    ])
+    require(nc_res.returncode == 0, f"not-covered chat failed: {nc_res.stderr}")
+    [nc_entry] = take()
+    nc_req = json.loads(nc_entry["body"])
+    require(nc_req.get("telemetry") == {"native_allocator": True},
+            f"non-stream opt-in must send telemetry.native_allocator=true: {nc_req}")
+    require(nc_res.stdout == "done\n", f"non-stream stdout: {nc_res.stdout!r}")
+    require("[telemetry] VRAM: N/C (batched_request_attribution_unavailable)" in nc_res.stderr,
+            f"expected honest N/C reason on stderr: {nc_res.stderr!r}")
+    require("0 B" not in nc_res.stderr and "0 MiB" not in nc_res.stderr and
+            "0.0 MiB" not in nc_res.stderr,
+            f"NOT_COVERED must never fabricate zero bytes: {nc_res.stderr!r}")
+
+    # (d) Top-level SSE telemetry with boolean peak must be rejected honestly as N/C.
+    malformed_res = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native",
+        "--prompt", "telemetry malformed top-level sse", "--stream",
+        "--native-allocator-telemetry",
+    ])
+    require(malformed_res.returncode == 0,
+            f"malformed peak SSE chat failed: {malformed_res.stderr}")
+    [malformed_entry] = take()
+    malformed_req = json.loads(malformed_entry["body"])
+    require(malformed_req.get("telemetry") == {"native_allocator": True},
+            f"top-level SSE opt-in request: {malformed_req}")
+    require(malformed_res.stdout == "hello world\n",
+            f"top-level SSE stdout must stay clean prose: {malformed_res.stdout!r}")
+    require("[telemetry] VRAM: N/C (malformed_peak_rejected)" in malformed_res.stderr,
+            f"boolean peak must render N/C: {malformed_res.stderr!r}")
+    require("0 B" not in malformed_res.stderr,
+            f"boolean peak must never fabricate 0 B: {malformed_res.stderr!r}")
+
+
 def main():
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_BIN
     if not binary.exists():
@@ -546,6 +713,7 @@ def main():
         test_speech_subcommand,
         test_chat_wave9_multimodal_flags,
         test_chat_video_input,
+        test_chat_native_allocator_telemetry,
     ]
     failures = 0
     try:

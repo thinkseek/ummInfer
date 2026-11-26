@@ -9,6 +9,7 @@
 #include <charconv>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -101,7 +102,8 @@ class Options {
 void usage(const std::string& command, std::ostream& out) {
   if (command == "chat") {
     out << "usage: umm-infer chat --prompt TEXT [--url https://api.openai.com/v1] "
-           "[--model M] [--system TEXT] [--stream] [--max-tokens N] [--temperature X] "
+           "[--model M] [--system TEXT] [--stream] [--native-allocator-telemetry] "
+           "[--max-tokens N] [--temperature X] "
            "[--top-p X] [--seed N] [--timeout-ms N] [--first-token-ms N] [--stall-ms N] "
            "[--max-attempts N]\n"
            "       [--image-url URL ... | --video-input PATH] [--video-url URL ...]\n"
@@ -418,6 +420,89 @@ const Artifact* find_artifact(const ChatResponse& response,
   return nullptr;
 }
 
+std::optional<uint64_t> non_negative_integer(const nlohmann::json& value) {
+  if (value.is_boolean() || !value.is_number_integer()) return std::nullopt;
+  if (value.is_number_unsigned()) return value.get<uint64_t>();
+  const int64_t signed_value = value.get<int64_t>();
+  if (signed_value < 0) return std::nullopt;
+  return static_cast<uint64_t>(signed_value);
+}
+
+std::string format_telemetry_bytes(uint64_t bytes) {
+  constexpr double kKiB = 1024.0;
+  constexpr double kMiB = 1024.0 * 1024.0;
+  constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
+  char buffer[64];
+  const double value = static_cast<double>(bytes);
+  if (value >= kGiB) {
+    std::snprintf(buffer, sizeof(buffer), "%.1f GiB", value / kGiB);
+    return buffer;
+  }
+  if (value >= kMiB) {
+    std::snprintf(buffer, sizeof(buffer), "%.1f MiB", value / kMiB);
+    return buffer;
+  }
+  if (value >= kKiB) {
+    std::snprintf(buffer, sizeof(buffer), "%.1f KiB", value / kKiB);
+    return buffer;
+  }
+  return std::to_string(bytes) + " B";
+}
+
+void print_native_allocator_telemetry(const nlohmann::json& telemetry,
+                                      std::ostream& err) {
+  if (!telemetry.is_object()) return;
+  const auto stages_it = telemetry.find("stages");
+  if (stages_it == telemetry.end() || !stages_it->is_array()) return;
+
+  size_t covered = 0;
+  const size_t total = stages_it->size();
+  std::optional<uint64_t> max_peak;
+  std::vector<std::string> reasons;
+  std::set<std::string> seen_reasons;
+
+  for (const auto& stage : *stages_it) {
+    if (!stage.is_object()) continue;
+    const auto cov_it = stage.find("coverage");
+    const bool is_covered =
+        cov_it != stage.end() && cov_it->is_string() &&
+        cov_it->get<std::string>() == "COVERED";
+    std::optional<uint64_t> peak;
+    if (is_covered) {
+      const auto peak_it = stage.find("allocated_bytes_peak");
+      if (peak_it != stage.end()) peak = non_negative_integer(*peak_it);
+    }
+    if (is_covered && peak.has_value()) {
+      ++covered;
+      max_peak = max_peak ? std::max(*max_peak, *peak) : *peak;
+    } else {
+      const auto reason_it = stage.find("reason");
+      if (reason_it != stage.end() && reason_it->is_string()) {
+        const std::string reason = reason_it->get<std::string>();
+        if (!reason.empty() && seen_reasons.insert(reason).second) {
+          reasons.push_back(reason);
+        }
+      }
+    }
+  }
+
+  if (covered > 0 && max_peak.has_value()) {
+    err << "[telemetry] VRAM: " << format_telemetry_bytes(*max_peak)
+        << " peak (covered=" << covered << "/" << total << ")\n";
+    return;
+  }
+  err << "[telemetry] VRAM: N/C";
+  if (!reasons.empty()) {
+    err << " (";
+    for (size_t i = 0; i < reasons.size(); ++i) {
+      if (i > 0) err << ", ";
+      err << reasons[i];
+    }
+    err << ")";
+  }
+  err << '\n';
+}
+
 int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   Options options(argc, argv, 2,
                   {"url", "model", "prompt", "system", "max-tokens", "temperature",
@@ -430,7 +515,7 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
                    "video-prompt", "video-size", "video-seconds", "video-fps",
                    "video-frames", "video-steps", "video-guidance", "video-seed",
                    "video-image"},
-                  {"stream"}, {"image-url", "video-url"});
+                  {"stream", "native-allocator-telemetry"}, {"image-url", "video-url"});
   if (options.help) {
     usage("chat", std::cout);
     return 0;
@@ -545,6 +630,7 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   request.first_token_timeout = milliseconds(options, "first-token-ms", 0);
   request.stall_timeout = milliseconds(options, "stall-ms", 0);
   request.stream = options.has("stream");
+  request.native_allocator_telemetry = options.has("native-allocator-telemetry");
   request.cancel = cancel;
 
   auto add_modality = [&](const char* mod) {
@@ -693,6 +779,9 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
       throw Error(ErrorCode::kEmpty, "the server returned no video");
     }
     write_output(video_out, video_artifact->data);
+  }
+  if (request.native_allocator_telemetry && response.telemetry) {
+    print_native_allocator_telemetry(*response.telemetry, std::cerr);
   }
   return 0;
 }

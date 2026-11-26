@@ -165,6 +165,9 @@ struct ChatRequest {
   nlohmann::json response_format;
   nlohmann::json extra_body = nlohmann::json::object();
   bool stream = false;
+  // Opt in to per-request native CUDA allocator peak telemetry
+  // (telemetry.native_allocator=true). Omitted from the wire body when false.
+  bool native_allocator_telemetry = false;
   std::function<void(const std::string&)> on_delta;
   Milliseconds timeout{0};
   Milliseconds first_token_timeout{0};
@@ -181,6 +184,8 @@ struct ChatResponse {
   std::vector<Artifact> artifacts;
   // Terminal legs array when the request used optional output legs.
   nlohmann::json legs = nlohmann::json::array();
+  // Opt-in server telemetry envelope (unified.telemetry or top-level telemetry).
+  std::optional<nlohmann::json> telemetry;
   std::string finish_reason;
   std::string model;
   Usage usage;

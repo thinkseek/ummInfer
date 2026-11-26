@@ -48,7 +48,8 @@ Plain HTTP is allowed only for a loopback host. Other OpenAI endpoints must use
 HTTPS. Redirects are disabled.
 
 Options include `--system`, `--max-tokens`, `--temperature`, `--top-p`,
-`--seed`, `--timeout-ms`, `--first-token-ms`, `--stall-ms`, and `--max-attempts`.
+`--seed`, `--native-allocator-telemetry`, `--timeout-ms`, `--first-token-ms`,
+`--stall-ms`, and `--max-attempts`.
 Retries use exponential backoff with equal jitter: the delay is drawn from
 `[cap/2, cap)`, and `cap` doubles from `retry_base` up to `retry_max`.
 `Retry-After` and `Retry-After-Ms` are honored; a wait above `max_retry_after`
@@ -362,7 +363,7 @@ estimated, and the strip stays hidden until at least one real metric arrives:
 - `<N> visual(s) (<dur>)`: count of settled visual slots/artifacts plus elapsed time to the first settled visual.
 - `I2V`: shown when any `visual_slot` carries `anchor_slot_index` I2V continuity metadata.
 - `Total <dur>`: elapsed time from request send to stream completion or stop.
-- `VRAM: <peak> peak` / `VRAM: N/C` (opt-in): controlled by the **Native VRAM telemetry** toggle in Options (default OFF, persisted in `localStorage` in Web UI, never auto-enabled by Showcase presets). When OFF, the request omits `telemetry` completely for byte-identical default wire requests and omits the VRAM pill. When ON, the request includes `"telemetry": {"native_allocator": true}` and reads the server-returned `telemetry` envelope from `unified.telemetry` (or top-level `telemetry` on non-unified streams). If one or more `stages[]` report `coverage="COVERED"` with a non-null finite `allocated_bytes_peak`, the pill displays the covered peak formatted in `B` / `KiB` / `MiB` / `GiB` with a per-stage tooltip (`stage`/`native_stage`, `coverage`, peak bytes, `epoch.id`, or `reason`). If the envelope is returned with zero covered stages (for example `NOT_COVERED` with `allocated_bytes_peak: null`), the pill displays `VRAM: N/C` with the server's `reason`s in the tooltip and never treats `null` as `0`.
+- `VRAM: <peak> peak` / `VRAM: N/C` (opt-in): controlled by the **Native VRAM telemetry** toggle in Options (default OFF, persisted in `localStorage` in Web UI, never auto-enabled by Showcase presets) and by `umm-infer chat --native-allocator-telemetry` (`ChatRequest::native_allocator_telemetry`) in the C++ CLI/library. When OFF, the request omits `telemetry` completely for byte-identical default wire requests and emits no VRAM pill or extra CLI stderr line. When ON, the request includes `"telemetry": {"native_allocator": true}` and reads the server-returned `telemetry` envelope from `unified.telemetry` (or top-level `telemetry` on non-unified SSE / non-stream responses, exposed on `ChatResponse::telemetry`). If one or more `stages[]` report `coverage="COVERED"` with a non-null finite integer `allocated_bytes_peak`, Web UI / `ummmlx` display the covered peak formatted in `B` / `KiB` / `MiB` / `GiB` with a per-stage tooltip (`stage`/`native_stage`, `coverage`, peak bytes, `epoch.id`, or `reason`), and `umm-infer chat` prints `[telemetry] VRAM: <peak> peak (covered=<C>/<T>)` to `stderr` while keeping `stdout` prose clean. If the envelope is returned with zero covered stages (for example `NOT_COVERED` with `allocated_bytes_peak: null`), Web UI / `ummmlx` display `VRAM: N/C` with the server's `reason`s in the tooltip and `umm-infer chat` prints `[telemetry] VRAM: N/C` (or `[telemetry] VRAM: N/C (<reason1>, <reason2>)`) to `stderr`, never treating `null` or malformed peaks as `0`.
 
 Sub-second durations format as `<N> ms` (e.g. `265 ms`) and values at or above
 `1000 ms` format as `<X.XX> s` (e.g. `1.42 s`). Both clients adapt the cards and
