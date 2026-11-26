@@ -472,6 +472,27 @@ Serving/trainer isolation and default legacy pack hashes pass. Exact commands,
 before/after hashes, and `NOT_RUN`/unretained boundaries are in
 [online-evidence-audit](online-evidence-audit.md).
 
+**Phase 6 real-model online-GRPO preflight and sampled/logprob alignment
+(2026-11-27).** The exact 18-shard Qwen3.8 model now has a real Stage C
+validation gate over the retained Task #49 exposed rollouts: two complete groups
+of three, v2 token exports bound to raw SSE/CAS/source spans/masks, exact native
+prompt packing, and serial cold behavior/current/reference forwards on GPU 7.
+All 192 sampled ids and masks (156 supervised, 36 directive-zero) passed. The
+independent extended-precision FP32 log-softmax maximum difference from sampled
+evidence is `2.580384863271764e-12`; current/reference differences from
+independent behavior are both `0.0`. A stdlib-only fresh decimal verifier
+recomputed clipped surrogate and separate-reference Schulman KL with maximum
+objective difference `7.946142857142661e-17`. Four semantic tamper cases were
+rejected with no report, all 112 evidence checksums passed, and GPU 7 returned
+to `3 MiB`. The independent audit also gained focused retry-attempt, streaming
+model-file, and Qwen EOS-key fixes without changing Task #52's sealed pre-fix
+checkpoint history. Exact run/policy/process identities, tolerances, failed
+pre-GPU attempts, and evidence hashes are in
+[online-grpo-real-model](online-grpo-real-model.md). The final integration base
+is Wave 86 `27c584e`. Real optimizer execution, exact optimizer resume/update,
+new online generation, model quality, and generalized improvement remain
+`NOT_RUN`; no training-quality gain is claimed.
+
 ## Model support plan
 
 These entries are not current deliverables. Their acceptance procedure,

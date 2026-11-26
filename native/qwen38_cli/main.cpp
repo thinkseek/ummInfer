@@ -18,7 +18,9 @@
 #include "qwen38/engine.hpp"
 #include "qwen38/image_preprocess.hpp"
 #include "qwen38/tokenizer.hpp"
+#include "qwen38_tests/independent_logsoftmax.hpp"
 #include "umminfer/obs/behavior_evidence.hpp"
+#include "umminfer/util/codec.hpp"
 #include "pipeline/narrative_parser.hpp"
 #include "pipeline/unified_schema.hpp"
 
@@ -33,6 +35,7 @@ struct Args {
   int max_new = 256;
   bool thinking = false;
   bool behavior = false;
+  bool independent_behavior = false;
   bool narrative_image = false;
   bool narrative_auto = false;
   float temperature = 0.0f;
@@ -44,7 +47,8 @@ struct Args {
 void usage() {
   std::cerr << "usage: umm-qwen38-native --model DIR --prompt TEXT [--image PATH] "
                "[--gpu N] [--max-new-tokens M] [--thinking] [--dump-dir DIR] "
-               "[--behavior-evidence] [--narrative-image|--narrative-auto] [--temperature T] "
+               "[--behavior-evidence|--independent-behavior-evidence] "
+               "[--narrative-image|--narrative-auto] [--temperature T] "
                "[--top-p P] [--seed N]\n";
 }
 
@@ -80,6 +84,8 @@ int main(int argc, char** argv) {
       args.thinking = true;
     else if (flag == "--behavior-evidence")
       args.behavior = true;
+    else if (flag == "--independent-behavior-evidence")
+      args.independent_behavior = true;
     else if (flag == "--narrative-image")
       args.narrative_image = true;
     else if (flag == "--narrative-auto")
@@ -98,7 +104,8 @@ int main(int argc, char** argv) {
     }
   }
   if (args.model_dir.empty() || args.prompt.empty() ||
-      (args.narrative_image && args.narrative_auto)) {
+      (args.narrative_image && args.narrative_auto) ||
+      (args.behavior && args.independent_behavior)) {
     usage();
     return 2;
   }
@@ -153,11 +160,40 @@ int main(int argc, char** argv) {
     sampling.seed = args.seed;
     sampling.has_seed = args.has_seed;
     sampling.capture_behavior_logprobs = args.behavior;
+    std::vector<int64_t> independent_ids;
+    std::vector<double> independent_logprobs;
+    nlohmann::json independent_rows = nlohmann::json::array();
+    if (args.independent_behavior) {
+      sampling.pre_sampling_logits_observer =
+          [&independent_ids, &independent_logprobs, &independent_rows](
+              int id, const float* logits, int vocab_size) {
+            umminfer::qwen38_validation::IndependentLogSoftmax scored;
+            if (!umminfer::qwen38_validation::independent_presampling_logsoftmax(
+                    logits, vocab_size, id, &scored)) {
+              throw std::runtime_error(
+                  "independent pre-sampling FP32 log-softmax rejected a row");
+            }
+            const std::string_view raw_row(
+                reinterpret_cast<const char*>(logits),
+                static_cast<size_t>(vocab_size) * sizeof(float));
+            independent_ids.push_back(id);
+            independent_logprobs.push_back(scored.logprob);
+            independent_rows.push_back({
+                {"token_id", id},
+                {"vocab_size", vocab_size},
+                {"raw_logits_sha256", umminfer::util::sha256_hex(raw_row)},
+                {"selected_raw_logit", scored.selected_raw_logit},
+                {"max_raw_logit", scored.max_raw_logit},
+                {"log_normalizer", scored.log_normalizer},
+                {"logprob", scored.logprob},
+            });
+          };
+    }
     auto result = engine->generate(ids, image.get(), args.max_new, args.dump_dir,
                                    {}, {}, sampling);
     const auto t2 = std::chrono::steady_clock::now();
 
-    if (args.behavior) {
+    if (args.behavior || args.independent_behavior) {
       if (!result.stopped_by_eos) {
         throw std::runtime_error("behavior replay requires an EOS-complete generation");
       }
@@ -173,29 +209,47 @@ int main(int argc, char** argv) {
       const std::vector<int64_t> mask =
           narrative_mask ? *narrative_mask
                          : std::vector<int64_t>(result.ids.size(), 1);
-      const umminfer::Value evidence = umminfer::obs::behavior_logprobs_value(
-          behavior_ids, result.behavior_logprobs, mask, tokenizer_sha256);
-      if (evidence.is_nil()) {
-        throw std::runtime_error("native behavior evidence is incomplete or invalid");
-      }
-      nlohmann::json behavior = {
-          {"format", umminfer::obs::kBehaviorLogprobsFormat},
-          {"tokenizer_sha256", tokenizer_sha256},
-          {"token_ids", behavior_ids},
-          {"logprobs", result.behavior_logprobs},
-          {"mask", mask},
-      };
       std::string clean;
       for (size_t i = 0; i < result.ids.size(); ++i) {
         if (mask[i] == 1) clean += tokenizer.decode({result.ids[i]});
       }
       nlohmann::json out = {
-          {"behavior", std::move(behavior)},
           {"prompt_token_ids", ids},
           {"raw_text", tokenizer.decode(result.ids)},
           {"clean_text", clean},
           {"finish_reason", "stop"},
       };
+      if (args.independent_behavior) {
+        if (independent_ids != behavior_ids ||
+            independent_logprobs.size() != behavior_ids.size() ||
+            independent_rows.size() != behavior_ids.size()) {
+          throw std::runtime_error("independent raw-logit observation is incomplete");
+        }
+        out["independent_behavior"] = {
+            {"format", "umminfer-independent-presampling-logsoftmax-v1"},
+            {"tokenizer_sha256", tokenizer_sha256},
+            {"token_ids", independent_ids},
+            {"logprobs", independent_logprobs},
+            {"mask", mask},
+            {"rows", std::move(independent_rows)},
+            {"input_precision", "FP32_PRE_SAMPLING_LM_HEAD_LOGITS"},
+            {"arithmetic", "INDEPENDENT_LONG_DOUBLE_NORMALIZER_FLOAT64_OUTPUT"},
+            {"producer_scoring_used", false},
+        };
+      } else {
+        const umminfer::Value evidence = umminfer::obs::behavior_logprobs_value(
+            behavior_ids, result.behavior_logprobs, mask, tokenizer_sha256);
+        if (evidence.is_nil()) {
+          throw std::runtime_error("native behavior evidence is incomplete or invalid");
+        }
+        out["behavior"] = {
+            {"format", umminfer::obs::kBehaviorLogprobsFormat},
+            {"tokenizer_sha256", tokenizer_sha256},
+            {"token_ids", behavior_ids},
+            {"logprobs", result.behavior_logprobs},
+            {"mask", mask},
+        };
+      }
       std::cout << out.dump() << "\n";
     } else {
       std::cout << tokenizer.decode(result.ids) << "\n";

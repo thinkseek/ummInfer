@@ -256,6 +256,44 @@ its C++ unified, realtime, voice, and online-attestation coverage. Both skips ar
 the optional real-tokenizer cases and remain explicit `NOT_RUN`. The full local
 command is CPU-only and does not contact the resident service.
 
+## Task #60 attested-retry correction
+
+The first real Task #49 rollout completed on attempt 2 after two genuine HTTP
+503 admissions. The independent auditor originally hard-coded attempt 0 in both
+provenance and response-attestation reconstruction, so its fresh Task #60 audit
+rejected that valid record with `STALE_OR_CROSS_GROUP_PROVENANCE`
+(`independent=2 evidence=0`) before any new GPU pass. The failed R3 bundle is
+retained separately; the accepted Task #49 evidence was not rewritten.
+
+Commit `b2f6931d5a7ffe235d7a9b9579f55349cb5cbf60` now derives the attempt from
+accepted provenance, requires an integer within the plan's retry bound and a
+retry-enabled policy for nonzero attempts, and reconstructs the response
+attestation with the identical attempt. A focused v2 fixture proves attempt 2
+byte-identical reconstruction and rejects a consistently re-attested,
+out-of-policy attempt 5 with no report. The independent suite now passes 10/10;
+default attempt-0 v1/v2 fixtures and the sealed pre-fix checkpoint/group-id
+records remain unchanged. This correction does not execute an optimizer or make
+a model-quality claim.
+
+The next real-model audit also exposed a separate fixture-size assumption: the
+exact token-export root contains 29 regular files, including all 18 multi-GiB
+weight shards, and `file_identity` used the generic 64 MiB `read_file` cap. R4
+therefore rejected the first shard as `FILE_TOO_LARGE`, again before GPU use.
+Commit `37b4f465a65d3d1a8369fd70e32820a3ca89ac69` adds bounded 8 MiB streaming
+SHA-256 for every declared tokenizer/model file while leaving the generic cap on
+small JSON/SSE evidence intact. A focused test covers a shard larger than 64 MiB
+and the independent suite passes 11/11. No weight or tokenizer file is excluded
+from the available-files manifest.
+
+A further real-Qwen schema check showed that `added_tokens_decoder` entries can
+omit an inner `id` and carry the terminal id only as their JSON member key.
+R5 rejected this valid declaration as `TERMINAL_TOKEN_IDENTITY`, before GPU use.
+Commit `1894a66c7513b69d751d74d4f049808354d7153d` mirrors the accepted
+validator's `value.get("id", key)` fallback. A real-shaped v2 fixture now binds
+`[248044, 248046]` correctly, and the independent suite passes 12/12. EOS remains
+excluded from sampled supervision; this is schema compatibility, not an EOS
+validation bypass.
+
 ## Explicit NOT_RUN / NOT_COVERED boundaries
 
 - New GPU, inference, serving, optimizer, model-quality, and production-training

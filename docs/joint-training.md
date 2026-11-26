@@ -632,6 +632,38 @@ online-generation/optimizer acceptance requirements are in
 current/reference forward, optimizer, GPU, serving, or model-quality result is
 claimed; those remain `NOT_RUN`.
 
+### Real Qwen3.8 online-GRPO preflight and sampled/logprob alignment
+
+The retained Task #49 exposed rollouts now drive a separate real-model
+validation layer without changing the synthetic CPU fixture contract. Exact
+model/config/weight/tokenizer/binary/process identities are revalidated before
+six v2 token-exported trajectories enter complete one-to-one groups. Real native
+prompt ids and sampled responses determine current/behavior/reference packing;
+raw SSE/CAS, source spans, directive mask=0, and EOS exclusion are independently
+rechecked.
+
+Eighteen serial cold native processes on GPU 7 recompute behavior, current, and
+reference inputs from identical 18-shard weights. Independent extended-precision
+log-softmax over raw FP32 pre-sampling rows matches all 192 sampled ids/masks
+(156 supervised, 36 directive-zero). Maximum behavior-versus-sampled difference
+is `2.580384863271764e-12`; current/reference differences from independent
+behavior are both `0.0`. A fresh stdlib-only verifier re-parses raw SSE and uses
+50-digit decimal arithmetic for clipped surrogate and Schulman KL, reaching a
+maximum objective difference of `7.946142857142661e-17`. Four tamper classes
+fail with no report, and 112 evidence checksums pass. The two real group losses
+are zero because their rewards have zero variance, not because any quality or
+optimizer objective was improved.
+
+The independent audit now also preserves attested nonzero retry attempts,
+streams complete model-file manifests with bounded memory, and accepts Qwen's
+`added_tokens_decoder` key-based EOS declarations. Focused regressions pass
+12/12 while Task #52's sealed pre-fix checkpoint disagreements remain intact.
+Exact preflight run id, tolerances, raw per-token/group evidence, failed pre-GPU
+attempts, tests, and cleanup are in
+[online-grpo-real-model](online-grpo-real-model.md). Real optimizer execution,
+exact resume/update, new online generation, model quality, and generalized
+improvement remain `NOT_RUN`.
+
 ## Bounded real joint-SFT optimizer gate
 
 `python/umminfer_joint_sft_live.py` is a narrow execution adapter around the

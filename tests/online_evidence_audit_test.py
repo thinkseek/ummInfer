@@ -165,6 +165,79 @@ class OnlineEvidenceAuditTests(unittest.TestCase):
                 self.assertEqual(report["groups"][2]["group_std"], 0.0)
         self.assertNotEqual(observed_runs[1], observed_runs[2])
 
+    def test_attested_retry_attempt_is_rebuilt_and_bounded(self):
+        work = self.root / "attested-retry"
+        bundle, tokenizer = self.fixture.make_online_bundle(
+            work / "source", version=2, exports=True, first_attempt=2)
+        records = read_jsonl(bundle / "trajectories.jsonl")
+        self.assertEqual(records[0]["rollout_provenance"]["attempt"], 2)
+        self.assertEqual(records[0]["rollout_provenance"]["response"]["attempt"], "2")
+        config = self.fixture.make_config(bundle, tokenizer)
+        output = work / "preflight"
+        self.fixture.preflight.prepare_preflight(bundle, output, config,
+                                                tokenizer_dir=tokenizer)
+        report_path = work / "audit.json"
+        run_audit(["preflight", "--online-pack", bundle,
+                   "--preflight-bundle", output, "--tokenizer-dir", tokenizer,
+                   "--repo-root", ROOT, "--report", report_path])
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["source_rollout_reconstruction"], "PASS_BYTE_IDENTICAL")
+
+        # A consistently re-attested but out-of-policy attempt is still invalid.
+        records[0]["rollout_provenance"]["attempt"] = 5
+        response = records[0]["rollout_provenance"]["response"]
+        response["attempt"] = "5"
+        response["attestation_sha256"] = hashlib.sha256(canonical({
+            key: value for key, value in response.items()
+            if key != "attestation_sha256"})).hexdigest()
+        write_jsonl(bundle / "trajectories.jsonl", records)
+        refresh_manifest(bundle, "rollout_manifest.json")
+        rejected = work / "rejected.json"
+        run_audit(["preflight", "--online-pack", bundle,
+                   "--preflight-bundle", output, "--tokenizer-dir", tokenizer,
+                   "--repo-root", ROOT, "--report", rejected], expected=2)
+        self.assertFalse(rejected.exists())
+
+    def test_large_declared_model_file_uses_streaming_identity(self):
+        sys.path.insert(0, str(ROOT / "python"))
+        import umminfer_online_evidence_audit as audit
+        root = self.root / "large-model-file"
+        root.mkdir(exist_ok=True)
+        target = root / "model-00001-of-00018.safetensors"
+        with target.open("wb") as handle:
+            handle.truncate(64 * 1024 * 1024 + 1)
+        digest = hashlib.sha256()
+        with target.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        self.assertEqual(audit.streaming_file_identity(
+            root, target.name), {"path": target.name, "sha256": digest.hexdigest(),
+                                 "bytes": target.stat().st_size})
+
+    def test_qwen_added_token_key_binds_terminal_identity(self):
+        sys.path.insert(0, str(ROOT / "python"))
+        import umminfer_online_evidence_audit as audit
+        root = self.root / "qwen-terminal-schema"
+        root.mkdir(exist_ok=True)
+        write_json(root / "generation_config.json", {"eos_token_id": [248046, 248044]})
+        write_json(root / "tokenizer_config.json", {
+            "eos_token": "<|im_end|>", "added_tokens_decoder": {
+                "248044": {"content": "<|endoftext|>", "special": True},
+                "248046": {"content": "<|im_end|>", "special": True},
+            }})
+        write_json(root / "vocab.json", {})
+        write_json(root / "tokenizer.json", {
+            "normalizer": {"type": "NFC"}, "decoder": {"type": "ByteLevel"},
+            "model": {"type": "BPE"}, "pre_tokenizer": {
+                "type": "ByteLevel", "add_prefix_space": False,
+                "trim_offsets": False, "use_regex": False}})
+        (root / "merges.txt").write_bytes(b"")
+        identity = {"available_files": [audit.streaming_file_identity(root, path.name)
+                                        for path in sorted(root.iterdir())]}
+        _files, _loaded, terminal, _vocab = audit.verify_tokenizer_dir(root, identity, 2)
+        self.assertEqual(terminal, [248044, 248046])
+
     def test_before_evidence_preserves_checkpoint_failure(self):
         report = json.loads((ROOT / "docs/evidence/online-evidence-audit-preflight-cpu.json")
                             .read_text(encoding="utf-8"))

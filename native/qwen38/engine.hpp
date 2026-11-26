@@ -22,6 +22,10 @@ struct GenerationAborted : std::runtime_error {
 using AbortCheck = std::function<bool()>;
 // Receives each generated token id before the next forward pass.
 using TokenCallback = std::function<void(int)>;
+// Serial validation-only access to the exact pre-sampling FP32 LM-head row.
+// The callback runs after token selection and only for a non-EOS emitted token.
+using PreSamplingLogitsObserver =
+    std::function<void(int token_id, const float* logits, int vocab_size)>;
 
 // Sampling knobs for one request. The defaults are exactly the original
 // executor: temperature <= 0 selects argmax, so an unset request stays greedy
@@ -33,6 +37,9 @@ struct SamplingParams {
   bool has_seed = false;
   // Serial-only observability. No flag preserves the legacy greedy fast path.
   bool capture_behavior_logprobs = false;
+  // Independent validation can observe raw logits without enabling the producer
+  // logprob calculation. The pointer is valid only for the duration of the call.
+  PreSamplingLogitsObserver pre_sampling_logits_observer = {};
 };
 
 struct GenResult {

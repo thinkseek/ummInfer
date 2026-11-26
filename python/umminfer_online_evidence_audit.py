@@ -197,6 +197,20 @@ def file_identity(root, relative):
     return {"path": str(relative), "sha256": sha256_bytes(raw), "bytes": len(raw)}
 
 
+def streaming_file_identity(root, relative):
+    """Hash an explicitly declared tokenizer/model file with bounded memory."""
+    pure = safe_relative(relative, str(relative))
+    target = Path(root).joinpath(*pure.parts)
+    require(target.is_file() and not target.is_symlink(),
+            "MISSING_OR_SYMBOLIC_FILE", str(relative))
+    digest = hashlib.sha256()
+    with target.open("rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return {"path": str(relative), "sha256": digest.hexdigest(),
+            "bytes": target.stat().st_size}
+
+
 def verify_sidecar(root, relative):
     raw = read_file(root, relative)
     sidecar = read_file(root, relative + ".sha256", max_bytes=4096)
@@ -636,13 +650,13 @@ def build_schedule(plan):
     return schedule, canonical_hash(schedule_identity)
 
 
-def expected_attestation(item, plan, coverage):
+def expected_attestation(item, plan, coverage, attempt=0):
     response = {
         "http_status": 200, "contract": "1", "generation": "fresh",
         "batch_id": plan["batch_id"], "group_id": item["group_id"],
         "rollout_id": item["rollout_id"],
         "rollout_index": str(item["rollout_index"]),
-        "attempt": "0", "request_sha256": item["request_sha256"],
+        "attempt": str(attempt), "request_sha256": item["request_sha256"],
         "behavior_policy_sha256": canonical_hash(plan["behavior_policy"]),
         "behavior_policy_revision": plan["behavior_policy"]["revision"],
         "model_id": plan["behavior_policy"]["model_id"],
@@ -831,12 +845,20 @@ def verify_online_record(record, item, plan, schedule_hash, artifact_root, path)
     provenance = record.get("rollout_provenance")
     require(isinstance(provenance, dict), "OFFLINE_ONLINE_PROVENANCE_MIX",
             path + ".rollout_provenance")
+    attempt = provenance.get("attempt")
+    transport = plan["transport"]
+    require(integer(attempt) and 0 <= attempt < transport["max_attempts"],
+            "RETRY_ATTEMPT_BOUND", path + ".rollout_provenance.attempt")
+    if attempt > 0:
+        require(transport["retry_statuses"] or transport["retry_transport"]
+                or transport["retry_timeouts"],
+                "RETRY_ATTEMPT_POLICY", path + ".rollout_provenance.attempt")
     expected_provenance = {
         "contract": PROVENANCE_CONTRACT, "mode": "online",
         "batch_id": plan["batch_id"], "plan_sha256": canonical_hash(plan),
         "schedule_sha256": schedule_hash, "group_id": item["group_id"],
         "group_index": item["group_index"], "rollout_id": item["rollout_id"],
-        "rollout_index": item["rollout_index"], "attempt": 0, "seed": item["seed"],
+        "rollout_index": item["rollout_index"], "attempt": attempt, "seed": item["seed"],
         "request_sha256": item["request_sha256"],
         "behavior_policy": plan["behavior_policy"],
         "behavior_policy_sha256": canonical_hash(plan["behavior_policy"]),
@@ -848,7 +870,7 @@ def verify_online_record(record, item, plan, schedule_hash, artifact_root, path)
     same(set(provenance), set(expected_provenance) | {"response", "behavior"},
          "PROVENANCE_FIELDS", path + ".rollout_provenance")
     response = provenance.get("response")
-    same(response, expected_attestation(item, plan, "exposed"),
+    same(response, expected_attestation(item, plan, "exposed", attempt),
          "ATTESTATION_MISMATCH", path + ".rollout_provenance.response")
     raw_behavior = behavior_from_raw(replay, path + ".behavior")
     summary = {
@@ -1558,7 +1580,7 @@ def verify_tokenizer_dir(tokenizer_dir, identity, version):
         require(not path.is_symlink(), "TOKENIZER_SYMLINK", str(path))
         if path.is_file():
             relative = path.relative_to(root).as_posix()
-            files.append(file_identity(root, relative))
+            files.append(streaming_file_identity(root, relative))
     require(files, "EMPTY_TOKENIZER_DIR", str(root))
     same(identity.get("available_files"), files, "TOKENIZER_FILE_DRIFT",
          "token_export.tokenizer.available_files")
@@ -1594,8 +1616,8 @@ def verify_tokenizer_dir(tokenizer_dir, identity, version):
         if isinstance(vocab, dict) and vocab.get(eos_token) in terminal:
             bound = True
         if isinstance(added, dict) and any(
-                str(value.get("id")) in {str(item) for item in terminal}
-                and value.get("content") == eos_token for value in added.values()):
+                str(value.get("id", key)) in {str(item) for item in terminal}
+                and value.get("content") == eos_token for key, value in added.items()):
             bound = True
     require(bound, "TERMINAL_TOKEN_IDENTITY", "tokenizer_config.eos_token")
     if version == 2:

@@ -143,11 +143,14 @@ def _consolidate_artifacts(work, bundle):
 
 
 def make_online_bundle(root, *, version=1, exports=True, covered=True,
-                       finish_reason="stop"):
+                       finish_reason="stop", first_attempt=0):
     """Build a replayable online bundle from raw SSE and deterministic tokenizers."""
     root = Path(root)
     root.mkdir(parents=True)
     plan = plan_with_groups()
+    if first_attempt:
+        plan["transport"].update({"max_attempts": 5, "retry_statuses": [503]})
+        plan = online.prepare_plan(plan)
     schedule, schedule_sha = online.build_schedule(plan)
     tokenizer_dir = behavior_fixture.tokenizer_directory(root, version)
     tokenizer = behavior_fixture.V1Tokenizer() if version == 1 \
@@ -185,13 +188,14 @@ def make_online_bundle(root, *, version=1, exports=True, covered=True,
                 }
         record = make_online_record(
             work, item, events, evidence, finish_reason=finish_reason)
+        attempt = first_attempt if item["schedule_index"] == 0 else 0
         response = online._expected_attestation(
             item, plan, http_status=200,
-            behavior_evidence="exposed" if covered else "not_exposed", attempt=0)
+            behavior_evidence="exposed" if covered else "not_exposed", attempt=attempt)
         behavior = online._behavior_evidence(
             record, response["behavior_evidence"], work / "live/artifacts")
         record["rollout_provenance"] = {
-            **online._provenance(item, plan, schedule_sha, 0),
+            **online._provenance(item, plan, schedule_sha, attempt),
             "response": response, "behavior": behavior,
         }
         online.validate_online_record(

@@ -5,6 +5,7 @@
 #include "qwen38/engine.hpp"
 #include "qwen38/prefix_cache.hpp"
 #include "qwen38/sampling.hpp"
+#include "qwen38_tests/independent_logsoftmax.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1223,6 +1224,33 @@ void test_decode_helpers() {
         "scalar-position decode mRoPE matches fill_text_rope_row bit for bit");
 }
 
+void test_independent_presampling_logsoftmax() {
+  using umminfer::qwen38_validation::IndependentLogSoftmax;
+  using umminfer::qwen38_validation::independent_presampling_logsoftmax;
+  IndependentLogSoftmax out;
+  const float equal[] = {0.0f, 0.0f};
+  check(independent_presampling_logsoftmax(equal, 2, 0, &out),
+        "independent log-softmax accepts a finite FP32 row");
+  check(out.selected_raw_logit == 0.0 && out.max_raw_logit == 0.0 &&
+            std::abs(out.log_normalizer - std::log(2.0)) < 1e-12 &&
+            std::abs(out.logprob + std::log(2.0)) < 1e-12,
+        "independent log-softmax computes exact raw components on equal logits");
+
+  const float ordered[] = {1.0f, 2.0f, 3.0f};
+  check(independent_presampling_logsoftmax(ordered, 3, 2, &out),
+        "independent log-softmax accepts ordered logits");
+  const double expected = -std::log(std::exp(-2.0) + std::exp(-1.0) + 1.0);
+  check(out.selected_raw_logit == 3.0 && out.max_raw_logit == 3.0 &&
+            std::abs(out.logprob - expected) < 1e-12,
+        "independent log-softmax uses the selected pre-sampling raw logit");
+
+  const float invalid[] = {0.0f, std::numeric_limits<float>::quiet_NaN()};
+  check(!independent_presampling_logsoftmax(invalid, 2, 0, &out) &&
+            !independent_presampling_logsoftmax(equal, 2, 2, &out) &&
+            !independent_presampling_logsoftmax(nullptr, 2, 0, &out),
+        "independent log-softmax rejects NaN, invalid ids, and missing rows");
+}
+
 }  // namespace
 
 int main() {
@@ -1232,6 +1260,7 @@ int main() {
   test_top_p_excludes_tail();
   test_extreme_logits();
   test_behavior_logprobs();
+  test_independent_presampling_logsoftmax();
   test_prefix_match();
   test_render_parts_matches_full();
   test_turn_boundary_prefix_is_stable();
