@@ -146,6 +146,11 @@ void test_analysis_and_temporal_timestamps() {
                             static_cast<int64_t>(100 + out.selected_frame_indices[i] * 3);
   }
   check(source_indices_match, "selected diagnostics retain exact source frame indices");
+  check(out.selected_frame_content_fnv1a64.size() == out.selected_frame_indices.size() &&
+            std::all_of(out.selected_frame_content_fnv1a64.begin(),
+                        out.selected_frame_content_fnv1a64.end(),
+                        [](const std::string& digest) { return digest.size() == 16; }),
+        "each selected frame carries one fixed-width scaled-RGB content fingerprint");
   bool timestamps_match = true;
   bool nonmonotonic_preserved = false;
   for (size_t i = 0; i < out.selected_frame_indices.size(); ++i) {
@@ -319,7 +324,8 @@ void test_ffmpeg_default_equivalence_and_temporal_budget() {
             a.preprocessed.resized_w == b.preprocessed.resized_w &&
             a.preprocessed.pixel_values == b.preprocessed.pixel_values &&
             a.timestamps == b.timestamps &&
-            a.selected_frame_indices == b.selected_frame_indices,
+            a.selected_frame_indices == b.selected_frame_indices &&
+            a.selected_frame_content_fnv1a64 == b.selected_frame_content_fnv1a64,
         "default and explicit uniform decode are byte-identical");
   check(a.decoded_frame_count <= 8 && a.preprocessed.rows() <= 3584,
         "uniform decode keeps the historical frame and token budgets");

@@ -113,6 +113,17 @@ temporal-2 patch packing、按历史公式生成 4 个时间片时间戳，随�
 与 C++ CLI/Client 契约覆盖；`tests/video_temporal_live.py` 保留后续 SM90 同视频
 同问题 A/B 门禁。本任务未访问 GPU，真实模型质量与线上时延均 `NOT_RUN`。
 
+长视频扩展在 `benchmarks/video-temporal-long/` 固定 4 个 449 帧 / 224.5 秒
+H.264 源与逐帧内容/包序证据，独立 CPU oracle 覆盖预算 4/8/16；公开 native
+live 仍只支持 8，其他预算在发请求前拒绝。`tests/video_temporal_long_live.py`
+复用短门禁的 SSE/native-log 契约，以 seeded interleaved warmup+3 重复比较 serial
+与 batch-four、冻结源码/二进制/模型/数据/请求拓扑，并强制冷前缀、设备独占、
+默认 uniform 兼容、精确源内容/PTS、temporal-2/mRoPE、完整产物与 SHA-256 门禁。
+新增的 `selected_frame_content_fnv1a64` 仅用于诊断 native 输入与独立解码内容的
+一致性，不改变默认 uniform 像素或历史 nominal mRoPE 时间戳。详见
+[video-temporal-long.md](video-temporal-long.md)；本轮真实生成、线上时延和感知
+质量均 `NOT_RUN`，fake endpoint 只验证合同。
+
 ---
 
 ### 2.2 显式叙事图像槽位 → I2V 引用与内容寻址绑定

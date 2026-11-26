@@ -1,0 +1,2463 @@
+{
+  "schema_version": 1,
+  "fixture_class": "SYNTHETIC_INPUT_FIXTURE_NOT_MODEL_OUTPUT",
+  "source": {
+    "frames": 449,
+    "fps": 2,
+    "width": 96,
+    "height": 64,
+    "duration_seconds": 224.5
+  },
+  "native_decode": {
+    "width": 224,
+    "height": 160,
+    "candidate_frames": 64,
+    "selected_frames": 8,
+    "max_premerge_patches": 3584
+  },
+  "selection": {
+    "motion_threshold": 0.02,
+    "scene_threshold": 0.25,
+    "analysis": "16x16 Rec.601 integer luma; 16-bin normalized L1 histogram",
+    "cpu_budgets": [
+      4,
+      8,
+      16
+    ],
+    "native_live_budgets": [
+      8
+    ],
+    "unsupported_live_budgets": [
+      4,
+      16
+    ]
+  },
+  "encoder": {
+    "binary_name": "ffmpeg",
+    "binary_sha256": "0dafc1360bb07743f76abeb1e4ae16b0aaa1331e9041a0e8d6a8524111dc0cbb",
+    "version_sha256": "b6e71b8343c5f344c67dd9420ccec50bec64a7f67373dff001ec55c9679de96c",
+    "version": "ffmpeg version 5.1.9-0+deb12u1 Copyright (c) 2000-2026 the FFmpeg developers",
+    "codec": "libx264",
+    "h264_profile": "recorded_per_case_ffprobe",
+    "settings": [
+      "-preset",
+      "veryslow",
+      "-crf",
+      "1",
+      "-threads",
+      "1",
+      "-g",
+      "32",
+      "-bf",
+      "2",
+      "-pix_fmt",
+      "yuv420p",
+      "-video_track_timescale",
+      "2",
+      "+bitexact"
+    ]
+  },
+  "default_uniform_semantics": "historical fps/scale decode; 0.25 fps floor; 8 decoded frames over the opening 32 seconds",
+  "temporal_semantics": "stride-8 source candidates 0..448; source PTS passthrough; first/last anchors; decode-order output",
+  "bframe_order_scope": "ffprobe packet decode order has non-monotonic PTS versus DTS; decoded presentation order is not falsely labelled non-monotonic",
+  "measurement": {
+    "schema_version": 1,
+    "warmup_repetitions": 1,
+    "measured_repetitions": 3,
+    "arm_order": "interleaved",
+    "seed": 390039,
+    "cooldown_ms": 0,
+    "arms": [
+      "default",
+      "uniform",
+      "temporal"
+    ],
+    "modes": {
+      "serial": {
+        "concurrency": 1,
+        "batch_size": 1
+      },
+      "batch4": {
+        "concurrency": 4,
+        "batch_size": 4
+      }
+    }
+  },
+  "claims": {
+    "real_generation": "NOT_RUN",
+    "live_latency": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "generalized_quality_claim": false
+  },
+  "cases": [
+    {
+      "id": "separated-motion",
+      "language": "en",
+      "question": "Which separated motion event appears first: red, green, or yellow? Answer with one color.",
+      "expect_all": [
+        "red"
+      ],
+      "events": {
+        "motion_peaks": [
+          64,
+          176,
+          320
+        ],
+        "scene_cuts": [],
+        "exact_static_intervals": [
+          [
+            80,
+            175
+          ],
+          [
+            336,
+            447
+          ]
+        ],
+        "uniform_visible_source_frames": [
+          3,
+          11,
+          19,
+          27,
+          35,
+          43,
+          51,
+          59
+        ]
+      },
+      "video": "fixtures/separated-motion.mp4",
+      "video_sha256": "bcb3d58fd8c1b423a1e1115da0628715a4fae4e9c415ff799aa3eed16b919035",
+      "video_bytes": 21815,
+      "content_frames": "content/separated-motion.frames.jsonl",
+      "content_frames_sha256": "6e287690237cc7202e41abc3be82966af568870b22a6679b6f310bb4305bd17f",
+      "decode_order_packets": "content/separated-motion.packets.json",
+      "decode_order_packets_sha256": "a58d2cea01cdd19d469b8378088a0acf3efd4426c1141799db94e5f991da883c",
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 96,
+            "height": 64,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "2/1",
+            "nb_frames": "449"
+          }
+        ],
+        "format": {
+          "duration": "224.500000",
+          "size": "21815"
+        }
+      },
+      "duration_seconds": 224.5,
+      "candidate_stride": 8,
+      "candidate_count": 57,
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.004197303921568627,
+          0.0
+        ],
+        [
+          0.004243259803921568,
+          0.0078125
+        ],
+        [
+          0.00427389705882353,
+          0.0078125
+        ],
+        [
+          0.0043504901960784315,
+          0.0
+        ],
+        [
+          0.004120710784313726,
+          0.0078125
+        ],
+        [
+          0.0038143382352941175,
+          0.0078125
+        ],
+        [
+          0.002650122549019608,
+          0.0078125
+        ],
+        [
+          0.025137867647058824,
+          0.09375
+        ],
+        [
+          0.01645220588235294,
+          0.046875
+        ],
+        [
+          0.024479166666666666,
+          0.1171875
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.050490196078431374,
+          0.15625
+        ],
+        [
+          0.050490196078431374,
+          0.15625
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.08939950980392157,
+          0.1640625
+        ],
+        [
+          0.05113357843137255,
+          0.0
+        ],
+        [
+          0.08936887254901961,
+          0.1640625
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            40,
+            42,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            320,
+            336,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            160.0,
+            168.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "fd6f42482935b162",
+            "b86b2091e0d058ae",
+            "2ae0136c74d86ba5",
+            "2ae0136c74d86ba5"
+          ],
+          "content_sha256": [
+            "551e22b86ce020c8657d21a39c604e37563593df880db2954b53e6c7bc1c957c",
+            "06b3a75782d0e5f6ced99b91bc0cec0596fa2e905a3c646529e35ff94388bd67",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            168.0
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            8,
+            22,
+            23,
+            40,
+            41,
+            42,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            64,
+            176,
+            184,
+            320,
+            328,
+            336,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            32.0,
+            88.0,
+            92.0,
+            160.0,
+            164.0,
+            168.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "fd6f42482935b162",
+            "3806332ba7e001a9",
+            "6c98c66682f2ef44",
+            "2ae0136c74d86ba5",
+            "b86b2091e0d058ae",
+            "a0c1a3fda41a57e9",
+            "2ae0136c74d86ba5",
+            "2ae0136c74d86ba5"
+          ],
+          "content_sha256": [
+            "551e22b86ce020c8657d21a39c604e37563593df880db2954b53e6c7bc1c957c",
+            "fb5482e4bff137fd66e1f7af96f070467a797e98a3f73fa0b04bfe30b67ab24a",
+            "685a00552139b231f8946c36a8eafefd7adfa671b6356f821a76f9f1da283aa8",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "06b3a75782d0e5f6ced99b91bc0cec0596fa2e905a3c646529e35ff94388bd67",
+            "bd587a07d32cb15a359d7cf74cfb2c6bf3d3de0e1ebd3c091cf44d536d9479ee",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            88.0,
+            160.0,
+            168.0
+          ]
+        },
+        "16": {
+          "candidate_indices": [
+            0,
+            4,
+            7,
+            8,
+            10,
+            11,
+            15,
+            19,
+            22,
+            23,
+            26,
+            30,
+            40,
+            41,
+            42,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            32,
+            56,
+            64,
+            80,
+            88,
+            120,
+            152,
+            176,
+            184,
+            208,
+            240,
+            320,
+            328,
+            336,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            16.0,
+            28.0,
+            32.0,
+            40.0,
+            44.0,
+            60.0,
+            76.0,
+            88.0,
+            92.0,
+            104.0,
+            120.0,
+            160.0,
+            164.0,
+            168.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "fd6f42482935b162",
+            "b4c7789e9b300a0d",
+            "0ec5ede8894d37e1",
+            "3806332ba7e001a9",
+            "2ae0136c74d86ba5",
+            "2ae0136c74d86ba5",
+            "2ae0136c74d86ba5",
+            "2ae0136c74d86ba5",
+            "6c98c66682f2ef44",
+            "2ae0136c74d86ba5",
+            "2ae0136c74d86ba5",
+            "2ae0136c74d86ba5",
+            "b86b2091e0d058ae",
+            "a0c1a3fda41a57e9",
+            "2ae0136c74d86ba5",
+            "2ae0136c74d86ba5"
+          ],
+          "content_sha256": [
+            "551e22b86ce020c8657d21a39c604e37563593df880db2954b53e6c7bc1c957c",
+            "6350914e69685fcc0bb7fddf7d068e2153cfabd7c0c91da52cdd6a329d185781",
+            "a021c298cbee505730c15e99682fdf65f20318b3ed8810855940eefc012840e4",
+            "fb5482e4bff137fd66e1f7af96f070467a797e98a3f73fa0b04bfe30b67ab24a",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "685a00552139b231f8946c36a8eafefd7adfa671b6356f821a76f9f1da283aa8",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "06b3a75782d0e5f6ced99b91bc0cec0596fa2e905a3c646529e35ff94388bd67",
+            "bd587a07d32cb15a359d7cf74cfb2c6bf3d3de0e1ebd3c091cf44d536d9479ee",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265",
+            "d2bcd3a320099a3ee9d759b421661f93fd141bdc8677705c8cc7a3c61db4e265"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            28.0,
+            40.0,
+            60.0,
+            88.0,
+            104.0,
+            160.0,
+            168.0
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          3,
+          11,
+          19,
+          27,
+          35,
+          43,
+          51,
+          59
+        ],
+        "source_timestamps_seconds": [
+          1.5,
+          5.5,
+          9.5,
+          13.5,
+          17.5,
+          21.5,
+          25.5,
+          29.5
+        ],
+        "content_fnv1a64": [
+          "240345842cd0dc79",
+          "c4dc7e8757d38b2b",
+          "9883fbfd71be1038",
+          "6d85355e14930781",
+          "c4e43474de818abc",
+          "01fed940f7dea294",
+          "ae0997ac30104f21",
+          "31faec7ed2fa77b3"
+        ],
+        "content_sha256": [
+          "466e39b51431af16635deb4c221a8e2960c29ef10bb5c0150cf07b09d4f3ef3e",
+          "53fa6743ca22513338515688abeeacab05828c2433ebfbbca260a247746803d8",
+          "5ecb718fab409d50f0a645b57342ac1d4f1a094b31655a37d0e2c75d720e9c4b",
+          "a5e76b083450ca96b2c7a6a2ca73bf99cf73c6dea3fdd05f98bf41f5c567e94f",
+          "8a1f2fb4f09ffa973b0a368364bc325ea728beff7793e422a784547a94538652",
+          "d7f06cfdee6312c305b3dde46d1630d9ecc7b6a913a5fc2b4d89c7b6d2b3df16",
+          "4b748c772e7857c1710223d01d23dbb1356c35d8a2ad66916baa33a3b320b365",
+          "d9d399d8dd991062246ad8a68b57cdf203606119f7f5c03f724bdb5b36e13c5b"
+        ],
+        "temporal2_pair_first_timestamps": [
+          1.5,
+          9.5,
+          17.5,
+          25.5
+        ]
+      },
+      "decode_order": {
+        "packet_count": 449,
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_monotonic": true,
+        "first_16_pts": [
+          0,
+          3,
+          1,
+          2,
+          6,
+          4,
+          5,
+          9,
+          7,
+          8,
+          12,
+          10,
+          11,
+          15,
+          13,
+          14
+        ],
+        "first_16_dts": [
+          -2,
+          -1,
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13
+        ]
+      }
+    },
+    {
+      "id": "scene-static",
+      "language": "zh",
+      "question": "视频中第二次突然切换后的主色是什么？只回答颜色。",
+      "expect_all": [
+        "蓝"
+      ],
+      "events": {
+        "motion_peaks": [],
+        "scene_cuts": [
+          112,
+          224,
+          336
+        ],
+        "exact_static_intervals": [
+          [
+            64,
+            111
+          ],
+          [
+            120,
+            223
+          ],
+          [
+            232,
+            335
+          ]
+        ],
+        "uniform_visible_source_frames": [
+          3,
+          11,
+          19,
+          27,
+          35,
+          43,
+          51,
+          59
+        ]
+      },
+      "video": "fixtures/scene-static.mp4",
+      "video_sha256": "a1c8fe5099e671ed1f1f92a997e608d77e64bb0f4358842b42880e311a7ec928",
+      "video_bytes": 22180,
+      "content_frames": "content/scene-static.frames.jsonl",
+      "content_frames_sha256": "8e91ba445512a5b0b0add081acb887143f0a6534fa3ff9de28f846fd321ae9a9",
+      "decode_order_packets": "content/scene-static.packets.json",
+      "decode_order_packets_sha256": "6499917bb8f27f9da98b49e7b5dd1e0ffd95313787aab36497b8a3440c23a1c2",
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 96,
+            "height": 64,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "2/1",
+            "nb_frames": "449"
+          }
+        ],
+        "format": {
+          "duration": "224.500000",
+          "size": "22180"
+        }
+      },
+      "duration_seconds": 224.5,
+      "candidate_stride": 8,
+      "candidate_count": 57,
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.002619485294117647,
+          0.0
+        ],
+        [
+          0.0027267156862745097,
+          0.0078125
+        ],
+        [
+          0.0028033088235294118,
+          0.0078125
+        ],
+        [
+          0.002925857843137255,
+          0.0
+        ],
+        [
+          0.0026348039215686276,
+          0.0078125
+        ],
+        [
+          0.0022824754901960786,
+          0.0078125
+        ],
+        [
+          0.0011795343137254901,
+          0.0078125
+        ],
+        [
+          3.0637254901960784e-05,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.05022977941176471,
+          0.9765625
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.06568627450980392,
+          0.984375
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.15718443627450981,
+          0.984375
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            28,
+            42,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            224,
+            336,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            112.0,
+            168.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "b629651ab31e1ff5",
+            "48e5912600a550bc",
+            "c4decc85398ed136",
+            "c4decc85398ed136"
+          ],
+          "content_sha256": [
+            "4dd8f3b734e46e1b66ea9f1898e7fa25f2cc8a79c08a4a3ff8c7a384302e9776",
+            "7d0cce3455b6ffdfab7e92250009434acacb5fc8bb2eee685545f448e082ccaa",
+            "70511425a1ee9b7fccad13b467be139c0b797ab02526d5c9f5626d467246ef73",
+            "70511425a1ee9b7fccad13b467be139c0b797ab02526d5c9f5626d467246ef73"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            168.0
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            8,
+            14,
+            16,
+            24,
+            28,
+            42,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            64,
+            112,
+            128,
+            192,
+            224,
+            336,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            32.0,
+            56.0,
+            64.0,
+            96.0,
+            112.0,
+            168.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "b629651ab31e1ff5",
+            "c7221a1eb3384741",
+            "71bc92daf1cdbcab",
+            "6cb1524f2d9255b4",
+            "6cb1524f2d9255b4",
+            "48e5912600a550bc",
+            "c4decc85398ed136",
+            "c4decc85398ed136"
+          ],
+          "content_sha256": [
+            "4dd8f3b734e46e1b66ea9f1898e7fa25f2cc8a79c08a4a3ff8c7a384302e9776",
+            "e72b1289e989078b23a8ba1b855e13af5599bf4b32b7f0476d33a71f2e80832b",
+            "3fa41eb9ade87755587e38fa91184d84edd760179a385d1c62fdf15a0cf4d080",
+            "e702e32093a13fa574d29fd2f4b5770e7b717acb39992e3c5f61f32fc670a7be",
+            "e702e32093a13fa574d29fd2f4b5770e7b717acb39992e3c5f61f32fc670a7be",
+            "7d0cce3455b6ffdfab7e92250009434acacb5fc8bb2eee685545f448e082ccaa",
+            "70511425a1ee9b7fccad13b467be139c0b797ab02526d5c9f5626d467246ef73",
+            "70511425a1ee9b7fccad13b467be139c0b797ab02526d5c9f5626d467246ef73"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            56.0,
+            96.0,
+            168.0
+          ]
+        },
+        "16": {
+          "candidate_indices": [
+            0,
+            4,
+            7,
+            11,
+            14,
+            15,
+            19,
+            22,
+            26,
+            28,
+            30,
+            34,
+            37,
+            41,
+            42,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            32,
+            56,
+            88,
+            112,
+            120,
+            152,
+            176,
+            208,
+            224,
+            240,
+            272,
+            296,
+            328,
+            336,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            16.0,
+            28.0,
+            44.0,
+            56.0,
+            60.0,
+            76.0,
+            88.0,
+            104.0,
+            112.0,
+            120.0,
+            136.0,
+            148.0,
+            164.0,
+            168.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "b629651ab31e1ff5",
+            "d819b4010282ea16",
+            "2f4a4906d9f9f753",
+            "c7221a1eb3384741",
+            "71bc92daf1cdbcab",
+            "71bc92daf1cdbcab",
+            "6cb1524f2d9255b4",
+            "6cb1524f2d9255b4",
+            "6cb1524f2d9255b4",
+            "48e5912600a550bc",
+            "48e5912600a550bc",
+            "48e5912600a550bc",
+            "48e5912600a550bc",
+            "48e5912600a550bc",
+            "c4decc85398ed136",
+            "c4decc85398ed136"
+          ],
+          "content_sha256": [
+            "4dd8f3b734e46e1b66ea9f1898e7fa25f2cc8a79c08a4a3ff8c7a384302e9776",
+            "53f925993abe6008dffce0080e8aa895dbcc52281b09208cc8b24b3ec25f591c",
+            "2d2d149e12fd08dd2902a2245dc4697c7f11c0c78271293302999ec05be85b04",
+            "e72b1289e989078b23a8ba1b855e13af5599bf4b32b7f0476d33a71f2e80832b",
+            "3fa41eb9ade87755587e38fa91184d84edd760179a385d1c62fdf15a0cf4d080",
+            "3fa41eb9ade87755587e38fa91184d84edd760179a385d1c62fdf15a0cf4d080",
+            "e702e32093a13fa574d29fd2f4b5770e7b717acb39992e3c5f61f32fc670a7be",
+            "e702e32093a13fa574d29fd2f4b5770e7b717acb39992e3c5f61f32fc670a7be",
+            "e702e32093a13fa574d29fd2f4b5770e7b717acb39992e3c5f61f32fc670a7be",
+            "7d0cce3455b6ffdfab7e92250009434acacb5fc8bb2eee685545f448e082ccaa",
+            "7d0cce3455b6ffdfab7e92250009434acacb5fc8bb2eee685545f448e082ccaa",
+            "7d0cce3455b6ffdfab7e92250009434acacb5fc8bb2eee685545f448e082ccaa",
+            "7d0cce3455b6ffdfab7e92250009434acacb5fc8bb2eee685545f448e082ccaa",
+            "7d0cce3455b6ffdfab7e92250009434acacb5fc8bb2eee685545f448e082ccaa",
+            "70511425a1ee9b7fccad13b467be139c0b797ab02526d5c9f5626d467246ef73",
+            "70511425a1ee9b7fccad13b467be139c0b797ab02526d5c9f5626d467246ef73"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            28.0,
+            56.0,
+            76.0,
+            104.0,
+            120.0,
+            148.0,
+            168.0
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          3,
+          11,
+          19,
+          27,
+          35,
+          43,
+          51,
+          59
+        ],
+        "source_timestamps_seconds": [
+          1.5,
+          5.5,
+          9.5,
+          13.5,
+          17.5,
+          21.5,
+          25.5,
+          29.5
+        ],
+        "content_fnv1a64": [
+          "6844f6659aa28780",
+          "58e473c16e715a12",
+          "f96cf5f2da3a65ed",
+          "de9e6cd74200c010",
+          "348ac6bc3e897f1c",
+          "29b9190b958f942c",
+          "6f5631d95e24bd9e",
+          "19e3c80e3febbe91"
+        ],
+        "content_sha256": [
+          "60d4ca0ce52b090c0c6610e10fa15827b1e3b2ba88d31fa2d81b3549931fc6f9",
+          "9308217cd3856e24f51fca727040cdd0f8150aa46a46caf9e8f04babcc80d37b",
+          "163e8a8b420bf1afc5f7b788efe6f8c116d2089b2df69db03717ffec6610bb1f",
+          "11774fee701f927b3a812d73f17c14227c7de4684991bbe2a74b2fbd9479a2dd",
+          "2452aa57d4f75339d8c5af88acca663b9519a56dae1d7c20addf4106c4eb2b4f",
+          "70449d4a5175cfe760a83db801b2a5da1546e79bc7021813563f2bbf11266159",
+          "4aa6eae1958efa07280bc11f21dea87ea91244569ea88f4cff8214fb35c48a15",
+          "12889fb503adc33c6e780d22d225f18cd26d538189c6df8e95cee2870d697d58"
+        ],
+        "temporal2_pair_first_timestamps": [
+          1.5,
+          9.5,
+          17.5,
+          25.5
+        ]
+      },
+      "decode_order": {
+        "packet_count": 449,
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_monotonic": true,
+        "first_16_pts": [
+          0,
+          3,
+          1,
+          2,
+          6,
+          4,
+          5,
+          9,
+          7,
+          8,
+          12,
+          10,
+          11,
+          15,
+          13,
+          14
+        ],
+        "first_16_dts": [
+          -2,
+          -1,
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13
+        ]
+      }
+    },
+    {
+      "id": "near-duplicate",
+      "language": "ja",
+      "question": "長い静止区間の後に現れる短い帯の色は何ですか？色だけで答えてください。",
+      "expect_all": [
+        "magenta",
+        "マゼンタ",
+        "紫"
+      ],
+      "expect_any_group": true,
+      "events": {
+        "motion_peaks": [
+          288
+        ],
+        "scene_cuts": [
+          288
+        ],
+        "exact_static_intervals": [
+          [
+            128,
+            255
+          ],
+          [
+            352,
+            447
+          ]
+        ],
+        "uniform_visible_source_frames": [
+          3,
+          11,
+          19,
+          27,
+          35,
+          43,
+          51,
+          59
+        ]
+      },
+      "video": "fixtures/near-duplicate.mp4",
+      "video_sha256": "c201f28f00467e40b7fd03c7ccec19ccd0c857c863cbfbc6e14d01ebc71e30a0",
+      "video_bytes": 22173,
+      "content_frames": "content/near-duplicate.frames.jsonl",
+      "content_frames_sha256": "7d6a6e8f91243358fbbfef8cce2663a51d97928128d5ca793f62a81e0e719881",
+      "decode_order_packets": "content/near-duplicate.packets.json",
+      "decode_order_packets_sha256": "1547e687c5218ba784560839ded88523cd1f453594474066a9866b46f36cec3c",
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 96,
+            "height": 64,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "2/1",
+            "nb_frames": "449"
+          }
+        ],
+        "format": {
+          "duration": "224.500000",
+          "size": "22173"
+        }
+      },
+      "duration_seconds": 224.5,
+      "candidate_stride": 8,
+      "candidate_count": 57,
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.00548406862745098,
+          0.01953125
+        ],
+        [
+          0.005453431372549019,
+          0.01953125
+        ],
+        [
+          0.006862745098039216,
+          0.0
+        ],
+        [
+          0.005254289215686275,
+          0.01953125
+        ],
+        [
+          0.006556372549019608,
+          0.0078125
+        ],
+        [
+          0.005530024509803922,
+          0.01953125
+        ],
+        [
+          0.006510416666666667,
+          0.015625
+        ],
+        [
+          0.0070006127450980395,
+          0.02734375
+        ],
+        [
+          0.003829656862745098,
+          0.0
+        ],
+        [
+          0.005162377450980392,
+          0.01953125
+        ],
+        [
+          0.003676470588235294,
+          0.0
+        ],
+        [
+          0.005162377450980392,
+          0.01953125
+        ],
+        [
+          0.003829656862745098,
+          0.0
+        ],
+        [
+          0.0038143382352941175,
+          0.01953125
+        ],
+        [
+          0.005300245098039216,
+          0.0
+        ],
+        [
+          0.00047487745098039215,
+          0.01953125
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.002818627450980392,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.16838235294117648,
+          0.4921875
+        ],
+        [
+          0.16838235294117648,
+          0.4921875
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.002818627450980392,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.002818627450980392,
+          0.0
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            36,
+            37,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            288,
+            296,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            144.0,
+            148.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "0a04eac6e1dfc8d6",
+            "c7602c410146ddd6",
+            "1a9d54cbd144c939",
+            "1a9d54cbd144c939"
+          ],
+          "content_sha256": [
+            "96e9f8896ed0c956d78b15502e99711855070575a5581e40627518c4f31a5e1c",
+            "f08c0dbed0273c8dd1cdbed4875272eabee53c616bf439269800e51179ae0617",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            148.0
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            8,
+            16,
+            24,
+            32,
+            36,
+            37,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            64,
+            128,
+            192,
+            256,
+            288,
+            296,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            32.0,
+            64.0,
+            96.0,
+            128.0,
+            144.0,
+            148.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "0a04eac6e1dfc8d6",
+            "7d19caf1ad7aeef1",
+            "7d19caf1ad7aeef1",
+            "7d19caf1ad7aeef1",
+            "1a9d54cbd144c939",
+            "c7602c410146ddd6",
+            "1a9d54cbd144c939",
+            "1a9d54cbd144c939"
+          ],
+          "content_sha256": [
+            "96e9f8896ed0c956d78b15502e99711855070575a5581e40627518c4f31a5e1c",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c",
+            "f08c0dbed0273c8dd1cdbed4875272eabee53c616bf439269800e51179ae0617",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            64.0,
+            128.0,
+            148.0
+          ]
+        },
+        "16": {
+          "candidate_indices": [
+            0,
+            4,
+            7,
+            11,
+            15,
+            19,
+            22,
+            26,
+            30,
+            34,
+            36,
+            37,
+            41,
+            45,
+            49,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            32,
+            56,
+            88,
+            120,
+            152,
+            176,
+            208,
+            240,
+            272,
+            288,
+            296,
+            328,
+            360,
+            392,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            16.0,
+            28.0,
+            44.0,
+            60.0,
+            76.0,
+            88.0,
+            104.0,
+            120.0,
+            136.0,
+            144.0,
+            148.0,
+            164.0,
+            180.0,
+            196.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "0a04eac6e1dfc8d6",
+            "325c850ee7a27873",
+            "9a71db051cfc0858",
+            "a5dfdc97727ae3f9",
+            "c9cb4a2282c47031",
+            "7d19caf1ad7aeef1",
+            "7d19caf1ad7aeef1",
+            "7d19caf1ad7aeef1",
+            "7d19caf1ad7aeef1",
+            "1a9d54cbd144c939",
+            "c7602c410146ddd6",
+            "1a9d54cbd144c939",
+            "1a9d54cbd144c939",
+            "7d19caf1ad7aeef1",
+            "7d19caf1ad7aeef1",
+            "1a9d54cbd144c939"
+          ],
+          "content_sha256": [
+            "96e9f8896ed0c956d78b15502e99711855070575a5581e40627518c4f31a5e1c",
+            "89095e82a7485b1fd8af3ddf7e8ac0c8484e474169e9dd00274d45d2b58c2d2d",
+            "aa9c233e729d5537bb1701ffd71a6a689cccd4d29a3e2021875c1e25845d58b7",
+            "66ba035d60568dc55efb970c764073db7ca61b45708e0401bab539ec7ebbbc86",
+            "9cdc36adf4a77d2aa0021a3e32fdf1c02157c3f48d437d5c0bf17f88bdee2929",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c",
+            "f08c0dbed0273c8dd1cdbed4875272eabee53c616bf439269800e51179ae0617",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "d787595e9c7563dcb71749ccb313b02424b9f88ce9dd87015c3431c99f49c585",
+            "31bbed457da18dff2e07cc4a2cbb021049d45d1163ce563640e11caebbb5ab6c"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            28.0,
+            60.0,
+            88.0,
+            120.0,
+            144.0,
+            164.0,
+            196.0
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          3,
+          11,
+          19,
+          27,
+          35,
+          43,
+          51,
+          59
+        ],
+        "source_timestamps_seconds": [
+          1.5,
+          5.5,
+          9.5,
+          13.5,
+          17.5,
+          21.5,
+          25.5,
+          29.5
+        ],
+        "content_fnv1a64": [
+          "913212635156ce08",
+          "75dabce36767d72c",
+          "7ef7c0a92194d065",
+          "cf24714044dab14f",
+          "bd074688e3492840",
+          "8bc27f1976291879",
+          "074e779345b761ec",
+          "c341d5cdd6c5dece"
+        ],
+        "content_sha256": [
+          "8bc7b378b865a128ed1d3813fbdbe12ee9ffad67ae274db254f81f2bb390c9f7",
+          "d3901f833953eb9d8ebfa8f74d1ca214641d46214211f1389ee5c494c389158d",
+          "f2b6cfc9031878e7de8f845998b959fc940bae93e3a7d60eaf686607d0aab2dc",
+          "eb62607164ff35ee9f8541cad88860c360fcb562516a18438aa405adebdae7fc",
+          "06a26d5e6eb2e5e9326731871800404ef0b2137a66a0ceb7f56a25bbe92f1c69",
+          "3188b73e53ef8c61fb9db81701de76f707c5f0d1847cd2e9be1fada1e8cf7163",
+          "493a2d3c8cb343417c5aea0c57d8ab745e50070dfa7ebfefe8f315c103759e1a",
+          "087416beafedf93bf8f84f7be9d5747dc0817af5cc2d64c58e273c6a8d100e30"
+        ],
+        "temporal2_pair_first_timestamps": [
+          1.5,
+          9.5,
+          17.5,
+          25.5
+        ]
+      },
+      "decode_order": {
+        "packet_count": 449,
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_monotonic": true,
+        "first_16_pts": [
+          0,
+          3,
+          1,
+          2,
+          6,
+          4,
+          5,
+          9,
+          7,
+          8,
+          12,
+          10,
+          11,
+          14,
+          13,
+          16
+        ],
+        "first_16_dts": [
+          -2,
+          -1,
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13
+        ]
+      }
+    },
+    {
+      "id": "bframe-anchors",
+      "language": "es",
+      "question": "¿Cuál es el color del primer cuadro y cuál el del último? Responde: blanco y negro.",
+      "expect_all": [
+        "blanco",
+        "negro"
+      ],
+      "events": {
+        "motion_peaks": [],
+        "scene_cuts": [
+          8
+        ],
+        "exact_static_intervals": [],
+        "required_source_anchors": [
+          0,
+          448
+        ],
+        "uniform_visible_source_frames": [
+          3,
+          11,
+          19,
+          27,
+          35,
+          43,
+          51,
+          59
+        ]
+      },
+      "video": "fixtures/bframe-anchors.mp4",
+      "video_sha256": "cf4e5941496093090d70ae3c1a99f9cd5c4aca5a0ab88ef7a391552b2eeab8cf",
+      "video_bytes": 66046,
+      "content_frames": "content/bframe-anchors.frames.jsonl",
+      "content_frames_sha256": "cce24d01c80d332861b5fc0244a9fffdce3f996562a3d49124512a288851dc2f",
+      "decode_order_packets": "content/bframe-anchors.packets.json",
+      "decode_order_packets_sha256": "441fe7b0668ff4d49326dba454afb0a3e385b0d89ad28857b3cebff4827f6e3e",
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 96,
+            "height": 64,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "2/1",
+            "nb_frames": "449"
+          }
+        ],
+        "format": {
+          "duration": "224.500000",
+          "size": "66046"
+        }
+      },
+      "duration_seconds": 224.5,
+      "candidate_stride": 8,
+      "candidate_count": 57,
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.664047181372549,
+          0.953125
+        ],
+        [
+          0.018627450980392157,
+          0.05859375
+        ],
+        [
+          0.014200367647058823,
+          0.0625
+        ],
+        [
+          0.009941789215686274,
+          0.05078125
+        ],
+        [
+          0.021982230392156864,
+          0.0859375
+        ],
+        [
+          0.01907169117647059,
+          0.06640625
+        ],
+        [
+          0.015456495098039216,
+          0.05078125
+        ],
+        [
+          0.00666360294117647,
+          0.078125
+        ],
+        [
+          0.022411151960784314,
+          0.13671875
+        ],
+        [
+          0.03607536764705882,
+          0.09765625
+        ],
+        [
+          0.011427696078431372,
+          0.046875
+        ],
+        [
+          0.007766544117647059,
+          0.0703125
+        ],
+        [
+          0.019806985294117646,
+          0.0859375
+        ],
+        [
+          0.03284313725490196,
+          0.0703125
+        ],
+        [
+          0.012178308823529412,
+          0.0625
+        ],
+        [
+          0.007398897058823529,
+          0.0859375
+        ],
+        [
+          0.017922794117647058,
+          0.0703125
+        ],
+        [
+          0.01913296568627451,
+          0.12890625
+        ],
+        [
+          0.02578125,
+          0.08203125
+        ],
+        [
+          0.0073682598039215685,
+          0.078125
+        ],
+        [
+          0.024356617647058824,
+          0.140625
+        ],
+        [
+          0.020940563725490195,
+          0.0859375
+        ],
+        [
+          0.010845588235294117,
+          0.0390625
+        ],
+        [
+          0.01288296568627451,
+          0.05859375
+        ],
+        [
+          0.02074142156862745,
+          0.0859375
+        ],
+        [
+          0.01634497549019608,
+          0.0546875
+        ],
+        [
+          0.013357843137254901,
+          0.046875
+        ],
+        [
+          0.014215686274509804,
+          0.046875
+        ],
+        [
+          0.019868259803921567,
+          0.078125
+        ],
+        [
+          0.019255514705882354,
+          0.08984375
+        ],
+        [
+          0.016973039215686273,
+          0.05859375
+        ],
+        [
+          0.008057598039215687,
+          0.0546875
+        ],
+        [
+          0.031510416666666666,
+          0.12109375
+        ],
+        [
+          0.022472426470588235,
+          0.1015625
+        ],
+        [
+          0.013449754901960785,
+          0.0625
+        ],
+        [
+          0.008501838235294117,
+          0.046875
+        ],
+        [
+          0.027711397058823528,
+          0.0859375
+        ],
+        [
+          0.01884191176470588,
+          0.0625
+        ],
+        [
+          0.014996936274509804,
+          0.0546875
+        ],
+        [
+          0.010493259803921568,
+          0.046875
+        ],
+        [
+          0.021721813725490195,
+          0.0859375
+        ],
+        [
+          0.04379595588235294,
+          0.08984375
+        ],
+        [
+          0.017294730392156864,
+          0.05859375
+        ],
+        [
+          0.00974264705882353,
+          0.046875
+        ],
+        [
+          0.00742953431372549,
+          0.05859375
+        ],
+        [
+          0.019745710784313725,
+          0.09375
+        ],
+        [
+          0.03005514705882353,
+          0.0703125
+        ],
+        [
+          0.011014093137254903,
+          0.046875
+        ],
+        [
+          0.006020220588235294,
+          0.046875
+        ],
+        [
+          0.017401960784313726,
+          0.0859375
+        ],
+        [
+          0.03259803921568628,
+          0.0703125
+        ],
+        [
+          0.012806372549019607,
+          0.046875
+        ],
+        [
+          0.006096813725490196,
+          0.078125
+        ],
+        [
+          0.022012867647058825,
+          0.11328125
+        ],
+        [
+          0.020021446078431374,
+          0.05859375
+        ],
+        [
+          0.2410232843137255,
+          1.0
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            42,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            8,
+            336,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            4.0,
+            168.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "e865efa8d6dae19d",
+            "f00f9ffa56f9f231",
+            "6862f040607f867a",
+            "4078a4edea2d660c"
+          ],
+          "content_sha256": [
+            "d58738d0f16cd68e336237d5ed884783871f88821e64a693142c05aa3df753e0",
+            "1e4bcba41aa0b15ba0bb1d10f6f26e89f27dc05bfdfe0604741d898e4f445f2b",
+            "8533d83e59782eb2952cc9fee5aea2c56af362d4874700782d8e9df5792bbbdc",
+            "01b762d448412500c863e3e579b9ede4b875fa990943606ec0dbea7bbac70bbe"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            168.0
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            10,
+            14,
+            33,
+            42,
+            51,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            8,
+            80,
+            112,
+            264,
+            336,
+            408,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            4.0,
+            40.0,
+            56.0,
+            132.0,
+            168.0,
+            204.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "e865efa8d6dae19d",
+            "f00f9ffa56f9f231",
+            "e8aee1108abf5efa",
+            "30fcbcd7577c27ab",
+            "df9f728ac4dcd082",
+            "6862f040607f867a",
+            "7ea107d7fba57865",
+            "4078a4edea2d660c"
+          ],
+          "content_sha256": [
+            "d58738d0f16cd68e336237d5ed884783871f88821e64a693142c05aa3df753e0",
+            "1e4bcba41aa0b15ba0bb1d10f6f26e89f27dc05bfdfe0604741d898e4f445f2b",
+            "ce470c2ae10e3351bd48196d5931ca595ea6d11fcfc8154fa1ec55f11b858dcd",
+            "ca9844bb7e219df60b82506c9acb1e50024ce32f9d490d8a4bc78df8de5b7081",
+            "ac015784a0dc22f6aac2250a6c2945210b61d3b2d2227c99ccd0d8966c59bd01",
+            "8533d83e59782eb2952cc9fee5aea2c56af362d4874700782d8e9df5792bbbdc",
+            "8491cb1fa9a05084842f53888b86ae401bb5687f4465c7e773718671ae02c881",
+            "01b762d448412500c863e3e579b9ede4b875fa990943606ec0dbea7bbac70bbe"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            40.0,
+            132.0,
+            204.0
+          ]
+        },
+        "16": {
+          "candidate_indices": [
+            0,
+            1,
+            5,
+            9,
+            10,
+            14,
+            19,
+            21,
+            33,
+            34,
+            37,
+            42,
+            47,
+            51,
+            54,
+            56
+          ],
+          "source_frame_indices": [
+            0,
+            8,
+            40,
+            72,
+            80,
+            112,
+            152,
+            168,
+            264,
+            272,
+            296,
+            336,
+            376,
+            408,
+            432,
+            448
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            4.0,
+            20.0,
+            36.0,
+            40.0,
+            56.0,
+            76.0,
+            84.0,
+            132.0,
+            136.0,
+            148.0,
+            168.0,
+            188.0,
+            204.0,
+            216.0,
+            224.0
+          ],
+          "content_fnv1a64": [
+            "e865efa8d6dae19d",
+            "f00f9ffa56f9f231",
+            "7d3057c34da00019",
+            "208f5619b4aa519a",
+            "e8aee1108abf5efa",
+            "30fcbcd7577c27ab",
+            "5b5f81f41395718d",
+            "b4649a6946865481",
+            "df9f728ac4dcd082",
+            "7dc8c1e78dad2ef9",
+            "cfa504b724131f6b",
+            "6862f040607f867a",
+            "42e696d10ffc77b1",
+            "7ea107d7fba57865",
+            "058da08fcc937d11",
+            "4078a4edea2d660c"
+          ],
+          "content_sha256": [
+            "d58738d0f16cd68e336237d5ed884783871f88821e64a693142c05aa3df753e0",
+            "1e4bcba41aa0b15ba0bb1d10f6f26e89f27dc05bfdfe0604741d898e4f445f2b",
+            "e4b9ef1211db014d8f7fff20f5c4ddb2163f17e555b8c722cd8dcc317e38f144",
+            "59def6bbac78f496bbbdc74ff2cf7793f2effb45dae280aabd151433a2aeb39b",
+            "ce470c2ae10e3351bd48196d5931ca595ea6d11fcfc8154fa1ec55f11b858dcd",
+            "ca9844bb7e219df60b82506c9acb1e50024ce32f9d490d8a4bc78df8de5b7081",
+            "c3d459595f71a0c03037cbcd5bb27d6f4d33e34157c63b7710287131fbc58b1c",
+            "26d7f2a29cb77b5a1d38ef799a59844b7007f93cca955475a5d098e087f81fab",
+            "ac015784a0dc22f6aac2250a6c2945210b61d3b2d2227c99ccd0d8966c59bd01",
+            "aac5725c5031c83ab87f386866809d1354e24611ec1cf93a9e2126f6fd86336b",
+            "4335b394da56e7f8a39d1c1455683cc247dc3a259cc27129ff17b591246e4de3",
+            "8533d83e59782eb2952cc9fee5aea2c56af362d4874700782d8e9df5792bbbdc",
+            "04352fcda82eee273fceaef9c7dc0bc450d047464886d30fb55dad97365fde56",
+            "8491cb1fa9a05084842f53888b86ae401bb5687f4465c7e773718671ae02c881",
+            "47c6cae1be90fd0cd142b1d4c022a69724b5fc890b7f9035d8c03446b6c637b5",
+            "01b762d448412500c863e3e579b9ede4b875fa990943606ec0dbea7bbac70bbe"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            20.0,
+            40.0,
+            76.0,
+            132.0,
+            148.0,
+            188.0,
+            216.0
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          3,
+          11,
+          19,
+          27,
+          35,
+          43,
+          51,
+          59
+        ],
+        "source_timestamps_seconds": [
+          1.5,
+          5.5,
+          9.5,
+          13.5,
+          17.5,
+          21.5,
+          25.5,
+          29.5
+        ],
+        "content_fnv1a64": [
+          "b4bcb33280356564",
+          "a386f02b0683b6d6",
+          "b70a3ff3ad1cdf50",
+          "497c2431876b9e6a",
+          "54660f92311508cd",
+          "a3910fc4746c2495",
+          "9fbee0b463ddb6cb",
+          "c948ae3d6d5d4a7d"
+        ],
+        "content_sha256": [
+          "5e4903c66bf8e3f03d9b060d851ae4be685b37521f4c3d47e974d9942cea0c1a",
+          "608f414f93057412ff5a39c1c1bf0c6a0f3f273b27605a572c122c74a560c3c6",
+          "72ee5558dde32df76a2fdcf8234550322dededd3540081844385d346e653d4b4",
+          "cbc5797fb3ba148e912c677c775bc0ab19565b094be407d0fdd35021a26ea87b",
+          "ff29c27f98f202ef4394a05c96ecb9e8cadb57486ccd656fbc1cef244ab18734",
+          "16a15c7a0493197c9e5bff397ff623ebc6f2bf988fd98a9b91f5641f1ed124a1",
+          "a4a582b66152347b3394c520d7d797407fc5c5fdb273643ea1e39695fb94b5e9",
+          "d46f305d7ce3a6485ecba9cbcf7520a674a5c6d547a3dbfb06807091796b9054"
+        ],
+        "temporal2_pair_first_timestamps": [
+          1.5,
+          9.5,
+          17.5,
+          25.5
+        ]
+      },
+      "decode_order": {
+        "packet_count": 449,
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_monotonic": true,
+        "first_16_pts": [
+          0,
+          1,
+          2,
+          5,
+          3,
+          4,
+          8,
+          6,
+          7,
+          11,
+          9,
+          10,
+          14,
+          12,
+          13,
+          15
+        ],
+        "first_16_dts": [
+          -2,
+          -1,
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13
+        ]
+      }
+    }
+  ]
+}

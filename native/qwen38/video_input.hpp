@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -23,6 +24,11 @@ struct DecodedVideo {
   std::vector<size_t> selected_frame_indices;
   std::vector<int64_t> selected_source_frame_indices;
   std::vector<double> selected_frame_timestamps;
+  // Non-cryptographic FNV-1a fingerprints of the exact scaled RGB24 bytes fed
+  // to temporal-2 preprocessing. They let an external fixture harness bind the
+  // native selection to independently decoded source content without changing
+  // the historical uniform decode or exposing frame bytes in the response.
+  std::vector<std::string> selected_frame_content_fnv1a64;
   bool source_indices_exact = false;
   bool has_nominal_timestamps = true;
   size_t decoded_frame_count = 0;

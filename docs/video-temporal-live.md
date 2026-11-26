@@ -51,7 +51,11 @@ MRoPE vector digest/next position, and serial/batched engine path. The harness
 validates `grid_t=ceil(selected/2)`, pair-first PTS, premerge and merged token
 counts, frame budgets, default/uniform native parity, and serial/batched native
 parity. The MRoPE digest is non-cryptographic FNV-1a diagnostic evidence, not a
-security hash.
+security hash. The long-video extension adds `selected_frame_content_fnv1a64`
+for independent scaled-RGB source binding without changing default uniform
+pixels or historical nominal timestamps. Its 449-frame fixtures, budgets,
+seeded repetitions, and two-stack controlled contract are documented in
+[video-temporal-long.md](video-temporal-long.md); no long live run has executed.
 
 ## Clip provenance and explicit expectations
 

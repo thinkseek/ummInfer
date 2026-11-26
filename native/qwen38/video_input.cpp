@@ -194,6 +194,26 @@ std::vector<double> parse_showinfo_timestamps(const std::string& metadata) {
   return out;
 }
 
+std::string rgb_fnv1a64(const std::vector<uint8_t>& rgb) {
+  uint64_t hash = 14695981039346656037ull;
+  for (const uint8_t byte : rgb) {
+    hash ^= byte;
+    hash *= 1099511628211ull;
+  }
+  char text[17];
+  std::snprintf(text, sizeof(text), "%016llx",
+                static_cast<unsigned long long>(hash));
+  return text;
+}
+
+void set_selected_content_digests(
+    DecodedVideo* out, const std::vector<std::vector<uint8_t>>& frames) {
+  out->selected_frame_content_fnv1a64.reserve(frames.size());
+  for (const auto& frame : frames) {
+    out->selected_frame_content_fnv1a64.push_back(rgb_fnv1a64(frame));
+  }
+}
+
 std::vector<std::vector<uint8_t>> split_rgb_frames(const std::string& raw,
                                                    int dst_h, int dst_w) {
   const size_t frame_bytes = static_cast<size_t>(dst_w) * dst_h * 3u;
@@ -235,6 +255,7 @@ DecodedVideo decode_uniform(const std::filesystem::path& path,
       split_rgb_frames(raw, dst_h, dst_w);
 
   DecodedVideo out;
+  set_selected_content_digests(&out, frames);
   out.preprocessed = preprocess_video_frames(
       frames, dst_h, dst_w, kVideoMinPixels, kVideoMaxFramePixels,
       kVideoMaxTotalPatches);
@@ -379,6 +400,7 @@ DecodedVideo preprocess_temporal_candidates(
             : static_cast<int64_t>(index));
     out.selected_frame_timestamps.push_back(candidates[index].timestamp_seconds);
   }
+  set_selected_content_digests(&out, frames);
   out.preprocessed = preprocess_video_frames(
       frames, src_h, src_w, kVideoMinPixels, kVideoMaxFramePixels,
       kVideoMaxTotalPatches);

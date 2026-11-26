@@ -267,6 +267,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
            decoded_video->selected_source_frame_indices},
           {"source_indices_exact", decoded_video->source_indices_exact},
           {"selected_frame_timestamps", decoded_video->selected_frame_timestamps},
+          {"selected_frame_content_fnv1a64",
+           decoded_video->selected_frame_content_fnv1a64},
           {"has_nominal_timestamps", decoded_video->has_nominal_timestamps},
           {"temporal2_pair_first_timestamps", video_timestamps},
           {"max_frames", qwen38::kVideoFrameBudget},

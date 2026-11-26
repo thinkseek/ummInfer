@@ -47,6 +47,7 @@ NATIVE_PARITY_FIELDS = (
     "policy", "decoded_frame_count", "selected_frame_count",
     "selected_candidate_indices", "selected_source_frame_indices",
     "source_indices_exact", "selected_frame_timestamps",
+    "selected_frame_content_fnv1a64",
     "has_nominal_timestamps", "temporal2_pair_first_timestamps",
     "max_frames", "max_candidate_frames", "motion_threshold",
     "scene_threshold", "grid_t", "grid_h", "grid_w",
@@ -271,6 +272,10 @@ def validate_native(record: dict, policy: str) -> None:
         raise ValueError("native selected source index count mismatch")
     if len(record["selected_frame_timestamps"]) != selected:
         raise ValueError("native selected timestamp count mismatch")
+    if len(record["selected_frame_content_fnv1a64"]) != selected or any(
+            not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{16}", value)
+            for value in record["selected_frame_content_fnv1a64"]):
+        raise ValueError("native selected RGB fingerprint count/format mismatch")
     if record["grid_t"] != (selected + 1) // 2:
         raise ValueError("temporal-2 grid_t does not match selected frame count")
     if record["premerge_patch_rows"] != (
@@ -587,6 +592,7 @@ def self_check() -> int:
         "selected_candidate_indices": [0, 2, 3],
         "selected_source_frame_indices": [0, 4, 6], "source_indices_exact": True,
         "selected_frame_timestamps": [0.0, 0.5, 0.75],
+        "selected_frame_content_fnv1a64": ["0123456789abcdef"] * 3,
         "has_nominal_timestamps": False,
         "temporal2_pair_first_timestamps": [0.0, 0.75],
         "max_frames": 8, "max_candidate_frames": 64,
