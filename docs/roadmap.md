@@ -321,6 +321,19 @@ cleanup are in [sse-replay-live.md](sse-replay-live.md). Model quality,
 generalized performance, and sampled token-id recovery remain unclaimed. The
 phase-2 boundary-token precision limit is unchanged.
 
+**Phase 6 real local Qwen token-export gate (2026-11-26).** The accepted strict
+token-export v1 remains byte-for-byte pinned. An explicit format-v2 extension
+now handles the designated `Qwen/Qwen3.8-27B` fast tokenizer's legitimate NFC
+composition and byte fallback without weakening v1: exact normalized token bytes,
+original UTF-8 source units, raw-offset SFT mask equivalence, complete file
+hashes, and fail-closed compatibility checks. The CPU-only local-file gate passed
+multilingual, emoji, combining-mark, spoken, visual-slot, explicit-anchor, and
+cancelled records, plus independent fresh-process export and strong validation
+with `transformers 5.6.0` / `tokenizers 0.22.2`. Exact identities, hashes, and
+limitations are in [token-export-real-qwen](token-export-real-qwen.md). No GPU,
+model inference, sampled decode-id recovery, serving, online rollout, or model
+quality is claimed.
+
 The Stage C joint-SFT, joint-DPO, and joint-GRPO optimizer gates are separately
 bounded to deterministic schema-v2 text/visual-slot fixtures and one small local
 Qwen2 model. Their commands, fail-closed input/mask contracts, checkpoint

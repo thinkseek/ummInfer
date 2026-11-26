@@ -113,6 +113,19 @@ a tokenizer is not a proof of tokenizer identity; the optional real-tokenizer
 fixture gate performs that re-encoding and remains `NOT_RUN` when no explicit
 local fixture is supplied.
 
+For the actual Qwen fast tokenizer's NFC composition and byte fallback, the
+explicit `--token-export-version 2` format stores exact normalized token bytes,
+overlapping original-source units, and separate raw offsets for the unchanged
+SFT mask calculation. V1 output and rejection behavior remain unchanged;
+unsupported normalization/vocabulary behavior fails closed. The designated
+`Qwen/Qwen3.8-27B` local-file gate **PASS** covers multilingual, emoji, combining,
+spoken, visual-slot, explicit-anchor, and cancelled records, plus two fresh CLI
+processes. Exact tokenizer files, hashes, commands, and boundaries are in
+[token-export-real-qwen.md](token-export-real-qwen.md) and the complete v2
+contract is in [rl.md](rl.md#format-v2-nfc-normalization-and-byte-fallback-provenance).
+No model inference, sampled decode ids, online rollout, or optimizer result is
+claimed.
+
 ### 2. Preference (DPO) & GRPO Group Pack (`--mode preference`)
 
 Outputs `dpo_train.jsonl`, `dpo_eval.jsonl`, `grpo_train.jsonl`, and
@@ -263,7 +276,7 @@ python3 -I tests/online_rollout_test.py
 | Raw-SSE live-versus-replay byte identity | **COVERED (loopback fixture)** | Exact raw/chunk/frame/[DONE], logical ticks, normalized JSONL and source hashes; no model claim |
 | Isolated real-service raw capture + fresh-process replay | **PASS (SM90 GPU 0)** | Real text/visual-contract/cancelled streams, observed `monotonic_ns`, byte-identical JSONL/CAS and tamper rejection; visual media are contract fixtures. See [sse-replay-live.md](sse-replay-live.md) |
 | SFT interleaved beat-marker reconstruction & dedup | **COVERED** | Byte-identical across repeated runs |
-| Optional token-id/UTF-8/source-span export & SFT mask equivalence | **COVERED (fixture tokenizer)** | Additive v2 blocks, fail-closed structural validation, deterministic independent decode; real-tokenizer fixture `NOT_RUN` unless explicitly supplied |
+| Optional token-id/UTF-8/source-span export & SFT mask equivalence | **COVERED (fixture v1/v2); PASS (real local Qwen v2)** | Additive blocks, fail-closed structural validation, exact normalized bytes/source units, deterministic independent decode and two fresh CLI processes; default run without a supplied tokenizer still reports `NOT_RUN` |
 | Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")` |
 | Zero train/eval prompt leakage & manifest sidecar | **COVERED** | Verified at build time and `--audit-only` |
 | End-to-end trajectory -> pack -> ablation-matrix dry-run driver | **COVERED** | `tools/umminfer_stage_c_pipeline.py` + `tests/stage_c_pipeline_test.py` |

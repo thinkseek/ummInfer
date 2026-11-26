@@ -51,11 +51,15 @@ incompatible sidecar can be rejected explicitly without invalidating old JSONL.
 Source-binding fields on normalized events are likewise additive. The replay
 CLI requires replay-enabled v2 records; it does not invent bytes for old ones.
 
-Token/span export follows the same additive rule. `token_export` is optional,
-has its own `format: "umminfer-trajectory-token-export-v1"` and
-`format_version: 1`, and never changes `schema_version`. V2 records without it
-and v1 records retain their old fields and validation behavior; a v1 record may
-not carry the block. The offline file exporter leaves v1 records untouched.
+Token/span export follows the same additive rule. `token_export` is optional
+and never changes `schema_version`. Its original format is
+`"umminfer-trajectory-token-export-v1"` / `format_version: 1`; the explicit
+NFC/ByteLevel extension is `"umminfer-trajectory-token-export-v2"` /
+`format_version: 2`. Trajectory-v2 records without the block and trajectory-v1
+records retain their old fields and validation behavior; a trajectory-v1 record
+may not carry the block. The offline file exporter leaves v1 records untouched.
+The token-export CLI defaults to format 1 and requires
+`--token-export-version 2` to emit the extension.
 
 V2 retains the phase-1 keys used by the GSM8K trainer (`output_text`,
 `output_sha256`, `events`, `request_params`, `inputs`, `terminal_state`, reward
@@ -250,7 +254,7 @@ sequences, hash/timing/terminal tampering, and CAS mismatches produce a concise
 `replay error:` and nonzero exit. Cancellation and incomplete artifact groups
 follow the existing v2 cancellation rules and replay identically.
 
-## Optional token-id and source-span export (format v1)
+## Optional token-id and source-span export (formats v1 and v2)
 
 `python/umminfer_token_export.py` adds exact tokenizer-backed supervision data
 after recording. It is an offline utility, not a recorder hook: serving and raw
@@ -366,6 +370,72 @@ tokenizer fixture gate requires four `--real-tokenizer-*` options and prints
 `REAL_TOKENIZER_FIXTURE: NOT_RUN` when unavailable. No real tokenizer, model
 quality, sampled-token identity, or optimizer outcome is claimed by the default
 CPU run.
+
+### Format v2: NFC normalization and byte-fallback provenance
+
+The actual repository-designated `Qwen/Qwen3.8-27B` fast tokenizer legitimately
+violates two v1 assumptions: byte-fallback tokens for one emoji have repeated
+original offsets and individually decode to U+FFFD, while NFC combines sequences
+such as `e` + U+0301 into `é` and leaves a gap in original offsets. Format v1
+continues to reject those streams. It is not silently repaired, and the accepted
+v1 fixture export has a pinned byte-for-byte golden regression.
+
+For a tokenizer that explicitly needs this behavior, pass
+`--token-export-version 2` on export. Strong validation auto-detects the block's
+own format version and needs no version flag:
+
+```text
+python3 -I python/umminfer_token_export.py trajectories.jsonl \
+  --out trajectories.tokens.jsonl \
+  --token-export-version 2 \
+  --tokenizer-dir /path/to/local/tokenizer \
+  --tokenizer-id Qwen/Qwen3.8-27B \
+  --tokenizer-revision UNKNOWN \
+  --tokenization-version transformers-5.6.0_tokenizers-0.22.2
+
+python3 -I python/umminfer_token_export.py trajectories.tokens.jsonl \
+  --validate-only \
+  --tokenizer-dir /path/to/local/tokenizer \
+  --tokenizer-id Qwen/Qwen3.8-27B \
+  --tokenizer-revision UNKNOWN \
+  --tokenization-version transformers-5.6.0_tokenizers-0.22.2
+```
+
+V2 is intentionally narrower than a generic normalization fallback. It requires
+`tokenizer.json` to declare BPE, an NFC normalizer, a ByteLevel decoder, and
+ByteLevel pretokenization with no prefix-space, trim, or regex rewrite. The
+backend must expose its normalizer and id-to-token mapping. Python and backend
+NFC results must match for the whole input and each independently mapped source
+cluster. Concatenated GPT-2 `bytes_to_unicode`-inverse token bytes must exactly
+equal the NFC UTF-8 text, and full-sequence decode with special-token skipping
+and cleanup disabled must equal those same bytes. Other tokenizers, cross-cluster
+NFC that cannot be mapped exactly, Unicode-version drift, unknown ids, empty raw
+offsets, and mismatched decode fail explicitly.
+
+Each v2 stream retains the exact original `text_sha256` and adds
+`normalized_sha256`, `decoded_sha256`, and `normalization_units[]`. Units cover
+both the original UTF-8 text and normalized text exactly, with source and
+normalized byte/codepoint ranges and hashes. Every token records:
+
+- exact `token_id` and `piece_hex` / `piece_sha256` for its normalized token
+  bytes (an individual byte-fallback piece need not be standalone UTF-8);
+- contiguous half-open `normalized_start` / `normalized_end` offsets;
+- conservative original UTF-8 `start` / `end`, codepoint ranges, and
+  `source_sha256`, which may overlap when tokens share a byte-fallback or NFC
+  source unit but whose union must cover the original stream exactly;
+- the fast tokenizer's original `offset_char_start` / `offset_char_end` and
+  corresponding byte offsets, contained in that source range; and
+- exact normalized source-event/raw-SSE-frame attribution.
+
+The existing SFT adapter consumes the raw original offsets, not expanded source
+coverage. V2 mask weights and annotations therefore use those raw offsets and
+are compared token-for-token with `_token_loss_mask`; expanded source spans do
+not double-charge byte-fallback or composed tokens. Structural validation
+recomputes every unit, token byte, range, mask, and digest without ML imports.
+Strong validation additionally re-encodes and full-sequence-decodes both streams
+and rehashes the complete selected tokenizer-file bundle. The real local Qwen
+identity, exact files, gate hashes, commands, and limitations are recorded in
+[token-export-real-qwen.md](token-export-real-qwen.md).
 
 ## Determinism
 

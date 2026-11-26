@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "python"))
@@ -81,6 +82,46 @@ class FixtureTokenizer:
         return "".join(pieces)
 
 
+class V2FixtureTokenizer:
+    """Deterministic NFC + byte-fallback tokenizer with no ML dependency."""
+
+    class _Normalizer:
+        @staticmethod
+        def normalize_str(text):
+            import unicodedata
+            return unicodedata.normalize("NFC", text)
+
+    class _Backend:
+        normalizer = None
+
+        def id_to_token(self, token_id):
+            if not 1 <= token_id <= 256:
+                return None
+            inverse = {value: key for key, value in tokens._BYTELEVEL_INVERSE.items()}
+            return inverse[token_id - 1]
+
+    def __init__(self):
+        self.backend_tokenizer = self._Backend()
+        self.backend_tokenizer.normalizer = self._Normalizer()
+        self.unk_token_id = None
+
+    def __len__(self):
+        return 257
+
+    def __call__(self, text, **kwargs):
+        units, normalized = tokens._nfc_source_units(text)
+        raw = normalized.encode("utf-8")
+        offsets = []
+        for cursor in range(len(raw)):
+            unit = next(unit for unit in units
+                        if unit["normalized_start"] <= cursor < unit["normalized_end"])
+            offsets.append((unit["char_start"], unit["char_end"]))
+        return {"input_ids": [value + 1 for value in raw], "offset_mapping": offsets}
+
+    def decode(self, ids, **kwargs):
+        return bytes(token_id - 1 for token_id in ids).decode("utf-8")
+
+
 def fixture_tokenizer():
     return FixtureTokenizer((
         "[[image: ", "[[video: ", " | source=slot-0]]", "]]",
@@ -135,6 +176,32 @@ def _attach(record, root, tokenizer=None, expected_target=True):
         sft_target=target)
 
 
+def _v2_tokenizer_dir(root):
+    root = Path(root) / "tokenizer-v2"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "tokenizer.json").write_text(json.dumps({
+        "normalizer": {"type": "NFC"},
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": False,
+                          "trim_offsets": False, "use_regex": False},
+        "decoder": {"type": "ByteLevel"},
+        "model": {"type": "BPE"},
+    }, sort_keys=True) + "\n", encoding="utf-8")
+    (root / "tokenizer_config.json").write_text(
+        '{"tokenizer_class":"V2FixtureTokenizer"}\n', encoding="utf-8")
+    return root
+
+
+def _attach_v2(record, root, tokenizer=None, expected_target=True):
+    tokenizer = tokenizer or V2FixtureTokenizer()
+    target = dataset.reconstruct_director_target(record)[0] if expected_target else None
+    return tokens.attach_token_export(
+        record, tokenizer, tokenizer_dir=_v2_tokenizer_dir(root),
+        tokenizer_id="fixture-bytelevel-nfc",
+        tokenizer_revision="fixture-revision-2",
+        tokenization_version="fixture-tokenization-v2",
+        sft_target=target, format_version=2)
+
+
 def _multilingual_record(root):
     first = "<spoken>黎明🌅 é"
     second = " 字。</spoken> 尾🧪"
@@ -157,7 +224,9 @@ def _assert_mask_equivalence(testcase, record, exported):
     mask = stage_c.build_span_loss_mask(target)
     stream = exported["token_export"]["streams"]["sft_target"]
     ids = stream["token_ids"]
-    offsets = [(token["char_start"], token["char_end"])
+    is_v2 = exported["token_export"]["format_version"] == 2
+    offsets = [((token["offset_char_start"], token["offset_char_end"]) if is_v2
+                else (token["char_start"], token["char_end"]))
                for token in stream["tokens"]]
     labels, weights, annotations = live_sft._token_loss_mask(
         offsets, target_start=0, target=target, token_ids=ids, mask_info=mask)
@@ -275,6 +344,23 @@ class TokenExportTests(unittest.TestCase):
             self.assertEqual(strong["status"], "PASS")
             self.assertTrue(strong["tokenizer_reencoded"])
             _assert_mask_equivalence(self, record_a, exported_a)
+
+    def test_v1_accepted_fixture_bytes_remain_pinned(self):
+        # Golden generated independently with the accepted fda637b module; v2
+        # support must not perturb a single accepted v1 export byte.
+        with tempfile.TemporaryDirectory(prefix="umm-token-v1-golden-") as tmp:
+            _, record = _record(Path(tmp) / "base", fixture.linked_events())
+            exported = _attach(record, Path(tmp) / "export")
+            block = exported["token_export"]
+            self.assertEqual(block["format_version"], 1)
+            self.assertEqual(block["export_sha256"],
+                             "929339094274e0084ea564ba811893e782c7ccc3dc9cbde5a79e5b43916c167e")
+            self.assertEqual(tokens._sha_bytes(tokens._canonical(exported)),
+                             "ea53770a67a602db250cf0cb8247752a181921544eee0bfc187e87a3eb712bd8")
+            self.assertEqual(block["streams"]["clean_text"]["tokens_sha256"],
+                             "b214545a573f2d32c24eedc8d9ef2d77d448f9cd4703f1686d8c7e4f32093a9e")
+            self.assertEqual(block["streams"]["sft_target"]["tokens_sha256"],
+                             "ba6a826e33feeda1412283c51b61a091f48d165ac4fc7cb61cea5f92258a2d20")
 
     def test_multilingual_emoji_combining_spoken_and_exact_byte_offsets(self):
         with tempfile.TemporaryDirectory(prefix="umm-token-utf8-") as tmp:
@@ -506,6 +592,188 @@ class TokenExportTests(unittest.TestCase):
                     sft_target="noncanonical target")
 
 
+class TokenExportV2Tests(unittest.TestCase):
+    def test_nfc_bytelevel_multilingual_anchor_and_cancelled_roundtrip(self):
+        cases = (
+            ("multilingual", _multilingual_record),
+            ("explicit-anchor", lambda root: _record(root, fixture.linked_events())),
+            ("cancelled", lambda root: _record(root, fixture.cancelled_events())),
+        )
+        for name, make_record in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory(
+                    prefix="umm-token-v2-" + name + "-") as tmp:
+                recorder, record = make_record(Path(tmp) / "record")
+                exported = _attach_v2(record, Path(tmp) / "a")
+                self.assertEqual(tokens._canonical(exported),
+                                 tokens._canonical(_attach_v2(record, Path(tmp) / "a")))
+                block = exported["token_export"]
+                self.assertEqual(block["format"], tokens.TOKEN_EXPORT_FORMAT_V2)
+                self.assertEqual(block["format_version"], 2)
+                target = dataset.reconstruct_director_target(record)[0]
+                strong = tokens.validate_record_token_export(
+                    exported, tokenizer=V2FixtureTokenizer(),
+                    tokenizer_dir=_v2_tokenizer_dir(Path(tmp) / "a"),
+                    expected_tokenizer_id="fixture-bytelevel-nfc",
+                    expected_tokenizer_revision="fixture-revision-2",
+                    expected_tokenization_version="fixture-tokenization-v2",
+                    expected_sft_target=target)
+                self.assertTrue(strong["tokenizer_reencoded"])
+                for kind, text in (("clean_text", record["clean_text"]),
+                                   ("sft_target", target)):
+                    import unicodedata
+                    stream = block["streams"][kind]
+                    source_raw = text.encode("utf-8")
+                    normalized_raw = unicodedata.normalize("NFC", text).encode("utf-8")
+                    normalized_cursor = 0
+                    source_cursor = 0
+                    pieces = []
+                    for token_id, token in zip(stream["token_ids"], stream["tokens"]):
+                        piece = bytes.fromhex(token["piece_hex"])
+                        self.assertEqual(token["normalized_start"], normalized_cursor)
+                        self.assertGreater(token["normalized_end"], normalized_cursor)
+                        self.assertEqual(piece, normalized_raw[
+                            normalized_cursor:token["normalized_end"]])
+                        self.assertEqual(token["piece_sha256"], tokens._sha_bytes(piece))
+                        source_piece = source_raw[token["start"]:token["end"]]
+                        self.assertEqual(token["source_sha256"],
+                                         tokens._sha_bytes(source_piece))
+                        self.assertLessEqual(token["start"], source_cursor)
+                        self.assertLessEqual(token["offset_start"], token["end"])
+                        self.assertGreaterEqual(token["offset_end"], token["start"])
+                        self.assertLessEqual(token["start"], token["offset_start"])
+                        self.assertLessEqual(token["offset_end"], token["end"])
+                        pieces.append(piece)
+                        normalized_cursor = token["normalized_end"]
+                        source_cursor = max(source_cursor, token["end"])
+                    self.assertEqual(normalized_cursor, len(normalized_raw))
+                    self.assertEqual(source_cursor, len(source_raw))
+                    self.assertEqual(b"".join(pieces), normalized_raw)
+                    self.assertEqual(stream["decoded_sha256"],
+                                     tokens._sha_bytes(normalized_raw))
+                if name == "multilingual":
+                    clean_stream = block["streams"]["clean_text"]
+                    self.assertNotEqual(clean_stream["text_sha256"],
+                                        clean_stream["normalized_sha256"])
+                    self.assertTrue(any(
+                        token["start"] < previous["end"]
+                        for previous, token in zip(
+                            clean_stream["tokens"], clean_stream["tokens"][1:])))
+                _assert_mask_equivalence(self, record, exported)
+                path = _write_attached(Path(tmp) / "record", exported)
+                self.assertEqual(worker.validate_trajectory(path), [exported])
+                ok, category, message, stats = dataset.verify_record_integrity(
+                    exported, artifact_dir=recorder.artifact_dir,
+                    require_artifact_dir=True)
+                self.assertTrue(ok, (category, message))
+                self.assertEqual(stats["checked_token_exports"], 1)
+
+    def test_v2_tampering_and_unsupported_tokenizers_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix="umm-token-v2-negative-") as tmp:
+            recorder, record = _record(Path(tmp) / "record", fixture.linked_events())
+            valid = _attach_v2(record, Path(tmp) / "valid")
+            path = _write_attached(Path(tmp) / "record", valid)
+
+            def stream(candidate):
+                return candidate["token_export"]["streams"]["sft_target"]
+
+            mutations = {
+                "normalized-gap": lambda c: stream(c)["tokens"][0].__setitem__(
+                    "normalized_start", 1),
+                "source-gap": lambda c: stream(c)["tokens"][0].__setitem__("start", 1),
+                "source-hash": lambda c: stream(c)["tokens"][0].__setitem__(
+                    "source_sha256", "0" * 64),
+                "piece": lambda c: stream(c)["tokens"][0].__setitem__("piece_hex", "00"),
+                "raw-offset": lambda c: stream(c)["tokens"][0].__setitem__(
+                    "offset_char_end", stream(c)["tokens"][0]["offset_char_end"] + 1),
+                "normalization-unit": lambda c: stream(c)["normalization_units"][0]
+                    .__setitem__("source_end", 0),
+                "mask": lambda c: stream(c)["sft_mask"]["token_weights"].__setitem__(0, 0.0),
+                "policy": lambda c: c["token_export"]["policy"].__setitem__(
+                    "normalization", "source_bytes_must_equal_token_decode"),
+                "boolean-version": lambda c: c["token_export"].__setitem__(
+                    "format_version", True),
+            }
+            for name, apply in mutations.items():
+                with self.subTest(mutation=name):
+                    bad = copy.deepcopy(valid)
+                    apply(bad)
+                    _refresh_export_hash(bad)
+                    with self.assertRaises(tokens.TokenExportError):
+                        tokens.validate_record_token_export(bad)
+                    path.write_bytes(tokens._canonical(bad) + b"\n")
+                    with self.assertRaises(ValueError):
+                        worker.validate_trajectory(path)
+                    ok, category, _, _ = dataset.verify_record_integrity(
+                        bad, artifact_dir=recorder.artifact_dir,
+                        require_artifact_dir=True)
+                    self.assertFalse(ok)
+                    self.assertEqual(category, "token_export_tampered")
+
+            with self.assertRaisesRegex(tokens.TokenExportError, "inspectable fast-tokenizer"):
+                _attach_v2(record, Path(tmp) / "unsupported", FixtureTokenizer())
+
+            class BadDecode(V2FixtureTokenizer):
+                def decode(self, ids, **kwargs):
+                    return "wrong"
+
+            with self.assertRaisesRegex(tokens.TokenExportError, "full-sequence decode"):
+                _attach_v2(record, Path(tmp) / "bad-decode", BadDecode())
+
+            class Unknown(V2FixtureTokenizer):
+                def __init__(self):
+                    super().__init__()
+                    self.unk_token_id = 66  # ASCII 'A' + 1: present in linked clean/target text.
+
+            with self.assertRaisesRegex(tokens.TokenExportError, "unknown token"):
+                _attach_v2(record, Path(tmp) / "unknown", Unknown())
+
+            bad_dir = _v2_tokenizer_dir(Path(tmp) / "bad-config")
+            config = json.loads((bad_dir / "tokenizer.json").read_text(encoding="utf-8"))
+            config["normalizer"]["type"] = "NFKC"
+            (bad_dir / "tokenizer.json").write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaisesRegex(tokens.TokenExportError, r"NFC \+ ByteLevel"):
+                tokens.attach_token_export(
+                    record, V2FixtureTokenizer(), tokenizer_dir=bad_dir,
+                    tokenizer_id="fixture-bytelevel-nfc",
+                    tokenizer_revision="fixture-revision-2",
+                    tokenization_version="fixture-tokenization-v2", format_version=2)
+
+    def test_structural_cli_errors_precede_optional_ml_import(self):
+        class ImportBlocker:
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "transformers":
+                    raise AssertionError("transformers import occurred before structural rejection")
+                return None
+
+        with tempfile.TemporaryDirectory(prefix="umm-token-preimport-") as tmp:
+            root = Path(tmp)
+            bad = root / "bad.jsonl"
+            bad.write_text('{"schema_version":2,"clean_text":"x","events":[]}\n',
+                           encoding="utf-8")
+            tokenizer_dir = _v2_tokenizer_dir(root)
+            argv = [
+                str(bad), "--out", str(root / "out.jsonl"),
+                "--tokenizer-dir", str(tokenizer_dir),
+                "--tokenizer-id", "fixture-bytelevel-nfc",
+                "--tokenizer-revision", "fixture-revision-2",
+                "--tokenization-version", "fixture-tokenization-v2",
+                "--token-export-version", "2",
+            ]
+            blocker = ImportBlocker()
+            sys.meta_path.insert(0, blocker)
+            stderr = io.StringIO()
+            try:
+                with mock.patch("sys.stderr", stderr):
+                    with self.assertRaises(SystemExit) as raised:
+                        tokens.main(argv)
+            finally:
+                sys.meta_path.remove(blocker)
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("invalid structural export input", stderr.getvalue())
+            self.assertNotIn("optional transformers", stderr.getvalue())
+            self.assertFalse((root / "out.jsonl").exists())
+
+
 def _parse_real_gate_args():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--real-tokenizer-dir")
@@ -530,30 +798,110 @@ class RealTokenizerFixtureTests(unittest.TestCase):
                          "REAL_TOKENIZER_FIXTURE: NOT_RUN (no local fixture supplied)")
     def test_real_fast_tokenizer_reencode_decode_and_file_binding(self):
         tokenizer = tokens._load_real_tokenizer(REAL_ARGS.real_tokenizer_dir)
-        with tempfile.TemporaryDirectory(prefix="umm-token-real-") as tmp:
-            recorder, record = _record(Path(tmp) / "base", fixture.linked_events())
-            target = dataset.reconstruct_director_target(record)[0]
-            exported = tokens.attach_token_export(
-                record, tokenizer,
-                tokenizer_dir=REAL_ARGS.real_tokenizer_dir,
-                tokenizer_id=REAL_ARGS.real_tokenizer_id,
-                tokenizer_revision=REAL_ARGS.real_tokenizer_revision,
-                tokenization_version=REAL_ARGS.real_tokenization_version,
-                sft_target=target)
-            result = tokens.validate_record_token_export(
-                exported, tokenizer=tokenizer,
-                tokenizer_dir=REAL_ARGS.real_tokenizer_dir,
-                expected_tokenizer_id=REAL_ARGS.real_tokenizer_id,
-                expected_tokenizer_revision=REAL_ARGS.real_tokenizer_revision,
-                expected_tokenization_version=REAL_ARGS.real_tokenization_version,
-                expected_sft_target=target)
-            self.assertTrue(result["tokenizer_reencoded"])
-            self.assertEqual(result["status"], "PASS")
-            _assert_mask_equivalence(self, record, exported)
-            ok, category, message, _ = dataset.verify_record_integrity(
-                exported, artifact_dir=recorder.artifact_dir,
-                require_artifact_dir=True)
-            self.assertTrue(ok, (category, message))
+        cases = (
+            ("multilingual-emoji-combining-spoken-visual", _multilingual_record),
+            ("explicit-anchor", lambda root: _record(root, fixture.linked_events())),
+            ("cancelled", lambda root: _record(root, fixture.cancelled_events())),
+        )
+        source_records = []
+        for name, make_record in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory(
+                    prefix="umm-token-real-" + name + "-") as tmp:
+                recorder, record = make_record(Path(tmp) / "base")
+                source_records.append(copy.deepcopy(record))
+                target = dataset.reconstruct_director_target(record)[0]
+                exported = tokens.attach_token_export(
+                    record, tokenizer,
+                    tokenizer_dir=REAL_ARGS.real_tokenizer_dir,
+                    tokenizer_id=REAL_ARGS.real_tokenizer_id,
+                    tokenizer_revision=REAL_ARGS.real_tokenizer_revision,
+                    tokenization_version=REAL_ARGS.real_tokenization_version,
+                    sft_target=target, format_version=2)
+                self.assertEqual(tokens._canonical(exported), tokens._canonical(
+                    tokens.attach_token_export(
+                        record, tokenizer,
+                        tokenizer_dir=REAL_ARGS.real_tokenizer_dir,
+                        tokenizer_id=REAL_ARGS.real_tokenizer_id,
+                        tokenizer_revision=REAL_ARGS.real_tokenizer_revision,
+                        tokenization_version=REAL_ARGS.real_tokenization_version,
+                        sft_target=target, format_version=2)))
+                result = tokens.validate_record_token_export(
+                    exported, tokenizer=tokenizer,
+                    tokenizer_dir=REAL_ARGS.real_tokenizer_dir,
+                    expected_tokenizer_id=REAL_ARGS.real_tokenizer_id,
+                    expected_tokenizer_revision=REAL_ARGS.real_tokenizer_revision,
+                    expected_tokenization_version=REAL_ARGS.real_tokenization_version,
+                    expected_sft_target=target)
+                self.assertTrue(result["tokenizer_reencoded"])
+                self.assertEqual(result["status"], "PASS")
+                for kind, text in (("clean_text", record["clean_text"]),
+                                   ("sft_target", target)):
+                    import unicodedata
+                    stream = exported["token_export"]["streams"][kind]
+                    raw = text.encode("utf-8")
+                    normalized = unicodedata.normalize("NFC", text).encode("utf-8")
+                    pieces = []
+                    source_cursor = 0
+                    for token in stream["tokens"]:
+                        piece = bytes.fromhex(token["piece_hex"])
+                        pieces.append(piece)
+                        self.assertEqual(piece, normalized[
+                            token["normalized_start"]:token["normalized_end"]])
+                        self.assertEqual(token["source_sha256"], tokens._sha_bytes(
+                            raw[token["start"]:token["end"]]))
+                        source_cursor = max(source_cursor, token["end"])
+                    self.assertEqual(b"".join(pieces), normalized)
+                    self.assertEqual(source_cursor, len(raw))
+                _assert_mask_equivalence(self, record, exported)
+                ok, category, message, _ = dataset.verify_record_integrity(
+                    exported, artifact_dir=recorder.artifact_dir,
+                    require_artifact_dir=True)
+                self.assertTrue(ok, (category, message))
+                print("REAL_TOKENIZER_CASE " + json.dumps({
+                    "case": name, "status": "PASS",
+                    "export_sha256": exported["token_export"]["export_sha256"],
+                    "available_files_sha256": exported["token_export"]["tokenizer"]
+                        ["available_files_sha256"],
+                    "clean_text_tokens": result["clean_text_tokens"],
+                    "sft_target_tokens": result["sft_target_tokens"],
+                }, sort_keys=True))
+
+        # The CLI export and strong validation must also succeed in two new
+        # processes, not only through this test process's loaded tokenizer.
+        with tempfile.TemporaryDirectory(prefix="umm-token-real-cli-") as tmp:
+            root = Path(tmp)
+            source = root / "source.jsonl"
+            exported_path = root / "exported.jsonl"
+            source.write_bytes(b"".join(
+                tokens._canonical(record) + b"\n" for record in source_records))
+            common = [
+                "--tokenizer-dir", REAL_ARGS.real_tokenizer_dir,
+                "--tokenizer-id", REAL_ARGS.real_tokenizer_id,
+                "--tokenizer-revision", REAL_ARGS.real_tokenizer_revision,
+                "--tokenization-version", REAL_ARGS.real_tokenization_version,
+            ]
+            cli_export = subprocess.run([
+                sys.executable, "-I", str(ROOT / "python" / "umminfer_token_export.py"),
+                str(source), "--out", str(exported_path),
+                "--token-export-version", "2", *common,
+            ], capture_output=True, text=True, timeout=120)
+            self.assertEqual(cli_export.returncode, 0,
+                             cli_export.stdout + cli_export.stderr)
+            export_summary = json.loads(cli_export.stdout)
+            self.assertEqual(export_summary["exported"], 3)
+            print("REAL_TOKENIZER_CLI_EXPORT " + json.dumps(
+                export_summary, sort_keys=True))
+            cli_validate = subprocess.run([
+                sys.executable, "-I", str(ROOT / "python" / "umminfer_token_export.py"),
+                str(exported_path), "--validate-only", *common,
+            ], capture_output=True, text=True, timeout=120)
+            self.assertEqual(cli_validate.returncode, 0,
+                             cli_validate.stdout + cli_validate.stderr)
+            validate_summary = json.loads(cli_validate.stdout)
+            self.assertEqual(validate_summary["validated"], 3)
+            self.assertEqual(validate_summary["tokenizer_reencoded"], 3)
+            print("REAL_TOKENIZER_CLI_VALIDATE " + json.dumps(
+                validate_summary, sort_keys=True))
 
 
 if __name__ == "__main__":
