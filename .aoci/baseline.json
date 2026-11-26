@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-26T02:39:48Z",
+  "updated_at": "2026-11-26T02:48:27Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "8be354cd0f161ca869d07221fa256c40b3c8194537e18a82e69bd725cd7dca6f",
-      "size": 231054,
-      "normalized_sha256": "8be354cd0f161ca869d07221fa256c40b3c8194537e18a82e69bd725cd7dca6f"
+      "sha256": "5fcef5d69b327568f65b79ee9a17db9cf2d492228457acdc9f7f7c7490333b0d",
+      "size": 231586,
+      "normalized_sha256": "5fcef5d69b327568f65b79ee9a17db9cf2d492228457acdc9f7f7c7490333b0d"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -98,6 +98,12 @@
       "sha256": "37f45a63e2308226c48273f9e1de1cfe8f39c05b8be1a4d8cea31b824111a4b2",
       "size": 1292,
       "normalized_sha256": "37f45a63e2308226c48273f9e1de1cfe8f39c05b8be1a4d8cea31b824111a4b2"
+    },
+    "benchmarks/ablations/request-memory-controlled-sm90.json": {
+      "role": "index",
+      "sha256": "3fb4d158c029facf8e90f38f876fdc6abb4ea0fbb77cec72f913104bd3ef52be",
+      "size": 4781,
+      "normalized_sha256": "3fb4d158c029facf8e90f38f876fdc6abb4ea0fbb77cec72f913104bd3ef52be"
     },
     "benchmarks/ablations/visual-form-controlled-sm90.json": {
       "role": "index",
@@ -503,9 +509,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "a62b2dee8f36a6f8b3ca900b33bf20708da7a941726867492b622ded6b3af33f",
-      "size": 133874,
-      "normalized_sha256": "a62b2dee8f36a6f8b3ca900b33bf20708da7a941726867492b622ded6b3af33f"
+      "sha256": "d01a00e231589e2041fe860ac56af37d73b6421d698be07c21709b8593615217",
+      "size": 133886,
+      "normalized_sha256": "d01a00e231589e2041fe860ac56af37d73b6421d698be07c21709b8593615217"
     },
     "docs/full-duplex.md": {
       "role": "index",
@@ -569,15 +575,15 @@
     },
     "docs/narrative-routing-ablation.md": {
       "role": "index",
-      "sha256": "58f7e995dbd00c8bf602f42b018f98b1907309fd7728c9839d1b6c5c06a12805",
-      "size": 51655,
-      "normalized_sha256": "58f7e995dbd00c8bf602f42b018f98b1907309fd7728c9839d1b6c5c06a12805"
+      "sha256": "c580f955913a42974dfca7c14f053b7f1144d4dc399b77a095139b7c23a507bb",
+      "size": 54174,
+      "normalized_sha256": "c580f955913a42974dfca7c14f053b7f1144d4dc399b77a095139b7c23a507bb"
     },
     "docs/native-service.md": {
       "role": "index",
-      "sha256": "3a8ac06c7f90de14dd6514d3723b3c49a242dcc3c3e8074805b7d3bd637ee213",
-      "size": 63581,
-      "normalized_sha256": "3a8ac06c7f90de14dd6514d3723b3c49a242dcc3c3e8074805b7d3bd637ee213"
+      "sha256": "9e2902946a88fda7c27ecd0927220bf6353a56414c3f55d9caf88118253e67d8",
+      "size": 66784,
+      "normalized_sha256": "9e2902946a88fda7c27ecd0927220bf6353a56414c3f55d9caf88118253e67d8"
     },
     "docs/objective-mix-ablation.md": {
       "role": "index",
@@ -587,9 +593,9 @@
     },
     "docs/observability.md": {
       "role": "index",
-      "sha256": "873d44fae7c7363865356c01a3c819adb75e73d010157552733d9de37346c319",
-      "size": 8321,
-      "normalized_sha256": "873d44fae7c7363865356c01a3c819adb75e73d010157552733d9de37346c319"
+      "sha256": "9638c8971e051a84d4a2a58baae8f10b340e464462ff6027d55161d46413dd86",
+      "size": 8701,
+      "normalized_sha256": "9638c8971e051a84d4a2a58baae8f10b340e464462ff6027d55161d46413dd86"
     },
     "docs/performance-baseline.md": {
       "role": "index",
@@ -2031,9 +2037,9 @@
     },
     "python/umminfer_ablation_run.py": {
       "role": "index",
-      "sha256": "4b909f3a09a013d4774234ba926770ddb7898a015cfa969d060a8bf655e3d820",
-      "size": 93403,
-      "normalized_sha256": "4b909f3a09a013d4774234ba926770ddb7898a015cfa969d060a8bf655e3d820"
+      "sha256": "0277d4d1f6a0e51cadd04a7dd495cdf2c3f3eafdbd7612687a1c54dd282552be",
+      "size": 94302,
+      "normalized_sha256": "0277d4d1f6a0e51cadd04a7dd495cdf2c3f3eafdbd7612687a1c54dd282552be"
     },
     "python/umminfer_controlled_measurement.py": {
       "role": "index",
@@ -2437,9 +2443,9 @@
     },
     "src/serve/openai_chat.cpp": {
       "role": "index",
-      "sha256": "0059890a8fa9da582089185fe938532d6ccaad764613a3e65673ad34a2cb9ab2",
-      "size": 29727,
-      "normalized_sha256": "0059890a8fa9da582089185fe938532d6ccaad764613a3e65673ad34a2cb9ab2"
+      "sha256": "f070e1cfedc98f67a5200f8ecc03fb141d32a2939b85d510f595e2cb84eb4536",
+      "size": 29920,
+      "normalized_sha256": "f070e1cfedc98f67a5200f8ecc03fb141d32a2939b85d510f595e2cb84eb4536"
     },
     "src/serve/openai_helpers.cpp": {
       "role": "index",
@@ -2527,9 +2533,9 @@
     },
     "tests/controlled_measurement_test.py": {
       "role": "observe",
-      "sha256": "2421d2f67f6248672f3e4cb9690111cba00f574c017813674bc95aa3b19e007b",
-      "size": 54767,
-      "normalized_sha256": "2421d2f67f6248672f3e4cb9690111cba00f574c017813674bc95aa3b19e007b"
+      "sha256": "08f6581caa40fe410c2822c5ad040c41c1fbdc551089c5182ecfa6f2331e8088",
+      "size": 56268,
+      "normalized_sha256": "08f6581caa40fe410c2822c5ad040c41c1fbdc551089c5182ecfa6f2331e8088"
     },
     "tests/cuda_bench.cpp": {
       "role": "observe",
@@ -2705,6 +2711,12 @@
       "size": 28356,
       "normalized_sha256": "205a02bc551f1ec06e1fe19d4dd02292184a73c12f6585dd881c3ee55745984b"
     },
+    "tests/request_telemetry_live.py": {
+      "role": "observe",
+      "sha256": "00e082ffd9a24f19a5adf72f026dd82ec43a408694d9883903fc14ce51e11676",
+      "size": 26444,
+      "normalized_sha256": "00e082ffd9a24f19a5adf72f026dd82ec43a408694d9883903fc14ce51e11676"
+    },
     "tests/rl_architecture_test.py": {
       "role": "observe",
       "sha256": "8caee34515a64c65c3ac76d556c65900b5ec8903b566fa839e49145f06afd251",
@@ -2773,9 +2785,9 @@
     },
     "tests/unified_contract_test.cpp": {
       "role": "observe",
-      "sha256": "e021cde038b2b0b5c12a454d750065174d78eb77dd52df5dd9c8ea41a0c2aa25",
-      "size": 522017,
-      "normalized_sha256": "e021cde038b2b0b5c12a454d750065174d78eb77dd52df5dd9c8ea41a0c2aa25"
+      "sha256": "515b9bc5fdb39ec41507f9635d9e2ee8b86c204f524a6f44308fbc0d3932692c",
+      "size": 523620,
+      "normalized_sha256": "515b9bc5fdb39ec41507f9635d9e2ee8b86c204f524a6f44308fbc0d3932692c"
     },
     "tests/video_live_e2e.py": {
       "role": "observe",

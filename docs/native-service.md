@@ -207,6 +207,42 @@ exclusive SM90 window must:
 
 No real CUDA peak or production-deployment claim is made until that gate passes.
 
+### SM90 validation gate — PASS (2026-11-26)
+
+The real serial gate ran on one isolated loopback stack with ASR, Qwen3.8
+`--batch-size 1`, and Wan2.2 CUDA all confined to explicitly idle physical
+GPU 0. The resident five-GPU service was not contacted or reconfigured.
+`tests/request_telemetry_live.py` was run with `UMMINFER_LIVE_OPT_IN=1`; it
+never starts or stops a process. Final NVML showed GPU 0 returned to `3 MiB`
+with no compute process.
+
+- Qwen3.8's first covered request reported allocated/reserved peaks of
+  **742,129,664 bytes** (covered epochs `1..8, 10`). Warm prefix/workspace
+  repeats truthfully reported zero new request-owned allocations rather than
+  inherited resident bytes (prefix reuse observed at 12 and 36 tokens).
+- Wan2.2 reported **156,241,920 bytes** on both measured serial video requests,
+  including the VAE-cache repeat, with 28 allocations and 28 frees per request
+  (epochs `1, 2`).
+- Telemetry-off/on JSON and SSE protocol projections matched; default responses
+  emitted no telemetry fields; Wan off/on MP4 bytes and SHA-256 were identical.
+  Nonstream artifact descriptors strip the internal `request_telemetry` key.
+- Real completed and failed Qwen requests retained covered terminal records.
+  Immediate public cancellation returned `cancelled` with null peaks and
+  `stage_terminal_snapshot_missing`. ASR returned `backend_not_instrumented`,
+  Qwen `--batch-size 2` returned `batched_request_attribution_unavailable`, and
+  Wan `contract-stub` returned `contract_stub_has_no_cuda_allocator`, all with
+  null peaks; `in_flight` drained to zero.
+- `benchmarks/ablations/request-memory-controlled-sm90.json`
+  (`request_memory.enabled=true`, `required=true`, two-arm
+  `request_native_backend=(qwen38, wan22)`) passed `--require-controlled` as
+  **CONTROLLED_LIVE / COMPLETED** (8/8 measured requests and 12/12 stage entries
+  `COVERED`, independent 50 ms whole-device NVML `88,656 MiB` baseline/final and
+  `88,806 MiB` Wan peak, **52/52 `SHA256SUMS` PASS**).
+
+Batched/concurrent/shared attribution, native Image/Omni/TTS, Python/external
+backends, and production deployment remain `NOT_COVERED` or `NOT_RUN` as
+declared above.
+
 ## Operate
 
 Without supervision:
@@ -531,6 +567,21 @@ and `--web-root`:
     `0` restarts on GPUs 2/4/5/6 and verified live on `43301` with
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
+
+- Wave 44 SM90 Real Request-Native CUDA Allocator Telemetry Gate & Nonstream Leak Fix (`4ff5133`):
+  - Harvested accepted Task #35 (`revisions=0`, isolated SM90 GPU 0 real CUDA
+    validation gate): landed `tests/request_telemetry_live.py`,
+    `benchmarks/ablations/request-memory-controlled-sm90.json`
+    (`variable=request_native_backend`, `request_memory.enabled=true`,
+    `required=true`), nonstream artifact descriptor strip fix in
+    `src/serve/openai_chat.cpp` + regression in `tests/unified_contract_test.cpp`,
+    `python/umminfer_ablation_run.py` two-arm support, `docs/observability.md`,
+    and `docs/narrative-routing-ablation.md`. Real SM90 GPU 0 peaks: Qwen3.8
+    `742,129,664 B`, Wan2.2 `156,241,920 B`, `CONTROLLED_LIVE / COMPLETED`
+    (8/8 measured requests, 12/12 stage entries `COVERED`, 52/52 `SHA256SUMS`,
+    GPU 0 returned to `3 MiB`). Local verification: `zig build test` PASS,
+    `controlled_measurement_test.py` 38/38 OK, `ablation_runner_test.py` 17/17 OK,
+    `stage_c_pipeline_test.py` 6/6 OK.
 
 - Wave 43 Stage C Decoupled Online GRPO Rollout Generation, Validation & Replay Contract (`db43e7e`):
   - Harvested accepted Task #36 (`revisions=0`, CPU-only contract): added
