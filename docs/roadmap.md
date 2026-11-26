@@ -243,6 +243,22 @@ orchestration, perceptual quality, and deployment remain `NOT_RUN`; exact hashes
 all per-run values, negative controls, and cleanup are in
 [flux2-i2v-continuity](flux2-i2v-continuity.md).
 
+**Phase 4 real public narrative source-slot gate (Task #65, 2026-11-27).** On
+isolated physical GPU 1, one real public VLM request emitted a FLUX.2 image
+slot, an explicit `source=slot-0` native Wan I2V, and clean streaming speech.
+The serial VLM stayed resident while FLUX, TTS, and Wan ran one output stage at
+a time. The retained stream has 69 unified events, 32 complete artifacts,
+source/video SHA-256 `01af1c29…150b` / `49c6ae4e…10b60`, exact binary anchor
+binding, and a five-leg native/public/terminal-WAV PCM join. Frozen first-frame
+and motion MAE proxies were `2.259115` / `5.124479`. Fresh remote and local
+reconstruction passed, `in_flight=0`, and GPU 1 returned to 3 MiB. A raw
+cancellation regression also fixed running narrative slots remaining
+nonterminal; pending/running slots now both become `aborted` without changing
+the public schema or implicit fallback behavior. Exact evidence and limits are
+in [public-narrative-i2v](public-narrative-i2v.md). Perceptual quality,
+generalization, performance baselines, and deployment remain
+`NOT_RUN`/`NOT_COVERED`.
+
 ### Phase 5 — Unified performance baseline and joint optimization
 
 **Goal.** Establish one measurable baseline for the unified engine, then

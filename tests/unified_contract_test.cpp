@@ -11809,17 +11809,40 @@ void test_explicit_anchor_failure_cancel_and_validation() {
     if (image) {
       check(h.wait_abort_on(h.image_recv, image->request_id),
             "cancel did not abort explicit source image");
-      h.complete(image->request_id, "image", false, Value(),
-                 std::string("request aborted"));
+      // A source can finish successfully before observing the abort. Its late
+      // bytes and any later VLM/directive events must not revive the request.
+      h.stream(vlm->request_id, "vlm",
+               text_chunk("late [[image: stale slot]]", false));
+      h.complete(image->request_id, "image", true,
+                 artifact_result("image", "image/png", "LATE-STALE-PNG"));
     }
     check(engine.wait(id, 5.0), "cancelled explicit dependency did not settle");
-    check(h.no_submit(h.video_recv), "cancelled explicit dependency dispatched");
+    const size_t settled_events = log.snapshot().size();
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("after terminal [[video: stale]]", false));
+    if (image) {
+      h.complete(image->request_id, "image", true,
+                 artifact_result("image", "image/png", "AFTER-TERMINAL-PNG"));
+    }
+    check(log.snapshot().size() == settled_events,
+          "post-terminal late events were not suppressed");
+    check(h.no_submit(h.video_recv) && h.no_submit(h.image_recv),
+          "cancelled explicit dependency dispatched late work");
+    check(count_kind(log, UnifiedEvent::Kind::kArtifact) == 0,
+          "late source completion leaked stale image bytes");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kCancelled &&
+              log.terminal_count(id) == 1,
+          "late completion replaced or duplicated the cancellation terminal");
+    bool source_aborted = false;
     bool dependent_aborted = false;
     for (const LegSnapshot& leg : engine.legs_snapshot(id)) {
+      if (leg.slot_id == "slot-0") source_aborted = leg.state == LegState::kAborted;
       if (leg.slot_id == "slot-1") {
         dependent_aborted = leg.state == LegState::kAborted;
       }
     }
+    check(source_aborted, "late source completion did not retain aborted source leg");
     check(dependent_aborted, "cancellation did not abort explicit dependent slot");
     engine.release(id);
   }
@@ -11846,7 +11869,7 @@ void test_explicit_anchor_failure_cancel_and_validation() {
     auto independent = h.next_submit(h.video_recv);
     check(independent.has_value() && independent->request_id == id + ":slot:0",
           "ordinary i2v_chain auto-tag behavior changed");
-    check(h.no_submit(h.video_recv),
+    check(h.no_submit(h.video_recv) && h.no_submit(h.image_recv),
           "invalid/wrong/duplicate/forward explicit reference dispatched");
     h.complete(vlm->request_id, "vlm", true, text_result("clean"));
     if (independent) {
@@ -11865,6 +11888,38 @@ void test_explicit_anchor_failure_cancel_and_validation() {
     }
     check(failed == 5 && count_kind(log, UnifiedEvent::Kind::kLegError) == 5,
           "invalid explicit references did not fail all dependent slots");
+    engine.release(id);
+  }
+  {
+    Harness h("explicitanchormalformedself");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request(2));
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[video: malformed | source=slot-]]"
+                        "[[video: self | source=slot-1]]", false));
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    check(engine.wait(id, 5.0), "malformed/self references did not settle");
+    check(h.no_submit(h.video_recv) && h.no_submit(h.image_recv),
+          "malformed/self explicit reference dispatched generation");
+    check(count_kind(log, UnifiedEvent::Kind::kArtifact) == 0 &&
+              count_kind(log, UnifiedEvent::Kind::kLegError) == 2,
+          "malformed/self controls produced bytes or missed slot errors");
+    const auto terminal = log.terminal_for(id);
+    size_t failed = 0;
+    if (terminal && terminal->legs.is_array()) {
+      check(terminal->legs.as_array().size() == 2,
+            "malformed/self controls lost slot identity");
+      for (const Value& leg : terminal->legs.as_array()) {
+        if (leg.find("state")->as_str() == "failed") ++failed;
+      }
+    }
+    check(failed == 2, "malformed/self controls did not fail closed");
     engine.release(id);
   }
   {

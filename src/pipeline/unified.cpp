@@ -1255,7 +1255,12 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
       record.video_leg.state = LegState::kAborted;
     }
     for (OutputLeg& leg : record.slot_legs) {
-      if (leg.state == LegState::kPending) leg.state = LegState::kAborted;
+      // A primary abort can finish the request before an already-running slot
+      // observes its abort. Late stage completions are then ignored by the
+      // Coordinator, so leaving that slot running would corrupt terminal legs.
+      if (leg.state == LegState::kPending || leg.state == LegState::kRunning) {
+        leg.state = LegState::kAborted;
+      }
     }
   } else if (kind == UnifiedEvent::Kind::kError) {
     if (record.vlm_id.empty()) {

@@ -199,8 +199,20 @@ Task #62 的 `tests/flux2_i2v_continuity_live.py` 另在隔离 SM90 物理 GPU 1
 PNG bytes/SHA-256、原生 `i2v=1/0` 日志与完整模型/二进制/请求/媒体/RGB 证据。冻结
 64×40 center-cover RGB 代理的 I2V 首帧 MAE 为 `2.286328`、首尾运动 MAE 为
 `3.466276`（T2V 分别 `85.225521` / `15.288021`）；wrong-hash 与 tampered-source
-均在生成前拒绝，新进程独立复核通过。完整公共 VLM 叙事编排和感知质量仍 `NOT_RUN`。
-详见 [flux2-i2v-continuity.md](flux2-i2v-continuity.md)。
+均在生成前拒绝，新进程独立复核通过。Task #62 当时的完整公共 VLM 叙事编排和感知质量
+均 `NOT_RUN`，详见 [flux2-i2v-continuity.md](flux2-i2v-continuity.md)。
+
+Task #65 已在同一官方基线的隔离物理 GPU 1 上补齐真实公共 VLM 叙事门禁：一次文本
+请求产生 `slot-0` FLUX.2 PNG、显式 `source=slot-0` 的原生 Wan I2V 与干净流式语音。
+串行 VLM 常驻，FLUX→TTS→Wan 每次只驻留一个输出 Stage。公开流保留 69 个 unified
+事件、32 个完整产物（30 个 PCM chunk）、raw SSE/CAS 与逐事件单调 tick；只读 tap 证明
+Wan 收到同一不可变 PNG bytes，五个 TTS leg 的 native PCM→public PCM→terminal WAV
+逐字节闭合。源图/视频 SHA-256 为 `01af1c29…150b` / `49c6ae4e…10b60`，冻结首帧/运动
+MAE 为 `2.259115` / `5.124479`，新进程双端重放通过，GPU 1 清理至 `3 MiB`。
+此外，原始取消回归先暴露 running source 在 terminal 中未结算，最小修复让 cancellation
+同时将 pending/running slot 置为 aborted；late bytes/events 仍被抑制。隐式 off、
+prompt_anchor 与 default fallback 不变。完整证据见
+[public-narrative-i2v.md](public-narrative-i2v.md)；感知质量与泛化仍 `NOT_RUN`/`NOT_COVERED`。
 
 ---
 

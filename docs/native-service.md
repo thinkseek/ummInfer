@@ -39,6 +39,23 @@ orchestration and perceptual quality remain `NOT_RUN`. See
 [flux2-i2v-continuity.md](flux2-i2v-continuity.md) and the
 [hash-only evidence](evidence/flux2-i2v-continuity-sm90.json).
 
+### Task #65 isolated public narrative source-slot gate (not deployed)
+
+The remaining real public VLM orchestration gate also passed on isolated GPU 1
+from official `2b0403b`: one text request produced a FLUX.2 `slot-0`, explicit
+`source=slot-0` native Wan I2V, and clean streaming TTS. FLUX, TTS, and Wan were
+joined serially with only one output stage resident. The raw stream/CAS,
+model/binary/config hashes, exact Wan binary-image binding, five-leg
+native/public/terminal-WAV PCM join, monotonic timing, decoded RGB, and fresh
+remote/local replays all passed. Source/video SHA-256 were
+`01af1c29f95aa2362b57067bd6592a032617b8c46d91509e7b946d7b0d4e150b` and
+`49c6ae4e5460a17a387fb5e31f821a0739cf5e789a21419fc125a63194110b60`; frozen
+RGB proxies were `2.259115 / 5.124479`. GPU 1 returned to 3 MiB. This isolated
+result changes no resident process or deployment claim. See
+[public-narrative-i2v.md](public-narrative-i2v.md) and
+[hash-only evidence](evidence/public-narrative-i2v-sm90.json). Perceptual
+quality and generalized performance remain unverified.
+
 Stages talk to the server over ZeroMQ and MessagePack, with payloads in POSIX
 shared memory. Endpoints live under `ipc_dir` (`/tmp/umminfer-native-ipc` by
 default): `asr`, `qwen38` (or `omni`), `image`, `tts`, `video`, plus the shared

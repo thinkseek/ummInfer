@@ -302,7 +302,10 @@ internal Stage-input check, not a new public HTTP field. Direct
 `/v1/visual/render` continues to reject unknown anchor metadata, and omitted
 anchor metadata preserves legacy direct T2V/I2V behavior. The Task #62 real
 FLUX.2/native-Wan gate and negative controls are recorded in
-[flux2-i2v-continuity.md](flux2-i2v-continuity.md).
+[flux2-i2v-continuity.md](flux2-i2v-continuity.md). The Task #65 real public
+VLM narrative, exact per-leg speech join, cancellation regression, and fresh
+replay evidence are recorded in
+[public-narrative-i2v.md](public-narrative-i2v.md).
 
 ### Partial failure
 
@@ -313,8 +316,10 @@ FLUX.2/native-Wan gate and negative controls are recorded in
   the primary VLM can continue. Already delivered text and artifacts stay valid,
   and a request whose primary VLM succeeds still ends with exactly one
   `complete`. The terminal `legs` names every optional leg's final state
-  (`completed`, `failed`, `aborted`), with `slot_id` on visual slot legs. The
-  `legs` key is absent when no optional leg ran.
+  (`completed`, `failed`, `aborted`), with `slot_id` on visual slot legs. On
+  cancellation, both pending and running narrative slots are finalized as
+  `aborted`; late source bytes or VLM/directive events cannot revive the
+  request. The `legs` key is absent when no optional leg ran.
 - All artifact and leg_error events are enqueued before the terminal.
 
 ## Direct single-stage visual render
