@@ -485,6 +485,50 @@ def _fresh_replay(source_records, aligned_records, artifact_dir):
                      f"{label}: fresh raw-SSE replay is not byte-identical")
 
 
+def validate_online_record_alignment(record, evidence, tokenizer_dir):
+    """Independently align one online record with retained supervision exports.
+
+    This stdlib-first entry point deliberately performs no model re-encoding or
+    logit recomputation.  The online replay layer remains responsible for raw
+    SSE/CAS freshness; this function binds the exact local tokenizer files and
+    then reuses the independent sampled-id/span/mask oracle above.
+    """
+    _require(isinstance(record, dict) and isinstance(record.get("token_export"), dict),
+             "online supervision alignment requires token_export")
+    _require(isinstance(evidence, dict)
+             and evidence.get("format") == BEHAVIOR_FORMAT,
+             "online supervision alignment requires sampled behavior evidence")
+    tokenizer_dir = Path(tokenizer_dir)
+    identity = record["token_export"].get("tokenizer") or {}
+    available_files = tokens.hash_available_tokenizer_files(tokenizer_dir)
+    _require(available_files and identity.get("available_files") == available_files,
+             "online token_export tokenizer files are missing or changed")
+    terminal_token_ids = _terminal_ids(tokenizer_dir)
+    loaded_digest = _loaded_tokenizer_digest(tokenizer_dir)
+    _require(evidence.get("tokenizer_sha256") == loaded_digest,
+             "sampled evidence tokenizer identity differs from exact local files")
+    for key in ("id", "revision", "tokenization_version"):
+        _require(isinstance(identity.get(key), str) and identity[key],
+                 f"online token_export lacks tokenizer {key}")
+    result = tokens.validate_record_token_export(
+        record, tokenizer_dir=tokenizer_dir,
+        expected_tokenizer_id=identity["id"],
+        expected_tokenizer_revision=identity["revision"],
+        expected_tokenization_version=identity["tokenization_version"])
+    _require(result.get("status") == "PASS"
+             and not result.get("tokenizer_reencoded"),
+             "structural online token_export validation failed")
+    target, summary = _validate_alignment(record, evidence, terminal_token_ids)
+    return {
+        "status": "PASS", "validation_level": "STRUCTURAL",
+        "tokenizer_reencode": "NOT_RUN",
+        "source_record_sha256": record["token_export"]["source_record_sha256"],
+        "export_sha256": record["token_export"]["export_sha256"],
+        "behavior_sha256": loaded_digest, "target_sha256": _sha(target.encode("utf-8")),
+        "terminal_token_ids": terminal_token_ids, **summary,
+    }
+
+
 def validate_bundle(root, tokenizer_dir=None, *, tokenizer=None, reencode=False):
     """Validate one pinned fixture bundle and return a path-free JSON report.
 

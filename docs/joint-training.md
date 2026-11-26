@@ -527,6 +527,32 @@ optimizer must still prove are in
 logit recomputation, online optimization, and model-quality results remain
 `NOT_RUN`.
 
+### Online GRPO deterministic CPU preflight and identity gate
+
+`python/umminfer_online_grpo_preflight.py` complements rather than relaxes the
+frozen-offline gate. It replays accepted raw-SSE/CAS online packs, requires every
+member's sampled ids/logprobs/masks to be `COVERED`, independently invokes the
+Task #48 alignment validator when token exports are present, and rejects legacy,
+offline, stale, duplicate, reordered, cross-group, non-finite, cancelled,
+truncated, and tokenizer/model-drifting inputs before final output or ML imports.
+
+The explicit `--preflight-only` output binds exact current/behavior/reference
+inputs, response labels/masks, packed hashes, normalized advantages, clipped
+surrogate and separate-reference Schulman-KL fixtures, group/member exports, and
+all split/checkpoint cursors. Current/reference values are deterministic
+synthetic arithmetic inputs, never model outputs. `--verify-bundle` replays the
+source and requires seven byte-identical reconstructed files, rejecting both
+stale-hash and consistently rehashed tampering. Deterministic multilingual,
+NFC/emoji, visual, explicit-anchor, and zero-variance fixtures pass, with run id
+`43d4bd01c7ed6736313af3aa71aae638bef9964c79e6ff5fbdba245371a84a21`.
+Frozen-offline GRPO and legacy pack serialization are unchanged.
+
+Commands, exact source/document hashes, all rejection classes, and future real
+online-generation/optimizer acceptance requirements are in
+[online-grpo-preflight.md](online-grpo-preflight.md). No real generation,
+current/reference forward, optimizer, GPU, serving, or model-quality result is
+claimed; those remain `NOT_RUN`.
+
 ## Bounded real joint-SFT optimizer gate
 
 `python/umminfer_joint_sft_live.py` is a narrow execution adapter around the

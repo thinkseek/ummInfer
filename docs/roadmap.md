@@ -396,29 +396,46 @@ online-provenance groups. Server-side HTTP attestation (`--online-rollout-config
 is described above (`CPU-only` verified; real loaded-stage attestation remains
 `NOT_RUN`). Native Qwen3.8 separately provides an explicit `behavior.logprobs=true`
 producer with actual sampled ids, full native log-softmax, clean-target masks,
-and exact loaded-tokenizer identity; its isolated SM90 GPU 7 gate passed text
-and interleaved visual coverage, truncation/cancellation/default-off behavior,
-exact fresh-process forward recomputation (61/61 tokens, maximum absolute
-difference `0.0`), and byte-identical raw replay — see
+exact loaded-tokenizer identity, and required attestation; its isolated SM90 GPU
+7 gate passed text and interleaved visual coverage,
+truncation/cancellation/default-off behavior, exact fresh-process forward
+recomputation (61/61 tokens, maximum absolute difference `0.0`), and
+byte-identical raw replay — see
 [behavior-logprobs-live](behavior-logprobs-live.md). Real attested online rollout
 generation, online optimizer execution, batch/audio/video behavior evidence, and
 model-quality outcomes remain `NOT_RUN`/`NOT_COVERED` as applicable; see
 [joint-training](joint-training.md#online-grpo-rollout-generation-and-validation-contract).
 
-**Phase 6 independent behavior/token-export alignment gate (2026-11-26).** An
-independent stdlib-first validator (`python/umminfer_behavior_token_alignment.py`)
-now binds retained native sampled evidence to trajectory token_export v1/v2
-supervision ids, raw source spans, and SFT masks before any optional tokenizer
-import or report output. Deterministic explicit-anchor and multilingual
-NFC/emoji/byte-fallback fixtures cover valid alignment and every fail-closed
-mismatch class. The retained real text/visual captures passed fresh-process
-strong re-encoding, all 61 sampled raw-target ids, 49 supervised masks plus 12
-zero directive masks, exact raw-SSE/CAS replay, and five tamper cases with no
-output. The visual clean stream legitimately re-encodes to 24 context-dependent
-ids rather than the 25 masked sampled ids; this is reported, never silently
-substituted. Exact hashes and future online optimizer requirements are in
+**Phase 6 sampled-behavior/token-export CPU alignment gate (2026-11-26).** An
+independent stdlib-first validator now binds retained native sampled evidence to
+trajectory token_export v1/v2 supervision ids, raw source spans, and SFT masks
+before any optional tokenizer import or report output. Deterministic explicit
+anchor and multilingual NFC/emoji/byte-fallback fixtures cover valid alignment
+and every fail-closed mismatch class. The retained real text/visual captures
+passed fresh-process strong re-encoding, all 61 sampled raw-target ids, 49
+supervised masks plus 12 zero directive masks, exact raw-SSE/CAS replay, and
+five tamper cases with no output. The visual clean stream legitimately
+re-encodes to 24 context-dependent ids rather than the 25 masked sampled ids;
+this is reported, never silently substituted. Exact hashes and future online
+optimizer requirements are in
 [behavior-token-alignment](behavior-token-alignment.md). New inference,
 numerical logprob recomputation, online optimization, and model-quality outcomes
+remain `NOT_RUN`.
+
+**Phase 6 online-GRPO CPU preflight/run-identity gate (2026-11-26).** A separate
+stdlib-first adapter now accepts only replay-validated online groups with complete
+sampled behavior evidence, exact ordered rewards/advantages, fresh raw-SSE/CAS,
+and independent token_export alignment when supervision is present. It binds
+current/behavior/reference identities, packed ids/labels/masks, separate-reference
+clipped-GRPO/Schulman-KL arithmetic fixtures, plan/group/member hashes, and every
+split/checkpoint cursor into run `43d4bd01c7ed6736313af3aa71aae638bef9964c79e6ff5fbdba245371a84a21`.
+Explicit `--preflight-only` and fresh-process verification produced seven
+byte-identical files and rejected stale and consistently rehashed tampering with
+no output or ML imports. The frozen-offline adapter and legacy pack bytes remain
+unchanged. Exact source/document hashes, commands, negative gates, and future real
+acceptance requirements are in
+[online-grpo-preflight](online-grpo-preflight.md). Real online generation,
+current/reference forwards, optimizer execution, GPU, serving, and model quality
 remain `NOT_RUN`.
 
 ## Model support plan

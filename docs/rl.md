@@ -514,9 +514,10 @@ emits the accepted attestation headers on bound responses (CPU-only schemas,
 tests, and real-stage limits are in [online-attestation.md](online-attestation.md)).
 Separately, the native unified Qwen3.8 endpoint provides an explicit
 `behavior.logprobs=true` streaming opt-in for actual sampled ids, full native
-log-softmax values, and exact clean-target masks. Other endpoints and every
-incomplete capture remain `NOT_COVERED`/null (`not_exposed`); no re-encoded
-supervision ids are substituted. The full attestation, producer,
+log-softmax values, exact clean-target masks, and the required online
+attestation headers. Other endpoints and every incomplete capture remain
+`NOT_COVERED`/null (`not_exposed`); no re-encoded supervision ids are
+substituted. The full attestation, producer,
 tokenizer-digest, narrative-mask, fail-closed, retry, validation, export, and
 fresh-process replay contracts are specified in
 [joint-training.md](joint-training.md#online-grpo-rollout-generation-and-validation-contract).
@@ -534,6 +535,17 @@ instead of substituting ids, and rejects stale/incomplete/cross-record/tokenizer
 mask, EOS, non-finite, raw, and CAS evidence before ML imports or output. See
 [behavior-token-alignment.md](behavior-token-alignment.md). New numerical
 forwards and online optimizer/model-quality outcomes remain `NOT_RUN`.
+
+The separate online CPU preflight consumes only replay-validated online packs and
+requires complete sampled behavior evidence before any final output or ML import.
+It invokes the independent alignment validator when supervision exports exist,
+keeps current/behavior/reference inputs distinct, and binds exact group/member,
+packed-id/label/mask, objective-fixture, split, and checkpoint hashes into online
+run identity. Fresh-process reconstruction is byte-identical and tamper rejects
+without output. Frozen-offline GRPO and legacy packs are unchanged. See
+[online-grpo-preflight.md](online-grpo-preflight.md) for commands, exact hashes,
+and future acceptance gates. Real generation, forwards, optimizer, GPU, serving,
+and quality remain `NOT_RUN`.
 
 ## Rewards
 
