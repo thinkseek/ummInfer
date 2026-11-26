@@ -410,6 +410,31 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 31 Live Gateway Echo-Suppression Rollout (`8ac1777`) & Exact-Byte Raw SSE Replay (`207ddb5`):
+  - **Gateway `/bin/umm-infer` hot-swap (`EchoRobustVad` + active `echo_suppression` A/B toggle)**
+    (`8ac1777`, `src/serve/realtime_api.cpp`, `tests/full_duplex_echo_live.py`,
+    `docs/full-duplex.md`): harvested accepted Task #28 (`zig build test` PASS
+    including `REALTIME_ECHO_ACTIVE_AB same_pcm=1 protected_cutins=0 baseline_cutins=1`,
+    `full_duplex_echo_live.py --self-check` PASS), rebuilt Linux `ReleaseFast`
+    `umm-infer` (`830ec93d...`), and hot-swapped ONLY the supervised gateway
+    (`.wave30` backup; `/ready` 200 with `0` stage restarts across GPUs 2–6,
+    `/health in_flight=0`). Task #28's isolated SM90 GPUs 0/1/7 live gate
+    (real Qwen3-ASR-1.7B + Qwen3.8-27B + Qwen3-TTS-12Hz-1.7B, `63/63 SHA256SUMS`)
+    verified `0/6` echo false cut-ins vs `6/6` disabled same-PCM A/B cut-ins,
+    near-end onset `3.355 ms`, double-talk cancellation `3.375 / 3.256 ms`,
+    and stale-reference pre-audio cancellation `0.323 ms` (physical speaker/mic
+    AEC remains `NOT_RUN`).
+  - **Exact-Byte Raw SSE Trajectory Replay (`python/umminfer_sse_replay.py`)**
+    (`207ddb5`): harvested accepted Task #30 (`53/53` RL/SFT/SSE-replay/Stage-C
+    offline tests PASS while preserving Wave 29's 0-based `slot-N` prompt fix)
+    and verified live against resident SM90 `43301` (`record_chat_completion(..., capture_replay=True)`
+    on 5-modality `i2v_chain` + streaming audio): captured `3,933,658 B` raw
+    `.sse` sidecar (`637f7447...`, `304` transport chunks, `198` SSE frames,
+    `196` normalized events, real `monotonic_ns` ticks up to `9,936.66 ms`,
+    PNG/MP4/PCM CAS artifacts), and confirmed fresh-process CLI replay
+    (`python/umminfer_sse_replay.py`) produced **byte-identical** canonical JSONL
+    (`9d52bbdd...`) and matching CAS/raw SHA-256 digests (`/health in_flight=0`).
+
 - Wave 30 Explicit Anchor UI (`5493d85`) & Frozen 3-Round Multimodal Stability Gate Orchestrator (`a30e32a`):
   - **Frozen 3-Round Multimodal Stability Orchestrator & SM90 Config**
     (`a30e32a`, `tools/multimodal_stability.py`,
