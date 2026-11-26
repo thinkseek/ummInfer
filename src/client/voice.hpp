@@ -7,6 +7,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -89,6 +90,7 @@ struct VoiceConfig {
   std::string output_device;
   int max_new_tokens = 256;
   int silence_ms = 400;
+  bool echo_suppression = true;
   Milliseconds connect_timeout{10000};
   int reconnect_attempts = 2;
   Milliseconds reconnect_delay{250};
@@ -102,6 +104,7 @@ struct VoiceHandlers {
   std::function<void(const std::string&)> on_response_completed;
   std::function<void(const std::string&)> on_status;
   std::function<void(const std::string&)> on_error;
+  std::function<void(bool)> on_echo_suppression;
 };
 
 using VoiceSocketFactory = std::function<std::unique_ptr<VoiceSocket>(
@@ -126,6 +129,10 @@ class VoiceClient {
 
   void run();
   void request_stop() noexcept;
+  void set_echo_suppression(bool enabled);
+  std::optional<bool> confirmed_echo_suppression() const noexcept;
+  int negotiated_silence_ms() const noexcept;
+  uint64_t barge_in_count() const noexcept;
   static std::string websocket_url(const std::string& base_url, const std::string& model);
 
  private:

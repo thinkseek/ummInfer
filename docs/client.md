@@ -657,13 +657,26 @@ behavior is unchanged:
 `--realtime-port` address when HTTP and WebSocket are on different ports. The
 server must have unified ASR, VLM and TTS stages. Start it with
 `--session-history` when interrupted turns should retain exactly the
-acknowledged assistant prefix. Options are `--connect-timeout-ms` (10000),
-`--reconnect-attempts` (2), `--reconnect-delay-ms` (250), and Linux ALSA
-`--input-device` / `--output-device` names (default `default`).
+acknowledged assistant prefix. Options are `--no-echo-suppression` (opt-in A/B
+disable for server-side echo suppression; default ON omits `echo_suppression` on
+the wire so the initial `turn_detection` payload stays byte-identical),
+`--connect-timeout-ms` (10000), `--reconnect-attempts` (2),
+`--reconnect-delay-ms` (250), and Linux ALSA `--input-device` /
+`--output-device` names (default `default`).
 
 The client sends `session.update` with server VAD, `input_audio_format=pcm16`,
 and `audio_output.playback_ack=true`, and refuses to start capture until the
-server echoes that negotiation. Microphone frames are exact little-endian
+server echoes that negotiation. When `--no-echo-suppression` is passed, the
+initial `session.update` emits `"echo_suppression": false` inside
+`turn_detection`, and the client fails cleanly if the server does not confirm
+`echo_suppression=false` in `transcription_session.updated`. Programmatic
+callers can also call `VoiceClient::set_echo_suppression(bool)` while connected
+or mid-response to send the narrow `turn_detection`-only `session.update` with
+the server-negotiated `silence_ms` without resetting active response state. On
+session ready, the CLI prints the server-confirmed echo suppression state
+(`on`/`off`), counts real observed `response.cancelled` barge-in events during
+the session (resetting on reconnect), and prints `barge_ins=<N>` in the stop
+summary when at least one barge-in occurred. Microphone frames are exact little-endian
 16 kHz mono PCM16 (20 ms per ALSA read), sent as `input_audio_buffer.append`;
 WAV headers are not added and audio is not retained for a Final HTTP request.
 Spoken replies use an isolated output queue. An
@@ -710,9 +723,11 @@ zig build voice-test -Ddeps-prefix=/path/to/deps -Dcurl-prefix=/path/to/curl-ws
 ```
 
 The suite covers cursor monotonicity, delayed/final ACKs, partial consumption,
-cancellation races, repeated cancellation, stale callbacks, reconnect, and
-microphone/playback cleanup on Stop Voice, external cancellation and errors.
-These are not physical-device or live-model results.
+cancellation races, repeated cancellation, stale callbacks, reconnect,
+`echo_suppression` wire omission/negotiation/mid-response toggling, observed
+`barge_in_count` telemetry, and microphone/playback cleanup on Stop Voice,
+external cancellation and errors. These are not physical-device or live-model
+results.
 
 ### Manual physical / live checklist
 

@@ -447,6 +447,10 @@ struct VoiceClient::Impl {
     std::mutex mu;
     std::exception_ptr error;
     bool microphone_started = false;
+    bool initial_negotiated = false;
+    bool initial_echo_suppression = true;
+    int negotiated_silence_ms = 400;
+    std::optional<bool> confirmed_echo_suppression;
     std::string active_response;
   };
 
@@ -468,6 +472,8 @@ struct VoiceClient::Impl {
     if (config.reconnect_attempts < 0 || config.reconnect_attempts > 10) {
       throw Error(ErrorCode::kConfig, "voice reconnect_attempts must be in 0..10");
     }
+    desired_echo_suppression.store(config.echo_suppression, std::memory_order_relaxed);
+    negotiated_silence.store(config.silence_ms, std::memory_order_relaxed);
   }
 
   bool stopping() const {
@@ -536,7 +542,7 @@ struct VoiceClient::Impl {
     if (!connection->playback->is_cancelled(id)) connection->active_response = id;
   }
 
-  void start_microphone(const std::shared_ptr<Connection>& connection) {
+  void start_microphone(const std::shared_ptr<Connection>& connection, bool echo_suppression) {
     {
       std::lock_guard lock(connection->mu);
       if (connection->microphone_started) return;
@@ -555,7 +561,8 @@ struct VoiceClient::Impl {
         current->owner->fail(current, error);
       }
     });
-    status("Listening");
+    status(echo_suppression ? "Listening (echo suppression: on)"
+                            : "Listening (echo suppression: off)");
   }
 
   void handle_event(const std::shared_ptr<Connection>& connection, std::string_view message) {
@@ -574,7 +581,63 @@ struct VoiceClient::Impl {
         throw Error(ErrorCode::kConfig,
                     "server did not negotiate audio_output.playback_ack=true");
       }
-      start_microphone(connection);
+      const auto& session = event["session"];
+      int silence_ms = config.silence_ms;
+      bool echo_suppression = true;
+      bool initial = false;
+      bool requested_initial_echo = true;
+      {
+        std::lock_guard lock(connection->mu);
+        silence_ms = connection->negotiated_silence_ms;
+        initial = !connection->initial_negotiated;
+        requested_initial_echo = connection->initial_echo_suppression;
+      }
+      if (session.contains("turn_detection")) {
+        const auto& turn = session["turn_detection"];
+        if (!turn.is_object()) {
+          throw Error(ErrorCode::kBadResponse,
+                      "transcription_session.updated has invalid turn_detection");
+        }
+        if (turn.contains("silence_ms")) {
+          const auto& raw = turn["silence_ms"];
+          const bool valid_silence =
+              raw.is_number_integer() &&
+              (raw.is_number_unsigned()
+                   ? raw.get<uint64_t>() >= 100 && raw.get<uint64_t>() <= 5000
+                   : raw.get<int64_t>() >= 100 && raw.get<int64_t>() <= 5000);
+          if (!valid_silence) {
+            throw Error(ErrorCode::kBadResponse,
+                        "transcription_session.updated has invalid turn_detection.silence_ms");
+          }
+          silence_ms = raw.get<int>();
+        }
+        if (turn.contains("echo_suppression")) {
+          if (!turn["echo_suppression"].is_boolean()) {
+            throw Error(
+                ErrorCode::kBadResponse,
+                "transcription_session.updated has non-boolean turn_detection.echo_suppression");
+          }
+          echo_suppression = turn["echo_suppression"].get<bool>();
+        }
+      }
+      if (initial && !requested_initial_echo && echo_suppression) {
+        throw Error(ErrorCode::kConfig,
+                    "server did not apply turn_detection.echo_suppression=false");
+      }
+      {
+        std::lock_guard lock(connection->mu);
+        connection->initial_negotiated = true;
+        connection->negotiated_silence_ms = silence_ms;
+        connection->confirmed_echo_suppression = echo_suppression;
+      }
+      negotiated_silence.store(silence_ms, std::memory_order_relaxed);
+      confirmed_echo_state.store(echo_suppression ? 1 : 0, std::memory_order_relaxed);
+      if (handlers.on_echo_suppression) handlers.on_echo_suppression(echo_suppression);
+      if (initial) {
+        start_microphone(connection, echo_suppression);
+      } else {
+        status(echo_suppression ? "Echo suppression: on" : "Echo suppression: off");
+      }
       return;
     }
     if (type == "input_audio_buffer.speech_started") {
@@ -649,6 +712,7 @@ struct VoiceClient::Impl {
     } else if (type == "response.completed") {
       if (handlers.on_response_completed) handlers.on_response_completed(id);
     } else if (type == "response.cancelled") {
+      barge_ins.fetch_add(1, std::memory_order_relaxed);
       std::string target = id;
       if (target.empty()) {
         std::lock_guard lock(connection->mu);
@@ -690,6 +754,9 @@ struct VoiceClient::Impl {
     const std::string url = websocket_url(config.base_url, config.model);
     int reconnects = 0;
     while (!stopping()) {
+      barge_ins.store(0, std::memory_order_relaxed);
+      confirmed_echo_state.store(-1, std::memory_order_relaxed);
+      negotiated_silence.store(config.silence_ms, std::memory_order_relaxed);
       auto connection = std::make_shared<Connection>(this);
       {
         std::lock_guard lock(current_mu);
@@ -719,11 +786,22 @@ struct VoiceClient::Impl {
             [weak](std::exception_ptr error) {
               if (auto current = weak.lock()) current->owner->fail(current, error);
             });
+        const bool want_echo_suppression =
+            desired_echo_suppression.load(std::memory_order_relaxed);
+        {
+          std::lock_guard lock(connection->mu);
+          connection->initial_echo_suppression = want_echo_suppression;
+          connection->negotiated_silence_ms = config.silence_ms;
+        }
+        nlohmann::json turn_detection = {{"type", "server_vad"},
+                                         {"silence_ms", config.silence_ms}};
+        if (!want_echo_suppression) {
+          turn_detection["echo_suppression"] = false;
+        }
         const nlohmann::json update = {
             {"type", "session.update"},
             {"session", {{"input_audio_format", "pcm16"},
-                         {"turn_detection", {{"type", "server_vad"},
-                                             {"silence_ms", config.silence_ms}}},
+                         {"turn_detection", std::move(turn_detection)},
                          {"max_new_tokens", config.max_new_tokens},
                          {"audio_output", {{"voice", config.voice},
                                            {"playback_ack", true}}}}}};
@@ -799,12 +877,60 @@ struct VoiceClient::Impl {
     }
   }
 
+  void set_echo_suppression(bool enabled) {
+    desired_echo_suppression.store(enabled, std::memory_order_relaxed);
+    std::shared_ptr<Connection> connection;
+    {
+      std::lock_guard lock(current_mu);
+      connection = current.lock();
+    }
+    if (!connection || !connection->active || !connection->ready || !connection->socket ||
+        stopping()) {
+      return;
+    }
+    int silence_ms = config.silence_ms;
+    {
+      std::lock_guard lock(connection->mu);
+      silence_ms = connection->negotiated_silence_ms;
+    }
+    const nlohmann::json update = {
+        {"type", "session.update"},
+        {"session",
+         {{"turn_detection",
+           {{"type", "server_vad"},
+            {"silence_ms", silence_ms},
+            {"echo_suppression", enabled}}}}}};
+    try {
+      connection->socket->send_text(update.dump());
+    } catch (...) {
+      if (connection->active && !stopping()) fail(connection, std::current_exception());
+    }
+  }
+
+  std::optional<bool> confirmed_echo_suppression() const noexcept {
+    const int state = confirmed_echo_state.load(std::memory_order_relaxed);
+    if (state < 0) return std::nullopt;
+    return state != 0;
+  }
+
+  int negotiated_silence_ms() const noexcept {
+    return negotiated_silence.load(std::memory_order_relaxed);
+  }
+
+  uint64_t barge_in_count() const noexcept {
+    return barge_ins.load(std::memory_order_relaxed);
+  }
+
   VoiceConfig config;
   VoiceHandlers handlers;
   VoiceSocketFactory socket_factory;
   VoiceMicrophoneFactory microphone_factory;
   VoiceAudioOutputFactory output_factory;
   std::atomic<bool> stop{false};
+  std::atomic<bool> desired_echo_suppression{true};
+  std::atomic<int> confirmed_echo_state{-1};
+  std::atomic<int> negotiated_silence{400};
+  std::atomic<uint64_t> barge_ins{0};
   std::mutex current_mu;
   std::weak_ptr<Connection> current;
 };
@@ -829,6 +955,18 @@ VoiceClient::VoiceClient(VoiceConfig config, VoiceHandlers handlers,
 VoiceClient::~VoiceClient() { request_stop(); }
 void VoiceClient::run() { impl_->run(); }
 void VoiceClient::request_stop() noexcept { if (impl_) impl_->request_stop(); }
+void VoiceClient::set_echo_suppression(bool enabled) {
+  if (impl_) impl_->set_echo_suppression(enabled);
+}
+std::optional<bool> VoiceClient::confirmed_echo_suppression() const noexcept {
+  return impl_ ? impl_->confirmed_echo_suppression() : std::nullopt;
+}
+int VoiceClient::negotiated_silence_ms() const noexcept {
+  return impl_ ? impl_->negotiated_silence_ms() : 400;
+}
+uint64_t VoiceClient::barge_in_count() const noexcept {
+  return impl_ ? impl_->barge_in_count() : 0;
+}
 
 std::string VoiceClient::websocket_url(const std::string& base_url, const std::string& model) {
   if (model.empty()) throw Error(ErrorCode::kConfig, "voice model is required");

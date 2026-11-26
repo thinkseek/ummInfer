@@ -446,20 +446,31 @@ struct ClientFixture {
   std::vector<std::string> bearers;
   std::mutex output_mu;
   std::vector<std::string> response_text;
+  std::vector<std::string> statuses;
+  std::vector<bool> echo_updates;
   std::unique_ptr<VoiceClient> client;
   std::thread thread;
   std::exception_ptr failure;
 
-  explicit ClientFixture(int reconnects = 0) {
+  explicit ClientFixture(int reconnects = 0, bool echo_suppression = true) {
     config.base_url = "http://127.0.0.1:8123";
     config.model = "voice model";
     config.api_key = "test-secret-never-in-url";
+    config.echo_suppression = echo_suppression;
     config.reconnect_attempts = reconnects;
     config.reconnect_delay = Milliseconds{0};
     VoiceHandlers handlers;
     handlers.on_response_text = [this](const std::string& text) {
       std::lock_guard lock(output_mu);
       response_text.push_back(text);
+    };
+    handlers.on_status = [this](const std::string& text) {
+      std::lock_guard lock(output_mu);
+      statuses.push_back(text);
+    };
+    handlers.on_echo_suppression = [this](bool enabled) {
+      std::lock_guard lock(output_mu);
+      echo_updates.push_back(enabled);
     };
     client = std::make_unique<VoiceClient>(
         config, std::move(handlers),
@@ -822,6 +833,254 @@ void test_external_cancellation_cleans_up() {
         "external signal cancellation did not clean resources");
 }
 
+void test_echo_suppression_default_omits_wire_key() {
+  ClientFixture f;
+  f.start();
+  const auto update = f.messages()[0];
+  check(update["type"] == "session.update", "initial message was not session.update");
+  const auto& turn = update["session"]["turn_detection"];
+  check(turn.is_object() && turn["type"] == "server_vad" && turn["silence_ms"] == 400 &&
+            !turn.contains("echo_suppression"),
+        "default echo_suppression=true must omit echo_suppression on the wire");
+  check(!f.client->confirmed_echo_suppression().has_value(),
+        "echo_suppression was confirmed before transcription_session.updated");
+  f.ready();
+  check(f.client->confirmed_echo_suppression() == std::optional<bool>(true),
+        "omitted turn_detection did not confirm echo_suppression=true");
+  check(f.client->barge_in_count() == 0, "idle session reported non-zero barge_in_count");
+  f.stop();
+  check(f.failure == nullptr, "default echo_suppression session failed on stop");
+}
+
+void test_echo_suppression_false_negotiation_and_rejection() {
+  // Explicit false emits echo_suppression=false and succeeds when server confirms false.
+  {
+    ClientFixture f(0, false);
+    f.start();
+    const auto update = f.messages()[0];
+    const auto& turn = update["session"]["turn_detection"];
+    check(turn.contains("echo_suppression") && turn["echo_suppression"].is_boolean() &&
+              !turn["echo_suppression"].get<bool>(),
+          "echo_suppression=false did not emit explicit false on initial session.update");
+    f.socket(0)->emit({{"type", "transcription_session.updated"},
+                       {"session",
+                        {{"audio_output", {{"playback_ack", true}}},
+                         {"turn_detection",
+                          {{"type", "server_vad"},
+                           {"silence_ms", 550},
+                           {"echo_suppression", false}}}}}});
+    wait_until([&] { return f.microphone(0)->start_count() == 1; },
+               "microphone start when server confirms echo_suppression=false");
+    check(f.client->confirmed_echo_suppression() == std::optional<bool>(false),
+          "confirmed_echo_suppression did not record false");
+    check(f.client->negotiated_silence_ms() == 550,
+          "negotiated_silence_ms did not track server-confirmed value");
+    {
+      std::lock_guard lock(f.output_mu);
+      check(!f.statuses.empty() &&
+                f.statuses.back().find("echo suppression: off") != std::string::npos,
+            "session ready status did not report echo suppression off");
+    }
+    f.stop();
+    check(f.failure == nullptr, "echo_suppression=false session failed cleanly on stop");
+  }
+
+  // Server omitting echo_suppression when client requested false must fail cleanly.
+  {
+    ClientFixture f(0, false);
+    f.start();
+    f.socket(0)->emit({{"type", "transcription_session.updated"},
+                       {"session",
+                        {{"audio_output", {{"playback_ack", true}}},
+                         {"turn_detection", {{"type", "server_vad"}, {"silence_ms", 400}}}}}});
+    f.join();
+    check(f.failure != nullptr && f.microphone(0)->start_count() == 0 &&
+              f.microphone(0)->stop_count() == 1 && f.output(0)->close_count() == 1,
+          "server omitting echo_suppression for echo_suppression=false did not fail cleanly");
+    std::string message;
+    try {
+      std::rethrow_exception(f.failure);
+    } catch (const std::exception& error) {
+      message = error.what();
+    }
+    check(message.find("server did not apply turn_detection.echo_suppression=false") !=
+              std::string::npos,
+          "unexpected error message for unconfirmed echo_suppression=false: " + message);
+  }
+
+  // Server returning echo_suppression=true when client requested false must fail cleanly.
+  {
+    ClientFixture f(0, false);
+    f.start();
+    f.socket(0)->emit({{"type", "transcription_session.updated"},
+                       {"session",
+                        {{"audio_output", {{"playback_ack", true}}},
+                         {"turn_detection",
+                          {{"type", "server_vad"},
+                           {"silence_ms", 400},
+                           {"echo_suppression", true}}}}}});
+    f.join();
+    check(f.failure != nullptr && f.microphone(0)->start_count() == 0,
+          "server confirming true for echo_suppression=false did not fail cleanly");
+  }
+
+  // Non-boolean echo_suppression must fail cleanly as a protocol error.
+  {
+    ClientFixture f;
+    f.start();
+    f.socket(0)->emit({{"type", "transcription_session.updated"},
+                       {"session",
+                        {{"audio_output", {{"playback_ack", true}}},
+                         {"turn_detection",
+                          {{"type", "server_vad"},
+                           {"silence_ms", 400},
+                           {"echo_suppression", "off"}}}}}});
+    f.join();
+    check(f.failure != nullptr && f.microphone(0)->start_count() == 0 &&
+              f.output(0)->close_count() == 1,
+          "non-boolean turn_detection.echo_suppression did not fail cleanly");
+  }
+}
+
+void test_mid_response_echo_suppression_toggle_preserves_active_response() {
+  ClientFixture f;
+  f.start();
+  f.socket(0)->emit({{"type", "transcription_session.updated"},
+                     {"session",
+                      {{"audio_output", {{"playback_ack", true}}},
+                       {"turn_detection", {{"type", "server_vad"}, {"silence_ms", 650}}}}}});
+  wait_until([&] { return f.microphone(0)->start_count() == 1; }, "initial negotiation");
+  check(f.client->confirmed_echo_suppression() == std::optional<bool>(true) &&
+            f.client->negotiated_silence_ms() == 650,
+        "initial negotiation did not record default echo_suppression=true and silence_ms=650");
+
+  // Begin an active spoken response before toggling echo suppression mid-response.
+  f.socket(0)->emit({{"type", "response.text.delta"}, {"response_id", "r1"}, {"text", "hello "}});
+  f.socket(0)->emit({{"type", "audio.delta"}, {"response_id", "r1"},
+                     {"format", "pcm16"}, {"sample_rate", 24000}, {"channels", 1},
+                     {"audio", base64_encode(std::string(4, '\x02'))}, {"text_cursor", 6}});
+  wait_until([&] { return f.output(0)->size() == 1; }, "active response first chunk");
+
+  // Toggle OFF mid-response: must send ONLY narrow turn_detection with negotiated silence_ms.
+  f.client->set_echo_suppression(false);
+  wait_until([&] { return f.of_type(0, "session.update").size() == 2; },
+             "mid-response echo_suppression=false update");
+  const auto toggle_off = f.of_type(0, "session.update")[1];
+  check(toggle_off["session"].size() == 1 && toggle_off["session"].contains("turn_detection") &&
+            toggle_off["session"]["turn_detection"] ==
+                json{{"type", "server_vad"}, {"silence_ms", 650}, {"echo_suppression", false}},
+        "mid-response toggle off did not send narrow turn_detection-only session.update");
+
+  f.socket(0)->emit({{"type", "transcription_session.updated"},
+                     {"session",
+                      {{"audio_output", {{"playback_ack", true}}},
+                       {"turn_detection",
+                        {{"type", "server_vad"},
+                         {"silence_ms", 650},
+                         {"echo_suppression", false}}}}}});
+  wait_until([&] { return f.client->confirmed_echo_suppression() == std::optional<bool>(false); },
+             "mid-response echo_suppression=false confirmation");
+
+  // Toggle back ON mid-response: server omits echo_suppression in reply per effective_session.
+  f.client->set_echo_suppression(true);
+  wait_until([&] { return f.of_type(0, "session.update").size() == 3; },
+             "mid-response echo_suppression=true update");
+  const auto toggle_on = f.of_type(0, "session.update")[2];
+  check(toggle_on["session"].size() == 1 && toggle_on["session"].contains("turn_detection") &&
+            toggle_on["session"]["turn_detection"] ==
+                json{{"type", "server_vad"}, {"silence_ms", 650}, {"echo_suppression", true}},
+        "mid-response toggle on did not send narrow turn_detection-only session.update");
+
+  f.socket(0)->emit({{"type", "transcription_session.updated"},
+                     {"session",
+                      {{"audio_output", {{"playback_ack", true}}},
+                       {"turn_detection", {{"type", "server_vad"}, {"silence_ms", 650}}}}}});
+  wait_until([&] { return f.client->confirmed_echo_suppression() == std::optional<bool>(true); },
+             "mid-response echo_suppression=true confirmation");
+
+  // Verify microphone was not restarted and active response playback/ACK was not clobbered.
+  check(f.microphone(0)->start_count() == 1 && f.output(0)->stop_count() == 0,
+        "mid-response transcription_session.updated restarted mic or stopped active playback");
+  f.socket(0)->emit({{"type", "response.text.delta"}, {"response_id", "r1"}, {"text", "world"}});
+  f.socket(0)->emit({{"type", "audio.done"}, {"response_id", "r1"}, {"text_cursor", 11}});
+  f.output(0)->complete(0);
+  wait_until([&] { return f.of_type(0, "output_audio_buffer.playback_ack").size() == 2; },
+             "active response ACKs after mid-response echo_suppression toggle");
+  const auto acks = f.of_type(0, "output_audio_buffer.playback_ack");
+  check(acks[0]["response_id"] == "r1" && acks[0]["text_cursor"] == 6 &&
+            acks[1]["response_id"] == "r1" && acks[1]["text_cursor"] == 11,
+        "active response ACKs were corrupted by mid-response toggle");
+  {
+    std::lock_guard lock(f.output_mu);
+    check(f.response_text.size() == 2 && f.response_text[0] == "hello " &&
+              f.response_text[1] == "world",
+          "active response text stream was clobbered by mid-response toggle");
+  }
+  f.stop();
+  check(f.failure == nullptr, "mid-response toggle test failed on stop");
+}
+
+void test_observed_barge_in_count_telemetry() {
+  // No cancellations => barge_in_count stays 0.
+  {
+    ClientFixture f;
+    f.start();
+    f.ready();
+    f.socket(0)->emit({{"type", "audio.delta"}, {"response_id", "r1"},
+                       {"format", "pcm16"}, {"sample_rate", 24000}, {"channels", 1},
+                       {"audio", base64_encode(std::string(4, '\x01'))}, {"text_cursor", 4}});
+    f.socket(0)->emit({{"type", "audio.done"}, {"response_id", "r1"}, {"text_cursor", 4}});
+    wait_until([&] { return f.output(0)->size() == 1; }, "clean response audio");
+    f.output(0)->complete(0);
+    wait_until([&] { return f.of_type(0, "output_audio_buffer.playback_ack").size() == 2; },
+               "clean response ACKs");
+    f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "r1"},
+                       {"text_cursor", 4}, {"final", true}});
+    wait_until([&] { return f.output(0)->stop_count() == 1; }, "clean response retirement");
+    check(f.client->barge_in_count() == 0,
+          "barge_in_count incremented without response.cancelled");
+    f.stop();
+    check(f.client->barge_in_count() == 0, "barge_in_count changed after stop");
+  }
+
+  // Real response.cancelled events increment barge_in_count, and reconnect resets it.
+  {
+    ClientFixture f(1);
+    f.start();
+    f.ready();
+    f.socket(0)->emit({{"type", "audio.delta"}, {"response_id", "r1"},
+                       {"format", "pcm16"}, {"sample_rate", 24000}, {"channels", 1},
+                       {"audio", base64_encode(std::string(4, '\x01'))}, {"text_cursor", 3}});
+    wait_until([&] { return f.output(0)->size() == 1; }, "first response audio");
+    f.socket(0)->emit({{"type", "input_audio_buffer.speech_started"},
+                       {"interrupted_response_id", "r1"}});
+    wait_until([&] { return f.output(0)->stop_count() == 1; }, "speech_started local stop");
+    // speech_started alone does not fabricate a barge_in_count; server response.cancelled does.
+    check(f.client->barge_in_count() == 0,
+          "speech_started incremented barge_in_count before response.cancelled");
+    f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r1"}});
+    wait_until([&] { return f.client->barge_in_count() == 1; }, "first barge-in count");
+
+    f.socket(0)->emit({{"type", "audio.delta"}, {"response_id", "r2"},
+                       {"format", "pcm16"}, {"sample_rate", 24000}, {"channels", 1},
+                       {"audio", base64_encode(std::string(4, '\x02'))}, {"text_cursor", 5}});
+    wait_until([&] { return f.output(0)->size() == 2; }, "second response audio");
+    f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r2"}});
+    wait_until([&] { return f.client->barge_in_count() == 2; }, "second barge-in count");
+
+    // Reconnect resets session barge_in_count to 0.
+    f.socket(0)->disconnect();
+    wait_until([&] { return f.socket_count() == 2 && f.microphone_count() == 2; },
+               "reconnect after barge-ins");
+    f.ready(1);
+    check(f.client->barge_in_count() == 0, "reconnect did not reset barge_in_count");
+    f.socket(1)->emit({{"type", "response.cancelled"}, {"response_id", "r3"}});
+    wait_until([&] { return f.client->barge_in_count() == 1; }, "post-reconnect barge-in count");
+    f.stop();
+    check(f.client->barge_in_count() == 1, "post-stop barge_in_count did not preserve summary");
+  }
+}
+
 using Test = std::pair<const char*, std::function<void()>>;
 
 }  // namespace
@@ -840,6 +1099,10 @@ int main() {
       {"final_ack_retires_response_and_drops_late_text", test_final_ack_retires_response_and_drops_late_text},
       {"error_paths_and_cleanup", test_error_paths_and_cleanup},
       {"external_cancellation_cleans_up", test_external_cancellation_cleans_up},
+      {"echo_suppression_default_omits_wire_key", test_echo_suppression_default_omits_wire_key},
+      {"echo_suppression_false_negotiation_and_rejection", test_echo_suppression_false_negotiation_and_rejection},
+      {"mid_response_echo_suppression_toggle_preserves_active_response", test_mid_response_echo_suppression_toggle_preserves_active_response},
+      {"observed_barge_in_count_telemetry", test_observed_barge_in_count_telemetry},
   };
   size_t passed = 0;
   for (const auto& [name, test] : tests) {

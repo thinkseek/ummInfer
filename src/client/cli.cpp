@@ -131,9 +131,10 @@ void usage(const std::string& command, std::ostream& out) {
   } else if (command == "voice") {
     out << "usage: umm-infer voice --url http://127.0.0.1:8000 --model M "
            "[--voice NAME] [--silence-ms N] [--max-new-tokens N]\n"
-           "       [--connect-timeout-ms N] [--reconnect-attempts N] "
-           "[--reconnect-delay-ms N]\n"
+           "       [--no-echo-suppression] [--connect-timeout-ms N] "
+           "[--reconnect-attempts N] [--reconnect-delay-ms N]\n"
            "       [--input-device ALSA_NAME] [--output-device ALSA_NAME]\n"
+           "       --no-echo-suppression disables server-side echo suppression (default: on).\n"
            "       Type 'stop' and press Enter, or send EOF, to Stop Voice.\n";
   } else if (command == "image") {
     out << "usage: umm-infer image generate --url URL --model M --prompt TEXT --out PATH\n"
@@ -837,7 +838,7 @@ int voice(int argc, char** argv, std::atomic<bool>* cancel) {
                   {"url", "model", "voice", "silence-ms", "max-new-tokens",
                    "connect-timeout-ms", "reconnect-attempts", "reconnect-delay-ms",
                    "input-device", "output-device"},
-                  {});
+                  {"no-echo-suppression"});
   if (options.help) {
     usage("voice", std::cout);
     return 0;
@@ -850,6 +851,7 @@ int voice(int argc, char** argv, std::atomic<bool>* cancel) {
   config.input_device = options.get("input-device");
   config.output_device = options.get("output-device");
   config.silence_ms = static_cast<int>(integer(options, "silence-ms", 400, 100, 5000));
+  config.echo_suppression = !options.has("no-echo-suppression");
   config.max_new_tokens =
       static_cast<int>(integer(options, "max-new-tokens", 256, 1, 1000000));
   config.connect_timeout = milliseconds(options, "connect-timeout-ms", 10000);
@@ -941,7 +943,12 @@ int voice(int argc, char** argv, std::atomic<bool>* cancel) {
   client.request_stop();
   if (control.joinable()) control.join();
   if (failure) std::rethrow_exception(failure);
-  std::cerr << "[voice] Voice stopped\n";
+  const uint64_t barge_ins = client.barge_in_count();
+  if (barge_ins > 0) {
+    std::cerr << "[voice] Voice stopped (barge_ins=" << barge_ins << ")\n";
+  } else {
+    std::cerr << "[voice] Voice stopped\n";
+  }
   return 0;
 }
 
