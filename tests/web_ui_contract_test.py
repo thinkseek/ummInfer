@@ -64,7 +64,8 @@ def check_markup(html):
                 'id="fastVideo"', 'id="videoFramePolicy"',
                 'id="videoMotionThreshold"', 'id="videoSceneThreshold"',
                 'id="nativeAllocatorTelemetry"', 'id="behaviorLogprobs"',
-                'id="exportFormat"', 'id="exportSession"'):
+                'id="exportFormat"', 'id="exportSession"',
+                'id="importSession"', 'id="importSessionInput"'):
         require(tag in html, f"missing element: {tag}")
     require('<option value="off" selected>Off</option>' in html,
             "narrativeContinuity must default to Off")
@@ -2153,6 +2154,532 @@ console.log('session export behavior passed');
             "session export harness did not reach its success assertion")
 
 
+def check_session_import(html, script):
+    """Pure client-side cross-client JSON Session Import markup and script hooks."""
+    for snippet in (
+        'id="importSessionInput"',
+        'type="file"',
+        'accept="application/json,.json"',
+        'id="importSession"',
+        '>Import JSON</button>',
+        '.slot-imported-note',
+    ):
+        require(snippet in html, f"missing session import markup or CSS: {snippet}")
+    require(re.search(r'id="importSessionInput"[^>]*\bhidden\b', html) is not None,
+            "importSessionInput file picker must be hidden")
+    require("ui.importSession" in script.split("function setBusy(busy)", 1)[1].split("])", 1)[0],
+            "importSession must be disabled while a response is streaming")
+    for hook in (
+        'MAX_IMPORT_SESSION_BYTES',
+        'SUPPORTED_IMPORT_SCHEMAS',
+        "'umminfer-web-session-export-v1'",
+        "'umminfer-session-export-v1'",
+        'parseImportedSessionJson(',
+        'formatImportedSessionChip(',
+        'applyImportedSessionWithContext(',
+        'applyImportedSession(',
+        'showSlotImportedMetadata(',
+        'formatImportedNativeAllocatorSummary(',
+        'formatImportedBehaviorSummary(',
+        "ui.importSession.addEventListener('click'",
+        "ui.importSessionInput.addEventListener('change'",
+    ):
+        require(hook in script, f"missing session import script hook: {hook}")
+    require("// SESSION_IMPORT_BEGIN" in script and "// SESSION_IMPORT_END" in script,
+            "missing session import behavior-test markers")
+    import_block = script.split("// SESSION_IMPORT_BEGIN", 1)[1].split(
+        "// SESSION_IMPORT_END", 1)[0]
+    require("fetch(" not in import_block and "new WebSocket(" not in import_block,
+            "pure session import helpers must never issue network or WebSocket calls")
+
+
+def check_session_import_behavior(script):
+    """Execute cross-client JSON session import, round-trip, and fail-closed checks in Node."""
+    node = shutil.which("node")
+    if not node:
+        print("skip session import behavior: node is not installed", flush=True)
+        return
+    for marker in (
+        "// TURN_TELEMETRY_BEGIN", "// TURN_TELEMETRY_END",
+        "// NARRATIVE_CONTINUITY_BEGIN", "// NARRATIVE_CONTINUITY_END",
+        "// REALTIME_AUDIO_METER_BEGIN", "// REALTIME_AUDIO_METER_END",
+        "// SESSION_EXPORT_BEGIN", "// SESSION_EXPORT_END",
+        "// SESSION_IMPORT_BEGIN", "// SESSION_IMPORT_END",
+    ):
+        require(marker in script, f"missing session import behavior-test marker: {marker}")
+    telemetry_src = script.split("// TURN_TELEMETRY_BEGIN", 1)[1].split(
+        "// TURN_TELEMETRY_END", 1)[0]
+    continuity_src = script.split("// NARRATIVE_CONTINUITY_BEGIN", 1)[1].split(
+        "// NARRATIVE_CONTINUITY_END", 1)[0]
+    realtime_meter_src = script.split("// REALTIME_AUDIO_METER_BEGIN", 1)[1].split(
+        "// REALTIME_AUDIO_METER_END", 1)[0]
+    export_src = script.split("// SESSION_EXPORT_BEGIN", 1)[1].split(
+        "// SESSION_EXPORT_END", 1)[0]
+    import_src = script.split("// SESSION_IMPORT_BEGIN", 1)[1].split(
+        "// SESSION_IMPORT_END", 1)[0]
+    harness = (
+        telemetry_src + "\n" + continuity_src + "\n" +
+        realtime_meter_src + "\n" + export_src + "\n" + import_src + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+
+// Guard: fail immediately if any network or WebSocket API is invoked during import.
+let networkCalls = 0;
+globalThis.fetch = () => { networkCalls += 1; throw new Error('unexpected fetch during import'); };
+globalThis.WebSocket = class ForbiddenWebSocket {
+  constructor() { networkCalls += 1; throw new Error('unexpected WebSocket during import'); }
+};
+
+function createMockRuntime(initialBusy = false) {
+  const state = {
+    busy: initialBusy,
+    sessionID: 'existing-session-keep',
+    history: [{ role: 'user', content: 'prior prompt' }, { role: 'assistant', content: 'prior reply' }],
+    turns: [{ user: 'prior prompt', assistant: 'prior reply' }],
+    sessionChip: { text: 'session existing', title: 'existing-session-keep' },
+    status: 'Ready',
+    error: '',
+    audioStopped: 0,
+    syncCount: 0,
+  };
+  const ctx = {
+    isBusy: () => state.busy,
+    stopActiveAudio() { state.audioStopped += 1; },
+    resetState(nextSessionId) {
+      state.sessionID = nextSessionId;
+      state.history = [];
+      state.turns = [];
+    },
+    clearTranscript() {},
+    clearError() { state.error = ''; },
+    addTurn(role, text) {
+      return {
+        role, text, asrText: '', asrEl: { textContent: '' },
+        renderedText: '', slots: [], interrupted: false, spokenBytes: null,
+        interruptedBadge: null, telemetry: null, renderedPills: [],
+      };
+    },
+    renderAssistantText(assistantTurn, text) {
+      assistantTurn.renderedText = text;
+    },
+    addImportedVisualSlot(assistantTurn, slotMeta) {
+      assistantTurn.slots.push({
+        ...slotMeta,
+        continuityBadge: visualSlotContinuityBadge(slotMeta),
+        importedMediaOmitted: !slotMeta.error,
+      });
+    },
+    attachInterruptedBadge(assistantTurn, bytes, badgeText) {
+      assistantTurn.interruptedBadge = { bytes, badgeText };
+    },
+    renderTelemetry(assistantTurn) {
+      assistantTurn.renderedPills = formatTurnTelemetry(assistantTurn.telemetry);
+    },
+    recordTurn(userTurn, assistantTurn, promptText, responseText) {
+      state.turns.push({ userTurn, assistantTurn });
+      if (promptText) state.history.push({ role: 'user', content: promptText });
+      if (responseText) state.history.push({ role: 'assistant', content: responseText });
+    },
+    setSessionChip(chip) { state.sessionChip = chip; },
+    syncUI() { state.syncCount += 1; },
+    setStatus(text) { state.status = text; },
+  };
+  return { state, ctx };
+}
+
+// 1. Round-trip export -> import -> re-export for umminfer-web-session-export-v1.
+const fixedTs = '2026-11-26T09:30:00.000Z';
+const sampleSha = '3a9d5bbe' + '4f12c890'.repeat(7);
+const slot0Sha = 'abcdef01' + '23456789'.repeat(7);
+const coveredEnvelope = {
+  schema_version: 1,
+  coverage: 'COVERED',
+  stages: [{
+    stage: 'vlm', native_stage: 'qwen38', coverage: 'COVERED',
+    allocated_bytes_peak: Math.round(128.4 * 1024 * 1024),
+    epoch: { id: 17, reset: true },
+  }],
+};
+const notCoveredEnvelope = {
+  schema_version: 1,
+  coverage: 'NOT_COVERED',
+  stages: [{
+    stage: 'vlm', native_stage: 'qwen38', coverage: 'NOT_COVERED',
+    allocated_bytes_peak: null, reason: 'batched_request_attribution_unavailable',
+  }],
+};
+const exposedBehaviorPayload = {
+  format: 'umminfer-behavior-logprobs-v1',
+  tokenizer_sha256: '1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016',
+  token_ids: [101, 202, 303, 404, 505],
+  logprobs: [-0.1, -0.25, -0.05, -0.4, -0.01],
+  mask: [1, 0, 1, 0, 1],
+};
+
+const webExportObj = buildSessionExportJson({
+  session_id: 'ummweb-a1b2c3d4e5f60708',
+  model: 'qwen3-native',
+  exported_at: fixedTs,
+  turns: [
+    {
+      prompt: 'Create a two-beat storyboard of a glowing lantern.',
+      response: 'A warm lantern floats above the misty river.',
+      asr_text: 'Create a two beat storyboard',
+      visual_slots: [
+        {
+          id: 'slot-0', kind: 'image', prompt: 'glowing lantern keyframe',
+          bytes: 131072, sha256: slot0Sha,
+        },
+        {
+          id: 'slot-1', kind: 'video', prompt: 'lantern drifting in rain',
+          bytes: 1572864, continuity_mode: 'i2v_chain',
+          anchor_slot_index: 0, anchor_explicit: true, anchor_sha256: sampleSha,
+        },
+      ],
+      telemetry: {
+        ttftMs: 210, ttfaMs: 380, visualSettledCount: 2, firstVisualMs: 3200,
+        hasI2VChain: true, hasExplicitAnchor: true, totalMs: 9100,
+        nativeAllocator: coveredEnvelope,
+        behaviorRequested: true, behaviorEvidenceHeader: 'EXPOSED',
+        behaviorEvidence: exposedBehaviorPayload,
+      },
+    },
+    {
+      prompt: 'Prove why sqrt(2) is irrational.',
+      response: 'Assume sqrt(2) = p/q in lowest terms.',
+      visual_slots: [],
+      telemetry: {
+        ttftMs: 120, ttfaMs: null, visualSettledCount: 0, firstVisualMs: null,
+        hasI2VChain: false, hasExplicitAnchor: false, totalMs: 950,
+        nativeAllocator: notCoveredEnvelope,
+        behaviorRequested: true, behaviorEvidenceHeader: 'not_exposed',
+        behaviorEvidence: null,
+      },
+    },
+    {
+      prompt: 'Tell me about ocean tides.',
+      response: 'Ocean tides are driven by',
+      interrupted: true,
+      spoken_bytes: 24,
+      visual_slots: [],
+      telemetry: null,
+    },
+  ],
+});
+
+const parsedWeb = parseImportedSessionJson(JSON.stringify(webExportObj));
+assert(parsedWeb.schema === 'umminfer-web-session-export-v1' &&
+       parsedWeb.sourceClient === 'web' &&
+       parsedWeb.session_id === 'ummweb-a1b2c3d4e5f60708' &&
+       parsedWeb.model === 'qwen3-native' &&
+       parsedWeb.turn_count === 3 && parsedWeb.turns.length === 3,
+       'parsed web session metadata mismatch');
+
+const webRt = createMockRuntime(false);
+const webApply = applyImportedSessionWithContext(parsedWeb, webRt.ctx);
+assert(webApply.turnCount === 3 && webApply.sourceClient === 'web', 'web apply summary mismatch');
+assert(webRt.state.sessionChip.text === 'imported a1b2c3d4' &&
+       webRt.state.status === 'Imported 3 turns',
+       `web session chip/status mismatch: ${JSON.stringify(webRt.state.sessionChip)} / ${webRt.state.status}`);
+assert(webRt.state.history.length === 6 &&
+       webRt.state.history[0].role === 'user' && webRt.state.history[1].role === 'assistant',
+       'restored history pairs mismatch');
+
+// Check restored Turn 1 telemetry, behavior, continuity, and omitted media (zero fabrication).
+const rt1 = webRt.state.turns[0].assistantTurn;
+assert(rt1.asrText === 'Create a two beat storyboard', 'turn 1 ASR mismatch');
+assert(rt1.slots.length === 2 && rt1.slots[0].importedMediaOmitted === true &&
+       rt1.slots[1].continuityBadge?.text === 'Explicit I2V ← Slot 1 · 3a9d5bbe',
+       'turn 1 restored visual slots mismatch');
+assert(JSON.stringify(rt1.renderedPills.map((p) => p.label)) ===
+       '["TTFT 210 ms","TTFA 380 ms","2 visuals (3.20 s)","Explicit I2V","Total 9.10 s","VRAM: 128.4 MiB peak","Behavior: 5 tok (3 sup)"]',
+       'turn 1 restored telemetry pills mismatch: ' + JSON.stringify(rt1.renderedPills));
+
+// Check restored Turn 2: NOT_COVERED VRAM + not_exposed behavior (zero fabricated zeros).
+const rt2 = webRt.state.turns[1].assistantTurn;
+assert(JSON.stringify(rt2.renderedPills.map((p) => p.label)) ===
+       '["TTFT 120 ms","Total 950 ms","VRAM: N/C","Behavior: not_exposed"]',
+       'turn 2 restored telemetry pills mismatch: ' + JSON.stringify(rt2.renderedPills));
+
+// Check restored Turn 3: interrupted badge, null telemetry omitted completely.
+const rt3 = webRt.state.turns[2].assistantTurn;
+assert(rt3.interrupted === true && rt3.spokenBytes === 24 &&
+       rt3.interruptedBadge?.badgeText === 'Interrupted · 24 B spoken' &&
+       rt3.telemetry === null && rt3.renderedPills.length === 0,
+       'turn 3 restored interruption/null telemetry mismatch');
+
+// Re-export the restored web session and verify JSON + Markdown fidelity!
+const reExportState = {
+  session_id: webRt.state.sessionID,
+  model: 'qwen3-native',
+  exported_at: fixedTs,
+  turns: webRt.state.turns.map((entry) => ({
+    prompt: entry.userTurn?.text || '',
+    response: entry.assistantTurn?.text || '',
+    asr_text: entry.assistantTurn?.asrText || '',
+    interrupted: entry.assistantTurn?.interrupted === true,
+    spoken_bytes: entry.assistantTurn?.spokenBytes,
+    visual_slots: entry.assistantTurn?.slots || [],
+    telemetry: entry.assistantTurn?.telemetry || null,
+  })),
+};
+const reExportJson = buildSessionExportJson(reExportState);
+assert(JSON.stringify(reExportJson) === JSON.stringify(webExportObj),
+       'round-trip re-export JSON diverged:\nexpected: ' + JSON.stringify(webExportObj) +
+       '\ngot:      ' + JSON.stringify(reExportJson));
+const reExportMd = buildSessionExportMarkdown(reExportState);
+assert(reExportMd.includes('`VRAM: 128.4 MiB peak`') &&
+       reExportMd.includes('`Behavior: 5 tok (3 sup)`') &&
+       reExportMd.includes('`VRAM: N/C`') &&
+       reExportMd.includes('`Behavior: not_exposed`') &&
+       reExportMd.includes('### Assistant · Interrupted · 24 B spoken'),
+       'round-trip re-export Markdown telemetry mismatch:\n' + reExportMd);
+
+// 2. Cross-client import of macOS ummmlx export (exact SessionExport.swift schema).
+const macOSExportJson = JSON.stringify({
+  exported_at: '2026-11-26T09:45:00.123Z',
+  model: 'mlx-community/Qwen3-8B-4bit',
+  schema: 'umminfer-session-export-v1',
+  session_id: 'ummmlx-deadbeef01020304',
+  turn_count: 2,
+  turns: [
+    {
+      asr_text: 'Show me a lantern drifting',
+      index: 1,
+      prompt: 'Show me a lantern drifting over a river.',
+      response: 'A warm paper lantern glides down the misty river.',
+      telemetry: {
+        behavior_logprobs: {
+          format: 'umminfer-behavior-logprobs-v1',
+          label: 'Behavior: 12 tok (9 sup)',
+          status: 'exposed',
+          supervised_count: 9,
+          token_count: 12,
+          tokenizer_sha256: '1dd1199e35f6cfb9f547458e02c9fb3a522e9c346ed22ba3d461aeed14310016',
+        },
+        first_visual_ms: 2800,
+        i2v_count: 1,
+        native_allocator: {
+          coverage: 'COVERED',
+          covered: true,
+          covered_stage_count: 2,
+          details: [
+            'vlm/qwen38: COVERED · peak 96 MiB · epoch #4',
+            'video/wan22: COVERED · peak 256 MiB · epoch #5',
+          ],
+          label: 'VRAM: 256 MiB peak',
+          peak_bytes: 268435456,
+          total_stage_count: 2,
+        },
+        total_ms: 7400,
+        ttfa_ms: 420,
+        ttft_ms: 190,
+        visual_slots: 2,
+      },
+      visual_slots: [
+        {
+          bytes: 65536,
+          kind: 'image',
+          prompt: 'lantern establishing shot',
+          sha256: slot0Sha,
+          slot_id: 'slot-0',
+          slot_index: 0,
+        },
+        {
+          anchor_explicit: true,
+          anchor_sha256: sampleSha,
+          anchor_slot_index: 0,
+          bytes: 1048576,
+          continuity_mode: 'i2v_chain',
+          kind: 'video',
+          prompt: 'lantern drifting smoothly',
+          slot_id: 'slot-1',
+          slot_index: 1,
+        },
+      ],
+    },
+    {
+      index: 2,
+      interrupted: true,
+      prompt: 'Continue the story.',
+      response: 'As night fell over',
+      spoken_bytes: 18,
+      visual_slots: [
+        {
+          error: 'video backend offline',
+          kind: 'video',
+          prompt: 'nightfall ripples',
+          slot_id: 'slot-0',
+          slot_index: 0,
+        },
+      ],
+    },
+  ],
+});
+
+const parsedMac = parseImportedSessionJson(macOSExportJson);
+assert(parsedMac.schema === 'umminfer-session-export-v1' &&
+       parsedMac.sourceClient === 'ummmlx' &&
+       parsedMac.session_id === 'ummmlx-deadbeef01020304' &&
+       parsedMac.turns.length === 2,
+       'macOS ummmlx export parse mismatch');
+const macRt = createMockRuntime(false);
+applyImportedSessionWithContext(parsedMac, macRt.ctx);
+assert(macRt.state.sessionChip.text === 'imported deadbeef' &&
+       macRt.state.status === 'Imported 2 turns · macOS ummmlx',
+       `macOS chip/status mismatch: ${macRt.state.sessionChip.text} / ${macRt.state.status}`);
+const macT1 = macRt.state.turns[0].assistantTurn;
+assert(macT1.slots.length === 2 &&
+       macT1.slots[0].id === 'slot-0' && macT1.slots[0].bytes === 65536 &&
+       macT1.slots[1].id === 'slot-1' &&
+       macT1.slots[1].continuityBadge?.text === 'Explicit I2V ← Slot 1 · 3a9d5bbe',
+       'macOS slot_id/slot_index restoration mismatch');
+assert(JSON.stringify(macT1.renderedPills.map((p) => p.label)) ===
+       '["TTFT 190 ms","TTFA 420 ms","2 visuals (2.80 s)","Explicit I2V","Total 7.40 s","VRAM: 256 MiB peak","Behavior: 12 tok (9 sup)"]',
+       'macOS telemetry pills mismatch: ' + JSON.stringify(macT1.renderedPills));
+const macT2 = macRt.state.turns[1].assistantTurn;
+assert(macT2.interrupted === true && macT2.spokenBytes === 18 &&
+       macT2.interruptedBadge?.badgeText === 'Interrupted · 18 B spoken' &&
+       macT2.slots[0].error === 'video backend offline' &&
+       macT2.slots[0].importedMediaOmitted === false &&
+       macT2.telemetry === null,
+       'macOS turn 2 interruption/slot-error/null telemetry mismatch');
+
+// 3. Empty valid export imports cleanly with local session label.
+const emptyParsed = parseImportedSessionJson(JSON.stringify({
+  schema: 'umminfer-web-session-export-v1',
+  session_id: null,
+  model: null,
+  turn_count: 0,
+  turns: [],
+}));
+const emptyRt = createMockRuntime(false);
+applyImportedSessionWithContext(emptyParsed, emptyRt.ctx);
+assert(emptyRt.state.turns.length === 0 &&
+       emptyRt.state.sessionChip.text === 'imported local' &&
+       emptyRt.state.status === 'Imported 0 turns',
+       'empty session import mismatch');
+
+// 4. Fail-closed validation: every invalid input throws and leaves prior state untouched.
+const invalidCases = [
+  ['non-string', 12345, /JSON string/],
+  ['empty string', '', /not valid JSON/],
+  ['malformed JSON', '{not valid json', /not valid JSON/],
+  ['array root', '[]', /must be an object/],
+  ['null root', 'null', /must be an object/],
+  ['missing schema', JSON.stringify({ turns: [] }), /Unsupported session export schema/],
+  ['unsupported schema', JSON.stringify({ schema: 'umminfer-session-export-v2', turns: [] }), /Unsupported session export schema/],
+  ['missing turns', JSON.stringify({ schema: 'umminfer-web-session-export-v1', messages: [] }), /turns array/],
+  ['non-array turns', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turns: {} }), /turns array/],
+  ['turn_count mismatch', JSON.stringify({ schema: 'umminfer-web-session-export-v1', turn_count: 2, turns: [] }), /turn_count/],
+  ['invalid role system', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ role: 'system', prompt: 'hi', response: 'yo' }],
+  }), /role is unsupported/],
+  ['invalid role tool', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ role: 'tool', prompt: 'hi', response: 'yo' }],
+  }), /role is unsupported/],
+  ['non-string prompt', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: 42, response: 'ok' }],
+  }), /prompt must be a string/],
+  ['non-string response', JSON.stringify({
+    schema: 'umminfer-session-export-v1',
+    turns: [{ prompt: 'ok', response: ['bad'] }],
+  }), /response must be a string/],
+  ['invalid slot kind', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: 'hi', response: 'ok', visual_slots: [{ id: 's0', kind: 'audio' }] }],
+  }), /kind must be/],
+  ['missing slot id', JSON.stringify({
+    schema: 'umminfer-session-export-v1',
+    turns: [{ prompt: 'hi', response: 'ok', visual_slots: [{ kind: 'image' }] }],
+  }), /non-empty string id or slot_id/],
+  ['negative telemetry ms', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: 'hi', response: 'ok', telemetry: { ttft_ms: -1 } }],
+  }), /non-negative finite number/],
+  ['covered VRAM missing peak_bytes', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: 'hi', response: 'ok', telemetry: {
+      native_allocator: { coverage: 'COVERED', covered: true, peak_bytes: null },
+    } }],
+  }), /peak_bytes is required/],
+  ['NOT_COVERED VRAM with fabricated peak_bytes', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: 'hi', response: 'ok', telemetry: {
+      native_allocator: { coverage: 'NOT_COVERED', covered: false, peak_bytes: 0 },
+    } }],
+  }), /peak_bytes must be null/],
+  ['exposed behavior supervised > token', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: 'hi', response: 'ok', telemetry: {
+      behavior_logprobs: { status: 'exposed', token_count: 3, supervised_count: 5 },
+    } }],
+  }), /supervised_count cannot exceed/],
+  ['not_exposed behavior with fabricated count', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: 'hi', response: 'ok', telemetry: {
+      behavior_logprobs: { status: 'not_exposed', token_count: 0, supervised_count: 0 },
+    } }],
+  }), /must have null token_count/],
+  ['oversized ASCII > 2 MiB', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: 'a'.repeat(2 * 1024 * 1024 + 10), response: '' }],
+  }), /2 MiB size limit/],
+  ['oversized multi-byte UTF-8 > 2 MiB', JSON.stringify({
+    schema: 'umminfer-web-session-export-v1',
+    turns: [{ prompt: '墨'.repeat(700000), response: '' }],
+  }), /2 MiB size limit/],
+];
+
+const intactRt = createMockRuntime(false);
+const snapshotBefore = JSON.stringify(intactRt.state);
+for (const [label, payload, pattern] of invalidCases) {
+  let caught = null;
+  try {
+    const parsed = parseImportedSessionJson(payload);
+    applyImportedSessionWithContext(parsed, intactRt.ctx);
+  } catch (err) {
+    caught = err;
+  }
+  assert(caught && pattern.test(caught.message),
+         `fail-closed case "${label}" did not match ${pattern} (got: ${caught?.message})`);
+}
+assert(JSON.stringify(intactRt.state) === snapshotBefore,
+       'failed imports mutated prior state!');
+
+// 5. Active-busy guard rejects import cleanly without mutating live state.
+const busyRt = createMockRuntime(true);
+const busySnapshot = JSON.stringify(busyRt.state);
+let busyRejected = null;
+try {
+  applyImportedSessionWithContext(parsedWeb, busyRt.ctx);
+} catch (err) {
+  busyRejected = err;
+}
+assert(busyRejected && /while a response is streaming/.test(busyRejected.message),
+       `active-busy guard failed: ${busyRejected?.message}`);
+assert(JSON.stringify(busyRt.state) === busySnapshot,
+       'active-busy rejection mutated prior state!');
+assert(networkCalls === 0, `expected 0 network calls, saw ${networkCalls}`);
+
+console.log('session import behavior passed');
+"""
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "session-import.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"session import behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
+    require("session import behavior passed" in result.stdout,
+            "session import harness did not reach its success assertion")
+
+
 def check_theme_tokens(html):
     """The CSS palette mirrors Theme.swift; both files must agree."""
     theme = THEME.read_text(encoding="utf-8")
@@ -2248,6 +2775,12 @@ class WebUIContractTest(unittest.TestCase):
     def test_session_export_behavior(self):
         check_session_export_behavior(self.script)
 
+    def test_session_import(self):
+        check_session_import(self.html, self.script)
+
+    def test_session_import_behavior(self):
+        check_session_import_behavior(self.script)
+
     def test_theme(self):
         check_theme_tokens(self.html)
 
@@ -2276,6 +2809,8 @@ def main():
         ("showcase_and_telemetry_behavior", lambda: check_showcase_and_telemetry_behavior(script)),
         ("session_export", lambda: check_session_export(html, script)),
         ("session_export_behavior", lambda: check_session_export_behavior(script)),
+        ("session_import", lambda: check_session_import(html, script)),
+        ("session_import_behavior", lambda: check_session_import_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0

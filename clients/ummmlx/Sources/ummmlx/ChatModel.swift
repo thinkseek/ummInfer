@@ -26,6 +26,27 @@ struct VisualSlotState: Identifiable, Equatable {
     var anchorExplicit: Bool = false
     /// Optional verified 64-char hex SHA-256 digest of the resolved anchor image.
     var anchorSha256: String? = nil
+    /// Optional imported artifact byte count when binary bytes were not included.
+    var importedBytes: Int? = nil
+    /// Optional imported 64-char hex SHA-256 digest when binary bytes were not included.
+    var importedSha256: String? = nil
+
+    /// Honest placeholder label when no live binary artifact is loaded in memory.
+    var placeholderLabel: String {
+        let kindLabel = activeKind == "video" ? "video" : "image"
+        var meta: [String] = []
+        if let bytes = importedBytes,
+           let formatted = NativeAllocatorTelemetrySummary.formatBytes(Int64(bytes)) {
+            meta.append(formatted)
+        }
+        if let sha = UnifiedDecode.normalizedAnchorSHA256(importedSha256) {
+            meta.append("sha256: \(sha.prefix(8))")
+        }
+        if !meta.isEmpty {
+            return "Imported \(kindLabel) (\(meta.joined(separator: " · ")))"
+        }
+        return "No \(kindLabel)"
+    }
 
     /// Short 8-character prefix of `anchorSha256` when a valid 64-char hex digest is present.
     var anchorShortDigest: String? {
@@ -257,6 +278,12 @@ struct TurnTelemetry: Equatable {
     /// Real server-returned opt-in final SSE `"behavior"` payload when exposed;
     /// nil otherwise (never fabricated).
     var behaviorEvidence: BehaviorLogprobsEvidence? = nil
+    /// Honest imported VRAM summary when restored from a JSON export without
+    /// raw per-stage server telemetry (never fabricates stages or peak bytes).
+    var importedNativeAllocator: SessionExportNativeAllocator? = nil
+    /// Honest imported behavior summary when restored from a JSON export without
+    /// raw token_ids/logprobs/mask arrays (never fabricates token arrays).
+    var importedBehaviorLogprobs: SessionExportBehaviorLogprobs? = nil
 
     static func formatDuration(_ ms: Double) -> String? {
         guard ms.isFinite, ms >= 0 else { return nil }
@@ -293,6 +320,8 @@ struct TurnTelemetry: Equatable {
         if let nativeAllocator {
             let summary = nativeAllocator.summary
             pills.append(Pill(kind: .vram, label: summary.label, help: summary.help))
+        } else if let importedVRAM = importedNativeAllocator {
+            pills.append(Pill(kind: .vram, label: importedVRAM.displayLabel, help: importedVRAM.helpText))
         }
         if let behaviorSummary = BehaviorLogprobsSummary.from(
             requested: behaviorRequested,
@@ -300,6 +329,8 @@ struct TurnTelemetry: Equatable {
             evidence: behaviorEvidence
         ) {
             pills.append(Pill(kind: .behavior, label: behaviorSummary.label, help: behaviorSummary.help))
+        } else if let importedBehavior = importedBehaviorLogprobs {
+            pills.append(Pill(kind: .behavior, label: importedBehavior.displayLabel, help: importedBehavior.helpText))
         }
         return pills
     }
@@ -336,9 +367,15 @@ struct ChatTurn: Identifiable {
     /// barge-in (`response.playback_ack` / `response.cancelled` `text_cursor`).
     /// Nil for normal completed turns.
     var interruptedSpokenBytes: Int? = nil
+    /// True when the turn was interrupted (including imported interrupted turns
+    /// whose `spoken_bytes` was omitted without fabricating `0`).
+    var isInterrupted: Bool = false
 
     var interruptedBadgeText: String? {
-        Self.formatInterruptedBadge(acknowledgedBytes: interruptedSpokenBytes)
+        if let badge = Self.formatInterruptedBadge(acknowledgedBytes: interruptedSpokenBytes) {
+            return badge
+        }
+        return isInterrupted ? "Interrupted" : nil
     }
 
     static func formatInterruptedBadge(acknowledgedBytes: Int?) -> String? {
@@ -489,6 +526,76 @@ final class ChatModel: ObservableObject {
     /// True while a chat request or any turn is actively streaming.
     var isStreaming: Bool {
         isRunning || turns.contains { $0.state == .streaming }
+    }
+
+    /// True while an active request, streaming turn, Live Voice session, or
+    /// microphone capture prevents replacing the current conversation.
+    var isSessionImportBlocked: Bool {
+        isStreaming || isLiveVoiceActive || isListening
+    }
+
+    /// Pure client-side session import (macOS `umminfer-session-export-v1` or
+    /// Web `umminfer-web-session-export-v1`). Rejects busy states and malformed
+    /// payloads fail-closed without mutating the existing conversation or
+    /// triggering any HTTP/WebSocket traffic.
+    @discardableResult
+    func importSessionJSON(_ data: Data, filename: String? = nil) throws -> ImportedSession {
+        guard !isSessionImportBlocked else {
+            let reason: String
+            if isLiveVoiceActive {
+                reason = "Cannot import a session while Live Voice is active."
+            } else if isListening {
+                reason = "Cannot import a session while voice recording is active."
+            } else {
+                reason = "Cannot import a session while a response is streaming."
+            }
+            let busyError = SessionImportError.sessionBusy(reason)
+            error = busyError.localizedDescription
+            throw busyError
+        }
+
+        let imported: ImportedSession
+        do {
+            imported = try SessionExporter.importJSON(data)
+        } catch {
+            self.error = "Could not import session: \(error.localizedDescription)"
+            status = "Import error"
+            throw error
+        }
+
+        stopStreamingAudio()
+        requestTask?.cancel()
+        requestTask = nil
+        activeTurn = nil
+        activeSettledVisualKeys.removeAll()
+        stopping = false
+        receivedDelta = false
+        onFirstDelta = nil
+
+        turns = imported.turns
+        if let importedModel = imported.model, !importedModel.isEmpty {
+            model = importedModel
+        }
+        if let importedSessionID = imported.sessionID, !importedSessionID.isEmpty {
+            sessionID = importedSessionID
+            requestSessionID = importedSessionID
+        } else {
+            sessionID = ""
+            requestSessionID = Self.newSessionID()
+        }
+        error = nil
+        let turnWord = imported.turnCount == 1 ? "turn" : "turns"
+        if let filename, !filename.isEmpty {
+            status = "Imported \(filename) (\(imported.turnCount) \(turnWord))"
+        } else {
+            status = "Imported \(imported.turnCount) \(turnWord)"
+        }
+        return imported
+    }
+
+    func noteSessionImportFailed(_ message: String) {
+        error = "Could not import session: \(message)"
+        status = "Import error"
     }
 
     /// Pure client-side session export bytes (JSON or Markdown) for the current

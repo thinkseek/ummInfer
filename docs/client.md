@@ -462,6 +462,21 @@ uninterrupted turns), and exact observed per-turn telemetry (`ttft_ms`,
 `behavior_logprobs`, preserving `null` / `N/C` / `not_exposed` with zero
 fabricated numbers).
 
+Both clients also provide a symmetric pure client-side **Import JSON** control
+(`#importSession` / `#importSessionInput` in `web/index.html` and
+`importSessionJSON` via `NSOpenPanel` in `ummmlx`) that accepts **either**
+`umminfer-web-session-export-v1` or `umminfer-session-export-v1` cross-client:
+- **Fail-closed validation**: enforces a 2 MiB size ceiling before decoding,
+  strict root object / schema allowlist / `turns` (or `messages`) structure /
+  role / visual-slot metadata / telemetry consistency checks, and rejects any
+  import while a stream, Live Voice session, or microphone recording is active
+  — leaving the existing conversation and DOM/model state untouched on failure.
+- **Zero fabrication & zero network traffic**: restores clean turns, honest
+  telemetry/behavior pills, interrupted badges, and static omitted-media slot
+  metadata (`bytes` / short `sha256` without synthesizing media bytes) locally
+  without sending any `/v1/chat/completions`, `/v1/visual/render`, or WebSocket
+  requests; Export, New Chat, and follow-up turns continue working normally.
+
 ## Direct Speech (`POST /v1/audio/speech`)
 
 `OpenAIClient::speech(const SpeechRequest&)` and the `umm-infer speech`

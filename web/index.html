@@ -145,6 +145,9 @@
     border-top-left-radius: 0; border-bottom-left-radius: 0;
     padding: 6px 11px; font-size: var(--f-caption);
   }
+  #importSession {
+    padding: 6px 11px; font-size: var(--f-caption);
+  }
 
   #transcript { flex: 1; overflow-y: auto; padding: 20px; }
   .empty-state {
@@ -357,6 +360,7 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .slot-error { font-size: var(--f-caption); color: var(--danger); padding: 0 10px; text-align: center; }
+  .slot-imported-note { font-size: var(--f-caption); color: var(--secondary); padding: 12px 14px; text-align: center; line-height: 1.5; }
   .slot-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .slot-actions button, .slot-actions a.dl { padding: 3px 9px; font-size: var(--f-caption); }
   .slot-actions a.dl {
@@ -449,6 +453,9 @@
     <button id="exportSession" type="button" disabled
             title="Export session transcript and observed telemetry (Shift-click for alternate format)">Export</button>
   </div>
+  <input id="importSessionInput" type="file" accept="application/json,.json" hidden>
+  <button id="importSession" type="button"
+          title="Import a saved ummInfer Web or macOS JSON session locally (no network calls)">Import JSON</button>
   <button id="new">New chat</button>
 </header>
 
@@ -585,6 +592,7 @@ const ui = {
   pickAudio: $('pickAudio'), mic: $('mic'),
   prompt: $('prompt'), send: $('send'), stop: $('stop'), newChat: $('new'),
   exportFormat: $('exportFormat'), exportSession: $('exportSession'),
+  importSession: $('importSession'), importSessionInput: $('importSessionInput'),
   narrative: $('narrative'), visualMode: $('visualMode'), maxSlots: $('maxSlots'),
   allowTextOnly: $('allowTextOnly'), narrativeContinuity: $('narrativeContinuity'),
   styleAnchor: $('styleAnchor'), fastVideo: $('fastVideo'),
@@ -1265,6 +1273,97 @@ function summarizeNativeAllocatorTelemetry(envelope) {
   };
 }
 
+function formatImportedNativeAllocatorSummary(summary) {
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return null;
+  const details = Array.isArray(summary.details)
+    ? summary.details.filter((line) => typeof line === 'string')
+    : [];
+  const totalStageCount = Number.isSafeInteger(summary.total_stage_count) && summary.total_stage_count >= 0
+    ? summary.total_stage_count : details.length;
+  const coveredStageCount = Number.isSafeInteger(summary.covered_stage_count) && summary.covered_stage_count >= 0
+    ? summary.covered_stage_count : 0;
+  if (summary.covered === true &&
+      typeof summary.peak_bytes === 'number' &&
+      Number.isFinite(summary.peak_bytes) &&
+      summary.peak_bytes >= 0) {
+    const formatted = formatAllocatorBytes(summary.peak_bytes);
+    const coverage = summary.coverage === 'PARTIAL' ? 'PARTIAL' : 'COVERED';
+    const header = totalStageCount > 0
+      ? `Native CUDA allocator (${coveredStageCount}/${totalStageCount} stage${totalStageCount === 1 ? '' : 's'} covered)`
+      : `Native CUDA allocator (${coverage})`;
+    return {
+      covered: true,
+      coverage,
+      coveredStageCount,
+      totalStageCount,
+      peakBytes: summary.peak_bytes,
+      label: `VRAM: ${formatted} peak`,
+      title: [header, ...details].join('\n'),
+      details,
+    };
+  }
+  const header = 'Native CUDA allocator (NOT_COVERED)';
+  const lines = details.length ? details : ['no stages reported'];
+  return {
+    covered: false,
+    coverage: 'NOT_COVERED',
+    coveredStageCount: 0,
+    totalStageCount,
+    peakBytes: null,
+    label: 'VRAM: N/C',
+    title: [header, ...lines].join('\n'),
+    details,
+  };
+}
+
+function formatImportedBehaviorSummary(summary) {
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return null;
+  const status = normalizeBehaviorEvidenceHeader(summary.status);
+  if (status === 'exposed' &&
+      Number.isSafeInteger(summary.token_count) && summary.token_count >= 0 &&
+      Number.isSafeInteger(summary.supervised_count) && summary.supervised_count >= 0 &&
+      summary.supervised_count <= summary.token_count) {
+    const format = typeof summary.format === 'string' ? summary.format : '';
+    const tokenizerSha = typeof summary.tokenizer_sha256 === 'string' ? summary.tokenizer_sha256 : '';
+    const lines = ['Behavior logprobs: exposed'];
+    if (format) lines.push(`Format: ${format}`);
+    lines.push(`Tokens: ${summary.token_count} (${summary.supervised_count} supervised)`);
+    if (tokenizerSha) lines.push(`Tokenizer SHA-256: ${tokenizerSha}`);
+    return {
+      status: 'exposed',
+      tokenCount: summary.token_count,
+      supervisedCount: summary.supervised_count,
+      format,
+      tokenizer_sha256: tokenizerSha,
+      label: `Behavior: ${summary.token_count} tok (${summary.supervised_count} sup)`,
+      title: lines.join('\n'),
+    };
+  }
+  if (status === 'absent') {
+    return {
+      status: 'absent',
+      tokenCount: null,
+      supervisedCount: null,
+      format: '',
+      tokenizer_sha256: '',
+      label: 'Behavior: absent',
+      title: 'Behavior logprobs requested, but X-UmmInfer-Behavior-Evidence header was absent',
+    };
+  }
+  if (status === 'not_exposed') {
+    return {
+      status: 'not_exposed',
+      tokenCount: null,
+      supervisedCount: null,
+      format: '',
+      tokenizer_sha256: '',
+      label: 'Behavior: not_exposed',
+      title: 'Behavior logprobs: not_exposed (no behavior payload)',
+    };
+  }
+  return null;
+}
+
 function formatTurnTelemetry(telemetry) {
   if (!telemetry || typeof telemetry !== 'object') return [];
   const pills = [];
@@ -1290,7 +1389,9 @@ function formatTurnTelemetry(telemetry) {
   }
   const total = formatTelemetryDuration(telemetry.totalMs);
   if (total !== null) pills.push({ kind: 'total', label: `Total ${total}` });
-  const vram = summarizeNativeAllocatorTelemetry(telemetry.nativeAllocator);
+  const vram = telemetry.nativeAllocatorSummary
+    ? formatImportedNativeAllocatorSummary(telemetry.nativeAllocatorSummary)
+    : summarizeNativeAllocatorTelemetry(telemetry.nativeAllocator);
   if (vram !== null) {
     pills.push({
       kind: 'vram',
@@ -1299,11 +1400,13 @@ function formatTurnTelemetry(telemetry) {
       coverage: vram.coverage,
     });
   }
-  const behavior = summarizeBehaviorEvidence({
-    requested: telemetry.behaviorRequested === true,
-    header: telemetry.behaviorEvidenceHeader || '',
-    payload: telemetry.behaviorEvidence || null,
-  });
+  const behavior = telemetry.behaviorSummary
+    ? formatImportedBehaviorSummary(telemetry.behaviorSummary)
+    : summarizeBehaviorEvidence({
+        requested: telemetry.behaviorRequested === true,
+        header: telemetry.behaviorEvidenceHeader || '',
+        payload: telemetry.behaviorEvidence || null,
+      });
   if (behavior !== null) {
     pills.push({
       kind: 'behavior',
@@ -1756,7 +1859,10 @@ function createSlot(id, prompt, kind, continuity = null) {
 function showSlotLoading(slot) {
   slot.hasError = false;
   slot.error = '';
-  if (slot.el?.dataset) delete slot.el.dataset.error;
+  if (slot.el?.dataset) {
+    delete slot.el.dataset.error;
+    delete slot.el.dataset.importedMedia;
+  }
   slot.el?.classList?.remove('has-error');
   const shimmer = document.createElement('div');
   shimmer.className = 'shimmer';
@@ -1769,7 +1875,10 @@ function showSlotLoading(slot) {
 function showSlotError(slot, message) {
   slot.hasError = true;
   slot.error = typeof message === 'string' ? message : '';
-  if (slot.el?.dataset) slot.el.dataset.error = 'true';
+  if (slot.el?.dataset) {
+    slot.el.dataset.error = 'true';
+    delete slot.el.dataset.importedMedia;
+  }
   slot.el?.classList?.add('has-error');
   const overlay = document.createElement('div');
   overlay.className = 'slot-overlay';
@@ -1780,10 +1889,31 @@ function showSlotError(slot, message) {
   slot.media.replaceChildren(overlay);
 }
 
+function showSlotImportedMetadata(slot) {
+  slot.hasError = false;
+  slot.error = '';
+  if (slot.el?.dataset) {
+    delete slot.el.dataset.error;
+    slot.el.dataset.importedMedia = 'omitted';
+  }
+  slot.el?.classList?.remove('has-error');
+  const note = document.createElement('div');
+  note.className = 'slot-imported-note';
+  const parts = ['Media bytes omitted from JSON export'];
+  const formattedBytes = formatAllocatorBytes(slot.bytes);
+  if (formattedBytes !== null) parts.push(formattedBytes);
+  if (slot.sha256) parts.push(`sha256: ${slot.sha256.slice(0, 8)}`);
+  note.textContent = parts.join(' · ');
+  slot.media.replaceChildren(note);
+}
+
 function setSlotMedia(slot, kind, url) {
   slot.hasError = false;
   slot.error = '';
-  if (slot.el?.dataset) delete slot.el.dataset.error;
+  if (slot.el?.dataset) {
+    delete slot.el.dataset.error;
+    delete slot.el.dataset.importedMedia;
+  }
   slot.el?.classList?.remove('has-error');
   slot.kind = kind;
   slot.url = url;
@@ -2534,7 +2664,12 @@ function attachRealtimeInterruptedBadge(responseTurn, acknowledgedBytes, badgeTe
     responseTurn.interruptedBadgeEl = badge;
     responseTurn.meta.append(badge);
   }
-  badge.dataset.acknowledgedBytes = String(acknowledgedBytes);
+  const bytes = parseNonNegativeCursor(acknowledgedBytes);
+  if (bytes !== null) {
+    badge.dataset.acknowledgedBytes = String(bytes);
+  } else if (badge.dataset) {
+    delete badge.dataset.acknowledgedBytes;
+  }
   badge.setAttribute('aria-label', badgeText);
   badge.textContent = badgeText;
 }
@@ -3137,7 +3272,7 @@ function setBusy(busy) {
     ui.temperature, ui.topP, ui.seed, ui.apiKey, ui.imageSize, ui.imageSteps,
     ui.imageFile, ui.refAudio, ui.videoSize, ui.videoSeconds,
     ui.videoFrames, ui.videoSteps, ui.videoGuidance, ui.pickImage,
-    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly,
+    ui.pickVideo, ui.pickAudio, ui.mic, ui.newChat, ui.importSession, ui.narrative, ui.visualMode, ui.maxSlots, ui.allowTextOnly,
     ui.narrativeContinuity, ui.styleAnchor, ui.fastVideo, ui.nativeAllocatorTelemetry, ui.behaviorLogprobs,
     ui.videoFramePolicy, ui.videoMotionThreshold, ui.videoSceneThreshold]) {
     control.disabled = busy;
@@ -3761,8 +3896,9 @@ function normalizeTurnTelemetryForExport(rawTelemetry, normalizedSlots) {
     if (isI2V) slotI2VCount += 1;
     if (s.anchor_explicit === true) slotHasExplicitAnchor = true;
   }
-  const rawI2VCount = src && Number.isInteger(src.i2v_count) && src.i2v_count >= 0
-    ? src.i2v_count : null;
+  const rawI2VSource = src ? (src.i2v_count ?? src.i2vCount) : undefined;
+  const rawI2VCount = Number.isInteger(rawI2VSource) && rawI2VSource >= 0
+    ? rawI2VSource : null;
   const hasI2VFlag = Boolean(src && (src.hasI2VChain === true || src.has_i2v_chain === true));
   const hasExplicitFlag = slotHasExplicitAnchor ||
     Boolean(src && (src.hasExplicitAnchor === true || src.has_explicit_anchor === true));
@@ -3771,18 +3907,24 @@ function normalizeTurnTelemetryForExport(rawTelemetry, normalizedSlots) {
     : (slotI2VCount > 0 ? slotI2VCount : ((hasI2VFlag || hasExplicitFlag) ? 1 : 0));
 
   const rawNativeAllocator = src ? (src.nativeAllocator ?? src.native_allocator ?? null) : null;
-  const vramSummary = summarizeNativeAllocatorTelemetry(rawNativeAllocator);
+  const rawNativeAllocatorSummary = src ? (src.nativeAllocatorSummary ?? null) : null;
+  const vramSummary = rawNativeAllocatorSummary
+    ? formatImportedNativeAllocatorSummary(rawNativeAllocatorSummary)
+    : summarizeNativeAllocatorTelemetry(rawNativeAllocator);
 
+  const rawBehaviorSummary = src ? (src.behaviorSummary ?? null) : null;
   const rawBehaviorRequested = Boolean(src && (src.behaviorRequested === true || src.behavior_requested === true));
   const rawBehaviorHeader = src
     ? (src.behaviorEvidenceHeader ?? src.behavior_evidence_header ?? '') : '';
   const rawBehaviorPayload = src
     ? (src.behaviorEvidence ?? src.behavior_evidence ?? null) : null;
-  const behaviorSummary = summarizeBehaviorEvidence({
-    requested: rawBehaviorRequested,
-    header: rawBehaviorHeader,
-    payload: rawBehaviorPayload,
-  });
+  const behaviorSummary = rawBehaviorSummary
+    ? formatImportedBehaviorSummary(rawBehaviorSummary)
+    : summarizeBehaviorEvidence({
+        requested: rawBehaviorRequested,
+        header: rawBehaviorHeader,
+        payload: rawBehaviorPayload,
+      });
 
   const hasAnyMetric = ttftMs !== null || ttfaMs !== null || firstVisualMs !== null ||
     totalMs !== null || visualSlotsCount > 0 || i2vCount > 0 ||
@@ -3800,7 +3942,9 @@ function normalizeTurnTelemetryForExport(rawTelemetry, normalizedSlots) {
   json.i2v_count = i2vCount;
 
   if (vramSummary !== null) {
-    const details = vramSummary.title.split('\n').slice(1);
+    const details = Array.isArray(vramSummary.details)
+      ? vramSummary.details
+      : vramSummary.title.split('\n').slice(1);
     json.native_allocator = {
       coverage: vramSummary.coverage,
       covered: vramSummary.covered,
@@ -3820,9 +3964,13 @@ function normalizeTurnTelemetryForExport(rawTelemetry, normalizedSlots) {
       label: behaviorSummary.label,
     };
     if (behaviorSummary.status === 'exposed') {
-      const validPayload = extractBehaviorEvidence({ behavior: rawBehaviorPayload });
-      if (validPayload?.format) behaviorOut.format = validPayload.format;
-      if (validPayload?.tokenizer_sha256) behaviorOut.tokenizer_sha256 = validPayload.tokenizer_sha256;
+      const validPayload = rawBehaviorPayload
+        ? extractBehaviorEvidence({ behavior: rawBehaviorPayload })
+        : null;
+      const format = validPayload?.format || behaviorSummary.format || '';
+      const tokenizerSha = validPayload?.tokenizer_sha256 || behaviorSummary.tokenizer_sha256 || '';
+      if (format) behaviorOut.format = format;
+      if (tokenizerSha) behaviorOut.tokenizer_sha256 = tokenizerSha;
     }
     json.behavior_logprobs = behaviorOut;
   }
@@ -3836,9 +3984,11 @@ function normalizeTurnTelemetryForExport(rawTelemetry, normalizedSlots) {
     hasExplicitAnchor: hasExplicitFlag,
     totalMs,
     nativeAllocator: rawNativeAllocator,
+    nativeAllocatorSummary: rawNativeAllocatorSummary,
     behaviorRequested: rawBehaviorRequested,
     behaviorEvidenceHeader: rawBehaviorHeader,
     behaviorEvidence: rawBehaviorPayload,
+    behaviorSummary: rawBehaviorSummary,
   };
 
   return { json, formatInput };
@@ -4020,6 +4170,514 @@ function triggerSessionExportDownload(state, format = 'json') {
 }
 // SESSION_EXPORT_END
 
+// SESSION_IMPORT_BEGIN
+const MAX_IMPORT_SESSION_BYTES = 2 * 1024 * 1024;
+const MAX_IMPORT_TURNS = 1000;
+const SUPPORTED_IMPORT_SCHEMAS = Object.freeze(new Set([
+  'umminfer-web-session-export-v1',
+  'umminfer-session-export-v1',
+]));
+const VALID_IMPORT_TURN_ROLES = Object.freeze(new Set(['user', 'assistant', 'turn']));
+const VALID_IMPORT_SLOT_KINDS = Object.freeze(new Set(['image', 'video']));
+const VALID_IMPORT_VRAM_COVERAGE = Object.freeze(new Set(['COVERED', 'PARTIAL', 'NOT_COVERED']));
+const VALID_IMPORT_BEHAVIOR_STATUS = Object.freeze(new Set(['exposed', 'not_exposed', 'absent']));
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseOptionalStringField(obj, key, context) {
+  const val = obj[key];
+  if (val === undefined || val === null) return null;
+  if (typeof val !== 'string') {
+    throw new Error(`${context}.${key} must be a string.`);
+  }
+  const trimmed = val.trim();
+  return trimmed || null;
+}
+
+function parseOptionalNonNegInt(obj, key, context) {
+  const val = obj[key];
+  if (val === undefined || val === null) return null;
+  if (typeof val !== 'number' || !Number.isSafeInteger(val) || val < 0) {
+    throw new Error(`${context}.${key} must be a non-negative integer.`);
+  }
+  return val;
+}
+
+function parseOptionalNonNegMs(obj, key, context) {
+  const val = obj[key];
+  if (val === undefined || val === null) return null;
+  if (typeof val !== 'number' || !Number.isFinite(val) || val < 0) {
+    throw new Error(`${context}.${key} must be a non-negative finite number.`);
+  }
+  return val;
+}
+
+function parseImportedVisualSlot(rawSlot, turnLabel, slotIdx) {
+  const ctx = `${turnLabel}.visual_slots[${slotIdx}]`;
+  if (!isPlainObject(rawSlot)) {
+    throw new Error(`${ctx} must be an object.`);
+  }
+  const rawId = rawSlot.id !== undefined ? rawSlot.id : rawSlot.slot_id;
+  if (typeof rawId !== 'string' || !rawId.trim()) {
+    throw new Error(`${ctx} must have a non-empty string id or slot_id.`);
+  }
+  const slotIndex = parseOptionalNonNegInt(rawSlot, 'slot_index', ctx);
+  if (typeof rawSlot.kind !== 'string' || !VALID_IMPORT_SLOT_KINDS.has(rawSlot.kind)) {
+    throw new Error(`${ctx}.kind must be "image" or "video".`);
+  }
+  const rawPrompt = rawSlot.prompt;
+  if (rawPrompt !== undefined && rawPrompt !== null && typeof rawPrompt !== 'string') {
+    throw new Error(`${ctx}.prompt must be a string.`);
+  }
+  const prompt = scrubInlineDataUri(typeof rawPrompt === 'string' ? rawPrompt.trim() : '');
+  const bytes = parseOptionalNonNegInt(rawSlot, 'bytes', ctx);
+  const rawSha = parseOptionalStringField(rawSlot, 'sha256', ctx);
+  const sha256 = rawSha ? normalizeAnchorSha256(rawSha) : '';
+
+  const rawContinuity = rawSlot.continuity_mode;
+  let continuityMode = '';
+  if (rawContinuity !== undefined && rawContinuity !== null) {
+    if (typeof rawContinuity !== 'string') {
+      throw new Error(`${ctx}.continuity_mode must be a string.`);
+    }
+    const trimmed = rawContinuity.trim();
+    if (trimmed && !VALID_CONTINUITY_MODES.has(trimmed)) {
+      throw new Error(`${ctx}.continuity_mode is unsupported: ${trimmed}.`);
+    }
+    continuityMode = trimmed === 'off' ? '' : trimmed;
+  }
+
+  const anchorSlotIndex = parseOptionalNonNegInt(rawSlot, 'anchor_slot_index', ctx);
+  const rawExplicit = rawSlot.anchor_explicit;
+  if (rawExplicit !== undefined && rawExplicit !== null && typeof rawExplicit !== 'boolean') {
+    throw new Error(`${ctx}.anchor_explicit must be a boolean.`);
+  }
+  const anchorExplicit = rawExplicit === true;
+  const rawAnchorSha = parseOptionalStringField(rawSlot, 'anchor_sha256', ctx);
+  const anchorSha256 = rawAnchorSha ? normalizeAnchorSha256(rawAnchorSha) : '';
+  const errorText = parseOptionalStringField(rawSlot, 'error', ctx) || '';
+
+  return {
+    id: rawId.trim(),
+    slot_index: slotIndex !== null ? slotIndex : slotIdx,
+    kind: rawSlot.kind,
+    prompt,
+    bytes,
+    sha256,
+    continuity_mode: continuityMode,
+    anchor_slot_index: anchorSlotIndex !== null ? anchorSlotIndex : undefined,
+    anchor_explicit: anchorExplicit,
+    anchor_sha256: anchorSha256,
+    error: errorText,
+  };
+}
+
+function parseImportedNativeAllocator(rawNa, turnLabel) {
+  if (rawNa === undefined || rawNa === null) return null;
+  const ctx = `${turnLabel}.telemetry.native_allocator`;
+  if (!isPlainObject(rawNa)) {
+    throw new Error(`${ctx} must be an object.`);
+  }
+  if (typeof rawNa.coverage !== 'string' || !VALID_IMPORT_VRAM_COVERAGE.has(rawNa.coverage)) {
+    throw new Error(`${ctx}.coverage must be COVERED, PARTIAL, or NOT_COVERED.`);
+  }
+  if (typeof rawNa.covered !== 'boolean') {
+    throw new Error(`${ctx}.covered must be a boolean.`);
+  }
+  if (rawNa.covered && rawNa.coverage === 'NOT_COVERED') {
+    throw new Error(`${ctx} cannot have covered=true with coverage=NOT_COVERED.`);
+  }
+  if (!rawNa.covered && rawNa.coverage !== 'NOT_COVERED') {
+    throw new Error(`${ctx} cannot have covered=false with coverage=${rawNa.coverage}.`);
+  }
+  const coveredStageCount = parseOptionalNonNegInt(rawNa, 'covered_stage_count', ctx);
+  const totalStageCount = parseOptionalNonNegInt(rawNa, 'total_stage_count', ctx);
+  if (coveredStageCount !== null && totalStageCount !== null && coveredStageCount > totalStageCount) {
+    throw new Error(`${ctx}.covered_stage_count exceeds total_stage_count.`);
+  }
+  let peakBytes = null;
+  if (rawNa.covered) {
+    peakBytes = parseOptionalNonNegMs(rawNa, 'peak_bytes', ctx);
+    if (peakBytes === null) {
+      throw new Error(`${ctx}.peak_bytes is required when covered=true.`);
+    }
+  } else if (rawNa.peak_bytes !== undefined && rawNa.peak_bytes !== null) {
+    throw new Error(`${ctx}.peak_bytes must be null when covered=false.`);
+  }
+  if (rawNa.label !== undefined && rawNa.label !== null && typeof rawNa.label !== 'string') {
+    throw new Error(`${ctx}.label must be a string.`);
+  }
+  let details = [];
+  if (rawNa.details !== undefined && rawNa.details !== null) {
+    if (!Array.isArray(rawNa.details) || !rawNa.details.every((d) => typeof d === 'string')) {
+      throw new Error(`${ctx}.details must be an array of strings.`);
+    }
+    details = rawNa.details.map((d) => d.trim()).filter(Boolean);
+  }
+  return {
+    coverage: rawNa.coverage,
+    covered: rawNa.covered,
+    covered_stage_count: coveredStageCount !== null ? coveredStageCount : (rawNa.covered ? 1 : 0),
+    total_stage_count: totalStageCount !== null ? totalStageCount : details.length,
+    peak_bytes: peakBytes,
+    details,
+  };
+}
+
+function parseImportedBehaviorLogprobs(rawBehavior, turnLabel) {
+  if (rawBehavior === undefined || rawBehavior === null) return null;
+  const ctx = `${turnLabel}.telemetry.behavior_logprobs`;
+  if (!isPlainObject(rawBehavior)) {
+    throw new Error(`${ctx} must be an object.`);
+  }
+  if (typeof rawBehavior.status !== 'string' || !VALID_IMPORT_BEHAVIOR_STATUS.has(rawBehavior.status)) {
+    throw new Error(`${ctx}.status must be exposed, not_exposed, or absent.`);
+  }
+  if (rawBehavior.label !== undefined && rawBehavior.label !== null && typeof rawBehavior.label !== 'string') {
+    throw new Error(`${ctx}.label must be a string.`);
+  }
+  if (rawBehavior.status === 'exposed') {
+    const tokenCount = parseOptionalNonNegInt(rawBehavior, 'token_count', ctx);
+    const supervisedCount = parseOptionalNonNegInt(rawBehavior, 'supervised_count', ctx);
+    if (tokenCount === null || supervisedCount === null) {
+      throw new Error(`${ctx} requires non-negative integer token_count and supervised_count when exposed.`);
+    }
+    if (supervisedCount > tokenCount) {
+      throw new Error(`${ctx}.supervised_count cannot exceed token_count.`);
+    }
+    const format = parseOptionalStringField(rawBehavior, 'format', ctx) || '';
+    const tokenizerSha = parseOptionalStringField(rawBehavior, 'tokenizer_sha256', ctx) || '';
+    return {
+      status: 'exposed',
+      token_count: tokenCount,
+      supervised_count: supervisedCount,
+      format,
+      tokenizer_sha256: tokenizerSha,
+    };
+  }
+  if ((rawBehavior.token_count !== undefined && rawBehavior.token_count !== null) ||
+      (rawBehavior.supervised_count !== undefined && rawBehavior.supervised_count !== null)) {
+    throw new Error(`${ctx} must have null token_count and supervised_count when status is ${rawBehavior.status}.`);
+  }
+  return {
+    status: rawBehavior.status,
+    token_count: null,
+    supervised_count: null,
+    format: '',
+    tokenizer_sha256: '',
+  };
+}
+
+function buildImportedTelemetryRecord(rawTelemetry, visualSlots, turnLabel) {
+  if (rawTelemetry === undefined || rawTelemetry === null) return null;
+  const ctx = `${turnLabel}.telemetry`;
+  if (!isPlainObject(rawTelemetry)) {
+    throw new Error(`${ctx} must be an object.`);
+  }
+  const ttftMs = parseOptionalNonNegMs(rawTelemetry, 'ttft_ms', ctx);
+  const ttfaMs = parseOptionalNonNegMs(rawTelemetry, 'ttfa_ms', ctx);
+  const firstVisualMs = parseOptionalNonNegMs(rawTelemetry, 'first_visual_ms', ctx);
+  const totalMs = parseOptionalNonNegMs(rawTelemetry, 'total_ms', ctx);
+  const visualSlotsCount = parseOptionalNonNegInt(rawTelemetry, 'visual_slots', ctx) ?? 0;
+  const i2vCount = parseOptionalNonNegInt(rawTelemetry, 'i2v_count', ctx) ?? 0;
+  const nativeAllocatorSummary = parseImportedNativeAllocator(rawTelemetry.native_allocator, turnLabel);
+  const behaviorSummary = parseImportedBehaviorLogprobs(rawTelemetry.behavior_logprobs, turnLabel);
+
+  const slotHasI2V = visualSlots.some(
+    (s) => (Number.isInteger(s.anchor_slot_index) && s.anchor_slot_index >= 0) ||
+           s.continuity_mode === 'i2v_chain' || s.anchor_explicit === true,
+  );
+  const slotHasExplicitAnchor = visualSlots.some((s) => s.anchor_explicit === true);
+
+  const hasAnyMetric = ttftMs !== null || ttfaMs !== null || firstVisualMs !== null ||
+    totalMs !== null || visualSlotsCount > 0 || i2vCount > 0 ||
+    nativeAllocatorSummary !== null || behaviorSummary !== null;
+  if (!hasAnyMetric) return null;
+
+  return {
+    startedAt: null,
+    ttftMs,
+    ttfaMs,
+    visualSettledCount: Math.max(visualSlotsCount, visualSlots.length),
+    settledSlotIds: new Set(),
+    firstVisualMs,
+    hasI2VChain: i2vCount > 0 || slotHasI2V,
+    hasExplicitAnchor: slotHasExplicitAnchor,
+    i2vCount,
+    totalMs,
+    nativeAllocator: null,
+    nativeAllocatorSummary,
+    behaviorRequested: behaviorSummary !== null,
+    behaviorEvidenceHeader: behaviorSummary ? behaviorSummary.status : '',
+    behaviorEvidence: null,
+    behaviorSummary,
+  };
+}
+
+function parseImportedSessionJson(text) {
+  if (typeof text !== 'string') {
+    throw new Error('Imported session must be a JSON string.');
+  }
+  if (text.length > MAX_IMPORT_SESSION_BYTES ||
+      new TextEncoder().encode(text).length > MAX_IMPORT_SESSION_BYTES) {
+    throw new Error('Imported session JSON exceeds the 2 MiB size limit.');
+  }
+  let root;
+  try {
+    root = JSON.parse(text);
+  } catch {
+    throw new Error('Imported file is not valid JSON.');
+  }
+  if (!isPlainObject(root)) {
+    throw new Error('Imported session JSON root must be an object.');
+  }
+  if (typeof root.schema !== 'string' || !SUPPORTED_IMPORT_SCHEMAS.has(root.schema)) {
+    const label = typeof root.schema === 'string' && root.schema ? root.schema : '(missing)';
+    throw new Error(`Unsupported session export schema: ${label}.`);
+  }
+  const sessionId = parseOptionalStringField(root, 'session_id', 'root');
+  const model = parseOptionalStringField(root, 'model', 'root');
+  const exportedAt = parseOptionalStringField(root, 'exported_at', 'root');
+
+  if (!Array.isArray(root.turns)) {
+    throw new Error('Imported session JSON must contain a turns array.');
+  }
+  if (root.turn_count !== undefined && root.turn_count !== null) {
+    if (typeof root.turn_count !== 'number' || !Number.isSafeInteger(root.turn_count) ||
+        root.turn_count !== root.turns.length) {
+      throw new Error('Imported session turn_count does not match turns length.');
+    }
+  }
+  if (root.turns.length > MAX_IMPORT_TURNS) {
+    throw new Error(`Imported session exceeds the maximum of ${MAX_IMPORT_TURNS} turns.`);
+  }
+
+  const turns = [];
+  for (let i = 0; i < root.turns.length; i += 1) {
+    const rawTurn = root.turns[i];
+    const label = `turns[${i}]`;
+    if (!isPlainObject(rawTurn)) {
+      throw new Error(`${label} must be an object.`);
+    }
+    if (rawTurn.index !== undefined && rawTurn.index !== null) {
+      if (typeof rawTurn.index !== 'number' || !Number.isSafeInteger(rawTurn.index) || rawTurn.index < 1) {
+        throw new Error(`${label}.index must be a positive integer.`);
+      }
+    }
+    let role = null;
+    if (rawTurn.role !== undefined && rawTurn.role !== null) {
+      if (typeof rawTurn.role !== 'string' || !VALID_IMPORT_TURN_ROLES.has(rawTurn.role)) {
+        throw new Error(`${label}.role is unsupported: ${String(rawTurn.role)}.`);
+      }
+      role = rawTurn.role;
+    }
+    if (typeof rawTurn.prompt !== 'string') {
+      throw new Error(`${label}.prompt must be a string.`);
+    }
+    if (typeof rawTurn.response !== 'string') {
+      throw new Error(`${label}.response must be a string.`);
+    }
+    const prompt = scrubInlineDataUri(rawTurn.prompt);
+    const response = scrubInlineDataUri(rawTurn.response);
+    const asrText = scrubInlineDataUri(parseOptionalStringField(rawTurn, 'asr_text', label) || '');
+
+    const rawInterrupted = rawTurn.interrupted;
+    if (rawInterrupted !== undefined && rawInterrupted !== null && typeof rawInterrupted !== 'boolean') {
+      throw new Error(`${label}.interrupted must be a boolean.`);
+    }
+    const interrupted = rawInterrupted === true;
+    const rawSpokenBytes = parseOptionalNonNegInt(rawTurn, 'spoken_bytes', label);
+    const spokenBytes = interrupted ? rawSpokenBytes : null;
+
+    let visualSlots = [];
+    if (rawTurn.visual_slots !== undefined && rawTurn.visual_slots !== null) {
+      if (!Array.isArray(rawTurn.visual_slots)) {
+        throw new Error(`${label}.visual_slots must be an array.`);
+      }
+      visualSlots = rawTurn.visual_slots.map((slot, j) => parseImportedVisualSlot(slot, label, j));
+    }
+
+    const telemetry = buildImportedTelemetryRecord(rawTurn.telemetry, visualSlots, label);
+    const resolvedRole = role || (prompt && response ? 'turn' : (response ? 'assistant' : (prompt ? 'user' : 'turn')));
+
+    turns.push({
+      index: i + 1,
+      role: resolvedRole,
+      prompt,
+      response,
+      asr_text: asrText,
+      interrupted,
+      spoken_bytes: spokenBytes,
+      visual_slots: visualSlots,
+      telemetry,
+    });
+  }
+
+  return {
+    schema: root.schema,
+    sourceClient: root.schema === 'umminfer-session-export-v1' ? 'ummmlx' : 'web',
+    exported_at: exportedAt,
+    session_id: sessionId,
+    model,
+    turn_count: turns.length,
+    turns,
+  };
+}
+
+function formatImportedSessionChip(sessionId) {
+  if (typeof sessionId === 'string' && sessionId.trim()) {
+    const cleaned = sanitizeSessionIdForFilename(sessionId)
+      .replace(/^umm(?:web|mlx)-/, '')
+      .slice(0, 8);
+    return {
+      text: `imported ${cleaned || 'local'}`,
+      title: `Imported session (${sessionId.trim()})`,
+    };
+  }
+  return {
+    text: 'imported local',
+    title: 'Imported session (local)',
+  };
+}
+
+function applyImportedSessionWithContext(parsed, ctx) {
+  if (!isPlainObject(parsed) || !Array.isArray(parsed.turns)) {
+    throw new Error('Parsed session payload is invalid.');
+  }
+  if (ctx.isBusy()) {
+    throw new Error('Cannot import a session while a response is streaming.');
+  }
+  ctx.stopActiveAudio?.();
+  ctx.resetState(parsed.session_id || '');
+  ctx.clearTranscript();
+  ctx.clearError?.();
+
+  for (const item of parsed.turns) {
+    let userTurn = null;
+    let assistantTurn = null;
+    const hasUser = Boolean(item.prompt) || (item.role === 'user' && !item.response &&
+      !item.asr_text && !item.interrupted && item.visual_slots.length === 0 && !item.telemetry);
+    const hasAssistant = Boolean(item.response) || Boolean(item.asr_text) ||
+      item.interrupted === true || item.visual_slots.length > 0 ||
+      item.telemetry !== null || item.role === 'assistant';
+
+    if (hasUser) {
+      userTurn = ctx.addTurn('user', item.prompt);
+    }
+    if (hasAssistant) {
+      assistantTurn = ctx.addTurn('assistant', '');
+      if (item.asr_text) {
+        assistantTurn.asrText = item.asr_text;
+        assistantTurn.asrEl.textContent = `ASR: ${item.asr_text}`;
+      }
+      if (item.response) {
+        assistantTurn.text = item.response;
+        ctx.renderAssistantText(assistantTurn, item.response);
+      }
+      for (let j = 0; j < item.visual_slots.length; j += 1) {
+        const slotMeta = item.visual_slots[j];
+        ctx.addImportedVisualSlot(assistantTurn, slotMeta, j);
+      }
+      if (item.interrupted === true) {
+        assistantTurn.interrupted = true;
+        assistantTurn.spokenBytes = item.spoken_bytes;
+        const badgeText = formatInterruptedBadge(item.spoken_bytes) || 'Interrupted';
+        ctx.attachInterruptedBadge(assistantTurn, item.spoken_bytes, badgeText);
+      }
+      if (item.telemetry !== null) {
+        assistantTurn.telemetry = item.telemetry;
+        ctx.renderTelemetry(assistantTurn);
+      }
+    }
+    ctx.recordTurn(userTurn, assistantTurn, item.prompt, item.response);
+  }
+
+  const chip = formatImportedSessionChip(parsed.session_id);
+  ctx.setSessionChip(chip);
+  ctx.syncUI();
+  const sourceTag = parsed.sourceClient === 'ummmlx' ? ' · macOS ummmlx' : '';
+  const turnLabel = parsed.turns.length === 1 ? '1 turn' : `${parsed.turns.length} turns`;
+  ctx.setStatus(`Imported ${turnLabel}${sourceTag}`, false);
+  return {
+    turnCount: parsed.turns.length,
+    schema: parsed.schema,
+    sourceClient: parsed.sourceClient,
+    sessionId: parsed.session_id,
+    chip,
+  };
+}
+// SESSION_IMPORT_END
+
+function applyImportedSession(parsed) {
+  return applyImportedSessionWithContext(parsed, {
+    isBusy: () => running || Boolean(realtime.activeResponseId),
+    stopActiveAudio() {
+      stopRealtime();
+      player.stop();
+    },
+    resetState(nextSessionId) {
+      stopped = false;
+      inflight = new Map();
+      turn = null;
+      history.length = 0;
+      sessionTurns.length = 0;
+      sessionID = nextSessionId;
+    },
+    clearTranscript() {
+      ui.transcript.replaceChildren(ui.emptyState);
+    },
+    clearError,
+    addTurn,
+    renderAssistantText(assistantTurn, text) {
+      const block = document.createElement('div');
+      block.className = 'block text md';
+      block._raw = text;
+      renderMarkdownInto(block, text);
+      assistantTurn.flow.append(block);
+    },
+    addImportedVisualSlot(assistantTurn, slotMeta, idx) {
+      const continuity = visualSlotContinuityBadge(slotMeta);
+      const slot = createSlot(slotMeta.id, slotMeta.prompt || '', slotMeta.kind, continuity);
+      slot.continuityMeta = {
+        continuity_mode: slotMeta.continuity_mode || '',
+        anchor_slot_index: slotMeta.anchor_slot_index,
+        anchor_explicit: slotMeta.anchor_explicit === true,
+        anchor_sha256: slotMeta.anchor_sha256 || '',
+      };
+      slot.bytes = slotMeta.bytes;
+      slot.sha256 = slotMeta.sha256 || '';
+      if (slotMeta.error) {
+        showSlotError(slot, slotMeta.error);
+      } else {
+        showSlotImportedMetadata(slot);
+      }
+      if (!slot.prompt) {
+        slot.swap.disabled = true;
+        slot.regen.disabled = true;
+      }
+      const key = assistantTurn.slots.has(slot.id) ? `${slot.id}-${idx}` : slot.id;
+      assistantTurn.slots.set(key, slot);
+      assistantTurn.flow.append(slot.el);
+    },
+    attachInterruptedBadge: attachRealtimeInterruptedBadge,
+    renderTelemetry: renderTurnTelemetry,
+    recordTurn(userTurn, assistantTurn, promptText, responseText) {
+      sessionTurns.push({ userTurn, assistantTurn });
+      if (promptText) history.push({ role: 'user', content: promptText });
+      if (responseText) history.push({ role: 'assistant', content: responseText });
+    },
+    setSessionChip(chip) {
+      ui.session.hidden = false;
+      ui.session.textContent = chip.text;
+      ui.session.title = chip.title;
+    },
+    syncUI: syncEmptyState,
+    setStatus,
+  });
+}
+
 function collectSessionExportState(exportedAt = new Date().toISOString()) {
   return {
     session_id: sessionID || '',
@@ -4072,6 +4730,38 @@ ui.exportSession.addEventListener('click', (event) => {
   const format = event?.shiftKey ? (selected === 'markdown' ? 'json' : 'markdown') : selected;
   const result = triggerSessionExportDownload(collectSessionExportState(), format);
   setStatus(`Exported ${result.filename}`, false);
+});
+
+ui.importSession.addEventListener('click', () => {
+  if (running || realtime.activeResponseId) {
+    showError('Cannot import a session while a response is streaming.');
+    return;
+  }
+  ui.importSessionInput.value = '';
+  ui.importSessionInput.click();
+});
+
+ui.importSessionInput.addEventListener('change', async () => {
+  const file = ui.importSessionInput.files?.[0];
+  ui.importSessionInput.value = '';
+  if (!file) return;
+  if (running || realtime.activeResponseId) {
+    showError('Cannot import a session while a response is streaming.');
+    return;
+  }
+  if (typeof file.size === 'number' && file.size > MAX_IMPORT_SESSION_BYTES) {
+    showError('Imported session JSON exceeds the 2 MiB size limit.');
+    setStatus('Import failed', false);
+    return;
+  }
+  try {
+    const text = await file.text();
+    const parsed = parseImportedSessionJson(text);
+    applyImportedSession(parsed);
+  } catch (err) {
+    showError('Session import failed: ' + (err?.message || String(err)));
+    setStatus('Import failed', false);
+  }
 });
 
 syncEmptyState();

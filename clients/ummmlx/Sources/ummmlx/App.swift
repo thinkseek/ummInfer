@@ -163,6 +163,13 @@ struct RootView: View {
             }
             .pickerStyle(.menu)
             .fixedSize()
+            Button("Import JSON") {
+                importSession()
+            }
+            .fixedSize()
+            .disabled(model.isSessionImportBlocked)
+            .help("Import a previously exported ummInfer macOS or Web session JSON file without contacting the server")
+            .accessibilityIdentifier("importSessionJSON")
             Menu("Export") {
                 Button("Export JSON…") {
                     exportSession(format: .json)
@@ -378,6 +385,33 @@ struct RootView: View {
         panel.nameFieldStringValue = defaultName
         if panel.runModal() == .OK, let url = panel.url {
             try? artifact.data.write(to: url)
+        }
+    }
+
+    private func importSession() {
+        guard !model.isSessionImportBlocked else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            if let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+               fileSize > SessionExporter.maxImportBytes {
+                let err = SessionImportError.payloadTooLarge(
+                    bytes: fileSize,
+                    limit: SessionExporter.maxImportBytes
+                )
+                model.noteSessionImportFailed(err.localizedDescription)
+                return
+            }
+            let data = try Data(contentsOf: url)
+            _ = try model.importSessionJSON(data, filename: url.lastPathComponent)
+        } catch is SessionImportError {
+            // ChatModel.importSessionJSON already surfaced the validation error.
+        } catch {
+            model.noteSessionImportFailed(error.localizedDescription)
         }
     }
 
@@ -654,7 +688,7 @@ struct RootView: View {
                         saveArtifact(artifact, defaultName: "video.mp4")
                     }
                 } else {
-                    visualPlaceholder(loading: slot.isLoading, label: "No video")
+                    visualPlaceholder(loading: slot.isLoading, label: slot.placeholderLabel)
                 }
             } else if let artifact = slot.imageArtifact,
                       let image = NSImage(data: artifact.data) {
@@ -674,7 +708,7 @@ struct RootView: View {
                 .accessibilityIdentifier("visual-slot-image")
                 .help("Open the full image")
             } else {
-                visualPlaceholder(loading: slot.isLoading, label: "No image")
+                visualPlaceholder(loading: slot.isLoading, label: slot.placeholderLabel)
             }
             HStack(spacing: 10) {
                 Button(slot.activeKind == "video" ? "→ Image"
