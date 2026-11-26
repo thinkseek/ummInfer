@@ -59,7 +59,8 @@ REPLAY_SCHEMA_VERSION = 1
 REPORT_SCHEMA_VERSION = 1
 POLICIES = ("text_only", "forced_image", "forced_video", "auto_tag")
 VISUAL_FORMS = ("image_only", "video_only", "image_then_i2v_animate")
-VARIABLES = ("routing_policy", "visual_form")
+REQUEST_NATIVE_BACKENDS = ("qwen38", "wan22")
+VARIABLES = ("routing_policy", "visual_form", "request_native_backend")
 VISUAL_MODALITIES = ("image", "video")
 HEX_256 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -197,8 +198,9 @@ def _variable(experiment):
 
 
 def _variants(experiment):
-    key = "routing_policies" if _variable(experiment) == "routing_policy" \
-        else "visual_forms"
+    variable = _variable(experiment)
+    key = {"routing_policy": "routing_policies", "visual_form": "visual_forms",
+           "request_native_backend": "request_native_backends"}[variable]
     return experiment.config[key]
 
 
@@ -214,6 +216,9 @@ def load_experiment(config_path):
         raise ValueError("routing_policies must contain exactly the four honest baselines")
     if variable == "visual_form" and config.get("visual_forms") != list(VISUAL_FORMS):
         raise ValueError("visual_forms must contain exactly the three visual forms")
+    if variable == "request_native_backend" \
+            and config.get("request_native_backends") != list(REQUEST_NATIVE_BACKENDS):
+        raise ValueError("request_native_backends must contain exactly qwen38 and wan22")
     if not isinstance(config.get("ablation_id"), str) or not config["ablation_id"]:
         raise ValueError("ablation_id must be a non-empty string")
 
@@ -332,6 +337,12 @@ def build_request(experiment, prompt, policy):
     if _variable(experiment) == "routing_policy":
         body.update(routing_overlay(policy, fixed["visual"]["max_slots"],
                                     include_audio="audio" in fixed))
+    elif _variable(experiment) == "request_native_backend":
+        # Two fully instrumented native paths; never substitute an
+        # uninstrumented image arm when request_memory.required=true.
+        overlay = "text_only" if policy == "qwen38" else "forced_video"
+        body.update(routing_overlay(overlay, fixed["visual"]["max_slots"],
+                                    include_audio=False))
     else:
         body.update(visual_form_overlay(policy, fixed["visual"]["max_slots"]))
     # The public parser treats a present options object as enabling its output.
@@ -1215,7 +1226,7 @@ def _case_report(experiment, variant, prompt, body, record, latency, animations=
         result["routing"] = observation
         result["metric_coverage"]["routing_f1"] = observation["coverage"]
         result["metric_coverage"]["redundant_visual_slot_rate"] = observation["coverage"]
-    else:
+    elif variable == "visual_form":
         result["visual_form_metrics"] = form_observation
         result["metric_coverage"]["visual_form_completion"] = "COVERED"
         result["metric_coverage"]["animation_success"] = (
@@ -1400,7 +1411,7 @@ def _metric_view(cases, records, variable="routing_policy"):
             coverage["ttfa"] = "NOT_COVERED"
         else:
             coverage["ttfa"] = "NOT_APPLICABLE"
-    else:
+    elif variable == "routing_policy":
         aggregate = routing_metrics.aggregate_routing(records)
         metrics["routing_f1"] = aggregate["f1"]
         metrics["redundant_visual_slot_rate"] = aggregate["redundant_slot_rate"]
@@ -1934,8 +1945,8 @@ def _build_combined(experiment, source, mode, evidence_class, variants,
         "evidence_class": evidence_class,
         "run_status": "COMPLETED" if equivalence_passed and all(
             _case_success(case) for case in all_cases) else "FAILED",
-        "routing_policies" if variable == "routing_policy" else "visual_forms":
-            list(variants),
+        {"routing_policy": "routing_policies", "visual_form": "visual_forms",
+         "request_native_backend": "request_native_backends"}[variable]: list(variants),
         "single_variable": fixed_matrix(experiment),
         "policy_summaries": summaries,
         "cases": all_cases,

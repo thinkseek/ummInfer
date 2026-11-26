@@ -115,11 +115,16 @@ This is a different scope from every `umm_gpu_*` gauge and from controlled
 `measurement.resources`. Those remain whole-device NVML samples; request peaks
 live only under `request_scoped_telemetry` in ablation reports. Epoch reset means
 a new ownership log, not a global CUDA counter reset. The projection is bounded,
-allow-listed, and excludes model/internal paths. See
+allow-listed, and excludes model/internal paths. Internal
+`request_telemetry` result keys are stripped from nonstream artifact descriptors;
+only the terminal envelope is public. See
 [native-service.md](native-service.md#opt-in-request-native-allocator-telemetry)
-for field definitions, lifecycle behavior, and the pending SM90 gate. Real CUDA
-measurements for this revision are `NOT_RUN`; host/fake-allocator tests are not
-GPU evidence.
+for field definitions, lifecycle behavior, and the SM90 gate. Real serial CUDA
+measurements passed on 2026-11-26 for Qwen3.8 and Wan2.2 on isolated physical
+GPU 0, including off/on output parity, cache repeats, lifecycle boundaries, and
+independent 50 ms whole-device NVML samples. Batched, concurrent/shared, and
+other-backend request attribution remains `NOT_COVERED`; host/fake-allocator
+tests alone are not GPU evidence.
 
 ## Request tracing
 

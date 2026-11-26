@@ -31,6 +31,7 @@ import umminfer_controlled_measurement as controlled  # noqa: E402
 EXAMPLE = ROOT / "benchmarks" / "ablations" / "narrative-routing-controlled-example.json"
 CONTROLLED_SM90 = ROOT / "benchmarks" / "ablations" / "narrative-routing-controlled-sm90.json"
 VISUAL_CONTROLLED_SM90 = ROOT / "benchmarks" / "ablations" / "visual-form-controlled-sm90.json"
+REQUEST_MEMORY_SM90 = ROOT / "benchmarks" / "ablations" / "request-memory-controlled-sm90.json"
 ROUTING_REPLAY = ROOT / "benchmarks" / "ablations" / "narrative-routing-replay.json"
 VISUAL_CONFIG = ROOT / "benchmarks" / "ablations" / "visual-form.json"
 VISUAL_REPLAY = ROOT / "benchmarks" / "ablations" / "visual-form-replay.json"
@@ -265,6 +266,28 @@ class ContractValidationTests(unittest.TestCase):
                 body = runner.build_request(experiment, prompt, policy)
                 self.assertNotIn("audio", body["modalities"])
                 self.assertNotIn("audio", body)
+        for block in [experiment.config["model"],
+                      *experiment.config["visual_backends"].values(),
+                      *experiment.config["auxiliary_backends"].values()]:
+            self.assertTrue(controlled.HEX_256.fullmatch(block["weights_sha256"]))
+            self.assertTrue(controlled.HEX_256.fullmatch(block["binary_sha256"]))
+            self.assertTrue(block.get("config_file_sha256")
+                            or block.get("config_files_sha256"))
+
+    def test_sm90_request_memory_config_requires_full_measured_coverage(self):
+        experiment = runner.load_experiment(REQUEST_MEMORY_SM90)
+        contract = controlled.parse_contract(experiment.config["measurement"])
+        self.assertEqual(contract["request_memory"],
+                         {"enabled": True, "required": True})
+        self.assertEqual(contract["exclusive_device"]["gpu_indexes"], [0])
+        self.assertEqual(experiment.config["request_native_backends"],
+                         ["qwen38", "wan22"])
+        for policy in experiment.config["request_native_backends"]:
+            for prompt in experiment.prompts:
+                body = runner.build_request(experiment, prompt, policy)
+                self.assertEqual(body["telemetry"], {"native_allocator": True})
+                self.assertNotIn("image", body["modalities"])
+                self.assertNotIn("audio", body["modalities"])
         for block in [experiment.config["model"],
                       *experiment.config["visual_backends"].values(),
                       *experiment.config["auxiliary_backends"].values()]:

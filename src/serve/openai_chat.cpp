@@ -171,6 +171,9 @@ void OpenAIApi::Impl::handle_nonstream_mixed(const httplib::Request& req,
     json out = std::move(slot.descriptor);
     out.erase("index");
     out.erase("total");
+    // Stage telemetry is projected only into the terminal allow-listed
+    // envelope; never leak the internal result key through an artifact.
+    out.erase(obs::kRequestTelemetryResultKey);
     out["encoding"] = "base64";
     if (total == 1) {
       const std::string_view bytes(event.artifact_bytes->data() +

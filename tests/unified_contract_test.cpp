@@ -11871,6 +11871,38 @@ void test_public_http_request_native_allocator_telemetry() {
             legacy["choices"][0]["message"]["content"] == "legacy answer",
         "default public JSON gained telemetry or changed its content");
 
+  json mixed_body = missing_body;
+  mixed_body["modalities"] = json::array({"text", "image"});
+  mixed_body["image"] = {{"output_format", "png"}, {"size", "256x256"}};
+  auto mixed_future = post(mixed_body);
+  auto mixed_vlm = h.next_submit(h.vlm_recv);
+  check(mixed_vlm.has_value(), "mixed telemetry request did not reach VLM");
+  if (mixed_vlm) {
+    Value result = Value(text_result("mixed answer"));
+    result[obs::kRequestTelemetryResultKey] =
+        native_stage_telemetry(mixed_vlm->request_id);
+    h.complete(mixed_vlm->request_id, "vlm", true, std::move(result));
+  }
+  auto mixed_image = h.next_submit(h.image_recv);
+  check(mixed_image.has_value(), "mixed telemetry request did not reach image");
+  if (mixed_image) {
+    Value result = artifact_result("image", "image/png", "PNG");
+    Value raw = native_stage_telemetry(mixed_image->request_id);
+    raw["stage"] = Value("image");
+    raw["native_stage"] = Value("image");
+    raw["backend"] = Value("image2");
+    result[obs::kRequestTelemetryResultKey] = std::move(raw);
+    h.complete(mixed_image->request_id, "image", true, std::move(result));
+  }
+  const auto mixed_response = mixed_future.get();
+  const json mixed = json::parse(mixed_response.body);
+  check(mixed_response.status == 200 && mixed.contains("telemetry") &&
+            mixed["artifacts"].size() == 1 &&
+            !mixed["artifacts"][0].contains(obs::kRequestTelemetryResultKey) &&
+            mixed_response.body.find(obs::kRequestTelemetryResultKey) ==
+                std::string::npos,
+        "internal stage telemetry leaked through a nonstream artifact");
+
   api.stop();
   server_thread.join();
 }

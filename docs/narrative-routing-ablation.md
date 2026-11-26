@@ -321,6 +321,54 @@ then executed as follows, and any future rerun must use the same procedure:
    any refusal reason downgrades the run to `UNCONTROLLED_LIVE` and it must
    not be cited as controlled performance evidence.
 
+## Request-native allocator controlled gate — 2026-11-26
+
+`benchmarks/ablations/request-memory-controlled-sm90.json` selects
+`variable=request_native_backend` with exactly `qwen38` and `wan22`. This is a
+separate two-backend measurement arm, not a relaxation of the four-policy routing
+contract: the Qwen arm sends text-only requests, while the Wan arm selects the
+existing forced-video overlay. It deliberately excludes the uninstrumented image
+backend instead of disguising an image request or accepting partial coverage.
+Prompts, sampling, video settings, seeds, model binaries, and available-weight
+hashes stay pinned; only the selected instrumented native backend changes.
+
+The config declares:
+
+```json
+"request_memory": {"enabled": true, "required": true}
+```
+
+Every public chat request then carries `telemetry.native_allocator=true`. The
+runner validates each terminal envelope against its public request id and
+terminal lifecycle, aggregates `request_scoped_telemetry`, and refuses
+`CONTROLLED_LIVE` unless every measured request and every returned stage entry is
+covered. Missing, malformed, batched, concurrent/shared, or uninstrumented data
+stays `NOT_COVERED` with null peaks; zero is reserved for a covered epoch that
+actually made no new allocation, such as a fully warm Qwen prefix/workspace hit.
+
+The real SM90 GPU 0 run used `--require-controlled` and `--gpu-index 0`, passed
+as **CONTROLLED_LIVE / COMPLETED**, and reported 8/8 covered measured requests
+and 12/12 covered stage entries with no refusal reasons. Its maximum Wan
+request-owned direct-allocation peak was 156,241,920 bytes; the separate serial
+Qwen gate measured 742,129,664 bytes on its first request. Independent 50 ms
+whole-device NVML samples, exact source-state/config/data/artifact digests,
+backend binary hashes, model config and available-weight manifest hashes, and
+`SHA256SUMS` are retained in `/tmp/umm-request-memory-35-controlled-final/`.
+This is allocation/protocol evidence, not a model-quality or cross-backend
+performance claim. Batched, concurrent/shared, other native backends,
+Python/external backends, and production deployment remain outside coverage.
+
+Run against a newly recorded isolated stack (update the one-run PID allowlist,
+never widen it):
+
+```text
+python3 -I python/umminfer_ablation_run.py \
+  --config benchmarks/ablations/request-memory-controlled-sm90.json \
+  --base-url http://127.0.0.1:PORT --gpu-index 0 \
+  --require-controlled --timeout-s 600 \
+  --out /tmp/umm-request-memory-controlled
+```
+
 ## Latency and status fields
 
 Every case reports:
