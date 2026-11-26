@@ -507,11 +507,16 @@ Only completed raw-SSE-backed responses with finite export-derived rewards enter
 online GRPO groups. Cancelled and malformed responses never become zero-reward
 or empty candidates.
 
-The native unified Qwen3.8 endpoint now has an explicit
+The explicit `--online-rollout-config` server opt-in validates trusted plan and
+native-stage identity evidence, independently re-hashes model files, derives
+schedule/policy/sampling/request bindings without echoing client proof, and
+emits the accepted attestation headers on bound responses (CPU-only schemas,
+tests, and real-stage limits are in [online-attestation.md](online-attestation.md)).
+Separately, the native unified Qwen3.8 endpoint provides an explicit
 `behavior.logprobs=true` streaming opt-in for actual sampled ids, full native
-log-softmax values, exact clean-target masks, and the required online
-attestation headers. Other endpoints and every incomplete capture remain
-`NOT_COVERED`/null; no re-encoded supervision ids are substituted. The producer,
+log-softmax values, and exact clean-target masks. Other endpoints and every
+incomplete capture remain `NOT_COVERED`/null (`not_exposed`); no re-encoded
+supervision ids are substituted. The full attestation, producer,
 tokenizer-digest, narrative-mask, fail-closed, retry, validation, export, and
 fresh-process replay contracts are specified in
 [joint-training.md](joint-training.md#online-grpo-rollout-generation-and-validation-contract).

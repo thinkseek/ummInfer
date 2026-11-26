@@ -55,7 +55,8 @@ CommandOptions command_options(const std::string& command) {
              "upstream-cb-failures", "upstream-cb-cooldown", "vlm-entry",
              "vlm-entry-endpoint", "image-entry", "image-entry-endpoint",
              "tts-entry", "tts-entry-endpoint", "video-entry",
-             "video-entry-endpoint", "max-in-flight", "web-root"},
+             "video-entry-endpoint", "max-in-flight", "web-root",
+             "online-rollout-config"},
             {"demo", "session-history"},
             {}};
   }
@@ -209,6 +210,7 @@ void print_usage(std::ostream& out) {
          "      [--max-in-flight N]  admitted unified requests before overload answers 503 (default 32)\n"
          "      [--realtime-port 30001]  enable the ASR WebSocket listener\n"
          "      [--web-root DIR]  serve DIR as static files at / (off by default)\n"
+         "      [--online-rollout-config PATH]  trusted plan + native identity attestation (off by default)\n"
       << "      [--demo]  run one in-process echo stage (development only)\n"
       << "  umm-infer stage --name N --recv EP --coordinator EP --abort EP "
          "[--next name=EP ...] [--peer name=EP ...]\n"
@@ -306,7 +308,13 @@ int run_serve(const Flags& flags) {
   // error even when the demo path would never use it.
   const int max_in_flight =
       parse_positive_int(flag(flags, "max-in-flight", "32"), "--max-in-flight");
-  if (flags.count("demo")) return run_demo(flags);
+  if (flags.count("demo")) {
+    if (flags.count("online-rollout-config")) {
+      std::cerr << "--online-rollout-config requires the unified external VLM stage\n";
+      return usage();
+    }
+    return run_demo(flags);
+  }
 
   ApiConfig api_config;
   api_config.host = flag(flags, "host", api_config.host);
@@ -314,6 +322,7 @@ int run_serve(const Flags& flags) {
   api_config.model = flag(flags, "model", api_config.model);
   api_config.api_key = flag(flags, "api-key", "");
   api_config.web_root = flag(flags, "web-root");
+  api_config.online_rollout_config = flag(flags, "online-rollout-config");
   if (!api_config.web_root.empty() &&
       !std::filesystem::is_directory(api_config.web_root)) {
     std::cerr << "--web-root is not a directory: " << api_config.web_root << "\n";
@@ -361,6 +370,10 @@ int run_serve(const Flags& flags) {
   const std::string video_name = flag(flags, "video-entry", "video");
   const std::string video_ep = flag(flags, "video-entry-endpoint");
   const bool unified = !vlm_ep.empty();
+  if (flags.count("online-rollout-config") && !unified) {
+    std::cerr << "--online-rollout-config requires --vlm-entry-endpoint\n";
+    return usage();
+  }
   if (flags.count("vlm-entry") && !unified) {
     std::cerr << "--vlm-entry requires --vlm-entry-endpoint\n";
     return usage();

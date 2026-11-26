@@ -19,6 +19,7 @@
 #include <utility>
 #include <variant>
 
+#include "serve/online_attestation.hpp"
 #include "serve/upstream_proxy.hpp"
 #include "umminfer/obs/metrics.hpp"
 #include "umminfer/pipeline/unified.hpp"
@@ -218,6 +219,7 @@ class OpenAIApi::Impl {
   std::function<void(const UnifiedEvent&)> unified_forwarder_;
   std::string unified_vlm_stage_;
   ApiConfig config_;
+  std::unique_ptr<openai_detail::OnlineRolloutServer> online_rollout_;
   serve_detail::UpstreamProxy proxy_;
   httplib::Server server_;
   int bound_port_ = 0;

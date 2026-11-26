@@ -1,0 +1,20 @@
+{
+  "schema": "umminfer-online-attestation-canonical-fixtures-v1",
+  "cases": [
+    {
+      "input": "{\n  \"seed\": -42,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"中文 é 🪐\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,AA==\"\n          },\n          \"nested\": {\n            \"media\": [\n              \"video/mp4\",\n              {\n                \"sha\": \"ab\"\n              }\n            ]\n          }\n        }\n      ]\n    }\n  ],\n  \"floats\": [\n    0.0,\n    -0.0,\n    1e-07,\n    1e-06,\n    1e-05,\n    0.0001,\n    1000000000000000.0,\n    1e+16,\n    5e-324,\n    2.2250738585072014e-308,\n    0.30000000000000004,\n    1.2345678901234567\n  ]\n}",
+      "canonical": "{\"floats\":[0.0,-0.0,1e-07,1e-06,1e-05,0.0001,1000000000000000.0,1e+16,5e-324,2.2250738585072014e-308,0.30000000000000004,1.2345678901234567],\"messages\":[{\"content\":[{\"text\":\"中文 é 🪐\",\"type\":\"text\"},{\"image_url\":{\"url\":\"data:image/png;base64,AA==\"},\"nested\":{\"media\":[\"video/mp4\",{\"sha\":\"ab\"}]},\"type\":\"image_url\"}],\"role\":\"user\"}],\"seed\":-42}",
+      "sha256": "69bb4e9ebc3c47bf863687340a9e269d32ad5361a282f9719ff31a14d6de3625"
+    },
+    {
+      "input": "{\n  \"z\": \"line\\nfeed\\t\\u0000\\\"\\\\\",\n  \"a\": [\n    true,\n    false,\n    null,\n    1,\n    1.0\n  ],\n  \"unicode_keys\": {\n    \"🪐\": 1,\n    \"中文\": 2,\n    \"é\": 3\n  }\n}",
+      "canonical": "{\"a\":[true,false,null,1,1.0],\"unicode_keys\":{\"é\":3,\"中文\":2,\"🪐\":1},\"z\":\"line\\nfeed\\t\\u0000\\\"\\\\\"}",
+      "sha256": "ff489f2a2cbe4792321bf68f3b46a6266a2cc726e43d4a8f3945c3aac7913dad"
+    },
+    {
+      "input": "{\n  \"body\": {\n    \"seed\": -9223372036854775808,\n    \"sampling\": {\n      \"temperature\": 0.25,\n      \"top_p\": 0.9\n    },\n    \"nested\": [\n      {\n        \"large\": 1e+20,\n        \"small\": 1e-05\n      }\n    ]\n  }\n}",
+      "canonical": "{\"body\":{\"nested\":[{\"large\":1e+20,\"small\":1e-05}],\"sampling\":{\"temperature\":0.25,\"top_p\":0.9},\"seed\":-9223372036854775808}}",
+      "sha256": "9f61fd9f9f9d7c0966ef9d8d25f0d9a4b21c093ff962acc57be9eaed36a07bfd"
+    }
+  ]
+}

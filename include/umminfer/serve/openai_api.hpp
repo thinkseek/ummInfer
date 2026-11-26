@@ -41,6 +41,10 @@ struct ApiConfig {
   // Opt-in static hosting of a directory (normally the repository `web/`) at
   // "/". Empty keeps the route absent, so a default deployment is unchanged.
   std::string web_root;
+  // Trusted online-rollout server configuration. Empty disables the feature and
+  // preserves the default response surface. A non-empty path is fully validated,
+  // including native model evidence, before bind() can accept traffic.
+  std::string online_rollout_config;
 
   // Fixed upstream. One process serves one upstream, one model and one
   // variant; there is no routing or fallback between upstreams. All five

@@ -33,6 +33,11 @@ OpenAIApi::Impl::Impl(Coordinator& coordinator, ApiConfig config)
   if (config_.served_model_name.empty()) {
     config_.served_model_name = config_.model;
   }
+  if (!config_.online_rollout_config.empty()) {
+    online_rollout_ = openai_detail::OnlineRolloutServer::load(
+        config_.online_rollout_config, config_.served_model_name,
+        openai_detail::now_epoch_ms());
+  }
   server_.set_payload_max_length(kMaxHttpPayloadBytes);
   server_.set_read_timeout(kHttpReadStallSeconds, 0);
   const size_t bounded_in_flight = std::min(config_.max_in_flight, size_t{128});
@@ -300,6 +305,11 @@ void OpenAIApi::Impl::install_routes() {
 
 bool OpenAIApi::Impl::bind() {
   if (bound_) return true;
+  if (online_rollout_ && !config_.upstream_kind.empty()) {
+    std::fprintf(stderr,
+                 "online rollout attestation cannot run behind a fixed upstream\n");
+    return false;
+  }
   const std::string config_error = validate_upstream_config(config_);
   if (!config_error.empty()) {
     std::fprintf(stderr, "invalid upstream configuration: %s\n",
@@ -331,6 +341,10 @@ void OpenAIApi::Impl::set_unified_forwarder(std::function<void(const UnifiedEven
 }
 
 void OpenAIApi::Impl::set_unified_engine(UnifiedEngine& engine, std::string vlm_stage) {
+  if (online_rollout_ && online_rollout_->native_stage_name() != vlm_stage) {
+    throw ProtocolError(
+        "online rollout attestation native stage does not match the unified VLM stage");
+  }
   unified_engine_ = &engine;
   unified_vlm_stage_ = std::move(vlm_stage);
   engine.on_event = [this](const UnifiedEvent& event) { on_unified_event(event); };

@@ -83,6 +83,7 @@ pub fn build(b: *std.Build) void {
             "src/pipeline/narrative_prompt.cpp",
             "src/pipeline/unified.cpp",
             "src/serve/upstream_proxy.cpp",
+            "src/serve/online_attestation.cpp",
             "src/serve/openai_helpers.cpp",
             "src/serve/openai_audio.cpp",
             "src/serve/openai_chat.cpp",
@@ -133,6 +134,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_test.step);
     const unified_test = b.step("unified-test", "Run unified orchestration contract tests");
     unified_test.dependOn(&run_test.step);
+
+    const online_attestation = b.addSystemCommand(&.{ "python3", "-I" });
+    online_attestation.addFileArg(b.path("tests/online_attestation_test.py"));
+    online_attestation.addArtifactArg(exe);
+    test_step.dependOn(&online_attestation.step);
+    const online_attestation_test = b.step("online-attestation-test", "Run CPU-only server HTTP attestation tests");
+    online_attestation_test.dependOn(&online_attestation.step);
 
     const voice_test_exe = b.addExecutable(.{
         .name = "voice_client_test",

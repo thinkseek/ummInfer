@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "umminfer/util/codec.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 
 #include "umminfer/proto/wire.hpp"
 
@@ -152,47 +154,62 @@ std::string base64_decode(std::string_view text, size_t max_bytes,
   return out;
 }
 
-std::string sha256_hex(std::string_view bytes) {
-  uint32_t state[8] = {0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
-                       0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u};
-  const uint64_t bit_length = uint64_t(bytes.size()) * 8u;
-  size_t offset = 0;
-  unsigned char block[64];
-  auto process = [&](size_t length) {
-    std::memset(block + length, 0, 64 - length);
-    sha256_compress(state, block);
-  };
-  while (bytes.size() - offset >= 64) {
-    std::memcpy(block, bytes.data() + offset, 64);
-    sha256_compress(state, block);
-    offset += 64;
+Sha256::Sha256()
+    : state_{0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+             0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u} {}
+
+void Sha256::update(std::string_view bytes) {
+  if (finished_) throw std::logic_error("SHA-256 digest is already finished");
+  if (bytes.size() > (UINT64_MAX - total_bytes_) / 8u) {
+    throw std::length_error("SHA-256 input is too large");
   }
-  const size_t tail = bytes.size() - offset;
-  std::memset(block, 0, sizeof(block));
-  if (tail > 0) std::memcpy(block, bytes.data() + offset, tail);
-  block[tail] = 0x80;
-  if (tail >= 56) {
-    process(tail + 1);
-    std::memset(block, 0, 56);
+  total_bytes_ += bytes.size();
+  while (!bytes.empty()) {
+    const size_t count = std::min(bytes.size(), buffer_.size() - buffer_size_);
+    std::memcpy(buffer_.data() + buffer_size_, bytes.data(), count);
+    buffer_size_ += count;
+    bytes.remove_prefix(count);
+    if (buffer_size_ == buffer_.size()) {
+      sha256_compress(state_.data(), buffer_.data());
+      buffer_size_ = 0;
+    }
   }
+}
+
+std::string Sha256::finish_hex() {
+  if (finished_) throw std::logic_error("SHA-256 digest is already finished");
+  finished_ = true;
+  const uint64_t bit_length = total_bytes_ * 8u;
+  buffer_[buffer_size_++] = 0x80;
+  if (buffer_size_ > 56) {
+    std::memset(buffer_.data() + buffer_size_, 0, 64 - buffer_size_);
+    sha256_compress(state_.data(), buffer_.data());
+    buffer_size_ = 0;
+  }
+  std::memset(buffer_.data() + buffer_size_, 0, 56 - buffer_size_);
   for (int i = 0; i < 8; ++i) {
-    block[63 - i] = static_cast<unsigned char>(bit_length >> (i * 8));
+    buffer_[63 - i] = static_cast<unsigned char>(bit_length >> (i * 8));
   }
-  sha256_compress(state, block);
+  sha256_compress(state_.data(), buffer_.data());
   static constexpr char hex[] = "0123456789abcdef";
-  std::string out;
-  out.resize(64);
+  std::string out(64, '0');
   for (int i = 0; i < 8; ++i) {
-    out[i * 8] = hex[(state[i] >> 28) & 0xf];
-    out[i * 8 + 1] = hex[(state[i] >> 24) & 0xf];
-    out[i * 8 + 2] = hex[(state[i] >> 20) & 0xf];
-    out[i * 8 + 3] = hex[(state[i] >> 16) & 0xf];
-    out[i * 8 + 4] = hex[(state[i] >> 12) & 0xf];
-    out[i * 8 + 5] = hex[(state[i] >> 8) & 0xf];
-    out[i * 8 + 6] = hex[(state[i] >> 4) & 0xf];
-    out[i * 8 + 7] = hex[state[i] & 0xf];
+    out[i * 8] = hex[(state_[i] >> 28) & 0xf];
+    out[i * 8 + 1] = hex[(state_[i] >> 24) & 0xf];
+    out[i * 8 + 2] = hex[(state_[i] >> 20) & 0xf];
+    out[i * 8 + 3] = hex[(state_[i] >> 16) & 0xf];
+    out[i * 8 + 4] = hex[(state_[i] >> 12) & 0xf];
+    out[i * 8 + 5] = hex[(state_[i] >> 8) & 0xf];
+    out[i * 8 + 6] = hex[(state_[i] >> 4) & 0xf];
+    out[i * 8 + 7] = hex[state_[i] & 0xf];
   }
   return out;
+}
+
+std::string sha256_hex(std::string_view bytes) {
+  Sha256 digest;
+  digest.update(bytes);
+  return digest.finish_hex();
 }
 
 std::string utf8_sanitized(std::string_view text) {

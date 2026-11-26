@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -44,6 +46,7 @@
 #include "pipeline/narrative_parser.hpp"
 #include "serve/echo_robust_vad.hpp"
 #include "serve/energy_vad.hpp"
+#include "serve/online_attestation.hpp"
 #include <curl/curl.h>
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -66,6 +69,7 @@ struct HttpRequest {
   client::Milliseconds timeout{10000};
   client::Milliseconds connect_timeout{2000};
   bool no_proxy = true;
+  bool allow_http_errors = false;
   std::function<bool(std::string_view)> on_body;
 };
 
@@ -176,7 +180,7 @@ inline HttpResponse perform(const HttpRequest& req) {
     if (out.body.empty()) out.body = res->body;
     for (const auto& [hk, hv] : res->headers) out.headers[hk] = hv;
   }
-  if (out.status < 200 || out.status >= 300) {
+  if (!req.allow_http_errors && (out.status < 200 || out.status >= 300)) {
     const auto code =
         (out.status == 429 || out.status == 503) ? client::ErrorCode::kRateLimited
         : (out.status == 401 || out.status == 403)
@@ -12489,19 +12493,25 @@ void test_public_http_behavior_logprobs() {
   };
 
   httplib::Client raw_client("127.0.0.1", api.bound_port());
+  {
+    httplib::Headers forged;
+    for (const auto& [key, value] : attestation) forged.emplace(key, value);
+    auto response = raw_client.Post("/v1/chat/completions", forged, base.dump(),
+                                    "application/json");
+    check(response && response->status == 400 &&
+              response->body.find("online_rollout_attestation_error") !=
+                  std::string::npos &&
+              response->get_header_value("x-umminfer-online-rollout-contract").empty(),
+          "unconfigured server must reject marked rollout requests without echoing headers");
+  }
   for (const json& behavior : {json{{"logprobs", "yes"}},
                                json{{"unknown", true}}, json::array()}) {
     json bad = base;
     bad["behavior"] = behavior;
-    httplib::Headers headers;
-    for (const auto& [key, value] : attestation) headers.emplace(key, value);
-    auto response = raw_client.Post("/v1/chat/completions", headers, bad.dump(),
+    auto response = raw_client.Post("/v1/chat/completions", bad.dump(),
                                     "application/json");
-    check(response && response->status == 400 &&
-              response->get_header_value("x-umminfer-behavior-evidence") ==
-                  "not_exposed" &&
-              response->get_header_value("x-umminfer-online-rollout-contract") == "1",
-          "malformed behavior opt-in failed closed with attestation");
+    check(response && response->status == 400,
+          "malformed behavior opt-in failed closed");
   }
   json nonstream = base;
   nonstream["stream"] = false;
@@ -12513,7 +12523,7 @@ void test_public_http_behavior_logprobs() {
 
   json covered_body = base;
   covered_body["behavior"] = json{{"logprobs", true}};
-  auto covered_future = post(covered_body, attestation);
+  auto covered_future = post(covered_body);
   auto covered_submit = h.next_submit(h.vlm_recv);
   check(covered_submit.has_value(), "covered behavior request did not reach VLM");
   if (covered_submit) {
@@ -12528,12 +12538,8 @@ void test_public_http_behavior_logprobs() {
   const auto covered = covered_future.get();
   check(covered.status == 200 &&
             behavior_response_header(covered, "x-umminfer-behavior-evidence") ==
-                "exposed" &&
-            behavior_response_header(covered, "x-umminfer-rollout-id") ==
-                "rollout-42" &&
-            behavior_response_header(covered, "x-umminfer-sampling-sha256") ==
-                std::string(64, '5'),
-        "covered response preserved exact online attestation headers");
+                "exposed",
+        "covered response exposed exact behavior evidence header");
   const auto covered_frames = sse_data_payloads(covered.body);
   size_t behavior_blocks = 0;
   for (size_t i = 0; i < covered_frames.size(); ++i) {
@@ -12676,6 +12682,291 @@ void test_public_http_behavior_logprobs() {
   server_thread.join();
 }
 
+void test_online_attestation_python_canonical_fixtures() {
+  std::ifstream input("tests/online_attestation_canonical_fixtures.json",
+                      std::ios::binary);
+  check(input.good(), "Python canonical attestation fixtures are missing");
+  const json fixtures = json::parse(input);
+  check(fixtures.at("schema") ==
+            "umminfer-online-attestation-canonical-fixtures-v1",
+        "unexpected canonical fixture schema");
+  check(fixtures.at("cases").size() == 3,
+        "canonical fixture coverage was reduced");
+  for (const auto& fixture : fixtures.at("cases")) {
+    const json body = json::parse(fixture.at("input").get<std::string>());
+    const std::string canonical = openai_detail::online_canonical_json(body);
+    check(canonical == fixture.at("canonical").get<std::string>(),
+          "C++ canonical JSON differs from the independent Python fixture");
+    check(util::sha256_hex(canonical) == fixture.at("sha256").get<std::string>(),
+          "C++ canonical request SHA-256 differs from Python");
+    check(canonical.find(std::filesystem::temp_directory_path().string()) ==
+              std::string::npos,
+          "canonical request bytes leaked a host temporary path");
+  }
+  json nonfinite = json::object();
+  nonfinite["temperature"] = std::numeric_limits<double>::infinity();
+  bool rejected = false;
+  try {
+    (void)openai_detail::online_canonical_json(nonfinite);
+  } catch (const std::exception&) {
+    rejected = true;
+  }
+  check(rejected, "canonical JSON accepted a non-finite float");
+}
+
+struct OnlineCppFixture {
+  std::filesystem::path root;
+  json plan;
+  std::vector<openai_detail::OnlineScheduleEntry> schedule;
+  std::string config_path;
+
+  ~OnlineCppFixture() {
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+  }
+};
+
+OnlineCppFixture make_online_cpp_fixture() {
+  namespace fs = std::filesystem;
+  OnlineCppFixture fixture;
+  fixture.root = fs::temp_directory_path() /
+                 ("umminfer-online-attestation-cpp-" + std::to_string(getpid()));
+  fs::remove_all(fixture.root);
+  fs::create_directories(fixture.root / "model");
+  const std::string config_bytes = "{\"model_type\":\"fake-contract\"}\n";
+  const std::string weight_bytes("fake native weights\0\xff\n", 22);
+  {
+    std::ofstream(fixture.root / "model/config.json", std::ios::binary)
+        << config_bytes;
+    std::ofstream out(fixture.root / "model/weights.safetensors", std::ios::binary);
+    out.write(weight_bytes.data(), weight_bytes.size());
+  }
+  json weight_files = {
+      {"weights.safetensors",
+       {{"sha256", util::sha256_hex(weight_bytes)},
+        {"bytes", static_cast<int64_t>(weight_bytes.size())}}}};
+  const std::string weight_set_sha =
+      util::sha256_hex(openai_detail::online_canonical_json(weight_files));
+  const std::string model_config_sha = util::sha256_hex(config_bytes);
+  fixture.plan = {
+      {"schema", "umminfer-online-grpo-plan-v1"},
+      {"batch_id", "cpp-attestation-batch"},
+      {"behavior_policy",
+       {{"policy_id", "cpp-policy"},
+        {"revision", "cpp-policy-revision"},
+        {"model_id", "qwen3-unified"},
+        {"model_revision", "cpp-native-revision"},
+        {"model_sha256", weight_set_sha},
+        {"model_config_sha256", model_config_sha}}},
+      {"sampling", {{"max_tokens", 16}, {"temperature", 0.25}, {"top_p", 0.9}}},
+      {"request_template", json::object()},
+      {"reward", {{"spec", "fixture:reward"}}},
+      {"split_seed", "cpp-split"},
+      {"eval_ratio", 0.0},
+      {"transport",
+       {{"timeout_s", 2.0}, {"max_attempts", 3},
+        {"retry_statuses", {503}}, {"retry_transport", false},
+        {"retry_timeouts", false}}},
+      {"groups",
+       {{{"prompt_id", "cpp-group"},
+         {"messages", {{{"role", "user"}, {"content", "held VLM request"}}}},
+         {"expected_visual_modalities", json::array()},
+         {"seeds", {-42, 43}}}}},
+  };
+  fixture.schedule = openai_detail::online_derive_schedule(fixture.plan);
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+  const json identity = {
+      {"schema", "umminfer-native-stage-identity-v1"},
+      {"stage_name", "vlm"}, {"state", "loaded"},
+      {"loaded_at_epoch_ms", now},
+      {"model_id", "qwen3-unified"},
+      {"model_revision", "cpp-native-revision"},
+      {"model_root", "model"},
+      {"config", {{"path", "config.json"}, {"sha256", model_config_sha},
+                  {"bytes", static_cast<int64_t>(config_bytes.size())}}},
+      {"weight_files", weight_files},
+      {"model_sha256", weight_set_sha},
+  };
+  json server = {
+      {"schema", "umminfer-online-rollout-server-v1"},
+      {"plan_path", "plan.json"},
+      {"native_identity_path", "identity.json"},
+      {"native_stage_name", "vlm"},
+      {"max_identity_age_ms", 300000},
+  };
+  const auto write_document = [&](const char* name, const json& value) {
+    const std::string bytes = openai_detail::online_canonical_json(value) + "\n";
+    std::ofstream out(fixture.root / name, std::ios::binary);
+    out.write(bytes.data(), bytes.size());
+    out.close();
+    return util::sha256_hex(bytes);
+  };
+  server["plan_sha256"] = write_document("plan.json", fixture.plan);
+  server["native_identity_sha256"] = write_document("identity.json", identity);
+  (void)write_document("server.json", server);
+  fixture.config_path = (fixture.root / "server.json").string();
+  return fixture;
+}
+
+std::string online_test_value(const std::string& key,
+                              const openai_detail::OnlineScheduleEntry& entry,
+                              int attempt) {
+  if (key == "contract") return "1";
+  if (key == "generation") return "fresh";
+  if (key == "batch_id") return entry.batch_id;
+  if (key == "group_id") return entry.group_id;
+  if (key == "rollout_id") return entry.rollout_id;
+  if (key == "rollout_index") return std::to_string(entry.rollout_index);
+  if (key == "attempt") return std::to_string(attempt);
+  if (key == "request_sha256") return entry.request_sha256;
+  if (key == "behavior_policy_sha256") return entry.behavior_policy_sha256;
+  if (key == "behavior_policy_revision") return entry.behavior_policy_revision;
+  if (key == "model_id") return entry.model_id;
+  if (key == "model_revision") return entry.model_revision;
+  if (key == "model_sha256") return entry.model_sha256;
+  if (key == "model_config_sha256") return entry.model_config_sha256;
+  if (key == "sampling_sha256") return entry.sampling_sha256;
+  if (key == "behavior_evidence") return "not_exposed";
+  throw std::runtime_error("unknown online test header");
+}
+
+test_http::HttpRequest online_test_request(
+    int port, const openai_detail::OnlineScheduleEntry& entry, int attempt,
+    bool marked = true) {
+  test_http::HttpRequest request;
+  request.url = "http://127.0.0.1:" + std::to_string(port) +
+                "/v1/chat/completions";
+  request.body = openai_detail::online_canonical_json(entry.body);
+  request.headers.emplace("Content-Type", "application/json");
+  request.allow_http_errors = true;
+  if (marked) {
+    for (const auto& [key, header] : openai_detail::online_response_headers()) {
+      if (key != "behavior_evidence") {
+        request.headers.emplace(header, online_test_value(key, entry, attempt));
+      }
+    }
+  }
+  return request;
+}
+
+void check_online_test_headers(
+    const test_http::HttpResponse& response,
+    const openai_detail::OnlineScheduleEntry& entry, int attempt) {
+  for (const auto& [key, header] : openai_detail::online_response_headers()) {
+    const auto found = response.headers.find(header);
+    check(found != response.headers.end() &&
+              found->second == online_test_value(key, entry, attempt),
+          ("online response attestation mismatch for " + key).c_str());
+  }
+}
+
+void test_public_http_online_attestation_retry_cancel() {
+  auto fixture = make_online_cpp_fixture();
+  Harness h("onlineattestation");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 5.0;
+  config.online_rollout_config = fixture.config_path;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedConfig engine_config;
+  engine_config.max_in_flight = 1;
+  UnifiedEngine engine(h.coordinator, engine_config);
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "online attestation server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+
+  const auto& first_entry = fixture.schedule[0];
+  const auto& retry_entry = fixture.schedule[1];
+  auto first = std::async(std::launch::async, [&] {
+    return test_http::perform(online_test_request(api.bound_port(), first_entry, 0));
+  });
+  auto first_submit = h.next_submit(h.vlm_recv);
+  check(first_submit.has_value(), "first attested request did not reach the fake VLM");
+
+  const auto overloaded = test_http::perform(
+      online_test_request(api.bound_port(), retry_entry, 0));
+  check(overloaded.status == 503, "full unified admission did not answer 503");
+  check_online_test_headers(overloaded, retry_entry, 0);
+  const auto duplicate = test_http::perform(
+      online_test_request(api.bound_port(), retry_entry, 0));
+  check(duplicate.status == 409, "duplicate rollout attempt was not rejected");
+  check_online_test_headers(duplicate, retry_entry, 0);
+
+  if (first_submit) {
+    auto result = text_result("first answer");
+    result["finish_reason"] = Value("stop");
+    h.complete(first_submit->request_id, "vlm", true, std::move(result));
+  }
+  const auto first_response = first.get();
+  check(first_response.status == 200, "first attested stream did not complete");
+  check_online_test_headers(first_response, first_entry, 0);
+
+  auto cancelled = std::async(std::launch::async, [&] {
+    return test_http::perform(online_test_request(api.bound_port(), retry_entry, 1));
+  });
+  auto cancel_submit = h.next_submit(h.vlm_recv);
+  check(cancel_submit.has_value(), "retry attempt did not reach the fake VLM");
+  if (cancel_submit) {
+    test_http::HttpRequest abort;
+    abort.url = "http://127.0.0.1:" + std::to_string(api.bound_port()) + "/abort";
+    abort.body = json{{"request_id", cancel_submit->request_id}}.dump();
+    abort.allow_http_errors = true;
+    const auto abort_response = test_http::perform(abort);
+    check(abort_response.status == 200, "public abort did not accept the retry id");
+    h.complete(cancel_submit->request_id, "vlm", false, Value{}, "request aborted");
+  }
+  const auto cancelled_response = cancelled.get();
+  check(cancelled_response.status == 200, "cancelled stream changed HTTP status");
+  check_online_test_headers(cancelled_response, retry_entry, 1);
+  check(cancelled_response.body.find("\"kind\":\"cancelled\"") != std::string::npos,
+        "cancelled attested stream lacks its cancelled terminal");
+
+  auto recovered = std::async(std::launch::async, [&] {
+    return test_http::perform(online_test_request(api.bound_port(), retry_entry, 2));
+  });
+  auto recovered_submit = h.next_submit(h.vlm_recv);
+  check(recovered_submit.has_value(), "second retry did not reach the fake VLM");
+  if (recovered_submit) {
+    auto result = text_result("retry answer");
+    result["finish_reason"] = Value("stop");
+    h.complete(recovered_submit->request_id, "vlm", true, std::move(result));
+  }
+  const auto recovered_response = recovered.get();
+  check(recovered_response.status == 200, "successful retry did not complete");
+  check_online_test_headers(recovered_response, retry_entry, 2);
+  check(recovered_response.body.find("retry answer") != std::string::npos,
+        "successful retry lost its generated text");
+
+  auto ordinary = std::async(std::launch::async, [&] {
+    return test_http::perform(
+        online_test_request(api.bound_port(), first_entry, 0, false));
+  });
+  auto ordinary_submit = h.next_submit(h.vlm_recv);
+  check(ordinary_submit.has_value(), "ordinary request did not reach the fake VLM");
+  if (ordinary_submit) {
+    auto result = text_result("ordinary answer");
+    result["finish_reason"] = Value("stop");
+    h.complete(ordinary_submit->request_id, "vlm", true, std::move(result));
+  }
+  const auto ordinary_response = ordinary.get();
+  check(ordinary_response.status == 200, "ordinary request failed on an opted-in server");
+  for (const auto& [key, header] : openai_detail::online_response_headers()) {
+    (void)key;
+    check(ordinary_response.headers.find(header) == ordinary_response.headers.end(),
+          "ordinary default response gained an attestation header");
+  }
+
+  api.stop();
+  server_thread.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "online attestation requests stayed in flight");
+}
+
 }  // namespace
 
 int main() {
@@ -12810,5 +13101,7 @@ int main() {
   RUN(test_public_http_request_native_allocator_telemetry());
   RUN(test_openai_client_teacache_and_narrative());
   RUN(test_public_http_behavior_logprobs());
+  RUN(test_online_attestation_python_canonical_fixtures());
+  RUN(test_public_http_online_attestation_retry_cancel());
   return g_failures == 0 ? 0 : 1;
 }

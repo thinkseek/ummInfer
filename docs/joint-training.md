@@ -286,9 +286,10 @@ python3 -I tests/online_rollout_test.py
 | Real joint-SFT optimizer gate | **PASS (SM90, legacy + token_export)** | Two exact-equivalent AdamW steps per path, changed finite parameters, fresh-process export resume, and pre-output invalid-input rejection; see [exported-token-sft-live](exported-token-sft-live.md) |
 | Real joint-DPO optimizer gate | **PASS (SM90, historical legacy path)** | Two real sigmoid-DPO AdamW steps, policy/reference log-probabilities, independent chosen/rejected masks, exact resume equivalence, and pre-import malformed/crossed-pair rejection; export-driven real optimization remains NOT_RUN |
 | Real joint-GRPO optimizer gate | **PASS (SM90)** | Two complete export-bound three-rollout groups, clipped policy ratios + KL, finite AdamW updates, exact fresh-process resume, and six pre-import rejection gates |
-| Online GRPO orchestration and validation | **COVERED (fake endpoint)** | Deterministic requests, exact response attestation, raw SSE, cancellation, bounded retry, complete groups, and fresh-process byte replay; no real-model claim |
+| Online GRPO orchestration and validation | **COVERED (fake endpoint + server fake stages)** | Deterministic requests, server-derived response attestation, raw SSE, cancellation, bounded retry, complete groups, and fresh-process byte replay; no real-model claim |
+| Server-side HTTP attestation and native identity validation | **COVERED (CPU transport/configuration only)** | Explicit trusted opt-in, exact config/evidence schemas, independent config/weight rehashing, fail-before-bind identity gates, canonical Python fixtures, and 200/error/retry/cancel/default-parity tests; see [online-attestation](online-attestation.md) |
 | Real online generation and online optimizer execution | **NOT_RUN** | Requires the isolated live gate below; the accepted frozen-offline GRPO result is unchanged |
-| Endpoint behavior log-probabilities and masks | **NOT_COVERED by the current public endpoint** | Null with `NOT_COVERED` when absent; complete endpoint-supplied arrays are structurally validated when exposed |
+| Endpoint behavior log-probabilities and masks | **NOT_COVERED by the current public endpoint** | Server coverage stays `not_exposed`; null with `NOT_COVERED` when absent; complete endpoint-supplied arrays are structurally validated when exposed |
 
 ## Online GRPO rollout generation and validation contract
 
@@ -324,12 +325,16 @@ Every public `POST /v1/chat/completions` request is streaming and carries
 `X-UmmInfer-Online-Rollout-Contract: 1` and
 `X-UmmInfer-Rollout-Generation: fresh` plus batch/group/rollout/attempt,
 request-hash, behavior-policy-hash/revision, model-id/revision/hash,
-model-config-hash, and sampling-hash headers. A compatible endpoint must echo
-all of them, with `X-UmmInfer-Behavior-Evidence: not_exposed` or `exposed`, on
-**every** response, including a retryable HTTP error. Missing headers, changed
+model-config-hash, and sampling-hash headers. A compatible endpoint must return
+the same binding from independently derived server evidence, with
+`X-UmmInfer-Behavior-Evidence: not_exposed` or `exposed`, on **every** response,
+including a retryable HTTP error. Client-supplied expected identities are not
+proof and must not merely be echoed. Missing headers, changed
 model/config/policy/sampling identities, wrong attempt or request hash, and
 stale/cross-group responses fail closed. Raw chunks must also keep one unique
-request id and the planned model id throughout the stream.
+request id and the planned model id throughout the stream. The implemented
+server opt-in, trust boundaries, and exact evidence schema are in
+[online-attestation](online-attestation.md).
 
 Only HTTP 200 `text/event-stream` responses with complete raw-SSE sidecars,
 one final terminal, completed state, verified artifacts, and a finite
@@ -448,24 +453,13 @@ trees. `attempts.jsonl` is diagnostic and intentionally outside that accepted
 file set. The committed fixture uses only logical ticks and a deterministic fake
 endpoint; it is not real generation evidence.
 
-### Isolated native Qwen3.8 live gate
+### Server-side HTTP attestation and isolated native Qwen3.8 live gate
 
-The native Qwen3.8 producer passed an isolated SM90 GPU 7 gate on 2026-11-26.
-It verified actual model/config/weight/tokenizer/binary/source hashes, exact
-requests/seeds/sampling, every response attestation, observed monotonic raw-SSE
-ticks, cancellation and truncation rejection, and fresh-process byte-identical
-raw replay. Text-only and supported interleaved image-narrative cases each
-recomputed every exposed log-probability in a fresh native forward process from
-the frozen model and exact sampled prefix: 61/61 token ids and masks matched,
-with maximum absolute difference `0.0` under tolerance `1e-6`. The visual case
-also proved route-token masks against public clean prose. Exact hashes,
-commands, failures, tolerances, and cleanup are in
-[behavior-logprobs-live.md](behavior-logprobs-live.md).
+The public server provides an explicit `--online-rollout-config` opt-in with fail-closed trusted plan and native-stage identity validation, independent model/weight re-hashing, deterministic schedule derivation without echoing client proof, and bound response headers (`docs/online-attestation.md`). Its server-side HTTP attestation verification is currently CPU-only; real loaded-stage attestation binding and real online rollout generation remain separate unrun gates.
 
-This validates serving evidence only. An online optimizer adapter, real
-model-quality evaluation, generalized improvement, and production-model
-training remain separate unrun gates. Serving retains no trainer/optimizer
-imports and the trainer retains no inference imports.
+For sampled behavior evidence itself, the native Qwen3.8 producer (`behavior.logprobs=true`) passed an isolated SM90 GPU 7 gate on 2026-11-26. It verified actual model/config/weight/tokenizer/binary/source hashes, exact requests/seeds/sampling, observed monotonic raw-SSE ticks, cancellation and truncation rejection, and fresh-process byte-identical raw replay. Text-only and supported interleaved image-narrative cases each recomputed every exposed log-probability in a fresh native forward process from the frozen model and exact sampled prefix: 61/61 token ids and masks matched, with maximum absolute difference `0.0` under tolerance `1e-6`. The visual case also proved route-token masks against public clean prose. Exact hashes, commands, failures, tolerances, and cleanup are in [behavior-logprobs-live.md](behavior-logprobs-live.md).
+
+Real end-to-end attested online rollout generation, an online optimizer adapter, real model-quality evaluation, generalized improvement, and production-model training remain **NOT_RUN**. Serving retains no trainer/optimizer imports and the trainer retains no inference imports.
 
 ## Bounded real joint-SFT optimizer gate
 

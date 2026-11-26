@@ -373,6 +373,18 @@ AdamW updates on GPU 7. These architecture gates do not satisfy or substitute fo
 online rollout generation, model-quality, generalized-improvement, or
 production-model training gates.
 
+**Phase 6 server-side online attestation (2026-11-26).** The public server now
+has an explicit `--online-rollout-config` opt-in. It pins trusted plan/native
+identity documents, independently re-hashes model config and available weights,
+derives canonical request/group/policy/model/sampling bindings without echoing
+client proof, rejects stale/duplicate/cross-group/drifting attempts, and emits no
+headers on default responses. CPU-only fresh-process and C++ fake-stage tests
+cover 200/error/retry/cancel/default parity, exact Python JSON fixtures, and
+fail-before-bind identity gates. Schemas and trust boundaries are in
+[online-attestation](online-attestation.md). Real native Qwen loaded-model
+verification, real online generation/optimization, behavior logprobs/masks, and
+quality remain `NOT_RUN`; coverage is truthfully `not_exposed`.
+
 **Phase 6 online-rollout contract (2026-11-26).** A separate trainer-side
 orchestrator defines deterministic online GRPO plans, seeds, group/candidate
 order, exact request and behavior-policy/model/config/sampling hashes, required
@@ -380,16 +392,18 @@ endpoint attestation, raw-SSE/cancellation handling, bounded retry/no-retry,
 complete group validation, and fresh-process byte-identical replay. Deterministic
 fake-endpoint tests cover interleaved visual text and malformed/drifting groups
 without ML or serving imports. The accepted frozen-offline GRPO adapter rejects
-online-provenance groups. Native Qwen3.8 now provides an explicit
-`behavior.logprobs=true` producer with actual sampled ids, full native
-log-softmax, clean-target masks, exact loaded-tokenizer identity, and required
-attestation. The isolated SM90 GPU 7 gate passed text and interleaved visual
-coverage, truncation/cancellation/default-off behavior, exact fresh-process
-forward recomputation (61/61 tokens, maximum absolute difference `0.0`), and
-byte-identical raw replay; see
-[behavior-logprobs-live](behavior-logprobs-live.md). Online optimizer execution,
-batch/audio/video evidence, and model-quality outcomes remain
-`NOT_RUN`/`NOT_COVERED` as applicable.
+online-provenance groups. Server-side HTTP attestation (`--online-rollout-config`)
+is described above (`CPU-only` verified; real loaded-stage attestation remains
+`NOT_RUN`). Native Qwen3.8 separately provides an explicit `behavior.logprobs=true`
+producer with actual sampled ids, full native log-softmax, clean-target masks,
+and exact loaded-tokenizer identity; its isolated SM90 GPU 7 gate passed text
+and interleaved visual coverage, truncation/cancellation/default-off behavior,
+exact fresh-process forward recomputation (61/61 tokens, maximum absolute
+difference `0.0`), and byte-identical raw replay — see
+[behavior-logprobs-live](behavior-logprobs-live.md). Real attested online rollout
+generation, online optimizer execution, batch/audio/video behavior evidence, and
+model-quality outcomes remain `NOT_RUN`/`NOT_COVERED` as applicable; see
+[joint-training](joint-training.md#online-grpo-rollout-generation-and-validation-contract).
 
 ## Model support plan
 

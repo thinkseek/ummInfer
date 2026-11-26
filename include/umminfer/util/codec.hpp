@@ -6,7 +6,9 @@
 // implementation with no reverse dependency on src/client/http.hpp.
 #pragma once
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -24,6 +26,22 @@ std::string base64_decode(
     std::string_view text,
     size_t max_bytes = std::numeric_limits<size_t>::max(),
     bool require_nonempty = false);
+
+// Incremental FIPS 180-4 SHA-256 for large, independently verified manifests.
+// finish_hex() consumes the digest; an instance must not be reused afterwards.
+class Sha256 {
+ public:
+  Sha256();
+  void update(std::string_view bytes);
+  std::string finish_hex();
+
+ private:
+  std::array<uint32_t, 8> state_{};
+  std::array<unsigned char, 64> buffer_{};
+  size_t buffer_size_ = 0;
+  uint64_t total_bytes_ = 0;
+  bool finished_ = false;
+};
 
 // FIPS 180-4 SHA-256 hex digest (lowercase, 64 characters).
 std::string sha256_hex(std::string_view bytes);
