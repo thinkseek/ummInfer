@@ -13,6 +13,9 @@ Suites:
   tts           real Qwen3.8 + CustomVoice TTS serial requests, two prompts,
                 warm repeats, off/on JSON/SSE/PCM parity, failure/cancel, and
                 independent 50 ms whole-device NVML (isolated stack required)
+  asr           real Qwen3-ASR + serial Qwen3.8, English/Mandarin PCM16,
+                warm repeats, JSON/SSE/transcript parity, failure/cancel, and
+                independent 50 ms whole-device NVML (isolated stack required)
   batched       Qwen3.8 --batch-size>1 must be NOT_COVERED with null peaks
   contract-stub Wan2.2 contract-stub must be NOT_COVERED with null peaks
 
@@ -202,6 +205,9 @@ class Gate:
         self.peaks = {}
         self.terminal_files = []
         self.media_hashes = {}
+        self.transcripts = {}
+        self.input_audio = {}
+        self.request_hashes = {}
         self.monitor = NvmlMonitor(args.device)
 
     def save_json(self, name, value):
@@ -229,6 +235,7 @@ class Gate:
 
     def chat(self, name, body):
         raw_request = canonical(body)
+        self.request_hashes[name] = sha256_bytes(raw_request)
         (self.evidence / f"{name}.request.json").write_bytes(raw_request + b"\n")
         request = urllib.request.Request(
             self.base + "/v1/chat/completions", data=raw_request,
@@ -244,8 +251,9 @@ class Gate:
         return status, parsed, path
 
     def stream(self, name, body, abort_first_frame=False,
-               abort_first_audio=False):
+               abort_first_audio=False, abort_delay_s=0.0):
         raw_request = canonical(body)
+        self.request_hashes[name] = sha256_bytes(raw_request)
         (self.evidence / f"{name}.request.json").write_bytes(raw_request + b"\n")
         parts = urllib.parse.urlsplit(self.base)
         connection = http.client.HTTPConnection(parts.hostname, parts.port,
@@ -283,6 +291,8 @@ class Gate:
                     request_id = frame.get("id")
                     require(isinstance(request_id, str) and request_id,
                             "first SSE frame has no request id")
+                    if abort_delay_s > 0:
+                        time.sleep(abort_delay_s)
                     abort_result = self.abort(request_id)
         finally:
             connection.close()
@@ -595,6 +605,219 @@ class Gate:
         require(len(self.epochs.get("tts", [])) >= 5,
                 "insufficient unique TTS request epochs")
 
+    def asr_body(self, wav, telemetry=False, stream=False):
+        body = self.text_body(telemetry=telemetry, stream=stream, max_tokens=4)
+        body["messages"] = [{"role": "user", "content": [
+            {"type": "input_audio", "input_audio": {
+                "data": base64.b64encode(wav).decode(), "format": "wav"}},
+            {"type": "text", "text":
+             "Transcribe the audio, then give one short acknowledgement."},
+        ]}]
+        return body
+
+    def retain_pcm16_wav(self, label, path):
+        wav = Path(path).read_bytes()
+        with wave.open(io.BytesIO(wav), "rb") as source:
+            require(source.getnchannels() == 1 and source.getsampwidth() == 2 and
+                    source.getframerate() == 16000,
+                    f"{label} is not 16 kHz mono PCM16")
+            pcm = source.readframes(source.getnframes())
+        require(len(pcm) > 0 and len(pcm) % 2 == 0,
+                f"{label} has empty or malformed PCM16")
+        (self.evidence / f"{label}.input.wav").write_bytes(wav)
+        (self.evidence / f"{label}.input.pcm").write_bytes(pcm)
+        self.input_audio[label] = {
+            "wav_sha256": sha256_bytes(wav), "wav_bytes": len(wav),
+            "pcm_sha256": sha256_bytes(pcm), "pcm_bytes": len(pcm),
+            "sample_rate": 16000, "channels": 1, "format": "pcm16",
+        }
+        return wav
+
+    def require_asr_warm_covered(self, envelope, lifecycle="completed"):
+        rows = [row for row in envelope.get("stages", [])
+                if row.get("native_stage") == "asr"]
+        require(len(rows) == 1, "missing unique native ASR telemetry stage")
+        single = dict(envelope)
+        single["stages"] = rows
+        stage = require_covered(single, "asr", self.args.device,
+                                lifecycle=lifecycle)
+        samples = stage["sample_coverage"]
+        require(stage["allocated_bytes_peak"] == 0 and
+                stage["reserved_bytes_peak"] == 0 and
+                stage["allocated_bytes_final"] == 0 and
+                stage["reserved_bytes_final"] == 0 and
+                samples["allocation_events"] == 0 and
+                samples["free_events"] == 0,
+                "ASR pre-request weights/workspaces/graphs entered request ownership")
+        return stage
+
+    def retain_asr_transcript(self, name, frames):
+        transcripts = []
+        for frame in frames:
+            unified = frame.get("unified", {})
+            if unified.get("kind") == "asr_final":
+                transcripts.append(unified.get("text"))
+        require(len(transcripts) == 1 and isinstance(transcripts[0], str) and
+                transcripts[0], f"{name} did not emit one nonempty ASR transcript")
+        text = transcripts[0]
+        (self.evidence / f"{name}.transcript.txt").write_bytes(text.encode("utf-8"))
+        self.transcripts[name] = {
+            "text": text, "utf8_sha256": sha256_bytes(text.encode("utf-8"))}
+        return text
+
+    def asr(self):
+        status, health = self.get_json("/health")
+        require(status == 200 and health.get("in_flight") == 0,
+                f"initial health is not idle: {health}")
+        status, ready = self.get_json("/ready")
+        require(status == 200 and ready.get("status") == "ready",
+                "ASR/Qwen stack is not ready")
+        english = self.retain_pcm16_wav("asr-english", self.args.audio_en)
+        mandarin = self.retain_pcm16_wav("asr-mandarin", self.args.audio_zh)
+        log_offset = Path(self.args.asr_log).stat().st_size
+
+        nonstream = {}
+        for name, enabled, wav in (
+                ("asr-en-on", True, english), ("asr-en-off", False, english),
+                ("asr-en-warm-on", True, english),
+                ("asr-en-warm-second-on", True, english),
+                ("asr-zh-on", True, mandarin)):
+            status, response, path = self.chat(
+                name, self.asr_body(wav, telemetry=enabled))
+            require(status == 200, f"{name} HTTP {status}: {response}")
+            envelope = response_telemetry(response)
+            if enabled:
+                require_covered(envelope, "qwen38", self.args.device)
+                self.require_asr_warm_covered(envelope)
+                self.note_epochs(envelope)
+                self.remember_terminal(path)
+            else:
+                require(envelope is None and "telemetry" not in response,
+                        "default ASR JSON emitted telemetry")
+            nonstream[name] = response
+        parity = self.compare(nonstream["asr-en-off"], nonstream["asr-en-on"],
+                              nonstream["asr-en-off"].get("id"),
+                              nonstream["asr-en-on"].get("id"))
+        self.record("asr-json-off-on-protocol-parity", "PASS", parity)
+        warm_parity = self.compare(
+            nonstream["asr-en-warm-on"], nonstream["asr-en-warm-second-on"],
+            nonstream["asr-en-warm-on"].get("id"),
+            nonstream["asr-en-warm-second-on"].get("id"))
+        self.record("asr-warm-repeat-protocol-parity", "PASS", warm_parity)
+
+        streamed = {}
+        for name, enabled, wav in (
+                ("asr-en-sse-off", False, english),
+                ("asr-en-sse-on", True, english),
+                ("asr-zh-sse-on", True, mandarin)):
+            status, frames, _ = self.stream(
+                name, self.asr_body(wav, telemetry=enabled, stream=True))
+            require(status == 200 and frames, f"{name} SSE failed")
+            envelopes = [frame_telemetry(frame) for frame in frames
+                         if frame_telemetry(frame) is not None]
+            if enabled:
+                require(len(envelopes) == 1,
+                        "ASR SSE did not emit one terminal envelope")
+                require_covered(envelopes[0], "qwen38", self.args.device)
+                self.require_asr_warm_covered(envelopes[0])
+                self.note_epochs(envelopes[0])
+            else:
+                require(not envelopes and
+                        all("telemetry" not in frame for frame in frames),
+                        "default ASR SSE emitted telemetry")
+            self.retain_asr_transcript(name, frames)
+            streamed[name] = frames
+        first_id = streamed["asr-en-sse-off"][0].get("id")
+        second_id = streamed["asr-en-sse-on"][0].get("id")
+        parity = self.compare(streamed["asr-en-sse-off"],
+                              streamed["asr-en-sse-on"], first_id, second_id)
+        self.record("asr-sse-off-on-protocol-parity", "PASS", parity)
+        require(self.transcripts["asr-en-sse-off"]["text"] ==
+                self.transcripts["asr-en-sse-on"]["text"],
+                "ASR off/on English transcript bytes differ")
+        self.record("asr-sse-off-on-transcript-parity", "PASS",
+                    self.transcripts["asr-en-sse-off"]["utf8_sha256"])
+
+        # The public WAV is valid nonempty PCM16. Its PCM happens to start with
+        # RIFF, so the existing native stage auto-detection treats those payload
+        # bytes as a malformed inner WAV and raises before STFT/encoder work.
+        # This reaches a real native failed terminal without changing defaults.
+        invalid_pcm = b"RIFF" + b"\x01\x00" * 1600
+        invalid_wav_buffer = io.BytesIO()
+        with wave.open(invalid_wav_buffer, "wb") as target:
+            target.setnchannels(1)
+            target.setsampwidth(2)
+            target.setframerate(16000)
+            target.writeframes(invalid_pcm)
+        invalid_wav = invalid_wav_buffer.getvalue()
+        (self.evidence / "asr-invalid-native.input.wav").write_bytes(invalid_wav)
+        (self.evidence / "asr-invalid-native.input.pcm").write_bytes(invalid_pcm)
+        status, failed, path = self.chat(
+            "asr-invalid-native-failed",
+            self.asr_body(invalid_wav, telemetry=True))
+        require(status >= 500, f"invalid native audio became HTTP {status}: {failed}")
+        envelope = response_telemetry(failed)
+        require(envelope and envelope.get("lifecycle_status") == "failed",
+                f"ASR failed lifecycle missing: {failed}")
+        self.require_asr_warm_covered(envelope, lifecycle="failed")
+        self.note_epochs(envelope)
+        self.remember_terminal(path)
+
+        # Abort at the first public SSE frame, while the English ASR decode is
+        # still running. The native log independently retains its actual abort.
+        status, frames, abort = self.stream(
+            "asr-cancelled", self.asr_body(english, telemetry=True, stream=True),
+            abort_first_frame=True, abort_delay_s=0.05)
+        require(status == 200 and abort and abort.get("status") == 200,
+                f"ASR in-flight abort failed: {abort}")
+        envelopes = [frame_telemetry(frame) for frame in frames
+                     if frame_telemetry(frame) is not None]
+        require(len(envelopes) == 1 and
+                envelopes[0].get("lifecycle_status") == "cancelled",
+                "ASR cancellation did not emit one cancelled envelope")
+        envelope = envelopes[0]
+        asr_rows = [row for row in envelope.get("stages", [])
+                    if row.get("stage") == "asr"]
+        require(len(asr_rows) == 1, "ASR cancellation lost its ASR boundary")
+        if asr_rows[0].get("native_stage") == "asr":
+            self.require_asr_warm_covered(envelope, lifecycle="cancelled")
+            self.note_epochs(envelope)
+        else:
+            require_not_covered(asr_rows[0], "stage_terminal_snapshot_missing")
+        self.save_json("asr-cancelled-boundary.json", {
+            "abort": abort, "telemetry": envelope,
+            "boundary": "public cancellation 50 ms after first SSE frame",
+        })
+
+        request_id = envelope["request_id"]
+        marker = ("asr request aborted request_id=" + request_id).encode()
+        native_log = b""
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            native_log = Path(self.args.asr_log).read_bytes()[log_offset:]
+            if marker in native_log:
+                break
+            time.sleep(0.05)
+        (self.evidence / "asr-native-log-tail.txt").write_bytes(native_log)
+        require(marker in native_log,
+                "native ASR log did not retain this request's actual cancellation")
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            _, health = self.get_json("/health")
+            if health.get("in_flight") == 0:
+                break
+            time.sleep(0.1)
+        require(health.get("in_flight") == 0, f"in_flight did not drain: {health}")
+        self.save_json("asr-final-health.json", health)
+        for path, digest in self.terminal_files:
+            require(sha256_bytes(path.read_bytes()) == digest,
+                    f"terminal response was rewritten: {path.name}")
+        require(len(self.epochs.get("asr", [])) >= 7,
+                "insufficient unique ASR request epochs")
+        require(all(peak == 0 for peak in self.peaks.get("asr", [])),
+                "ASR pool-reuse peak was not the measured zero")
+
     def compare(self, off, on, off_id=None, on_id=None):
         left = canonical(normalize(off, off_id))
         right = canonical(normalize(on, on_id))
@@ -797,6 +1020,8 @@ class Gate:
         try:
             if self.args.suite == "serial":
                 self.serial()
+            elif self.args.suite == "asr":
+                self.asr()
             elif self.args.suite == "batched":
                 self.batched()
             elif self.args.suite == "tts":
@@ -816,6 +1041,9 @@ class Gate:
             "covered_epochs": self.epochs,
             "allocated_bytes_peaks": self.peaks,
             "media_hashes": self.media_hashes,
+            "transcripts": self.transcripts,
+            "input_audio": self.input_audio,
+            "canonical_request_sha256": self.request_hashes,
             "whole_device_nvml": "independent 50 ms samples; never request-only peaks",
         }
         self.save_json("summary.json", summary)
@@ -834,9 +1062,12 @@ def main(argv=None):
     parser.add_argument("--model", default="qwen3-native")
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--suite", choices=("serial", "batched", "contract-stub", "tts"),
+    parser.add_argument("--suite", choices=("serial", "asr", "tts", "batched", "contract-stub"),
                         default="serial")
     parser.add_argument("--audio", help="optional real PCM16 WAV for uninstrumented ASR")
+    parser.add_argument("--audio-en", help="real English 16 kHz mono PCM16 WAV for ASR suite")
+    parser.add_argument("--audio-zh", help="real Mandarin 16 kHz mono PCM16 WAV for ASR suite")
+    parser.add_argument("--asr-log", help="fresh native ASR log for cancellation evidence")
     parser.add_argument("--qwen-log", help="optional stage log for prefix_reused evidence")
     parser.add_argument("--tts-log", help="fresh native TTS log for cancellation evidence")
     parser.add_argument("--timeout-s", type=float, default=600)
@@ -847,6 +1078,8 @@ def main(argv=None):
         parser.error("live telemetry gate requires a credential-free loopback HTTP URL")
     if args.device < 0 or args.timeout_s <= 0:
         parser.error("device must be nonnegative and timeout positive")
+    if args.suite == "asr" and not (args.audio_en and args.audio_zh and args.asr_log):
+        parser.error("ASR suite requires --audio-en, --audio-zh, and --asr-log")
     if os.environ.get("UMMINFER_LIVE_OPT_IN") != "1":
         print("BLOCKED set UMMINFER_LIVE_OPT_IN=1 for the isolated live gate")
         return 0

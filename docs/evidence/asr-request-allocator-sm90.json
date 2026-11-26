@@ -1,0 +1,162 @@
+{
+  "schema": "umminfer-asr-request-native-allocator-sm90-v1",
+  "status": "PASS",
+  "date": "2026-11-26",
+  "final_source_commit": "b37871e64e6ff9b9da801b132186844536591571",
+  "binary_source_commit": "2a4a6c651c8522b8c9acf1885aa5c419847aa8a0",
+  "hardware": {
+    "profile": "NVIDIA Hopper SM90",
+    "physical_device_index": 7,
+    "execution": "serial",
+    "native_batch_capacity": 1,
+    "gateway": "isolated loopback ASR plus Qwen3.8 stack",
+    "resident_service_contacted": false,
+    "other_devices_used": []
+  },
+  "coverage": {
+    "scope": "explicit native ASR cudaMalloc/cudaFree blocks first owned by one request epoch",
+    "resident_weights": "excluded_before_request",
+    "encoder_conv_scratch": "pre-request_and_excluded",
+    "decoder_kv_scratch": "pre-request_and_excluded",
+    "decode_cuda_graph": "captured_pre-request_and_excluded",
+    "stft_log_mel": "CPU_only_no_direct_device_allocation",
+    "pinned_host_staging": "outside_device_byte_metric",
+    "cuda_driver_graph_and_library_internals": "NOT_COVERED"
+  },
+  "build_and_deterministic_tests": {
+    "cuda": "12.4.131 SM90",
+    "native_stage_ctest": "2/2 PASS: request_telemetry_test and asr_request_allocator_test",
+    "native_asr_host_ctest": "1/1 PASS",
+    "stage_host_ctest": "9/9 PASS",
+    "umm_test_local": "PASS",
+    "controlled_measurement_test": "38/38 PASS",
+    "real_cuda_adapter_fixture": {
+      "cold_allocated_bytes_peak": 768,
+      "cold_reserved_bytes_peak": 768,
+      "cold_allocated_bytes_final": 512,
+      "allocation_events": 2,
+      "free_events_before_terminal": 1,
+      "late_free_original_owner_only": true,
+      "warm_zero_event_epochs": true,
+      "failed_and_cancelled_peaks_retained": true,
+      "unsupported_and_batched_null_not_covered": true
+    },
+    "public_contracts": "ASR JSON/SSE off/on transcript parity, warm repeat, covered failure, immediate cancel, and malicious-field sanitization PASS"
+  },
+  "measured_requests": {
+    "english": 7,
+    "mandarin": 2,
+    "invalid_native_audio": 1,
+    "asr_epochs": [15, 16, 17, 18, 19, 20, 21],
+    "unique_monotonic_epochs": true,
+    "allocated_bytes_peak": [0, 0, 0, 0, 0, 0, 0],
+    "reserved_bytes_peak": [0, 0, 0, 0, 0, 0, 0],
+    "allocated_bytes_final": [0, 0, 0, 0, 0, 0, 0],
+    "reserved_bytes_final": [0, 0, 0, 0, 0, 0, 0],
+    "allocation_events": [0, 0, 0, 0, 0, 0, 0],
+    "free_events": [0, 0, 0, 0, 0, 0, 0],
+    "zero_meaning": "covered requests reused pre-request ASR pools and made no new direct allocations; this is not unsupported null coverage"
+  },
+  "protocol_and_transcripts": {
+    "json_off_on_normalized_sha256": "6c24505e75ce99a64ad82dd1396124d6faa7bf76e9e82960ceb2de9693c0ebb3",
+    "warm_repeat_normalized_sha256": "6c24505e75ce99a64ad82dd1396124d6faa7bf76e9e82960ceb2de9693c0ebb3",
+    "sse_off_on_normalized_sha256": "5d77a59d57bbb440b7be150fb4042512381ceb2c99da084821d1af6d9bb4ce28",
+    "default_off_has_no_telemetry_field": true,
+    "english_transcript": "Uh huh. Oh yeah, yeah. He wasn't even that big when I started listening to him, but and his solo music didn't do overly well, but he did very well when he started writing for other people.",
+    "english_transcript_off_on_identical": true,
+    "english_transcript_sha256": "6156c793c0b0a7e6205516044eed6db003ab38627bedaabd0b10707e9266d69b",
+    "mandarin_transcript": "甚至出现交易几乎停滞的情况。",
+    "mandarin_transcript_sha256": "c2e21537e98ec94cf4c629dbe843e2e33918116e3175f19ef8400c2fb64d2b61"
+  },
+  "input_pcm16": {
+    "english": {
+      "sample_rate": 16000,
+      "channels": 1,
+      "pcm_bytes": 481640,
+      "pcm_sha256": "77c199660bbe1bc0eefc303e350e4d0b3fdcf4a626df33f4e45b0a9da72d288d",
+      "wav_sha256": "64fbd9f7ecafc160ba457595570f4a8b338f10e16acc0933be30aedc7eedf86d"
+    },
+    "mandarin": {
+      "sample_rate": 16000,
+      "channels": 1,
+      "pcm_bytes": 134526,
+      "pcm_sha256": "c2a9473f527a99737e16e5de5f7fd7bbdec48a7ada9be12512a01cbd6a6ce724",
+      "wav_sha256": "46dbc998c9d1d48111267c40741dd3200f2e5bcf4075f8c4c97f4451160dce50"
+    }
+  },
+  "lifecycles": {
+    "completed": "covered terminal snapshots retained",
+    "failed": {
+      "request_id": "req-17",
+      "epoch": 21,
+      "native_error": "not a RIFF WAVE file",
+      "coverage": "COVERED",
+      "allocated_bytes_peak": 0,
+      "allocation_events": 0,
+      "free_events": 0
+    },
+    "cancelled": {
+      "request_id": "http-12",
+      "public_coverage": "NOT_COVERED",
+      "reason": "stage_terminal_snapshot_missing",
+      "byte_fields": null,
+      "native_log": "aborted at token 0",
+      "native_compute_ms": 69,
+      "native_abort_verified": true
+    },
+    "gateway_in_flight_after_gate": 0
+  },
+  "whole_device_nvml": {
+    "scope": "whole-device-used-memory",
+    "poll_interval_ms": 50,
+    "sample_count": 40,
+    "memory_used_mib_first": 61478,
+    "memory_used_mib_min": 61478,
+    "memory_used_mib_max": 61478,
+    "memory_used_mib_last": 61478,
+    "request_peaks_inferred_from_nvml": false
+  },
+  "provenance": {
+    "binary_sha256": {
+      "umm-infer": "bfe1a1b5d7cb215f34469f32bdfc420b4f7a2d34f013d236e605d24e4c954bc4",
+      "umm-native-stage-asr": "8858341913c361ed4deff22cf0fe4009488cec5a4d3337263905aedbe8fe4ac9",
+      "umm-native-stage-qwen38": "0811fea35008ffa3299f7dcf355d7c2580365014356e1bcbb3014573afe4d809",
+      "asr_request_allocator_test": "ae733e5844b89df4c34b813ab285946ae8be58a72c2e3bda72f4c97d24fd0df7"
+    },
+    "model_config_sha256": {
+      "Qwen3-ASR-1.7B": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f",
+      "qwen3.8-27b": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+    },
+    "model_and_config_hash_count": 41,
+    "source_hash_count": 425,
+    "raw_response_and_pcm_hash_manifest": "live/SHA256SUMS",
+    "command_records": ["build-commands.txt", "stack-commands.txt", "live-command.txt"]
+  },
+  "independent_verification": {
+    "status": "PASS",
+    "method": "fresh stdlib verifier with no producer import rehashed files and reread raw responses, PCM requests, epochs, transcripts, lifecycle, and NVML",
+    "initial_epoch_disagreement_preserved": true,
+    "proved_cause": "verifier grouped failed epoch 21 before SSE epochs 19 and 20; raw producer execution order 15..21 and native attribution were unchanged",
+    "full_rerun_after_verifier_order_fix": "PASS",
+    "report": "independent-verification.json"
+  },
+  "cleanup": {
+    "only_recorded_task_processes_signaled": true,
+    "gpu_7_memory_used_mib": 3,
+    "gpu_7_compute_processes": 0,
+    "recorded_pid_state": "zombie entries with no executing threads; container parent owns reaping"
+  },
+  "evidence": {
+    "directory": "/tmp/umminfer-task57-r4-evidence/",
+    "file_count_excluding_sha256sums": 73,
+    "sha256sums_sha256": "6345f6e2894cc71c4532e2fedaafe7c61c9883eb2b28499045ede0eb7b65282b"
+  },
+  "claims": {
+    "asr_accuracy": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "production_deployment": "NOT_RUN",
+    "generalized_performance": "NOT_RUN",
+    "batched_or_overlapping_attribution": "NOT_COVERED",
+    "external_library_driver_and_graph_internal_allocation": "NOT_COVERED"
+  }
+}

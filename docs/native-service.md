@@ -153,23 +153,27 @@ Current coverage is deliberately narrow:
 | Path | Request allocator result |
 | --- | --- |
 | Qwen3.8 native stage, `--batch-size 1` | Instrumented explicit native `cudaMalloc`/`cudaFree`; `COVERED` when attribution invariants hold |
+| Qwen3-ASR native stage, serial | Every explicit native device allocation/free in weights, encoder/conv, decoder/KV and scratch is owner-routed; `COVERED` with truthful zero events when requests only reuse pre-request pools |
 | Wan2.2 native stage, `cuda` or `cuda-scaffold`, serial | Instrumented explicit native runtime allocations in UMT5, DiT, VAE, and scaffold paths |
 | Qwen3-TTS native stage, serial CustomVoice | Every explicit native device `cudaMalloc`/`cudaFree` in Talker, Code Predictor, codec/KV, control buffers, and scratch is owner-routed; `COVERED` with truthful zero events when a request only uses pre-request pools |
 | Qwen3.8 `--batch-size > 1` | `NOT_COVERED`, reason `batched_request_attribution_unavailable`; configured capacity and request identity remain attached |
 | Concurrent/shared execution or overlapping serial epochs | `NOT_COVERED`; no peer subtraction or shared-counter split |
-| Native ASR, Omni, and Image stages | `NOT_COVERED`, `backend_not_instrumented` |
+| Native Omni and Image stages | `NOT_COVERED`, `backend_not_instrumented` |
 | Video `contract-stub` | `NOT_COVERED`, `contract_stub_has_no_cuda_allocator` |
 | Python/Diffusers/FLUX stages and fixed external proxies | No truthful native epoch is inferred; absent/missing terminal data is normalized to `NOT_COVERED` |
 
 TTS allocates its model regions, Talker/Code Predictor workspaces and KV,
 causal-codec state, control buffers, and both CUDA graphs in the engine
-constructor, before any request epoch. Those resident allocations are excluded.
-The graph bodies perform no direct allocation; CUDA Graph runtime internals and
-pinned host staging are not direct device blocks in this metric. A covered TTS
+constructor, before any request epoch. ASR log-mel/STFT runs on the CPU, and
+its weight shards, encoder/conv and decoder/KV workspaces, scratch/control
+buffers, and decode-graph capture are likewise created in the engine constructor
+before any request epoch. Those resident allocations are excluded; graph bodies
+perform no direct allocation, and CUDA Graph runtime internals and pinned host
+staging are not direct device blocks in this metric. A covered TTS or ASR
 request that only reuses these pools therefore reports zero bytes **and zero
-allocation/free events**. This differs from an unsupported path's null bytes.
-The standalone `umm-tts-native` build retains direct CUDA calls and emits no
-request telemetry.
+allocation/free events**, unlike an unsupported path's null bytes. The
+standalone `umm-tts-native` and `umm-asr-native` builds retain direct CUDA calls
+and emit no request telemetry.
 
 Success and failure completions carry their native terminal snapshot. The
 scheduler also retains a covered cancelled snapshot when compute observes the
@@ -259,8 +263,8 @@ declared above.
 Task #56 (`89708c8`, live-harness completion `6afd197`) ran an isolated serial
 Qwen3.8 + Qwen3-TTS-12Hz-1.7B-CustomVoice stack on explicitly idle physical
 GPU 7. ASR was resident only because the gateway requires a distinct entry for
-readiness; it was not used for synthesis and remains uninstrumented. The
-resident service was not contacted. Only task-owned processes were stopped.
+readiness; it was not used for synthesis during that TTS run. The resident
+service was not contacted. Only task-owned processes were stopped.
 
 - Every explicit TTS device allocation/free in `engine.cpp` and `codec.cpp`
   uses the existing request-owner adapter. Load-time weights, fixed Talker and
@@ -302,6 +306,58 @@ resident service was not contacted. Only task-owned processes were stopped.
 This is allocator/protocol coverage only. Audio quality, perceptual latency,
 production deployment, batched/overlapping TTS attribution, Base-model live
 telemetry, and other-stage expansion are not claimed.
+
+### SM90 ASR validation gate — PASS (2026-11-26)
+
+Task #57 ran the exact serial Qwen3-ASR-1.7B + Qwen3.8 stack on explicitly idle
+physical GPU 7 with `--batch-size 1`. The resident service was not contacted;
+only recorded task-owned processes were stopped. Final source is `b37871e`;
+the measured native binaries were built from `2a4a6c6`, whose runtime files are
+unchanged by the two subsequent live-harness-only commits.
+
+- Every explicit ASR device allocation/free in `engine.cpp` uses the request-owner
+  adapter. Weights, fixed encoder/conv and decoder/KV workspaces, scratch/control
+  buffers, and graph capture are pre-request and excluded. Seven covered ASR
+  terminal records had unique monotonically increasing epochs `15..21`, all four
+  allocated/reserved peak/final fields of **0 bytes**, and zero allocation/free
+  events. These are measured pool-reuse results, not unsupported zeroes. The
+  separate real-CUDA fixture observed a **768-byte peak**, 512-byte final, two
+  allocations and one free before checking late-free ownership, warm epochs,
+  failure/cancel, and unsupported null coverage.
+- Seven English and two Mandarin 16 kHz mono PCM16 requests, plus one malformed
+  native-audio request, are retained with exact canonical-request and PCM hashes.
+  English off/on JSON and SSE projections matched, including exact transcript
+  bytes; a second warm repeat also matched. Mandarin produced its own retained
+  transcript. Transcript SHA-256 values are `6156c793…` (English) and
+  `c2e21537…` (Mandarin); no recognition-accuracy claim is made.
+- A valid outer PCM16 WAV whose payload begins `RIFF` reached the native parser
+  and failed as `not a RIFF WAVE file`, retaining covered `failed` epoch 21 with
+  zero pool-reuse events. Cancellation 50 ms after the first SSE frame returned
+  the documented immediate public `cancelled` / `stage_terminal_snapshot_missing`
+  boundary with null bytes. The native log independently records request
+  `http-12` aborting at token 0 after 69 ms. `/health` retained `in_flight=0`.
+- Independent whole-device NVML sampling remained separate: **40 samples** from
+  the 50 ms monitor all reported **61,478 MiB** while both models were resident.
+  No request peak was inferred from NVML. After stopping only the task-owned
+  gateway/stages, GPU 7 returned to **3 MiB** with no compute process; recorded
+  pids remained only as zombie entries awaiting container-parent reaping, with
+  no executing threads.
+- Evidence is in `/tmp/umminfer-task57-r4-evidence/`: raw requests/responses/SSE,
+  exact transcripts and PCM, native/gateway logs, 41 model/config hashes, four
+  binary hashes, 425 source hashes, build/CTest logs, command records, request
+  identities, lifecycle records, 50 ms NVML samples, independent verifier, and
+  cleanup. **73/73 `SHA256SUMS` PASS**, manifest SHA-256
+  `6345f6e2894cc71c4532e2fedaafe7c61c9883eb2b28499045ede0eb7b65282b`.
+  The compact machine-readable record is
+  [asr-request-allocator-sm90.json](evidence/asr-request-allocator-sm90.json).
+  An initial independent-verifier epoch-order disagreement is preserved there:
+  the verifier had grouped failed epoch 21 before SSE epochs 19/20; raw request
+  order proved the verifier defect, and its complete rerun passed without
+  changing producer data or weakening a gate.
+
+This is allocator/protocol coverage only. ASR accuracy, perceptual quality,
+production deployment, generalized performance, batched/overlapping ASR
+attribution, and driver/graph/external-library internals are not claimed.
 
 ## Operate
 

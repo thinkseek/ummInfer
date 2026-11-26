@@ -104,15 +104,17 @@ that device; a device that refuses a reading emits 0 for that field.
 
 Off by default. `POST /v1/chat/completions` accepts
 `telemetry: {"native_allocator": true}` and returns a terminal `telemetry`
-envelope only for that request. Serial instrumented Qwen3.8, Wan2.2, and native
-Qwen3-TTS stages report allocated/reserved byte peaks for explicit native CUDA
-blocks first owned by a new request epoch. Batches, concurrent/shared execution,
-uninstrumented stages, external proxies, and malformed/missing data remain
-`NOT_COVERED` with null peaks. No request-only value is inferred from another
-request or a resident baseline. TTS preallocates its Talker/Code Predictor,
-causal-codec/KV, scratch, and graphs before requests, so a covered pool-reuse
-request reports zero bytes with zero allocation/free events; this is distinct
-from unsupported null coverage.
+envelope only for that request. Serial instrumented Qwen3.8, Qwen3-ASR, Wan2.2,
+and native Qwen3-TTS stages report allocated/reserved byte peaks for explicit
+native CUDA blocks first owned by a new request epoch. Batches,
+concurrent/shared execution, uninstrumented stages, external proxies, and
+malformed/missing data remain `NOT_COVERED` with null peaks. No request-only
+value is inferred from another request or a resident baseline. Both TTS (Talker,
+Code Predictor, causal-codec/KV, scratch, graphs) and ASR (CPU STFT/log-mel plus
+preallocated device weights, encoder/decoder/KV workspaces, scratch, and decode
+graph) preallocate before requests, so covered pool-reuse requests report zero
+bytes with zero allocation/free events; this is distinct from unsupported null
+coverage.
 
 This is a different scope from every `umm_gpu_*` gauge and from controlled
 `measurement.resources`. Those remain whole-device NVML samples; request peaks
@@ -128,10 +130,13 @@ GPU 0, including off/on output parity, cache repeats, lifecycle boundaries, and
 independent 50 ms whole-device NVML samples. A separate isolated physical GPU 7
 gate passed serial Qwen3.8 + CustomVoice TTS with two prompts, warm repeats,
 exact off/on JSON/SSE/PCM parity, seven unique zero-event TTS pool-reuse epochs,
-covered failure, truthful immediate-cancellation boundaries, and 3 MiB cleanup.
-Batched, concurrent/shared, Base-TTS live telemetry, and other-backend request
-attribution remains `NOT_COVERED`/`NOT_RUN`; host/fake-allocator tests alone are
-not GPU evidence.
+covered failure, truthful immediate-cancellation boundaries, and 3 MiB cleanup,
+and a separate isolated physical GPU 7 gate passed serial Qwen3-ASR with English
+and Mandarin PCM16, warm repeats, exact off/on JSON/SSE/transcript parity, seven
+unique zero-event pool-reuse epochs, covered native failure, actual native
+cancellation, and 3 MiB cleanup. Batched, concurrent/shared, Base-TTS live
+telemetry, and other-backend request attribution remains
+`NOT_COVERED`/`NOT_RUN`; host/fake-allocator tests alone are not GPU evidence.
 
 ## Request tracing
 

@@ -194,7 +194,7 @@ Stage 参数、结果字段、SSE/JSON 字段或遥测日志。启用后，`Unif
 随 ASR/VLM/输出子 leg 透传，原生 Stage 包装器在单次 compute 外建立独立
 allocation-ownership epoch，终态结果经 `request_telemetry` 回到统一终态信封。
 
-当前串行 Qwen3.8、串行 Wan2.2（`cuda` / `cuda-scaffold`）与串行原生
+当前串行 Qwen3.8、串行 Qwen3-ASR、串行 Wan2.2（`cuda` / `cuda-scaffold`）与串行原生
 Qwen3-TTS 把显式 `cudaMalloc`/`cudaFree` 接入所有权跟踪。峰值只累计该 epoch
 首次拥有的直接 CUDA 块；加载期常驻权重、CUDA context/driver、外部库内分配不在
 范围内。直接 runtime 块的 allocated 与 reserved 相等，不从设备显存、常驻基线或
@@ -205,9 +205,12 @@ Python/外部代理、缺失或 malformed 数据均显式 `NOT_COVERED`，字节
 
 TTS 的 Talker、Code Predictor、causal codec/KV、控制/scratch 与双 CUDA Graph
 均在 model load 时分配或捕获，属于排除的预请求池；请求执行只复用这些固定地址。
-因此 COVERED 的 TTS 请求可以真实地同时报告 `0 B` 与 `0 alloc / 0 free`，但不得
-把缺失覆盖写成零。Graph runtime 内部分配与 pinned host staging 不属于该直接设备
-块指标，standalone TTS CLI 仍走原始 CUDA 调用且无请求遥测。
+ASR 的 STFT/log-mel 在 CPU 执行；权重、encoder/conv、decoder/KV、scratch 与
+decode graph 均在请求前创建。因此 COVERED 的 TTS 与 ASR 请求若只复用预请求池且无新直接分配，
+可以真实地同时报告 `0 B` 与 `0 alloc / 0 free`，但不得把缺失覆盖写成零。Graph runtime
+内部分配与 pinned host staging 不属于该直接设备块指标，standalone TTS/ASR CLI
+仍走原始 CUDA 调用且无请求遥测；独立 CUDA fixture 用非零小块验证计数、峰值、晚 free、失败与取消，
+不能把该 fixture 峰值冒充模型请求峰值。
 
 终态信封保留公共 request id、子 stage request id、公共/原生 stage 身份、串行/批处理
 属性、epoch reset 语义、事件样本覆盖和 completed/failed/cancelled 状态。立即取消若先于
@@ -221,9 +224,10 @@ TTS 的 Talker、Code Predictor、causal codec/KV、控制/scratch 与双 CUDA G
 required 要求所有测量请求完全 COVERED，否则撤销 `CONTROLLED_LIVE`。详细协议和后续
 SM90 门禁见 [native-service.md](native-service.md#opt-in-request-native-allocator-telemetry)。
 串行 Qwen3.8/Wan2.2 的 GPU 0 门禁与受控双臂消融已通过；Task #56 的串行
-Qwen3.8+CustomVoice TTS GPU 7 门禁也已通过双提示、warm、off/on JSON/SSE/PCM、
-失败/取消及独立 NVML/清理验证。Base TTS live telemetry、批处理/重叠执行和其他
-Stage 仍不声明覆盖。
+Qwen3.8+CustomVoice TTS GPU 7 门禁（双提示、warm、off/on JSON/SSE/PCM、失败/取消与独立 NVML/清理）
+及 Task #57 的串行 Qwen3-ASR GPU 7 门禁（中英 PCM16、warm epoch、off/on 协议与转写一致性、原生失败/取消、
+独立 50 ms whole-device NVML 与清理）均已通过。Base TTS live telemetry、批处理/重叠执行、
+准确率、感知质量、生产部署与泛化性能仍不在该门禁声明范围内。
 
 ---
 

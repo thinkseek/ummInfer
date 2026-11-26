@@ -12049,6 +12049,24 @@ Value native_stage_telemetry(const std::string& request_id,
   return Value(std::move(out));
 }
 
+Value asr_native_stage_telemetry(const std::string& request_id,
+                                 const std::string& lifecycle = "completed",
+                                 int64_t epoch = 7) {
+  Value raw = native_stage_telemetry(request_id, lifecycle);
+  raw["stage"] = Value("asr");
+  raw["backend"] = Value("asr");
+  raw["epoch"]["id"] = Value(epoch);
+  for (const char* key : {"allocated_bytes_peak", "reserved_bytes_peak",
+                          "allocated_bytes_final", "reserved_bytes_final"}) {
+    raw[key] = Value(int64_t{0});
+  }
+  raw["sample_coverage"] = Value(Value::Map{
+      {"allocation_events", Value(int64_t{0})},
+      {"free_events", Value(int64_t{0})},
+      {"terminal_snapshots", Value(int64_t{1})}});
+  return raw;
+}
+
 void test_public_http_request_native_allocator_telemetry() {
   Harness h("requesttelemetryhttp");
   ApiConfig config;
@@ -12420,6 +12438,251 @@ void test_public_http_request_native_allocator_telemetry() {
             util::sha256_hex(pcm_off.media_bytes) ==
                 util::sha256_hex(pcm_on.media_bytes),
         "TTS SSE/PCM off-on protocol parity failed");
+
+  api.stop();
+  server_thread.join();
+}
+
+void test_public_http_asr_request_native_allocator_telemetry() {
+  Harness h("asrrequesttelemetryhttp");
+  ApiConfig config;
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.model = "qwen3-unified";
+  config.request_timeout_s = 10.0;
+  OpenAIApi api(h.coordinator, config);
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  api.set_unified_engine(engine, "vlm");
+  check(api.bind(), "ASR request telemetry HTTP server did not bind");
+  h.start_pump();
+  std::thread server_thread([&] { api.listen(); });
+  const std::string url = "http://127.0.0.1:" +
+                          std::to_string(api.bound_port()) +
+                          "/v1/chat/completions";
+  auto post = [&](json body) {
+    return std::async(std::launch::async, [url, body = std::move(body)] {
+      test_http::HttpRequest request;
+      request.url = url;
+      request.body = body.dump();
+      request.headers.emplace("Content-Type", "application/json");
+      request.timeout = client::Milliseconds{15000};
+      return test_http::perform(request);
+    });
+  };
+
+  std::string pcm(3200, '\0');
+  for (size_t i = 0; i < pcm.size(); ++i) {
+    pcm[i] = static_cast<char>((i * 29 + 7) & 0xff);
+  }
+  const std::string wav = audio::wav_from_pcm16(pcm, 16000);
+  const json audio_part = {
+      {"type", "input_audio"},
+      {"input_audio", {{"data", util::base64_encode(wav)}, {"format", "wav"}}}};
+  const json messages = json::array(
+      {json{{"role", "user"}, {"content", json::array({audio_part})}}});
+  auto body_for = [&](bool enabled, bool streamed) {
+    json body = {{"model", "qwen3-unified"}, {"messages", messages},
+                 {"stream", streamed}, {"max_tokens", 16}, {"temperature", 0}};
+    if (enabled) body["telemetry"] = {{"native_allocator", true}};
+    return body;
+  };
+
+  struct AsrTelemetryRun {
+    test_http::HttpResponse response;
+    json normalized;
+    std::string transcript;
+    std::string answer;
+  };
+  int64_t next_epoch = 20;
+  auto run_asr = [&](bool enabled, bool streamed) {
+    auto future = post(body_for(enabled, streamed));
+    auto asr_submit = h.next_submit(h.asr_recv);
+    check(asr_submit.has_value(), "ASR telemetry request did not reach ASR");
+    StagePayload asr_payload = StagePayload::from_value(asr_submit->data);
+    check(asr_payload.request.inputs.find("audio")->as_bin() == pcm &&
+              obs::native_allocator_telemetry_requested(asr_payload.request.params) ==
+                  enabled,
+          "ASR telemetry changed PCM or its stage opt-in");
+    Value asr_result = text_result("allocator transcript");
+    if (enabled) {
+      asr_result[obs::kRequestTelemetryResultKey] = asr_native_stage_telemetry(
+          asr_submit->request_id, "completed", next_epoch++);
+    }
+    h.complete(asr_submit->request_id, "asr", true, std::move(asr_result));
+
+    auto vlm_submit = h.next_submit(h.vlm_recv);
+    check(vlm_submit.has_value(), "ASR telemetry request did not reach VLM");
+    StagePayload vlm_payload = StagePayload::from_value(vlm_submit->data);
+    const Value& vlm_messages = *vlm_payload.request.inputs.find("messages");
+    check(vlm_messages.as_array().at(0).find("content")->as_str() ==
+              "allocator transcript" &&
+              obs::native_allocator_telemetry_requested(vlm_payload.request.params) ==
+                  enabled,
+          "ASR transcript or VLM telemetry opt-in changed");
+    if (streamed) {
+      h.stream(vlm_submit->request_id, "vlm", text_chunk("telemetry answer", false));
+    }
+    Value vlm_result = text_result("telemetry answer");
+    vlm_result["finish_reason"] = Value("stop");
+    if (enabled) {
+      vlm_result[obs::kRequestTelemetryResultKey] =
+          native_stage_telemetry(vlm_submit->request_id);
+    }
+    h.complete(vlm_submit->request_id, "vlm", true, std::move(vlm_result));
+
+    AsrTelemetryRun out{future.get(), json(), {}, {}};
+    check(out.response.status == 200, "ASR off/on public request failed");
+    json public_body;
+    std::string public_id;
+    if (streamed) {
+      public_body = json::array();
+      for (const std::string& payload : sse_data_payloads(out.response.body)) {
+        if (payload == "[DONE]") continue;
+        json frame = json::parse(payload);
+        if (public_id.empty() && frame.contains("id")) {
+          public_id = frame["id"].get<std::string>();
+        }
+        if (frame.contains("unified")) {
+          const json& unified = frame["unified"];
+          if (unified.value("kind", "") == "asr_final") {
+            out.transcript = unified.value("text", "");
+          }
+        }
+        if (frame.contains("choices") && !frame["choices"].empty() &&
+            frame["choices"][0].contains("delta")) {
+          out.answer += frame["choices"][0]["delta"].value("content", "");
+        }
+        public_body.push_back(std::move(frame));
+      }
+    } else {
+      public_body = json::parse(out.response.body);
+      public_id = public_body["id"].get<std::string>();
+      out.transcript = vlm_messages.as_array().at(0).find("content")->as_str();
+      out.answer = public_body["choices"][0]["message"]["content"];
+    }
+    check(out.transcript == "allocator transcript" &&
+              out.answer == "telemetry answer",
+          "ASR off/on transcript or answer changed");
+    check((out.response.body.find("\"telemetry\"") != std::string::npos) == enabled,
+          "ASR telemetry field presence differs from its opt-in");
+    if (enabled) {
+      check(out.response.body.find("\"native_stage\":\"asr\"") != std::string::npos &&
+                out.response.body.find("\"allocated_bytes_peak\":0") !=
+                    std::string::npos,
+            "covered warm ASR zero-event telemetry is missing");
+    }
+
+    std::function<json(const json&)> normalize = [&](const json& value) -> json {
+      if (value.is_object()) {
+        json object = json::object();
+        for (auto it = value.begin(); it != value.end(); ++it) {
+          if (it.key() == "created" || it.key() == "session_id" ||
+              it.key() == "telemetry") {
+            continue;
+          }
+          object[it.key()] = normalize(it.value());
+        }
+        return object;
+      }
+      if (value.is_array()) {
+        json array = json::array();
+        for (const json& item : value) array.push_back(normalize(item));
+        return array;
+      }
+      if (value.is_string()) {
+        std::string text = value.get<std::string>();
+        for (const std::string& id :
+             {public_id, asr_submit->request_id, vlm_submit->request_id}) {
+          if (id.empty()) continue;
+          size_t at = 0;
+          while ((at = text.find(id, at)) != std::string::npos) {
+            text.replace(at, id.size(), "<request>");
+            at += 9;
+          }
+        }
+        return text;
+      }
+      return value;
+    };
+    out.normalized = normalize(public_body);
+    return out;
+  };
+
+  const auto json_off = run_asr(false, false);
+  const auto json_on = run_asr(true, false);
+  const auto json_warm = run_asr(true, false);
+  check(json_off.normalized == json_on.normalized &&
+            json_on.normalized == json_warm.normalized,
+        "ASR JSON/repeated-warm protocol parity failed");
+  const auto sse_off = run_asr(false, true);
+  const auto sse_on = run_asr(true, true);
+  check(sse_off.normalized == sse_on.normalized,
+        "ASR SSE/transcript off-on protocol parity failed");
+
+  // A covered native ASR failure retains its observed terminal record and never
+  // starts VLM. The zero values mean no new allocations, not missing coverage.
+  auto failed_future = std::async(std::launch::async, [&] {
+    json body = body_for(true, false);
+    httplib::Client client("127.0.0.1", api.bound_port());
+    return client.Post("/v1/chat/completions", body.dump(), "application/json");
+  });
+  auto failed_submit = h.next_submit(h.asr_recv);
+  check(failed_submit.has_value(), "failed ASR telemetry request missing");
+  Value failed_result = text_result("unused failed transcript");
+  failed_result[obs::kRequestTelemetryResultKey] = asr_native_stage_telemetry(
+      failed_submit->request_id, "failed", next_epoch++);
+  h.complete(failed_submit->request_id, "asr", false, std::move(failed_result),
+             std::string("injected invalid native audio"));
+  const auto failed_response = failed_future.get();
+  check(failed_response && failed_response->status == 500 &&
+            failed_response->body.find("\"native_stage\":\"asr\"") !=
+                std::string::npos &&
+            failed_response->body.find("\"lifecycle_status\":\"failed\"") !=
+                std::string::npos &&
+            failed_response->body.find("\"allocated_bytes_peak\":0") !=
+                std::string::npos,
+        "failed ASR request lost its covered terminal telemetry");
+
+  // Malformed ASR telemetry is allow-list sanitized at the public projection;
+  // native paths and negative byte counts never escape into the response.
+  auto malformed_future = post(body_for(true, false));
+  auto malformed_submit = h.next_submit(h.asr_recv);
+  check(malformed_submit.has_value(), "malformed ASR telemetry request missing");
+  Value malformed = asr_native_stage_telemetry(malformed_submit->request_id);
+  malformed["allocated_bytes_peak"] = Value(int64_t{-1});
+  malformed["model_path"] = Value("/secret/internal/asr-model");
+  Value malformed_result = text_result("sanitized transcript");
+  malformed_result[obs::kRequestTelemetryResultKey] = std::move(malformed);
+  h.complete(malformed_submit->request_id, "asr", true, std::move(malformed_result));
+  auto malformed_vlm = h.next_submit(h.vlm_recv);
+  check(malformed_vlm.has_value(), "sanitization request did not reach VLM");
+  Value sanitized_vlm_result = text_result("sanitized answer");
+  sanitized_vlm_result[obs::kRequestTelemetryResultKey] =
+      native_stage_telemetry(malformed_vlm->request_id);
+  h.complete(malformed_vlm->request_id, "vlm", true,
+             std::move(sanitized_vlm_result));
+  const auto malformed_response = malformed_future.get();
+  check(malformed_response.status == 200 &&
+            malformed_response.body.find("malformed_native_telemetry") !=
+                std::string::npos &&
+            malformed_response.body.find("/secret/internal/asr-model") ==
+                std::string::npos,
+        "malformed ASR telemetry was not sanitized to NOT_COVERED");
+
+  // Immediate public cancellation is truthful about the missing native terminal
+  // instead of inventing a late covered ASR allocation snapshot.
+  auto cancel_future = post(body_for(true, true));
+  auto cancel_submit = h.next_submit(h.asr_recv);
+  check(cancel_submit.has_value(), "cancel ASR telemetry request missing");
+  check(engine.cancel(cancel_submit->request_id),
+        "ASR telemetry cancellation was not accepted");
+  const auto cancel_response = cancel_future.get();
+  check(cancel_response.body.find("\"kind\":\"cancelled\"") != std::string::npos &&
+            cancel_response.body.find("\"lifecycle_status\":\"cancelled\"") !=
+                std::string::npos &&
+            cancel_response.body.find("stage_terminal_snapshot_missing") !=
+                std::string::npos,
+        "ASR immediate cancellation did not retain truthful status/coverage");
 
   api.stop();
   server_thread.join();
@@ -13650,6 +13913,7 @@ int main() {
   RUN(test_explicit_anchor_failure_cancel_and_validation());
   RUN(test_explicit_anchor_http_wire());
   RUN(test_public_http_request_native_allocator_telemetry());
+  RUN(test_public_http_asr_request_native_allocator_telemetry());
   RUN(test_openai_client_teacache_and_narrative());
   RUN(test_public_http_behavior_logprobs());
   RUN(test_openai_client_behavior_logprobs());

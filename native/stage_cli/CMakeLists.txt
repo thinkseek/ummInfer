@@ -156,6 +156,18 @@ if(UMM_STAGE_CUDA)
   set_target_properties(tts_request_allocator_test PROPERTIES CUDA_ARCHITECTURES 90)
   add_test(NAME tts_request_allocator_test COMMAND tts_request_allocator_test)
 
+  add_executable(asr_request_allocator_test
+    asr_request_allocator_test.cpp
+    ${NATIVE_DIR}/common/cuda_request_allocator.cpp
+  )
+  target_include_directories(asr_request_allocator_test PRIVATE ${NATIVE_DIR})
+  target_compile_definitions(asr_request_allocator_test PRIVATE
+    UMM_NATIVE_REQUEST_ALLOCATOR=1)
+  target_link_libraries(asr_request_allocator_test PRIVATE
+    umm_stage_core CUDA::cudart)
+  set_target_properties(asr_request_allocator_test PROPERTIES CUDA_ARCHITECTURES 90)
+  add_test(NAME asr_request_allocator_test COMMAND asr_request_allocator_test)
+
   target_sources(umm-native-stage-video PRIVATE
     ${NATIVE_DIR}/common/cuda_request_allocator.cpp
     ${NATIVE_DIR}/video/safetensors_mmap.cpp
@@ -175,12 +187,15 @@ if(UMM_STAGE_CUDA)
   # ---- ASR ----
   add_executable(umm-native-stage-asr
     main.cpp asr_stage.cpp
+    ${NATIVE_DIR}/common/cuda_request_allocator.cpp
     ${NATIVE_DIR}/umm_asr_native/feature_frontend.cpp
     ${NATIVE_DIR}/umm_asr_native/tokenizer.cpp
     ${NATIVE_DIR}/umm_asr_native/safetensors.cpp
     ${NATIVE_DIR}/umm_asr_native/engine.cpp
     ${NATIVE_DIR}/umm_asr_native/cuda_kernels.cu
   )
+  target_compile_definitions(umm-native-stage-asr PRIVATE
+    UMM_NATIVE_REQUEST_ALLOCATOR=1)
   target_link_libraries(umm-native-stage-asr PRIVATE umm_stage_common CUDA::cudart)
   set_target_properties(umm-native-stage-asr PROPERTIES CUDA_ARCHITECTURES 90)
 

@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/cuda_request_allocator.hpp"
 #include "cuda_kernels.hpp"
 #include "model_config.hpp"
 #include "safetensors.hpp"
@@ -127,33 +128,33 @@ struct AsrEngine::Impl {
     if (h_argmax_pinned) cudaFreeHost(h_argmax_pinned);
     if (h_ids_pinned) cudaFreeHost(h_ids_pinned);
     if (h_mel_pinned) cudaFreeHost(h_mel_pinned);
-    cudaFree(kv);
-    cudaFree(d_pe);
-    cudaFree(d_conv3);
-    cudaFree(d_conv2);
-    cudaFree(d_conv1);
-    cudaFree(d_conv_in);
-    cudaFree(d_au_ffn);
-    cudaFree(d_au_v);
-    cudaFree(d_au_k);
-    cudaFree(d_au_q);
-    cudaFree(d_au_norm);
-    cudaFree(d_audio);
-    cudaFree(d_up);
-    cudaFree(d_gate);
-    cudaFree(d_v);
-    cudaFree(d_k);
-    cudaFree(d_q);
-    cudaFree(d_norm);
-    cudaFree(d_hidden);
-    cudaFree(d_argmax);
-    cudaFree(d_step_pos);
-    cudaFree(d_positions);
-    cudaFree(d_ids);
-    cudaFree(d_logits);
-    cudaFree(d_inv_freq);
-    cudaFree(d_mel);
-    for (Bf16* shard : d_shards) cudaFree(shard);
+    request_cuda_free(kv);
+    request_cuda_free(d_pe);
+    request_cuda_free(d_conv3);
+    request_cuda_free(d_conv2);
+    request_cuda_free(d_conv1);
+    request_cuda_free(d_conv_in);
+    request_cuda_free(d_au_ffn);
+    request_cuda_free(d_au_v);
+    request_cuda_free(d_au_k);
+    request_cuda_free(d_au_q);
+    request_cuda_free(d_au_norm);
+    request_cuda_free(d_audio);
+    request_cuda_free(d_up);
+    request_cuda_free(d_gate);
+    request_cuda_free(d_v);
+    request_cuda_free(d_k);
+    request_cuda_free(d_q);
+    request_cuda_free(d_norm);
+    request_cuda_free(d_hidden);
+    request_cuda_free(d_argmax);
+    request_cuda_free(d_step_pos);
+    request_cuda_free(d_positions);
+    request_cuda_free(d_ids);
+    request_cuda_free(d_logits);
+    request_cuda_free(d_inv_freq);
+    request_cuda_free(d_mel);
+    for (Bf16* shard : d_shards) request_cuda_free(shard);
     if (stream) cudaStreamDestroy(stream);
   }
 
@@ -498,7 +499,7 @@ AsrEngine::AsrEngine(const std::string& model_dir, int gpu_id) {
   for (size_t s = 0; s < st.shard_count(); ++s) {
     const size_t data_start = st.data_region_offset(s);
     const size_t region_bytes = st.data_region_bytes(s);
-    UMM_CUDA_CHECK(cudaMalloc(&im.d_shards[s], region_bytes));
+    UMM_CUDA_CHECK(request_cuda_malloc(&im.d_shards[s], region_bytes));
     UMM_CUDA_CHECK(cudaMemcpy(im.d_shards[s], st.shard_bytes(s).data() + data_start,
                               region_bytes, cudaMemcpyHostToDevice));
   }
@@ -570,16 +571,16 @@ AsrEngine::AsrEngine(const std::string& model_dir, int gpu_id) {
   // Workspaces, every size derived from config.json (strictly <= original VRAM:
   // unused d_proj removed, d_v shrunk to 1 row for decode, d_positions only
   // allocated when head_dim != 128).
-  auto mk = [&](Bf16*& p, size_t n) { UMM_CUDA_CHECK(cudaMalloc(&p, n * sizeof(Bf16))); };
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_mel, c.mel_elements() * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_inv_freq, c.inv_freq_elements() * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_logits, c.logits_elements() * sizeof(float)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_ids, c.max_seq * sizeof(int)));
+  auto mk = [&](Bf16*& p, size_t n) { UMM_CUDA_CHECK(request_cuda_malloc(&p, n * sizeof(Bf16))); };
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_mel, c.mel_elements() * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_inv_freq, c.inv_freq_elements() * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_logits, c.logits_elements() * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_ids, c.max_seq * sizeof(int)));
   if (c.text_head_dim != 128) {
-    UMM_CUDA_CHECK(cudaMalloc(&im.d_positions, c.max_seq * sizeof(int)));
+    UMM_CUDA_CHECK(request_cuda_malloc(&im.d_positions, c.max_seq * sizeof(int)));
   }
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_step_pos, sizeof(int)));
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_argmax, sizeof(int)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_step_pos, sizeof(int)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_argmax, sizeof(int)));
   UMM_CUDA_CHECK(cudaMemset(im.d_step_pos, 0, sizeof(int)));
   UMM_CUDA_CHECK(cudaMemset(im.d_argmax, 0, sizeof(int)));
 
@@ -601,7 +602,7 @@ AsrEngine::AsrEngine(const std::string& model_dir, int gpu_id) {
   mk(im.d_conv1, c.conv1_elements());
   mk(im.d_conv2, c.conv2_elements());
   mk(im.d_conv3, c.conv3_elements());
-  UMM_CUDA_CHECK(cudaMalloc(&im.d_pe, c.pe_elements() * sizeof(float)));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.d_pe, c.pe_elements() * sizeof(float)));
   // SinusoidsPositionEmbedding: sin/cos split, max_timescale 10000.
   const int audio_dim = c.audio_d;
   std::vector<float> pe(static_cast<size_t>(per_chunk) * audio_dim);
@@ -615,7 +616,7 @@ AsrEngine::AsrEngine(const std::string& model_dir, int gpu_id) {
   }
   UMM_CUDA_CHECK(cudaMemcpy(im.d_pe, pe.data(), pe.size() * sizeof(float),
                             cudaMemcpyHostToDevice));
-  UMM_CUDA_CHECK(cudaMalloc(&im.kv, sizeof(Bf16) * c.kv_cache_elements()));
+  UMM_CUDA_CHECK(request_cuda_malloc(&im.kv, sizeof(Bf16) * c.kv_cache_elements()));
 
   std::vector<float> inv(static_cast<size_t>(c.inv_freq_elements()));
   for (int i = 0; i < c.inv_freq_elements(); ++i)
