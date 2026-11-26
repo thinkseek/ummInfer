@@ -451,12 +451,16 @@
       <option value="markdown">Markdown</option>
     </select>
     <button id="exportSession" type="button" disabled
-            title="Export session transcript and observed telemetry (Shift-click for alternate format)">Export</button>
+            aria-keyshortcuts="Meta+E Control+E Meta+Shift+E Control+Shift+E"
+            title="Export session transcript and observed telemetry (Cmd/Ctrl+E JSON · Cmd/Ctrl+Shift+E Markdown · Shift-click alternate)">Export</button>
   </div>
   <input id="importSessionInput" type="file" accept="application/json,.json" hidden>
   <button id="importSession" type="button"
-          title="Import a saved ummInfer Web or macOS JSON session locally (no network calls)">Import JSON</button>
-  <button id="new">New chat</button>
+          aria-keyshortcuts="Meta+O Control+O"
+          title="Import a saved ummInfer Web or macOS JSON session locally (Cmd/Ctrl+O, no network calls)">Import JSON</button>
+  <button id="new" type="button"
+          aria-keyshortcuts="Alt+N Meta+Shift+K Control+Shift+K"
+          title="Start a new chat (Alt+N or Cmd/Ctrl+Shift+K)">New chat</button>
 </header>
 
 <section id="settings">
@@ -568,7 +572,9 @@
   <button id="mic" type="button" title="Record voice for ASR -> VLM">Mic</button>
   <textarea id="prompt" rows="1" placeholder="Write a prompt (or attach image / video / record voice)"></textarea>
   <button id="send" class="primary">Send</button>
-  <button id="stop" class="danger" hidden>Stop</button>
+  <button id="stop" class="danger" hidden
+          aria-keyshortcuts="Escape"
+          title="Stop generation (Esc)">Stop</button>
 </footer>
 
 <script type="module">
@@ -3880,13 +3886,18 @@ function limit(text) {
   return trimmed.length > 300 ? trimmed.slice(0, 300) + '…' : (trimmed || 'no error detail');
 }
 
-ui.send.addEventListener('click', send);
-ui.stop.addEventListener('click', () => {
-  if (!running) return;
+function stopGeneration() {
+  if (!running) return false;
   stopped = true;
   player.stop();
   setStatus('Stopping…');
   controller?.abort();
+  return true;
+}
+
+ui.send.addEventListener('click', send);
+ui.stop.addEventListener('click', () => {
+  stopGeneration();
 });
 ui.prompt.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -4866,29 +4877,168 @@ function collectSessionExportState(exportedAt = new Date().toISOString()) {
   };
 }
 
-ui.exportSession.addEventListener('click', (event) => {
-  if (!canExportSession(sessionTurns.length, running)) return;
-  const selected = ui.exportFormat.value === 'markdown' ? 'markdown' : 'json';
-  const format = event?.shiftKey ? (selected === 'markdown' ? 'json' : 'markdown') : selected;
-  const result = triggerSessionExportDownload(collectSessionExportState(), format);
+function exportSession(format) {
+  if (!canExportSession(sessionTurns.length, running)) return false;
+  const normalized = format === 'markdown' || format === 'md' ? 'markdown' : 'json';
+  const result = triggerSessionExportDownload(collectSessionExportState(), normalized);
   setStatus(`Exported ${result.filename}`, false);
-});
+  return true;
+}
 
-ui.importSession.addEventListener('click', () => {
-  if (running || realtime.activeResponseId) {
-    showError('Cannot import a session while a response is streaming.');
-    return;
+function openImportDialog() {
+  if (running || realtime.enabled || realtime.activeResponseId) {
+    showError('Cannot import a session while a response or live voice session is active.');
+    return false;
   }
   ui.importSessionInput.value = '';
   ui.importSessionInput.click();
+  return true;
+}
+
+function newChat() {
+  if (running) return false;
+  stopRealtime();
+  player.stop();
+  history.length = 0;
+  sessionTurns.length = 0;
+  ui.transcript.replaceChildren(ui.emptyState);
+  syncEmptyState();
+  sessionID = '';
+  ui.session.hidden = true;
+  applyVideoFrameSelectionToControls(ui, undefined);
+  videoFrameBudgetPersistenceError = null;
+  saveSettings();
+  syncVideoFrameControls();
+  clearError();
+  setStatus('Ready', false);
+  return true;
+}
+
+// KEYBOARD_SHORTCUTS_BEGIN
+function resolveGlobalShortcutAction(event, state = {}) {
+  if (!event || event.defaultPrevented || event.isComposing) {
+    return null;
+  }
+  const key = typeof event.key === 'string' ? event.key : '';
+  const code = typeof event.code === 'string' ? event.code : '';
+  const lower = key.toLowerCase();
+  const primary = Boolean(event.metaKey || event.ctrlKey);
+  const alt = Boolean(event.altKey);
+  const shift = Boolean(event.shiftKey);
+
+  if (key === 'Escape' && !primary && !alt && !shift) {
+    if (state && state.exportMenuOpen === true) return 'close_export_menu';
+    if (state && state.isRunning === true) return 'stop_generation';
+    return null;
+  }
+
+  if (primary && !alt && !shift && lower === 'e') {
+    return 'export_json';
+  }
+  if (primary && !alt && shift && lower === 'e') {
+    return 'export_markdown';
+  }
+  if (primary && !alt && !shift && lower === 'o') {
+    return 'import_session';
+  }
+  if ((!primary && alt && !shift && (lower === 'n' || code === 'KeyN')) ||
+      (primary && !alt && shift && (lower === 'k' || code === 'KeyK'))) {
+    return 'new_chat';
+  }
+
+  return null;
+}
+
+function handleGlobalShortcut(event, ctx = {}) {
+  const isRunning = typeof ctx.isRunning === 'function'
+    ? Boolean(ctx.isRunning())
+    : Boolean(ctx.isRunning);
+  const explicitBusy = typeof ctx.isBusy === 'function'
+    ? Boolean(ctx.isBusy())
+    : (ctx.isBusy !== undefined ? Boolean(ctx.isBusy) : false);
+  const isBusy = explicitBusy || isRunning;
+  const isLiveVoiceActive = typeof ctx.isLiveVoiceActive === 'function'
+    ? Boolean(ctx.isLiveVoiceActive())
+    : Boolean(ctx.isLiveVoiceActive);
+  const hasTurns = typeof ctx.hasTurns === 'function'
+    ? Boolean(ctx.hasTurns())
+    : Boolean(ctx.hasTurns);
+  const exportMenuOpen = typeof ctx.isExportMenuOpen === 'function'
+    ? Boolean(ctx.isExportMenuOpen())
+    : Boolean(ctx.exportMenuOpen);
+
+  const action = resolveGlobalShortcutAction(event, { isRunning, exportMenuOpen });
+  if (!action) {
+    return { action: null, handled: false, prevented: false };
+  }
+
+  if (typeof event.preventDefault === 'function') {
+    event.preventDefault();
+  }
+  if (event.repeat) {
+    return { action, handled: false, prevented: true, reason: 'repeat' };
+  }
+
+  switch (action) {
+    case 'close_export_menu':
+      ctx.closeExportMenu?.();
+      return { action, handled: true, prevented: true };
+    case 'stop_generation':
+      if (!isRunning) return { action, handled: false, prevented: true, reason: 'not_running' };
+      ctx.stopGeneration?.();
+      return { action, handled: true, prevented: true };
+    case 'export_json':
+      if (isBusy || !hasTurns) {
+        return { action, handled: false, prevented: true, reason: isBusy ? 'busy' : 'empty' };
+      }
+      ctx.exportSession?.('json');
+      return { action, handled: true, prevented: true };
+    case 'export_markdown':
+      if (isBusy || !hasTurns) {
+        return { action, handled: false, prevented: true, reason: isBusy ? 'busy' : 'empty' };
+      }
+      ctx.exportSession?.('markdown');
+      return { action, handled: true, prevented: true };
+    case 'import_session':
+      if (isBusy || isLiveVoiceActive) {
+        return {
+          action, handled: false, prevented: true,
+          reason: isBusy ? 'busy' : 'live_voice_active',
+        };
+      }
+      ctx.openImportDialog?.();
+      return { action, handled: true, prevented: true };
+    case 'new_chat':
+      if (isBusy || isLiveVoiceActive) {
+        return {
+          action, handled: false, prevented: true,
+          reason: isBusy ? 'busy' : 'live_voice_active',
+        };
+      }
+      ctx.newChat?.();
+      return { action, handled: true, prevented: true };
+    default:
+      return { action: null, handled: false, prevented: false };
+  }
+}
+// KEYBOARD_SHORTCUTS_END
+
+ui.exportSession.addEventListener('click', (event) => {
+  const selected = ui.exportFormat.value === 'markdown' ? 'markdown' : 'json';
+  const format = event?.shiftKey ? (selected === 'markdown' ? 'json' : 'markdown') : selected;
+  exportSession(format);
+});
+
+ui.importSession.addEventListener('click', () => {
+  openImportDialog();
 });
 
 ui.importSessionInput.addEventListener('change', async () => {
   const file = ui.importSessionInput.files?.[0];
   ui.importSessionInput.value = '';
   if (!file) return;
-  if (running || realtime.activeResponseId) {
-    showError('Cannot import a session while a response is streaming.');
+  if (running || realtime.enabled || realtime.activeResponseId) {
+    showError('Cannot import a session while a response or live voice session is active.');
     return;
   }
   if (typeof file.size === 'number' && file.size > MAX_IMPORT_SESSION_BYTES) {
@@ -4909,21 +5059,21 @@ ui.importSessionInput.addEventListener('change', async () => {
 syncEmptyState();
 
 ui.newChat.addEventListener('click', () => {
-  if (running) return;
-  stopRealtime();
-  player.stop();
-  history.length = 0;
-  sessionTurns.length = 0;
-  ui.transcript.replaceChildren(ui.emptyState);
-  syncEmptyState();
-  sessionID = '';
-  ui.session.hidden = true;
-  applyVideoFrameSelectionToControls(ui, undefined);
-  videoFrameBudgetPersistenceError = null;
-  saveSettings();
-  syncVideoFrameControls();
-  clearError();
-  setStatus('Ready', false);
+  newChat();
+});
+
+document.addEventListener('keydown', (event) => {
+  handleGlobalShortcut(event, {
+    isRunning: () => running,
+    isBusy: () => running,
+    isLiveVoiceActive: () => Boolean(realtime.enabled || realtime.activeResponseId),
+    hasTurns: () => sessionTurns.length > 0,
+    isExportMenuOpen: () => false,
+    exportSession,
+    openImportDialog,
+    newChat,
+    stopGeneration,
+  });
 });
 </script>
 </body>

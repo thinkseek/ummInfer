@@ -2796,6 +2796,310 @@ console.log('session import behavior passed');
             "session import harness did not reach its success assertion")
 
 
+def check_keyboard_shortcuts(html, script):
+    """Global Web UI keyboard shortcuts markup hints, document keydown hook, and purity."""
+    for snippet in (
+        'id="exportSession"',
+        'aria-keyshortcuts="Meta+E Control+E Meta+Shift+E Control+Shift+E"',
+        'id="importSession"',
+        'aria-keyshortcuts="Meta+O Control+O"',
+        'id="new"',
+        'aria-keyshortcuts="Alt+N Meta+Shift+K Control+Shift+K"',
+        'id="stop"',
+        'aria-keyshortcuts="Escape"',
+    ):
+        require(snippet in html, f"missing keyboard shortcut markup hint: {snippet}")
+    for hook in (
+        "// KEYBOARD_SHORTCUTS_BEGIN",
+        "// KEYBOARD_SHORTCUTS_END",
+        "function resolveGlobalShortcutAction(",
+        "function handleGlobalShortcut(",
+        "document.addEventListener('keydown'",
+        "handleGlobalShortcut(event,",
+        "exportSession",
+        "openImportDialog",
+        "newChat",
+        "stopGeneration",
+    ):
+        require(hook in script, f"missing keyboard shortcut script hook: {hook}")
+    block = script.split("// KEYBOARD_SHORTCUTS_BEGIN", 1)[1].split(
+        "// KEYBOARD_SHORTCUTS_END", 1)[0]
+    require("fetch(" not in block and "new WebSocket(" not in block,
+            "keyboard shortcut helpers must never issue network or WebSocket calls")
+
+
+def check_keyboard_shortcuts_behavior(script):
+    """Execute pure global keyboard shortcut resolver and handler contracts in Node."""
+    node = shutil.which("node")
+    if not node:
+        print("skip keyboard shortcuts behavior: node is not installed", flush=True)
+        return
+    require("// KEYBOARD_SHORTCUTS_BEGIN" in script
+            and "// KEYBOARD_SHORTCUTS_END" in script,
+            "missing keyboard shortcuts behavior-test markers")
+    shortcuts_src = script.split("// KEYBOARD_SHORTCUTS_BEGIN", 1)[1].split(
+        "// KEYBOARD_SHORTCUTS_END", 1)[0]
+    harness = shortcuts_src + r"""
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+
+let networkCalls = 0;
+globalThis.fetch = async () => { networkCalls += 1; throw new Error('unexpected fetch'); };
+globalThis.WebSocket = class { constructor() { networkCalls += 1; throw new Error('unexpected WebSocket'); } };
+
+function makeEvent(props) {
+  let prevented = false;
+  return {
+    key: '',
+    code: '',
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    defaultPrevented: false,
+    isComposing: false,
+    repeat: false,
+    ...props,
+    preventDefault() { prevented = true; },
+    get _prevented() { return prevented; },
+  };
+}
+
+function makeHarness(overrides = {}) {
+  const calls = [];
+  const state = {
+    isRunning: false,
+    isBusy: false,
+    isLiveVoiceActive: false,
+    hasTurns: true,
+    exportMenuOpen: false,
+    ...overrides,
+  };
+  const ctx = {
+    isRunning: () => state.isRunning,
+    isBusy: () => state.isBusy,
+    isLiveVoiceActive: () => state.isLiveVoiceActive,
+    hasTurns: () => state.hasTurns,
+    isExportMenuOpen: () => state.exportMenuOpen,
+    exportSession: (fmt) => calls.push(['export', fmt]),
+    openImportDialog: () => calls.push(['import']),
+    newChat: () => calls.push(['new_chat']),
+    closeExportMenu: () => calls.push(['close_export_menu']),
+    stopGeneration: () => calls.push(['stop_generation']),
+  };
+  return { state, ctx, calls };
+}
+
+// 1. Cmd+E and Ctrl+E -> export_json (enabled, empty, and busy cases).
+for (const mod of [{ metaKey: true }, { ctrlKey: true }]) {
+  const ev = makeEvent({ key: 'e', ...mod });
+  assert(resolveGlobalShortcutAction(ev) === 'export_json', 'expected export_json');
+  const h = makeHarness({ hasTurns: true, isBusy: false });
+  const res = handleGlobalShortcut(ev, h.ctx);
+  assert(res.action === 'export_json' && res.handled === true && ev._prevented === true,
+         'export_json enabled mismatch');
+  assert(JSON.stringify(h.calls) === JSON.stringify([['export', 'json']]),
+         'export_json did not call exportSession("json")');
+
+  // Empty session: prevented so browser search bar does not hijack, but handler not called.
+  const emptyEv = makeEvent({ key: 'e', ...mod });
+  const emptyH = makeHarness({ hasTurns: false, isBusy: false });
+  const emptyRes = handleGlobalShortcut(emptyEv, emptyH.ctx);
+  assert(emptyRes.action === 'export_json' && emptyRes.handled === false &&
+         emptyRes.reason === 'empty' && emptyEv._prevented === true && emptyH.calls.length === 0,
+         'export_json empty guard mismatch');
+
+  // Busy / running: prevented, handler not called.
+  const busyEv = makeEvent({ key: 'e', ...mod });
+  const busyH = makeHarness({ hasTurns: true, isRunning: true, isBusy: true });
+  const busyRes = handleGlobalShortcut(busyEv, busyH.ctx);
+  assert(busyRes.action === 'export_json' && busyRes.handled === false &&
+         busyRes.reason === 'busy' && busyEv._prevented === true && busyH.calls.length === 0,
+         'export_json busy guard mismatch');
+}
+
+// 2. Cmd+Shift+E and Ctrl+Shift+E -> export_markdown (enabled, empty, and busy cases).
+for (const mod of [{ metaKey: true, shiftKey: true, key: 'E' }, { ctrlKey: true, shiftKey: true, key: 'e' }]) {
+  const ev = makeEvent(mod);
+  assert(resolveGlobalShortcutAction(ev) === 'export_markdown', 'expected export_markdown');
+  const h = makeHarness({ hasTurns: true, isBusy: false });
+  const res = handleGlobalShortcut(ev, h.ctx);
+  assert(res.action === 'export_markdown' && res.handled === true && ev._prevented === true,
+         'export_markdown enabled mismatch');
+  assert(JSON.stringify(h.calls) === JSON.stringify([['export', 'markdown']]),
+         'export_markdown did not call exportSession("markdown")');
+
+  const emptyEv = makeEvent(mod);
+  const emptyH = makeHarness({ hasTurns: false });
+  const emptyRes = handleGlobalShortcut(emptyEv, emptyH.ctx);
+  assert(emptyRes.handled === false && emptyRes.reason === 'empty' && emptyEv._prevented === true &&
+         emptyH.calls.length === 0, 'export_markdown empty guard mismatch');
+
+  const busyEv = makeEvent(mod);
+  const busyH = makeHarness({ hasTurns: true, isRunning: true });
+  const busyRes = handleGlobalShortcut(busyEv, busyH.ctx);
+  assert(busyRes.handled === false && busyRes.reason === 'busy' && busyEv._prevented === true &&
+         busyH.calls.length === 0, 'export_markdown busy guard mismatch');
+}
+
+// 3. Cmd+O and Ctrl+O -> import_session (enabled, busy, live-voice active).
+for (const mod of [{ metaKey: true }, { ctrlKey: true }]) {
+  const ev = makeEvent({ key: 'o', ...mod });
+  assert(resolveGlobalShortcutAction(ev) === 'import_session', 'expected import_session');
+  const h = makeHarness({ isBusy: false, isLiveVoiceActive: false });
+  const res = handleGlobalShortcut(ev, h.ctx);
+  assert(res.action === 'import_session' && res.handled === true && ev._prevented === true &&
+         JSON.stringify(h.calls) === JSON.stringify([['import']]),
+         'import_session enabled mismatch');
+
+  const busyEv = makeEvent({ key: 'o', ...mod });
+  const busyH = makeHarness({ isBusy: true });
+  const busyRes = handleGlobalShortcut(busyEv, busyH.ctx);
+  assert(busyRes.handled === false && busyRes.reason === 'busy' && busyEv._prevented === true &&
+         busyH.calls.length === 0, 'import_session busy guard mismatch');
+
+  const voiceEv = makeEvent({ key: 'o', ...mod });
+  const voiceH = makeHarness({ isLiveVoiceActive: true });
+  const voiceRes = handleGlobalShortcut(voiceEv, voiceH.ctx);
+  assert(voiceRes.handled === false && voiceRes.reason === 'live_voice_active' &&
+         voiceEv._prevented === true && voiceH.calls.length === 0,
+         'import_session live-voice guard mismatch');
+}
+
+// 4. Alt+N (including macOS dead-key code=KeyN) and Cmd/Ctrl+Shift+K -> new_chat.
+const newChatEvents = [
+  { key: 'n', altKey: true },
+  { key: 'Dead', code: 'KeyN', altKey: true },
+  { key: 'K', metaKey: true, shiftKey: true },
+  { key: 'k', ctrlKey: true, shiftKey: true },
+];
+for (const spec of newChatEvents) {
+  const ev = makeEvent(spec);
+  assert(resolveGlobalShortcutAction(ev) === 'new_chat',
+         `expected new_chat for ${JSON.stringify(spec)}`);
+  const h = makeHarness({ isBusy: false, isLiveVoiceActive: false });
+  const res = handleGlobalShortcut(ev, h.ctx);
+  assert(res.action === 'new_chat' && res.handled === true && ev._prevented === true &&
+         JSON.stringify(h.calls) === JSON.stringify([['new_chat']]),
+         `new_chat enabled mismatch for ${JSON.stringify(spec)}`);
+
+  const busyEv = makeEvent(spec);
+  const busyH = makeHarness({ isRunning: true });
+  const busyRes = handleGlobalShortcut(busyEv, busyH.ctx);
+  assert(busyRes.handled === false && busyRes.reason === 'busy' && busyEv._prevented === true &&
+         busyH.calls.length === 0, 'new_chat busy guard mismatch');
+
+  const voiceEv = makeEvent(spec);
+  const voiceH = makeHarness({ isLiveVoiceActive: true });
+  const voiceRes = handleGlobalShortcut(voiceEv, voiceH.ctx);
+  assert(voiceRes.handled === false && voiceRes.reason === 'live_voice_active' &&
+         voiceEv._prevented === true && voiceH.calls.length === 0,
+         'new_chat live-voice guard mismatch');
+}
+
+// 5. Escape: export menu takes priority -> stop generation -> idle no-op (no preventDefault).
+{
+  const menuEv = makeEvent({ key: 'Escape' });
+  const menuH = makeHarness({ exportMenuOpen: true, isRunning: true });
+  const menuRes = handleGlobalShortcut(menuEv, menuH.ctx);
+  assert(menuRes.action === 'close_export_menu' && menuRes.handled === true &&
+         menuEv._prevented === true &&
+         JSON.stringify(menuH.calls) === JSON.stringify([['close_export_menu']]),
+         'Escape should close export menu first without stopping generation');
+
+  const stopEv = makeEvent({ key: 'Escape' });
+  const stopH = makeHarness({ exportMenuOpen: false, isRunning: true });
+  const stopRes = handleGlobalShortcut(stopEv, stopH.ctx);
+  assert(stopRes.action === 'stop_generation' && stopRes.handled === true &&
+         stopEv._prevented === true &&
+         JSON.stringify(stopH.calls) === JSON.stringify([['stop_generation']]),
+         'Escape should stop in-flight generation when export menu is closed');
+
+  const idleEv = makeEvent({ key: 'Escape' });
+  const idleH = makeHarness({ exportMenuOpen: false, isRunning: false });
+  const idleRes = handleGlobalShortcut(idleEv, idleH.ctx);
+  assert(idleRes.action === null && idleRes.handled === false &&
+         idleEv._prevented === false && idleH.calls.length === 0,
+         'Escape when idle must return null and NOT call preventDefault()');
+
+  for (const mod of [{ shiftKey: true }, { metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
+    const modEsc = makeEvent({ key: 'Escape', ...mod });
+    const modH = makeHarness({ exportMenuOpen: true, isRunning: true });
+    const modRes = handleGlobalShortcut(modEsc, modH.ctx);
+    assert(modRes.action === null && modRes.handled === false &&
+           modEsc._prevented === false && modH.calls.length === 0,
+           'modified Escape must be ignored');
+  }
+}
+
+// 6. defaultPrevented, isComposing, and key repeat guards.
+for (const guard of [{ defaultPrevented: true }, { isComposing: true }]) {
+  for (const spec of [
+    { key: 'e', metaKey: true },
+    { key: 'E', ctrlKey: true, shiftKey: true },
+    { key: 'o', metaKey: true },
+    { key: 'n', altKey: true },
+    { key: 'K', metaKey: true, shiftKey: true },
+    { key: 'Escape' },
+  ]) {
+    const ev = makeEvent({ ...spec, ...guard });
+    const h = makeHarness({ isRunning: true, exportMenuOpen: true });
+    const res = handleGlobalShortcut(ev, h.ctx);
+    assert(res.action === null && res.handled === false && ev._prevented === false &&
+           h.calls.length === 0,
+           `guard ${JSON.stringify(guard)} did not ignore ${JSON.stringify(spec)}`);
+  }
+}
+{
+  const repEv = makeEvent({ key: 'e', metaKey: true, repeat: true });
+  const repH = makeHarness({ hasTurns: true });
+  const repRes = handleGlobalShortcut(repEv, repH.ctx);
+  assert(repRes.action === 'export_json' && repRes.handled === false &&
+         repRes.reason === 'repeat' && repEv._prevented === true && repH.calls.length === 0,
+         'key repeat should prevent browser default without re-triggering export');
+}
+
+// 7. Normal typing, editing shortcuts, and browser New Window (Cmd/Ctrl+N) are never hijacked.
+const nonShortcuts = [
+  { key: 'a', metaKey: true }, { key: 'c', metaKey: true }, { key: 'v', metaKey: true },
+  { key: 'x', metaKey: true }, { key: 'z', metaKey: true },
+  { key: 'a', ctrlKey: true }, { key: 'c', ctrlKey: true }, { key: 'v', ctrlKey: true },
+  { key: 'x', ctrlKey: true }, { key: 'z', ctrlKey: true },
+  { key: 'n', metaKey: true }, { key: 'n', ctrlKey: true },
+  { key: 'Enter' }, { key: 'Enter', metaKey: true }, { key: 'Enter', ctrlKey: true },
+  { key: 'e' }, { key: 'E', shiftKey: true }, { key: 'o' }, { key: 'n' }, { key: 'k' },
+  { key: 'e', metaKey: true, altKey: true },
+  { key: 'o', ctrlKey: true, altKey: true },
+  { key: 'o', metaKey: true, shiftKey: true },
+  { key: 'n', altKey: true, shiftKey: true },
+  { key: 'n', altKey: true, metaKey: true },
+  { key: 'k', metaKey: true },
+  { key: 'k', ctrlKey: true, shiftKey: true, altKey: true },
+];
+for (const spec of nonShortcuts) {
+  const ev = makeEvent(spec);
+  const h = makeHarness({ hasTurns: true, isRunning: true });
+  const res = handleGlobalShortcut(ev, h.ctx);
+  assert(res.action === null && res.handled === false && ev._prevented === false &&
+         h.calls.length === 0,
+         `non-shortcut was hijacked: ${JSON.stringify(spec)}`);
+}
+
+assert(networkCalls === 0, `expected 0 network calls, saw ${networkCalls}`);
+console.log('keyboard shortcuts behavior passed');
+"""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "keyboard-shortcuts.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True,
+                                text=True, timeout=60)
+    require(result.returncode == 0,
+            f"keyboard shortcuts behavior failed: {(result.stderr or result.stdout).strip()[:1200]}")
+    require("keyboard shortcuts behavior passed" in result.stdout,
+            "keyboard shortcuts harness did not reach its success assertion")
+
+
 def check_theme_tokens(html):
     """The CSS palette mirrors Theme.swift; both files must agree."""
     theme = THEME.read_text(encoding="utf-8")
@@ -2897,6 +3201,12 @@ class WebUIContractTest(unittest.TestCase):
     def test_session_import_behavior(self):
         check_session_import_behavior(self.script)
 
+    def test_keyboard_shortcuts(self):
+        check_keyboard_shortcuts(self.html, self.script)
+
+    def test_keyboard_shortcuts_behavior(self):
+        check_keyboard_shortcuts_behavior(self.script)
+
     def test_theme(self):
         check_theme_tokens(self.html)
 
@@ -2927,6 +3237,8 @@ def main():
         ("session_export_behavior", lambda: check_session_export_behavior(script)),
         ("session_import", lambda: check_session_import(html, script)),
         ("session_import_behavior", lambda: check_session_import_behavior(script)),
+        ("keyboard_shortcuts", lambda: check_keyboard_shortcuts(html, script)),
+        ("keyboard_shortcuts_behavior", lambda: check_keyboard_shortcuts_behavior(script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0

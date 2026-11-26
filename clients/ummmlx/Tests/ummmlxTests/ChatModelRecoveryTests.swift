@@ -53,6 +53,9 @@ private let doneLine = "data: [DONE]\n\n"
 
 /// Serves one scripted behavior per host on the 10.9.9.0/24 test range.
 private final class ScriptedSSE: URLProtocol {
+    private struct WeakBox: @unchecked Sendable {
+        weak var value: ScriptedSSE?
+    }
     enum Behavior {
         /// Send headers and bytes, then leave the connection open.
         case streamAndHold(String)
@@ -118,10 +121,11 @@ private final class ScriptedSSE: URLProtocol {
         case .streamAndHold(let body), .streamThenFail(let body):
             send(status: 200, contentType: "text/event-stream", body: body)
             if case .streamThenFail = behavior {
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    guard let self else { return }
-                    self.client?.urlProtocol(
-                        self, didFailWithError: URLError(.networkConnectionLost))
+                let box = WeakBox(value: self)
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+                    guard let proto = box.value else { return }
+                    proto.client?.urlProtocol(
+                        proto, didFailWithError: URLError(.networkConnectionLost))
                 }
             }
         case .status(let status, let body):

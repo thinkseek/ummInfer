@@ -34,6 +34,7 @@ server, serve the page from the same origin instead of opening the file.
 | Barge-in | `response.cancelled` stops scheduled sources immediately and drops every later frame for that `response_id` |
 | Errors | HTTP status, `unified.kind == error`, `leg_error`, `[DONE]`-missing, seq gap |
 | Stop | aborts the fetch and closes the AudioContext |
+| Keyboard shortcuts | Pure client-side global shortcuts: `Cmd/Ctrl+E` (Export JSON), `Cmd/Ctrl+Shift+E` (Export Markdown), `Cmd/Ctrl+O` (Import JSON), `Alt+N` / `Cmd/Ctrl+Shift+K` (New chat, avoiding browser `Cmd/Ctrl+N`), `Esc` (Stop active generation), plus `Cmd/Ctrl+Enter` in the prompt composer to Send |
 
 Settings: base URL, model, image output, audio output, voice. Image size is
 fixed at `512x512`, PNG. Theme follows `prefers-color-scheme` and can be

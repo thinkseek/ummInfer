@@ -520,6 +520,19 @@ Both clients also provide a symmetric pure client-side **Import JSON** control
   without sending any `/v1/chat/completions`, `/v1/visual/render`, or WebSocket
   requests; Export, New Chat, and follow-up turns continue working normally.
 
+Both graphical clients expose keyboard shortcuts for session workflows (pure
+client-side, zero network side effects, ignoring IME composition and busy/live
+voice conflicts):
+- **macOS `ummmlx`**: `Cmd+N` (New chat), `Cmd+O` (Import JSON…), `Cmd+E`
+  (Export JSON…), `Cmd+Shift+E` (Export Markdown…), `Cmd+Return` (Send), and
+  `Cmd+.` (Stop).
+- **Web UI (`web/index.html`)**: `Cmd/Ctrl+E` (Export JSON), `Cmd/Ctrl+Shift+E`
+  (Export Markdown), `Cmd/Ctrl+O` (Import JSON), `Alt+N` or `Cmd/Ctrl+Shift+K`
+  (New chat — deliberately avoiding `Cmd/Ctrl+N` so the browser's New Window
+  shortcut is preserved), `Esc` (close open export menu or stop in-flight
+  generation, passing through untouched when idle), and `Cmd/Ctrl+Enter` in the
+  prompt composer (Send).
+
 ## Direct Speech (`POST /v1/audio/speech`)
 
 `OpenAIClient::speech(const SpeechRequest&)` and the `umm-infer speech`
