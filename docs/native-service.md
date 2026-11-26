@@ -410,6 +410,15 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 33 Native C++ CLI `umm-infer voice` Echo-Suppression & Barge-In Telemetry (`9147b84`):
+  - Completed 3-client parity (Web UI + macOS `ummmlx` + C++ CLI `umm-infer voice`)
+    for Wave 31's server-side `turn_detection.echo_suppression`: added
+    `VoiceConfig::echo_suppression` (`--no-echo-suppression`, default ON omitted
+    on wire), narrow mid-response `VoiceClient::set_echo_suppression(bool)`,
+    strict opt-out confirmation check, and real observed `barge_in_count()`
+    (`zig build test` PASS: `voice_client_test` **16/16 PASS** +
+    `unified_contract_test` PASS).
+
 - Wave 32 Web UI & macOS `ummmlx` Server-Side `echo_suppression` Toggle & Live Barge-In Status (`f18834d`):
   - **Web UI `/web/index.html` & macOS `ummmlx`** (`f18834d`): exposed Wave 31's
     `turn_detection.echo_suppression` control (default ON omitted on wire to
