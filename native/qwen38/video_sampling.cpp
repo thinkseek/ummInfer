@@ -92,8 +92,9 @@ void validate_video_frame_selection(const VideoFrameSelection& options) {
       options.scene_threshold > 1.0) {
     throw std::invalid_argument("video scene_threshold must be finite and in [0,1]");
   }
-  if (options.max_frames <= 0 || options.max_frames > kVideoFrameBudget) {
-    throw std::invalid_argument("video max_frames exceeds the 8-frame budget");
+  if (options.max_frames != 4 && options.max_frames != 8 &&
+      options.max_frames != kVideoMaxFrameBudget) {
+    throw std::invalid_argument("video max_frames must be exactly 4, 8, or 16");
   }
   if (options.max_candidate_frames <= 0 ||
       options.max_candidate_frames > kVideoCandidateFrameBudget) {

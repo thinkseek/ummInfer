@@ -615,14 +615,26 @@ def test_chat_video_input(binary, base, workdir):
         "chat", "--url", base, "--model", "qwen3-native",
         "--prompt", "find the scene change", "--video-input", str(clip),
         "--video-frame-policy", "temporal", "--video-motion-threshold", "0.04",
-        "--video-scene-threshold", "0.3",
+        "--video-scene-threshold", "0.3", "--video-frame-budget", "16",
     ])
     require(temporal.returncode == 0, f"temporal video input failed: {temporal.stderr}")
     [temporal_entry] = take()
     temporal_parts = json.loads(temporal_entry["body"])["messages"][0]["content"]
     selection = temporal_parts[1]["video_url"]["frame_selection"]
     require(selection == {"policy": "temporal", "motion_threshold": 0.04,
-                          "scene_threshold": 0.3}, f"temporal selection: {selection}")
+                          "scene_threshold": 0.3, "max_frames": 16},
+            f"temporal selection: {selection}")
+
+    budget4 = run_cli(binary, [
+        "chat", "--url", base, "--model", "qwen3-native", "--prompt", "four",
+        "--video-input", str(clip), "--video-frame-budget", "4",
+    ])
+    require(budget4.returncode == 0, f"four-frame video input failed: {budget4.stderr}")
+    [budget4_entry] = take()
+    budget4_selection = json.loads(budget4_entry["body"])["messages"][0]["content"][1][
+        "video_url"]["frame_selection"]
+    require(budget4_selection == {"policy": "uniform", "max_frames": 4},
+            f"budget-only selection must default to uniform: {budget4_selection}")
 
     uniform = run_cli(binary, [
         "chat", "--url", base, "--model", "qwen3-native",
@@ -643,6 +655,14 @@ def test_chat_video_input(binary, base, workdir):
             "require --video-frame-policy temporal" in invalid_threshold.stderr,
             f"threshold without temporal opt-in: {invalid_threshold.stderr}")
     require(not take(), "invalid temporal options must be rejected before HTTP")
+
+    for invalid_budget in ("3", "17", "4.0", "true", "0", "-4"):
+        invalid = run_cli(binary, [
+            "chat", "--url", base, "--model", "qwen3-native", "--prompt", "bad",
+            "--video-input", str(clip), "--video-frame-budget", invalid_budget,
+        ])
+        require(invalid.returncode == 2 and not take(),
+                f"invalid frame budget reached HTTP or was accepted: {invalid_budget}")
 
     rejected = run_cli(binary, [
         "chat", "--url", base, "--model", "qwen3-native", "--prompt", "mixed",

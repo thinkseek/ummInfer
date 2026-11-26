@@ -10074,6 +10074,46 @@ void test_public_http_video_url_input() {
   }
   check(temporal_fut.get().status == 200, "temporal video request failed");
 
+  // Explicit 4/8/16 survives both public JSON and SSE and both native policies.
+  for (const bool stream : {false, true}) {
+    for (const char* policy : {"uniform", "temporal"}) {
+      for (const int budget : {4, 8, 16}) {
+        nlohmann::json budget_body = ok_body;
+        budget_body["stream"] = stream;
+        budget_body["messages"][0]["content"][0]["video_url"]["frame_selection"] = {
+            {"policy", policy}, {"max_frames", budget}};
+        auto budget_fut = std::async(std::launch::async, [&] {
+          test_http::HttpRequest req;
+          req.url = url;
+          req.body = budget_body.dump();
+          req.headers.emplace("Content-Type", "application/json");
+          return test_http::perform(req);
+        });
+        auto budget_vlm = h.next_submit(h.vlm_recv);
+        check(budget_vlm.has_value(), "budgeted video request did not reach VLM");
+        if (budget_vlm) {
+          const StagePayload payload = StagePayload::from_value(budget_vlm->data);
+          const Value* msgs = payload.request.inputs.find("messages");
+          const Value* content = msgs != nullptr && msgs->is_array()
+                                     ? msgs->as_array()[0].find("content") : nullptr;
+          const Value* video = content != nullptr && content->is_array()
+                                   ? content->as_array()[0].find("video_url") : nullptr;
+          const Value* selection = video != nullptr && video->is_map()
+                                       ? video->find("frame_selection") : nullptr;
+          const Value* frames = selection != nullptr && selection->is_map()
+                                    ? selection->find("max_frames") : nullptr;
+          check(frames != nullptr && frames->is_int() && frames->as_int() == budget,
+                "public JSON/SSE dropped or changed the explicit frame budget");
+          h.complete(budget_vlm->request_id, "vlm", true, text_result("Budget accepted."));
+        }
+        const auto response = budget_fut.get();
+        check(response.status == 200 &&
+                  (!stream || response.body.ends_with("data: [DONE]\n\n")),
+              "public JSON/SSE rejected a valid 4/8/16 frame budget");
+      }
+    }
+  }
+
   // 2. Rejects non-data video_url and image_url + video_url in the same turn.
   const auto expect_400 = [&](const nlohmann::json& bad_body, const char* msg) {
     bool rejected = false;
@@ -10130,7 +10170,12 @@ void test_public_http_video_url_input() {
   expect_400(selection_body({{"policy", "temporal"}, {"scene_threshold", 1.01}}),
              "scene threshold above one was not rejected");
   expect_400(selection_body({{"policy", "temporal"}, {"max_frames", 1000}}),
-             "API frame budget override was not rejected");
+             "API frame budget override above sixteen was not rejected");
+  for (const nlohmann::json& invalid : std::vector<nlohmann::json>{
+           true, 4.0, "4", 0, -4, 3, 17, std::numeric_limits<uint64_t>::max()}) {
+    expect_400(selection_body({{"policy", "uniform"}, {"max_frames", invalid}}),
+               "non-integer, unsupported, or overflowing frame budget was not rejected");
+  }
   expect_400(selection_body({{"policy", "uniform"}, {"motion_threshold", 0.1}}),
              "uniform policy with an ignored threshold was not rejected");
   expect_400(selection_body(nlohmann::json::array()),

@@ -11,7 +11,8 @@ namespace umminfer::qwen38 {
 // These are hard ceilings, not allocation hints. The public API cannot raise
 // them. Temporal mode may decode more candidates than it selects, but both the
 // candidate RGB allocation and the final temporal-2 patch allocation are capped.
-inline constexpr int kVideoFrameBudget = 8;
+inline constexpr int kVideoFrameBudget = 8;  // Unchanged default.
+inline constexpr int kVideoMaxFrameBudget = 16;
 inline constexpr int kVideoCandidateFrameBudget = 64;
 inline constexpr double kDefaultVideoMotionThreshold = 0.02;
 inline constexpr double kDefaultVideoSceneThreshold = 0.25;
@@ -22,9 +23,10 @@ struct VideoFrameSelection {
   VideoFramePolicy policy = VideoFramePolicy::kUniform;
   double motion_threshold = kDefaultVideoMotionThreshold;
   double scene_threshold = kDefaultVideoSceneThreshold;
-  // Test-only lowering is useful for small synthetic clips. Values above the
-  // hard ceilings, non-positive values, and max_frames > max_candidate_frames
-  // are rejected before any decode output buffer is allocated.
+  // The public explicit selected-frame budget is exactly 4, 8, or 16. Omission
+  // retains the historical 8-frame path. Unsupported values are rejected before
+  // any decode output buffer is allocated; max_candidate_frames stays a
+  // separately bounded native/test setting and is not public API.
   int max_frames = kVideoFrameBudget;
   int max_candidate_frames = kVideoCandidateFrameBudget;
 };

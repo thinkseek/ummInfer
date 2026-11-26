@@ -189,12 +189,24 @@ ValidatedSubmission validate_submission(const Value& inputs,
           }
           for (const auto& [key, value] : selection->as_map()) {
             if (key != "policy" && key != "motion_threshold" &&
-                key != "scene_threshold") {
+                key != "scene_threshold" && key != "max_frames") {
               throw ProtocolError("unsupported video_url.frame_selection field: " + key);
             }
             (void)value;
           }
-          if (policy->as_str() == "uniform" && selection->as_map().size() != 1) {
+          if (const Value* budget = selection->find("max_frames"); budget != nullptr) {
+            if (!budget->is_int()) {
+              throw ProtocolError("video_url.frame_selection.max_frames must be an integer");
+            }
+            const int64_t parsed = budget->as_int();
+            if (parsed != 4 && parsed != 8 && parsed != 16) {
+              throw ProtocolError(
+                  "video_url.frame_selection.max_frames must be exactly 4, 8, or 16");
+            }
+          }
+          if (policy->as_str() == "uniform" &&
+              (selection->find("motion_threshold") != nullptr ||
+               selection->find("scene_threshold") != nullptr)) {
             throw ProtocolError(
                 "uniform video frame_selection does not accept temporal thresholds");
           }

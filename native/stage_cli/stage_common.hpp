@@ -91,6 +91,7 @@ struct VideoFrameSelectionWork {
   // False is the historical deterministic uniform sampler. Temporal selection
   // is enabled only by frame_selection.policy="temporal".
   bool temporal = false;
+  int max_frames = 8;
   double motion_threshold = 0.02;
   double scene_threshold = 0.25;
 };

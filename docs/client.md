@@ -105,7 +105,7 @@ accepts an explicit bounded temporal policy, either through the CLI:
   --url "$UMMINFER_URL" --model qwen3-native \
   --prompt 'Identify the first scene change and describe the motion' \
   --video-input /tmp/input.mp4 \
-  --video-frame-policy temporal \
+  --video-frame-policy temporal --video-frame-budget 16 \
   --video-motion-threshold 0.02 --video-scene-threshold 0.25
 ```
 
@@ -126,18 +126,29 @@ or on the `video_url` object:
 ```
 
 `policy` is `uniform` or `temporal`; both thresholds are finite numbers in
-`[0,1]`. `{"policy":"uniform"}` is equivalent to omission. Uniform mode rejects
-threshold fields rather than silently ignoring them, and unknown fields
-(including attempts to raise frame limits) return HTTP 400. Temporal mode
-analyzes at most 64 candidates and selects at most 8 frames; these hard limits
-are not API-configurable. Adjacent scene detections are deduplicated, motion and
+`[0,1]`. Optional `max_frames` is an integer explicitly set to **4, 8, or 16**;
+omission retains exactly 8. `--video-frame-budget N` exposes the same field and
+defaults to uniform when no policy is supplied. Booleans, integral-valued
+floats, strings, zero, negatives, unsupported integers, overflow-sized values,
+and unknown fields return HTTP 400 before native output allocation. Uniform mode
+continues to reject threshold fields rather than silently ignoring them.
+
+Explicit `{"policy":"uniform"}` with no budget, and explicit `max_frames:8`,
+are byte-equivalent to the historical default decode. Non-default uniform 4/16
+use rounded source-index coverage with first/last anchors, source PTS
+passthrough, and deterministic short-decode behavior; this avoids the historical
+0.25-fps floor silently turning a larger budget into eight frames. Temporal mode
+analyzes at most 64 candidates and selects exactly the requested budget when
+that many frames decode. Adjacent scene detections are deduplicated, motion and
 scene ties use the earliest decode index, and static/repeated/high-threshold
 clips fill unused slots by deterministic uniform coverage. First/last candidate
 anchors and short-decode fallback always leave a valid bounded video. Selected
 frames stay in decode order with their source presentation timestamps;
-non-monotonic timestamps are not sorted. The existing temporal-2 patch packer,
-video prompt, 3D MRoPE, and serial/batched engine paths are shared with uniform
-mode.
+non-monotonic timestamps are not sorted. The existing temporal-2 patch packer
+(including final-frame duplication for an odd short decode), video prompt, 3D
+MRoPE, and serial/batched engine paths are shared. The candidate ceiling remains
+64 and final premerge allocation remains at most 3584 patches; neither is an API
+setting.
 
 For a later real-model A/B run, `python3 -I tests/video_temporal_live.py
 --self-check` validates the request fixture offline. The live mode requires

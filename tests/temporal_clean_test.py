@@ -196,10 +196,12 @@ class FakeHarness:
     """Synthetic-only transport/native evidence; never real model inference."""
 
     def __init__(self, *, warmup=0, measured=1, prefix_reused=0,
-                 diverge_selection=False, diverge_mrope=False, fail_request=False):
-        self.manifest = long_live.prepare_cases(
+                 diverge_selection=False, diverge_mrope=False, fail_request=False,
+                 budgets=(8,)):
+        clean.validate_budgets(budgets)
+        self.manifest = clean.prepare_budget_cases(
             clean.load_manifest(BUNDLE / "manifest.json", deep=False, freeze_path=FREEZE),
-            BUNDLE, short)
+            BUNDLE, budgets, short)
         self.manifest["measurement"]["warmup_repetitions"] = warmup
         self.manifest["measurement"]["measured_repetitions"] = measured
         self.prefix_reused = prefix_reused
@@ -223,20 +225,22 @@ class FakeHarness:
                           "files": {"contract-only": "3" * 64}},
             }
 
-    def native_record(self, request_id, case, arm, mode):
-        expected = case["expected_uniform_8"] if arm != "temporal" else case["expected_temporal"]["8"]
+    def native_record(self, request_id, case, arm, mode, budget):
+        expected = case["_expected_uniform"][str(budget)] if arm != "temporal" \
+            else case["expected_temporal"][str(budget)]
         temporal = arm == "temporal"
-        if temporal:
+        exact = temporal or budget in (4, 16)
+        if exact:
             timestamps = expected["source_timestamps_seconds"]
-            candidates = expected["candidate_indices"]
+            candidates = expected["candidate_indices"] if temporal else list(range(budget))
             sources = expected["source_frame_indices"]
         else:
-            timestamps = [case["duration_seconds"] * index / 8 for index in range(8)]
-            candidates = list(range(8))
-            sources = expected["source_frame_indices"]
-        pairs = [timestamps[min(2 * index, 7)] for index in range(4)]
+            timestamps = [case["duration_seconds"] * index / budget for index in range(budget)]
+            candidates = list(range(budget))
+            sources = list(range(budget))
+        pairs = [timestamps[min(2 * index, budget - 1)] for index in range((budget + 1) // 2)]
         identity = "uniform" if not temporal else "temporal"
-        mrope = fixture.sha256_bytes(f"{case['id']}:{identity}".encode())[:16]
+        mrope = fixture.sha256_bytes(f"{case['id']}:{identity}:{budget}".encode())[:16]
         if self.diverge_mrope and arm == "default" and mode == "serial":
             mrope = "f" * 16
         content = list(expected["content_fnv1a64"])
@@ -245,15 +249,17 @@ class FakeHarness:
         return {
             "request_id": request_id + ":vlm", "policy": identity,
             "engine_path": "serial" if mode == "serial" else "batched",
-            "decoded_frame_count": case["candidate_count"] if temporal else 8,
-            "selected_frame_count": 8, "selected_candidate_indices": candidates,
-            "selected_source_frame_indices": sources, "source_indices_exact": temporal,
+            "decoded_frame_count": case["candidate_count"] if temporal else budget,
+            "selected_frame_count": budget, "selected_candidate_indices": candidates,
+            "selected_source_frame_indices": sources, "source_indices_exact": exact,
             "selected_frame_timestamps": timestamps, "selected_frame_content_fnv1a64": content,
-            "has_nominal_timestamps": not temporal, "temporal2_pair_first_timestamps": pairs,
-            "max_frames": 8, "max_candidate_frames": 64,
+            "has_nominal_timestamps": not exact, "temporal2_pair_first_timestamps": pairs,
+            "max_frames": budget, "max_candidate_frames": 64,
             "motion_threshold": 0.02, "scene_threshold": 0.25,
-            "grid_t": 4, "grid_h": 10, "grid_w": 14, "premerge_patch_rows": 560,
-            "merged_tokens_per_slice": 35, "video_token_count": 140, "prompt_token_count": 200,
+            "grid_t": (budget + 1) // 2, "grid_h": 10, "grid_w": 14,
+            "premerge_patch_rows": ((budget + 1) // 2) * 140,
+            "merged_tokens_per_slice": 35, "video_token_count": ((budget + 1) // 2) * 35,
+            "prompt_token_count": 200,
             "media_hash": fixture.sha256_bytes(f"{case['id']}:{identity}:media".encode())[:16],
             "mrope_next": 260, "mrope_fnv1a64": mrope,
         }
@@ -269,15 +275,18 @@ class FakeHarness:
             self.assert_content_order(content)
             selection = content[0]["video_url"].get("frame_selection")
             arm = selection["policy"] if selection else "default"
+            budget = selection.get("max_frames", 8) if selection else 8
             data_url = content[0]["video_url"]["url"]
             case = next(case for case in self.manifest["cases"] if case["_data_url"] == data_url
                         and case["question"] == content[1]["text"])
             request_id = f"synthetic-{mode}-{serial}"
-            self.native[mode][request_id + ":vlm"] = self.native_record(request_id, case, arm, mode)
+            self.native[mode][request_id + ":vlm"] = self.native_record(
+                request_id, case, arm, mode, budget)
             self.execution[mode][request_id + ":vlm"] = {
                 "request_id": request_id + ":vlm", "prompt_tokens": 200, "prefill_tokens": 200,
                 "prefix_reused": self.prefix_reused if serial == 0 else 0,
-                "image_tokens": 140, "generated_tokens": 2, "elapsed_ms": 50 + serial,
+                "image_tokens": ((budget + 1) // 2) * 35,
+                "generated_tokens": 2, "elapsed_ms": 50 + serial,
                 "vision_ms": 10.0, "prefill_ms": 20.0, "decode_ms": 15.0,
                 "decode_tok_per_s": 50.0,
             }
@@ -335,6 +344,29 @@ class ControlledContractTests(unittest.TestCase):
                           ["cases"]["motion-late-control"]["answers"])
             validated = clean.validate_bundle(root, short, deep=False)
             self.assertEqual(validated["aggregates"], report["aggregates"])
+
+    def test_all_budgets_have_serial_batch_repetition_and_cold_prefix_parity(self):
+        with tempfile.TemporaryDirectory(prefix="umm-clean-budgets-") as tmp:
+            root = Path(tmp) / "evidence"
+            report = FakeHarness(warmup=1, measured=3, budgets=(4, 8, 16)).run(root)
+            self.assertTrue(report["gate_pass"], report["gate_reasons"])
+            self.assertEqual(report["budget_support"]["native_live_executed"], [4, 8, 16])
+            self.assertEqual(len(report["records"]), 448)
+            self.assertEqual(len(report["aggregates"]), 112)
+            self.assertEqual(len(report["parity"]), 400)
+            self.assertTrue(all(row["passed"] for row in report["parity"]))
+            for row in report["records"]:
+                self.assertEqual(row["native_execution"]["prefix_reused"], 0)
+                self.assertEqual(row["native"]["max_frames"], row["budget"])
+                self.assertEqual(row["native"]["selected_frame_count"], row["budget"])
+            for mode in clean.MODES:
+                for arm in ("uniform", "temporal"):
+                    for budget in (4, 8, 16):
+                        outcome = report["answer_outcomes"]["quality_scored"][mode][arm][str(budget)]
+                        self.assertEqual(outcome["declared"], 12)
+                        self.assertEqual(outcome["answer_hits"], 12)
+            validated = clean.validate_bundle(root, short, deep=False)
+            self.assertEqual(validated["parity"], report["parity"])
 
     def test_fail_closed_prefix_device_selection_mrope_and_request(self):
         cases = (

@@ -282,20 +282,29 @@ def answer_hit(answer, case):
     return all(term.casefold() in folded for term in terms)
 
 
-def validate_native_selection(native, execution, *, case, arm, mode, short):
+def validate_native_selection(native, execution, *, case, arm, mode, short, budget=BUDGET):
     short.validate_native(native, arm)
-    if native["selected_frame_count"] != BUDGET or native["max_frames"] != BUDGET:
-        raise ValueError("native selected-frame budget is not exactly eight")
+    if budget not in (4, 8, 16) or (arm == "default" and budget != BUDGET):
+        raise ValueError("default/native frame budget combination is invalid")
+    if native["selected_frame_count"] != budget or native["max_frames"] != budget:
+        raise ValueError("native selected-frame budget differs from the explicit request")
     expected_engine = "serial" if mode == "serial" else "batched"
     if native["engine_path"] != expected_engine:
         raise ValueError("native engine path differs from the requested mode")
     if execution["prefix_reused"] != 0:
         raise ValueError(f"cold-prefix proof failed: prefix_reused={execution['prefix_reused']}")
-    expected = case["expected_uniform_8"] if arm in ("default", "uniform") \
-        else case["expected_temporal"][str(BUDGET)]
+    if arm in ("default", "uniform"):
+        expected = case.get("_expected_uniform", {}).get(str(budget))
+        if expected is None and budget == BUDGET:
+            expected = case["expected_uniform_8"]
+    else:
+        expected = case["expected_temporal"][str(budget)]
+    if expected is None:
+        raise ValueError(f"missing independent uniform oracle for budget {budget}")
     if native["selected_frame_content_fnv1a64"] != expected["content_fnv1a64"]:
         raise ValueError("native selected RGB sequence diverges from independent source content")
-    if arm == "temporal" and native["temporal2_pair_first_timestamps"] != \
+    exact_native = arm == "temporal" or budget in (4, 16)
+    if exact_native and native["temporal2_pair_first_timestamps"] != \
             expected["temporal2_pair_first_timestamps"]:
         raise ValueError("temporal-2 pair-first timestamps diverge")
     if arm == "temporal":
@@ -310,10 +319,21 @@ def validate_native_selection(native, execution, *, case, arm, mode, short):
         if native["decoded_frame_count"] != case["candidate_count"]:
             raise ValueError("temporal candidate decode is incomplete")
     else:
-        if native["source_indices_exact"] or not native["has_nominal_timestamps"]:
-            raise ValueError("uniform nominal diagnostics changed contract")
-        if native["decoded_frame_count"] != BUDGET:
-            raise ValueError("uniform historical decode count changed")
+        if budget == BUDGET:
+            if native["source_indices_exact"] or not native["has_nominal_timestamps"]:
+                raise ValueError("historical uniform-eight nominal diagnostics changed contract")
+        else:
+            if not native["source_indices_exact"] or native["has_nominal_timestamps"]:
+                raise ValueError("explicit uniform source indices/PTS are not fully exact")
+            for native_key, expected_key in (
+                    ("selected_source_frame_indices", "source_frame_indices"),
+                    ("selected_frame_timestamps", "source_timestamps_seconds")):
+                if native[native_key] != expected[expected_key]:
+                    raise ValueError(f"explicit uniform source mismatch: {native_key}")
+            if native["selected_candidate_indices"] != list(range(budget)):
+                raise ValueError("explicit uniform candidate order changed")
+        if native["decoded_frame_count"] != budget:
+            raise ValueError("uniform decode count differs from its requested budget")
     return {"status": "COVERED", "source_binding": "native_scaled_rgb_fnv1a64_"
             "matched_to_independent_full_decode",
             "exact_source_frame_indices": expected["source_frame_indices"],
@@ -498,11 +518,15 @@ def aggregate_results(records):
 
 def parity_checks(records, short):
     checks = []
+    multi_budget = len({record["budget"] for record in records}) > 1
     by_key = {}
     for record in records:
-        key = (record["mode"], record["phase"], record["repetition"], record["clip"])
+        key = (record["mode"], record["phase"], record["repetition"], record["clip"],
+               record["budget"])
         by_key.setdefault(key, {})[record["arm"]] = record
     for key, arms in sorted(by_key.items()):
+        if "default" not in arms or "uniform" not in arms:
+            continue
         default = arms.get("default", {})
         uniform = arms.get("uniform", {})
         valid = default.get("native_evidence_valid") and uniform.get("native_evidence_valid")
@@ -512,14 +536,18 @@ def parity_checks(records, short):
         answers = bool(default and uniform) and \
             default.get("raw_answer") == uniform.get("raw_answer")
         native = bool(valid) and short.native_parity(default["native"], uniform["native"])
-        checks.append({"scope": "default_uniform", "mode": key[0], "phase": key[1],
-                       "repetition": key[2], "clip": key[3], "passed": bool(
-                           requests and answers and native),
-                       "request_projection_equal": requests, "answer_byte_identical": answers,
-                       "native_selection_temporal2_mrope_identical": native})
+        check = {"scope": "default_uniform", "mode": key[0], "phase": key[1],
+                 "repetition": key[2], "clip": key[3], "passed": bool(
+                     requests and answers and native),
+                 "request_projection_equal": requests, "answer_byte_identical": answers,
+                 "native_selection_temporal2_mrope_identical": native}
+        if multi_budget:
+            check["budget"] = key[4]
+        checks.append(check)
     cross = {}
     for record in records:
-        key = (record["phase"], record["repetition"], record["clip"], record["arm"])
+        key = (record["phase"], record["repetition"], record["clip"], record["arm"],
+               record["budget"])
         cross.setdefault(key, {})[record["mode"]] = record
     for key, modes in sorted(cross.items()):
         serial = modes.get("serial", {})
@@ -528,12 +556,15 @@ def parity_checks(records, short):
         native = bool(valid) and short.native_parity(serial["native"], batch["native"])
         answers = bool(serial and batch) and serial.get("raw_answer") == batch.get("raw_answer")
         requests = bool(serial and batch) and serial.get("request") == batch.get("request")
-        checks.append({"scope": "serial_batch4", "phase": key[0], "repetition": key[1],
-                       "clip": key[2], "arm": key[3], "passed": bool(
-                           native and answers and requests),
-                       "request_byte_identical": requests,
-                       "answer_byte_identical": answers,
-                       "native_selection_temporal2_mrope_identical": native})
+        check = {"scope": "serial_batch4", "phase": key[0], "repetition": key[1],
+                 "clip": key[2], "arm": key[3], "passed": bool(
+                     native and answers and requests),
+                 "request_byte_identical": requests,
+                 "answer_byte_identical": answers,
+                 "native_selection_temporal2_mrope_identical": native}
+        if multi_budget:
+            check["budget"] = key[4]
+        checks.append(check)
     repeated = {}
     for record in records:
         key = (record["mode"], record["clip"], record["arm"], record["budget"])
@@ -568,10 +599,12 @@ def gate_reasons(result, provenances, exclusive, stale_errors=()):
             expected = (provenances["_measurement"]["warmup_repetitions"]
                         if phase == "warmup" else
                         provenances["_measurement"]["measured_repetitions"])
-            actual = {(row["clip"], row["arm"], row["repetition"])
+            actual = {(row["clip"], row["arm"], row["repetition"], row["budget"])
                       for row in records if row["mode"] == mode and row["phase"] == phase}
-            wanted = {(case["id"], arm, repetition)
-                      for case in provenances["_cases"] for arm in ARMS
+            budget_arms = provenances.get("_budget_arms", {BUDGET: ARMS})
+            wanted = {(case["id"], arm, repetition, budget)
+                      for case in provenances["_cases"]
+                      for budget, arms in budget_arms.items() for arm in arms
                       for repetition in range(1, expected + 1)}
             if actual != wanted:
                 reasons.append(f"complete_repetitions: {mode}/{phase} schedule is incomplete")

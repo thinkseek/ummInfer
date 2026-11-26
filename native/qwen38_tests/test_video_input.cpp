@@ -66,13 +66,14 @@ void test_motion_scene_order_and_ties() {
   check(selected == std::vector<size_t>({0, 4, 7, 9}),
         "scene change and motion peak rank between chronological coverage anchors");
 
-  options = temporal(3, 8);
+  options = temporal(4, 8);
   options.scene_threshold = 1.0;
   scores.assign(8, {});
   scores[2] = {0.5, 0.4};
+  scores[3] = {0.5, 0.4};
   scores[5] = {0.5, 0.4};
   selected = umminfer::qwen38::select_temporal_keyframes(scores, options);
-  check(selected == std::vector<size_t>({0, 2, 7}),
+  check(selected == std::vector<size_t>({0, 2, 3, 7}),
         "equal motion/scene scores break ties by earliest decode index");
 }
 
@@ -104,14 +105,14 @@ void test_static_repeated_short_and_all_motion_fallbacks() {
 }
 
 void test_duplicate_scene_run() {
-  VideoFrameSelection options = temporal(3, 7);
-  options.motion_threshold = 0.05;
+  VideoFrameSelection options = temporal(4, 7);
+  options.motion_threshold = 0.2;
   options.scene_threshold = 0.5;
   std::vector<TemporalFrameScore> scores(7);
   scores[2] = {0.1, 0.8};
   scores[3] = {0.1, 0.6};
   const auto selected = umminfer::qwen38::select_temporal_keyframes(scores, options);
-  check(selected == std::vector<size_t>({0, 2, 6}),
+  check(selected == std::vector<size_t>({0, 2, 4, 6}),
         "adjacent duplicate scene detections use one strongest representative");
 }
 
@@ -172,6 +173,11 @@ void test_analysis_and_temporal_timestamps() {
     slice_timestamps_match &= out.timestamps[slice] == out.selected_frame_timestamps[pair];
   }
   check(slice_timestamps_match, "each temporal-2 slice uses its pair-first source timestamp");
+  const DecodedVideo odd = umminfer::qwen38::preprocess_temporal_candidates(
+      candidates, kSize, kSize, temporal(8, 8));
+  check(odd.selected_frame_indices.size() == 5 && odd.preprocessed.grid_t == 3 &&
+            odd.timestamps == std::vector<double>({0.0, 0.2, 0.1}),
+        "odd selected-frame tail duplicates only the final pixel pair and retains pair-first PTS");
   check(candidates[2].timestamp_seconds == 0.2 && candidates[2].rgb == solid(32, 32, 255),
         "temporal preprocessing never mutates decoded source candidates");
 
@@ -191,7 +197,7 @@ void test_prompt_mrope_parity_and_still_image() {
       {solid(kSize, kSize, 128), 0.2},
   };
   const DecodedVideo decoded = umminfer::qwen38::preprocess_temporal_candidates(
-      candidates, kSize, kSize, temporal(3, 3));
+      candidates, kSize, kSize, temporal(4, 4));
   umminfer::qwen38::ChatTurn turn;
   turn.role = "user";
   turn.text = "What changes?";
@@ -266,9 +272,16 @@ void test_exact_temporal2_channel_frame_packing() {
 
 void test_malformed_and_budget_rejection() {
   VideoFrameSelection options = temporal();
-  options.max_frames = 9;
-  check(throws([&] { umminfer::qwen38::validate_video_frame_selection(options); }),
-        "more than eight selected frames is rejected before allocation");
+  for (const int invalid : {0, -4, 1, 3, 5, 9, 17, 1000}) {
+    options = temporal();
+    options.max_frames = invalid;
+    check(throws([&] { umminfer::qwen38::validate_video_frame_selection(options); }),
+          "unsupported selected-frame budget is rejected before allocation");
+  }
+  options = temporal();
+  options.max_frames = 16;
+  check(!throws([&] { umminfer::qwen38::validate_video_frame_selection(options); }),
+        "sixteen selected frames fit the native candidate/patch ceilings");
   options = temporal();
   options.max_candidate_frames = 65;
   check(throws([&] { umminfer::qwen38::validate_video_frame_selection(options); }),
@@ -327,7 +340,10 @@ void run_process(const std::vector<std::string>& args) {
 }
 
 std::string make_synthetic_mp4(const std::filesystem::path& dir) {
-  const std::vector<uint8_t> values{0, 0, 0, 255, 250, 245, 0, 0, 128, 126, 124, 0};
+  std::vector<uint8_t> values{0, 0, 0, 255, 250, 245, 0, 0, 128, 126, 124, 0};
+  for (size_t i = values.size(); i < 32; ++i) {
+    values.push_back(static_cast<uint8_t>((i * 37) % 256));
+  }
   for (size_t i = 0; i < values.size(); ++i) {
     const std::string name = "frame-" + std::to_string(i) + ".ppm";
     std::ofstream out(dir / name, std::ios::binary);
@@ -366,9 +382,9 @@ void test_ffmpeg_default_equivalence_and_temporal_budget() {
   check(a.decoded_frame_count <= 8 && a.preprocessed.rows() <= 3584,
         "uniform decode keeps the historical frame and token budgets");
 
-  VideoFrameSelection options = temporal(4, 12);
+  VideoFrameSelection options = temporal(4, 32);
   const DecodedVideo selected = umminfer::qwen38::decode_video_bytes(bytes, options);
-  check(selected.decoded_frame_count <= 12 &&
+  check(selected.decoded_frame_count <= 32 &&
             selected.selected_frame_indices.size() <= 4 &&
             selected.preprocessed.rows() <= 3584 && selected.preprocessed.is_video,
         "temporal FFmpeg decode enforces candidate, frame, and patch budgets");
@@ -388,6 +404,54 @@ void test_ffmpeg_default_equivalence_and_temporal_budget() {
     const size_t position = static_cast<size_t>(boundary - selected.selected_frame_indices.begin());
     check(std::fabs(selected.selected_frame_timestamps[position] - 0.75) < 0.05,
           "temporal decoder preserves the source presentation timestamp near 0.75 s");
+  }
+
+  auto identical = [](const DecodedVideo& left, const DecodedVideo& right) {
+    return left.preprocessed.pixel_values == right.preprocessed.pixel_values &&
+           left.preprocessed.grid_t == right.preprocessed.grid_t &&
+           left.preprocessed.grid_h == right.preprocessed.grid_h &&
+           left.preprocessed.grid_w == right.preprocessed.grid_w &&
+           left.timestamps == right.timestamps &&
+           left.selected_frame_indices == right.selected_frame_indices &&
+           left.selected_source_frame_indices == right.selected_source_frame_indices &&
+           left.selected_frame_timestamps == right.selected_frame_timestamps &&
+           left.selected_frame_content_fnv1a64 == right.selected_frame_content_fnv1a64 &&
+           left.source_indices_exact == right.source_indices_exact &&
+           left.has_nominal_timestamps == right.has_nominal_timestamps;
+  };
+  for (const int budget : {4, 8, 16}) {
+    VideoFrameSelection uniform;
+    uniform.max_frames = budget;
+    const DecodedVideo first = umminfer::qwen38::decode_video_bytes(bytes, uniform);
+    const DecodedVideo second = umminfer::qwen38::decode_video_bytes(bytes, uniform);
+    check(identical(first, second) && first.selected_frame_indices.size() == size_t(budget) &&
+              first.preprocessed.grid_t == budget / 2 && first.preprocessed.rows() <= 3584,
+          "explicit uniform 4/8/16 is deterministic and honors its exact budget");
+    check(first.selected_source_frame_indices.size() == size_t(budget) &&
+              first.selected_frame_timestamps.size() == size_t(budget) &&
+              first.selected_frame_content_fnv1a64.size() == size_t(budget) &&
+              std::is_sorted(first.selected_frame_timestamps.begin(),
+                             first.selected_frame_timestamps.end()),
+          "uniform budget retains exact selected index/PTS/content diagnostics in decode order");
+    if (budget == 8) {
+      check(identical(a, first), "explicit uniform eight remains byte-identical to the default");
+    } else {
+      check(first.source_indices_exact && !first.has_nominal_timestamps &&
+                first.selected_source_frame_indices.front() == 0 &&
+                first.selected_source_frame_indices.back() == 31,
+            "uniform four/sixteen bind exact source indices and first/last anchors");
+    }
+
+    const DecodedVideo temporal_selected = umminfer::qwen38::decode_video_bytes(
+        bytes, temporal(budget, 32));
+    check(temporal_selected.selected_frame_indices.size() == size_t(budget) &&
+              temporal_selected.preprocessed.grid_t == budget / 2 &&
+              temporal_selected.preprocessed.rows() <= 3584 &&
+              temporal_selected.selected_source_frame_indices.front() == 0 &&
+              temporal_selected.selected_source_frame_indices.back() == 31 &&
+              temporal_selected.source_indices_exact &&
+              !temporal_selected.has_nominal_timestamps,
+          "temporal 4/8/16 honors exact selection, first/last anchors, temporal-2 and patches");
   }
 }
 

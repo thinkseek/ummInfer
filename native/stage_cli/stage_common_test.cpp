@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <limits>
 #include <string>
 
 namespace {
@@ -136,7 +137,7 @@ void test_tts_work() {
   check(parsed_vid.video_url == "data:video/mp4;base64,AAAA" &&
             parsed_vid.messages.size() == 1 && parsed_vid.messages[0].has_video,
         "qwen38 parses video_url content part");
-  check(!parsed_vid.frame_selection.temporal &&
+  check(!parsed_vid.frame_selection.temporal && parsed_vid.frame_selection.max_frames == 8 &&
             parsed_vid.frame_selection.motion_threshold == 0.02 &&
             parsed_vid.frame_selection.scene_threshold == 0.25,
         "omitted frame_selection keeps the historical uniform defaults");
@@ -173,6 +174,22 @@ void test_tts_work() {
              .frame_selection.temporal,
         "explicit uniform and omitted policy have identical native options");
 
+  for (const int64_t budget : {4, 8, 16}) {
+    Value::Map budget_part = vpart;
+    budget_part["video_url"] = Value(Value::Map{
+        {"url", Value("data:video/mp4;base64,AAAA")},
+        {"frame_selection", Value(Value::Map{{"policy", Value("temporal")},
+                                            {"max_frames", Value(budget)}})}});
+    Value::Map budget_msg;
+    budget_msg["role"] = Value("user");
+    budget_msg["content"] = Value::Array{Value(budget_part), Value(tpart)};
+    Value::Map budget_work;
+    budget_work["messages"] = Value::Array{Value(budget_msg)};
+    check(umminfer::stage::parse_qwen38_work(Value(budget_work))
+                  .frame_selection.max_frames == budget,
+          "native stage accepts exactly the explicit 4/8/16 frame budgets");
+  }
+
   auto reject_selection = [&](Value::Map selection) {
     Value::Map bad_part = vpart;
     bad_part["video_url"] = Value(Value::Map{
@@ -200,7 +217,14 @@ void test_tts_work() {
         "uniform silently ignored thresholds are rejected");
   check(reject_selection(Value::Map{{"policy", Value("temporal")},
                                     {"max_frames", Value(static_cast<int64_t>(100))}}),
-        "API cannot raise the native frame budget");
+        "API cannot raise the native frame budget beyond sixteen");
+  for (const Value invalid : {Value(true), Value(4.0), Value("4"),
+                              Value(static_cast<int64_t>(0)), Value(static_cast<int64_t>(-4)),
+                              Value(static_cast<int64_t>(3)), Value(static_cast<int64_t>(17)),
+                              Value(std::numeric_limits<int64_t>::max())}) {
+    check(reject_selection(Value::Map{{"policy", Value("uniform")}, {"max_frames", invalid}}),
+          "native stage fail-closed rejects non-integer/unsupported/overflow frame budgets");
+  }
 
   Value::Map ipart;
   ipart["type"] = Value("image_url");

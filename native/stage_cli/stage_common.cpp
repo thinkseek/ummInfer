@@ -84,13 +84,25 @@ VideoFrameSelectionWork parse_frame_selection(const Value& video) {
     bad("video_url.frame_selection.policy must be uniform or temporal");
   }
   for (const auto& [key, value] : selection->as_map()) {
-    if (key != "policy" && key != "motion_threshold" && key != "scene_threshold") {
+    if (key != "policy" && key != "motion_threshold" && key != "scene_threshold" &&
+        key != "max_frames") {
       bad("unsupported video_url.frame_selection field: " + key);
     }
     (void)value;
   }
+  if (const Value* budget = selection->find("max_frames"); budget != nullptr) {
+    if (!budget->is_int()) {
+      bad("video_url.frame_selection.max_frames must be an integer");
+    }
+    const int64_t parsed = budget->as_int();
+    if (parsed != 4 && parsed != 8 && parsed != 16) {
+      bad("video_url.frame_selection.max_frames must be exactly 4, 8, or 16");
+    }
+    out.max_frames = static_cast<int>(parsed);
+  }
   if (policy->as_str() == "uniform") {
-    if (selection->as_map().size() != 1) {
+    if (selection->find("motion_threshold") != nullptr ||
+        selection->find("scene_threshold") != nullptr) {
       bad("uniform video frame_selection does not accept temporal thresholds");
     }
     return out;

@@ -299,12 +299,25 @@ bool unified_input_parts(const json& body, std::string& pcm, bool& has_audio,
             }
             for (const auto& item : selection.items()) {
               if (item.key() != "policy" && item.key() != "motion_threshold" &&
-                  item.key() != "scene_threshold") {
+                  item.key() != "scene_threshold" && item.key() != "max_frames") {
                 error = "unsupported video_url.frame_selection field: " + item.key();
                 return false;
               }
             }
-            if (selection["policy"] == "uniform" && selection.size() != 1) {
+            if (selection.contains("max_frames")) {
+              const json& budget = selection["max_frames"];
+              if (!budget.is_number_integer()) {
+                error = "video_url.frame_selection.max_frames must be an integer";
+                return false;
+              }
+              const int64_t parsed = budget.get<int64_t>();
+              if (parsed != 4 && parsed != 8 && parsed != 16) {
+                error = "video_url.frame_selection.max_frames must be exactly 4, 8, or 16";
+                return false;
+              }
+            }
+            if (selection["policy"] == "uniform" &&
+                (selection.contains("motion_threshold") || selection.contains("scene_threshold"))) {
               error = "uniform video frame_selection does not accept temporal thresholds";
               return false;
             }

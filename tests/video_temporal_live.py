@@ -262,7 +262,7 @@ def validate_native(record: dict, policy: str) -> None:
         raise ValueError(f"native policy mismatch: {record['policy']} != {expected_policy}")
     selected = record["selected_frame_count"]
     decoded = record["decoded_frame_count"]
-    if not 1 <= selected <= record["max_frames"] <= 8:
+    if record["max_frames"] not in (4, 8, 16) or not 1 <= selected <= record["max_frames"]:
         raise ValueError("native selected frame budget was violated")
     if decoded < selected or decoded > record["max_candidate_frames"] or decoded > 64:
         raise ValueError("native candidate frame budget was violated")

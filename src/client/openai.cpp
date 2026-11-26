@@ -156,6 +156,9 @@ json content_part_json(const ContentPart& part) {
       json out = {{"type", "video_url"}, {"video_url", {{"url", part.url}}}};
       if (part.frame_selection) {
         json selection = {{"policy", part.frame_selection->policy}};
+        if (part.frame_selection->max_frames) {
+          selection["max_frames"] = *part.frame_selection->max_frames;
+        }
         if (part.frame_selection->motion_threshold) {
           selection["motion_threshold"] = *part.frame_selection->motion_threshold;
         }
@@ -211,6 +214,11 @@ void validate_message_parts(const Message& message, size_t index) {
           if (selection.policy != "uniform" && selection.policy != "temporal") {
             throw Error(ErrorCode::kConfig,
                         where + " video frame_selection.policy must be uniform or temporal");
+          }
+          if (selection.max_frames && *selection.max_frames != 4 &&
+              *selection.max_frames != 8 && *selection.max_frames != 16) {
+            throw Error(ErrorCode::kConfig,
+                        where + " video frame_selection.max_frames must be exactly 4, 8, or 16");
           }
           if (selection.policy == "uniform" &&
               (selection.motion_threshold || selection.scene_threshold)) {

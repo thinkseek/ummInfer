@@ -34,20 +34,26 @@ def budgets(text):
 
 
 def self_check():
-    long_live.validate_budgets([8])
-    for unsupported in ([4], [16], [4, 8, 16], [8, 8]):
+    for supported in ([4], [8], [16], [4, 8, 16]):
+        clean.validate_budgets(supported)
+    for unsupported in ([8, 8], [0], [3], [17], [4.0], [True], []):
         try:
-            long_live.validate_budgets(unsupported)
+            clean.validate_budgets(unsupported)
         except ValueError:
             pass
         else:
             raise AssertionError(f"unsupported clean live budget accepted: {unsupported}")
     body = clean.build_body_after_context(
         "data:video/mp4;base64,AA==", "What shape?", "temporal", "qwen3-native",
-        json_request_contract())
+        json_request_contract(), 16)
     assert [part["type"] for part in body["messages"][0]["content"]] == ["video_url", "text"]
     assert body["seed"] == 510051 and body["max_tokens"] == 64
-    print("SELF-CHECK PASS: frozen budget, question-after-context, seed, and live opt-in boundary")
+    assert body["messages"][0]["content"][0]["video_url"]["frame_selection"]["max_frames"] == 16
+    default = clean.build_body_after_context(
+        "data:video/mp4;base64,AA==", "What shape?", "default", "qwen3-native",
+        json_request_contract())
+    assert "frame_selection" not in default["messages"][0]["content"][0]["video_url"]
+    print("SELF-CHECK PASS: explicit 4/8/16, unchanged default, question-after-context, seed")
     print("REAL_GENERATION: NOT_RUN")
     print("LIVE_LATENCY: NOT_RUN")
     print("FIXTURE_SUBSTRING_ACCURACY: NOT_RUN")

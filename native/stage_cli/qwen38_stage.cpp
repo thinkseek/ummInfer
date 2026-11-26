@@ -188,6 +188,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       selection.policy = input.frame_selection.temporal
                              ? qwen38::VideoFramePolicy::kTemporal
                              : qwen38::VideoFramePolicy::kUniform;
+      selection.max_frames = input.frame_selection.max_frames;
       selection.motion_threshold = input.frame_selection.motion_threshold;
       selection.scene_threshold = input.frame_selection.scene_threshold;
       try {
@@ -292,7 +293,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
            decoded_video->selected_frame_content_fnv1a64},
           {"has_nominal_timestamps", decoded_video->has_nominal_timestamps},
           {"temporal2_pair_first_timestamps", video_timestamps},
-          {"max_frames", qwen38::kVideoFrameBudget},
+          {"max_frames", input.frame_selection.max_frames},
           {"max_candidate_frames", qwen38::kVideoCandidateFrameBudget},
           {"motion_threshold", input.frame_selection.motion_threshold},
           {"scene_threshold", input.frame_selection.scene_threshold},

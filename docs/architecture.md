@@ -95,8 +95,9 @@ temporal-2 patch packing、按历史公式生成 4 个时间片时间戳，随�
 显式 `video_url.frame_selection={"policy":"temporal",
 "motion_threshold":0.02,"scene_threshold":0.25}` 才启用新路径：
 
-1. 输入仍先经过公开 32 MiB data-URL 上限；解码器在分配 stdout 前固定候选
-   64 帧、最终 8 帧、3584 pre-merge patch 的硬上限，API 不可放大预算。
+1. 输入仍先经过公开 32 MiB data-URL 上限；可选整数 `max_frames` 只接受 4/8/16，
+   缺省严格为 8。解码器在分配 stdout 前固定候选 64 帧、所选预算和 3584 pre-merge
+   patch 硬上限；bool/float/string/零/负数/其他整数/溢出值均 fail closed。
 2. 容器有帧数/帧率元数据时，以源帧序号 `select` 均匀覆盖全片并保持 PTS
    passthrough；未知元数据时使用有界 `fps` 候选回退。`showinfo` 提供源时间戳，
    缺失或非有限 PTS 才使用确定性名义时间戳；短解码不补造新帧。
@@ -109,13 +110,13 @@ temporal-2 patch packing、按历史公式生成 4 个时间片时间戳，随�
    `preprocess_video_frames`，不是互相独立的静图，因此 Wave 16 多片 ViT、视频
    模板、mRoPE、prefix media hash 与 serial/batched parity 均不改变。
 
-离线验证由 `native/qwen38_tests/test_video_input.cpp`、Stage schema、公开 HTTP
-与 C++ CLI/Client 契约覆盖；`tests/video_temporal_live.py` 保留后续 SM90 同视频
-同问题 A/B 门禁。本任务未访问 GPU，真实模型质量与线上时延均 `NOT_RUN`。
+离线验证由 `native/qwen38_tests/test_video_input.cpp`、Stage schema、公开 HTTP JSON/SSE
+与 C++ CLI/Client 契约覆盖；`tests/video_temporal_live.py` 保留 SM90 同视频同问题
+A/B 门禁。初始 temporal 接入未访问 GPU；后续独立受控实测见下文与专题文档。
 
 长视频扩展在 `benchmarks/video-temporal-long/` 固定 4 个 449 帧 / 224.5 秒
-H.264 源与逐帧内容/包序证据，独立 CPU oracle 覆盖预算 4/8/16；公开 native
-live 仍只支持 8，其他预算在发请求前拒绝。`tests/video_temporal_long_live.py`
+H.264 源与逐帧内容/包序证据，独立 CPU oracle 覆盖预算 4/8/16；历史 R4 live 只运行 8。
+`tests/video_temporal_long_live.py`
 复用短门禁的 SSE/native-log 契约，以 seeded interleaved warmup+3 重复比较 serial
 与 batch-four、冻结源码/二进制/模型/数据/请求拓扑，并强制冷前缀、设备独占、
 默认 uniform 兼容、精确源内容/PTS、temporal-2/mRoPE、完整产物与 SHA-256 门禁。
@@ -123,8 +124,8 @@ live 仍只支持 8，其他预算在发请求前拒绝。`tests/video_temporal_
 一致性，不改变默认 uniform 像素或历史 nominal mRoPE 时间戳。Task #44 R4 已在
 `77215ce` 用隔离 SM90 GPU 0/1 完成 96/96 请求、冷前缀、serial/batch-four、源内容/
 PTS/temporal-2/mRoPE 与完整证据门禁，获 `CONTROLLED_LIVE`；default/uniform/temporal
-显式答案命中分别仅 6/24、6/24、0/24，感知质量与泛化提升仍 `NOT_RUN`，预算 4/16
-仍为 CPU-oracle-only。详见 [video-temporal-long.md](video-temporal-long.md)；fake
+显式答案命中分别仅 6/24、6/24、0/24，感知质量与泛化提升仍 `NOT_RUN`；该历史 R4 的
+预算 4/16 仅 CPU-oracle。详见 [video-temporal-long.md](video-temporal-long.md)；fake
 endpoint 只验证合同。
 
 Task #47 的官方根因审计进一步证明：R4 default/uniform 选择缺少原预期答案锚点、
@@ -136,6 +137,14 @@ R4/R5 或 native runtime：仅用 shape/pattern/luminance 语义，预注册并 
 parity；default/uniform/temporal 质量用例命中为 18/24、18/24、12/24，所有 miss 与
 control 原始答案均保留且未新增别名。证据支持有界模型局限，未证明运行时缺陷；
 `PERCEPTUAL_QUALITY: NOT_RUN`。详见 [video-temporal-clean.md](video-temporal-clean.md)。
+
+Task #54 在不改冻结 R4/R5/clean 字节、prompt、答案或评分的前提下加入显式 4/8/16：
+default 与 uniform-8 逐字节等价；uniform 4/16 以 rounded source-index `select` 覆盖首末
+源帧并保留真实 PTS，temporal 沿用冻结候选和优先级/fallback。SM90 GPU 0 serial / GPU 1
+batch-four 完成 448/448 请求（112 热身 + 336 实测），400/400 parity、全冷前缀、精确 RGB/
+源序号/PTS/temporal-2/mRoPE、948 项 SHA-256 与双端新进程验证通过。4 帧降低时延但命中
+下降；16 帧提高部分 temporal 命中但增加 prefill/ViT 时延，不能据此声称泛化质量。详见
+[video-temporal-clean.md](video-temporal-clean.md#task-54-explicit-4816-frame-budgets)。
 
 ---
 

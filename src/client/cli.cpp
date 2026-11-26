@@ -109,7 +109,8 @@ void usage(const std::string& command, std::ostream& out) {
            "       [--image-url URL ... | --video-input PATH] [--video-url URL ...]\n"
            "       [--audio PATH]  --video-input accepts .mp4/.webm/.mov up to 32 MiB\n"
            "       [--video-frame-policy uniform|temporal [--video-motion-threshold X]\n"
-           "        [--video-scene-threshold X]]  native video input selection\n"
+           "        [--video-scene-threshold X] [--video-frame-budget 4|8|16]]\n"
+           "                                      native video input selection\n"
            "       [--audio-out PATH --voice NAME [--ref-audio PATH]]  speech output\n"
            "       [--image-out PATH [--image-prompt TEXT] [--image-size WxH]\n"
            "        [--image-steps N] [--image-ref PATH] [--image-seed N]\n"
@@ -558,7 +559,7 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
                    "top-p", "seed", "timeout-ms", "first-token-ms", "stall-ms",
                    "max-attempts", "audio", "audio-out", "voice", "ref-audio",
                    "video-input", "video-frame-policy", "video-motion-threshold",
-                   "video-scene-threshold",
+                   "video-scene-threshold", "video-frame-budget",
                    "image-out", "image-prompt", "image-size", "image-steps",
                    "image-ref", "image-seed", "image-format", "video-out",
                    "video-prompt", "video-size", "video-seconds", "video-fps",
@@ -594,9 +595,10 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
   const bool video_input = options.has("video-input");
   std::optional<VideoFrameSelection> frame_selection;
   const bool has_frame_policy = options.has("video-frame-policy");
+  const bool has_frame_budget = options.has("video-frame-budget");
   const bool has_motion_threshold = options.has("video-motion-threshold");
   const bool has_scene_threshold = options.has("video-scene-threshold");
-  if ((has_frame_policy || has_motion_threshold || has_scene_threshold) &&
+  if ((has_frame_policy || has_frame_budget || has_motion_threshold || has_scene_threshold) &&
       !video_input && video_urls.empty()) {
     throw UsageError("video frame selection requires --video-input or --video-url");
   }
@@ -606,6 +608,14 @@ int chat(int argc, char** argv, std::atomic<bool>* cancel) {
     if (frame_selection->policy != "uniform" && frame_selection->policy != "temporal") {
       throw UsageError("--video-frame-policy must be uniform or temporal");
     }
+  }
+  if (has_frame_budget) {
+    if (!frame_selection) frame_selection.emplace();
+    const int64_t budget = integer(options, "video-frame-budget", 8, 4, 16);
+    if (budget != 4 && budget != 8 && budget != 16) {
+      throw UsageError("--video-frame-budget must be exactly 4, 8, or 16");
+    }
+    frame_selection->max_frames = static_cast<int>(budget);
   }
   if (has_motion_threshold || has_scene_threshold) {
     if (!frame_selection || frame_selection->policy != "temporal") {

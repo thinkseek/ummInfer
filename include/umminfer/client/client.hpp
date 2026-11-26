@@ -54,6 +54,8 @@ struct VideoFrameSelection {
   // "uniform" is the historical default; "temporal" opts into bounded
   // scene/motion keyframe selection on the native Qwen3.8 worker.
   std::string policy = "uniform";
+  // Explicit native selected-frame budget; omission preserves historical 8.
+  std::optional<int> max_frames;
   std::optional<double> motion_threshold;
   std::optional<double> scene_threshold;
 };

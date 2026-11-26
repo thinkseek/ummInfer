@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import functools
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ import types
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import umminfer_controlled_measurement as controlled  # noqa: E402
+import umminfer_long_video_fixture as base  # noqa: E402
 import umminfer_long_video_live as long_live  # noqa: E402
 import umminfer_temporal_clean_fixture as fixture  # noqa: E402
 
@@ -30,6 +32,7 @@ SCHEMA_VERSION = 1
 ARMS = fixture.ARMS
 MODES = ("serial", "batch4")
 BUDGET = 8
+PUBLIC_BUDGETS = (4, 8, 16)
 EXPECTED_GPUS = {"serial": 0, "batch4": 1}
 SYNTHETIC_CLASS = long_live.SYNTHETIC_CLASS
 TECHNICAL_GATES = long_live.TECHNICAL_GATES + (
@@ -61,15 +64,76 @@ def load_manifest(path, *, deep=True, freeze_path=fixture.DEFAULT_FREEZE):
     return manifest
 
 
-def build_body_after_context(data_url, question, policy, model, request_contract):
+def validate_budgets(budgets):
+    if not budgets or any(isinstance(value, bool) or not isinstance(value, int)
+                          for value in budgets):
+        raise ValueError("clean budgets must be integers")
+    if len(set(budgets)) != len(budgets) or any(value not in PUBLIC_BUDGETS for value in budgets):
+        raise ValueError("clean native budgets must be unique values from 4,8,16")
+
+
+def arms_for_budget(budget):
+    return ARMS if budget == BUDGET else ("uniform", "temporal")
+
+
+def rounded_source_indices(count, budget):
+    if count < budget or budget not in (4, 16):
+        raise ValueError("explicit source-uniform oracle requires 4 or 16 available frames")
+    return [(slot * (count - 1) + (budget - 1) // 2) // (budget - 1)
+            for slot in range(budget)]
+
+
+@functools.lru_cache(maxsize=8)
+def explicit_uniform_oracle(video_path, budget):
+    """Independent full-source binding for the native non-default uniform path."""
+    path = Path(video_path)
+    source_frames, source_pts = base.decode_rgb(
+        "ffmpeg", path, f"scale={fixture.NATIVE_WIDTH}:{fixture.NATIVE_HEIGHT}:flags=bicubic",
+        fixture.FRAME_COUNT)
+    indices = rounded_source_indices(len(source_frames), budget)
+    expression = "+".join(f"eq(n,{index})" for index in indices)
+    frames, timestamps = base.decode_rgb(
+        "ffmpeg", path, f"select='{expression}',"
+        f"scale={fixture.NATIVE_WIDTH}:{fixture.NATIVE_HEIGHT}:flags=bicubic", budget)
+    if len(frames) != budget or len(timestamps) != budget:
+        raise ValueError("explicit uniform oracle did not decode its exact budget")
+    for position, source_index in enumerate(indices):
+        if fixture.sha256_bytes(frames[position]) != fixture.sha256_bytes(source_frames[source_index]):
+            raise ValueError("explicit uniform RGB diverges from independent full decode")
+        if timestamps[position] != source_pts[source_index]:
+            raise ValueError("explicit uniform PTS diverges from independent full decode")
+    return base.selection_record(list(range(budget)), indices, timestamps, frames)
+
+
+def attach_budget_oracles(manifest, bundle, budgets):
+    result = copy.deepcopy(manifest)
+    for case in result["cases"]:
+        case["_expected_uniform"] = {str(BUDGET): copy.deepcopy(case["expected_uniform_8"])}
+        for budget in budgets:
+            if budget in (4, 16):
+                case["_expected_uniform"][str(budget)] = explicit_uniform_oracle(
+                    str(Path(bundle) / case["video"]), budget)
+    result["_budgets"] = list(budgets)
+    return result
+
+
+def prepare_budget_cases(manifest, bundle, budgets, short):
+    prepared = attach_budget_oracles(manifest, bundle, budgets)
+    return long_live.prepare_cases(prepared, bundle, short)
+
+
+def build_body_after_context(data_url, question, policy, model, request_contract, budget=BUDGET):
     if policy not in ARMS:
         raise ValueError("unknown frame-selection arm")
+    if budget not in PUBLIC_BUDGETS or (policy == "default" and budget != BUDGET):
+        raise ValueError("invalid clean arm/frame-budget combination")
     video = {"url": data_url}
     if policy == "uniform":
-        video["frame_selection"] = {"policy": "uniform"}
+        video["frame_selection"] = {"policy": "uniform", "max_frames": budget}
     elif policy == "temporal":
         video["frame_selection"] = {
             "policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25,
+            "max_frames": budget,
         }
     return {
         "model": model, "stream": True,
@@ -116,6 +180,9 @@ def execute_schedule(manifest, *, transports, native_logs, execution_logs,
                      short, synthetic=False):
     measurement = manifest["measurement"]
     steps, records, cleanup_checks, resource_steps = [], [], [], []
+    budgets = manifest.get("_budgets", [BUDGET])
+    validate_budgets(budgets)
+    multi_budget = len(budgets) > 1
     lock = threading.Lock()
     for mode in MODES:
         config = measurement["modes"][mode]
@@ -130,12 +197,13 @@ def execute_schedule(manifest, *, transports, native_logs, execution_logs,
             "cleanup": {"require_in_flight_zero": True,
                         "max_residual_memory_mib": provenances[mode]["max_residual_memory_mib"]},
         })
-        mode_steps = controlled.build_schedule(ARMS, contract)
-        for schedule_index, step in enumerate(mode_steps):
+        planned_steps = [(budget, step) for budget in budgets
+                         for step in controlled.build_schedule(arms_for_budget(budget), contract)]
+        for schedule_index, (budget, step) in enumerate(planned_steps):
             monitor = long_live.ResourceMonitor(
                 provenances[mode]["physical_gpu"], memory_samplers[mode],
                 synthetic=synthetic).start()
-            step_record = {"mode": mode, **step, "budget": BUDGET,
+            step_record = {"mode": mode, **step, "budget": budget,
                            "case_count": len(manifest["cases"]),
                            "schedule_index": schedule_index}
 
@@ -143,19 +211,22 @@ def execute_schedule(manifest, *, transports, native_logs, execution_logs,
                 body = build_body_after_context(
                     case["_data_url"], case["question"], step["arm"],
                     provenances[mode]["model"].get("id", "qwen3-native"),
-                    manifest["request_contract"])
+                    manifest["request_contract"], budget)
                 response, frames, error = None, [], None
                 try:
                     response, frames = transports[mode](body, 240.0)
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"[:4096]
-                relative = Path("records") / mode / step["phase"] / (
+                relative = Path("records") / mode
+                if multi_budget:
+                    relative /= f"budget-{budget}"
+                relative = relative / step["phase"] / (
                     f"repetition-{step['repetition']}") / step["arm"] / f"{case['id']}.json"
                 frame_relative = relative.with_suffix(".sse.json")
                 quality_scored = case["evaluation_role"] == "quality_scored"
                 base = {
                     "mode": mode, "phase": step["phase"], "repetition": step["repetition"],
-                    "arm": step["arm"], "budget": BUDGET, "clip": case["id"],
+                    "arm": step["arm"], "budget": budget, "clip": case["id"],
                     "video_id": case["video_id"], "evaluation_role": case["evaluation_role"],
                     "quality_scored": quality_scored, "schedule_index": schedule_index,
                     "status": "COMPLETED" if response is not None else "FAILED",
@@ -192,7 +263,7 @@ def execute_schedule(manifest, *, transports, native_logs, execution_logs,
                 residual_mib={provenances[mode]["physical_gpu"]: resources["final_mib"]})
             cleanup.update({"mode": mode, "schedule_index": schedule_index})
             cleanup_checks.append(cleanup)
-            resource_steps.append({"mode": mode, **step, "resources": resources,
+            resource_steps.append({"mode": mode, "budget": budget, **step, "resources": resources,
                                    "cleanup": cleanup})
             steps.append(step_record)
 
@@ -209,7 +280,8 @@ def execute_schedule(manifest, *, transports, native_logs, execution_logs,
             native = short.native_for_request(native_logs[record["mode"]], request_id)
             execution = short.execution_for_request(execution_logs[record["mode"]], request_id)
             record["source_selection"] = long_live.validate_native_selection(
-                native, execution, case=case, arm=record["arm"], mode=record["mode"], short=short)
+                native, execution, case=case, arm=record["arm"], mode=record["mode"], short=short,
+                budget=record["budget"])
             record["native"] = native
             record["native_execution"] = execution
             record["native_evidence_valid"] = True
@@ -222,7 +294,10 @@ def execute_schedule(manifest, *, transports, native_logs, execution_logs,
             }
         except (ValueError, TypeError, KeyError) as error:
             record["native_evidence_error"] = str(error)
-        artifact = out_dir / "records" / record["mode"] / record["phase"] / (
+        artifact = out_dir / "records" / record["mode"]
+        if multi_budget:
+            artifact /= f"budget-{record['budget']}"
+        artifact = artifact / record["phase"] / (
             f"repetition-{record['repetition']}") / record["arm"] / f"{record['clip']}.json"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(json.dumps(record, ensure_ascii=False, indent=2).encode() + b"\n")
@@ -275,13 +350,14 @@ def aggregate_results(records):
 
 def answer_outcomes(records):
     grouped = {}
+    multi_budget = len({row["budget"] for row in records}) > 1
     for row in records:
         if row["phase"] != "measured":
             continue
-        key = (row["evaluation_role"], row["mode"], row["arm"])
+        key = (row["evaluation_role"], row["mode"], row["arm"], row["budget"])
         grouped.setdefault(key, []).append(row)
     result = {}
-    for (role, mode, arm), rows in sorted(grouped.items()):
+    for (role, mode, arm, budget), rows in sorted(grouped.items()):
         completed = [row for row in rows if row["status"] == "COMPLETED"]
         covered = [row for row in completed if row["expected_answer_hit"] is not None]
         cases = {}
@@ -302,7 +378,11 @@ def answer_outcomes(records):
             block["preregistered_substring_accuracy"] = rate
         else:
             block["diagnostic_substring_rate_not_quality"] = rate
-        result.setdefault(role, {}).setdefault(mode, {})[arm] = block
+        if multi_budget:
+            block["budget"] = budget
+            result.setdefault(role, {}).setdefault(mode, {}).setdefault(arm, {})[str(budget)] = block
+        else:
+            result.setdefault(role, {}).setdefault(mode, {})[arm] = block
     return result
 
 
@@ -317,8 +397,11 @@ def anchor_coverage(manifest):
 
 def gate_reasons(result, provenances, exclusive, manifest, short, stale_errors=()):
     provenance_view = dict(provenances)
+    budgets = manifest.get("_budgets", [BUDGET])
     provenance_view.update({"_measurement": manifest["measurement"],
-                            "_cases": manifest["cases"], "_short": parity_adapter(short)})
+                            "_cases": manifest["cases"], "_short": parity_adapter(short),
+                            "_budget_arms": {budget: arms_for_budget(budget)
+                                             for budget in budgets}})
     reasons = long_live.gate_reasons(result, provenance_view, exclusive, stale_errors)
     for case in manifest["cases"]:
         try:
@@ -354,8 +437,10 @@ def finish_report(manifest, result, *, provenances, exclusive, evidence_class,
         "preregistration_sha256": manifest["preregistration_sha256"],
         "freeze_receipt": freeze_receipt,
         "budget_support": {"cpu_oracle": list(fixture.CPU_BUDGETS),
-                           "native_live_executed": [BUDGET],
-                           "native_live_unsupported_rejected": [4, 16]},
+                           "native_live_supported": list(PUBLIC_BUDGETS),
+                           "native_live_executed": manifest.get("_budgets", [BUDGET]),
+                           "default_budget": BUDGET,
+                           "default_arm_executed_only_at_budget": BUDGET},
         "arms": list(ARMS), "modes": list(MODES), "records": result["records"],
         "measurement": copy.deepcopy(manifest["measurement"]),
         "steps": result["steps"], "resources": result["resources"],
@@ -439,6 +524,8 @@ def validate_bundle(out_dir, short, *, deep=True):
         raise ValueError("independent clean aggregate/outcome recomputation failed")
     if long_live.parity_checks(report["records"], parity_adapter(short)) != report["parity"]:
         raise ValueError("independent clean parity recomputation failed")
+    budgets = sorted({row["budget"] for row in report["records"]})
+    manifest = attach_budget_oracles(manifest, out_dir / "input" / "fixture", budgets)
     by_id = {case["id"]: case for case in manifest["cases"]}
     for row in report["records"]:
         case = by_id[row["clip"]]
@@ -451,10 +538,31 @@ def validate_bundle(out_dir, short, *, deep=True):
                 raise ValueError("raw answer bytes/hash are inconsistent")
             if answer_hit(row["raw_answer"], case) != row["expected_answer_hit"]:
                 raise ValueError("recorded answer hit differs from frozen scoring")
+            if row["native_evidence_valid"]:
+                expected_selection = long_live.validate_native_selection(
+                    row["native"], row["native_execution"], case=case, arm=row["arm"],
+                    mode=row["mode"], short=short, budget=row["budget"])
+                if expected_selection != row["source_selection"]:
+                    raise ValueError("independent native source-selection recomputation failed")
             content = row["request"]["messages"][0]["content"]
             if [part["type"] for part in content] != ["video_url", "text"] \
                     or content[1]["text"] != case["question"]:
                 raise ValueError("recorded prompt/order differs from preregistration")
+            selection = content[0]["video_url"].get("frame_selection")
+            if row["arm"] == "default":
+                if selection is not None or row["budget"] != BUDGET:
+                    raise ValueError("default arm acquired a budget or selection field")
+            else:
+                expected_request = ({"policy": "uniform", "max_frames": row["budget"]}
+                                    if row["arm"] == "uniform" else {
+                                        "policy": "temporal", "motion_threshold": 0.02,
+                                        "scene_threshold": 0.25, "max_frames": row["budget"]})
+                # Schema-v1 R1 used an implicit eight for uniform/temporal.
+                legacy_eight = row["budget"] == BUDGET and selection is not None and \
+                    all(key != "max_frames" for key in selection) and \
+                    selection.get("policy") == expected_request["policy"]
+                if selection != expected_request and not legacy_eight:
+                    raise ValueError("recorded explicit budget differs from the native request")
     gate_manifest = dict(manifest)
     gate_manifest["measurement"] = report["measurement"]
     reasons = gate_reasons(
@@ -516,12 +624,12 @@ def comparable_stack_identity(provenances, field):
 
 
 def execute_live(args, short):
-    long_live.validate_budgets(args.budgets)
+    validate_budgets(args.budgets)
     manifest_path = Path(args.manifest).resolve()
     freeze_path = Path(args.freeze).resolve()
     manifest = load_manifest(manifest_path, deep=True, freeze_path=freeze_path)
     committed = validate_committed_fixture(args.source_root, manifest_path.parent, freeze_path)
-    manifest = long_live.prepare_cases(manifest, manifest_path.parent, short)
+    manifest = prepare_budget_cases(manifest, manifest_path.parent, args.budgets, short)
     if Path(args.out_dir).exists():
         raise ValueError("refusing to overwrite an existing clean evidence directory")
     provenance_args = {"serial": args.serial_provenance, "batch4": args.batch_provenance}

@@ -237,9 +237,13 @@ DecodedVideo decode_uniform(const std::filesystem::path& path,
   const int target_frames = options.max_frames;
   int dst_h = 0, dst_w = 0;
   target_dimensions(probe, &dst_h, &dst_w);
-  const double sample_fps =
-      std::max(0.25, static_cast<double>(target_frames) /
-                         std::max(0.5, probe.duration));
+  const double requested_fps =
+      static_cast<double>(target_frames) / std::max(0.5, probe.duration);
+  // Only the historical 8-frame path retains the 0.25-fps floor. Non-default
+  // budgets must not silently decode a different number on long clips.
+  const double sample_fps = target_frames == kVideoFrameBudget
+                                ? std::max(0.25, requested_fps)
+                                : requested_fps;
   char vf[160];
   std::snprintf(vf, sizeof(vf), "fps=%.4f,scale=%d:%d:flags=bicubic", sample_fps,
                 dst_w, dst_h);
@@ -280,6 +284,74 @@ DecodedVideo decode_uniform(const std::filesystem::path& path,
                                 static_cast<double>(slices))
                              : 0.0;
     out.timestamps.push_back(t_sec);
+  }
+  return out;
+}
+
+DecodedVideo decode_uniform_explicit_source(const std::filesystem::path& path,
+                                            const VideoProbe& probe,
+                                            const VideoFrameSelection& options) {
+  // Non-default budgets select exact rounded source indices with first/last
+  // anchors. select preserves source PTS, and repeated/static content cannot
+  // make the source-index binding ambiguous. The default eight-frame path above
+  // remains byte-identical, including its historical nominal timestamps.
+  const int target = options.max_frames;
+  const int64_t source_count = probe.frame_count;
+  std::vector<int64_t> source_indices;
+  source_indices.reserve(static_cast<size_t>(target));
+  std::string select = "select='";
+  for (int slot = 0; slot < target; ++slot) {
+    const int64_t index =
+        (slot * (source_count - 1) + (target - 1) / 2) / (target - 1);
+    source_indices.push_back(index);
+    if (slot != 0) select += "+";
+    select += "eq(n," + std::to_string(index) + ")";
+  }
+  select += "'";
+  int dst_h = 0, dst_w = 0;
+  target_dimensions(probe, &dst_h, &dst_w);
+  const std::string vf = select + ",scale=" + std::to_string(dst_w) + ":" +
+                         std::to_string(dst_h) + ":flags=bicubic,showinfo";
+  TempFileGuard metadata_guard;
+  metadata_guard.path = temp_media_path(".log");
+  const size_t output_cap = static_cast<size_t>(target + 2) *
+                            static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h) * 3u;
+  const std::string raw = run_capture(
+      {"ffmpeg", "-v", "info", "-i", path.string(), "-an", "-sn", "-dn",
+       "-vf", vf, "-vsync", "0", "-frames:v", std::to_string(target), "-f", "rawvideo",
+       "-pix_fmt", "rgb24", "pipe:1"},
+      output_cap, metadata_guard.path);
+  std::vector<std::vector<uint8_t>> frames = split_rgb_frames(raw, dst_h, dst_w);
+  if (frames.size() > source_indices.size()) {
+    throw std::runtime_error("explicit source selection exceeded its frame budget");
+  }
+  const std::vector<double> source_timestamps =
+      parse_showinfo_timestamps(read_metadata(metadata_guard.path));
+
+  DecodedVideo out;
+  out.decoded_frame_count = frames.size();
+  out.source_indices_exact = true;
+  out.has_nominal_timestamps = false;
+  set_selected_content_digests(&out, frames);
+  out.preprocessed = preprocess_video_frames(
+      frames, dst_h, dst_w, kVideoMinPixels, kVideoMaxFramePixels,
+      kVideoMaxTotalPatches);
+  for (size_t i = 0; i < frames.size(); ++i) {
+    out.selected_frame_indices.push_back(i);
+    out.selected_source_frame_indices.push_back(source_indices[i]);
+    double timestamp = probe.duration * static_cast<double>(source_indices[i]) /
+                       static_cast<double>(std::max<int64_t>(1, source_count - 1));
+    if (i < source_timestamps.size() && std::isfinite(source_timestamps[i])) {
+      timestamp = source_timestamps[i];
+    } else {
+      out.has_nominal_timestamps = true;
+    }
+    out.selected_frame_timestamps.push_back(timestamp);
+  }
+  out.timestamps.reserve(static_cast<size_t>(out.preprocessed.grid_t));
+  for (int slice = 0; slice < out.preprocessed.grid_t; ++slice) {
+    const size_t pair_first = std::min(static_cast<size_t>(slice * 2), frames.size() - 1);
+    out.timestamps.push_back(out.selected_frame_timestamps[pair_first]);
   }
   return out;
 }
@@ -426,6 +498,10 @@ DecodedVideo decode_video_bytes(std::string_view bytes,
   }
   const VideoProbe probe = probe_video(guard.path);
   if (options.policy == VideoFramePolicy::kUniform) {
+    if ((options.max_frames == 4 || options.max_frames == kVideoMaxFrameBudget) &&
+        probe.frame_count >= options.max_frames) {
+      return decode_uniform_explicit_source(guard.path, probe, options);
+    }
     return decode_uniform(guard.path, probe, options);
   }
   return decode_temporal(guard.path, probe, options);

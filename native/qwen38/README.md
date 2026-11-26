@@ -266,20 +266,26 @@ cross-block state would be O(1).
 
 ## Native video input selection
 
-The stage accepts one `video_url` instead of one still image. Default/explicit
-`uniform` sampling retains the historical FFmpeg command, at most 8 RGB frames,
-temporal-2 packing, and synthetic slice timestamps. The opt-in
-`video_url.frame_selection.policy="temporal"` path decodes at most 64 candidates,
-ranks deduplicated scene boundaries and motion on a fixed 16×16 luma grid, and
-selects at most 8 frames with first/last anchors and uniform fallback. Ties use
-the earliest decode index; short/static/repeated clips always have a bounded
-valid result. Selection stays in decode order and preserves finite source PTS,
-including non-monotonic PTS. Pair-first source timestamps feed the existing
-video prompt and 3D MRoPE. Both policies use `preprocess_video_frames`, the same
-batched multi-slice ViT, and the same serial/batched engine calls; selected
-frames are never submitted as independent still images. Candidate, output-frame,
-and patch ceilings are validated before output allocation and cannot be raised
-through the API. See `video_sampling.*`, `video_input.*`, and
+The stage accepts one `video_url` instead of one still image. Default and
+explicit uniform-8 sampling retain the historical FFmpeg command, 8 RGB frames,
+temporal-2 packing, and synthetic slice timestamps. Optional
+`video_url.frame_selection.max_frames` accepts exactly integer 4, 8, or 16;
+omission stays at 8. Uniform 4/16 use deterministic rounded source indices with
+first/last anchors and source PTS, so repeated pixels cannot obscure the source
+mapping and the historical 0.25-fps floor cannot clamp 16 to 8.
+
+The opt-in `policy="temporal"` path decodes at most 64 candidates, ranks
+deduplicated scene boundaries and motion on a fixed 16×16 luma grid, and selects
+4/8/16 frames with first/last anchors and uniform fallback. Ties use the earliest
+decode index; short/static/repeated clips always have a bounded valid result.
+Selection stays in decode order and preserves finite source PTS, including
+non-monotonic PTS. Pair-first source timestamps feed the existing video prompt
+and 3D MRoPE; an odd short decode duplicates only its final temporal-2 pixel
+pair. Both policies use `preprocess_video_frames`, the same batched multi-slice
+ViT, and the same serial/batched engine calls; selected frames are never
+submitted as independent still images. The public budget is validated before
+output allocation; candidate (64) and final patch (3584) ceilings cannot be
+raised through the API. See `video_sampling.*`, `video_input.*`, and
 `native/qwen38_tests/test_video_input.cpp`.
 
 ## Known limitations
