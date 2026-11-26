@@ -568,6 +568,22 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 47 Deterministic Realtime Full-Duplex Concurrency/Lifecycle Stress Gate & Duplicate-Terminal Tombstone Fix (`3a46598`):
+  - Harvested accepted Task #38 (`revisions=0`, CPU-only stress & sanitizer
+    gate): landed `tests/realtime_stress_test.cpp`,
+    `tests/realtime_stress_sanitize.sh`, `build.zig` `realtime-stress-test`
+    step, Coordinator 6-session 18-request exact-history stress in
+    `tests/unified_contract_test.cpp`, bounded per-connection duplicate
+    `response.completed` / `response.cancelled` tombstone fixes in
+    `src/client/voice.cpp`, and evidence in `docs/full-duplex.md`.
+  - Verified locally: `zig build test` PASS (`voice_client_test` 20/20,
+    `REALTIME_COORDINATOR_STRESS PASS sessions=6 rounds=3 requests=18
+    history_exact=1 terminal_double=0 stale_after_release=0`),
+    `zig build realtime-stress-test` PASS (`seed=6221112 iterations=3
+    sessions=6 scheduler_actions=252 trace=0xb2066d415e934bee`). Dedicated TSan
+    and GCC ASan+UBSan+leak runs passed on Linux (`NOT_COVERED` for full
+    `unified_contract_test` TSan/ASan and physical mic/speaker audio quality).
+
 - Wave 46 SM90 Gateway Hot-Swap to `4ef23de` & North-Star 5-Journey Showcase `--native-allocator-telemetry` Live Regression (`5bff589`):
   - Rebuilt Linux `ReleaseFast` `umm-infer` gateway (`ed291d57...`, preserving
     `.wave31` backup `830ec93d...`) and hot-swapped ONLY the supervised gateway
