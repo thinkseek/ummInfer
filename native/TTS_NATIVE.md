@@ -65,9 +65,11 @@ The reference `generate()` defaults to stochastic sampling with
 - Greedy argmax at both the talker codec head and the predictor LM heads.
 - Logits [2048,3072) are suppressed except codec EOS 2150; EOS is allowed from
   frame 2 onward.
-- HuggingFace repetition penalty 1.05 is applied to the emitted group-0
-  history. Pure greedy without this penalty loops and never reaches EOS; this
-  was confirmed against the reference model offline.
+- HuggingFace repetition penalty 1.05 is applied once per distinct id in the
+  emitted group-0 history. A shared-memory id bitset deduplicates repeated
+  history entries before one thread per logit applies the penalty. Pure greedy
+  without this penalty loops and never reaches EOS; this was confirmed against
+  the reference model offline.
 - A consecutive-run guard bans a group-0 id after four identical emissions.
   It is a safety net for a near-tie flipped by reduction-order noise. On the
   verified trajectories it does not fire.
@@ -86,29 +88,36 @@ reference accumulation order. Elementwise and convolution kernels keep a
 256-thread block. This keeps the verified Chinese and English prompts on the
 converging trajectory without slowing the codec convolution path.
 
-Determinism scope: repeated runs produce bit-identical prefill embeddings and
-bit-identical codec token traces (the speech content is fixed). The FP32 codec
-still sums in a nondeterministic block order, so the final waveform differs
-between runs by sub-LSB PCM16 amounts (under 0.3% of samples, peak about
-1.5e-3 of full scale in the observed runs). PCM16 stats and ASR transcription
-are unaffected. Bit-exact waveform reproducibility is not provided; see the
-limitations section.
+Task #59 isolated a duplicate-history race in the original repetition-penalty
+kernel: concurrent read/modify/write operations on one logit could apply the
+penalty multiple times and change group-0 argmax, codec length, and full PCM.
+The replacement uses idempotent shared-memory bit sets followed by one owner
+per logit. The focused real-CUDA fixture failed before and passes after; direct
+8-request and 108-request frozen-order A/A replays, fresh native stage runs,
+stream/terminal PCM, cancel/retry, and nonstream/stream checks are byte
+identical on the tested SM90 path. These measurements do not promote the full
+two-GPU R4 gate, unseen prompts, other hardware, or perceptual quality; those
+remain outside this determinism claim.
 
 ## Build and test
 
-RETIRED. The `tts_host_tests` and `tts_cuda_tests` targets were built from
-`native/tts_tests/`, which was removed in `ab51cf5`. `native/tts/CMakeLists.txt`
-still names those sources, so configuring this project currently fails. That is
-a known build break outside this document.
-
-The trailing-noise trim has a standalone host test, `tts_tail_trim_test`, wired
-through `native/stage_cli`:
+The current host suite covers prompt/tokenizer, WAV, decode helpers, config,
+and the once-per-id repetition-penalty reference. With CUDA enabled,
+`tts_cuda_determinism_test` additionally exercises dense duplicate histories
+on the real device and requires exact semantic and repeatability identity:
 
 ```
-cmake -S native/stage_cli -B native/stage_cli/build
-cmake --build native/stage_cli/build --target tts_tail_trim_test
-ctest --test-dir native/stage_cli/build -R tts_tail_trim_test
+cmake -S native/tts -B /tmp/umm-tts-host
+cmake --build /tmp/umm-tts-host -j
+ctest --test-dir /tmp/umm-tts-host --output-on-failure
+
+cmake -S native/tts -B /tmp/umm-tts-cuda -DUMM_TTS_CUDA=ON
+cmake --build /tmp/umm-tts-cuda -j
+ctest --test-dir /tmp/umm-tts-cuda --output-on-failure
 ```
+
+The trailing-noise trim also retains its standalone `tts_tail_trim_test`
+through `native/stage_cli`.
 
 The BPE tokenizer was fuzz-checked against HuggingFace tokenizers 0.22.2 via
 `native/tts_tests/tools/tok_fuzz.{cpp,py}` (30010/30010 parity in the bring-up

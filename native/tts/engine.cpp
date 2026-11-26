@@ -764,8 +764,8 @@ std::vector<float> TtsEngine::synthesize_impl(
   auto select_c0 = [&](bool allow_eos, int n_hist, int ban_id) {
     gemv_t<Bf16>(im.talker_codec_head_w, im.cp_past, im.logits, cfg.codec_vocab,
                  H, im.stream);
-    repetition_penalty_f32(im.logits, im.d_hist, n_hist, kRepPenalty,
-                           im.stream);
+    repetition_penalty_f32(im.logits, im.d_hist, n_hist, cfg.codec_vocab,
+                           kRepPenalty, im.stream);
     suppress_logits(im.logits, cfg.cp_vocab, cfg.codec_vocab,
                     allow_eos ? cfg.codec_eos_id : -1, im.stream);
     if (ban_id >= 0) ban_logit_f32(im.logits, ban_id, im.stream);

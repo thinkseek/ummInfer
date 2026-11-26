@@ -393,3 +393,51 @@ contains no fair-priority or other latency-scheduling change. No threshold, prom
 raw sample, report hash, or outlier was altered to reach this disposition. The Task
 #55 latency-optimization outcome is **blocked/diagnostic**, not a done quality-safe
 improvement. Native continuation order-independence remains the follow-up blocker.
+
+## Task #59 native continuation determinism closeout
+
+Task #59 isolated that follow-up blocker without changing the frozen reports,
+analyzers, scheduling, scores, thresholds, or fair-priority reversion. The repro
+was derived against official `49d34063b7ecb61d0571bf962b11f1a71c0d039f`, and
+final integration uses Wave 84 `ac25f5cc31b295c5a1df8399731dd1feee565190`.
+A direct `TtsEngine`
+replay used the exact R4 continuation text and native chunk schedule. Two
+pristine fresh-process runs of the full 108-request cold-short order disagreed
+on 2/108 requests; an eight-request prefix disagreed on 1/8 in both A/A
+comparisons, while the sampled two-request control stayed equal. Generated
+codec frames differed as well as PCM, so observer alignment is not the cause.
+For `req-4:tts:1`, both pre-fix PCM records had 737,280 bytes but different
+hashes, first differing sample 209,281 (1049 versus 1050), and their first
+generated-code difference was frame 109, codebook 0. `req-9:tts:1` first
+differed at sample 180,481 and produced 156 versus 192 frames.
+
+The root defect was in `repetition_penalty_kernel`: one thread per emitted
+history entry performed an unguarded read/modify/write on `logits[id]`.
+Duplicate group-0 ids therefore raced and could apply the penalty repeatedly,
+changing argmax and later EOS. Native fix commit
+`b12d9026ded138a9fd3d6e623a657642157f7ac2` now builds a shared-memory id
+bitset with idempotent atomic bit sets, then lets one thread per logit apply
+the penalty at most once. This preserves Hugging Face gather/scatter semantics
+and avoids an O(logits × history) decode scan. No public request or PCM field,
+allocator ownership, cancellation path, or scheduler rule changed.
+
+The focused real-CUDA fixture failed before the fix (mixed duplicates: 3
+semantic and 5 repeat failures; dense duplicates: 12 and 7) and passed after
+with zero failures. Two final fresh-process 108-request A/A runs had zero PCM
+or frame mismatches across 45,676,800 compared bytes. Both prior `req-4` and
+`req-9` continuation records became 737,280-byte PCM SHA-256
+`3eaa2791bba77428558a314086e2264e3279123b03d89a4998f24a3cce11773d`.
+Two actual native-stage runs each passed ten successful requests, exact
+stream/terminal PCM, nonstream/stream equality for the tested continuation,
+cancel/retry equality, and seeded fragment/rejoin identity. The independent
+fresh-process verifier checked all these raw records and 1,479/1,479 checksums;
+its machine-readable result is [Task #59 SM90 evidence](evidence/tts-continuation-determinism-sm90.json),
+SHA-256 `a34832621ce0a9b151257394284fb9476b04d451b118fa71ca6d0023556a0b47`.
+
+This establishes minimal native A/A byte identity only. A later frozen R4
+exact-quality replay is justified before reconsidering any candidate, but the
+full two-GPU R4 replay is **NOT_RUN** here, fair-priority remains reverted, and
+the earlier diagnostic latency improvement is **not unlocked**. Public HTTP
+speech is **NOT_RUN** because its required unified VLM entry is outside this
+native-TTS task; the failed launch-only attempt produced no speech evidence.
+Perceptual listening and physical playback remain **NOT_COVERED**.

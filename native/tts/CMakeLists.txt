@@ -73,4 +73,14 @@ if(UMM_TTS_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/..)
   target_link_libraries(umm-tts-native PRIVATE umm_tts_host CUDA::cudart)
   set_target_properties(umm-tts-native PROPERTIES CUDA_ARCHITECTURES 90)
+
+  add_executable(tts_cuda_determinism_test
+    ../tts_tests/test_cuda_determinism.cpp
+    cuda_kernels.cu
+  )
+  target_include_directories(tts_cuda_determinism_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(tts_cuda_determinism_test PRIVATE CUDA::cudart)
+  set_target_properties(tts_cuda_determinism_test PROPERTIES CUDA_ARCHITECTURES 90)
+  add_test(NAME tts_cuda_determinism_test COMMAND tts_cuda_determinism_test)
 endif()

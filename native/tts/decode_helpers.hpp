@@ -23,6 +23,24 @@ UMM_TTS_HD constexpr int tts_gemv_unroll_for(int m) { return m <= 2 ? 4 : 1; }
 // already keeps four 128-bit weight loads in flight at m = 1..2.
 UMM_TTS_HD constexpr int tts_swiglu_unroll_for(int m) { return m <= 2 ? 2 : 1; }
 
+// Hugging Face repetition penalty gathers from the original logits and scatters
+// one penalized value per id, so duplicate occurrences must not penalize an id
+// repeatedly.
+UMM_TTS_HD float apply_repetition_penalty(float logit, float penalty) {
+  return logit > 0.0f ? logit / penalty : logit * penalty;
+}
+
+// Host/device reference for the same once-per-id rule. The CUDA kernel uses a
+// shared id bitset to avoid an O(logits * history) scan; this helper keeps the
+// boundary semantics directly host-testable.
+UMM_TTS_HD float repetition_penalty_for_id(float logit, const int* history,
+                                           int n_history, int id, float penalty) {
+  for (int i = 0; i < n_history; ++i) {
+    if (history[i] == id) return apply_repetition_penalty(logit, penalty);
+  }
+  return logit;
+}
+
 struct MultiGemvRowLoc {
   int proj;
   int local_row;

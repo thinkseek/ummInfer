@@ -134,15 +134,18 @@ The same prompt, temperature 0 and image seed 0 are replayed at every level.
 - Image: the serial request and both concurrent requests returned the same
   artifact `sha256` (`95b852bab5e6bd37ed3305376390912e014f7b1a3e8b0e7125c6f8b46f02bac5`).
   Image output is byte identical under concurrency.
-- TTS: the two concurrent requests returned different WAV hashes, although the
-  stage log reports the same 384000 samples, the same peak and an RMS that
-  differs in the sixth significant digit (0.0469319 against 0.0469320). A
-  sequential control with concurrency 1 also returned two different hashes
-  (`76a3e7d3...` and `a88c86b9...`) with identical log statistics. The TTS
-  engine is therefore not bit-reproducible from run to run, and concurrency
-  does not add any divergence. This is a pre-existing engine property, not a
-  serving regression; the samples and the duration are identical, only
-  low-order bits differ.
+- TTS (historical 2026-11-17 observation): the two concurrent requests returned
+  different WAV hashes, although the stage log reports the same 384000 samples,
+  the same peak and an RMS that differs in the sixth significant digit
+  (0.0469319 against 0.0469320). A sequential control with concurrency 1 also
+  returned two different hashes (`76a3e7d3...` and `a88c86b9...`) with
+  identical log statistics. This was a pre-existing engine property, not a
+  serving regression; the samples and duration were identical and only
+  low-order bits differed. Task #59 later isolated and fixed a duplicate-history
+  repetition-penalty race; its focused direct/stage A/A evidence is byte
+  identical, but does not retroactively rewrite this historical observation or
+  replace the unrun full R4 gate (see
+  [realtime-first-audio](realtime-first-audio.md#task-59-native-continuation-determinism-closeout)).
 
 ## Capacity
 

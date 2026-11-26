@@ -254,6 +254,17 @@ optimize it without changing output.
 | Stability | The coefficient of variation is reported; `cv > 0.10` means the window was not quiet and the run repeats. |
 | Attribution | The report separates model time from control-plane time. |
 
+**Phase 5 native Qwen3-TTS continuation determinism gate (2026-11-27).** Task
+#59 removed a duplicate-history read/modify/write race in the group-0
+repetition-penalty CUDA kernel by deduplicating ids before one-owner logit
+updates. Pristine direct-native replay reproduced generated-frame and PCM A/A
+mismatches; the fixed 108-request fresh-process A/A and two native-stage runs
+are byte-identical, including stream/terminal, nonstream/stream and
+cancel/retry checks. Exact records are in
+[realtime-first-audio](realtime-first-audio.md#task-59-native-continuation-determinism-closeout).
+The full two-GPU R4 replay, fair-priority reconsideration, generalized latency
+acceptance, and perceptual quality remain `NOT_RUN`/`NOT_COVERED`.
+
 The existing MLX text-chat optimization record keeps its own convention; it is
 not a unified-engine baseline. [docs/mlx.md](mlx.md) gives the
 number and its conditions.

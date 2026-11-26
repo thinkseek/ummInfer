@@ -49,10 +49,11 @@ class TtsEngine {
   // RequestAborted. An empty check keeps the original behaviour bit for bit.
   // With a stream sink, each chunk decodes the frame prefix produced so far
   // and only its new tail samples are kept, so the returned vector is the
-  // concatenation of the chunks by construction. The codec is not
-  // bit-repeatable across calls, so a second decode of the same frames does
-  // not reproduce them; no code path relies on that. The returned waveform is
-  // trimmed of the decoder's trailing noise; a streamed utterance of a single
+  // concatenation of the chunks by construction. Per-utterance codec state is
+  // reset explicitly, and the talker applies repetition penalty once per
+  // distinct emitted id rather than racing duplicate history entries. The
+  // returned waveform is trimmed of the decoder's trailing noise; a streamed
+  // utterance of a single
   // chunk (at most 160 ms of audio) is returned untrimmed.
   std::vector<float> synthesize(const std::vector<int>& text_ids, int language_id,
                                 int speaker_id, int max_frames,

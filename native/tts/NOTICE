@@ -59,11 +59,11 @@ run time. `ldd umm-tts-native` lists only the libraries above.
 
 ## 4. Determinism statement
 
-The talker token trajectory (group-0 and groups 1-15 codec ids) is
-deterministic run to run for a fixed input and is byte-identical across
-repeated executions. The FP32 speech codec performs nondeterministic-order
-floating-point reductions that produce sub-LSB waveform differences across
-runs (well below 0.5% of samples, magnitude around 1e-3 of full scale); the
-PCM16 stats (RMS, peak, non-silence ratio, duration, sample count) are stable
-and ASR transcription is unaffected. This is documented as a known limitation
-in `TTS_NATIVE.md`.
+The talker applies repetition penalty once per distinct group-0 id. Duplicate
+history entries are marked through an idempotent shared-memory bitset, then
+one thread per logit applies the penalty; the earlier duplicate read/modify/
+write race was removed in Task #59. Real-CUDA duplicate fixtures and the
+recorded direct/stage A/A replays are byte identical on the tested SM90 path,
+including generated frames and PCM16. This is not a claim for unseen prompts,
+the unrun full two-GPU R4 replay, other hardware, or perceptual quality; see
+`TTS_NATIVE.md` and `docs/realtime-first-audio.md`.

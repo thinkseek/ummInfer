@@ -383,6 +383,18 @@ static void test_decode_helpers() {
   CHECK(tts_swiglu_unroll_for(2) == 2);
   CHECK(tts_swiglu_unroll_for(4) == 1);
 
+  // Repetition penalty applies once per distinct id, never once per duplicate
+  // history entry. This is the host half of the real-CUDA race regression.
+  const int duplicate_history[] = {7, 3, 7, 19, 3, 7};
+  CHECK(repetition_penalty_for_id(8.0f, duplicate_history, 6, 7, 2.0f) == 4.0f);
+  CHECK(repetition_penalty_for_id(-8.0f, duplicate_history, 6, 7, 2.0f) == -16.0f);
+  CHECK(repetition_penalty_for_id(8.0f, duplicate_history, 6, 8, 2.0f) == 8.0f);
+  CHECK(repetition_penalty_for_id(0.0f, duplicate_history, 6, 7, 2.0f) == 0.0f);
+  CHECK(repetition_penalty_for_id(8.0f, duplicate_history, 0, 7, 2.0f) == 8.0f);
+  const int single_history[] = {7};
+  CHECK(repetition_penalty_for_id(8.0f, single_history, 1, 7, 2.0f) ==
+        repetition_penalty_for_id(8.0f, duplicate_history, 6, 7, 2.0f));
+
   // Bijective 3-way QKV row mapping (2048 + 1024 + 1024 = 4096).
   const int qkv_n[3] = {2048, 1024, 1024};
   CHECK(multi_gemv_locate_row(-1, qkv_n, 3).proj == -1);

@@ -707,12 +707,25 @@ __global__ void suppress_kernel(float* logits, int lo, int hi, int keep) {
 }
 
 __global__ void repetition_penalty_kernel(float* logits, const int* history,
-                                          int n_history, float penalty) {
-  const int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= n_history) return;
-  const int id = history[i];
-  logits[id] =
-      logits[id] > 0.0f ? logits[id] / penalty : logits[id] * penalty;
+                                          int n_history, int n_logits,
+                                          float penalty) {
+  extern __shared__ unsigned int seen[];
+  const int words = (n_logits + 31) / 32;
+  for (int i = threadIdx.x; i < words; i += blockDim.x) seen[i] = 0;
+  __syncthreads();
+  for (int i = threadIdx.x; i < n_history; i += blockDim.x) {
+    const int id = history[i];
+    if (id >= 0 && id < n_logits) {
+      // Duplicate atomic bit sets are idempotent; no float logit is shared.
+      atomicOr(&seen[id / 32], 1u << (id % 32));
+    }
+  }
+  __syncthreads();
+  for (int id = threadIdx.x; id < n_logits; id += blockDim.x) {
+    if ((seen[id / 32] & (1u << (id % 32))) != 0) {
+      logits[id] = apply_repetition_penalty(logits[id], penalty);
+    }
+  }
 }
 
 __global__ void ban_logit_kernel(float* logits, int id) {
@@ -1795,10 +1808,12 @@ void suppress_logits(float* logits, int lo, int hi, int keep, cudaStream_t st) {
       logits, lo, hi, keep);
 }
 void repetition_penalty_f32(float* logits, const int* history, int n_history,
-                            float penalty, cudaStream_t st) {
-  if (n_history <= 0) return;
-  repetition_penalty_kernel<<<(n_history + kBlock - 1) / kBlock, kBlock, 0,
-                              st>>>(logits, history, n_history, penalty);
+                            int n_logits, float penalty, cudaStream_t st) {
+  if (n_history <= 0 || n_logits <= 0) return;
+  const size_t seen_bytes = static_cast<size_t>((n_logits + 31) / 32) *
+                            sizeof(unsigned int);
+  repetition_penalty_kernel<<<1, min(1024, n_logits), seen_bytes, st>>>(
+      logits, history, n_history, n_logits, penalty);
 }
 void ban_logit_f32(float* logits, int id, cudaStream_t st) {
   ban_logit_kernel<<<1, 1, 0, st>>>(logits, id);

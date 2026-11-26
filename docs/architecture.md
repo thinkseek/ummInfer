@@ -241,6 +241,23 @@ Qwen3.8+CustomVoice TTS GPU 7 门禁（双提示、warm、off/on JSON/SSE/PCM、
 
 ---
 
+### 2.4 原生 Qwen3-TTS continuation 重复惩罚确定性
+
+Task #59 修复了 Talker group-0 历史重复惩罚的 CUDA 竞态。旧核函数让每个
+history entry 对同一 `logits[id]` 做非同步 read/modify/write；重复 id 可能被
+多次惩罚并改变 argmax、EOS 帧数与完整 PCM。现实现先以 shared-memory bitset
+幂等标记出现过的 id，再由每个 logit 的单独 owner 应用一次惩罚，保持 HF
+gather/scatter 语义且不改变公开请求、流式 PCM/WAV、allocator、取消或调度契约。
+
+聚焦真实 CUDA fixture 修复前失败、修复后通过；最终两轮 fresh-process
+108-request direct-native A/A 的 codec frames 与 PCM 全部逐字节一致，两轮真实
+native-stage replay 同时验证 stream/terminal、nonstream/stream、cancel/retry 和
+seeded fragmentation。完整双 GPU R4、fair-priority 候选、感知质量均未重跑或
+解锁。根因、哈希与独立校验见 [realtime-first-audio](realtime-first-audio.md#task-59-native-continuation-determinism-closeout)
+及 [证据](evidence/tts-continuation-determinism-sm90.json)。
+
+---
+
 ## 3. 本机轻量构建与测试验证矩阵
 
 > 环境：macOS 25.3.0 (ARM64), Zig 0.16.0, AppleClang 21.0.0, CMake, Swift, Python 3.13.7（系统 Python 无 `msgpack`/`pyzmq`/`mlx`/`websockets` 第三方包），无 NVIDIA CUDA GPU。

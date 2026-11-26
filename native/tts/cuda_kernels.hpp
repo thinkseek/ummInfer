@@ -95,8 +95,9 @@ void argmax_f32_dev(const float* logits, int n, int* out, cudaStream_t stream);
 // Set logits[idx] = -inf for every idx in [lo, hi) except keep.
 void suppress_logits(float* logits, int lo, int hi, int keep, cudaStream_t stream);
 // HF repetition penalty over the emitted id history (applied before argmax).
+// Each distinct logit id is penalized at most once, regardless of duplicates.
 void repetition_penalty_f32(float* logits, const int* history, int n_history,
-                            float penalty, cudaStream_t stream);
+                            int n_logits, float penalty, cudaStream_t stream);
 // Force one id to -inf (anti-degeneracy consecutive-run ban).
 void ban_logit_f32(float* logits, int id, cudaStream_t stream);
 
