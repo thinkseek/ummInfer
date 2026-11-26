@@ -302,3 +302,148 @@ python3 -I tests/video_temporal_long_live.py --self-check
 python3 -I tests/controlled_measurement_test.py
 umm-test-local test
 ```
+
+## Task #47 R4 root-cause audit and controlled correction boundary — 2026-11-26
+
+### Outcome: fixture/model limitation; no native runtime defect proven
+
+Task #47 started from official main `1136b60` (newer than the requested
+`c7e7ed4`), preserved the complete sealed R4 bundle, and used the unchanged
+public native stage. The model/data/scoring correction boundary is explicit:
+**no native serving implementation, tracked source fixture, expected answer, or
+quality-scoring rule was changed**. The accepted R4 outcomes remain 6/24
+default, 6/24 uniform, and 0/24 temporal, including every miss.
+
+The established root-cause boundary is a combination of **invalid perceptual
+oracle coverage, synthetic color contamination, prompt leakage, and model
+limitations on these four fixtures**, not a demonstrated selection/B-frame/
+temporal-2/mRoPE implementation defect:
+
+1. Every default/uniform selection ends at source frame 59. Those frames contain
+   none of the intended separated motion events (64/176/320), the second scene
+   cut (224), the magenta band (288), or the first/last anchors (0/448). Thus the
+   uniform expected answers are not justified by the selected long-video pixels.
+   In particular, R4's six uniform/default blue hits cannot establish temporal
+   understanding: no blue scene was selected. A blue binding tag at source frame
+   35 is visible instead.
+2. `anchor_tag()` adds unmentioned colored 5x5 source markers to frames 0–63.
+   Temporal always selects frame 0, whose green tag survives native scaling with
+   138–205 green-dominant pixels depending on the clip. Temporal's intended red,
+   blue, magenta, and black/white pixels are also present and correctly ordered,
+   but the original responses repeatedly select green. This is a fixture
+   contamination and model-grounding limitation, not missing intended frames.
+3. The Spanish anchor prompt literally includes `Responde: blanco y negro.`
+   Both anchor frames also contain both black and white regions. Its substring
+   hits are therefore not clean perceptual evidence.
+4. Temporal-2 intentionally packs adjacent selected frames into one channel-major
+   slice and uses the pair-first PTS as its text marker. For example, scene-static
+   packs red frame 192 with blue frame 224 under the 96.0-second pair-first marker;
+   near-duplicate packs static frame 256 with magenta frame 288 under 128.0
+   seconds. The oracle must not imply lossless per-frame timestamp semantics.
+5. A separate negative probe proves that the native-style FFmpeg command
+   zero-normalizes a nonzero initial presentation timestamp. Matroska packets
+   retaining 1.5…29.5 seconds decode as 0…28 seconds. All R4 sources start at
+   zero, so this boundary does not explain R4. The live uniform control therefore
+   uses explicitly named **source-relative** PTS and does not claim absolute-start
+   coverage.
+
+### Offline deterministic regressions
+
+`tests/temporal_quality_r4_test.py` contains 15 CPU tests covering the missing
+uniform answer anchors, colored-tag contamination, answer leakage, unchanged
+multilingual scoring, B-frame packet/decode-order distinction, independent full
+mRoPE coordinates, failed-record grouping, nested evidence sealing, exact
+rational/container PTS, and lossless RGB round trips. Native host tests add exact
+channel-major first/second-frame packing and prove that numeric timestamp text
+changes do not alter mRoPE coordinates when token/grid layout is unchanged.
+
+The intervention generator independently decodes the selected source frames and
+packages them as lossless RGB H.264. Each derived video must decode to the exact
+original eight selected RGB buffers, in the same order, with exact declared
+rational packet ticks and native `showinfo` values. Contact sheets and the
+nonzero-start negative probe are sealed with the inputs. Derived lossless RGB
+controls deliberately contain no B-frames; original B-frame proof comes only
+from the original sources and sealed packet/decode evidence.
+
+A host-only `qwen38_prompt_position_audit` executable emits the exact expanded
+prompt ids using the frozen tokenizer. It never constructs an Engine or
+initializes CUDA. Python independently reconstructs every T/H/W coordinate and
+FNV-1a diagnostic digest. All 24 case/arm position entries passed, including
+exact agreement with the sealed R4 temporal and uniform baseline digests.
+
+### Controlled serial GPU-0 interventions
+
+The completed run used source commit
+`afac5f18c1e71d08cbb2801a0fd6998c8d87dc7b`; the later `5963bd0` correction only
+fixed evidence sealing and added no model request. The frozen native model was
+Qwen3.8-27B with the same complete 29-file hashes as R4, config SHA-256
+`191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab`.
+The gateway SHA-256 was
+`337b00db5f3855d6d24372a528459299235222fc6c3714356433686d3d76b1f4`;
+the native stage SHA-256 was
+`ef4f4e3e5f8c45f0c2e09d9370b052145c62830d611a6aa1e503f360f8db3b61`.
+The fixture manifest stayed
+`642ce61e4983cd47d549b0315e0d6f92f01495f936e109487ea2407592a28980`;
+the R4 `SHA256SUMS` stayed
+`354e29c3e98fa39210de45abd1e13b4625bb274cbc46717b9f55e9ff8a14ed45`.
+
+Only explicitly idle physical GPU 0 was used, serial batch size 1, with
+`CUDA_VISIBLE_DEVICES=0`, `UMM_QWEN38_PREFIX_CACHE=0`, greedy temperature 0,
+`top_p=1`, seed 390039, and 128 maximum output tokens. GPU 7, GPUs 2–6, and the
+resident service were not contacted. The schedule used one declared warmup and
+three measured repetitions, with seeded interleaving across six arms and all
+four scene/motion/static/B-frame cases: 96 requests total, 72 measured.
+
+| Arm | Original expected-substring hits / 12 | Raw answer by case; identical across three measured repetitions |
+| --- | ---: | --- |
+| temporal pixels + source PTS | 0 | separated=`green`; scene=`绿色`; near=`緑`; anchors=`El primer cuadro es de color verde y el último es de color blanco.` |
+| identical temporal pixels + uniform nominal positions | 0 | identical to source-PTS arm on all four cases |
+| identical temporal pixels + ordinal normalized PTS | 3 | separated=`green`; scene=`绿色`; near=`緑`; anchors=`blanco y negro` |
+| identical uniform pixels + historical nominal positions | 3 | separated=`green`; scene=`蓝色`; near=`緑`; anchors=`El primer cuadro es de color verde y el último es de color morado.` |
+| identical uniform pixels + matched source-relative PTS | 3 | identical to uniform-nominal arm on all four cases |
+| temporal pixels/source PTS + alternate-language prompt | 0 | separated=`绿色`; scene=`green`; near=` green`; anchors=`The first frame is white and the last frame is black.` |
+
+The language arm deliberately receives **no new scoring aliases**. Consequently
+its semantically white/black English answer remains a miss under the original
+Spanish substrings. The ordinal arm's three hits occur only on the prompt-leaking
+Spanish case and are not evidence of a position fix or generalized improvement.
+Source PTS versus uniform positions leaves all four original-prompt answers
+unchanged; only ordinal PTS changes the anchor-case answer. No arm establishes
+perceptual or generalized quality.
+
+All 96/96 requests completed, all 96 native records passed exact
+pixel/order/PTS/temporal-2/media-hash/cold-prefix/independent-position checks,
+all 88/88 factor-isolation and within-serial repetition checks passed, and all
+32/32 R4-equivalent temporal/uniform baseline checks matched native identity and
+raw answers. Existing default-versus-explicit-uniform native tests still pass;
+no new default-uniform live comparison was needed because runtime code did not
+change. Answer scores never participate in the technical gate.
+
+### Failures retained and evidence verification
+
+Two post-request harness failures are not hidden: an initial report-grouping
+`KeyError` after 96 requests, and the final run's initial seal failure caused by
+nested R4/source manifest names. Their raw SSE, logs, original reports, invalid
+manifests, and corrections are under `failed-attempts/`; the first attempt is not
+claimed as a controlled result. Correcting the final seal added zero model
+requests. Pre-traffic gateway dependency and media-toolchain failures, plus a
+metadata annotation error, are recorded in `support/setup-failures.json`.
+No failure or answer miss was removed.
+
+The final local evidence directory is `/tmp/umm-task47-r5-final-evidence`.
+Its `SHA256SUMS` SHA-256 is
+`060edc180409b8fa15272b416458ffae952905ababceaf95dedd115d7c75b3f0`.
+It includes the complete sealed R4 evidence, frozen original/derived inputs,
+contact sheets, full independent position vectors, raw SSE, raw native logs,
+commands, complete model/binary hashes, aggregates, failures, and cleanup proof.
+Fresh remote and local processes passed deep verification:
+
+```sh
+python3 -I tests/temporal_quality_r4_live.py \
+  --check-evidence /tmp/umm-task47-r5-final-evidence
+```
+
+The final native process accepted SIGTERM; GPU 0 returned to 3 MiB with zero
+compute processes on both checks. The three stopped container PIDs remained
+zombie/reap-pending (`Z`) and are recorded as such, not reported as absent.
+`PERCEPTUAL_QUALITY: NOT_RUN`; generalized quality claim: `false`.

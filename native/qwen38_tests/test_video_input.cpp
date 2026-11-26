@@ -218,6 +218,16 @@ void test_prompt_mrope_parity_and_still_image() {
   check(serial.t == batched.t && serial.h == batched.h && serial.w == batched.w &&
             serial.next == batched.next,
         "serial and batched requests share identical temporal MRoPE geometry");
+  std::vector<int> changed_timestamp_values = ids;
+  for (int& id : changed_timestamp_values) {
+    if (id == 1) id = 4242;  // Same token layout, different timestamp text ids.
+  }
+  const auto changed_stamps = umminfer::qwen38::build_mrope_positions(
+      changed_timestamp_values, decoded.preprocessed.grid_t, decoded.preprocessed.grid_h,
+      decoded.preprocessed.grid_w, true);
+  check(changed_stamps.t == serial.t && changed_stamps.h == serial.h &&
+            changed_stamps.w == serial.w && changed_stamps.next == serial.next,
+        "mRoPE coordinates depend on token/grid layout rather than numeric timestamp text");
 
   const auto still = umminfer::qwen38::preprocess_rgb(
       solid(64, 64, 0).data(), 64, 64, 4096, 16384);
@@ -226,6 +236,32 @@ void test_prompt_mrope_parity_and_still_image() {
             std::all_of(still.pixel_values.begin(), still.pixel_values.end(),
                         [](float value) { return value == -1.0f; }),
         "still-image decode/preprocess remains single-slice and byte-exact");
+}
+
+void test_exact_temporal2_channel_frame_packing() {
+  constexpr int kSize = 32;
+  std::vector<std::vector<uint8_t>> frames;
+  for (int index = 0; index < 8; ++index) {
+    frames.push_back(solid(kSize, kSize, static_cast<uint8_t>(20 + index)));
+  }
+  const auto packed = umminfer::qwen38::preprocess_video_frames(
+      frames, kSize, kSize, 1024, 1024, 3584);
+  check(packed.grid_t == 4 && packed.grid_h == 2 && packed.grid_w == 2 &&
+            packed.resized_h == kSize && packed.resized_w == kSize && packed.rows() == 16,
+        "eight frames produce four exact-size temporal-2 slices");
+  for (int slice = 0; slice < 4; ++slice) {
+    const float expected0 = static_cast<float>(20 + slice * 2) / 127.5f - 1.0f;
+    const float expected1 = static_cast<float>(20 + slice * 2 + 1) / 127.5f - 1.0f;
+    for (int merge_row = 0; merge_row < 4; ++merge_row) {
+      const size_t base = static_cast<size_t>(slice * 4 + merge_row) *
+                          umminfer::qwen38::PreprocessedImage::kPatchDim;
+      check(std::fabs(packed.pixel_values[base] - expected0) < 1e-7 &&
+                std::fabs(packed.pixel_values[base + 256] - expected1) < 1e-7 &&
+                std::fabs(packed.pixel_values[base + 512] - expected0) < 1e-7 &&
+                std::fabs(packed.pixel_values[base + 768] - expected1) < 1e-7,
+            "each temporal-2 slice packs channel-major first/second frame values without reordering");
+    }
+  }
 }
 
 void test_malformed_and_budget_rejection() {
@@ -363,6 +399,7 @@ int main() {
   test_duplicate_scene_run();
   test_analysis_and_temporal_timestamps();
   test_prompt_mrope_parity_and_still_image();
+  test_exact_temporal2_channel_frame_packing();
   test_malformed_and_budget_rejection();
   test_ffmpeg_default_equivalence_and_temporal_budget();
   if (g_failures != 0) {
