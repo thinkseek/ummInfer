@@ -14,9 +14,11 @@ import argparse
 import builtins
 import copy
 import hashlib
+import importlib.util
 import io
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,7 +42,8 @@ import umminfer_token_export as tokens  # noqa: E402
 FIXTURE_SEED = "joint-dpo-live-fixture-v1"
 
 
-def build_fixture_pack(root, *, export_version=None, rich=False):
+def build_fixture_pack(root, *, export_version=None, rich=False,
+                       real_tokenizer=None):
     """Build two schema-v2 preference pairs with structured targets on both sides."""
     root = Path(root)
     export_dir = root / "export"
@@ -113,7 +116,9 @@ def build_fixture_pack(root, *, export_version=None, rich=False):
     identity = None
     trajectory_path = recorder.jsonl_path
     if export_version is not None:
-        if export_version == 2:
+        if real_tokenizer is not None:
+            tokenizer, tokenizer_dir, tokenizer_id, revision, version = real_tokenizer
+        elif export_version == 2:
             tokenizer = token_fixture.V2FixtureTokenizer()
             tokenizer_dir = token_fixture._v2_tokenizer_dir(root / "fixture-tokenizer")
             tokenizer_id, revision, version = (
@@ -894,9 +899,281 @@ def _fixture_bundle_verify(root, version, output):
     return 0
 
 
+def run_real_tokenizer_gate(args):
+    """Execute the CPU-only real-local-tokenizer export/preflight/verify gate."""
+    evidence = Path(args.evidence_dir)
+    if evidence.exists() and any(evidence.iterdir()):
+        raise ValueError("real-tokenizer evidence directory must be absent or empty")
+    evidence.mkdir(parents=True, exist_ok=True)
+    os.environ.update({
+        "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+        "HF_DATASETS_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1",
+        "CUDA_VISIBLE_DEVICES": "",
+    })
+    env = os.environ.copy()
+    tokenizer, version, real_import, real_find_spec = \
+        live._torch_isolated_tokenizer(args.model_path)
+    try:
+        fixture = build_fixture_pack(
+            evidence / "fixture", export_version=2, rich=True,
+            real_tokenizer=(
+                tokenizer, args.model_path, "Qwen/Qwen2.5-0.5B-Instruct",
+                "UNKNOWN", version))
+    finally:
+        builtins.__import__ = real_import
+        importlib.util.find_spec = real_find_spec
+    if "torch" in sys.modules:
+        raise RuntimeError("torch was imported while producing real token exports")
+
+    legacy = build_fixture_pack(evidence / "legacy-fixture")
+    legacy_sha = stage_c.sha256_file(legacy["pack_dir"] / "dpo_train.jsonl")
+    if legacy_sha != "2e7e15b5143bdba21cb597371849c35b911c07ba03b647ad8b184491617e4ead":
+        raise RuntimeError("legacy unexported DPO rows changed")
+
+    commands = {}
+
+    def execute(name, argv):
+        proc = subprocess.run(
+            [str(item) for item in argv], capture_output=True, text=True,
+            timeout=1800, env=env)
+        (evidence / f"{name}.stdout.log").write_text(proc.stdout, encoding="utf-8")
+        (evidence / f"{name}.stderr.log").write_text(proc.stderr, encoding="utf-8")
+        commands[name] = {
+            "argv": [str(item) for item in argv],
+            "environment": {
+                key: env[key] for key in (
+                    "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
+                    "HF_DATASETS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY",
+                    "CUDA_VISIBLE_DEVICES")
+            },
+            "returncode": proc.returncode,
+        }
+        return proc
+
+    adapter = ROOT / "python/umminfer_joint_dpo_live.py"
+    config = ROOT / "configs/training/joint_dpo_live_gate.json"
+    preflight_dir = evidence / "preflight"
+    common = [
+        "--dataset-dir", fixture["pack_dir"], "--config", config,
+        "--model-path", args.model_path,
+    ]
+    preflight = execute("preflight", [
+        sys.executable, "-I", adapter, *common,
+        "--output-dir", preflight_dir, "--source-commit", args.source_commit,
+        "--max-steps", "2", "--token-source", "token_export", "--preflight-only",
+    ])
+    if preflight.returncode:
+        raise RuntimeError("real-tokenizer DPO preflight failed; see captured stderr")
+    bundle_path = preflight_dir / "token_export_preflight.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    scheduled_pair_ids = [json.loads(line)["pair_id"] for line in (
+        fixture["pack_dir"] / "dpo_train.jsonl").read_text(
+            encoding="utf-8").splitlines()]
+    scheduled = bundle["schedule"]["scheduled_pair_ids"]
+    if len(bundle["pairs"]) != 2 or len(scheduled) != 2 \
+            or len(set(scheduled)) != 2 or set(scheduled) != set(scheduled_pair_ids):
+        raise RuntimeError("real-tokenizer preflight did not retain both scheduled pairs")
+    if (preflight_dir / "live_manifest.json").exists() \
+            or (preflight_dir / "checkpoints").exists() \
+            or list(preflight_dir.rglob("*.pt")):
+        raise RuntimeError("CPU preflight produced optimizer or model output")
+
+    verification_path = evidence / "independent_verification.json"
+    verify = execute("independent-verifier", [
+        sys.executable, "-I", adapter, "--token-export-verify",
+        "--bundle", bundle_path, *common,
+        "--tokenizer-id", "Qwen/Qwen2.5-0.5B-Instruct",
+        "--tokenizer-revision", "UNKNOWN", "--output", verification_path,
+    ])
+    if verify.returncode:
+        raise RuntimeError("independent real-tokenizer verification failed; see captured stderr")
+    verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    recomputed_identity = stage_c.sha256_bytes(stage_c.canonical_json(
+        bundle["run_identity"]))
+    recomputed_reference = stage_c.sha256_bytes(stage_c.canonical_json(
+        bundle["reference_policy_inputs"]))
+    independent_ok = (
+        verification["status"] == "PASS"
+        and verification["fresh_process_reconstruction"] == "BYTE_IDENTICAL"
+        and verification["torch_imported"] is False
+        and verification["bundle_sha256"] == stage_c.sha256_file(bundle_path)
+        and verification["run_identity_sha256"] == recomputed_identity
+        == bundle["run_identity_sha256"]
+        and recomputed_reference == bundle["reference_policy_inputs_sha256"])
+    if not independent_ok:
+        raise RuntimeError("independent bundle identity recomputation differs")
+
+    rows = [json.loads(line) for line in (
+        fixture["pack_dir"] / "dpo_train.jsonl").read_text(
+            encoding="utf-8").splitlines()]
+    if len(rows) != 2 or any(
+            row["chosen"]["assistant_target"] == row["rejected"]["assistant_target"]
+            or row["chosen"]["score"] == row["rejected"]["score"]
+            or "source=slot-0" not in row["chosen"]["assistant_target"]
+            for row in rows):
+        raise RuntimeError("real preference pairs lack distinct targets/rewards or anchors")
+
+    def mismatched_tokenizer(rows, _index):
+        for row in rows:
+            for side in ("chosen", "rejected"):
+                block = row[side]["token_export"]
+                block["tokenizer"]["id"] = "Qwen/intentionally-mismatched"
+                block["config_sha256"] = tokens._config_digest(
+                    block["tokenizer"], tokens.EXPORT_POLICY_V2)
+                unsigned = {key: value for key, value in block.items()
+                            if key != "export_sha256"}
+                block["export_sha256"] = stage_c.sha256_bytes(
+                    stage_c.canonical_json(unsigned))
+
+    mutations = {
+        "partial-export": lambda rows, i: rows[i]["chosen"].pop("token_export"),
+        "stale-source": lambda rows, i: rows[i]["chosen"][
+            "token_export_source"].update(clean_text="stale"),
+        "malformed-token": lambda rows, i: rows[i]["rejected"]["token_export"][
+            "streams"]["sft_target"]["token_ids"].__setitem__(0, 1),
+        "crossed-pair": lambda rows, i: rows[i].update(
+            chosen=copy.deepcopy(rows[1 - i]["chosen"])),
+        "tokenizer-mismatch": mismatched_tokenizer,
+    }
+    invalid_results = {}
+    with tempfile.TemporaryDirectory(prefix="umm-dpo-real-tokenizer-negative-") as tmp:
+        for name, mutate in mutations.items():
+            bad_pack = Path(tmp) / f"{name}-pack"
+            shutil.copytree(fixture["pack_dir"], bad_pack)
+            _resign_pack_pair(bad_pack, mutate)
+            run_dir = Path(tmp) / f"{name}-run"
+            proc = execute(f"invalid-{name}", [
+                sys.executable, "-I", adapter,
+                "--dataset-dir", bad_pack, "--config", config,
+                "--model-path", args.model_path, "--output-dir", run_dir,
+                "--source-commit", args.source_commit, "--max-steps", "2",
+                "--token-source", "token_export", "--preflight-only",
+            ])
+            forbidden = {
+                "planner": (run_dir / "plan").exists(),
+                "checkpoint": (run_dir / "checkpoints").exists(),
+                "live_manifest": (run_dir / "live_manifest.json").exists(),
+                "preflight_bundle": (run_dir / "token_export_preflight.json").exists(),
+                "torch_payload": run_dir.exists() and any(run_dir.rglob("*.pt")),
+            }
+            invalid_results[name] = {
+                "status": "PASS" if proc.returncode == 2 and not any(
+                    forbidden.values()) else "FAIL",
+                "returncode": proc.returncode,
+                "mutated_dpo_train_sha256": stage_c.sha256_file(
+                    bad_pack / "dpo_train.jsonl"),
+                "forbidden_outputs": forbidden,
+            }
+    if any(item["status"] != "PASS" for item in invalid_results.values()):
+        raise RuntimeError("a real-tokenizer invalid-input gate did not fail closed")
+
+    packed_ok = True
+    for pair, summary in zip(bundle["packed"], bundle["pairs"]):
+        chosen = pair["chosen"]
+        rejected = pair["rejected"]
+        packed_ok = packed_ok and chosen["prompt_token_ids"] == rejected["prompt_token_ids"]
+        for side in ("chosen", "rejected"):
+            item = pair[side]
+            export = item["token_export"]
+            prefix_len = len(item["prompt_token_ids"])
+            packed_ok = packed_ok and all((
+                export["legacy_equality"] == "PASS",
+                export["tokenizer_reencoded"] is True,
+                export["format_version"] == 2,
+                item["input_ids"][:prefix_len] == item["prompt_token_ids"],
+                item["labels"][:prefix_len] == [-100] * prefix_len,
+                item["weights"][:prefix_len] == [0.0] * prefix_len,
+                item["raw_target_offsets"] == item["offsets"][prefix_len:],
+                summary[side]["input_ids_sha256"] == stage_c.sha256_bytes(
+                    stage_c.canonical_json(item["input_ids"])),
+                summary[side]["labels_sha256"] == stage_c.sha256_bytes(
+                    stage_c.canonical_json(item["labels"])),
+                summary[side]["loss_weights_sha256"] == stage_c.sha256_bytes(
+                    stage_c.canonical_json(item["weights"])),
+                summary[side]["annotations_sha256"] == stage_c.sha256_bytes(
+                    stage_c.canonical_json(item["annotations"][prefix_len:])),
+                summary[side]["raw_offsets_sha256"] == stage_c.sha256_bytes(
+                    stage_c.canonical_json(item["raw_target_offsets"])),
+            ))
+    if not packed_ok:
+        raise RuntimeError("packed policy/reference inputs failed exact field recomputation")
+
+    source_files = list(live.SOURCE_FILES) + list(live.TOKEN_EXPORT_SOURCE_FILES) + [
+        "tests/joint_dpo_live_test.py", "configs/training/joint_dpo_live_gate.json"]
+    commands_path = evidence / "commands.json"
+    commands_path.write_bytes(stage_c.canonical_json(commands) + b"\n")
+    report = {
+        "schema": "umminfer-joint-dpo-real-tokenizer-cpu-gate-v1",
+        "status": "PASS",
+        "source_commit": args.source_commit,
+        "source_files": {rel: stage_c.sha256_file(ROOT / rel) for rel in source_files},
+        "python_executable_sha256": hashlib.sha256(
+            Path(sys.executable).read_bytes()).hexdigest(),
+        "tokenization_version": version,
+        "tokenizer_id": "Qwen/Qwen2.5-0.5B-Instruct",
+        "tokenizer_revision": "UNKNOWN",
+        "upstream_revision_verification": "NOT_RUN",
+        "complete_regular_file_count": len(bundle["tokenizer"]["available_files"]),
+        "complete_regular_file_list_sha256": bundle["tokenizer"]["available_files_sha256"],
+        "model_config_sha256": bundle["run_identity"]["model"]["config_sha256"],
+        "available_weights_sha256": bundle["run_identity"]["model"][
+            "available_weights_sha256"],
+        "config_file_sha256": bundle["run_identity"]["config_file_sha256"],
+        "resolved_config_sha256": bundle["run_identity"]["resolved_config_sha256"],
+        "dataset_manifest_sha256": bundle["run_identity"]["dataset_manifest_sha256"],
+        "exported_trajectory_sha256": fixture["trajectory_sha256"],
+        "dpo_train_sha256": stage_c.sha256_file(
+            fixture["pack_dir"] / "dpo_train.jsonl"),
+        "legacy_dpo_train_sha256": legacy_sha,
+        "legacy_rows_byte_identical": True,
+        "pair_count": len(rows),
+        "pair_ids": [row["pair_id"] for row in rows],
+        "pair_rewards": [{
+            "pair_id": row["pair_id"], "chosen": row["chosen"]["score"],
+            "rejected": row["rejected"]["score"]} for row in rows],
+        "preflight_sha256": stage_c.sha256_file(bundle_path),
+        "run_identity_sha256": bundle["run_identity_sha256"],
+        "independent_recomputation": {
+            "status": "PASS", "fresh_process": "BYTE_IDENTICAL",
+            "run_identity_sha256": recomputed_identity,
+            "reference_policy_inputs_sha256": recomputed_reference,
+            "torch_imported": False,
+        },
+        "exact_packed_fields": "PASS",
+        "shared_prompt_prefixes": True,
+        "independent_policy_reference_inputs": True,
+        "invalid_input": invalid_results,
+        "real_dpo_optimizer": "NOT_RUN",
+        "model_inference": "NOT_RUN",
+        "model_quality": "NOT_RUN",
+        "sampled_online_behavior_ids": "NOT_CLAIMED",
+        "serving": "NOT_RUN",
+        "gpu": "NOT_RUN",
+    }
+    report_path = evidence / "acceptance.json"
+    report_path.write_bytes(stage_c.canonical_json(report) + b"\n")
+    Path(str(report_path) + ".sha256").write_text(
+        stage_c.sha256_file(report_path) + "\n", encoding="ascii")
+    checksum_lines = []
+    for path in sorted(evidence.rglob("*")):
+        if path.is_file() and path.name != "SHA256SUMS":
+            checksum_lines.append(
+                f"{stage_c.sha256_file(path)}  {path.relative_to(evidence).as_posix()}\n")
+    (evidence / "SHA256SUMS").write_text("".join(checksum_lines), encoding="ascii")
+    print(json.dumps({
+        "status": "PASS", "pairs": len(rows), "tokenization_version": version,
+        "fresh_process_reconstruction": "BYTE_IDENTICAL",
+        "invalid_input": "PASS", "legacy_rows_byte_identical": True,
+        "real_dpo_optimizer": "NOT_RUN", "model_inference": "NOT_RUN",
+        "model_quality": "NOT_RUN",
+    }, sort_keys=True))
+    return 0
+
+
 def _live_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--real-tokenizer-preflight", action="store_true")
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--evidence-dir", required=True)
     parser.add_argument("--source-commit", required=True)
@@ -916,6 +1193,8 @@ if __name__ == "__main__":
             print(f"fixture bundle verification error: {exc}", file=sys.stderr)
             status = 2
         raise SystemExit(status)
+    if "--real-tokenizer-preflight" in sys.argv:
+        raise SystemExit(run_real_tokenizer_gate(_live_parser().parse_args()))
     if "--live" in sys.argv:
         raise SystemExit(run_live_gate(_live_parser().parse_args()))
     result = unittest.main(exit=False, verbosity=2)

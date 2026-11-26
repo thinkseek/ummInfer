@@ -280,7 +280,7 @@ python3 -I tests/online_rollout_test.py
 | SFT interleaved beat-marker reconstruction & dedup | **COVERED** | Byte-identical across repeated runs |
 | Optional token-id/UTF-8/source-span export & SFT mask equivalence | **COVERED (fixture v1/v2); PASS (real local Qwen v2)** | Additive blocks, fail-closed structural validation, exact normalized bytes/source units, deterministic independent decode and two fresh CLI processes; default run without a supplied tokenizer still reports `NOT_RUN` |
 | Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")`; additive DPO-side export/source retention |
-| Exported-token DPO pair data/preflight | **COVERED (fixture v1/v2 CPU); real local tokenizer CLI NOT_RUN** | All-or-nothing pair validation, exact policy/reference masks, run/resume identity, and independent fresh-process bundle verification; see [exported-token-dpo-preflight](exported-token-dpo-preflight.md) |
+| Exported-token DPO pair data/preflight | **PASS (fixture v1/v2 + real local Qwen2.5 v2 CPU)** | Two real preference pairs, all-or-nothing validation, exact policy/reference packing, run identity, five fail-closed real negative cases, and byte-identical fresh-process verification; real optimizer remains NOT_RUN. See [exported-token-dpo-preflight](exported-token-dpo-preflight.md) |
 | Zero train/eval prompt leakage & manifest sidecar | **COVERED** | Verified at build time and `--audit-only` |
 | End-to-end trajectory -> pack -> ablation-matrix dry-run driver | **COVERED** | `tools/umminfer_stage_c_pipeline.py` + `tests/stage_c_pipeline_test.py` |
 | Real joint-SFT optimizer gate | **PASS (SM90, legacy + token_export)** | Two exact-equivalent AdamW steps per path, changed finite parameters, fresh-process export resume, and pre-output invalid-input rejection; see [exported-token-sft-live](exported-token-sft-live.md) |
@@ -611,10 +611,11 @@ byte-compares a complete real-local-tokenizer bundle in a fresh process without
 Torch. Deterministic v1/v2 fixture subprocesses cover multilingual/NFC/emoji,
 spoken and visual spans, explicit anchors, exact sigmoid/reference-mask arithmetic,
 invalid-input no-output/no-ML gates, and split/resume schedule identity. Exact
-commands, fixture hashes, and the future real-local-tokenizer and optimizer gates
-are in [exported-token-dpo-preflight](exported-token-dpo-preflight.md). No real
-local-tokenizer CLI, GPU, model inference, or export-driven DPO optimizer was run
-for this CPU gate.
+commands, fixture hashes, and real-local-tokenizer evidence are in
+[exported-token-dpo-preflight](exported-token-dpo-preflight.md). The real
+Qwen2.5 tokenizer preflight and fresh-process verifier passed two v2 pairs and
+five fail-closed negative cases with no Torch import. No GPU, model inference,
+or export-driven DPO optimizer was run; model quality remains NOT_RUN.
 
 Run the deterministic suite:
 

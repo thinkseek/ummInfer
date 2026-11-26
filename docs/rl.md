@@ -468,9 +468,11 @@ legacy/export and different pairs cannot cross-resume.
 execution; `--token-export-verify` independently rebuilds a complete bundle in a
 fresh process. Deterministic v1/v2 pair fixtures, exact sigmoid/reference-mask
 arithmetic, invalid-input gates, hashes, and commands are in
-[exported-token-dpo-preflight](exported-token-dpo-preflight.md). Real
-local-tokenizer CLI execution and export-driven real DPO optimization were not
-run for this CPU gate. Exported post-hoc ids are not sampled online behavior ids.
+[exported-token-dpo-preflight](exported-token-dpo-preflight.md). The designated
+local Qwen2.5 fast-tokenizer CLI preflight and fresh-process verifier passed two
+real v2 pairs with byte-identical reconstruction and five fail-closed negative
+cases. Export-driven real DPO optimization, inference, and quality remain
+`NOT_RUN`. Exported post-hoc ids are not sampled online behavior ids.
 
 ## Determinism
 

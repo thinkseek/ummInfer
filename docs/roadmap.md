@@ -355,9 +355,12 @@ fixtures cover multilingual/NFC/emoji/spoken/visual/explicit-anchor pairs,
 exact sigmoid/reference-mask arithmetic, invalid-input no-output/no-ML gates,
 and split/resume equivalence. Legacy unexported pack bytes and the historical
 real DPO evidence remain unchanged. Commands and hashes are in
-[exported-token-dpo-preflight](exported-token-dpo-preflight.md). This task ran
-no GPU, inference, serving, remote execution, real local-tokenizer CLI, or real
-export-driven DPO optimizer; those and quality claims remain `NOT_RUN`.
+[exported-token-dpo-preflight](exported-token-dpo-preflight.md). The designated
+real local Qwen2.5 tokenizer gate passed two v2 preference pairs, exact
+policy/reference field checks, byte-identical fresh-process reconstruction, and
+five fail-closed negative cases with Torch isolated. No GPU, inference, serving,
+model download, real export-driven DPO optimizer, or quality evaluation ran;
+those remain `NOT_RUN`.
 
 The Stage C joint-SFT, joint-DPO, and joint-GRPO optimizer gates are separately
 bounded to deterministic schema-v2 text/visual-slot fixtures and one small local

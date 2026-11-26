@@ -1,12 +1,13 @@
 # Exported-token joint-DPO CPU data and preflight path
 
-Date: 2026-11-26. Integration base:
-`5d04dd006c84edd48913cae5b9b91b91f0a4e12e`, which contains the accepted
-exported-token SFT path and the newest then-available mainline integration.
-Implementation commit:
+Date: 2026-11-26. The original deterministic implementation was integrated
+non-destructively with newer main. The integrated real-local-tokenizer CPU
+measurement source is `e400caed4250bb8b67e55157745cc3528450ac80`.
+The original implementation commit recorded by Task #43 is
 `fde70d5a6bb7252d7eddcf71a2f151eba20d6e5c`.
-This task adds deterministic CPU-only DPO data/preflight coverage. It did not
-run a GPU, model inference, a real DPO optimizer, serving, or remote execution.
+Task #45 executed only tokenization, data packing, preflight, and independent
+verification in the previously validated offline CPU runtime. It did not run a
+GPU, model inference, a real DPO optimizer, model download, or serving endpoint.
 Exported ids are post-hoc supervision ids, not sampled online behavior ids.
 
 ## Opt-in contract and compatibility
@@ -117,12 +118,21 @@ python3 -I tests/joint_dpo_live_test.py \
   --fixture-bundle-verify TMPDIR VERSION TMPDIR/verification.json
 ```
 
-## Future exact-local-tokenizer gate
+## Real exact-local-tokenizer gate — PASS
 
-No real local tokenizer was supplied to the new DPO commands in this task, so
-this standalone CLI gate is **NOT_RUN**. A future CPU-only run must use an
-export pack produced by the exact same complete local tokenizer/model directory,
-id, revision, and Transformers/tokenizers runtime, with offline loading:
+Task #45 supplied the designated local `Qwen/Qwen2.5-0.5B-Instruct` directory to
+both standalone commands. Revision remains `UNKNOWN` because upstream revision
+verification was not performed. The pinned runtime was Python 3.12.3,
+Transformers 5.23.0, and tokenizers 0.23.3. The complete 31-regular-file bundle,
+including cache metadata and the 988,097,824-byte weight file, was rehashed; its
+file-list SHA-256 is
+`23ebb8d9f27833dadcc9047936b3f73a4453de77a3078fff40e74c07f2d68e83`.
+The two real v2 pairs contain multilingual text, decomposed `café`, emoji byte
+fallback, `<spoken>` spans, structured image/video targets, completed CAS legs,
+and chosen-side explicit `source=slot-0` anchors. Chosen/rejected targets differ;
+rewards are respectively `1.0` and `0.6666666666666666` in both pairs.
+
+The actual command shape was:
 
 ```sh
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
@@ -149,6 +159,48 @@ The verifier independently revalidates the pack and tokenizer, rebuilds the
 planner/schedule/run identity in a fresh process, and requires canonical bundle
 equality. It does not load model weights for inference or import Torch.
 
+The complete real gate was driven by:
+
+```sh
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+CUDA_VISIBLE_DEVICES="" python3 -I tests/joint_dpo_live_test.py \
+  --real-tokenizer-preflight --model-path EXACT_LOCAL_MODEL_TOKENIZER_DIR \
+  --evidence-dir NEW_EVIDENCE_DIR --source-commit \
+  e400caed4250bb8b67e55157745cc3528450ac80
+```
+
+The positive preflight and the independent verifier each returned 0 in a separate
+fresh process with `torch_imported=false`. Exact ids, raw offsets, labels,
+weights, annotations, shared prompt prefixes, independent policy/reference
+inputs, pair/prompt/export-bound identity, and canonical bundle reconstruction
+all passed. The legacy unexported pack retained its pinned SHA-256. Real
+partial-export, stale-source, malformed-token, crossed-pair, and
+tokenizer-mismatch cases each exited 2 before planner, checkpoint, optimizer,
+live manifest, preflight bundle, or Torch payload creation.
+
+| Real-gate item | Exact value |
+| --- | --- |
+| Exported trajectory / DPO train SHA-256 | `3678f744c6cec776e501b70b3895be1c80ec8528141d99c3e4f4782d37a03324` / `ff13bf833b98b82f31e032453998a7d39cbf0ae137fa4d701e9abe50adc5bd21` |
+| Legacy DPO train SHA-256 | `2e7e15b5143bdba21cb597371849c35b911c07ba03b647ad8b184491617e4ead` |
+| Preflight bundle / run identity SHA-256 | `fc6c1d00eb171c0452e28557d979d69229b71cf44f01dea434c9548e9f86b534` / `30e09a248fdca7d2111a1358a1ea0752c8009892aa234195c8107f8b4eb3352d` |
+| Dataset manifest / exact config / resolved config SHA-256 | `e97295de2e8316aaa05bf31fe80ce6042b52622988447ec48e8709895026bff9` / `ca1cfe51e2d25bd5a59546362fc719bf2ff19ed54c79d0d81880eea1c64c3b04` / `497a31c6e056ef5ff45f8573a03c671cec5d509be0ea6f39929314d74a2dd72d` |
+| Model config / weight-file SHA-256 | `18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45` / `fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe` |
+| Independent verifier output SHA-256 | `976bc40cc6614a734939563232b1b909b64a0a5f90f35aeca63ce0289c7d72a3` |
+| Real adapter / real harness SHA-256 | `e432c02364681638346a7757bfca0bf4fcc21a22fb526dadfb8b13d4aa735ca2` / `32eabf6b2d1b8fa2521c30385ac71e2a8b3bfb8e4ab7c3dcbf84f42e653da5bb` |
+| Acceptance / commands / SHA256SUMS SHA-256 | `92702d0e3652a1e8d673f73b9bd78f4fcab46c8ce6048e119b61ddf6f0349894` / `6f0e28cc118ac3a34f333fbb24c1fcf620093e6a63525f83e5286d915a85882a` / `2cae07a72a0a52bfd69e94f59450e5a5e1383772a21d7deef807c7feb13a3f2a` |
+
+The 44-file raw bundle under `/tmp/umminfer-task45-e400cae-evidence` retains raw
+trajectories/exports, CAS fixtures, preference packs, preflight/planner output,
+fresh-process verifier output, all positive/negative stdout and stderr, exact
+commands, source/runtime/file hashes, and `SHA256SUMS`; all entries passed an
+independent checksum run. The compact committed result is
+[docs/evidence/exported-token-dpo-real-tokenizer-e400cae.json](evidence/exported-token-dpo-real-tokenizer-e400cae.json).
+The first measurement attempt exposed only a harness assumption that scheduled
+pair order equals raw pack order. Commit
+`e400caed4250bb8b67e55157745cc3528450ac80` corrected that assertion to compare
+unique pair sets; no adapter or real-tokenizer incompatibility was found, and the
+final frozen source passed end to end.
+
 ## Remaining real-gate requirements and boundaries
 
 A future export-driven real DPO optimizer gate must separately prove the same
@@ -161,7 +213,9 @@ This task supplies none of those real optimizer results.
 The historical legacy-only SM90 DPO result in
 [joint-training.md](joint-training.md#measured-sm90-dpo-acceptance--2026-11-26)
 remains historical evidence for its recorded source, not a result of this task.
-Real export-driven DPO optimization, real local-tokenizer CLI execution, model
-quality, generalized improvement, production training, sampled online behavior
-ids, online rollout parity, model inference, serving, and vision/media forward
-execution remain `NOT_RUN`, `NOT_CLAIMED`, or `NOT_COVERED` as applicable.
+Real export-driven DPO optimization, model quality, generalized improvement,
+production training, sampled online behavior ids, online rollout parity, model
+inference, serving, and vision/media forward execution remain `NOT_RUN`,
+`NOT_CLAIMED`, or `NOT_COVERED` as applicable. The real local-tokenizer CLI
+preflight and independent verifier are **PASS**; this does not change the real
+DPO optimizer boundary.

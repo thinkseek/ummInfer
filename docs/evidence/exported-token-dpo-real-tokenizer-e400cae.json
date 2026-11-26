@@ -1,0 +1,122 @@
+{
+  "schema": "umminfer-joint-dpo-real-tokenizer-cpu-evidence-v1",
+  "status": "PASS",
+  "source_commit": "e400caed4250bb8b67e55157745cc3528450ac80",
+  "scope": "CPU-only token export, DPO preflight, independent fresh-process verification, and fail-closed negative inputs",
+  "tokenizer": {
+    "id": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "UNKNOWN",
+    "upstream_revision_verification": "NOT_RUN",
+    "token_id_space_size": 151665,
+    "unknown_token_id": null,
+    "python": "3.12.3",
+    "tokenization_version": "transformers-5.23.0_tokenizers-0.23.3",
+    "python_executable_sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+    "complete_regular_file_count": 31,
+    "complete_regular_file_list_sha256": "23ebb8d9f27833dadcc9047936b3f73a4453de77a3078fff40e74c07f2d68e83",
+    "model_config_sha256": "18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45",
+    "model_safetensors_sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe",
+    "available_weights_sha256": "0d79ed576a7c2e115025787de0f0536c260affeaeb73f6c8022141290609eec7"
+  },
+  "data": {
+    "format_version": 2,
+    "pair_count": 2,
+    "pair_ids": [
+      "d67b1db95b424b828ba909bbfc7a9a26",
+      "ffdf7bdc94d1c61f7f0c681b5140a75b"
+    ],
+    "pair_rewards": [
+      {
+        "pair_id": "d67b1db95b424b828ba909bbfc7a9a26",
+        "chosen": 1.0,
+        "rejected": 0.6666666666666666
+      },
+      {
+        "pair_id": "ffdf7bdc94d1c61f7f0c681b5140a75b",
+        "chosen": 1.0,
+        "rejected": 0.6666666666666666
+      }
+    ],
+    "exported_trajectory_sha256": "3678f744c6cec776e501b70b3895be1c80ec8528141d99c3e4f4782d37a03324",
+    "dpo_train_sha256": "ff13bf833b98b82f31e032453998a7d39cbf0ae137fa4d701e9abe50adc5bd21",
+    "legacy_dpo_train_sha256": "2e7e15b5143bdba21cb597371849c35b911c07ba03b647ad8b184491617e4ead",
+    "legacy_rows_byte_identical": true,
+    "dataset_manifest_sha256": "e97295de2e8316aaa05bf31fe80ce6042b52622988447ec48e8709895026bff9"
+  },
+  "config": {
+    "config_file_sha256": "ca1cfe51e2d25bd5a59546362fc719bf2ff19ed54c79d0d81880eea1c64c3b04",
+    "resolved_config_sha256": "497a31c6e056ef5ff45f8573a03c671cec5d509be0ea6f39929314d74a2dd72d"
+  },
+  "source_files": {
+    "configs/training/joint_dpo_live_gate.json": "ca1cfe51e2d25bd5a59546362fc719bf2ff19ed54c79d0d81880eea1c64c3b04",
+    "python/umminfer_joint_dpo_live.py": "e432c02364681638346a7757bfca0bf4fcc21a22fb526dadfb8b13d4aa735ca2",
+    "python/umminfer_joint_sft_live.py": "8598dbe01402efa1f0dfcba1e65ae9a6471cab39874e3d026d2d5161b2cc921b",
+    "python/umminfer_joint_trainer.py": "2c0405d4a3a692aae31a4cc94d50e90e169f471038bac17dae94edeacf6725fd",
+    "python/umminfer_rl_trajectory.py": "d895acc57cc6a7a2ea5ab1cec7272e084667a493ad288bf8fd3541c75ac40305",
+    "python/umminfer_sft_dataset.py": "ca689792d35d1c7145b54cbd96216d669938b127a65395378a5f816af22898bb",
+    "python/umminfer_token_export.py": "e5cb8ddb1a039d8ce79b79ef65162294c32353dd4a7fd648397be056ae6d826d",
+    "tests/joint_dpo_live_test.py": "32eabf6b2d1b8fa2521c30385ac71e2a8b3bfb8e4ab7c3dcbf84f42e653da5bb"
+  },
+  "preflight": {
+    "status": "PASS",
+    "preflight_sha256": "fc6c1d00eb171c0452e28557d979d69229b71cf44f01dea434c9548e9f86b534",
+    "run_identity_sha256": "30e09a248fdca7d2111a1358a1ea0752c8009892aa234195c8107f8b4eb3352d",
+    "schedule_sha256": "e318fe836e16ab72965c4552e6403445464fb417010cfd3e719abf1ea1a9edf3",
+    "pair_order_sha256": "9f583c1e8e358944069a69cab59b24d980ca0dc99a0545912c9af268b02b639c",
+    "scheduled_pair_ids": [
+      "ffdf7bdc94d1c61f7f0c681b5140a75b",
+      "d67b1db95b424b828ba909bbfc7a9a26"
+    ],
+    "exact_ids_offsets_labels_weights_annotations": "PASS",
+    "shared_prompt_prefixes": true,
+    "independent_policy_reference_inputs": true,
+    "legacy_equality_reference_only": true,
+    "torch_imported": false
+  },
+  "independent_verification": {
+    "status": "PASS",
+    "fresh_process_reconstruction": "BYTE_IDENTICAL",
+    "bundle_sha256": "fc6c1d00eb171c0452e28557d979d69229b71cf44f01dea434c9548e9f86b534",
+    "run_identity_sha256": "30e09a248fdca7d2111a1358a1ea0752c8009892aa234195c8107f8b4eb3352d",
+    "output_sha256": "976bc40cc6614a734939563232b1b909b64a0a5f90f35aeca63ce0289c7d72a3",
+    "torch_imported": false
+  },
+  "invalid_input": {
+    "partial-export": {
+      "returncode": 2,
+      "planner_checkpoint_optimizer_or_ml_output": false
+    },
+    "stale-source": {
+      "returncode": 2,
+      "planner_checkpoint_optimizer_or_ml_output": false
+    },
+    "malformed-token": {
+      "returncode": 2,
+      "planner_checkpoint_optimizer_or_ml_output": false
+    },
+    "crossed-pair": {
+      "returncode": 2,
+      "planner_checkpoint_optimizer_or_ml_output": false
+    },
+    "tokenizer-mismatch": {
+      "returncode": 2,
+      "planner_checkpoint_optimizer_or_ml_output": false
+    }
+  },
+  "raw_evidence": {
+    "retention": "local evidence bundle; model weights are not duplicated",
+    "directory": "/tmp/umminfer-task45-e400cae-evidence",
+    "file_count": 44,
+    "acceptance_sha256": "92702d0e3652a1e8d673f73b9bd78f4fcab46c8ce6048e119b61ddf6f0349894",
+    "commands_sha256": "6f0e28cc118ac3a34f333fbb24c1fcf620093e6a63525f83e5286d915a85882a",
+    "sha256sums_sha256": "2cae07a72a0a52bfd69e94f59450e5a5e1383772a21d7deef807c7feb13a3f2a",
+    "sha256sum_check": "PASS"
+  },
+  "real_dpo_optimizer": "NOT_RUN",
+  "model_inference": "NOT_RUN",
+  "model_quality": "NOT_RUN",
+  "generalized_improvement": "NOT_RUN",
+  "sampled_online_behavior_ids": "NOT_CLAIMED",
+  "serving": "NOT_RUN",
+  "gpu": "NOT_RUN"
+}
