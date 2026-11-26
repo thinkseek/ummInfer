@@ -687,14 +687,26 @@ and `audio_output.playback_ack=true`, and refuses to start capture until the
 server echoes that negotiation. When `--no-echo-suppression` is passed, the
 initial `session.update` emits `"echo_suppression": false` inside
 `turn_detection`, and the client fails cleanly if the server does not confirm
-`echo_suppression=false` in `transcription_session.updated`. Programmatic
-callers can also call `VoiceClient::set_echo_suppression(bool)` while connected
-or mid-response to send the narrow `turn_detection`-only `session.update` with
-the server-negotiated `silence_ms` without resetting active response state. On
+`echo_suppression=false` in `transcription_session.updated`. Interactive CLI
+sessions also accept `echo on` / `echo off` (or `/echo on` / `/echo off`,
+case-insensitive) on stdin, and programmatic callers can call
+`VoiceClient::set_echo_suppression(bool)` while connected or mid-response to
+send the narrow `turn_detection`-only `session.update` with the
+server-negotiated `silence_ms` without resetting active response state. On
 session ready, the CLI prints the server-confirmed echo suppression state
 (`on`/`off`), counts real observed `response.cancelled` barge-in events during
-the session (resetting on reconnect), and prints `barge_ins=<N>` in the stop
-summary when at least one barge-in occurred. Microphone frames are exact little-endian
+the session (resetting on reconnect), prints per-turn barge-in cut-points on
+`stderr` (`[voice] Interrupted · <N> B spoken` when server-acknowledged
+`text_cursor` bytes `> 0`, or `[voice] Interrupted before audio` when `0`,
+driven strictly by `response.playback_ack` and `response.cancelled` with no
+badge emitted on `response.completed` or `response.failed`), and prints
+`barge_ins=<N>` in the stop summary when at least one barge-in occurred.
+`compute_pcm16_rms_level()` computes the real normalized `[0.0, 1.0]` RMS level
+directly from captured little-endian PCM16 frames, surfaced via
+`VoiceHandlers::on_mic_level` and `VoiceClient::last_mic_rms_level()` (and
+`VoiceHandlers::on_response_cancelled` / `VoiceClient::last_barge_in_cut_point()`
+for per-turn cut-points), resetting to `0.0` / `std::nullopt` on reconnect and
+cleanup. Microphone frames are exact little-endian
 16 kHz mono PCM16 (20 ms per ALSA read), sent as `input_audio_buffer.append`;
 WAV headers are not added and audio is not retained for a Final HTTP request.
 Spoken replies use an isolated output queue. An
@@ -709,8 +721,9 @@ local response, before the server's `response.cancelled` arrives. Both that
 event and repeated cancellation drop old queued audio, text, final cursors and
 late device callbacks. A new response cannot overlap a cancelled one.
 
-Type `stop`, `stop voice`, `/stop`, `/stop-voice`, `quit`, or `exit` and press
-Enter to **Stop Voice**. Stdin EOF, SIGINT and SIGTERM take the same bounded
+Type `echo on` / `echo off` (or `/echo on` / `/echo off`) to toggle server-side
+echo suppression live, or `stop`, `stop voice`, `/stop`, `/stop-voice`, `quit`,
+or `exit` and press Enter to **Stop Voice**. Stdin EOF, SIGINT and SIGTERM take the same bounded
 cleanup path: stop capture, interrupt playback, close the socket and join the
 client threads. Other stdin text is not sent as a chat turn. A transport break
 closes all old audio resources, waits for the configured delay, and opens a
@@ -743,9 +756,10 @@ zig build voice-test -Ddeps-prefix=/path/to/deps -Dcurl-prefix=/path/to/curl-ws
 The suite covers cursor monotonicity, delayed/final ACKs, partial consumption,
 cancellation races, repeated cancellation, stale callbacks, reconnect,
 `echo_suppression` wire omission/negotiation/mid-response toggling, observed
-`barge_in_count` telemetry, and microphone/playback cleanup on Stop Voice,
-external cancellation and errors. These are not physical-device or live-model
-results.
+`barge_in_count` telemetry, per-turn barge-in cut-point tracking/formatting,
+real captured PCM16 RMS level reporting, and microphone/playback cleanup on Stop
+Voice, external cancellation and errors. These are not physical-device or
+live-model results.
 
 ### Manual physical / live checklist
 

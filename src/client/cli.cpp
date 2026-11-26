@@ -137,7 +137,8 @@ void usage(const std::string& command, std::ostream& out) {
            "[--reconnect-attempts N] [--reconnect-delay-ms N]\n"
            "       [--input-device ALSA_NAME] [--output-device ALSA_NAME]\n"
            "       --no-echo-suppression disables server-side echo suppression (default: on).\n"
-           "       Type 'stop' and press Enter, or send EOF, to Stop Voice.\n";
+           "       Type 'echo on'/'echo off' (or '/echo on'/'/echo off') to toggle echo "
+           "suppression live, or 'stop' (or EOF) to Stop Voice.\n";
   } else if (command == "image") {
     out << "usage: umm-infer image generate --url URL --model M --prompt TEXT --out PATH\n"
            "           [--n N] [--size WxH] [--field NAME=VALUE ...] [--timeout-ms N]\n"
@@ -911,15 +912,40 @@ int realtime(int argc, char** argv, std::atomic<bool>* cancel) {
   return 0;
 }
 
-bool voice_stop_command(std::string text) {
+std::string normalize_voice_command(std::string text) {
   const auto first = text.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) return false;
+  if (first == std::string::npos) return {};
   const auto last = text.find_last_not_of(" \t\r\n");
   text = text.substr(first, last - first + 1);
-  std::transform(text.begin(), text.end(), text.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return text == "stop" || text == "stop voice" || text == "/stop" ||
-         text == "/stop-voice" || text == "quit" || text == "exit" || text == "/quit";
+  std::string normalized;
+  normalized.reserve(text.size());
+  bool in_space = false;
+  for (unsigned char c : text) {
+    if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+      if (!in_space) {
+        normalized.push_back(' ');
+        in_space = true;
+      }
+    } else {
+      normalized.push_back(static_cast<char>(std::tolower(c)));
+      in_space = false;
+    }
+  }
+  return normalized;
+}
+
+bool voice_stop_command(const std::string& text) {
+  const std::string normalized = normalize_voice_command(text);
+  return normalized == "stop" || normalized == "stop voice" || normalized == "/stop" ||
+         normalized == "/stop-voice" || normalized == "quit" || normalized == "exit" ||
+         normalized == "/quit";
+}
+
+std::optional<bool> voice_echo_command(const std::string& text) {
+  const std::string normalized = normalize_voice_command(text);
+  if (normalized == "echo on" || normalized == "/echo on") return true;
+  if (normalized == "echo off" || normalized == "/echo off") return false;
+  return std::nullopt;
 }
 
 int voice(int argc, char** argv, std::atomic<bool>* cancel) {
@@ -951,6 +977,7 @@ int voice(int argc, char** argv, std::atomic<bool>* cancel) {
   if (config.model.empty()) throw UsageError("--model is required");
 
   std::mutex output_mu;
+  bool response_has_output = false;
   detail::VoiceHandlers handlers;
   handlers.on_status = [&](const std::string& text) {
     std::lock_guard lock(output_mu);
@@ -966,15 +993,29 @@ int voice(int argc, char** argv, std::atomic<bool>* cancel) {
   };
   handlers.on_transcript = [&](const std::string& text) {
     std::lock_guard lock(output_mu);
+    if (response_has_output) {
+      std::cout << '\n';
+      response_has_output = false;
+    }
     std::cout << "you: " << text << '\n' << std::flush;
   };
   handlers.on_response_text = [&](const std::string& text) {
     std::lock_guard lock(output_mu);
+    if (!text.empty()) response_has_output = true;
     std::cout << text << std::flush;
   };
   handlers.on_response_completed = [&](const std::string&) {
     std::lock_guard lock(output_mu);
+    response_has_output = false;
     std::cout << '\n' << std::flush;
+  };
+  handlers.on_response_cancelled = [&](const detail::VoiceBargeInCutPoint& cut_point) {
+    std::lock_guard lock(output_mu);
+    if (response_has_output) {
+      std::cout << '\n' << std::flush;
+      response_has_output = false;
+    }
+    std::cerr << "[voice] " << cut_point.label << '\n';
   };
 
   detail::VoiceClient client(config, std::move(handlers));
@@ -1002,7 +1043,8 @@ int voice(int argc, char** argv, std::atomic<bool>* cancel) {
       pending.append(buffer, static_cast<size_t>(count));
       if (pending.size() > 4096) {
         std::lock_guard lock(output_mu);
-        std::cerr << "[voice] control input is too long; enter 'stop' to end voice\n";
+        std::cerr << "[voice] control input is too long; enter 'echo on', 'echo off', or 'stop' "
+                     "to end voice\n";
         pending.clear();
         continue;
       }
@@ -1014,9 +1056,14 @@ int voice(int argc, char** argv, std::atomic<bool>* cancel) {
           client.request_stop();
           return;
         }
-        if (!line.empty()) {
+        if (const auto echo_enabled = voice_echo_command(line); echo_enabled.has_value()) {
+          client.set_echo_suppression(*echo_enabled);
+          continue;
+        }
+        if (!normalize_voice_command(line).empty()) {
           std::lock_guard lock(output_mu);
-          std::cerr << "[voice] enter 'stop' to Stop Voice; microphone input stays live\n";
+          std::cerr << "[voice] enter 'echo on', 'echo off', or 'stop' to Stop Voice; "
+                       "microphone input stays live\n";
         }
       }
     }

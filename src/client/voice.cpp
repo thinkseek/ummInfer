@@ -3,11 +3,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
 #include <exception>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -76,6 +78,29 @@ class CurlVoiceSocket final : public VoiceSocket {
 };
 
 }  // namespace
+
+double compute_pcm16_rms_level(std::string_view pcm16_le) noexcept {
+  const size_t sample_count = pcm16_le.size() / 2;
+  if (sample_count == 0) return 0.0;
+  double sum_squares = 0.0;
+  for (size_t i = 0; i < sample_count; ++i) {
+    const uint16_t lo = static_cast<unsigned char>(pcm16_le[i * 2]);
+    const uint16_t hi = static_cast<unsigned char>(pcm16_le[i * 2 + 1]);
+    const int16_t sample = static_cast<int16_t>(lo | (hi << 8));
+    const double normalized = static_cast<double>(sample) / 32768.0;
+    sum_squares += normalized * normalized;
+  }
+  const double rms = std::sqrt(sum_squares / static_cast<double>(sample_count));
+  if (!std::isfinite(rms) || rms <= 0.0) return 0.0;
+  return std::min(1.0, rms);
+}
+
+std::string format_barge_in_cut_point(uint64_t spoken_bytes) {
+  if (spoken_bytes > 0) {
+    return "Interrupted · " + std::to_string(spoken_bytes) + " B spoken";
+  }
+  return "Interrupted before audio";
+}
 
 struct VoicePlayback::Impl : std::enable_shared_from_this<VoicePlayback::Impl> {
   struct Item {
@@ -452,6 +477,7 @@ struct VoiceClient::Impl {
     int negotiated_silence_ms = 400;
     std::optional<bool> confirmed_echo_suppression;
     std::string active_response;
+    std::map<std::string, uint64_t> acked_text_cursors;
   };
 
   Impl(VoiceConfig input, VoiceHandlers hooks, VoiceSocketFactory sockets,
@@ -508,6 +534,9 @@ struct VoiceClient::Impl {
       return;
     }
     try {
+      const double rms = compute_pcm16_rms_level(pcm);
+      last_mic_rms.store(rms, std::memory_order_relaxed);
+      if (handlers.on_mic_level) handlers.on_mic_level(rms);
       static const size_t max_append_pcm = [] {
         constexpr size_t max_message = 1u << 20;
         const size_t envelope = nlohmann::json{
@@ -712,26 +741,57 @@ struct VoiceClient::Impl {
     } else if (type == "response.completed") {
       if (handlers.on_response_completed) handlers.on_response_completed(id);
     } else if (type == "response.cancelled") {
+      uint64_t event_cursor = 0;
+      if (event.contains("text_cursor")) {
+        event_cursor = cursor(event, "text_cursor");
+      }
       barge_ins.fetch_add(1, std::memory_order_relaxed);
       std::string target = id;
-      if (target.empty()) {
+      uint64_t acked_cursor = 0;
+      {
         std::lock_guard lock(connection->mu);
-        target = connection->active_response;
+        if (target.empty()) target = connection->active_response;
+        if (!target.empty()) {
+          const auto it = connection->acked_text_cursors.find(target);
+          if (it != connection->acked_text_cursors.end()) {
+            acked_cursor = it->second;
+            connection->acked_text_cursors.erase(it);
+          }
+        }
       }
       cancel_response(connection, target);
+      const uint64_t spoken_bytes = std::max(acked_cursor, event_cursor);
+      VoiceBargeInCutPoint cut_point{target, spoken_bytes,
+                                     format_barge_in_cut_point(spoken_bytes)};
+      {
+        std::lock_guard lock(telemetry_mu);
+        last_cut_point = cut_point;
+      }
+      if (handlers.on_response_cancelled) handlers.on_response_cancelled(cut_point);
       status("Interrupted; listening");
     } else if (type == "response.failed") {
       std::string target = id;
-      if (target.empty()) {
+      {
         std::lock_guard lock(connection->mu);
-        target = connection->active_response;
+        if (target.empty()) target = connection->active_response;
+        if (!target.empty()) connection->acked_text_cursors.erase(target);
       }
       cancel_response(connection, target);
       note_error("Realtime response failed: " + event_error(event));
       status("Listening");
     } else if (type == "response.playback_ack") {
-      (void)cursor(event, "text_cursor");
-      if (event.value("final", false)) {
+      const uint64_t ack_cursor = cursor(event, "text_cursor");
+      const bool final = event.value("final", false);
+      {
+        std::lock_guard lock(connection->mu);
+        if (final) {
+          if (!id.empty()) connection->acked_text_cursors.erase(id);
+        } else if (!id.empty()) {
+          auto& tracked = connection->acked_text_cursors[id];
+          tracked = std::max(tracked, ack_cursor);
+        }
+      }
+      if (final) {
         // Generation completion is not retirement: only the server's final ACK
         // echo makes all later frames for this response stale.
         cancel_response(connection, id);
@@ -748,6 +808,17 @@ struct VoiceClient::Impl {
     if (connection->microphone) connection->microphone->stop();
     if (connection->playback) connection->playback->close();
     if (connection->socket) connection->socket->close();
+    last_mic_rms.store(0.0, std::memory_order_relaxed);
+    try {
+      std::lock_guard lock(telemetry_mu);
+      last_cut_point.reset();
+    } catch (...) {
+    }
+    try {
+      std::lock_guard lock(connection->mu);
+      connection->acked_text_cursors.clear();
+    } catch (...) {
+    }
   }
 
   void run() {
@@ -757,6 +828,11 @@ struct VoiceClient::Impl {
       barge_ins.store(0, std::memory_order_relaxed);
       confirmed_echo_state.store(-1, std::memory_order_relaxed);
       negotiated_silence.store(config.silence_ms, std::memory_order_relaxed);
+      last_mic_rms.store(0.0, std::memory_order_relaxed);
+      {
+        std::lock_guard lock(telemetry_mu);
+        last_cut_point.reset();
+      }
       auto connection = std::make_shared<Connection>(this);
       {
         std::lock_guard lock(current_mu);
@@ -921,6 +997,19 @@ struct VoiceClient::Impl {
     return barge_ins.load(std::memory_order_relaxed);
   }
 
+  std::optional<VoiceBargeInCutPoint> last_barge_in_cut_point() const noexcept {
+    try {
+      std::lock_guard lock(telemetry_mu);
+      return last_cut_point;
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  double last_mic_rms_level() const noexcept {
+    return last_mic_rms.load(std::memory_order_relaxed);
+  }
+
   VoiceConfig config;
   VoiceHandlers handlers;
   VoiceSocketFactory socket_factory;
@@ -931,6 +1020,9 @@ struct VoiceClient::Impl {
   std::atomic<int> confirmed_echo_state{-1};
   std::atomic<int> negotiated_silence{400};
   std::atomic<uint64_t> barge_ins{0};
+  std::atomic<double> last_mic_rms{0.0};
+  mutable std::mutex telemetry_mu;
+  std::optional<VoiceBargeInCutPoint> last_cut_point;
   std::mutex current_mu;
   std::weak_ptr<Connection> current;
 };
@@ -966,6 +1058,12 @@ int VoiceClient::negotiated_silence_ms() const noexcept {
 }
 uint64_t VoiceClient::barge_in_count() const noexcept {
   return impl_ ? impl_->barge_in_count() : 0;
+}
+std::optional<VoiceBargeInCutPoint> VoiceClient::last_barge_in_cut_point() const noexcept {
+  return impl_ ? impl_->last_barge_in_cut_point() : std::nullopt;
+}
+double VoiceClient::last_mic_rms_level() const noexcept {
+  return impl_ ? impl_->last_mic_rms_level() : 0.0;
 }
 
 std::string VoiceClient::websocket_url(const std::string& base_url, const std::string& model) {

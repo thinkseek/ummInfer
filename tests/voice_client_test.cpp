@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -448,6 +449,8 @@ struct ClientFixture {
   std::vector<std::string> response_text;
   std::vector<std::string> statuses;
   std::vector<bool> echo_updates;
+  std::vector<VoiceBargeInCutPoint> cancelled_cut_points;
+  std::vector<double> mic_levels;
   std::unique_ptr<VoiceClient> client;
   std::thread thread;
   std::exception_ptr failure;
@@ -471,6 +474,14 @@ struct ClientFixture {
     handlers.on_echo_suppression = [this](bool enabled) {
       std::lock_guard lock(output_mu);
       echo_updates.push_back(enabled);
+    };
+    handlers.on_response_cancelled = [this](const VoiceBargeInCutPoint& cut_point) {
+      std::lock_guard lock(output_mu);
+      cancelled_cut_points.push_back(cut_point);
+    };
+    handlers.on_mic_level = [this](double level) {
+      std::lock_guard lock(output_mu);
+      mic_levels.push_back(level);
     };
     client = std::make_unique<VoiceClient>(
         config, std::move(handlers),
@@ -1081,6 +1092,315 @@ void test_observed_barge_in_count_telemetry() {
   }
 }
 
+std::string make_pcm16_le(const std::vector<int16_t>& samples) {
+  std::string out;
+  out.reserve(samples.size() * 2);
+  for (int16_t sample : samples) {
+    const uint16_t u = static_cast<uint16_t>(sample);
+    out.push_back(static_cast<char>(u & 0xffu));
+    out.push_back(static_cast<char>((u >> 8) & 0xffu));
+  }
+  return out;
+}
+
+void test_compute_pcm16_rms_level_and_cut_point_format() {
+  check(compute_pcm16_rms_level("") == 0.0, "empty PCM16 must return 0.0");
+  check(compute_pcm16_rms_level(std::string(1, '\x7f')) == 0.0,
+        "1-byte PCM16 must return 0.0");
+  check(compute_pcm16_rms_level(make_pcm16_le({0, 0, 0, 0})) == 0.0,
+        "all-zero PCM16 must return 0.0");
+
+  const double half = compute_pcm16_rms_level(make_pcm16_le({16384, 16384, 16384, 16384}));
+  check(std::abs(half - 0.5) < 1e-9, "half-scale PCM16 RMS must be 0.5");
+
+  const double full_neg = compute_pcm16_rms_level(make_pcm16_le({-32768, -32768}));
+  check(std::abs(full_neg - 1.0) < 1e-9, "full-scale negative PCM16 RMS must be 1.0");
+
+  const double full_pos = compute_pcm16_rms_level(make_pcm16_le({32767, 32767}));
+  check(std::abs(full_pos - (32767.0 / 32768.0)) < 1e-9 && full_pos <= 1.0,
+        "full-scale positive PCM16 RMS must match 32767/32768");
+
+  const double mixed = compute_pcm16_rms_level(make_pcm16_le({16384, -16384, 0, 0}));
+  check(std::abs(mixed - std::sqrt(0.125)) < 1e-9, "mixed PCM16 RMS calculation was inaccurate");
+
+  std::string with_trailing_odd = make_pcm16_le({16384});
+  with_trailing_odd.push_back('\xff');
+  check(std::abs(compute_pcm16_rms_level(with_trailing_odd) - 0.5) < 1e-9,
+        "trailing odd byte must be safely ignored");
+
+  check(format_barge_in_cut_point(0) == "Interrupted before audio",
+        "0 spoken bytes must format as 'Interrupted before audio'");
+  check(format_barge_in_cut_point(1) == "Interrupted · 1 B spoken",
+        "1 spoken byte formatted incorrectly");
+  check(format_barge_in_cut_point(42) == "Interrupted · 42 B spoken",
+        "42 spoken bytes formatted incorrectly");
+  check(format_barge_in_cut_point(2048) == "Interrupted · 2048 B spoken",
+        "2048 spoken bytes formatted incorrectly");
+}
+
+void test_barge_in_cut_point_from_playback_ack_and_cancelled_cursor() {
+  ClientFixture f;
+  f.start();
+  f.ready();
+  check(!f.client->last_barge_in_cut_point().has_value(),
+        "idle session must not have a barge-in cut-point");
+
+  // 1. Cut-point derived monotonically from response.playback_ack across speech_started.
+  f.socket(0)->emit({{"type", "response.text.delta"}, {"response_id", "r1"}, {"text", "Hello world"}});
+  f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "r1"},
+                     {"text_cursor", 12}, {"final", false}});
+  f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "r1"},
+                     {"text_cursor", 24}, {"final", false}});
+  // Out-of-order lower cursor must not regress tracked spoken bytes.
+  f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "r1"},
+                     {"text_cursor", 10}, {"final", false}});
+  f.socket(0)->emit({{"type", "input_audio_buffer.speech_started"},
+                     {"interrupted_response_id", "r1"}});
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return !f.statuses.empty() && f.statuses.back() == "Interrupted; listening";
+  }, "speech_started status");
+  check(!f.client->last_barge_in_cut_point().has_value(),
+        "speech_started alone must not populate last_barge_in_cut_point");
+  f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r1"}});
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.cancelled_cut_points.size() == 1;
+  }, "first response.cancelled cut-point");
+  {
+    const auto cp = f.client->last_barge_in_cut_point();
+    check(cp.has_value() && cp->response_id == "r1" && cp->spoken_bytes == 24 &&
+              cp->label == "Interrupted · 24 B spoken",
+          "playback_ack cut-point did not preserve monotonic 24 B spoken");
+    std::lock_guard lock(f.output_mu);
+    check(f.cancelled_cut_points[0].response_id == "r1" &&
+              f.cancelled_cut_points[0].spoken_bytes == 24 &&
+              f.cancelled_cut_points[0].label == "Interrupted · 24 B spoken",
+          "on_response_cancelled callback did not receive exact cut-point");
+  }
+
+  // 2. response.cancelled.text_cursor overrides higher cursor, and max keeps higher ACK.
+  f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "r2"},
+                     {"text_cursor", 16}, {"final", false}});
+  f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r2"},
+                     {"text_cursor", 30}});
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.cancelled_cut_points.size() == 2;
+  }, "second response.cancelled cut-point override");
+  {
+    const auto cp = f.client->last_barge_in_cut_point();
+    check(cp.has_value() && cp->response_id == "r2" && cp->spoken_bytes == 30 &&
+              cp->label == "Interrupted · 30 B spoken",
+          "response.cancelled.text_cursor did not override lower playback_ack");
+  }
+
+  f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "r3"},
+                     {"text_cursor", 40}, {"final", false}});
+  f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r3"},
+                     {"text_cursor", 12}});
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.cancelled_cut_points.size() == 3;
+  }, "third response.cancelled max cursor");
+  {
+    const auto cp = f.client->last_barge_in_cut_point();
+    check(cp.has_value() && cp->response_id == "r3" && cp->spoken_bytes == 40 &&
+              cp->label == "Interrupted · 40 B spoken",
+          "response.cancelled did not keep max of playback_ack and event text_cursor");
+  }
+
+  // 3. Zero-audio cancellation emits "Interrupted before audio".
+  f.socket(0)->emit({{"type", "response.text.delta"}, {"response_id", "r4"}, {"text", "Early"}});
+  f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r4"}});
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.cancelled_cut_points.size() == 4;
+  }, "zero-audio response.cancelled cut-point");
+  {
+    const auto cp = f.client->last_barge_in_cut_point();
+    check(cp.has_value() && cp->response_id == "r4" && cp->spoken_bytes == 0 &&
+              cp->label == "Interrupted before audio",
+          "zero-audio cancellation did not format as 'Interrupted before audio'");
+  }
+
+  f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r5"},
+                     {"text_cursor", 0}});
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.cancelled_cut_points.size() == 5;
+  }, "explicit-zero response.cancelled cut-point");
+  {
+    const auto cp = f.client->last_barge_in_cut_point();
+    check(cp.has_value() && cp->response_id == "r5" && cp->spoken_bytes == 0 &&
+              cp->label == "Interrupted before audio",
+          "explicit text_cursor=0 did not format as 'Interrupted before audio'");
+  }
+
+  f.stop();
+  check(f.failure == nullptr, "cut-point session failed on stop");
+  check(!f.client->last_barge_in_cut_point().has_value(),
+        "cleanup on stop did not reset last_barge_in_cut_point");
+}
+
+void test_barge_in_cut_point_non_emission_and_invalid_cursor_rejection() {
+  // response.completed, final response.playback_ack, and response.failed must never emit cut-points.
+  {
+    ClientFixture f;
+    f.start();
+    f.ready();
+    f.socket(0)->emit({{"type", "response.text.delta"}, {"response_id", "ok"}, {"text", "Done"}});
+    f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "ok"},
+                       {"text_cursor", 4}, {"final", false}});
+    f.socket(0)->emit({{"type", "response.completed"}, {"response_id", "ok"}});
+    f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "ok"},
+                       {"text_cursor", 4}, {"final", true}});
+    f.socket(0)->emit({{"type", "response.text.delta"}, {"response_id", "bad"}, {"text", "Oops"}});
+    f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "bad"},
+                       {"text_cursor", 4}, {"final", false}});
+    f.socket(0)->emit({{"type", "response.failed"}, {"response_id", "bad"},
+                       {"error", {{"message", "synthetic failure"}}}});
+    wait_until([&] {
+      std::lock_guard lock(f.output_mu);
+      return !f.statuses.empty() && f.statuses.back() == "Listening" &&
+             f.response_text.size() == 2;
+    }, "completed and failed turns settled");
+    check(!f.client->last_barge_in_cut_point().has_value(),
+          "response.completed or response.failed populated last_barge_in_cut_point");
+    check(f.client->barge_in_count() == 0,
+          "response.completed or response.failed incremented barge_in_count");
+    {
+      std::lock_guard lock(f.output_mu);
+      check(f.cancelled_cut_points.empty(),
+            "response.completed or response.failed invoked on_response_cancelled");
+    }
+    // Verify response.failed erased tracked cursor so a hypothetical later cancelled starts at 0.
+    f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "bad"}});
+    wait_until([&] {
+      std::lock_guard lock(f.output_mu);
+      return f.cancelled_cut_points.size() == 1;
+    }, "cancelled after failed");
+    check(f.client->last_barge_in_cut_point()->spoken_bytes == 0,
+          "response.failed did not clear tracked playback_ack cursor");
+    f.stop();
+    check(f.failure == nullptr, "non-emission test failed on stop");
+  }
+
+  // Invalid response.cancelled.text_cursor values must fail cleanly with ErrorCode::kBadResponse.
+  const std::vector<json> invalid_cursors = {-1, "12", true, 1.5, nullptr};
+  for (const auto& bad_cursor : invalid_cursors) {
+    ClientFixture f;
+    f.start();
+    f.ready();
+    f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r_bad"},
+                       {"text_cursor", bad_cursor}});
+    f.join();
+    check(f.failure != nullptr, "invalid response.cancelled.text_cursor did not fail");
+    bool saw_bad_response = false;
+    try {
+      std::rethrow_exception(f.failure);
+    } catch (const Error& error) {
+      saw_bad_response = (error.code() == ErrorCode::kBadResponse);
+    }
+    check(saw_bad_response,
+          "invalid response.cancelled.text_cursor did not fail with ErrorCode::kBadResponse: " +
+              bad_cursor.dump());
+    check(f.client->barge_in_count() == 0 && !f.client->last_barge_in_cut_point().has_value(),
+          "invalid response.cancelled.text_cursor mutated barge-in telemetry");
+    {
+      std::lock_guard lock(f.output_mu);
+      check(f.cancelled_cut_points.empty(),
+            "invalid response.cancelled.text_cursor invoked on_response_cancelled");
+    }
+    check(f.microphone(0)->stop_count() == 1 && f.output(0)->close_count() == 1,
+          "invalid response.cancelled.text_cursor did not clean audio resources");
+  }
+}
+
+void test_mic_rms_level_callback_and_reconnect_reset() {
+  ClientFixture f(1);
+  f.start();
+  f.ready();
+  check(f.client->last_mic_rms_level() == 0.0,
+        "initial last_mic_rms_level must be 0.0 before capture");
+
+  f.microphone(0)->emit(make_pcm16_le({0, 0, 0, 0}));
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.mic_levels.size() == 1;
+  }, "silence mic RMS callback");
+  check(f.client->last_mic_rms_level() == 0.0, "silence frame must report 0.0 RMS");
+
+  f.microphone(0)->emit(make_pcm16_le({16384, 16384, 16384, 16384}));
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.mic_levels.size() == 2;
+  }, "half-scale mic RMS callback");
+  check(std::abs(f.client->last_mic_rms_level() - 0.5) < 1e-9,
+        "half-scale captured frame did not update last_mic_rms_level to 0.5");
+
+  f.microphone(0)->emit(make_pcm16_le({-32768, -32768}));
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.mic_levels.size() == 3;
+  }, "full-scale mic RMS callback");
+  check(std::abs(f.client->last_mic_rms_level() - 1.0) < 1e-9,
+        "full-scale captured frame did not update last_mic_rms_level to 1.0");
+  {
+    std::lock_guard lock(f.output_mu);
+    check(f.mic_levels[0] == 0.0 && std::abs(f.mic_levels[1] - 0.5) < 1e-9 &&
+              std::abs(f.mic_levels[2] - 1.0) < 1e-9,
+          "on_mic_level callback sequence did not match real captured PCM16 RMS");
+  }
+
+  // Populate both last_barge_in_cut_point and an in-flight playback_ack before disconnect.
+  f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "r1"},
+                     {"text_cursor", 15}, {"final", false}});
+  f.socket(0)->emit({{"type", "response.cancelled"}, {"response_id", "r1"}});
+  f.socket(0)->emit({{"type", "response.playback_ack"}, {"response_id", "r_stale"},
+                     {"text_cursor", 99}, {"final", false}});
+  wait_until([&] {
+    const auto cp = f.client->last_barge_in_cut_point();
+    return cp.has_value() && cp->spoken_bytes == 15;
+  }, "pre-reconnect cut-point");
+
+  // Reconnect must reset last_mic_rms_level, last_barge_in_cut_point, and acked_text_cursors.
+  f.socket(0)->disconnect();
+  wait_until([&] { return f.socket_count() == 2 && f.microphone_count() == 2; },
+             "reconnect after mic RMS and cut-point");
+  f.ready(1);
+  check(f.client->last_mic_rms_level() == 0.0,
+        "reconnect did not reset last_mic_rms_level to 0.0");
+  check(!f.client->last_barge_in_cut_point().has_value(),
+        "reconnect did not reset last_barge_in_cut_point");
+
+  // r_stale from connection 0 must not leak its 99-byte cursor into connection 1.
+  f.socket(1)->emit({{"type", "response.cancelled"}, {"response_id", "r_stale"}});
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.cancelled_cut_points.size() == 2;
+  }, "post-reconnect cancelled for stale id");
+  check(f.client->last_barge_in_cut_point().has_value() &&
+            f.client->last_barge_in_cut_point()->spoken_bytes == 0 &&
+            f.client->last_barge_in_cut_point()->label == "Interrupted before audio",
+        "reconnect leaked prior connection's acked_text_cursors");
+
+  f.microphone(1)->emit(make_pcm16_le({16384, 16384}));
+  wait_until([&] {
+    std::lock_guard lock(f.output_mu);
+    return f.mic_levels.size() == 4;
+  }, "post-reconnect mic RMS callback");
+  check(std::abs(f.client->last_mic_rms_level() - 0.5) < 1e-9,
+        "post-reconnect captured frame did not update last_mic_rms_level");
+
+  f.stop();
+  check(f.failure == nullptr, "mic RMS reconnect test failed on stop");
+  check(f.client->last_mic_rms_level() == 0.0,
+        "cleanup on stop did not reset last_mic_rms_level to 0.0");
+  check(!f.client->last_barge_in_cut_point().has_value(),
+        "cleanup on stop did not reset last_barge_in_cut_point");
+}
+
 using Test = std::pair<const char*, std::function<void()>>;
 
 }  // namespace
@@ -1103,6 +1423,10 @@ int main() {
       {"echo_suppression_false_negotiation_and_rejection", test_echo_suppression_false_negotiation_and_rejection},
       {"mid_response_echo_suppression_toggle_preserves_active_response", test_mid_response_echo_suppression_toggle_preserves_active_response},
       {"observed_barge_in_count_telemetry", test_observed_barge_in_count_telemetry},
+      {"compute_pcm16_rms_level_and_cut_point_format", test_compute_pcm16_rms_level_and_cut_point_format},
+      {"barge_in_cut_point_from_playback_ack_and_cancelled_cursor", test_barge_in_cut_point_from_playback_ack_and_cancelled_cursor},
+      {"barge_in_cut_point_non_emission_and_invalid_cursor_rejection", test_barge_in_cut_point_non_emission_and_invalid_cursor_rejection},
+      {"mic_rms_level_callback_and_reconnect_reset", test_mic_rms_level_callback_and_reconnect_reset},
   };
   size_t passed = 0;
   for (const auto& [name, test] : tests) {

@@ -97,6 +97,15 @@ struct VoiceConfig {
   CancelFlag cancel = nullptr;
 };
 
+struct VoiceBargeInCutPoint {
+  std::string response_id;
+  uint64_t spoken_bytes = 0;
+  std::string label;
+};
+
+double compute_pcm16_rms_level(std::string_view pcm16_le) noexcept;
+std::string format_barge_in_cut_point(uint64_t spoken_bytes);
+
 struct VoiceHandlers {
   std::function<void(const std::string&)> on_partial;
   std::function<void(const std::string&)> on_transcript;
@@ -105,6 +114,8 @@ struct VoiceHandlers {
   std::function<void(const std::string&)> on_status;
   std::function<void(const std::string&)> on_error;
   std::function<void(bool)> on_echo_suppression;
+  std::function<void(const VoiceBargeInCutPoint&)> on_response_cancelled;
+  std::function<void(double)> on_mic_level;
 };
 
 using VoiceSocketFactory = std::function<std::unique_ptr<VoiceSocket>(
@@ -133,6 +144,8 @@ class VoiceClient {
   std::optional<bool> confirmed_echo_suppression() const noexcept;
   int negotiated_silence_ms() const noexcept;
   uint64_t barge_in_count() const noexcept;
+  std::optional<VoiceBargeInCutPoint> last_barge_in_cut_point() const noexcept;
+  double last_mic_rms_level() const noexcept;
   static std::string websocket_url(const std::string& base_url, const std::string& model);
 
  private:
