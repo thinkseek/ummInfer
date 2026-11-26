@@ -568,6 +568,22 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 50 Isolated SM90 2-GPU 6-Session Live Full-Duplex Realtime WebSocket Gate & Independent Wire Verifier (`dd753b3`):
+  - Harvested accepted Task #41 (`revisions=0`, isolated SM90 GPU 0 ASR + GPU 1
+    Qwen3.8 & TTS live public `WS /v1/realtime` gate): landed
+    `python/umminfer_realtime_network.py`, `tests/realtime_network_live.py`,
+    `tests/realtime_network_test.py` (11/11 PASS), `tests/realtime_network_verify.py`,
+    `build.zig` verifier test registration, and evidence in `docs/full-duplex.md`.
+  - SM90 live evidence (`seed 0x41c0de`, 6 concurrent isolated sessions × 3
+    rounds, 15 WS connections including reconnects during playback & generation):
+    **41 real ASR->VLM->TTS responses**, **30 exact next-turn native VLM prompts
+    independently matched**, **147 ACK schedules** (delayed/duplicate/decreasing/foreign),
+    **6 barge-ins**, **27 exactly-once terminal callbacks**, **0 stale events /
+    0 cross-session leaks / 0 duplicate callback kinds / 0 accepted decreasing
+    cursors**; same-response echo-only A/B `0` protected vs `1` disabled cut-in;
+    `/health in_flight=0`, **44/44 `SHA256SUMS` PASS**, GPUs 0/1 returned to
+    `3 MiB`. Physical mic/speaker & listening quality remain `NOT_COVERED`.
+
 - Wave 49 449-Frame Long-Video Temporal Sampling Stress Fixtures, Independent Oracle & Controlled Dual-Stack Harness (`c929ddc`):
   - Harvested accepted Task #39 (`revisions=0`, CPU-only fixture/oracle/harness
     gate): landed `benchmarks/video-temporal-long/` (4 reproducible 449-frame /
