@@ -14,6 +14,7 @@ import argparse
 import builtins
 import copy
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
@@ -29,15 +30,17 @@ sys.path.insert(0, str(ROOT / "python"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import joint_trainer_test as fixture_helpers  # noqa: E402
+import token_export_test as token_fixture  # noqa: E402
 import umminfer_joint_dpo_live as live  # noqa: E402
 import umminfer_joint_trainer as stage_c  # noqa: E402
 import umminfer_rl_trajectory as traj  # noqa: E402
 import umminfer_sft_dataset as ds  # noqa: E402
+import umminfer_token_export as tokens  # noqa: E402
 
 FIXTURE_SEED = "joint-dpo-live-fixture-v1"
 
 
-def build_fixture_pack(root):
+def build_fixture_pack(root, *, export_version=None, rich=False):
     """Build two schema-v2 preference pairs with structured targets on both sides."""
     root = Path(root)
     export_dir = root / "export"
@@ -67,37 +70,96 @@ def build_fixture_pack(root):
             [("image", "static labelled accretion disk sketch", 0)],
         ),
     ]
+    if rich:
+        cases = [
+            (
+                "用中文和 English explain a lantern 🌅 with café physics.",
+                ["<spoken>黎明🌅 café 灯笼。</spoken> ",
+                 "Gravity 引力 makes it rise 🧪."],
+                [
+                    ("image", "红灯笼 🏮 glowing at dawn", 0),
+                    ("video", "灯笼随 🌅 rises slowly",
+                     len("<spoken>黎明🌅 café 灯笼。</spoken> ".encode("utf-8"))),
+                ],
+                ["<spoken>黎明🌅 café 灯笼。</spoken> Static 静图 🧪."],
+                [("image", "静态红灯笼 🏮 at dawn", 0)],
+            ),
+            (
+                "Présentez un disque d’accrétion 黑洞 with spoken 🎙️ detail.",
+                ["<spoken>Le plasma café 黑洞 🎙️.</spoken> ",
+                 "Matter spirals inward 🌌."],
+                [
+                    ("image", "disque 黑洞 café cross section", 0),
+                    ("video", "plasma 🌌 spiraling 黑洞",
+                     len("<spoken>Le plasma café 黑洞 🎙️.</spoken> ".encode("utf-8"))),
+                ],
+                ["<spoken>Le plasma café 黑洞 🎙️.</spoken> Static sketch."],
+                [("image", "static disque 黑洞 sketch", 0)],
+            ),
+        ]
     for index, (prompt, chosen_parts, chosen_slots,
                 rejected_parts, rejected_slots) in enumerate(cases):
         fixture_helpers._make_v2_record(
             recorder, prompt_text=prompt, clean_parts=chosen_parts,
             slots=chosen_slots, session_id=f"dpo-live-{index}-chosen",
             request_id=f"dpo-live-{index}-chosen-request",
-            expected_modalities=["image", "video"])
+            expected_modalities=["image", "video"], explicit_anchor=rich)
         fixture_helpers._make_v2_record(
             recorder, prompt_text=prompt, clean_parts=rejected_parts,
             slots=rejected_slots, session_id=f"dpo-live-{index}-rejected",
             request_id=f"dpo-live-{index}-rejected-request",
             expected_modalities=["image", "video"])
 
+    identity = None
+    trajectory_path = recorder.jsonl_path
+    if export_version is not None:
+        if export_version == 2:
+            tokenizer = token_fixture.V2FixtureTokenizer()
+            tokenizer_dir = token_fixture._v2_tokenizer_dir(root / "fixture-tokenizer")
+            tokenizer_id, revision, version = (
+                "fixture-bytelevel-nfc", "fixture-revision-2", "fixture-tokenization-v2")
+        else:
+            tokenizer = token_fixture.fixture_tokenizer()
+            tokenizer_dir = token_fixture._tokenizer_dir(root / "fixture-tokenizer")
+            tokenizer_id, revision, version = (
+                "fixture-unicode-bpe", "fixture-revision-1", "fixture-tokenization-v1")
+        identity = {
+            "tokenizer": tokenizer, "tokenizer_dir": tokenizer_dir,
+            "tokenizer_id": tokenizer_id, "tokenizer_revision": revision,
+            "tokenization_version": version,
+        }
+        records = [json.loads(line) for line in trajectory_path.read_text(
+            encoding="utf-8").splitlines() if line.strip()]
+        exported = [tokens.attach_token_export(
+            record, tokenizer, tokenizer_dir=tokenizer_dir,
+            tokenizer_id=tokenizer_id, tokenizer_revision=revision,
+            tokenization_version=version,
+            sft_target=ds.reconstruct_director_target(record)[0],
+            format_version=export_version) for record in records]
+        trajectory_path = trajectory_path.with_name(
+            trajectory_path.stem + ".tokens.jsonl")
+        trajectory_path.write_bytes(b"".join(
+            stage_c.canonical_json(record) + b"\n" for record in exported))
+
     pack_dir = root / "pack"
     manifest = ds.build_dataset(
-        [recorder.jsonl_path], pack_dir, mode="preference",
+        [trajectory_path], pack_dir, mode="preference",
         seed=FIXTURE_SEED, eval_ratio=0.0, min_margin=0.1,
         min_group_size=2, strict_artifacts=True)
     if manifest["outputs"]["dpo_train"]["record_count"] != 2:
         raise RuntimeError("deterministic DPO fixture did not produce exactly two pairs")
     return {
-        "trajectory_path": recorder.jsonl_path,
-        "trajectory_sha256": stage_c.sha256_file(recorder.jsonl_path),
+        "trajectory_path": trajectory_path,
+        "trajectory_sha256": stage_c.sha256_file(trajectory_path),
         "pack_dir": pack_dir,
         "manifest": manifest,
+        "export_identity": identity,
     }
 
 
 def _fake_model_dir(root):
     root = Path(root)
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=True)
     (root / "config.json").write_text(json.dumps({
         "model_type": "qwen2",
         "architectures": ["Qwen2ForCausalLM"],
@@ -223,6 +285,332 @@ class JointDpoLivePreflightTests(unittest.TestCase):
                         [(target_start - 1, target_start + 1)],
                         target_start=target_start, target=target,
                         token_ids=[1], mask_info=mask)
+
+
+    def test_legacy_pack_bytes_and_v1_v2_export_pair_equivalence(self):
+        with tempfile.TemporaryDirectory(prefix="umm-dpo-legacy-bytes-") as tmp:
+            fixture = build_fixture_pack(Path(tmp))
+            self.assertEqual(
+                stage_c.sha256_file(fixture["pack_dir"] / "dpo_train.jsonl"),
+                "2e7e15b5143bdba21cb597371849c35b911c07ba03b647ad8b184491617e4ead")
+            rows = [json.loads(line) for line in (
+                fixture["pack_dir"] / "dpo_train.jsonl").read_text().splitlines()]
+            self.assertTrue(all("token_export" not in row[side]
+                                for row in rows for side in ("chosen", "rejected")))
+
+        config = json.loads((ROOT / "configs/training/joint_dpo_live_gate.json")
+                            .read_text(encoding="utf-8"))
+        for version in (1, 2):
+            with self.subTest(export_version=version), tempfile.TemporaryDirectory(
+                    prefix=f"umm-dpo-export-v{version}-") as tmp:
+                fixture = build_fixture_pack(Path(tmp), export_version=version, rich=True)
+                rows = [json.loads(line) for line in (
+                    fixture["pack_dir"] / "dpo_train.jsonl").read_text().splitlines()]
+                self.assertEqual(len(rows), 2)
+                self.assertTrue(all(row[side].get("token_export")
+                                    for row in rows for side in ("chosen", "rejected")))
+                self.assertTrue(any("source=slot-0" in row["chosen"]["assistant_target"]
+                                    for row in rows))
+                identity = fixture["export_identity"]
+                result = live._pack_export_pairs(
+                    rows, identity["tokenizer"],
+                    tokenizer_dir=identity["tokenizer_dir"],
+                    tokenizer_id=identity["tokenizer_id"],
+                    tokenizer_revision=identity["tokenizer_revision"],
+                    tokenization_version=identity["tokenization_version"],
+                    span_loss_weights=config["span_loss_weights"],
+                    dpo_config=config["dpo"])
+                self.assertEqual(result["status"], "PASS")
+                self.assertEqual(result["claims"]["real_dpo_optimizer"], "NOT_RUN")
+                annotations = [annotation for pair in result["packed"]
+                               for side in ("chosen", "rejected")
+                               for annotation in pair[side]["annotations"]]
+                self.assertTrue(any("spoken_style" in item["span_types"]
+                                    for item in annotations))
+                self.assertTrue(any("visual_route_tag" in item["span_types"]
+                                    for item in annotations))
+                self.assertTrue(any(item["includes_terminal_delimiter"]
+                                    for item in annotations))
+                for row, pair in zip(rows, result["packed"]):
+                    audit = live._audit_pair(row)
+                    for side in ("chosen", "rejected"):
+                        legacy = live._pack_response(
+                            identity["tokenizer"], row, row[side], audit[side],
+                            side=side, prepared={"identity": {
+                                "dpo": config["dpo"],
+                                "span_loss_weights": config["span_loss_weights"],
+                            }})
+                        for key in ("input_ids", "labels", "weights", "annotations", "audit"):
+                            self.assertEqual(
+                                stage_c.canonical_json(pair[side][key]),
+                                stage_c.canonical_json(legacy[key]))
+                        self.assertEqual(pair[side]["token_export"]["legacy_equality"], "PASS")
+                grpo_rows = [json.loads(line) for line in (
+                    fixture["pack_dir"] / "grpo_train.jsonl").read_text().splitlines()]
+                self.assertTrue(all("token_export" not in rollout
+                                    for group in grpo_rows for rollout in group["rollouts"]))
+
+    def test_exact_dpo_loss_and_independent_reference_masks(self):
+        pair = {
+            "chosen": {
+                "input_ids": [5, 11, 12, 13],
+                "labels": [-100, 11, 12, 13],
+                "weights": [0.0, 1.0, 1.5, 0.5],
+            },
+            "rejected": {
+                "input_ids": [5, 21, 22, 23],
+                "labels": [-100, 21, -100, 23],
+                "weights": [0.0, 2.0, 0.0, 1.0],
+            },
+        }
+        result = live._stdlib_dpo_fixture(
+            pair,
+            policy_logps={
+                "chosen": [0.0, -0.5, -0.25, -2.0],
+                "rejected": [0.0, -4.0, -100.0, -1.0],
+            },
+            reference_logps={
+                "chosen": [0.0, -0.25, -0.5, -0.75],
+                "rejected": [0.0, -1.0, -100.0, -2.0],
+            }, beta=0.1)
+        self.assertEqual(result["policy"]["chosen"]["weighted_logp_sum"], -1.875)
+        self.assertEqual(result["policy"]["chosen"]["mean_logp"], -0.625)
+        self.assertEqual(result["policy"]["rejected"]["mean_logp"], -3.0)
+        self.assertEqual(result["reference"]["chosen"]["active_loss_weight"], 3.0)
+        self.assertEqual(result["reference"]["rejected"]["active_loss_weight"], 3.0)
+        self.assertAlmostEqual(result["scaled_margin"], 0.15, places=15)
+        self.assertEqual(result["loss"], 0.6209570477895321)
+        self.assertEqual(result["real_optimizer"], "NOT_RUN")
+        broken = copy.deepcopy(pair)
+        broken["rejected"]["weights"][2] = 1.0
+        with self.assertRaisesRegex(ValueError, "masked DPO reference token"):
+            live._stdlib_sequence_logprob(
+                broken["rejected"], [0.0, -1.0, -2.0, -3.0])
+
+    def test_invalid_exports_fail_before_output_planner_or_ml(self):
+        mutations = {
+            "missing-chosen": lambda rows, i: (
+                rows[i]["chosen"].pop("token_export"),
+                rows[i]["chosen"].pop("token_export_source")),
+            "partial-rejected": lambda rows, i: rows[i]["rejected"].pop(
+                "token_export_source"),
+            "stale-source": lambda rows, i: rows[i]["chosen"][
+                "token_export_source"].update(clean_text="stale"),
+            "malformed-token": lambda rows, i: rows[i]["rejected"]["token_export"][
+                "streams"]["sft_target"]["token_ids"].__setitem__(0, 1),
+            "cross-pair": lambda rows, i: rows[i].update(
+                chosen=copy.deepcopy(rows[1 - i]["chosen"])),
+            "prompt-mismatch": lambda rows, i: rows[i].update(
+                prompt_text=rows[i]["prompt_text"] + " mismatched"),
+            "cross-side-export": lambda rows, i: rows[i]["chosen"].update(
+                token_export=copy.deepcopy(rows[i]["rejected"]["token_export"])),
+            "duplicate-pair": lambda rows, i: rows.append(copy.deepcopy(rows[i])),
+            "unsupported": lambda rows, i: rows[i]["chosen"]["token_export"].update(
+                format="umminfer-unsupported", format_version=3),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name), tempfile.TemporaryDirectory(
+                    prefix="umm-dpo-export-invalid-") as tmp:
+                root = Path(tmp)
+                fixture = build_fixture_pack(root, export_version=2, rich=True)
+                _resign_pack_pair(fixture["pack_dir"], mutate)
+                real_import = builtins.__import__
+
+                def no_ml(import_name, *args, **kwargs):
+                    if import_name == "torch" or import_name.startswith("transformers"):
+                        raise AssertionError(f"ML import after invalid export: {import_name}")
+                    return real_import(import_name, *args, **kwargs)
+
+                with mock.patch("builtins.__import__", side_effect=no_ml), \
+                        mock.patch.object(live, "_run_export_preflight",
+                                          side_effect=AssertionError("preflight executed")):
+                    with self.assertRaises(ValueError):
+                        live.prepare_live_run(
+                            dataset_dir=fixture["pack_dir"], output_dir=root / "bad-run",
+                            config_path=ROOT / "configs/training/joint_dpo_live_gate.json",
+                            model_path=_fake_model_dir(root / "model"),
+                            source_commit="0" * 40, max_steps=2,
+                            token_source="token_export")
+                self.assertFalse((root / "bad-run/plan").exists())
+                self.assertFalse((root / "bad-run/token_export_preflight.json").exists())
+                self.assertFalse((root / "bad-run/live_manifest.json").exists())
+                self.assertFalse((root / "bad-run/checkpoints").exists())
+
+    def test_export_tokenizer_identity_and_mixed_batches_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix="umm-dpo-export-identity-") as tmp:
+            fixture = build_fixture_pack(Path(tmp), export_version=2, rich=True)
+            rows = [json.loads(line) for line in (
+                fixture["pack_dir"] / "dpo_train.jsonl").read_text().splitlines()]
+            identity = fixture["export_identity"]
+            config = json.loads((ROOT / "configs/training/joint_dpo_live_gate.json")
+                                .read_text(encoding="utf-8"))
+            for field, wrong in (("tokenizer_id", "wrong"),
+                                 ("tokenizer_revision", "wrong"),
+                                 ("tokenization_version", "wrong")):
+                options = dict(identity)
+                options[field] = wrong
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    live._pack_export_pairs(
+                        rows, options["tokenizer"],
+                        tokenizer_dir=options["tokenizer_dir"],
+                        tokenizer_id=options["tokenizer_id"],
+                        tokenizer_revision=options["tokenizer_revision"],
+                        tokenization_version=options["tokenization_version"],
+                        span_loss_weights=config["span_loss_weights"],
+                        dpo_config=config["dpo"])
+            changed = copy.deepcopy(rows[0]["chosen"]["token_export"])
+            changed["tokenizer"]["id"] = "cross-pair-tokenizer"
+            changed["config_sha256"] = tokens._config_digest(
+                changed["tokenizer"], tokens.EXPORT_POLICY_V2)
+            unsigned = {key: value for key, value in changed.items() if key != "export_sha256"}
+            changed["export_sha256"] = stage_c.sha256_bytes(stage_c.canonical_json(unsigned))
+            rows[0]["chosen"]["token_export"] = changed
+            with self.assertRaisesRegex(ValueError, "mixed DPO token-export tokenizer"):
+                live._pack_export_pairs(
+                    rows, identity["tokenizer"],
+                    tokenizer_dir=identity["tokenizer_dir"],
+                    tokenizer_id=identity["tokenizer_id"],
+                    tokenizer_revision=identity["tokenizer_revision"],
+                    tokenization_version=identity["tokenization_version"],
+                    span_loss_weights=config["span_loss_weights"],
+                    dpo_config=config["dpo"])
+
+    def test_export_identity_split_resume_and_legacy_isolation(self):
+        with tempfile.TemporaryDirectory(prefix="umm-dpo-export-resume-") as tmp:
+            root = Path(tmp)
+            fixture = build_fixture_pack(root / "rich", export_version=2, rich=True)
+            other = build_fixture_pack(root / "other", export_version=2, rich=False)
+            config_path = ROOT / "configs/training/joint_dpo_live_gate.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+
+            def raw(item):
+                rows = [json.loads(line) for line in (
+                    item["pack_dir"] / "dpo_train.jsonl").read_text().splitlines()]
+                identity = item["export_identity"]
+                return live._pack_export_pairs(
+                    rows, identity["tokenizer"],
+                    tokenizer_dir=identity["tokenizer_dir"],
+                    tokenizer_id=identity["tokenizer_id"],
+                    tokenizer_revision=identity["tokenizer_revision"],
+                    tokenization_version=identity["tokenization_version"],
+                    span_loss_weights=config["span_loss_weights"],
+                    dpo_config=config["dpo"])
+
+            preflight = raw(fixture)
+            with mock.patch.object(live, "_run_export_preflight", return_value=preflight):
+                full = live.prepare_live_run(
+                    dataset_dir=fixture["pack_dir"], output_dir=root / "full",
+                    config_path=config_path, model_path=_fake_model_dir(root / "model"),
+                    source_commit="0" * 40, max_steps=2, token_source="token_export")
+                split = live.prepare_live_run(
+                    dataset_dir=fixture["pack_dir"], output_dir=root / "split",
+                    config_path=config_path, model_path=_fake_model_dir(root / "model"),
+                    source_commit="0" * 40, max_steps=2, stop_after=1,
+                    token_source="token_export")
+            legacy = live.prepare_live_run(
+                dataset_dir=fixture["pack_dir"], output_dir=root / "legacy",
+                config_path=config_path, model_path=_fake_model_dir(root / "model"),
+                source_commit="0" * 40, max_steps=2)
+            with mock.patch.object(live, "_run_export_preflight", return_value=raw(other)):
+                different = live.prepare_live_run(
+                    dataset_dir=other["pack_dir"], output_dir=root / "different",
+                    config_path=config_path, model_path=_fake_model_dir(root / "model"),
+                    source_commit="0" * 40, max_steps=2, token_source="token_export")
+            self.assertEqual(full["identity_sha256"], split["identity_sha256"])
+            self.assertEqual(full["export_packed"], split["export_packed"])
+            self.assertNotEqual(full["identity_sha256"], legacy["identity_sha256"])
+            self.assertNotEqual(full["identity_sha256"], different["identity_sha256"])
+            self.assertNotIn("token_source", legacy["identity"])
+            self.assertIsNone(legacy["export_packed"])
+            payload = {
+                "format": live.CHECKPOINT_FORMAT,
+                "run_identity_sha256": full["identity_sha256"],
+                "next_step": 1,
+                "schedule_position": 1,
+                "reference_policy_inputs_sha256": stage_c.sha256_bytes(
+                    stage_c.canonical_json(full["reference_policy_inputs"])),
+            }
+            self.assertEqual(live._validate_resume_payload(full, payload), 1)
+            with self.assertRaises(ValueError):
+                live._validate_resume_payload(legacy, payload)
+            with self.assertRaises(ValueError):
+                live._validate_resume_payload(different, payload)
+            payload["reference_policy_inputs_sha256"] = "0" * 64
+            with self.assertRaisesRegex(ValueError, "reference-policy input"):
+                live._validate_resume_payload(full, payload)
+
+    def test_cpu_preflight_only_writes_no_optimizer_output(self):
+        with tempfile.TemporaryDirectory(prefix="umm-dpo-cpu-only-") as tmp:
+            root = Path(tmp)
+            fixture = build_fixture_pack(root, export_version=2, rich=True)
+            preflight = _fixture_raw_bundle(fixture)
+            output = root / "cpu-run"
+            argv = [
+                "--dataset-dir", str(fixture["pack_dir"]),
+                "--config", str(ROOT / "configs/training/joint_dpo_live_gate.json"),
+                "--model-path", str(_fake_model_dir(root / "model")),
+                "--output-dir", str(output), "--source-commit", "0" * 40,
+                "--max-steps", "2", "--token-source", "token_export",
+                "--preflight-only",
+            ]
+            with mock.patch.object(live, "_run_export_preflight", return_value=preflight), \
+                    mock.patch("sys.stdout", new=io.StringIO()):
+                self.assertEqual(live.main(argv), 0)
+            bundle_path = output / "token_export_preflight.json"
+            self.assertTrue(bundle_path.is_file())
+            self.assertTrue(Path(str(bundle_path) + ".sha256").is_file())
+            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+            self.assertEqual(bundle["claims"]["real_dpo_optimizer"], "NOT_RUN")
+            self.assertEqual(bundle["schedule"]["stop_after"], 2)
+            self.assertNotIn("torch", sys.modules)
+            self.assertNotIn("transformers", sys.modules)
+            self.assertFalse((output / "live_manifest.json").exists())
+            self.assertFalse((output / "checkpoints").exists())
+            bad_output = root / "bad-cli"
+            bad_argv = list(argv)
+            bad_argv[bad_argv.index("--output-dir") + 1] = str(bad_output)
+            bad_argv.remove("--token-source")
+            bad_argv.remove("token_export")
+            with mock.patch("sys.stderr", new=io.StringIO()), \
+                    self.assertRaisesRegex(SystemExit, "2"):
+                live.main(bad_argv)
+            self.assertFalse((bad_output / "plan").exists())
+            self.assertFalse((bad_output / "token_export_preflight.json").exists())
+
+    def test_independent_fresh_process_v1_v2_bundle_verification(self):
+        for version in (1, 2):
+            with self.subTest(export_version=version), tempfile.TemporaryDirectory(
+                    prefix=f"umm-dpo-bundle-v{version}-") as tmp:
+                root = Path(tmp)
+                write = subprocess.run([
+                    sys.executable, "-I", str(Path(__file__).resolve()),
+                    "--fixture-bundle-write", str(root), str(version),
+                ], capture_output=True, text=True, timeout=120)
+                self.assertEqual(write.returncode, 0, write.stderr)
+                output = root / "verification.json"
+                verify_command = [
+                    sys.executable, "-I", str(Path(__file__).resolve()),
+                    "--fixture-bundle-verify", str(root), str(version), str(output),
+                ]
+                verify = subprocess.run(
+                    verify_command, capture_output=True, text=True, timeout=120)
+                self.assertEqual(verify.returncode, 0, verify.stderr)
+                report = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual(report["status"], "PASS")
+                self.assertEqual(report["fresh_process"], "BYTE_IDENTICAL")
+                self.assertEqual(report["real_dpo_optimizer"], "NOT_RUN")
+                bundle_path = root / "token_export_preflight.json"
+                bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+                bundle["pairs"][0]["chosen"]["labels_sha256"] = "0" * 64
+                bundle_path.write_bytes(stage_c.canonical_json(bundle) + b"\n")
+                Path(str(bundle_path) + ".sha256").write_text(
+                    stage_c.sha256_file(bundle_path) + "\n", encoding="ascii")
+                tampered_output = root / "tampered-verification.json"
+                verify_command[-1] = str(tampered_output)
+                tampered = subprocess.run(
+                    verify_command, capture_output=True, text=True, timeout=120)
+                self.assertNotEqual(tampered.returncode, 0)
+                self.assertFalse(tampered_output.exists())
 
 
 def _load_manifest(run_dir):
@@ -436,6 +824,76 @@ def run_live_gate(args):
     return 0
 
 
+def _fixture_raw_bundle(fixture):
+    rows = [json.loads(line) for line in (
+        fixture["pack_dir"] / "dpo_train.jsonl").read_text().splitlines()]
+    identity = fixture["export_identity"]
+    config = json.loads((ROOT / "configs/training/joint_dpo_live_gate.json")
+                        .read_text(encoding="utf-8"))
+    return live._pack_export_pairs(
+        rows, identity["tokenizer"], tokenizer_dir=identity["tokenizer_dir"],
+        tokenizer_id=identity["tokenizer_id"],
+        tokenizer_revision=identity["tokenizer_revision"],
+        tokenization_version=identity["tokenization_version"],
+        span_loss_weights=config["span_loss_weights"], dpo_config=config["dpo"])
+
+
+def _fixture_bundle_write(root, version):
+    root = Path(root)
+    fixture = build_fixture_pack(
+        root / "fixture", export_version=int(version), rich=True)
+    bundle = _fixture_raw_bundle(fixture)
+    path = root / "token_export_preflight.json"
+    live.sft_live._atomic_json(path, bundle)
+    print(json.dumps({"status": "PASS", "pairs": len(bundle["pairs"]),
+                      "real_dpo_optimizer": "NOT_RUN"}, sort_keys=True))
+    return 0
+
+
+def _fixture_bundle_verify(root, version, output):
+    root = Path(root)
+    fixture_root = root / "fixture"
+    if int(version) == 2:
+        tokenizer = token_fixture.V2FixtureTokenizer()
+        tokenizer_dir = fixture_root / "fixture-tokenizer/tokenizer-v2"
+        tokenizer_id, revision, tokenization_version = (
+            "fixture-bytelevel-nfc", "fixture-revision-2", "fixture-tokenization-v2")
+    else:
+        tokenizer = token_fixture.fixture_tokenizer()
+        tokenizer_dir = fixture_root / "fixture-tokenizer/tokenizer"
+        tokenizer_id, revision, tokenization_version = (
+            "fixture-unicode-bpe", "fixture-revision-1", "fixture-tokenization-v1")
+    fixture = {
+        "pack_dir": fixture_root / "pack",
+        "export_identity": {
+            "tokenizer": tokenizer, "tokenizer_dir": tokenizer_dir,
+            "tokenizer_id": tokenizer_id, "tokenizer_revision": revision,
+            "tokenization_version": tokenization_version,
+        },
+    }
+    expected = _fixture_raw_bundle(fixture)
+    bundle_path = root / "token_export_preflight.json"
+    sidecar = Path(str(bundle_path) + ".sha256")
+    if sidecar.read_text(encoding="ascii").strip() != stage_c.sha256_file(bundle_path):
+        raise ValueError("fixture bundle SHA-256 mismatch")
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    if stage_c.canonical_json(bundle) != stage_c.canonical_json(expected):
+        raise ValueError("fresh-process fixture bundle reconstruction differs")
+    if "torch" in sys.modules or "transformers" in sys.modules:
+        raise RuntimeError("ML import during fixture bundle verification")
+    result = {
+        "schema": "umminfer-joint-dpo-fixture-bundle-verification-v1",
+        "status": "PASS", "fresh_process": "BYTE_IDENTICAL",
+        "bundle_sha256": stage_c.sha256_file(bundle_path),
+        "pair_count": len(bundle["pairs"]), "torch_imported": False,
+        "real_dpo_optimizer": "NOT_RUN", "model_quality": "NOT_RUN",
+        "sampled_online_behavior_ids": "NOT_CLAIMED",
+    }
+    live.sft_live._atomic_json(output, result)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
 def _live_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
@@ -446,6 +904,18 @@ def _live_parser():
 
 
 if __name__ == "__main__":
+    if "--fixture-bundle-write" in sys.argv:
+        index = sys.argv.index("--fixture-bundle-write")
+        raise SystemExit(_fixture_bundle_write(sys.argv[index + 1], sys.argv[index + 2]))
+    if "--fixture-bundle-verify" in sys.argv:
+        index = sys.argv.index("--fixture-bundle-verify")
+        try:
+            status = _fixture_bundle_verify(
+                sys.argv[index + 1], sys.argv[index + 2], sys.argv[index + 3])
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            print(f"fixture bundle verification error: {exc}", file=sys.stderr)
+            status = 2
+        raise SystemExit(status)
     if "--live" in sys.argv:
         raise SystemExit(run_live_gate(_live_parser().parse_args()))
     result = unittest.main(exit=False, verbosity=2)

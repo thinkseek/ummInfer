@@ -452,6 +452,26 @@ cleanup evidence is in
 [exported-token-sft-live](exported-token-sft-live.md). These post-hoc ids are
 not sampled online behavior ids.
 
+### Export-driven joint-DPO consumption
+
+DPO chosen/rejected response summaries additively retain the same export/source
+binding when present; unexported pair bytes and GRPO rollout summaries remain
+unchanged. The DPO adapter's explicit `--token-source token_export` mode requires
+both sides of every pair and applies the same Torch-isolated exact tokenizer,
+raw-offset, mask, annotation, and legacy-equality rules independently to chosen
+and rejected targets. Only their shared unexported prompt prefix is tokenized
+for training. Pair/prompt/export hashes, packed ids/labels/masks, tokenizer
+provenance, and frozen-reference inputs enter run/checkpoint identity so
+legacy/export and different pairs cannot cross-resume.
+
+`--preflight-only` writes a CPU data bundle without model inference or optimizer
+execution; `--token-export-verify` independently rebuilds a complete bundle in a
+fresh process. Deterministic v1/v2 pair fixtures, exact sigmoid/reference-mask
+arithmetic, invalid-input gates, hashes, and commands are in
+[exported-token-dpo-preflight](exported-token-dpo-preflight.md). Real
+local-tokenizer CLI execution and export-driven real DPO optimization were not
+run for this CPU gate. Exported post-hoc ids are not sampled online behavior ids.
+
 ## Determinism
 
 JSON is key-sorted, compact UTF-8 with `allow_nan=False`. Turn indexes start at

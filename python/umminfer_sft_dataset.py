@@ -1042,7 +1042,8 @@ def _build_sft_records(candidates, *, seed, eval_ratio):
     return train_records, eval_records, duplicates
 
 
-def _response_summary(candidate, score, *, rank=None, advantage=None):
+def _response_summary(candidate, score, *, rank=None, advantage=None,
+                      include_token_export=False):
     summary = {
         "target_sha256": candidate["target_sha256"],
         "assistant_target": candidate["assistant_target"],
@@ -1053,6 +1054,16 @@ def _response_summary(candidate, score, *, rank=None, advantage=None):
         "score": float(score),
         "provenance": candidate["provenance"],
     }
+    raw_record = candidate["_raw_record"]
+    if include_token_export and "token_export" in raw_record:
+        # DPO export mode needs the complete independent source binding on each
+        # side.  This is additive: rows without exports and GRPO rows retain
+        # their previous JSON bytes.
+        summary["token_export"] = copy.deepcopy(raw_record["token_export"])
+        summary["token_export_source"] = {
+            key: copy.deepcopy(value) for key, value in raw_record.items()
+            if key != "token_export"
+        }
     if rank is not None:
         summary["rank"] = rank
     if advantage is not None:
@@ -1165,8 +1176,10 @@ def _build_preference_records(candidates, *, reward, seed, eval_ratio,
                     "input_media_refs": lead["input_media_refs"],
                     "reward_name": reward.name,
                     "margin": float(margin),
-                    "chosen": _response_summary(chosen_cand, chosen_score),
-                    "rejected": _response_summary(rejected_cand, rejected_score),
+                    "chosen": _response_summary(
+                        chosen_cand, chosen_score, include_token_export=True),
+                    "rejected": _response_summary(
+                        rejected_cand, rejected_score, include_token_export=True),
                 }
                 if split == "eval":
                     dpo_eval.append(dpo_entry)

@@ -37,7 +37,7 @@ FORBIDDEN_TOKENS = [
 
 def _make_v2_record(recorder, *, prompt_text, clean_parts, slots=(),
                     session_id="sess-0", request_id="req-0",
-                    expected_modalities=None):
+                    expected_modalities=None, explicit_anchor=False):
     """Record a verified schema-v2 trajectory with CAS media artifacts."""
     inputs = [{
         "kind": "text",
@@ -65,7 +65,7 @@ def _make_v2_record(recorder, *, prompt_text, clean_parts, slots=(),
     for idx, slot in enumerate(slots):
         media_type, slot_prompt, text_offset = slot
         slot_id = f"slot-{idx}"
-        events.append({
+        event = {
             "seq": seq,
             "server_seq": seq,
             "type": "visual_slot",
@@ -77,7 +77,15 @@ def _make_v2_record(recorder, *, prompt_text, clean_parts, slots=(),
             "media_type": media_type,
             "prompt": slot_prompt,
             "text_offset": text_offset,
-        })
+        }
+        if explicit_anchor:
+            event["continuity_mode"] = "i2v_chain"
+            if idx == 1 and media_type == "video":
+                event["anchor_slot_index"] = 0
+                event["anchor_explicit"] = True
+            elif idx != 0 or media_type != "image":
+                raise ValueError("explicit-anchor fixture requires image slot 0 then video slot 1")
+        events.append(event)
         seq += 1
 
         raw = fixture.PNG if media_type == "image" else fixture.MP4
@@ -89,7 +97,7 @@ def _make_v2_record(recorder, *, prompt_text, clean_parts, slots=(),
         (recorder.artifact_dir / ref).write_bytes(raw)
         art_id = f"art-{media_type}-{idx}"
         chunks_sha = traj.sha256_bytes(bytes.fromhex(digest))
-        events.append({
+        artifact_event = {
             "seq": seq,
             "server_seq": seq,
             "type": "artifact",
@@ -111,9 +119,16 @@ def _make_v2_record(recorder, *, prompt_text, clean_parts, slots=(),
                 "slot_id": slot_id,
                 "slot_index": idx,
             },
-        })
+        }
+        if explicit_anchor and idx == 1:
+            artifact_event["artifact"].update({
+                "anchor_slot_index": 0,
+                "anchor_explicit": True,
+                "anchor_sha256": artifacts[0]["sha256"],
+            })
+        events.append(artifact_event)
         seq += 1
-        artifacts.append({
+        artifact_record = {
             "artifact_id": art_id,
             "media_type": media_type,
             "mime_type": mime,
@@ -125,13 +140,27 @@ def _make_v2_record(recorder, *, prompt_text, clean_parts, slots=(),
             "chunks_sha256": chunks_sha,
             "slot_id": slot_id,
             "slot_index": idx,
-        })
-        legs.append({
+        }
+        if explicit_anchor and idx == 1:
+            artifact_record.update({
+                "anchor_slot_index": 0,
+                "anchor_explicit": True,
+                "anchor_sha256": artifacts[0]["sha256"],
+            })
+        artifacts.append(artifact_record)
+        leg = {
             "stage": media_type,
             "slot_id": slot_id,
             "slot_index": idx,
             "state": "completed",
-        })
+        }
+        if explicit_anchor and idx == 1:
+            leg.update({
+                "anchor_slot_index": 0,
+                "anchor_explicit": True,
+                "anchor_sha256": artifacts[0]["sha256"],
+            })
+        legs.append(leg)
 
     output_text = "".join(clean_parts)
     events.append({

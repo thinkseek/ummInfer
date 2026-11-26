@@ -978,6 +978,7 @@ class SftDatasetBuilderTests(unittest.TestCase):
         offline_dataset_consumers = {
             "umminfer_sft_dataset.py",
             "umminfer_joint_sft_live.py",
+            "umminfer_joint_dpo_live.py",
             "umminfer_joint_grpo_live.py",
             "umminfer_online_rollout.py",
         }

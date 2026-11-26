@@ -107,8 +107,10 @@ multibyte text. The full schema, strong re-encode/decode validation command, and
 hash/tamper rules are in [rl.md](rl.md#optional-token-id-and-source-span-export-format-v1).
 
 This export does not change dataset JSONL version 1, dataset deduplication,
-splitting, or preference packing. The existing worker and dataset integrity
-checks reject a malformed block whenever present. Structural validation without
+splitting, scores, pair identities, or GRPO packing. DPO chosen/rejected response
+summaries additively retain the same export and complete source binding when
+present; preference rows without exports retain their exact previous JSONL.
+The existing worker and dataset integrity checks reject a malformed block whenever present. Structural validation without
 a tokenizer is not a proof of tokenizer identity; the optional real-tokenizer
 fixture gate performs that re-encoding and remains `NOT_RUN` when no explicit
 local fixture is supplied.
@@ -277,11 +279,12 @@ python3 -I tests/online_rollout_test.py
 | Isolated real-service raw capture + fresh-process replay | **PASS (SM90 GPU 0)** | Real text/visual-contract/cancelled streams, observed `monotonic_ns`, byte-identical JSONL/CAS and tamper rejection; visual media are contract fixtures. See [sse-replay-live.md](sse-replay-live.md) |
 | SFT interleaved beat-marker reconstruction & dedup | **COVERED** | Byte-identical across repeated runs |
 | Optional token-id/UTF-8/source-span export & SFT mask equivalence | **COVERED (fixture v1/v2); PASS (real local Qwen v2)** | Additive blocks, fail-closed structural validation, exact normalized bytes/source units, deterministic independent decode and two fresh CLI processes; default run without a supplied tokenizer still reports `NOT_RUN` |
-| Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")` |
+| Export-only DPO pair & GRPO group-advantage packing | **COVERED** | Pluggable `load_reward("module:attr")`; additive DPO-side export/source retention |
+| Exported-token DPO pair data/preflight | **COVERED (fixture v1/v2 CPU); real local tokenizer CLI NOT_RUN** | All-or-nothing pair validation, exact policy/reference masks, run/resume identity, and independent fresh-process bundle verification; see [exported-token-dpo-preflight](exported-token-dpo-preflight.md) |
 | Zero train/eval prompt leakage & manifest sidecar | **COVERED** | Verified at build time and `--audit-only` |
 | End-to-end trajectory -> pack -> ablation-matrix dry-run driver | **COVERED** | `tools/umminfer_stage_c_pipeline.py` + `tests/stage_c_pipeline_test.py` |
 | Real joint-SFT optimizer gate | **PASS (SM90, legacy + token_export)** | Two exact-equivalent AdamW steps per path, changed finite parameters, fresh-process export resume, and pre-output invalid-input rejection; see [exported-token-sft-live](exported-token-sft-live.md) |
-| Real joint-DPO optimizer gate | **PASS (SM90)** | Two real sigmoid-DPO AdamW steps, policy/reference log-probabilities, independent chosen/rejected masks, exact resume equivalence, and pre-import malformed/crossed-pair rejection |
+| Real joint-DPO optimizer gate | **PASS (SM90, historical legacy path)** | Two real sigmoid-DPO AdamW steps, policy/reference log-probabilities, independent chosen/rejected masks, exact resume equivalence, and pre-import malformed/crossed-pair rejection; export-driven real optimization remains NOT_RUN |
 | Real joint-GRPO optimizer gate | **PASS (SM90)** | Two complete export-bound three-rollout groups, clipped policy ratios + KL, finite AdamW updates, exact fresh-process resume, and six pre-import rejection gates |
 | Online GRPO orchestration and validation | **COVERED (fake endpoint)** | Deterministic requests, exact response attestation, raw SSE, cancellation, bounded retry, complete groups, and fresh-process byte replay; no real-model claim |
 | Real online generation and online optimizer execution | **NOT_RUN** | Requires the isolated live gate below; the accepted frozen-offline GRPO result is unchanged |
@@ -582,6 +585,42 @@ the resident service were not contacted or restarted.
 At that SFT gate, model quality, generalized improvement, DPO, GRPO, upstream
 revision verification, and vision/media forward execution remained **`NOT_RUN`**.
 The separate bounded DPO gate is documented below.
+
+## Exported-token joint-DPO CPU data and preflight gate
+
+`python/umminfer_joint_dpo_live.py --token-source legacy` remains the default and
+preserves the accepted full-text encoding and real DPO path. Explicit
+`--token-source token_export` requires a supported v1/v2 export and complete
+source binding on both chosen and rejected sides of every pair. The preference
+builder retains those blocks additively; unexported DPO pack bytes and all GRPO
+summary shapes remain unchanged.
+
+The DPO structural gate validates pair, prompt, provenance, source, and tokenizer
+identities before planner output. A fresh Torch-isolated tokenizer process then
+rehashes the exact local files/runtime and strongly validates every export. Only
+the shared prompt prefix is encoded for training; exported target ids, raw
+offsets, labels, weights, and annotation bindings drive both policy and reference
+inputs, with legacy encoding used solely for exact equality checks. Pair/export,
+packed tensor, tokenizer, and frozen-reference input identities enter checkpoint
+resume identity. Invalid inputs cannot fall back on one side or cross-resume.
+
+`--preflight-only` is the deterministic CPU-only entry point. It writes the
+preflight bundle and SHA-256 with real optimizer and quality marked `NOT_RUN`.
+The separate `--token-export-verify` entry point independently reconstructs and
+byte-compares a complete real-local-tokenizer bundle in a fresh process without
+Torch. Deterministic v1/v2 fixture subprocesses cover multilingual/NFC/emoji,
+spoken and visual spans, explicit anchors, exact sigmoid/reference-mask arithmetic,
+invalid-input no-output/no-ML gates, and split/resume schedule identity. Exact
+commands, fixture hashes, and the future real-local-tokenizer and optimizer gates
+are in [exported-token-dpo-preflight](exported-token-dpo-preflight.md). No real
+local-tokenizer CLI, GPU, model inference, or export-driven DPO optimizer was run
+for this CPU gate.
+
+Run the deterministic suite:
+
+```text
+python3 -I tests/joint_dpo_live_test.py
+```
 
 ## Bounded real joint-DPO optimizer gate
 
