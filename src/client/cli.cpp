@@ -125,6 +125,11 @@ void usage(const std::string& command, std::ostream& out) {
   } else if (command == "speech") {
     out << "usage: umm-infer speech --url URL --model M --text TEXT --out PATH "
            "[--voice NAME] [--format wav|pcm] [--ref-audio PATH] [--timeout-ms N]\n";
+  } else if (command == "render") {
+    out << "usage: umm-infer render --url URL --kind image|video --prompt TEXT --out PATH\n"
+           "           [--size WxH] [--steps N] [--frames N] [--fps N] [--seconds N]\n"
+           "           [--guidance F] [--seed N] [--teacache-thresh F] [--image PATH]\n"
+           "           [--timeout-ms N] [--max-attempts N]\n";
   } else if (command == "transcribe") {
     out << "usage: umm-infer transcribe --url http://127.0.0.1:8000 --model M --file PATH "
            "[--format wav|pcm] [--language L] [--prompt TEXT] [--max-new-tokens N] "
@@ -905,6 +910,97 @@ int speech(int argc, char** argv, std::atomic<bool>* cancel) {
   return 0;
 }
 
+int render(int argc, char** argv, std::atomic<bool>* cancel) {
+  Options options(argc, argv, 2,
+                  {"url", "kind", "prompt", "out", "size", "steps", "frames",
+                   "fps", "seconds", "guidance", "seed", "teacache-thresh",
+                   "image", "timeout-ms", "max-attempts"},
+                  {});
+  if (options.help) {
+    usage("render", std::cout);
+    return 0;
+  }
+  const std::string kind = options.get("kind");
+  if (kind.empty()) throw UsageError("--kind is required");
+  if (kind != "image" && kind != "video") {
+    throw UsageError("--kind must be image or video");
+  }
+  const std::string prompt = options.get("prompt");
+  if (prompt.empty()) throw UsageError("--prompt is required");
+  const std::string out = options.get("out");
+  if (out.empty()) throw UsageError("--out is required");
+
+  const bool is_image = kind == "image";
+  if (is_image && (options.has("frames") || options.has("fps") ||
+                   options.has("seconds") || options.has("guidance") ||
+                   options.has("teacache-thresh"))) {
+    throw UsageError(
+        "--frames, --fps, --seconds, --guidance, and --teacache-thresh are "
+        "only valid with --kind video");
+  }
+
+  VisualRenderRequest request;
+  request.kind = kind;
+  request.prompt = prompt;
+  if (options.has("size")) {
+    const std::string size = options.get("size");
+    if (size.empty()) throw UsageError("--size must be non-empty");
+    request.size = size;
+  }
+  if (options.has("steps")) {
+    request.steps = integer(options, "steps", 0, 1, 100);
+  }
+  if (options.has("seed")) {
+    request.seed = integer(options, "seed", 0,
+                           std::numeric_limits<int64_t>::min(),
+                           std::numeric_limits<int64_t>::max());
+  }
+  if (!is_image) {
+    if (options.has("frames")) {
+      request.num_frames =
+          integer(options, "frames", 0, 1, std::numeric_limits<int64_t>::max());
+    }
+    if (options.has("fps")) {
+      request.fps =
+          integer(options, "fps", 0, 1, std::numeric_limits<int64_t>::max());
+    }
+    if (options.has("seconds")) {
+      request.seconds = integer(options, "seconds", 0, 1,
+                                std::numeric_limits<int64_t>::max());
+    }
+    if (options.has("guidance")) {
+      request.guidance_scale =
+          number(options, "guidance", 0.0, 0.0, std::numeric_limits<double>::max());
+    }
+    if (options.has("teacache-thresh")) {
+      request.teacache_thresh =
+          number(options, "teacache-thresh", 0.0, 0.0, 0.25);
+    }
+  }
+  if (options.has("image")) {
+    const std::string ref_path = options.get("image");
+    const std::string mime = image_content_type(ref_path);
+    if (mime.rfind("image/", 0) != 0) {
+      throw UsageError("--image must be a .png, .jpg, .jpeg, or .webp file");
+    }
+    const std::string bytes = read_limited(ref_path, 16u << 20, "image");
+    if (bytes.empty()) throw Error(ErrorCode::kBadRequest, "image is empty");
+    request.image = "data:" + mime + ";base64," + detail::base64_encode(bytes);
+  }
+
+  OpenAIConfig config = media_config(options);
+  config.max_attempts = static_cast<int>(integer(options, "max-attempts", 1, 1, 10));
+  check_output(out);
+
+  OpenAIClient client(config);
+  request.timeout = milliseconds(options, "timeout-ms", 0);
+  request.cancel = cancel;
+  const VisualRenderResponse response = client.visual_render(request);
+  write_output(out, response.bytes);
+  std::cout << out << '\n';
+  return 0;
+}
+
 ASRConfig asr_config(const Options& options) {
   ASRConfig config;
   config.base_url = options.get("url", "http://127.0.0.1:8000");
@@ -1326,6 +1422,7 @@ int run_cli(const std::string& command, int argc, char** argv, std::atomic<bool>
   try {
     if (command == "chat") return chat(argc, argv, cancel);
     if (command == "speech") return speech(argc, argv, cancel);
+    if (command == "render") return render(argc, argv, cancel);
     if (command == "transcribe") return transcribe(argc, argv, cancel);
     if (command == "realtime") return realtime(argc, argv, cancel);
     if (command == "voice") return voice(argc, argv, cancel);

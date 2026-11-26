@@ -276,6 +276,36 @@ struct SpeechRequest {
   CancelFlag cancel = nullptr;
 };
 
+// Direct visual render via POST /v1/visual/render (single-stage image or video
+// without a VLM turn).
+struct VisualRenderRequest {
+  std::string kind;  // "image" or "video"
+  std::string prompt;
+  std::optional<std::string> size;
+  std::optional<int64_t> steps;
+  // Video-only fields (rejected when kind == "image").
+  std::optional<int64_t> num_frames;
+  std::optional<int64_t> fps;
+  std::optional<int64_t> seconds;
+  std::optional<double> guidance_scale;
+  std::optional<int64_t> seed;
+  // Optional per-request Wan2.2 TeaCache threshold in [0.0, 0.25] (video-only).
+  // Omitted on the wire when unset (lossless default 0.0).
+  std::optional<double> teacache_thresh;
+  // Optional data:image/...;base64,... URL (max 16 MiB decoded) for FLUX.2
+  // image-to-image editing or Wan2.2 native I2V first-frame animation.
+  std::optional<std::string> image;
+  Milliseconds timeout{0};
+  CancelFlag cancel = nullptr;
+};
+
+struct VisualRenderResponse {
+  std::string bytes;
+  std::string content_type;
+  // Value of the X-UmmInfer-Kind response header when present.
+  std::string kind;
+};
+
 class OpenAIClient {
  public:
   explicit OpenAIClient(OpenAIConfig config);
@@ -284,6 +314,7 @@ class OpenAIClient {
   // Creation calls are sent once. A retry could submit a second job or a
   // second billable generation, so none of these methods retries.
   std::string speech(const SpeechRequest& request) const;
+  VisualRenderResponse visual_render(const VisualRenderRequest& request) const;
   ImageResponse generate_image(const ImageRequest& request) const;
   ImageResponse edit_image(const ImageEditRequest& request) const;
   VideoJob create_video(const VideoRequest& request) const;

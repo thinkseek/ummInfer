@@ -458,17 +458,46 @@ response bytes. The request has no `slot_id` field.
 ```
 
 `kind` (`image` or `video`) and a non-empty string `prompt` are required. Both
-kinds accept optional `size`, positive integer `steps`, signed 64-bit integer
-`seed`, and an `image` data URL (max 16 MiB decoded). Image uses `image` for
-FLUX.2 image-to-image editing. Video with `kind: "video"` uses it as the first
-frame for `Wan2.2-TI2V-5B` native I2V. Video also accepts positive integers
-`num_frames`, `fps`, `seconds`, and non-negative number `guidance_scale`.
+kinds accept optional `size`, positive integer `steps` (`1..100`), signed
+64-bit integer `seed`, and an `image` data URL (max 16 MiB decoded). Image uses
+`image` for FLUX.2 image-to-image editing. Video with `kind: "video"` uses it
+as the first frame for `Wan2.2-TI2V-5B` native I2V. Video also accepts positive
+integers `num_frames`, `fps`, `seconds`, non-negative finite number
+`guidance_scale`, and optional finite `teacache_thresh` in `[0.0, 0.25]`
+(omitted by default for lossless `0.0`).
 
 HTTP 200 returns raw `image/png` or `video/mp4` with a matching `Content-Type`
 and `X-UmmInfer-Kind: image` or `video`. Invalid JSON, unknown or invalid fields,
 and an empty prompt return 400. An unavailable stage or fixed-upstream mode
 returns 501. Overload returns 503 with `Retry-After: 1`. The endpoint performs
 one synchronous stage request; it emits no SSE events.
+
+`OpenAIClient::visual_render(const VisualRenderRequest&)` (returning
+`VisualRenderResponse` with `bytes`, `content_type`, and `kind` from
+`X-UmmInfer-Kind`) and the `umm-infer render` subcommand expose this route
+natively in C++ and the CLI:
+
+```sh
+# Direct single-stage image render
+./zig-out/bin/umm-infer render \
+  --url http://127.0.0.1:43301/v1 --kind image \
+  --prompt 'a glowing red lantern over a misty lake' \
+  --size 1024x1024 --steps 4 --out /tmp/lantern.png
+
+# Animate -> Video (native I2V from an existing frame + opt-in TeaCache)
+./zig-out/bin/umm-infer render \
+  --url http://127.0.0.1:43301/v1 --kind video \
+  --prompt 'the lantern drifts across the lake' \
+  --image /tmp/lantern.png \
+  --frames 29 --steps 10 --guidance 5.0 --seed 42 --teacache-thresh 0.05 \
+  --out /tmp/lantern.mp4
+```
+
+Unset optional fields are omitted on the wire. Video-only flags (`--frames`,
+`--fps`, `--seconds`, `--guidance`, `--teacache-thresh`) with `--kind image`,
+out-of-range `--teacache-thresh` outside `[0.0, 0.25]`, and unsupported
+`--image` extensions fail closed with exit code `2` before any HTTP request is
+sent. Requests are sent once with no retries.
 
 ## Final ASR
 

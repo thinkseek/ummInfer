@@ -29,6 +29,7 @@ constexpr size_t kMaxImageBytes = 64u << 20;
 constexpr size_t kMaxImageTotalBytes = 256u << 20;
 constexpr size_t kMaxAudioBytes = 128u << 20;
 constexpr size_t kMaxVideoBytes = 512u << 20;
+constexpr size_t kMaxMediaInputBytes = 16u << 20;
 constexpr size_t kMaxVideoInputBytes = 32u << 20;
 // Mixed-output chat mirrors the server's frozen decoded-byte contract.
 constexpr size_t kMixedMaxImageBytes = 48u << 20;
@@ -1141,6 +1142,116 @@ std::string OpenAIClient::speech(const SpeechRequest& request) const {
     throw Error(ErrorCode::kBadResponse, "speech response is empty");
   }
   return response.body;
+}
+
+VisualRenderResponse OpenAIClient::visual_render(
+    const VisualRenderRequest& request) const {
+  if (request.kind != "image" && request.kind != "video") {
+    throw Error(ErrorCode::kConfig, "kind must be image or video");
+  }
+  const bool image = request.kind == "image";
+  if (request.prompt.empty()) {
+    throw Error(ErrorCode::kConfig, "prompt must be a non-empty string");
+  }
+  if (request.size && request.size->empty()) {
+    throw Error(ErrorCode::kConfig, "size must be a non-empty string");
+  }
+  if (request.steps && (*request.steps < 1 || *request.steps > 100)) {
+    throw Error(ErrorCode::kConfig, "steps must be an integer between 1 and 100");
+  }
+  if (image) {
+    if (request.num_frames || request.fps || request.seconds ||
+        request.guidance_scale || request.teacache_thresh) {
+      throw Error(ErrorCode::kConfig,
+                  "video-only fields are not valid for kind image");
+    }
+  } else {
+    if (request.num_frames && *request.num_frames < 1) {
+      throw Error(ErrorCode::kConfig, "num_frames must be a positive integer");
+    }
+    if (request.fps && *request.fps < 1) {
+      throw Error(ErrorCode::kConfig, "fps must be a positive integer");
+    }
+    if (request.seconds && *request.seconds < 1) {
+      throw Error(ErrorCode::kConfig, "seconds must be a positive integer");
+    }
+    if (request.guidance_scale &&
+        (!std::isfinite(*request.guidance_scale) ||
+         *request.guidance_scale < 0.0)) {
+      throw Error(ErrorCode::kConfig,
+                  "guidance_scale must be a finite non-negative number");
+    }
+    if (request.teacache_thresh &&
+        (!std::isfinite(*request.teacache_thresh) ||
+         *request.teacache_thresh < 0.0 ||
+         *request.teacache_thresh > 0.25)) {
+      throw Error(ErrorCode::kConfig,
+                  "teacache_thresh must be a finite number between 0.0 and 0.25");
+    }
+  }
+  if (request.image) {
+    const std::string& url = *request.image;
+    const size_t comma = url.find(',');
+    if (url.rfind("data:image/", 0) != 0 || comma == std::string::npos ||
+        url.substr(0, comma).find(";base64") == std::string::npos) {
+      throw Error(ErrorCode::kConfig,
+                  "image must be a data:image/...;base64,... URL");
+    }
+    try {
+      const std::string decoded =
+          detail::base64_decode(url.substr(comma + 1), kMaxMediaInputBytes);
+      if (decoded.empty()) {
+        throw Error(ErrorCode::kConfig, "image payload must be non-empty");
+      }
+    } catch (const Error& error) {
+      if (error.code() == ErrorCode::kConfig) throw;
+      throw Error(ErrorCode::kConfig,
+                  std::string("invalid or oversized image data: ") +
+                      error.what());
+    }
+  }
+  if (request.timeout.count() < 0) {
+    throw Error(ErrorCode::kConfig, "request timeout must not be negative");
+  }
+  detail::check_cancelled(request.cancel);
+
+  json body = {{"kind", request.kind}, {"prompt", request.prompt}};
+  if (request.size) body["size"] = *request.size;
+  if (request.steps) body["steps"] = *request.steps;
+  if (request.seed) body["seed"] = *request.seed;
+  if (!image) {
+    if (request.num_frames) body["num_frames"] = *request.num_frames;
+    if (request.fps) body["fps"] = *request.fps;
+    if (request.seconds) body["seconds"] = *request.seconds;
+    if (request.guidance_scale) body["guidance_scale"] = *request.guidance_scale;
+    if (request.teacache_thresh) {
+      body["teacache_thresh"] = *request.teacache_thresh;
+    }
+  }
+  if (request.image) body["image"] = *request.image;
+
+  auto http = media_request(config_, base_url_, "/visual/render",
+                            detail::HttpMethod::kPost, request.timeout,
+                            request.cancel);
+  http.headers.emplace("Content-Type", "application/json");
+  http.accept = image ? "image/png" : "video/mp4";
+  http.body_limit = image ? kMaxImageBytes : kMaxVideoBytes;
+  http.body = encoded_body(body);
+  const detail::HttpResponse response = detail::perform(http);
+  if (response.body.empty()) {
+    throw Error(ErrorCode::kBadResponse, "visual render response is empty");
+  }
+  VisualRenderResponse out;
+  out.bytes = response.body;
+  if (const auto it = response.headers.find("content-type");
+      it != response.headers.end()) {
+    out.content_type = it->second;
+  }
+  if (const auto it = response.headers.find("x-umminfer-kind");
+      it != response.headers.end()) {
+    out.kind = it->second;
+  }
+  return out;
 }
 
 ImageResponse OpenAIClient::edit_image(const ImageEditRequest& request) const {

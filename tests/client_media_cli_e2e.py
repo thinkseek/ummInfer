@@ -94,9 +94,12 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(length) if length else b""
 
-    def reply(self, status, body, kind="application/json"):
+    def reply(self, status, body, kind="application/json", extra_headers=None):
         self.send_response(status)
         self.send_header("Content-Type", kind)
+        if extra_headers:
+            for name, value in extra_headers.items():
+                self.send_header(name, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -137,6 +140,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, b"\x01\x02\x03\x04", "audio/pcm")
             else:
                 self.reply(200, b"RIFF\x24\x00\x00\x00WAVEfmt ", "audio/wav")
+            return
+        if self.path == "/v1/visual/render":
+            request = json.loads(body)
+            kind = request.get("kind")
+            if request.get("prompt") == "boom":
+                self.json(400, {"error": {"message": "render rejected"}})
+                return
+            if kind == "image":
+                self.reply(200, PNG_ONE, "image/png", {"X-UmmInfer-Kind": "image"})
+                return
+            if kind == "video":
+                self.reply(200, MP4, "video/mp4", {"X-UmmInfer-Kind": "video"})
+                return
+            self.json(400, {"error": {"message": "kind must be image or video"}})
             return
         if self.path == "/v1/chat/completions":
             import hashlib
@@ -865,6 +882,128 @@ def test_chat_narrative_controls(binary, base, _workdir):
         require(not take(), f"invalid args {extra_args} must not reach server")
 
 
+def test_visual_render_subcommand(binary, base, workdir):
+    # (a) Image render: byte-exact PNG, unset optional fields omitted on wire.
+    img_out = workdir / "render-img.png"
+    img_res = run_cli(binary, [
+        "render", "--url", base, "--kind", "image",
+        "--prompt", "a glowing red lantern", "--out", str(img_out),
+    ])
+    require(img_res.returncode == 0, f"render image failed: {img_res.stderr}")
+    [img_entry] = take()
+    require(img_entry["method"] == "POST" and img_entry["path"] == "/v1/visual/render",
+            f"render image request: {img_entry['method']} {img_entry['path']}")
+    img_req = json.loads(img_entry["body"])
+    require(img_req == {"kind": "image", "prompt": "a glowing red lantern"},
+            f"render image wire JSON must omit unset optionals: {img_req}")
+    require(img_out.read_bytes() == PNG_ONE, "render image output bytes mismatch")
+    require(img_res.stdout.strip() == str(img_out),
+            f"render image stdout: {img_res.stdout!r}")
+
+    # (b) Video I2V render with full flags + teacache_thresh=0.05.
+    src_frame = workdir / "render-first-frame.png"
+    src_frame.write_bytes(PNG_TWO)
+    vid_out = workdir / "render-i2v.mp4"
+    vid_res = run_cli(binary, [
+        "render", "--url", base, "--kind", "video",
+        "--prompt", "the lantern drifts across the lake",
+        "--image", str(src_frame),
+        "--frames", "29", "--steps", "10", "--guidance", "5.0",
+        "--seed", "42", "--teacache-thresh", "0.05",
+        "--out", str(vid_out),
+    ])
+    require(vid_res.returncode == 0, f"render i2v failed: {vid_res.stderr}")
+    [vid_entry] = take()
+    require(vid_entry["method"] == "POST" and vid_entry["path"] == "/v1/visual/render",
+            f"render i2v request: {vid_entry['method']} {vid_entry['path']}")
+    vid_req = json.loads(vid_entry["body"])
+    expected_image = "data:image/png;base64," + base64.b64encode(PNG_TWO).decode()
+    require(vid_req == {
+        "kind": "video",
+        "prompt": "the lantern drifts across the lake",
+        "num_frames": 29,
+        "steps": 10,
+        "guidance_scale": 5.0,
+        "seed": 42,
+        "teacache_thresh": 0.05,
+        "image": expected_image,
+    }, f"render i2v exact wire JSON mismatch: {vid_req}")
+    require(vid_out.read_bytes() == MP4, "render i2v output bytes mismatch")
+    require(vid_res.stdout.strip() == str(vid_out),
+            f"render i2v stdout: {vid_res.stdout!r}")
+
+    # (c) Default video render without --teacache-thresh omits teacache_thresh.
+    default_vid_out = workdir / "render-default.mp4"
+    default_vid_res = run_cli(binary, [
+        "render", "--url", base, "--kind", "video",
+        "--prompt", "calm lake at dawn", "--out", str(default_vid_out),
+    ])
+    require(default_vid_res.returncode == 0,
+            f"render default video failed: {default_vid_res.stderr}")
+    [default_vid_entry] = take()
+    default_vid_req = json.loads(default_vid_entry["body"])
+    require(default_vid_req == {"kind": "video", "prompt": "calm lake at dawn"},
+            f"default video must omit teacache_thresh and unset optionals: {default_vid_req}")
+    require(default_vid_out.read_bytes() == MP4, "render default video bytes mismatch")
+
+    # (d) HTTP error exits non-zero and leaves no output file.
+    err_out = workdir / "render-err.png"
+    err_res = run_cli(binary, [
+        "render", "--url", base, "--kind", "image",
+        "--prompt", "boom", "--out", str(err_out),
+    ])
+    require(err_res.returncode != 0 and "400" in err_res.stderr,
+            f"render HTTP error: {err_res.returncode} {err_res.stderr!r}")
+    require(not err_out.exists(), "failed render must leave no output file")
+    take()
+
+    # (e) Fail-closed exit-2 rejections with zero HTTP requests.
+    bad_img = workdir / "bad.bmp"
+    bad_img.write_bytes(b"BM\x00\x00")
+    unused_out = workdir / "render-never.mp4"
+    invalid_cases = [
+        (["--url", base, "--kind", "audio", "--prompt", "hi", "--out", str(unused_out)],
+         "--kind must be image or video"),
+        (["--url", base, "--kind", "image", "--prompt", "hi", "--out", str(unused_out),
+          "--teacache-thresh", "0.05"],
+         "only valid with --kind video"),
+        (["--url", base, "--kind", "video", "--prompt", "hi", "--out", str(unused_out),
+          "--teacache-thresh", "0.5"],
+         "invalid --teacache-thresh"),
+        (["--url", base, "--kind", "video", "--prompt", "hi", "--out", str(unused_out),
+          "--teacache-thresh", "-0.01"],
+         "invalid --teacache-thresh"),
+        (["--url", base, "--kind", "video", "--prompt", "hi", "--out", str(unused_out),
+          "--teacache-thresh", "nan"],
+         "invalid --teacache-thresh"),
+        (["--url", base, "--kind", "video", "--prompt", "hi", "--out", str(unused_out),
+          "--teacache-thresh", "inf"],
+         "invalid --teacache-thresh"),
+        (["--url", base, "--kind", "image", "--prompt", "hi", "--out", str(unused_out),
+          "--frames", "29"],
+         "only valid with --kind video"),
+        (["--url", base, "--kind", "image", "--prompt", "hi", "--out", str(unused_out),
+          "--guidance", "5.0"],
+         "only valid with --kind video"),
+        (["--url", base, "--kind", "image", "--out", str(unused_out)],
+         "--prompt is required"),
+        (["--url", base, "--kind", "image", "--prompt", "hi"],
+         "--out is required"),
+        (["--url", base, "--prompt", "hi", "--out", str(unused_out)],
+         "--kind is required"),
+        (["--url", base, "--kind", "video", "--prompt", "hi", "--out", str(unused_out),
+          "--image", str(bad_img)],
+         ".png, .jpg, .jpeg, or .webp"),
+    ]
+    for extra_args, expected_err in invalid_cases:
+        res = run_cli(binary, ["render", *extra_args])
+        require(res.returncode == 2 and expected_err in res.stderr,
+                f"render args={extra_args}: expected exit 2 + {expected_err!r}, "
+                f"got {res.returncode} {res.stderr!r}")
+        require(not unused_out.exists(), "rejected render must not write output file")
+        require(not take(), f"rejected render args {extra_args} must not reach server")
+
+
 def main():
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_BIN
     if not binary.exists():
@@ -880,6 +1019,7 @@ def main():
         test_video_lifecycle,
         test_video_rejects_a_bad_id,
         test_speech_subcommand,
+        test_visual_render_subcommand,
         test_chat_wave9_multimodal_flags,
         test_chat_video_input,
         test_chat_native_allocator_telemetry,

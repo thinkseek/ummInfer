@@ -219,6 +219,7 @@ void print_usage(std::ostream& out) {
       << "      [--image-out PATH [--image-prompt TEXT] [--image-steps N] [--image-ref PATH]]  image output\n"
       << "      [--video-out PATH [--video-prompt TEXT] [--video-frames N] [--video-steps N]]  video output\n"
       << "  umm-infer speech --url URL --model M --text TEXT --out PATH [--voice NAME] [--format wav|pcm] [--ref-audio PATH]\n"
+      << "  umm-infer render --url URL --kind image|video --prompt TEXT --out PATH [--size WxH] [--steps N] [--frames N] [--guidance F] [--seed N] [--teacache-thresh F] [--image PATH]\n"
       << "  umm-infer transcribe --url URL --model M --file audio.wav\n"
       << "  umm-infer realtime --url URL --model M --file audio.wav [--live-result]\n"
       << "  umm-infer voice --url URL --model M [--voice NAME]  opt-in full-duplex microphone + playback\n"
@@ -590,9 +591,9 @@ int main(int argc, char** argv) {
       if (command == "serve") return run_serve(options.flags);
       return run_stage(options.flags);
     }
-    if (command == "chat" || command == "speech" || command == "transcribe" ||
-        command == "realtime" || command == "voice" || command == "image" ||
-        command == "video") {
+    if (command == "chat" || command == "speech" || command == "render" ||
+        command == "transcribe" || command == "realtime" || command == "voice" ||
+        command == "image" || command == "video") {
       return umminfer::client::run_cli(command, argc, argv, &g_cancelled);
     }
   } catch (const FlagError& exc) {
