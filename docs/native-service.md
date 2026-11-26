@@ -568,6 +568,25 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 49 449-Frame Long-Video Temporal Sampling Stress Fixtures, Independent Oracle & Controlled Dual-Stack Harness (`c929ddc`):
+  - Harvested accepted Task #39 (`revisions=0`, CPU-only fixture/oracle/harness
+    gate): landed `benchmarks/video-temporal-long/` (4 reproducible 449-frame /
+    224.5 s H.264 clips with exact per-frame RGB hashes, PTS, B-frame packet
+    order, static intervals, scene cuts, separated motion, and 4-language
+    expectations), `python/umminfer_long_video_fixture.py`,
+    `python/umminfer_long_video_live.py`, `tests/video_temporal_long_live.py`,
+    `tests/long_video_temporal_test.py`, `selected_frame_content_fnv1a64`
+    native diagnostics in `native/qwen38/video_input.{cpp,hpp}` +
+    `native/stage_cli/qwen38_stage.cpp` + `native/qwen38_tests/test_video_input.cpp`,
+    `docs/video-temporal-long.md`, and updated `docs/video-temporal-live.md` /
+    `docs/architecture.md`.
+  - Verification: pinned-FFmpeg Linux `tests/long_video_temporal_test.py`
+    **13/13 PASS** (including byte-identical H.264 regeneration and deep oracle),
+    short & long `--self-check` PASS, `controlled_measurement_test.py`
+    **38/38 PASS**, `benchmarks/video-temporal-long/SHA256SUMS` **13/13 OK**.
+    Real SM90 generation, live latency, and perceptual quality remain
+    explicitly `NOT_RUN`.
+
 - Wave 48 Stage C Opt-In Exported-Token Joint-SFT Path & SM90 GPU 7 Dual-Path Equivalence Gate (`f344d1d`):
   - Harvested accepted Task #40 (`revisions=0`, isolated SM90 GPU 7 real
     `Qwen2.5-0.5B` BF16 AdamW gate): landed `--token-source legacy|token_export`
