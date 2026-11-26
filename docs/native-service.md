@@ -410,6 +410,18 @@ and `--web-root`:
     `{"policy": "temporal", "motion_threshold": 0.02, "scene_threshold": 0.25}`
     returning accurate motion understanding (`in_flight=0`).
 
+- Wave 36 Web UI & macOS `ummmlx` 4th Showcase Preset (`Temporal Video QA`) & Explicit `source=slot-0` Storyboard Preset (`3a53f89`):
+  - Added `temporal_video_qa` (`Temporal Video QA`: configures `temporal` frame
+    selection `0.02/0.25` + `allowTextOnly` + non-blocking attach-clip hint,
+    never auto-sends, resets to `uniform` when switching presets) and upgraded
+    `storyboard_i2v` to explicitly request `source=slot-0` anchor binding across
+    both Web UI (`web/index.html`) and macOS `ummmlx`:
+    - `web_ui_contract_test.py`: **17/17 PASS**; macOS `swift test`: **134/134 PASS**;
+      Release `ummmlx.app` rebuilt (`9.12 s`, zero `_AVKit_SwiftUI`).
+    - Zero-restart hot-deployed `web/index.html` (`.wave34` backup) live onto
+      SM90 `43301` (`data-preset="temporal_video_qa"` & `source=slot-0` verified
+      live, `/health in_flight=0`).
+
 - Wave 34 Web UI & macOS `ummmlx` Per-Turn Barge-In Cut-Point Badges & Real PCM16 Mic Level Meter (`e6d7291`):
   - Exposed real server-acknowledged spoken prefix cut-point badges
     (`Interrupted · <N> B spoken` / `Interrupted before audio` from observed
