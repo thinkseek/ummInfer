@@ -1,0 +1,491 @@
+{
+  "baseline_execution_commit": "df563436b3255fec7aed955c4ff18fe06ef0c706",
+  "candidate_execution_commit": "c2b383561236151e347516a701093f2f194e51c3",
+  "candidate_removal_commit": "44199d9fa323d3708074922ff63dd7ffc30ae69b",
+  "claims": {
+    "barge_in": "NOT_RUN",
+    "candidate_promotion": "NOT_PROMOTED",
+    "cross_modal_generation": "NOT_RUN",
+    "final_default_runtime_candidate": "REMOVED",
+    "generalized_quality": "NOT_COVERED",
+    "perceptual_quality": "NOT_RUN",
+    "physical_voice_playback": "NOT_RUN"
+  },
+  "cleanup": {
+    "physical_gpu": 1,
+    "post_stop_compute_processes": 0,
+    "post_stop_memory_mib": 3
+  },
+  "distributions": {
+    "baseline/driver-scene-change": {
+      "decode_prefill": {
+        "count": 16,
+        "cv": 0.006842171568176874,
+        "iqr_ms": 12.96474999999964,
+        "mad_ms": 4.418999999999983,
+        "max_ms": 1260.1309999999999,
+        "mean_ms": 1243.026625,
+        "median_ms": 1238.9755,
+        "min_ms": 1232.7359999999999,
+        "p95_ms": 1260.1309999999999
+      },
+      "first_text": {
+        "count": 16,
+        "cv": 0.015350691781837908,
+        "iqr_ms": 57.4923160020262,
+        "mad_ms": 27.51176618039608,
+        "max_ms": 1910.2267026901245,
+        "mean_ms": 1867.1238189563155,
+        "median_ms": 1863.4647456929088,
+        "min_ms": 1828.9240160956979,
+        "p95_ms": 1910.2267026901245
+      },
+      "first_voice": {
+        "count": 16,
+        "cv": 0.013886191579077766,
+        "iqr_ms": 57.681730249896646,
+        "mad_ms": 28.86253036558628,
+        "max_ms": 2130.2302833646536,
+        "mean_ms": 2086.826226208359,
+        "median_ms": 2083.5098465904593,
+        "min_ms": 2047.1981270238757,
+        "p95_ms": 2130.2302833646536
+      },
+      "public_total": {
+        "count": 16,
+        "cv": 0.008395214512920407,
+        "iqr_ms": 60.60531456023455,
+        "mad_ms": 27.432978618890047,
+        "max_ms": 3529.3430192396045,
+        "mean_ms": 3487.6914981286973,
+        "median_ms": 3483.461497351527,
+        "min_ms": 3449.461811222136,
+        "p95_ms": 3529.3430192396045
+      }
+    },
+    "baseline/phone-action": {
+      "decode_prefill": {
+        "count": 16,
+        "cv": 0.007013559771154022,
+        "iqr_ms": 14.872000000000071,
+        "mad_ms": 8.745000000000118,
+        "max_ms": 1258.0009999999997,
+        "mean_ms": 1243.7189375,
+        "median_ms": 1241.8635,
+        "min_ms": 1232.0459999999998,
+        "p95_ms": 1258.0009999999997
+      },
+      "first_text": {
+        "count": 16,
+        "cv": 0.016607428047407623,
+        "iqr_ms": 57.65169579535723,
+        "mad_ms": 27.51286095008254,
+        "max_ms": 1914.9766620248556,
+        "mean_ms": 1871.6931021772325,
+        "median_ms": 1864.2923412844539,
+        "min_ms": 1825.6092825904489,
+        "p95_ms": 1914.9766620248556
+      },
+      "first_voice": {
+        "count": 16,
+        "cv": 0.014808543020626693,
+        "iqr_ms": 56.664461037144065,
+        "mad_ms": 26.37428930029273,
+        "max_ms": 2134.801241569221,
+        "mean_ms": 2091.6192297590896,
+        "median_ms": 2082.9404988326132,
+        "min_ms": 2045.3054159879684,
+        "p95_ms": 2134.801241569221
+      },
+      "public_total": {
+        "count": 16,
+        "cv": 0.01081433272827708,
+        "iqr_ms": 57.57327959872782,
+        "mad_ms": 25.465758051723242,
+        "max_ms": 2885.048773139715,
+        "mean_ms": 2840.8933352911845,
+        "median_ms": 2832.5138385407627,
+        "min_ms": 2795.1213670894504,
+        "p95_ms": 2885.048773139715
+      }
+    },
+    "candidate/driver-scene-change": {
+      "decode_prefill": {
+        "count": 16,
+        "cv": 0.002811018188358159,
+        "iqr_ms": 5.350500000000011,
+        "mad_ms": 2.9774999999999636,
+        "max_ms": 1252.355,
+        "mean_ms": 1246.062625,
+        "median_ms": 1245.2365,
+        "min_ms": 1239.929,
+        "p95_ms": 1252.355
+      },
+      "first_text": {
+        "count": 16,
+        "cv": 0.017299150755658906,
+        "iqr_ms": 64.7471786942333,
+        "mad_ms": 17.563955392688513,
+        "max_ms": 1908.1051610410213,
+        "mean_ms": 1861.9999313959852,
+        "median_ms": 1848.1716280803084,
+        "min_ms": 1826.2172564864159,
+        "p95_ms": 1908.1051610410213
+      },
+      "first_voice": {
+        "count": 16,
+        "cv": 0.015522298254522227,
+        "iqr_ms": 64.68747812323272,
+        "mad_ms": 17.37163169309497,
+        "max_ms": 2128.135384991765,
+        "mean_ms": 2081.31832012441,
+        "median_ms": 2067.798818461597,
+        "min_ms": 2043.3232178911567,
+        "p95_ms": 2128.135384991765
+      },
+      "public_total": {
+        "count": 16,
+        "cv": 0.009369819918247995,
+        "iqr_ms": 62.67976458184421,
+        "mad_ms": 18.569065257906914,
+        "max_ms": 3532.728848978877,
+        "mean_ms": 3483.917213685345,
+        "median_ms": 3469.4165736436844,
+        "min_ms": 3446.6703683137894,
+        "p95_ms": 3532.728848978877
+      }
+    },
+    "candidate/phone-action": {
+      "decode_prefill": {
+        "count": 16,
+        "cv": 0.004630110876565694,
+        "iqr_ms": 6.067499999999882,
+        "mad_ms": 2.61200000000008,
+        "max_ms": 1259.731,
+        "mean_ms": 1246.3685625,
+        "median_ms": 1244.662,
+        "min_ms": 1236.812,
+        "p95_ms": 1259.731
+      },
+      "first_text": {
+        "count": 16,
+        "cv": 0.018150306805949167,
+        "iqr_ms": 73.34040245041251,
+        "mad_ms": 24.411555379629135,
+        "max_ms": 1918.3242209255695,
+        "mean_ms": 1864.8981471196748,
+        "median_ms": 1852.1264451555908,
+        "min_ms": 1826.0365389287472,
+        "p95_ms": 1918.3242209255695
+      },
+      "first_voice": {
+        "count": 16,
+        "cv": 0.016133922366642912,
+        "iqr_ms": 72.94350233860314,
+        "mad_ms": 24.476672522723675,
+        "max_ms": 2138.154262676835,
+        "mean_ms": 2083.786026283633,
+        "median_ms": 2070.660427212715,
+        "min_ms": 2045.7634087651968,
+        "p95_ms": 2138.154262676835
+      },
+      "public_total": {
+        "count": 16,
+        "cv": 0.011949454240245978,
+        "iqr_ms": 71.10358378849924,
+        "mad_ms": 24.61483096703887,
+        "max_ms": 2889.075357466936,
+        "mean_ms": 2835.5559672927484,
+        "median_ms": 2823.1759830377996,
+        "min_ms": 2797.3447060212493,
+        "p95_ms": 2889.075357466936
+      }
+    }
+  },
+  "execution": {
+    "default_frame_budget": 8,
+    "exact_paired_requests": 36,
+    "frame_selection_absent": true,
+    "measured_requests": 64,
+    "prefix_reused_all_zero": true,
+    "requests": 72,
+    "schedule": "baseline-A,candidate-B,candidate-C,baseline-D",
+    "warmup_requests": 8
+  },
+  "experiment": "umminfer_ns05_video_decode_prefill_before_after_v1",
+  "external_evidence": {
+    "bytes": 213197074,
+    "files": 1115,
+    "independent_verification_sha256": "e7214970d89559fc47adf7a58b443f348dc5d5592be1294ea38eec62ffd8459e",
+    "manifest_sha256": "2162149bed6ba77386de1144caec23e631bf20cc274d22da8b5c6188443deeb8",
+    "report_sha256": "85e516920dc87d188dcf02a347d6d79758b6737175f88acfbbcdbc6c3b749f23",
+    "self_excluded": [
+      "artifact-manifest.json",
+      "SHA256SUMS"
+    ],
+    "sha256sums_sha256": "40444a6edf40b571b3079a1e0274183b831fc98f3c4893e097f267d70b48ce2b"
+  },
+  "historical_revision0": {
+    "manifest_sha256": "8d65ffbdcc9c4a7e7913a86b2afaeb4b21f244f3f629a23efa9d4fc195c26501",
+    "public_total_improvement": 0.023266061979744568,
+    "required": 0.05,
+    "result": "FAIL_UNCHANGED",
+    "video_input_median_improvement": 0.0973
+  },
+  "identities": {
+    "asr_sha256": "de572724fb2aa0a046f311724f671fa2a708d3e87c3a6d5f727ed81aa1259452",
+    "baseline_vlm_sha256": "b82052b7ebdc96b17aecb795eb6034fbb84c2314612f91cc4f3bd11cc718900b",
+    "candidate_vlm_sha256": "5dfea715cb282eba0cbe1fa4ba470893b062e8ea77b590e9ac6635009fb67ad2",
+    "gateway_sha256": "ac9e81a42f1baa234497fddb9ec610ca8b0062c828c8a7459a16d9f5582cdab3",
+    "tts_sha256": "fab9e01cfdf6114a485cbf7a0251f23790acb0444e3bbafdc4d3ccb354794539"
+  },
+  "merge_commit": "d8a1bd3883793d5539b02f3a06ace1c335f9aeef",
+  "official_main": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "outliers": {
+    "by_cell": [
+      {
+        "case_id": "phone-action",
+        "count": 1,
+        "implementation": "candidate",
+        "metric": "decode_prefill"
+      }
+    ],
+    "count": 1
+  },
+  "paired_comparisons": {
+    "driver-scene-change/decode_prefill": {
+      "bootstrap_95_median_delta_ms": [
+        -5.192999999999984,
+        9.89500000000021
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.454498291015625,
+      "mad_delta_ms": 8.41599999999994,
+      "mean_delta_ms": 3.0360000000000156,
+      "median_delta_ms": 4.98800000000017,
+      "negative_pairs": 6,
+      "positive_pairs": 10,
+      "zero_pairs": 0
+    },
+    "driver-scene-change/first_text": {
+      "bootstrap_95_median_delta_ms": [
+        -11.262555606663227,
+        2.3077260702848434
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.454498291015625,
+      "mad_delta_ms": 7.956804241985083,
+      "mean_delta_ms": -5.123887560330331,
+      "median_delta_ms": -4.997512325644493,
+      "negative_pairs": 10,
+      "positive_pairs": 6,
+      "zero_pairs": 0
+    },
+    "driver-scene-change/first_voice": {
+      "bootstrap_95_median_delta_ms": [
+        -13.523152098059654,
+        3.14332265406847
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.803619384765625,
+      "mad_delta_ms": 9.132068138569593,
+      "mean_delta_ms": -5.50790608394891,
+      "median_delta_ms": -6.30220677703619,
+      "negative_pairs": 9,
+      "positive_pairs": 7,
+      "zero_pairs": 0
+    },
+    "driver-scene-change/public_total": {
+      "bootstrap_95_median_delta_ms": [
+        -12.430447153747082,
+        3.862207755446434
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.803619384765625,
+      "mad_delta_ms": 8.726710919290781,
+      "mean_delta_ms": -3.7742844433523715,
+      "median_delta_ms": -3.4165275283157825,
+      "negative_pairs": 9,
+      "positive_pairs": 7,
+      "zero_pairs": 0
+    },
+    "phone-action/decode_prefill": {
+      "bootstrap_95_median_delta_ms": [
+        -6.132999999999811,
+        9.055000000000064
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 1.0,
+      "mad_delta_ms": 8.210999999999785,
+      "mean_delta_ms": 2.6496250000000146,
+      "median_delta_ms": 3.347499999999968,
+      "negative_pairs": 8,
+      "positive_pairs": 8,
+      "zero_pairs": 0
+    },
+    "phone-action/first_text": {
+      "bootstrap_95_median_delta_ms": [
+        -14.791952446103096,
+        4.556699655950069
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.454498291015625,
+      "mad_delta_ms": 11.45666977390647,
+      "mean_delta_ms": -6.794955057557672,
+      "median_delta_ms": -8.362652733922005,
+      "negative_pairs": 10,
+      "positive_pairs": 6,
+      "zero_pairs": 0
+    },
+    "phone-action/first_voice": {
+      "bootstrap_95_median_delta_ms": [
+        -15.499281696975231,
+        3.3530211076140404
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.454498291015625,
+      "mad_delta_ms": 12.486568186432123,
+      "mean_delta_ms": -7.833203475456685,
+      "median_delta_ms": -7.359620183706284,
+      "negative_pairs": 10,
+      "positive_pairs": 6,
+      "zero_pairs": 0
+    },
+    "phone-action/public_total": {
+      "bootstrap_95_median_delta_ms": [
+        -14.436084777116776,
+        6.278586108237505
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.803619384765625,
+      "mad_delta_ms": 11.386086698621511,
+      "mean_delta_ms": -5.337367998436093,
+      "median_delta_ms": -7.578281220048666,
+      "negative_pairs": 9,
+      "positive_pairs": 7,
+      "zero_pairs": 0
+    }
+  },
+  "preregistration_sha256": "8851708654b5f464ed7ea5e07739b5667baf639430a6d49c809c08ed2466d8ae",
+  "promotion": {
+    "candidate_promotion": false,
+    "disposition": "NOT_PROMOTED",
+    "driver_scene_change_first_voice": {
+      "bootstrap_95_median_delta_ms": [
+        -13.523152098059654,
+        3.14332265406847
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.803619384765625,
+      "mad_delta_ms": 9.132068138569593,
+      "mean_delta_ms": -5.50790608394891,
+      "median_delta_ms": -6.30220677703619,
+      "negative_pairs": 9,
+      "positive_pairs": 7,
+      "zero_pairs": 0
+    },
+    "phone_action_first_voice": {
+      "bootstrap_95_median_delta_ms": [
+        -15.499281696975231,
+        3.3530211076140404
+      ],
+      "count": 16,
+      "exact_two_sided_sign_test_p": 0.454498291015625,
+      "mad_delta_ms": 12.486568186432123,
+      "mean_delta_ms": -7.833203475456685,
+      "median_delta_ms": -7.359620183706284,
+      "negative_pairs": 10,
+      "positive_pairs": 6,
+      "zero_pairs": 0
+    },
+    "reason": "Both first-voice paired bootstrap intervals cross zero and sign tests are nonsignificant; default-eight input does not execute the 16-frame candidate."
+  },
+  "quality": {
+    "baseline/driver-scene-change": {
+      "hits": 0,
+      "misses": 16,
+      "total": 16,
+      "unique_missed_answers": [
+        {
+          "answer": "The driver stops talking on the phone and looks at the camera.",
+          "count": 16
+        }
+      ]
+    },
+    "baseline/phone-action": {
+      "hits": 0,
+      "misses": 16,
+      "total": 16,
+      "unique_missed_answers": [
+        {
+          "answer": "He holds it to his ear to talk.",
+          "count": 16
+        }
+      ]
+    },
+    "candidate/driver-scene-change": {
+      "hits": 0,
+      "misses": 16,
+      "total": 16,
+      "unique_missed_answers": [
+        {
+          "answer": "The driver stops talking on the phone and looks at the camera.",
+          "count": 16
+        }
+      ]
+    },
+    "candidate/phone-action": {
+      "hits": 0,
+      "misses": 16,
+      "total": 16,
+      "unique_missed_answers": [
+        {
+          "answer": "He holds it to his ear to talk.",
+          "count": 16
+        }
+      ]
+    }
+  },
+  "regressions_over_1_percent": [],
+  "schema_version": 1,
+  "source": {
+    "bytes": 19821335,
+    "continuous_source_interval_seconds": [
+      30,
+      150
+    ],
+    "derivative_sha256": "ffef335edc161a2f6dead512e0fde96cf48fb997ae6b6491067e36c76eec58d0",
+    "duration_seconds": 120.0,
+    "frames": 3600,
+    "license": "CC-BY-4.0",
+    "license_sha256": "e7edaaaeb0cd6da6a3dd97c54f3e8443ef027be685253fab64bf6eed2419ee7e",
+    "looping_or_synthetic": false,
+    "multi_shot_real_natural": true,
+    "upstream_commit": "57978890822836f2b4743852f04f62fc511757e4",
+    "upstream_repository": "https://github.com/intel-iot-devkit/sample-videos",
+    "upstream_sha256": "fd24e652c92a5759127aa9c7f23fea63d73aebb4bcea72763abe72ef06a20cf0"
+  },
+  "task72_non_regression": {
+    "answers_exact_to_baseline": 320,
+    "latency_outliers": 0,
+    "misses": 18,
+    "native_semantics_exact_to_baseline": 320,
+    "parity_checks": 304,
+    "quality_hits": {
+      "default-8": 42,
+      "temporal-4": 48,
+      "temporal-8": 42,
+      "uniform-4": 48,
+      "uniform-8": 42
+    },
+    "report_sha256": "94e3973ccb01f53fa44f3c1709960d46fafba47db92c0133346b7c0eac500443",
+    "requests": 320,
+    "verification_sha256": "4e638e0707cd1cb0a5eab8e1bbfe5545b1377f65942f68df9e08336f97db7dfe"
+  },
+  "thresholds": {
+    "first_text_p95_max_ms": 1918.3242209255695,
+    "first_voice_p95_max_ms": 2138.154262676835,
+    "limit_ms": 3000,
+    "passed": true
+  }
+}

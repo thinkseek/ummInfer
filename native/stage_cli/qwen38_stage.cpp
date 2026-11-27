@@ -177,6 +177,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     std::vector<double> video_timestamps;
     bool is_video = false;
     int image_tokens = 0;
+    double video_input_ms = 0.0;
     if (!input.image_url.empty()) {
       image = std::make_unique<qwen38::PreprocessedImage>(decode_image(input.image_url));
       if (image->grid_t != 1) {
@@ -192,8 +193,11 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       selection.motion_threshold = input.frame_selection.motion_threshold;
       selection.scene_threshold = input.frame_selection.scene_threshold;
       try {
+        const auto video_started = std::chrono::steady_clock::now();
         decoded_video = std::make_unique<qwen38::DecodedVideo>(
             qwen38::decode_video_bytes(load_video_bytes(input.video_url), selection));
+        video_input_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - video_started).count();
       } catch (const std::exception& error) {
         throw ProtocolError(std::string("video decode failed: ") + error.what());
       }
@@ -203,6 +207,7 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       is_video = true;
       image_tokens = (image->grid_h * image->grid_w) / 4;
     }
+    const auto prompt_started = std::chrono::steady_clock::now();
     std::vector<qwen38::ChatTurn> turns;
     turns.reserve(input.messages.size() + 1);
     bool any_marked = false;
@@ -334,6 +339,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
       pending_utf8.erase(0, safe);
     };
 
+    const double prompt_prep_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - prompt_started).count();
     qwen38::GenResult result;
     try {
       if (engine->batch_capacity() > 1) {
@@ -387,6 +394,12 @@ CancellableComputeFn make_compute(const StageOptions& options) {
         << result.decode_ms
         << " decode_tok_per_s=" << std::fixed << std::setprecision(1)
         << decode_tok_s
+        << " video_input_ms=" << std::fixed << std::setprecision(3)
+        << video_input_ms
+        << " prompt_prep_ms=" << prompt_prep_ms
+        << " unattributed_ms="
+        << (static_cast<double>(elapsed.count()) - video_input_ms - prompt_prep_ms -
+            result.vision_ms - result.prefill_ms - result.decode_ms)
         << " elapsed_ms=" << elapsed.count() << "\n";
     std::cerr << log.str();
     Value output = omni_result(text, static_cast<int>(result.ids.size()),

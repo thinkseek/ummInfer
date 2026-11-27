@@ -12,6 +12,19 @@
 
 namespace umminfer::qwen38 {
 
+struct VideoDecodeProfile {
+  double input_write_ms = 0.0;
+  double probe_ms = 0.0;
+  double ffmpeg_decode_rgb_ms = 0.0;
+  double rgb_split_ms = 0.0;
+  double content_fingerprint_ms = 0.0;
+  double temporal_analysis_ms = 0.0;
+  double frame_selection_ms = 0.0;
+  double selection_copy_ms = 0.0;
+  double temporal_pack_ms = 0.0;
+  double total_ms = 0.0;
+};
+
 struct DecodedVideo {
   PreprocessedImage preprocessed;
   // One timestamp per native temporal-2 slice: the first selected source frame
@@ -47,5 +60,12 @@ DecodedVideo preprocess_temporal_candidates(
 // alone uses the bounded candidate decoder and source presentation timestamps.
 DecodedVideo decode_video_bytes(std::string_view bytes,
                                 const VideoFrameSelection& options = {});
+
+// Diagnostic-only variant. The production entry point above passes no profile
+// and performs no timing-clock reads. Stage boundaries match the implementation;
+// FFmpeg demux/decode/RGB conversion/scaling share one child-process boundary.
+DecodedVideo decode_video_bytes_profiled(std::string_view bytes,
+                                         const VideoFrameSelection& options,
+                                         VideoDecodeProfile* profile);
 
 }  // namespace umminfer::qwen38

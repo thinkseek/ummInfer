@@ -291,6 +291,14 @@ output allocation; candidate (64) and final patch (3584) ceilings cannot be
 raised through the API. See `video_sampling.*`, `video_input.*`, and
 `native/qwen38_tests/test_video_input.cpp`.
 
+A historical non-exact 16-frame second-resize candidate used at most four workers,
+but it is **not present in the current runtime**. Revision 0 failed its frozen 5%
+public-total gate; the direct default-eight NS-05 evaluation then found no
+statistically robust gain, so the candidate was marked `NOT_PROMOTED` and removed.
+The measured diagnostics and exact-parity controls remain in
+[video-decode-prefill](../../docs/video-decode-prefill.md) and the linked NS-05
+report.
+
 ## Known limitations
 
 - Sampling supports `temperature`, `top_p`, and signed `seed`; no `top_k` knob.

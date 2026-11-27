@@ -1,0 +1,222 @@
+{
+  "format": "umminfer-ns03-routing-suite-v1",
+  "rubric_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "classes": {
+    "text": {"images": 0, "videos": 0},
+    "static": {"images": 1, "videos": 0},
+    "dynamic": {"images": 0, "videos": 1},
+    "followup": {"images": 0, "videos": 0}
+  },
+  "cases": [
+    {
+      "id": "dev-text-01", "population": "development", "class": "text", "language": "en",
+      "prompt": "Prove that there are infinitely many prime numbers. Give a rigorous proof in prose and equations."
+    },
+    {
+      "id": "dev-text-02", "population": "development", "class": "text", "language": "en",
+      "prompt": "Write a Python function that returns the longest palindromic substring. Explain its time complexity; do not draw a picture."
+    },
+    {
+      "id": "dev-text-03", "population": "development", "class": "text", "language": "zh",
+      "prompt": "用反证法证明根号二是无理数，只需文字和公式，不要生成任何图片。"
+    },
+    {
+      "id": "dev-text-04", "population": "development", "class": "text", "language": "fr",
+      "prompt": "Explique la complexité moyenne et le pire cas du tri rapide. Réponds en français, sans graphique ni illustration."
+    },
+    {
+      "id": "dev-text-05", "population": "development", "class": "text", "language": "en", "adversarial_visual_nouns": true,
+      "prompt": "In an article comparing JPEG and PNG, explain when each format is preferable. This is a text question about formats: do not generate either kind of image."
+    },
+    {
+      "id": "dev-static-01", "population": "development", "class": "static", "language": "en",
+      "prompt": "Explain Transformer masked self-attention and include exactly one clear structure diagram showing tokens, the causal mask, attention weights, and output."
+    },
+    {
+      "id": "dev-static-02", "population": "development", "class": "static", "language": "zh",
+      "prompt": "画一张清晰的双层住宅剖面示意图，标出客厅、楼梯、卧室和承重墙，并简短说明布局。只要一张静图。"
+    },
+    {
+      "id": "dev-static-03", "population": "development", "class": "static", "language": "fr",
+      "prompt": "Dessine une seule coupe anatomique étiquetée d'une cellule végétale, puis explique brièvement le noyau, la vacuole et la chloroplaste. Pas de vidéo."
+    },
+    {
+      "id": "dev-static-04", "population": "development", "class": "static", "language": "en",
+      "prompt": "Use one labeled top-down image to show a six-person round-table seating plan where Ada faces Grace, Lin sits to Ada's left, and the empty chair is opposite Lin."
+    },
+    {
+      "id": "dev-static-05", "population": "development", "class": "static", "language": "ja",
+      "prompt": "太陽系の八大惑星の相対位置を一枚の静止した構造図で示し、日本語で短く説明してください。動画は不要です。"
+    },
+    {
+      "id": "dev-dynamic-01", "population": "development", "class": "dynamic", "language": "en",
+      "prompt": "Demonstrate the evolution of a double pendulum's chaotic motion with one native video, and briefly explain the changing trajectories."
+    },
+    {
+      "id": "dev-dynamic-02", "population": "development", "class": "dynamic", "language": "zh",
+      "prompt": "用一段原生视频演示一滴墨水滴入清水后扩散的全过程，再简要解释扩散与混合。"
+    },
+    {
+      "id": "dev-dynamic-03", "population": "development", "class": "dynamic", "language": "en",
+      "prompt": "Show one video of a four-stroke engine completing intake, compression, power, and exhaust, with the piston and valves moving in sync."
+    },
+    {
+      "id": "dev-dynamic-04", "population": "development", "class": "dynamic", "language": "es",
+      "prompt": "Genera un solo vídeo que muestre cómo una mariposa abre las alas y despega de una flor; añade una explicación breve en español."
+    },
+    {
+      "id": "dev-dynamic-05", "population": "development", "class": "dynamic", "language": "ja",
+      "prompt": "ばねを伝わる横波の進行を一本の動画で示し、媒質の振動と波の進行方向の違いを日本語で説明してください。"
+    },
+    {
+      "id": "dev-followup-01", "population": "development", "class": "followup", "language": "en",
+      "setup": {
+        "prompt": "Explain Euclid's proof that primes are infinite in exactly three short numbered steps, using text only.",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "Expand the second step with more algebraic detail.",
+      "context_any": [["product", "multiply", "multiplication"], ["plus one", "+ 1", "+1"]]
+    },
+    {
+      "id": "dev-followup-02", "population": "development", "class": "followup", "language": "en",
+      "setup": {
+        "prompt": "Describe binary search in exactly three numbered steps: initialize bounds, inspect the midpoint, then update one bound. Use prose only.",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "Why is that update in your second explanation necessary, and what invariant does it preserve?",
+      "context_any": [["midpoint", "middle", "mid"], ["invariant", "sorted", "eliminate"]]
+    },
+    {
+      "id": "dev-followup-03", "population": "development", "class": "followup", "language": "zh",
+      "setup": {
+        "prompt": "仅用文字把光合作用分成三个编号步骤：光反应、卡尔文循环、糖的输出。",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "把刚才第二步展开说明，尤其说明二氧化碳去了哪里。",
+      "context_any": [["卡尔文", "calvin"], ["二氧化碳", "co₂", "co2", "碳"]]
+    },
+    {
+      "id": "dev-followup-04", "population": "development", "class": "followup", "language": "es",
+      "setup": {
+        "prompt": "Explica en exactamente tres pasos numerados y solo con texto cómo preparar té: calentar agua, infusionar las hojas y servir.",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "Detalla el segundo paso e indica qué ocurre con las hojas.",
+      "context_any": [["hojas"], ["infus", "remoj", "sabor", "compuestos"]]
+    },
+    {
+      "id": "dev-followup-05", "population": "development", "class": "followup", "language": "en", "adversarial_visual_nouns": true,
+      "setup": {
+        "prompt": "Draft a text-only design note with three sections: 1 API, 2 data schema for a user with id and email, 3 tests. Keep it short.",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "Expand the second section and clarify the two fields. No diagram is needed.",
+      "context_any": [["id"], ["email"]]
+    },
+    {
+      "id": "hold-text-01", "population": "heldout", "class": "text", "language": "ja",
+      "prompt": "数学的帰納法で 1 から n までの整数の和が n(n+1)/2 であることを証明してください。文章と式だけで答えてください。"
+    },
+    {
+      "id": "hold-text-02", "population": "heldout", "class": "text", "language": "en",
+      "prompt": "Write a Rust function that reverses a UTF-8 string by Unicode scalar values, and explain why reversing raw bytes is invalid. No illustration."
+    },
+    {
+      "id": "hold-text-03", "population": "heldout", "class": "text", "language": "es",
+      "prompt": "Demuestra que la suma de dos números pares es par. Usa únicamente una demostración algebraica escrita, sin imágenes."
+    },
+    {
+      "id": "hold-text-04", "population": "heldout", "class": "text", "language": "ar",
+      "prompt": "اكتب دالة بايثون تتحقق من أن قوسي وتعبير الرياضي متوازنان، واشرح الفكرة نصياً من دون إنشاء صورة."
+    },
+    {
+      "id": "hold-text-05", "population": "heldout", "class": "text", "language": "en", "adversarial_visual_nouns": true,
+      "prompt": "Explain the historical meaning of the phrase 'moving pictures' in two paragraphs. The words are the subject, not a request for an animation or video."
+    },
+    {
+      "id": "hold-static-01", "population": "heldout", "class": "static", "language": "es",
+      "prompt": "Dibuja un único diagrama estático y etiquetado de un circuito en serie con batería, interruptor y dos bombillas; añade una explicación breve."
+    },
+    {
+      "id": "hold-static-02", "population": "heldout", "class": "static", "language": "zh",
+      "prompt": "用一张清晰的静力结构示意图展示简支桥的桥跨、两个桥墩和向下的载荷，并用中文简短解释。"
+    },
+    {
+      "id": "hold-static-03", "population": "heldout", "class": "static", "language": "en",
+      "prompt": "Create exactly one exploded-view image of a mechanical keyboard showing keycaps, switches, plate, PCB, and case, with a short explanation."
+    },
+    {
+      "id": "hold-static-04", "population": "heldout", "class": "static", "language": "de",
+      "prompt": "Zeichne genau ein beschriftetes Standbild vom Aufbau eines Kühlschranks mit Kompressor, Kondensator, Verdampfer und Expansionsventil. Kein Video."
+    },
+    {
+      "id": "hold-static-05", "population": "heldout", "class": "static", "language": "en", "adversarial_visual_nouns": true,
+      "prompt": "Show the four chambers of the human heart and the direction of blood flow in one static anatomical diagram, explicitly not an animation or moving image."
+    },
+    {
+      "id": "hold-dynamic-01", "population": "heldout", "class": "dynamic", "language": "fr",
+      "prompt": "Crée une seule vidéo montrant l'évolution d'une onde de pendules dont les longueurs diffèrent, puis explique brièvement les motifs changeants."
+    },
+    {
+      "id": "hold-dynamic-02", "population": "heldout", "class": "dynamic", "language": "zh",
+      "prompt": "生成一段视频演示月球绕地球运行时月相从新月到满月的变化过程，并用中文简要解释。"
+    },
+    {
+      "id": "hold-dynamic-03", "population": "heldout", "class": "dynamic", "language": "en",
+      "prompt": "Animate one video of bubble sort transforming [5, 1, 4, 2] into sorted order, showing each swap, then explain the process briefly."
+    },
+    {
+      "id": "hold-dynamic-04", "population": "heldout", "class": "dynamic", "language": "ar",
+      "prompt": "أنشئ مقطع فيديو واحداً يوضح دورة الماء: التبخر ثم التكاثف ثم هطول المطر، مع شرح عربي موجز."
+    },
+    {
+      "id": "hold-dynamic-05", "population": "heldout", "class": "dynamic", "language": "de",
+      "prompt": "Erzeuge genau ein Video, das die Drehbewegung und Kraftübertragung zweier ineinandergreifender Zahnräder zeigt, mit einer kurzen deutschen Erklärung."
+    },
+    {
+      "id": "hold-followup-01", "population": "heldout", "class": "followup", "language": "en",
+      "setup": {
+        "prompt": "Explain in exactly three short numbered steps how to make pour-over coffee: rinse the filter, bloom the grounds, then pour the remaining water. Text only.",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "Expand your second step and explain why the coffee grounds need that pause.",
+      "context_any": [["bloom", "grounds"], ["carbon dioxide", "co2", "co₂", "gas", "degas"]]
+    },
+    {
+      "id": "hold-followup-02", "population": "heldout", "class": "followup", "language": "zh",
+      "setup": {
+        "prompt": "仅用文字用三个编号步骤解释快速排序：选择基准、分区、递归处理两侧。",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "展开刚才第二步，说明分区后基准的位置有什么保证。",
+      "context_any": [["分区", "partition"], ["基准", "pivot"], ["左", "右"]]
+    },
+    {
+      "id": "hold-followup-03", "population": "heldout", "class": "followup", "language": "fr",
+      "setup": {
+        "prompt": "Explique en exactement trois étapes numérotées et sans image le protocole TCP: SYN, SYN-ACK, puis ACK.",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "Détaille la deuxième étape et précise qui envoie ce message à qui.",
+      "context_any": [["syn-ack", "syn ack"], ["serveur", "server"], ["client"]]
+    },
+    {
+      "id": "hold-followup-04", "population": "heldout", "class": "followup", "language": "ja",
+      "setup": {
+        "prompt": "パン作りを、計量、こね、発酵の短い三番号付き手順で文章だけ説明してください。",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "さきほどの二手順目を詳しくし、グルテンの役割を説明してください。",
+      "context_any": [["こね", "捏ね"], ["グルテン", "gluten"]]
+    },
+    {
+      "id": "hold-followup-05", "population": "heldout", "class": "followup", "language": "en", "adversarial_visual_nouns": true,
+      "setup": {
+        "prompt": "Give exactly three short numbered text steps for debugging a blank screen: verify power, inspect the error log, then test a minimal component. Do not generate a picture.",
+        "expected": {"images": 0, "videos": 0}
+      },
+      "prompt": "Expand the second step: which error-log details should I compare with the minimal component?",
+      "context_any": [["log"], ["error", "exception", "stack", "timestamp", "message"]]
+    }
+  ]
+}

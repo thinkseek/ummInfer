@@ -1,0 +1,133 @@
+{
+  "format": "umminfer-ns03-routing-preregistration-v1",
+  "rubric": "docs/north-star-cases.md#ns-03",
+  "rubric_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "suite": "suite.json",
+  "suite_sha256": "35769692293fb99828ad23f40f1eaf3dd154b4c3c7e9b66b21d71ee27f61b097",
+  "freeze_rule": "Frozen by tests/ns03_routing.py freeze before the first model output; suite and scoring changes are forbidden.",
+  "population_order": [
+    "development",
+    "heldout"
+  ],
+  "class_order": [
+    "text",
+    "static",
+    "dynamic",
+    "followup"
+  ],
+  "minimum_cases_per_class_per_population": 5,
+  "public_client_contract": {
+    "source": "web/index.html default fresh localStorage state",
+    "endpoint_path": "/v1/chat/completions",
+    "model": "qwen3-native",
+    "stream": true,
+    "max_tokens": 256,
+    "temperature": 0,
+    "top_p": "OMITTED",
+    "seed": "OMITTED",
+    "modalities_in_order": [
+      "text",
+      "image",
+      "video",
+      "audio"
+    ],
+    "image": {
+      "size": "512x512",
+      "output_format": "png"
+    },
+    "video": {
+      "size": "704x480",
+      "output_format": "mp4",
+      "seconds": 2,
+      "num_frames": 29,
+      "steps": 25,
+      "guidance_scale": 5.0
+    },
+    "audio": {
+      "voice": "vivian",
+      "format": "wav",
+      "stream": true
+    },
+    "narrative": {
+      "enabled": true,
+      "visual_mode": "auto",
+      "max_slots": 3,
+      "allow_text_only": true
+    },
+    "continuity_mode": "OMITTED_DEFAULT_OFF",
+    "style_anchor": "OMITTED",
+    "teacache_thresh": "OMITTED_FAST_VIDEO_OFF",
+    "frame_selection": "OMITTED_NO_INPUT_VIDEO",
+    "session_id": "unique per case and arm",
+    "session_history": "false/omitted on first turns; true only on a follow-up after its real setup terminal",
+    "user_actions": [
+      "type or speak",
+      "ordinary follow-up"
+    ],
+    "forbidden_changes": [
+      "manual modality toggle",
+      "new preset",
+      "frame-budget control",
+      "backend substitution",
+      "training"
+    ]
+  },
+  "execution": {
+    "hardware": "one explicitly idle physical NVIDIA Hopper SM90 GPU 1 in the established remote container",
+    "server": "task-owned public umm-infer serve with --session-history on an ephemeral loopback port",
+    "stages": "real serial Qwen3.8-27B VLM, FLUX.2-klein-4B image, Qwen3-TTS-12Hz-1.7B-CustomVoice PCM, native Wan2.2-TI2V-5B video; only GPU 1",
+    "order": "development Before first; one bounded candidate may then be frozen; only after candidate freeze may development After and either held-out arm run",
+    "arm_order_after_candidate_freeze": [
+      "development/after",
+      "heldout/before",
+      "heldout/after"
+    ],
+    "case_order": "suite order; setup immediately precedes its follow-up in the same fresh session",
+    "request_timeout_seconds": 1200,
+    "retry_policy": "no model-request retries; transport, timeout, media, and protocol failures are retained as failures",
+    "media": "decode every real image/video with ffmpeg and require nonempty PCM16 audio; retain raw SSE and content-addressed artifacts outside Git",
+    "cleanup": "stop only recorded task-owned process ids, require in_flight=0, recheck GPU 1"
+  },
+  "decision_extraction": {
+    "source": "public unified visual_slot events in each raw SSE stream",
+    "artifacts": "reassembled contiguous base64 artifact chunks with final SHA-256 checked",
+    "route": "ordered image/video slot modalities; duplicate or unknown-slot artifacts are protocol errors, not silently ignored",
+    "clean_text": "concatenated public vlm_delta text must equal complete terminal text and contain no [[image/video/visual: directive",
+    "terminal": "exactly one complete unified terminal, final event, and exactly one final [DONE]",
+    "voice": "one or more complete audio/pcm artifacts with nonempty even-byte PCM16 payloads",
+    "pending_leak": "any pending/running terminal leg or unmatched visual slot is an error",
+    "cross_session": "any event whose public request/session identity differs from the case is an error"
+  },
+  "scoring": {
+    "routing_correct": "expected image/video slot counts exactly, one clean complete terminal, and no public protocol error; media decode and voice are reported separately",
+    "end_to_end_correct": "routing_correct plus every slot has exactly one valid decoded artifact, no extra visual artifact, and voice is present",
+    "followup_correct": "routing_correct, valid voice and artifacts, and every context_any group has at least one casefolded substring in the follow-up response; the real setup must have completed and the follow-up request must set session_history=true in the same session",
+    "miss_case": "routing_correct=false with fewer than the expected visual count or wrong modality",
+    "redundant_visual_case": "at least one image/video slot on a zero-visual case, or more visual slots than the frozen expected total on static/dynamic cases",
+    "redundant_visual_rate": "redundant_visual_case count divided by all cases in the same arm/population; zero-visual and excess-visual cases remain separate misses as applicable",
+    "redundant_visual_slot_rate": "zero-case visual slots plus positive excess slot count divided by all frozen expected visual slots; reported diagnostically, not the owner gate",
+    "redundant_artifact_case": "same definition applied to valid real visual artifacts; reported separately and never used to hide a redundant slot",
+    "ambiguous": "HTTP/transport/parser evidence prevents decision extraction; counted incorrect and retained, never relabeled",
+    "primary_populations": [
+      "development",
+      "heldout",
+      "all"
+    ],
+    "class_aggregates": "each of text/static/dynamic/followup within each population and all"
+  },
+  "statistics": {
+    "paired_test": "two-sided exact McNemar sign test over Before/After routing-correct discordant pairs, including zero-discordance p=1",
+    "effect": "After minus Before routing accuracy in percentage points with paired improved/worsened counts",
+    "interval": "Wilson 95% interval for each arm's routing accuracy; descriptive only",
+    "multiple_comparisons": "none; primary exact paired test is all 40 cases, population tests are descriptive"
+  },
+  "promotion": {
+    "owner_routing_accuracy_min": 0.8,
+    "owner_redundant_visual_rate_max_exclusive": 0.05,
+    "rubric_hard_ideal_routing_accuracy_min": 0.9,
+    "applies_to": "After/all and After/heldout, each reported independently; heldout gates promotion and all is the paired primary",
+    "gain_rule": "verifiable positive paired After routing gain over Before/all, no heldout regression, and all protocol/media evidence retained",
+    "otherwise": "NOT_PROMOTED and remove candidate from final default runtime",
+    "physical_perceptual_quality": "NOT_RUN"
+  }
+}

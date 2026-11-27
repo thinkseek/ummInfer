@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "experiment": "qwen38_natural_video_decode_prefill_throughput_v1",
+  "preregistered_on": "2026-11-27",
+  "official_main": "a4320e7678748a2336f74e3c2477c21b30805fb8",
+  "candidate_selection": {
+    "state": "SELECTED_AFTER_PROFILE_BEFORE_CANDIDATE_EDIT",
+    "initial_preregistration_commit": "f14afe94bec2d00638b4a02c7b1795e0f77719de",
+    "initial_preregistration_sha256": "baf1b58978bea2dcee723fe106e4778be2b463877d5ffab81ffdc9777cdde1b2",
+    "diagnostic_commit": "7249be82062a47e28bd84e3928a3996e70850433",
+    "diagnostic_binary_sha256": "d7b27c14262ee4188228f1a82f50ebdb0f5a6f3ed0a68dae7e0af612d2d63fe9",
+    "natural_full_temporal16_remote_median_ms": {
+      "decode_video_total": 511.496,
+      "temporal2_pack": 68.209,
+      "ffmpeg_decode_rgb": 339.263,
+      "temporal_analysis": 7.760,
+      "frame_selection": 0.006,
+      "rgb_split": 4.005
+    },
+    "selected_candidate": "Parallelize the existing independent per-frame bicubic resize computations with at most four workers only for non-exact 16-frame video inputs. Preserve each frame's scalar bicubic arithmetic, output index, duplicated odd tail, dimensions, and subsequent serial packing. Keep exact-size and smaller-budget paths serial and unchanged.",
+    "mechanism": "The 68.209 ms packing stage includes a redundant second host resize for the 16-frame budget: historical FFmpeg scaling uses a fixed four-slice cap (256x480 here), while preprocessing correctly applies the eight-slice cap (224x448). Changing FFmpeg dimensions would change selected RGB and is forbidden. Each existing float resize is independent, so bounded frame-level parallelism reduces latency with bit-identical arithmetic and no reordering.",
+    "rejected_before_final_candidate": {
+      "variant": "direct patch pointers and 256-entry normalization LUT, then direct pointers with scalar normalization",
+      "local_temporal16_pack_median_ms": [79.161, 79.360],
+      "baseline_local_temporal16_pack_median_ms": 78.538,
+      "result": "NO_IMPROVEMENT; both variants reverted before the bounded-parallel candidate edit; exact semantic binaries passed and raw patches/profiles are retained externally"
+    },
+    "rejected_simd_variant": {
+      "variant": "runtime-dispatched AVX2/SSSE3 exact-size packing",
+      "local_temporal16_pack_median_ms": 77.599,
+      "result": "NO_PRIMARY_IMPROVEMENT; diagnostics established that 16-frame input is non-exact (FFmpeg 256x480 then host 224x448), so the SIMD exact-size path was unreachable. Reverted; exact semantic binaries passed and raw patch/profile retained externally"
+    },
+    "rejected_parallel_variant": {
+      "variant": "four-way exact-size temporal-slice parallelism for grid_t=8",
+      "local_temporal16_pack_median_ms": 74.019,
+      "baseline_local_temporal16_pack_median_ms": 78.538,
+      "result": "INSUFFICIENT_IMPROVEMENT; reverted before SIMD candidate edit; exact semantic binaries passed and raw patch/profile retained externally"
+    },
+    "rule": "Select at most one measured host/CUDA/FFmpeg bottleneck. Do not edit a runtime candidate before recording its mechanism and binding it to this protocol. If no plausible candidate can meet the primary gate, stop with diagnostic evidence.",
+    "forbidden_changes": [
+      "training, optimizer, LoRA, and synthetic-geometry work",
+      "selector thresholds, ordering, budgets, anchors, source PTS, temporal-2 packing, mRoPE, model or sampling semantics",
+      "public request/response schemas, cancellation behavior, Task 61/66/72 controls",
+      "new media downloads, procedural substitutes, docs/index.html, and docs/assets/umminfer-showcase-*"
+    ]
+  },
+  "sources": {
+    "throughput": {
+      "id": "natural-full-330",
+      "origin": "existing Git blob at a5d41d39ac6567da53a6ddbb2c4a4534bfdd9104:docs/assets/umminfer-apple-16x9.mp4",
+      "git_blob_sha1": "fa078dc543b273922dfc8c07e74f63306778a3ed",
+      "sha256": "81178f8af6c859d908cd6fa4a5348ed9bbe271c071a94a196ff2488c63f0db2e",
+      "codec": "h264",
+      "width": 1920,
+      "height": 1080,
+      "frames": 330,
+      "fps": "30/1",
+      "duration_seconds": 11.0,
+      "b_frames": 2,
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "asset_class": "EXISTING_APACHE_2_0_NATURAL_FOOTAGE_NOT_DOWNLOADED_NOT_PROCEDURAL"
+    },
+    "functional_controls": {
+      "task72_bundle": "benchmarks/video-temporal-natural",
+      "task72_manifest_sha256": "10a7a68244be10ce38565e6ae4f7e97b23a83f1717ea083728e51d4ca44204db",
+      "task72_preregistration_sha256": "bec705e56732adab907731da53c139ff953ff184fe0b66df1fb43801ba11e7e2",
+      "task72_sha256sums_sha256": "be929f176f7d67fb7fe5764e8880b72e7f1dda6c02f6a5ea36633ad91d069eaa",
+      "task66_bundle": "benchmarks/video-temporal-heldout",
+      "task66_manifest_sha256": "25c51b6c97cdf9bd6b95991da8a424e8a366ae3105a59099a181d22b65eb2db8",
+      "task66_preregistration_sha256": "74eb3eac15233ec5fe508168dfa6b974259544b5b29ef9c28f74ca3539d24bbe",
+      "task66_sha256sums_sha256": "9a0d0389ac38f48e91dd251dacd6d5e1fd398e01fd7ca52a6705b3585468c000"
+    }
+  },
+  "profiling": {
+    "required_before_candidate": true,
+    "device": "HOST_ONLY_FOR_DECODER_PROFILE",
+    "sources": ["natural-full-330", "natural-01", "natural-03", "natural-06"],
+    "arms": ["default-8", "uniform-4", "uniform-8", "uniform-16", "temporal-4", "temporal-8", "temporal-16"],
+    "warmup_repetitions": 2,
+    "measured_repetitions": 9,
+    "order": "seeded interleaving with seed 510075; identical schedule for every diagnostic build",
+    "decomposition": [
+      "input write and demux/probe",
+      "FFmpeg demux/decode, RGB conversion and scaling (one child boundary unless separately traced)",
+      "RGB split/copy and content fingerprinting",
+      "temporal analysis and frame selection",
+      "temporal-2 normalization and packing",
+      "total decode_video_bytes"
+    ],
+    "live_decomposition": [
+      "total public request",
+      "native compute elapsed",
+      "video input through temporal-2 packing",
+      "vision encoding",
+      "text prefill",
+      "decode",
+      "host-to-device transfer where separately observable"
+    ],
+    "selection_rule": "Choose a candidate only if its targeted stage is at least 25 ms median or 5 percent of native elapsed on natural-full-330 temporal-16 and the proposed transformation is exact by construction and testable."
+  },
+  "live_workload": {
+    "question": "Describe the visible natural scenes and their order in one concise English sentence.",
+    "content_order": ["video_url", "text_question"],
+    "model": "qwen3-native",
+    "stream": true,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "seed": 510075,
+    "max_tokens": 32,
+    "accepted_finish_reasons": ["stop", "length"],
+    "finish_reason_note": "Added after excluded preflight transport failures and before accepted traffic; the 32-token cap, prompt, and output parity are unchanged. Length is a valid real terminal, not a quality-scored answer.",
+    "arms": ["default-8", "uniform-16", "temporal-16"],
+    "primary_arm": "temporal-16",
+    "modes": {
+      "serial": {"physical_gpu": 1, "batch_size": 1, "concurrency": 1},
+      "batch4": {"physical_gpu": 1, "batch_size": 4, "concurrency": 4}
+    },
+    "execution": "For each mode run fresh baseline,candidate,candidate,baseline stacks (ABBA), completely stopping each stack before the next. Never run serial and batch-four concurrently.",
+    "warmup_repetitions_per_stack_arm": 1,
+    "measured_repetitions_per_stack_arm": 8,
+    "warmup_padding_per_stack": "one extra default-8 request in every stack, marked warmup_padding, so batch-four warmup forms one complete group; serial receives the same padding",
+    "stacks_per_mode": 4,
+    "measured_requests_per_mode_arm_implementation": 16,
+    "requests_per_stack": 28,
+    "requests_per_mode": 112,
+    "requests_total": 224,
+    "arm_order": "seeded interleaving with seed 510075; serial requests are sequential and batch-four uses seeded groups of four with no incomplete group",
+    "pairing": "Within each ABBA half, pair candidate and baseline by source, arm, repetition and seeded schedule position; preserve all 16 paired differences per mode/arm.",
+    "pre_live_schedule_correction": "Changed seven to eight measured repetitions and added equal warmup padding before any Task75 model traffic because 3*7 cannot form complete batch-four groups. No acceptance threshold or workload semantics changed.",
+    "prefix_cache": "disabled in every fresh native process; every request must log prefix_reused=0",
+    "os_cache_policy": "Weights and footage may be page-cache warm; every stack gets the same warmups. ABBA order limits monotonic cache/drift bias. No claim of cold-disk latency.",
+    "cold_prefix_policy": "All measured and warmup requests are cold-prefix. Reused-prefix results are excluded from throughput claims and fail the gate.",
+    "resource_bounds": {
+      "allowed_physical_gpus": [1],
+      "forbidden_physical_gpus": [0, 2, 3, 4, 5, 6, 7],
+      "forbidden_resident_port": 43301,
+      "max_candidate_frames": 64,
+      "max_input_bytes": 33554432,
+      "max_concurrency": 4,
+      "request_timeout_seconds": 30,
+      "max_whole_device_residual_mib": 80000
+    }
+  },
+  "metrics": {
+    "primary": "serial natural-full-330 temporal-16 public total request latency, paired candidate-minus-baseline",
+    "secondary": ["TTFT", "native elapsed", "video input/packing", "vision encoding", "text prefill", "decode", "batch-four total latency"],
+    "distribution": "Report count, median, nearest-rank p95, inclusive-quartile IQR, and median absolute deviation for every mode/arm/implementation and primary stage metric; retain min/max and every raw value externally.",
+    "paired_analysis": "Report paired median/mean candidate-minus-baseline, median absolute paired delta, exact two-sided sign test over nonzero pairs, and deterministic percentile-bootstrap 95 percent interval for the median paired delta (20000 resamples, seed 510075).",
+    "outliers": "Inclusive-quartile Tukey upper/lower fences within each mode/arm/implementation for total and native elapsed; retain all misses and outliers in every aggregate.",
+    "stability": "Report coefficient of variation. A primary-cell CV above 0.10 invalidates an improvement claim for that run; repeat the complete affected ABBA mode once, retain both attempts, and do not pool attempts selectively."
+  },
+  "acceptance": {
+    "performance": [
+      "At least 25 ms and at least 5 percent lower primary paired median total latency.",
+      "Bootstrap 95 percent interval for primary median paired delta entirely below zero and exact two-sided sign-test p <= 0.05.",
+      "Primary-cell CV <= 0.10 for both implementations.",
+      "No secondary mode/arm has a median or p95 total-latency regression greater than 5 percent; any such result blocks a broad improvement claim and is reported explicitly."
+    ],
+    "semantics": [
+      "Baseline/candidate selected RGB byte sequences and source-PTS sequences are exactly equal for all seven host arms on all profiled sources.",
+      "Temporal-2 pixel_values bytes, grid geometry, pair-first timestamps, prompt ids and mRoPE inputs/digests are exactly equal.",
+      "Every live candidate answer is byte-identical to its paired baseline answer; repeated outputs and serial/batch-four answers are exactly equal.",
+      "Default-8 remains identical to explicit uniform-8; first/last anchors, B-frame presentation order and all native evidence remain valid.",
+      "No assertion, threshold, timeout, source population, or quality criterion is weakened after results are seen."
+    ],
+    "controls": [
+      "Run umm-test-local, native host/CUDA tests and focused red/green tests for the actual change.",
+      "Run the frozen Task72 natural gate on the candidate and independently compare its raw answers and native evidence to retained accepted baseline evidence.",
+      "Run unchanged Task66 deterministic/fixture controls; any unrun real-model Task66 replay remains NOT_RUN rather than being implied.",
+      "Independent fresh-process verification uses only raw evidence plus a complete self-excluded external manifest and does not import producer/scoring modules."
+    ]
+  },
+  "claim_separation": {
+    "throughput": "NOT_RUN",
+    "output_parity": "NOT_RUN",
+    "natural_fixture_accuracy": "NOT_RUN",
+    "generalized_quality": "NOT_COVERED",
+    "perceptual_quality": "NOT_RUN"
+  },
+  "evidence": {
+    "raw_location_policy": "External task-owned evidence directory supplied by CLI; no task-specific absolute-path default in tracked files.",
+    "tracked": "Preregistration, focused harness/tests, aggregate metrics, exact binary/model/source identities, negative results, external file counts, and manifest/report hashes only.",
+    "excluded_from_tracking": "Per-frame blobs, per-request blobs, raw SSE corpora, large media, and newly generated static fixture corpora.",
+    "manifest": "SHA-256 every external raw file, with the manifest and verification reports self-excluded by explicit relative-path rules."
+  }
+}

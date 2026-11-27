@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +25,20 @@ constexpr int kVideoMinPixels = 32768;
 constexpr int kVideoMaxFramePixels = 131072;
 constexpr int kVideoMaxTotalPatches = 3584;
 constexpr size_t kDecoderMetadataLimit = 1u << 20;
+
+using ProfileClock = std::chrono::steady_clock;
+
+ProfileClock::time_point profile_started(const VideoDecodeProfile* profile) {
+  return profile ? ProfileClock::now() : ProfileClock::time_point{};
+}
+
+double profile_ms(ProfileClock::time_point started) {
+  return std::chrono::duration<double, std::milli>(ProfileClock::now() - started).count();
+}
+
+DecodedVideo preprocess_temporal_candidates_impl(
+    const std::vector<VideoCandidate>& candidates, int src_h, int src_w,
+    const VideoFrameSelection& options, VideoDecodeProfile* profile);
 
 struct TempFileGuard {
   std::filesystem::path path;
@@ -233,7 +248,8 @@ std::vector<std::vector<uint8_t>> split_rgb_frames(const std::string& raw,
 
 DecodedVideo decode_uniform(const std::filesystem::path& path,
                             const VideoProbe& probe,
-                            const VideoFrameSelection& options) {
+                            const VideoFrameSelection& options,
+                            VideoDecodeProfile* profile) {
   const int target_frames = options.max_frames;
   int dst_h = 0, dst_w = 0;
   target_dimensions(probe, &dst_h, &dst_w);
@@ -249,20 +265,28 @@ DecodedVideo decode_uniform(const std::filesystem::path& path,
                 dst_w, dst_h);
   // This is intentionally the historical command and output cap. No showinfo,
   // re-timestamping, candidate analysis, or reordering occurs in uniform mode.
+  const auto decode_started = profile_started(profile);
   const std::string raw = run_capture(
       {"ffmpeg", "-v", "error", "-i", path.string(), "-an", "-sn", "-dn", "-vf",
        vf, "-frames:v", std::to_string(target_frames), "-f", "rawvideo",
        "-pix_fmt", "rgb24", "pipe:1"},
       static_cast<size_t>(target_frames + 2) * static_cast<size_t>(dst_w) *
           static_cast<size_t>(dst_h) * 3u);
+  if (profile) profile->ffmpeg_decode_rgb_ms = profile_ms(decode_started);
+  const auto split_started = profile_started(profile);
   std::vector<std::vector<uint8_t>> frames =
       split_rgb_frames(raw, dst_h, dst_w);
+  if (profile) profile->rgb_split_ms = profile_ms(split_started);
 
   DecodedVideo out;
+  const auto fingerprint_started = profile_started(profile);
   set_selected_content_digests(&out, frames);
+  if (profile) profile->content_fingerprint_ms = profile_ms(fingerprint_started);
+  const auto pack_started = profile_started(profile);
   out.preprocessed = preprocess_video_frames(
       frames, dst_h, dst_w, kVideoMinPixels, kVideoMaxFramePixels,
       kVideoMaxTotalPatches);
+  if (profile) profile->temporal_pack_ms = profile_ms(pack_started);
   out.decoded_frame_count = frames.size();
   out.selected_frame_indices.reserve(frames.size());
   out.selected_source_frame_indices.reserve(frames.size());
@@ -290,7 +314,8 @@ DecodedVideo decode_uniform(const std::filesystem::path& path,
 
 DecodedVideo decode_uniform_explicit_source(const std::filesystem::path& path,
                                             const VideoProbe& probe,
-                                            const VideoFrameSelection& options) {
+                                            const VideoFrameSelection& options,
+                                            VideoDecodeProfile* profile) {
   // Non-default budgets select exact rounded source indices with first/last
   // anchors. select preserves source PTS, and repeated/static content cannot
   // make the source-index binding ambiguous. The default eight-frame path above
@@ -316,12 +341,16 @@ DecodedVideo decode_uniform_explicit_source(const std::filesystem::path& path,
   metadata_guard.path = temp_media_path(".log");
   const size_t output_cap = static_cast<size_t>(target + 2) *
                             static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h) * 3u;
+  const auto decode_started = profile_started(profile);
   const std::string raw = run_capture(
       {"ffmpeg", "-v", "info", "-i", path.string(), "-an", "-sn", "-dn",
        "-vf", vf, "-vsync", "0", "-frames:v", std::to_string(target), "-f", "rawvideo",
        "-pix_fmt", "rgb24", "pipe:1"},
       output_cap, metadata_guard.path);
+  if (profile) profile->ffmpeg_decode_rgb_ms = profile_ms(decode_started);
+  const auto split_started = profile_started(profile);
   std::vector<std::vector<uint8_t>> frames = split_rgb_frames(raw, dst_h, dst_w);
+  if (profile) profile->rgb_split_ms = profile_ms(split_started);
   if (frames.size() > source_indices.size()) {
     throw std::runtime_error("explicit source selection exceeded its frame budget");
   }
@@ -332,10 +361,14 @@ DecodedVideo decode_uniform_explicit_source(const std::filesystem::path& path,
   out.decoded_frame_count = frames.size();
   out.source_indices_exact = true;
   out.has_nominal_timestamps = false;
+  const auto fingerprint_started = profile_started(profile);
   set_selected_content_digests(&out, frames);
+  if (profile) profile->content_fingerprint_ms = profile_ms(fingerprint_started);
+  const auto pack_started = profile_started(profile);
   out.preprocessed = preprocess_video_frames(
       frames, dst_h, dst_w, kVideoMinPixels, kVideoMaxFramePixels,
       kVideoMaxTotalPatches);
+  if (profile) profile->temporal_pack_ms = profile_ms(pack_started);
   for (size_t i = 0; i < frames.size(); ++i) {
     out.selected_frame_indices.push_back(i);
     out.selected_source_frame_indices.push_back(source_indices[i]);
@@ -358,7 +391,8 @@ DecodedVideo decode_uniform_explicit_source(const std::filesystem::path& path,
 
 DecodedVideo decode_temporal(const std::filesystem::path& path,
                              const VideoProbe& probe,
-                             const VideoFrameSelection& options) {
+                             const VideoFrameSelection& options,
+                             VideoDecodeProfile* profile) {
   int dst_h = 0, dst_w = 0;
   target_dimensions(probe, &dst_h, &dst_w);
   int64_t source_frames = probe.frame_count;
@@ -404,9 +438,13 @@ DecodedVideo decode_temporal(const std::filesystem::path& path,
   if (preserve_source_pts) args.insert(args.end(), {"-vsync", "0"});
   args.insert(args.end(), {"-frames:v", std::to_string(options.max_candidate_frames),
                            "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"});
+  const auto decode_started = profile_started(profile);
   const std::string raw = run_capture(args, output_cap, metadata_guard.path);
+  if (profile) profile->ffmpeg_decode_rgb_ms = profile_ms(decode_started);
+  const auto split_started = profile_started(profile);
   std::vector<std::vector<uint8_t>> frames =
       split_rgb_frames(raw, dst_h, dst_w);
+  if (profile) profile->rgb_split_ms = profile_ms(split_started);
   const std::vector<double> source_timestamps =
       parse_showinfo_timestamps(read_metadata(metadata_guard.path));
 
@@ -429,17 +467,15 @@ DecodedVideo decode_temporal(const std::filesystem::path& path,
                                      : -1;
     candidates.push_back(VideoCandidate{std::move(frames[i]), timestamp, source_index});
   }
-  DecodedVideo out = preprocess_temporal_candidates(candidates, dst_h, dst_w, options);
+  DecodedVideo out = preprocess_temporal_candidates_impl(candidates, dst_h, dst_w, options, profile);
   out.source_indices_exact = preserve_source_pts;
   out.has_nominal_timestamps = has_nominal_timestamps;
   return out;
 }
 
-}  // namespace
-
-DecodedVideo preprocess_temporal_candidates(
+DecodedVideo preprocess_temporal_candidates_impl(
     const std::vector<VideoCandidate>& candidates, int src_h, int src_w,
-    const VideoFrameSelection& options) {
+    const VideoFrameSelection& options, VideoDecodeProfile* profile) {
   validate_video_frame_selection(options);
   if (options.policy != VideoFramePolicy::kTemporal) {
     throw std::invalid_argument("preprocess_temporal_candidates requires temporal policy");
@@ -450,15 +486,20 @@ DecodedVideo preprocess_temporal_candidates(
   if (candidates.size() > static_cast<size_t>(options.max_candidate_frames)) {
     throw std::invalid_argument("temporal candidates exceed the configured frame budget");
   }
+  const auto analysis_started = profile_started(profile);
   const std::vector<TemporalFrameScore> scores =
       analyze_temporal_frames(candidates, src_h, src_w);
+  if (profile) profile->temporal_analysis_ms = profile_ms(analysis_started);
+  const auto selection_started = profile_started(profile);
   const std::vector<size_t> selected = select_temporal_keyframes(scores, options);
+  if (profile) profile->frame_selection_ms = profile_ms(selection_started);
   if (selected.empty() || selected.size() > static_cast<size_t>(options.max_frames)) {
     throw std::runtime_error("temporal selection violated the frame budget");
   }
 
   std::vector<std::vector<uint8_t>> frames;
   frames.reserve(selected.size());
+  const auto copy_started = profile_started(profile);
   DecodedVideo out;
   out.decoded_frame_count = candidates.size();
   out.selected_frame_indices = selected;
@@ -472,10 +513,15 @@ DecodedVideo preprocess_temporal_candidates(
             : static_cast<int64_t>(index));
     out.selected_frame_timestamps.push_back(candidates[index].timestamp_seconds);
   }
+  if (profile) profile->selection_copy_ms = profile_ms(copy_started);
+  const auto fingerprint_started = profile_started(profile);
   set_selected_content_digests(&out, frames);
+  if (profile) profile->content_fingerprint_ms = profile_ms(fingerprint_started);
+  const auto pack_started = profile_started(profile);
   out.preprocessed = preprocess_video_frames(
       frames, src_h, src_w, kVideoMinPixels, kVideoMaxFramePixels,
       kVideoMaxTotalPatches);
+  if (profile) profile->temporal_pack_ms = profile_ms(pack_started);
   out.timestamps.reserve(static_cast<size_t>(out.preprocessed.grid_t));
   for (int slice = 0; slice < out.preprocessed.grid_t; ++slice) {
     const size_t pair_first = std::min(static_cast<size_t>(slice * 2), frames.size() - 1);
@@ -484,27 +530,51 @@ DecodedVideo preprocess_temporal_candidates(
   return out;
 }
 
-DecodedVideo decode_video_bytes(std::string_view bytes,
-                                const VideoFrameSelection& options) {
+}  // namespace
+
+DecodedVideo preprocess_temporal_candidates(
+    const std::vector<VideoCandidate>& candidates, int src_h, int src_w,
+    const VideoFrameSelection& options) {
+  return preprocess_temporal_candidates_impl(candidates, src_h, src_w, options, nullptr);
+}
+
+DecodedVideo decode_video_bytes_profiled(std::string_view bytes,
+                                         const VideoFrameSelection& options,
+                                         VideoDecodeProfile* profile) {
+  const auto total_started = profile_started(profile);
   validate_video_frame_selection(options);
   if (bytes.empty()) throw std::invalid_argument("video input is empty");
   TempFileGuard guard;
   guard.path = temp_media_path(".mp4");
   {
+    const auto write_started = profile_started(profile);
     std::ofstream f(guard.path, std::ios::binary | std::ios::trunc);
     if (!f) throw std::runtime_error("failed to create temp file for video decode");
     f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     if (!f) throw std::runtime_error("failed to write temp file for video decode");
+    if (profile) profile->input_write_ms = profile_ms(write_started);
   }
+  const auto probe_started = profile_started(profile);
   const VideoProbe probe = probe_video(guard.path);
+  if (profile) profile->probe_ms = profile_ms(probe_started);
+  DecodedVideo out;
   if (options.policy == VideoFramePolicy::kUniform) {
     if ((options.max_frames == 4 || options.max_frames == kVideoMaxFrameBudget) &&
         probe.frame_count >= options.max_frames) {
-      return decode_uniform_explicit_source(guard.path, probe, options);
+      out = decode_uniform_explicit_source(guard.path, probe, options, profile);
+    } else {
+      out = decode_uniform(guard.path, probe, options, profile);
     }
-    return decode_uniform(guard.path, probe, options);
+  } else {
+    out = decode_temporal(guard.path, probe, options, profile);
   }
-  return decode_temporal(guard.path, probe, options);
+  if (profile) profile->total_ms = profile_ms(total_started);
+  return out;
+}
+
+DecodedVideo decode_video_bytes(std::string_view bytes,
+                                const VideoFrameSelection& options) {
+  return decode_video_bytes_profiled(bytes, options, nullptr);
 }
 
 }  // namespace umminfer::qwen38

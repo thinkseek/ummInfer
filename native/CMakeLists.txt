@@ -77,6 +77,9 @@ add_executable(qwen38_video_input_tests qwen38_tests/test_video_input.cpp)
 target_link_libraries(qwen38_video_input_tests PRIVATE qwen38_host)
 add_test(NAME qwen38_video_input_tests COMMAND qwen38_video_input_tests)
 
+add_executable(qwen38_video_decode_profile qwen38_tests/video_decode_profile.cpp)
+target_link_libraries(qwen38_video_decode_profile PRIVATE qwen38_host)
+
 # Host-only temporal-quality evidence tool: emits exact expanded prompt ids for
 # independent Python MRoPE reconstruction. It has no CUDA or Engine dependency.
 add_executable(qwen38_prompt_position_audit qwen38_tests/prompt_position_audit.cpp)

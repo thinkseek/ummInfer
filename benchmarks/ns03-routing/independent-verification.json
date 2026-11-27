@@ -1,0 +1,10 @@
+{
+  "followup_setup_streams_verified": 20,
+  "manifest_file_count": 408,
+  "manifest_sha256": "cc5129a4501b06035950d1d676f8b081f2da3573481c083a06e7c279da7936da",
+  "model_trees_rehashed": 4,
+  "physical_perceptual_quality": "NOT_RUN",
+  "raw_cases_verified": 80,
+  "result": "PASS",
+  "scorecard_sha256": "2fa7e68d4635ffc12e4d7f5e4b1c517bd295b29cc24b7b7b9395210d374819df"
+}

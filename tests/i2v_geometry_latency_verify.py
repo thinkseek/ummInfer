@@ -28,7 +28,14 @@ EXPECTED_CASES = {
     "square": {"source": [512, 512], "target": [704, 480]},
 }
 REPETITIONS = 3
+NS02_REPETITIONS = 5
 INTERLEAVING_SEED = 74062
+NS02_INTERLEAVING_SEED = 79025
+NS02_MIN_SPEEDUP_MS = 2000.0
+NS02_VIDEO_LIMIT_MS = 5000.0
+NS02_CANCEL_LIMIT_MS = 500.0
+NS02_MIN_SSIM = 0.90
+NS02_MIN_PSNR_DB = 24.0
 FIRST_FRAME_MAX_MAE = 48.0
 MOTION_MIN_MAE = 1.0
 
@@ -334,11 +341,13 @@ def native_phase(log_path, request_id):
     return fields
 
 
-def expected_schedule():
+def expected_schedule(mode="candidate"):
     result = []
-    for repetition in range(REPETITIONS):
+    repetitions = NS02_REPETITIONS if mode == "ns02" else REPETITIONS
+    seed = NS02_INTERLEAVING_SEED if mode == "ns02" else INTERLEAVING_SEED
+    for repetition in range(repetitions):
         arms = ["baseline", "candidate"]
-        random.Random(INTERLEAVING_SEED + repetition).shuffle(arms)
+        random.Random(seed + repetition).shuffle(arms)
         for arm in arms:
             result.append({"repetition": repetition, "arm": arm,
                            "shapes": list(EXPECTED_CASES), "warmups_per_shape": 1,
@@ -370,13 +379,246 @@ def verify_preregistration(document, profile_sha):
             "preregistration gates are incomplete")
 
 
-def verify_bundle(root, args, nested=False):
+def verify_ns02_preregistration(document, profile_sha):
+    require(document.get("format") == "umminfer-ns02-interactive-preview-preregistration-v1"
+            and document.get("profile_report_sha256") == profile_sha
+            and document.get("candidate_id") == "automatic-i2v-teacache-0.25"
+            and document.get("candidate_commit") == "3f98fe1645d4d82877372056ba8ad2544aa399c5"
+            and document.get("repetitions") == NS02_REPETITIONS
+            and document.get("interleaving_seed") == NS02_INTERLEAVING_SEED,
+            "NS-02 preregistration identity/population mismatch")
+    require(document.get("settings") == {
+        "frames": 29, "steps": 20, "fps": 16, "guidance": 5.0, "seed": 42,
+        "request_teacache_field": "omitted", "baseline_effective_teacache": 0.0,
+        "candidate_effective_teacache": 0.25}, "NS-02 frozen settings changed")
+    require(document.get("regression_gates") == {
+        "exact_paired_first_frame_rgb": True, "minimum_ssim_all": NS02_MIN_SSIM,
+        "minimum_all_frame_psnr_db": NS02_MIN_PSNR_DB,
+        "temporal_motion_ratio_range": [0.5, 1.5],
+        "minimum_median_speedup_ms": NS02_MIN_SPEEDUP_MS,
+        "all_paired_deltas_negative": True,
+        "candidate_median_and_p95_video_ms_below": NS02_VIDEO_LIMIT_MS,
+        "cancel_native_terminal_and_client_settle_ms_below": NS02_CANCEL_LIMIT_MS,
+        "cancel_threshold_arm": "candidate_only_before_is_reported_independently",
+        "zero_late_native_media_and_final_in_flight_zero": True,
+        "immediate_retry_exact_own_arm_hash": True}, "NS-02 gates changed")
+
+
+def ns02_all_rgb(ffmpeg, path, target):
+    width, height = target[0] // 8, target[1] // 8
+    result = subprocess.run([
+        ffmpeg, "-v", "error", "-i", str(path), "-vf",
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True,
+        capture_output=True, timeout=120)
+    size = width * height * 3
+    require(len(result.stdout) == 29 * size, "independent all-frame RGB size mismatch")
+    return [result.stdout[index * size:(index + 1) * size] for index in range(29)]
+
+
+def ns02_ssim(ffmpeg, baseline, candidate):
+    result = subprocess.run([
+        ffmpeg, "-hide_banner", "-i", str(baseline), "-i", str(candidate),
+        "-lavfi", "ssim", "-f", "null", "-"], check=True, capture_output=True,
+        text=True, timeout=120)
+    match = re.search(r"\bAll:([0-9.]+)", result.stderr)
+    require(match is not None, "independent FFmpeg SSIM parse failed")
+    return {"all": float(match.group(1))}
+
+
+def ns02_quality(root, args, baseline, candidate, baseline_root=None):
+    target = EXPECTED_CASES[baseline["shape"]]["target"]
+    before_path = (baseline_root or root) / baseline["media_file"]
+    after_path = root / candidate["media_file"]
+    before_first = ((baseline_root or root) /
+                    baseline["decoded_rgb"]["first_full"]["file"]).read_bytes()
+    after_first = (root / candidate["decoded_rgb"]["first_full"]["file"]).read_bytes()
+    before_frames = ns02_all_rgb(args.ffmpeg, before_path, target)
+    after_frames = ns02_all_rgb(args.ffmpeg, after_path, target)
+    before = b"".join(before_frames)
+    after = b"".join(after_frames)
+    mse = sum((a - b) ** 2 for a, b in zip(before, after)) / len(before)
+    psnr = 999.0 if mse == 0.0 else 10.0 * math.log10(255.0 * 255.0 / mse)
+    before_motion_values = [mean_absolute(before_frames[i - 1], before_frames[i])
+                            for i in range(1, 29)]
+    after_motion_values = [mean_absolute(after_frames[i - 1], after_frames[i])
+                           for i in range(1, 29)]
+    before_motion = sum(before_motion_values) / 28
+    after_motion = sum(after_motion_values) / 28
+    ratio = after_motion / max(before_motion, 1e-9)
+    ssim = ns02_ssim(args.ffmpeg, before_path, after_path)
+    quality = {
+        "first_frame_rgb_exact": before_first == after_first,
+        "first_frame_rgb_sha256_before": sha256_bytes(before_first),
+        "first_frame_rgb_sha256_candidate": sha256_bytes(after_first),
+        "evaluation_size": [target[0] // 8, target[1] // 8], "all_frames": 29,
+        "all_frame_mae": mean_absolute(before, after), "all_frame_psnr_db": psnr,
+        "ssim": ssim, "before_temporal_mae_mean": before_motion,
+        "candidate_temporal_mae_mean": after_motion, "temporal_motion_ratio": ratio,
+        "before_first_last_mae": baseline["motion_mae"],
+        "candidate_first_last_mae": candidate["motion_mae"]}
+    quality["quality_gate_pass"] = bool(
+        quality["first_frame_rgb_exact"] and ssim["all"] >= NS02_MIN_SSIM
+        and psnr >= NS02_MIN_PSNR_DB and 0.5 <= ratio <= 1.5
+        and candidate["first_frame_mae"] <= FIRST_FRAME_MAX_MAE
+        and candidate["motion_mae"] >= MOTION_MIN_MAE)
+    return quality
+
+
+def verify_ns02_cancellations(root, report):
+    expected = {arm: next(item for item in report["cancellations"]
+                          if item["arm"] == arm) for arm in ("baseline", "candidate")}
+    require(len(report["cancellations"]) == 2 and len(expected) == 2,
+            "NS-02 requires one disconnect cancellation per arm")
+    for arm, item in expected.items():
+        body_raw = (root / "requests" / f"{arm}-disconnect-cancel.json").read_bytes()
+        require(sha256_bytes(body_raw) == item["public_request_sha256"],
+                f"{arm} cancel request hash mismatch")
+        submit = unpack_msgpack((root / item["native_input_file"]).read_bytes())
+        terminal = unpack_msgpack((root / item["native_output_file"]).read_bytes())
+        require(submit["type"] == "submit" and terminal["type"] == "complete"
+                and submit["request_id"] == terminal["request_id"]
+                == item["native_request_id"] and terminal["success"] is False
+                and not (terminal.get("result") or {}).get("data"),
+                f"{arm} disconnect did not produce one media-free native abort")
+        require(item["submit_monotonic_ns"] <= item["native_submit_monotonic_ns"]
+                < item["disconnect_monotonic_ns"] <= item["native_terminal_monotonic_ns"]
+                <= item["settled_monotonic_ns"], f"{arm} cancel timing is nonmonotonic")
+        close(item["disconnect_to_native_terminal_ms"],
+              (item["native_terminal_monotonic_ns"] - item["disconnect_monotonic_ns"]) / 1e6,
+              arm + ".native_cancel")
+        close(item["disconnect_to_client_settled_ms"],
+              (item["settled_monotonic_ns"] - item["disconnect_monotonic_ns"]) / 1e6,
+              arm + ".client_cancel")
+        require(item["public_abort_ack"]
+                == "NOT_APPLICABLE_NONSTREAM_RENDER_HAS_NO_REQUEST_ID"
+                and item["public_media_bytes"] == 0
+                and item["health"] == {"status": "ok", "in_flight": 0},
+                f"{arm} disconnect cleanup or NOT_APPLICABLE boundary changed")
+        terminal_name = Path(item["native_output_file"]).name
+        terminal_index = int(terminal_name.split("-")[2])
+        late = []
+        paths = sorted((root / "native").glob("video-output-*.msgpack"),
+                       key=lambda path: int(path.name.split("-")[2]))
+        for path in paths:
+            index = int(path.name.split("-")[2])
+            if index <= terminal_index:
+                continue
+            message = unpack_msgpack(path.read_bytes())
+            if message.get("request_id") == item["native_request_id"]:
+                late.append(path.name)
+        require(len(late) == item["late_native_records_after_terminal"],
+                f"{arm} late native records were omitted from the report")
+        if "late_native_record_sha256" in item:
+            require(item["late_native_record_sha256"]
+                    == [sha256_file((root / "native" / name))["sha256"] for name in late],
+                    f"{arm} late native record hashes differ")
+    return expected
+
+
+def verify_ns02_candidate(root, args, report, measured, baseline_report, baseline_manifest):
+    prereg_raw = (root / "preregistration.json").read_bytes()
+    prereg = json.loads(prereg_raw)
+    verify_ns02_preregistration(prereg, sha256_file(
+        root / "baseline-reference" / "report.json")["sha256"])
+    require(report["preregistration_sha256"] == sha256_bytes(prereg_raw)
+            and baseline_report["mode"] == "profile"
+            and report["provenance"]["baseline_wan_binary"]
+            == baseline_report["provenance"]["baseline_wan_binary"],
+            "NS-02 preregistration/profile identity mismatch")
+    schedule = json.loads((root / "candidate-schedule.json").read_text())
+    require(schedule == expected_schedule("ns02"), "NS-02 schedule changed")
+    analysis = report["candidate_analysis"]
+    require(analysis["schedule"] == schedule, "NS-02 report schedule changed")
+    paired = []
+    for repetition in range(NS02_REPETITIONS):
+        for shape in EXPECTED_CASES:
+            baseline = next(run for run in measured if run["arm"] == "baseline"
+                            and run["repetition"] == repetition and run["shape"] == shape)
+            candidate = next(run for run in measured if run["arm"] == "candidate"
+                             and run["repetition"] == repetition and run["shape"] == shape)
+            quality = ns02_quality(root, args, baseline, candidate)
+            reported = next(item for item in analysis["paired"]
+                            if item["repetition"] == repetition and item["shape"] == shape)
+            # FFmpeg logs contain process-volatile pointer/thread text. Numeric SSIM
+            # is exact evidence; a historical producer log hash is retained but not
+            # treated as a cross-process semantic identity.
+            stable_reported = json.loads(json.dumps(reported["quality"]))
+            stable_reported["ssim"].pop("log_sha256", None)
+            require(quality == stable_reported,
+                    f"independent numeric quality differs at r{repetition} {shape}")
+            if "log_sha256" in reported["quality"]["ssim"]:
+                quality["ssim"]["log_sha256"] = reported["quality"]["ssim"]["log_sha256"]
+            paired.append({"repetition": repetition, "shape": shape,
+                "baseline_run_id": baseline["run_id"], "candidate_run_id": candidate["run_id"],
+                "baseline_sha256": baseline["media_sha256"],
+                "candidate_sha256": candidate["media_sha256"],
+                "baseline_ms": baseline["public_complete_artifact_ms"],
+                "candidate_ms": candidate["public_complete_artifact_ms"],
+                "candidate_minus_baseline_ms": candidate["public_complete_artifact_ms"]
+                    - baseline["public_complete_artifact_ms"],
+                "quality": quality})
+    require(analysis["paired"] == paired, "NS-02 paired raw/quality measurements changed")
+    deltas = [item["candidate_minus_baseline_ms"] for item in paired]
+    before = [item["baseline_ms"] for item in paired]
+    after = [item["candidate_ms"] for item in paired]
+    check_summary(analysis["paired_delta"], deltas, "ns02.delta")
+    check_summary(analysis["baseline"], before, "ns02.before")
+    check_summary(analysis["candidate"], after, "ns02.after")
+    median_delta = statistics.median(deltas)
+    median_before = statistics.median(before)
+    close(analysis["median_paired_candidate_minus_baseline_ms"], median_delta, "ns02.median_delta")
+    close(analysis["median_paired_change_percent"], 100.0 * median_delta / median_before,
+          "ns02.median_change")
+    shape_deltas = {shape: statistics.median([item["candidate_minus_baseline_ms"]
+                    for item in paired if item["shape"] == shape]) for shape in EXPECTED_CASES}
+    quality_pass = all(item["quality"]["quality_gate_pass"] for item in paired)
+    speed_pass = median_delta <= -NS02_MIN_SPEEDUP_MS and all(delta < 0.0 for delta in deltas) \
+        and all(value < 0.0 for value in shape_deltas.values())
+    video_pass = statistics.median(after) < NS02_VIDEO_LIMIT_MS \
+        and quantile(after, 0.95) < NS02_VIDEO_LIMIT_MS
+    cancellations = verify_ns02_cancellations(root, report)
+    candidate_cancel = cancellations["candidate"]
+    cancel_pass = all((candidate_cancel["disconnect_to_native_terminal_ms"] < NS02_CANCEL_LIMIT_MS,
+                       candidate_cancel["disconnect_to_client_settled_ms"] < NS02_CANCEL_LIMIT_MS,
+                       candidate_cancel["late_native_records_after_terminal"] == 0,
+                       candidate_cancel["health"].get("in_flight") == 0))
+    decision = "PROMOTED" if all((quality_pass, speed_pass, video_pass, cancel_pass)) \
+        else "NOT_PROMOTED"
+    for arm, item in cancellations.items():
+        if "cancellation_latency" in analysis:
+            check_summary(analysis["cancellation_latency"][arm]["native_terminal"],
+                          [item["disconnect_to_native_terminal_ms"]], f"ns02.{arm}.cancel_native")
+            check_summary(analysis["cancellation_latency"][arm]["client_settled"],
+                          [item["disconnect_to_client_settled_ms"]], f"ns02.{arm}.cancel_client")
+    require(analysis["shape_median_paired_delta_ms"] == shape_deltas
+            and analysis["quality_gate_pass"] == quality_pass
+            and analysis["speed_gate_pass"] == speed_pass
+            and analysis["video_hard_threshold_pass"] == video_pass
+            and analysis["cancellation_hard_threshold_pass"] == cancel_pass
+            and analysis["cancellations"] == report["cancellations"]
+            and analysis["promotion_decision"] == decision
+            and analysis["candidate_id"] == "automatic-i2v-teacache-0.25"
+            and analysis["candidate_commit"] == "3f98fe1645d4d82877372056ba8ad2544aa399c5"
+            and analysis["all_observations_retained"] is True
+            and analysis["perceptual_quality"] == analysis["human_review"] == "NOT_RUN",
+            "NS-02 scorecard or promotion decision mismatch")
+    return {"latency_verdict": analysis["latency_verdict"],
+            "promotion_decision": decision, "median_paired_candidate_minus_baseline_ms": median_delta,
+            "median_paired_change_percent": analysis["median_paired_change_percent"],
+            "quality_gate_pass": quality_pass, "speed_gate_pass": speed_pass,
+            "video_hard_threshold_pass": video_pass,
+            "cancellation_hard_threshold_pass": cancel_pass,
+            "paired_count": len(paired), "baseline_reference_manifest": baseline_manifest}
+
+
+def verify_bundle(root, args, nested=False, allow_nested_ns02=False):
     root = Path(root).resolve()
     manifest = check_manifest(root)
     report = json.loads((root / "report.json").read_text())
     require(report["format"] == "umminfer-i2v-geometry-latency-v1"
             and report["status"] == "SEALED_AWAITING_INDEPENDENT_VERIFICATION"
-            and report["mode"] in ("profile", "candidate")
+            and report["mode"] in ("profile", "candidate", "ns02")
             and report["geometry_cases"] == EXPECTED_CASES,
             "report format, status, mode, or geometry cases mismatch")
     require(re.fullmatch(r"[0-9a-f]{40}", report["base_commit"])
@@ -461,7 +703,9 @@ def verify_bundle(root, args, nested=False):
                     "The red lantern sways gently while the camera slowly orbits above the misty lake")
                 and body["steps"] == 20 and body["num_frames"] == 29
                 and body["fps"] == 16 and body["guidance_scale"] == 5.0
-                and body["seed"] == 42 and body["teacache_thresh"] == 0.0,
+                and body["seed"] == 42
+                and (("teacache_thresh" not in body) if report["mode"] == "ns02"
+                     else body["teacache_thresh"] == 0.0),
                 f"public video request drift: {run['run_id']}")
         target = [500, 480] if run["role"] == "malformed_dimension" else case["target"]
         require(body["size"] == size_text(target), f"requested target mismatch: {run['run_id']}")
@@ -482,7 +726,9 @@ def verify_bundle(root, args, nested=False):
         require(native_source == source and inputs["size"] == body["size"]
                 and inputs["steps"] == 20 and inputs["num_frames"] == 29
                 and inputs["fps"] == 16 and inputs["guidance_scale"] == 5.0
-                and inputs["seed"] == 42 and inputs["teacache_thresh"] == 0.0,
+                and inputs["seed"] == 42
+                and (("teacache_thresh" not in inputs) if report["mode"] == "ns02"
+                     else inputs["teacache_thresh"] == 0.0),
                 f"native source/settings binding mismatch: {run['run_id']}")
         submit = run["submit_monotonic_ns"]
         headers = run["response_headers_monotonic_ns"]
@@ -530,6 +776,13 @@ def verify_bundle(root, args, nested=False):
                 and phase["size"] == size_text(target)
                 and phase["source_size"] == size_text(case["source"]),
                 f"native phase/stale geometry mismatch: {run['run_id']}")
+        if report["mode"] == "ns02":
+            expected_threshold = 0.25 if run["arm"] == "candidate" else 0.0
+            require(float(phase["teacache_thresh"]) == expected_threshold,
+                    f"effective TeaCache threshold mismatch: {run['run_id']}")
+            if run["arm"] == "candidate":
+                hits, total = (int(value) for value in phase["teacache_hits"].split("/"))
+                require(0 < hits < total, f"candidate did not use bounded caching: {run['run_id']}")
         first = ffmpeg_rgb(args.ffmpeg, media_path, *target, frame=0)
         last = ffmpeg_rgb(args.ffmpeg, media_path, *target, frame=28)
         eval_size = [target[0] // 8, target[1] // 8]
@@ -553,17 +806,44 @@ def verify_bundle(root, args, nested=False):
         successful[shape].append(run)
         if run["role"] == "measured":
             measured.append(run)
+    if report["mode"] == "ns02":
+        require(report.get("journal_policy")
+                == "one exact JSON snapshot per completed public/cancel record",
+                "NS-02 per-run journal policy missing")
+        for run in report["runs"] + report["controls"] + report["cancellations"]:
+            journal_path = root / "run-records" / f"{run['run_id']}.json"
+            require(journal_path.is_file()
+                    and json.loads(journal_path.read_text()) == run,
+                    f"exact per-run journal mismatch: {run['run_id']}")
     for shape, shape_runs in successful.items():
-        require(shape_runs and len({run["media_sha256"] for run in shape_runs}) == 1,
-                f"fixed-seed media are not reproducible: {shape}")
+        arms = ("baseline", "candidate") if report["mode"] == "ns02" else (None,)
+        for arm in arms:
+            hashes = {run["media_sha256"] for run in shape_runs
+                      if arm is None or run["arm"] == arm}
+            require(shape_runs and len(hashes) == 1,
+                    f"fixed-seed media are not reproducible: {shape}/{arm}")
     require(successful["wide"][0]["media_sha256"] != successful["square"][0]["media_sha256"],
             "wide and square anchors produced identical wide output")
     recoveries = [run for run in report["controls"] if run["role"] == "post_failure_recovery"]
-    require(len(recoveries) == 1 and recoveries[0]["http_status"] == 200
-            and recoveries[0]["media_sha256"] == successful["wide"][0]["media_sha256"],
-            "post-failure exact recovery control failed")
-    require(sum(run["role"] == "malformed_dimension" for run in report["controls"]) == 1,
-            "expected one malformed-dimension control")
+    if report["mode"] == "ns02":
+        require(len(recoveries) == 2, "expected malformed/recovery controls on both arms")
+        for recovery in recoveries + [run for run in report["controls"]
+                                     if run["role"] == "post_cancel_recovery"]:
+            reference = next(run for run in successful["wide"]
+                             if run["arm"] == recovery["arm"])
+            require(recovery["http_status"] == 200
+                    and recovery["media_sha256"] == reference["media_sha256"],
+                    "own-arm exact cancel/failure recovery failed")
+        require(sum(run["role"] == "post_cancel_recovery" for run in report["controls"]) == 2
+                and sum(run["role"] == "malformed_dimension"
+                        for run in report["controls"]) == 2,
+                "NS-02 immediate retry or malformed-input controls are incomplete")
+    else:
+        require(len(recoveries) == 1 and recoveries[0]["http_status"] == 200
+                and recoveries[0]["media_sha256"] == successful["wide"][0]["media_sha256"],
+                "post-failure exact recovery control failed")
+        require(sum(run["role"] == "malformed_dimension" for run in report["controls"]) == 1,
+                "expected one malformed-dimension control")
 
     profile = report["profile"]
     for shape in EXPECTED_CASES:
@@ -575,6 +855,14 @@ def verify_bundle(root, args, nested=False):
                       "latent_init_ms", "dit_ms", "vae_decode_ms", "encode_ms"):
             check_summary(phases[phase], [run["native_phase"][phase] for run in measured
                           if run["shape"] == shape], f"{shape}.{phase}")
+    if report["mode"] == "ns02":
+        for arm in ("baseline", "candidate"):
+            for shape in EXPECTED_CASES:
+                values = [run["public_complete_artifact_ms"] for run in measured
+                          if run["shape"] == shape and run["arm"] == arm]
+                check_summary(profile["warm_by_shape_arm"][arm][shape], values,
+                              f"warm.{arm}.{shape}")
+
     check_summary(profile["source_preparation"],
                   [run["source_preparation_ms"] for run in measured], "source_preparation")
     check_summary(profile["public_first_artifact_byte"],
@@ -586,6 +874,13 @@ def verify_bundle(root, args, nested=False):
         "cold/warmup observations were dropped")
 
     candidate_result = None
+    if report["mode"] == "ns02":
+        require(not nested or allow_nested_ns02,
+                "nested NS-02 bundles require an explicit independent final audit")
+        baseline_result = verify_bundle(root / "baseline-reference", args, nested=True)
+        candidate_result = verify_ns02_candidate(
+            root, args, report, measured, baseline_result["report"],
+            baseline_result["manifest"])
     if report["mode"] == "candidate":
         require(not nested, "nested candidate bundles are forbidden")
         baseline_root = root / "baseline-reference"

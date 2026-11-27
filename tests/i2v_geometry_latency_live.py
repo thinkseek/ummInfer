@@ -24,6 +24,7 @@ from pathlib import Path
 import random
 import re
 import shutil
+import socket
 import statistics
 import struct
 import subprocess
@@ -44,8 +45,15 @@ GUIDANCE = 5.0
 FIRST_FRAME_MAX_MAE = 48.0
 MOTION_MIN_MAE = 1.0
 REPETITIONS = 3
+NS02_REPETITIONS = 5
 WARMUP_PER_SHAPE_PER_BLOCK = 1
 INTERLEAVING_SEED = 74062
+NS02_INTERLEAVING_SEED = 79025
+NS02_MIN_SPEEDUP_MS = 2000.0
+NS02_VIDEO_LIMIT_MS = 5000.0
+NS02_CANCEL_LIMIT_MS = 500.0
+NS02_MIN_SSIM = 0.90
+NS02_MIN_PSNR_DB = 24.0
 PRIMARY_METRIC = "median_paired_public_complete_artifact_ms"
 CASES = {
     "wide": {"source": (704, 480), "target": (704, 480)},
@@ -360,6 +368,76 @@ def mean_absolute(first, second):
     return sum(abs(a - b) for a, b in zip(first, second)) / len(first)
 
 
+def ffmpeg_all_rgb(ffmpeg, media, width, height, evaluation):
+    eval_w, eval_h = evaluation
+    result = subprocess.run([
+        ffmpeg, "-v", "error", "-i", str(media), "-vf",
+        f"scale={eval_w}:{eval_h}:force_original_aspect_ratio=increase,crop={eval_w}:{eval_h}",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True,
+        capture_output=True, timeout=120)
+    frame_bytes = eval_w * eval_h * 3
+    require(len(result.stdout) == FRAMES * frame_bytes,
+            f"all-frame RGB byte count mismatch for {media}")
+    return [result.stdout[index * frame_bytes:(index + 1) * frame_bytes]
+            for index in range(FRAMES)]
+
+
+def ssim_all(ffmpeg, baseline, candidate):
+    result = subprocess.run([
+        ffmpeg, "-hide_banner", "-i", str(baseline), "-i", str(candidate),
+        "-lavfi", "ssim", "-f", "null", "-"], check=True, capture_output=True,
+        text=True, timeout=120)
+    match = re.search(r"\bAll:([0-9.]+)", result.stderr)
+    require(match is not None, f"FFmpeg SSIM output is missing: {result.stderr}")
+    value = float(match.group(1))
+    require(math.isfinite(value) and 0.0 <= value <= 1.0, "invalid SSIM")
+    return {"all": value}
+
+
+def paired_video_quality(ffmpeg, out, baseline, candidate, baseline_out=None):
+    target = CASES[baseline["shape"]]["target"]
+    require(target == CASES[candidate["shape"]]["target"], "paired geometry differs")
+    before_path = (baseline_out or out) / baseline["media_file"]
+    after_path = out / candidate["media_file"]
+    before_first = ((baseline_out or out) /
+                    baseline["decoded_rgb"]["first_full"]["file"]).read_bytes()
+    after_first = (out / candidate["decoded_rgb"]["first_full"]["file"]).read_bytes()
+    evaluation = (target[0] // 8, target[1] // 8)
+    before_frames = ffmpeg_all_rgb(ffmpeg, before_path, *target, evaluation)
+    after_frames = ffmpeg_all_rgb(ffmpeg, after_path, *target, evaluation)
+    before = b"".join(before_frames)
+    after = b"".join(after_frames)
+    squared = sum((a - b) ** 2 for a, b in zip(before, after))
+    mse = squared / len(before)
+    psnr = 999.0 if mse == 0.0 else 10.0 * math.log10(255.0 * 255.0 / mse)
+    before_temporal = [mean_absolute(before_frames[i - 1], before_frames[i])
+                       for i in range(1, FRAMES)]
+    after_temporal = [mean_absolute(after_frames[i - 1], after_frames[i])
+                      for i in range(1, FRAMES)]
+    before_motion = sum(before_temporal) / len(before_temporal)
+    after_motion = sum(after_temporal) / len(after_temporal)
+    motion_ratio = after_motion / max(before_motion, 1e-9)
+    ssim = ssim_all(ffmpeg, before_path, after_path)
+    result = {
+        "first_frame_rgb_exact": before_first == after_first,
+        "first_frame_rgb_sha256_before": sha256_bytes(before_first),
+        "first_frame_rgb_sha256_candidate": sha256_bytes(after_first),
+        "evaluation_size": list(evaluation), "all_frames": FRAMES,
+        "all_frame_mae": mean_absolute(before, after), "all_frame_psnr_db": psnr,
+        "ssim": ssim, "before_temporal_mae_mean": before_motion,
+        "candidate_temporal_mae_mean": after_motion,
+        "temporal_motion_ratio": motion_ratio,
+        "before_first_last_mae": baseline["motion_mae"],
+        "candidate_first_last_mae": candidate["motion_mae"],
+    }
+    result["quality_gate_pass"] = bool(
+        result["first_frame_rgb_exact"] and ssim["all"] >= NS02_MIN_SSIM
+        and psnr >= NS02_MIN_PSNR_DB and 0.5 <= motion_ratio <= 1.5
+        and candidate["first_frame_mae"] <= FIRST_FRAME_MAX_MAE
+        and candidate["motion_mae"] >= MOTION_MIN_MAE)
+    return result
+
+
 def parse_native_phase(log_path, request_id):
     for line in Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines():
         if "video request backend=" not in line or f"request_id={request_id}" not in line:
@@ -439,11 +517,43 @@ def validate_preregistration(document):
     return document
 
 
-def candidate_schedule():
+def validate_ns02_preregistration(document, profile_sha256):
+    require(document.get("format") == "umminfer-ns02-interactive-preview-preregistration-v1",
+            "unknown NS-02 preregistration format")
+    require(document.get("profile_report_sha256") == profile_sha256
+            and document.get("candidate_id") == "automatic-i2v-teacache-0.25"
+            and document.get("candidate_commit") == "3f98fe1645d4d82877372056ba8ad2544aa399c5"
+            and document.get("repetitions") == NS02_REPETITIONS
+            and document.get("interleaving_seed") == NS02_INTERLEAVING_SEED,
+            "NS-02 profile, candidate, population, or seed identity changed")
+    require(document.get("settings") == {
+        "frames": FRAMES, "steps": STEPS, "fps": FPS, "guidance": GUIDANCE,
+        "seed": SEED, "request_teacache_field": "omitted",
+        "baseline_effective_teacache": 0.0, "candidate_effective_teacache": 0.25},
+        "NS-02 sampler, fidelity, frame, or TeaCache protocol changed")
+    gates = document.get("regression_gates") or {}
+    require(gates == {
+        "exact_paired_first_frame_rgb": True, "minimum_ssim_all": NS02_MIN_SSIM,
+        "minimum_all_frame_psnr_db": NS02_MIN_PSNR_DB,
+        "temporal_motion_ratio_range": [0.5, 1.5],
+        "minimum_median_speedup_ms": NS02_MIN_SPEEDUP_MS,
+        "all_paired_deltas_negative": True,
+        "candidate_median_and_p95_video_ms_below": NS02_VIDEO_LIMIT_MS,
+        "cancel_native_terminal_and_client_settle_ms_below": NS02_CANCEL_LIMIT_MS,
+        "cancel_threshold_arm": "candidate_only_before_is_reported_independently",
+        "zero_late_native_media_and_final_in_flight_zero": True,
+        "immediate_retry_exact_own_arm_hash": True},
+        "NS-02 quality, latency, cancellation, or recovery gates changed")
+    return document
+
+
+def candidate_schedule(mode="candidate"):
     schedule = []
-    for repetition in range(REPETITIONS):
+    repetitions = NS02_REPETITIONS if mode == "ns02" else REPETITIONS
+    seed = NS02_INTERLEAVING_SEED if mode == "ns02" else INTERLEAVING_SEED
+    for repetition in range(repetitions):
         arms = ["baseline", "candidate"]
-        random.Random(INTERLEAVING_SEED + repetition).shuffle(arms)
+        random.Random(seed + repetition).shuffle(arms)
         for arm in arms:
             schedule.append({"repetition": repetition, "arm": arm,
                              "shapes": list(CASES), "warmups_per_shape": 1,
@@ -471,7 +581,7 @@ def run_live(args):
                 "live mode requires exact lowercase base/execution commits")
     out = Path(args.out_dir)
     require(not out.exists(), f"evidence directory already exists: {out}")
-    for directory in ("requests", "responses", "media", "rgb", "native"):
+    for directory in ("requests", "responses", "media", "rgb", "native", "run-records"):
         (out / directory).mkdir(parents=True, exist_ok=True)
     args.ffmpeg = shutil.which(args.ffmpeg)
     args.ffprobe = shutil.which(args.ffprobe)
@@ -480,15 +590,21 @@ def run_live(args):
             "ffmpeg, ffprobe, and nvidia-smi must resolve through PATH")
     verifier = Path(args.verifier).resolve()
     require(verifier.is_file(), "independent verifier is missing")
-    candidate_mode = args.mode == "candidate"
+    candidate_mode = args.mode in ("candidate", "ns02")
+    ns02_mode = args.mode == "ns02"
     prereg = None
     baseline_reference = None
     if candidate_mode:
         require(args.preregistration and args.baseline_evidence
                 and args.candidate_wan_binary,
                 "candidate mode requires preregistration, baseline evidence, and candidate binary")
-        prereg = validate_preregistration(json.loads(Path(args.preregistration).read_text()))
+        prereg = json.loads(Path(args.preregistration).read_text())
         baseline_reference = Path(args.baseline_evidence)
+        if ns02_mode:
+            prereg = validate_ns02_preregistration(
+                prereg, sha256_file(baseline_reference / "report.json")["sha256"])
+        else:
+            prereg = validate_preregistration(prereg)
         require((baseline_reference / "report.json").is_file(),
                 "baseline evidence report is missing")
         require(sha256_file(baseline_reference / "report.json")["sha256"]
@@ -500,7 +616,7 @@ def run_live(args):
                 == sha256_file(args.wan_binary),
                 "candidate baseline must use the exact instrumented Wan binary from the profile")
         (out / "preregistration.json").write_bytes(Path(args.preregistration).read_bytes())
-        schedule = candidate_schedule()
+        schedule = candidate_schedule(args.mode)
         write_json(out / "candidate-schedule.json", schedule)
     else:
         require(not args.candidate_wan_binary and not args.baseline_evidence
@@ -543,6 +659,7 @@ def run_live(args):
     runs = []
     sources = {}
     controls = []
+    cancellations = []
     gpu = {"before": require_gpu_idle(args.nvidia_smi, args.gpu)}
     current_video = None
     current_arm = None
@@ -583,6 +700,10 @@ def run_live(args):
         current_video.wait_log("native stage video ready kind=video", args.timeout)
         gpu[f"{name}-ready"] = gpu_state(args.nvidia_smi, args.gpu)
 
+    def journal_record(record):
+        write_json(out / "run-records" / f"{record['run_id']}.json", record)
+        return record
+
     def execute_video(shape, role, run_id, repetition=None, override_size=None):
         case = CASES[shape]
         target = override_size or case["target"]
@@ -594,7 +715,9 @@ def run_live(args):
         body = {"kind": "video", "prompt": MOTION_PROMPT, "size": size_text(target),
                 "steps": STEPS, "num_frames": FRAMES, "fps": FPS,
                 "guidance_scale": GUIDANCE, "seed": SEED,
-                "image": source_data_url(source), "teacache_thresh": 0.0}
+                "image": source_data_url(source)}
+        if not ns02_mode:
+            body["teacache_thresh"] = 0.0
         payload = canonical(body)
         prep_done = clock_ns()
         input_before = len(video_input_tap.records)
@@ -626,7 +749,8 @@ def run_live(args):
                 and native_input["inputs"].get("steps") == STEPS
                 and native_input["inputs"].get("num_frames") == FRAMES
                 and native_input["inputs"].get("seed") == SEED
-                and native_input["inputs"].get("teacache_thresh") == 0.0,
+                and (("teacache_thresh" not in native_input["inputs"]) if ns02_mode
+                     else native_input["inputs"].get("teacache_thresh") == 0.0),
                 f"native request settings drifted for {run_id}")
         record = {
             **public, "run_id": run_id, "shape": shape, "role": role,
@@ -651,7 +775,7 @@ def run_live(args):
             record["error_body"] = raw.decode("utf-8", errors="replace")
             require(not native_output["success"] and not native_output.get("media_sha256"),
                     f"failed request emitted media: {run_id}")
-            return record
+            return journal_record(record)
         require(native_output["success"] and native_output.get("media_sha256")
                 == public["public_response_sha256"],
                 f"native/public MP4 bytes differ for {run_id}")
@@ -665,6 +789,13 @@ def run_live(args):
         require(record["native_phase"]["size"] == size_text(target)
                 and record["native_phase"]["source_size"] == sources[shape]["source_size"],
                 f"stale native geometry metadata for {run_id}")
+        if ns02_mode:
+            expected_teacache = 0.25 if current_arm == "candidate" else 0.0
+            require(float(record["native_phase"]["teacache_thresh"]) == expected_teacache,
+                    f"effective TeaCache policy drifted for {run_id}")
+            if current_arm == "candidate":
+                hits, total = record["native_phase"]["teacache_hits"].split("/")
+                require(0 < int(hits) < int(total), f"candidate did not use bounded cache: {run_id}")
         eval_size = (target[0] // 8, target[1] // 8)
         first = ffmpeg_rgb(args.ffmpeg, media_path, *target, frame=0)
         last = ffmpeg_rgb(args.ffmpeg, media_path, *target, frame=FRAMES - 1)
@@ -689,7 +820,86 @@ def run_live(args):
                 f"first-frame continuity gate failed for {run_id}: {record['first_frame_mae']}")
         require(record["motion_mae"] >= MOTION_MIN_MAE,
                 f"motion/nonzero-output gate failed for {run_id}: {record['motion_mae']}")
-        return record
+        return journal_record(record)
+
+    def exercise_disconnect_cancel(arm):
+        shape = "wide"
+        source = (out / sources[shape]["source_file"]).read_bytes()
+        body = {"kind": "video", "prompt": MOTION_PROMPT,
+                "size": size_text(CASES[shape]["target"]), "steps": STEPS,
+                "num_frames": FRAMES, "fps": FPS, "guidance_scale": GUIDANCE,
+                "seed": SEED, "image": source_data_url(source)}
+        payload = canonical(body)
+        run_id = f"{arm}-disconnect-cancel"
+        (out / "requests" / f"{run_id}.json").write_bytes(payload)
+        input_before = len(video_input_tap.records)
+        output_before = len(video_output_tap.records)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=args.timeout)
+        submit_ns = clock_ns()
+        conn.request("POST", "/v1/visual/render", body=payload,
+                     headers={"Content-Type": "application/json"})
+        deadline = time.monotonic() + 30.0
+        while True:
+            inputs = [record for record in video_input_tap.records[input_before:]
+                      if record["message_type"] == "submit"]
+            if len(inputs) == 1:
+                break
+            require(time.monotonic() < deadline and video_input_tap.error is None,
+                    "native submit did not arrive before disconnect")
+            time.sleep(0.001)
+        native_input = inputs[0]
+        target_ns = native_input["observed_monotonic_ns"] + 1_000_000_000
+        remaining_ns = target_ns - clock_ns()
+        if remaining_ns > 0:
+            time.sleep(remaining_ns / 1e9)
+        disconnect_ns = clock_ns()
+        if conn.sock is not None:
+            conn.sock.shutdown(socket.SHUT_RDWR)
+        conn.close()
+        while True:
+            outputs = [record for record in video_output_tap.records[output_before:]
+                       if record["message_type"] == "complete"]
+            if len(outputs) == 1:
+                break
+            require(time.monotonic() < deadline and video_output_tap.error is None,
+                    "native abort terminal did not arrive after disconnect")
+            time.sleep(0.001)
+        terminal = outputs[0]
+        require(terminal["request_id"] == native_input["request_id"]
+                and terminal["success"] is False and not terminal.get("media_sha256"),
+                f"disconnect did not fail closed without media: {terminal}")
+        health_deadline = time.monotonic() + 5.0
+        while True:
+            status, health = http_json(port, "GET", "/health", timeout=5)
+            if status == 200 and health.get("in_flight") == 0:
+                break
+            require(time.monotonic() < health_deadline, "disconnect retained in-flight work")
+            time.sleep(0.005)
+        settled_ns = clock_ns()
+        time.sleep(0.6)
+        late = [record for record in video_output_tap.records[output_before:]
+                if record.get("request_id") == native_input["request_id"]
+                and record["observed_monotonic_ns"] > terminal["observed_monotonic_ns"]]
+        require(not late, f"late native events/media followed disconnect: {late}")
+        record = {
+            "run_id": run_id, "arm": arm, "shape": shape,
+            "public_request_sha256": sha256_bytes(payload),
+            "native_request_id": native_input["request_id"],
+            "native_input_file": "native/" + native_input["packed_file"],
+            "native_output_file": "native/" + terminal["packed_file"],
+            "submit_monotonic_ns": submit_ns,
+            "native_submit_monotonic_ns": native_input["observed_monotonic_ns"],
+            "disconnect_monotonic_ns": disconnect_ns,
+            "native_terminal_monotonic_ns": terminal["observed_monotonic_ns"],
+            "settled_monotonic_ns": settled_ns,
+            "disconnect_to_native_terminal_ms": (
+                terminal["observed_monotonic_ns"] - disconnect_ns) / 1e6,
+            "disconnect_to_client_settled_ms": (settled_ns - disconnect_ns) / 1e6,
+            "public_abort_ack": "NOT_APPLICABLE_NONSTREAM_RENDER_HAS_NO_REQUEST_ID",
+            "late_native_records_after_terminal": 0, "public_media_bytes": 0,
+            "health": health,
+        }
+        return journal_record(record)
 
     try:
         video_input_tap = MessageTap("video-input", endpoints["video-tap-in"],
@@ -824,16 +1034,48 @@ def run_live(args):
                         f"r{item['repetition']}-{item['arm']}-{shape}-measured",
                         repetition=item["repetition"]))
                 stop_video()
-            start_video("candidate", len(schedule))
-            invalid = execute_video("wide", "malformed_dimension", "candidate-invalid",
-                                    override_size=(500, 480))
-            require(invalid["http_status"] == 500
-                    and "divisible by 32" in invalid["error_body"],
-                    f"candidate malformed dimensions were not rejected: {invalid}")
-            controls.append(invalid)
-            controls.append(execute_video("wide", "post_failure_recovery", "candidate-recovery"))
-            stop_video()
+            if ns02_mode:
+                for control_index, arm in enumerate(("baseline", "candidate")):
+                    block = len(schedule) + control_index
+                    start_video(arm, block)
+                    runs.append(execute_video(
+                        "wide", "cold_or_warmup", f"{arm}-cancel-warmup"))
+                    cancellations.append(exercise_disconnect_cancel(arm))
+                    controls.append(execute_video(
+                        "wide", "post_cancel_recovery", f"{arm}-immediate-retry"))
+                    invalid = execute_video(
+                        "wide", "malformed_dimension", f"{arm}-invalid",
+                        override_size=(500, 480))
+                    require(invalid["http_status"] == 500
+                            and "divisible by 32" in invalid["error_body"],
+                            f"{arm} malformed dimensions were not rejected: {invalid}")
+                    controls.append(invalid)
+                    controls.append(execute_video(
+                        "wide", "post_failure_recovery", f"{arm}-failure-recovery"))
+                    stop_video()
+            else:
+                start_video("candidate", len(schedule))
+                invalid = execute_video("wide", "malformed_dimension", "candidate-invalid",
+                                        override_size=(500, 480))
+                require(invalid["http_status"] == 500
+                        and "divisible by 32" in invalid["error_body"],
+                        f"candidate malformed dimensions were not rejected: {invalid}")
+                controls.append(invalid)
+                controls.append(execute_video("wide", "post_failure_recovery", "candidate-recovery"))
+                stop_video()
 
+        # Include the entire retained post-cancel history, including activity while
+        # immediate retry/failure controls ran, rather than only the first 0.6 s.
+        for cancellation in cancellations:
+            terminal_tick = cancellation["native_terminal_monotonic_ns"]
+            request_id = cancellation["native_request_id"]
+            late = [record for record in video_output_tap.records
+                    if record.get("request_id") == request_id
+                    and record["observed_monotonic_ns"] > terminal_tick]
+            cancellation["late_native_records_after_terminal"] = len(late)
+            cancellation["late_native_record_sha256"] = [
+                record["packed_sha256"] for record in late]
+            journal_record(cancellation)
         video_input_tap.stop()
         video_output_tap.stop()
         video_input_tap = video_output_tap = None
@@ -856,19 +1098,29 @@ def run_live(args):
                                   and run["http_status"] == 200] for shape in CASES}
         for shape, shape_runs in valid_by_shape.items():
             require(shape_runs, f"no successful real I2V run for {shape}")
-            hashes = {run["media_sha256"] for run in shape_runs}
-            require(len(hashes) == 1,
-                    f"fixed source/settings are not byte reproducible for {shape}: {hashes}")
+            arms = ("baseline", "candidate") if ns02_mode else (None,)
+            for arm in arms:
+                hashes = {run["media_sha256"] for run in shape_runs
+                          if arm is None or run["arm"] == arm}
+                require(len(hashes) == 1,
+                        f"fixed source/settings are not byte reproducible for {shape}/{arm}: {hashes}")
         require(valid_by_shape["wide"][0]["media_sha256"]
                 != valid_by_shape["square"][0]["media_sha256"],
                 "wide and square anchors produced identical wide outputs; source may be ignored")
         for control in controls:
-            if control["role"] == "post_failure_recovery":
-                reference = valid_by_shape[control["shape"]][0]
+            if control["role"] in ("post_failure_recovery", "post_cancel_recovery"):
+                reference = next(run for run in valid_by_shape[control["shape"]]
+                                 if not ns02_mode or run["arm"] == control["arm"])
                 require(control["media_sha256"] == reference["media_sha256"],
-                        "post-failure recovery output differs from its valid control")
+                        "post-cancel/failure recovery output differs from its own-arm control")
 
         profile = {
+            "warm_by_shape_arm": {
+                arm: {shape: summarize([
+                    run["public_complete_artifact_ms"] for run in valid_by_shape[shape]
+                    if run["role"] == "measured" and run["arm"] == arm])
+                    for shape in CASES} for arm in ("baseline", "candidate")
+            } if ns02_mode else None,
             "warm_by_shape": {
                 shape: summarize([run["public_complete_artifact_ms"]
                                   for run in valid_by_shape[shape]
@@ -897,29 +1149,41 @@ def run_live(args):
         if candidate_mode:
             measured = [run for run in runs if run["role"] == "measured"]
             paired = []
-            for repetition in range(REPETITIONS):
+            repetitions = NS02_REPETITIONS if ns02_mode else REPETITIONS
+            for repetition in range(repetitions):
                 for shape in CASES:
                     baseline = next(run for run in measured if run["arm"] == "baseline"
                                     and run["repetition"] == repetition and run["shape"] == shape)
                     candidate = next(run for run in measured if run["arm"] == "candidate"
                                      and run["repetition"] == repetition and run["shape"] == shape)
-                    require(candidate["media_sha256"] == baseline["media_sha256"],
-                            f"candidate/baseline MP4 mismatch at r{repetition} {shape}")
+                    if not ns02_mode:
+                        require(candidate["media_sha256"] == baseline["media_sha256"],
+                                f"candidate/baseline MP4 mismatch at r{repetition} {shape}")
                     profile_run = next(run for run in baseline_reference_runs(baseline_reference)
                                        if run["shape"] == shape and run["role"] == "measured"
                                        and run["repetition"] == 0)
                     profile_media = (baseline_reference / profile_run["media_file"]).read_bytes()
-                    require(sha256_bytes(profile_media) == profile_run["media_sha256"]
-                            and candidate["media_sha256"] == profile_run["media_sha256"],
-                            f"candidate/profile MP4 mismatch at r{repetition} {shape}")
-                    paired.append({"repetition": repetition, "shape": shape,
-                                   "baseline_run_id": baseline["run_id"],
-                                   "candidate_run_id": candidate["run_id"],
-                                   "baseline_ms": baseline["public_complete_artifact_ms"],
-                                   "candidate_ms": candidate["public_complete_artifact_ms"],
-                                   "candidate_minus_baseline_ms": (
-                                       candidate["public_complete_artifact_ms"]
-                                       - baseline["public_complete_artifact_ms"])})
+                    require(sha256_bytes(profile_media) == profile_run["media_sha256"],
+                            f"profile media hash mismatch at r{repetition} {shape}")
+                    if not ns02_mode:
+                        require(candidate["media_sha256"] == profile_run["media_sha256"],
+                                f"candidate/profile MP4 mismatch at r{repetition} {shape}")
+                    item = {"repetition": repetition, "shape": shape,
+                            "baseline_run_id": baseline["run_id"],
+                            "candidate_run_id": candidate["run_id"],
+                            "baseline_sha256": baseline["media_sha256"],
+                            "candidate_sha256": candidate["media_sha256"],
+                            "baseline_ms": baseline["public_complete_artifact_ms"],
+                            "candidate_ms": candidate["public_complete_artifact_ms"],
+                            "candidate_minus_baseline_ms": (
+                                candidate["public_complete_artifact_ms"]
+                                - baseline["public_complete_artifact_ms"])}
+                    if ns02_mode:
+                        item["quality"] = paired_video_quality(args.ffmpeg, out, baseline, candidate)
+                    else:
+                        item.pop("baseline_sha256")
+                        item.pop("candidate_sha256")
+                    paired.append(item)
             deltas = [item["candidate_minus_baseline_ms"] for item in paired]
             baseline_values = [item["baseline_ms"] for item in paired]
             candidate_values = [item["candidate_ms"] for item in paired]
@@ -935,6 +1199,42 @@ def run_live(args):
                 "regression_gate_pass": median_delta <= 0.05 * median_baseline,
                 "all_observations_retained": True,
             }
+            if ns02_mode:
+                shape_deltas = {shape: statistics.median([
+                    item["candidate_minus_baseline_ms"] for item in paired
+                    if item["shape"] == shape]) for shape in CASES}
+                quality_pass = all(item["quality"]["quality_gate_pass"] for item in paired)
+                candidate_cancel = next((item for item in cancellations
+                                         if item["arm"] == "candidate"), None)
+                cancel_pass = len(cancellations) == 2 and candidate_cancel is not None and all((
+                    candidate_cancel["disconnect_to_native_terminal_ms"] < NS02_CANCEL_LIMIT_MS,
+                    candidate_cancel["disconnect_to_client_settled_ms"] < NS02_CANCEL_LIMIT_MS,
+                    candidate_cancel["late_native_records_after_terminal"] == 0,
+                    candidate_cancel["health"].get("in_flight") == 0))
+                video_threshold_pass = (statistics.median(candidate_values) < NS02_VIDEO_LIMIT_MS
+                                        and quantile(candidate_values, 0.95) < NS02_VIDEO_LIMIT_MS)
+                speed_pass = (median_delta <= -NS02_MIN_SPEEDUP_MS
+                              and all(delta < 0.0 for delta in deltas)
+                              and all(value < 0.0 for value in shape_deltas.values()))
+                candidate_analysis.update({
+                    "candidate_id": "automatic-i2v-teacache-0.25",
+                    "candidate_commit": "3f98fe1645d4d82877372056ba8ad2544aa399c5",
+                    "shape_median_paired_delta_ms": shape_deltas,
+                    "quality_gate_pass": quality_pass, "speed_gate_pass": speed_pass,
+                    "video_hard_threshold_pass": video_threshold_pass,
+                    "cancellation_hard_threshold_pass": cancel_pass,
+                    "cancellations": cancellations,
+                    "cancellation_latency": {arm: {
+                        "native_terminal": summarize([item["disconnect_to_native_terminal_ms"]
+                            for item in cancellations if item["arm"] == arm]),
+                        "client_settled": summarize([item["disconnect_to_client_settled_ms"]
+                            for item in cancellations if item["arm"] == arm])}
+                        for arm in ("baseline", "candidate")},
+                    "promotion_decision": "PROMOTED" if all((quality_pass, speed_pass,
+                        video_threshold_pass, cancel_pass)) else "NOT_PROMOTED",
+                    "promotion_scope": "native I2V default only; no full NS PASS",
+                    "perceptual_quality": "NOT_RUN", "human_review": "NOT_RUN",
+                })
 
         report = {
             "format": FORMAT, "mode": args.mode,
@@ -942,6 +1242,7 @@ def run_live(args):
             "base_commit": args.base_commit, "execution_commit": args.execution_commit,
             "physical_gpu": args.gpu, "port": port,
             "geometry_cases": CASES, "sources": sources, "runs": runs, "controls": controls,
+            "cancellations": cancellations,
             "profile": profile, "candidate_analysis": candidate_analysis,
             "preregistration_sha256": sha256_file(out / "preregistration.json")["sha256"]
                 if candidate_mode else None,
@@ -953,10 +1254,12 @@ def run_live(args):
                 "public_path": "POST /v1/visual/render -> UnifiedEngine Coordinator -> native Wan",
                 "perceptual_quality": "NOT_RUN", "human_review": "NOT_RUN",
                 "character_style_consistency": "NOT_RUN",
-                "real_cancellation": "NOT_RUN (accepted Task #67 controls retained separately)",
+                "real_cancellation": "CLIENT_DISCONNECT_MEASURED" if ns02_mode else
+                    "NOT_RUN (accepted Task #67 controls retained separately)",
                 "resident_service": "NOT_CONTACTED", "deployment": "NOT_RUN",
             },
             "manifest_policy": "every regular file recursively except top-level SHA256SUMS itself",
+            "journal_policy": "one exact JSON snapshot per completed public/cancel record" if ns02_mode else None,
         }
         write_json(out / "report.json", report)
         # No file is created or modified under out after this manifest is sealed.
@@ -986,8 +1289,8 @@ def run_live(args):
             "manifest_sha256": sha256_file(out / "SHA256SUMS")["sha256"],
             "manifest_files": file_count,
             "verification_sha256": sha256_file(verification)["sha256"],
-            "candidate_verdict": candidate_analysis["latency_verdict"]
-                if candidate_analysis else None,
+            "candidate_verdict": (candidate_analysis.get("promotion_decision",
+                candidate_analysis["latency_verdict"]) if candidate_analysis else None),
             "gpu_after": gpu["after-all-requests-before-server-stop"],
         }, sort_keys=True))
         print("PERCEPTUAL_QUALITY: NOT_RUN")
@@ -1039,6 +1342,42 @@ def self_check():
     require(candidate_schedule() == candidate_schedule()
             and len(candidate_schedule()) == 6,
             "seeded candidate schedule is not deterministic")
+    ns02_schedule = candidate_schedule("ns02")
+    require(ns02_schedule == candidate_schedule("ns02") and len(ns02_schedule) == 10
+            and sum(item["arm"] == "candidate" for item in ns02_schedule) == 5,
+            "NS-02 seeded process-separated schedule is not balanced")
+    ns02_prereg = {
+        "format": "umminfer-ns02-interactive-preview-preregistration-v1",
+        "profile_report_sha256": "0" * 64,
+        "candidate_id": "automatic-i2v-teacache-0.25",
+        "candidate_commit": "3f98fe1645d4d82877372056ba8ad2544aa399c5",
+        "repetitions": NS02_REPETITIONS, "interleaving_seed": NS02_INTERLEAVING_SEED,
+        "settings": {"frames": FRAMES, "steps": STEPS, "fps": FPS,
+                     "guidance": GUIDANCE, "seed": SEED,
+                     "request_teacache_field": "omitted",
+                     "baseline_effective_teacache": 0.0,
+                     "candidate_effective_teacache": 0.25},
+        "regression_gates": {
+            "exact_paired_first_frame_rgb": True, "minimum_ssim_all": NS02_MIN_SSIM,
+            "minimum_all_frame_psnr_db": NS02_MIN_PSNR_DB,
+            "temporal_motion_ratio_range": [0.5, 1.5],
+            "minimum_median_speedup_ms": NS02_MIN_SPEEDUP_MS,
+            "all_paired_deltas_negative": True,
+            "candidate_median_and_p95_video_ms_below": NS02_VIDEO_LIMIT_MS,
+            "cancel_native_terminal_and_client_settle_ms_below": NS02_CANCEL_LIMIT_MS,
+        "cancel_threshold_arm": "candidate_only_before_is_reported_independently",
+            "zero_late_native_media_and_final_in_flight_zero": True,
+            "immediate_retry_exact_own_arm_hash": True}}
+    require(validate_ns02_preregistration(ns02_prereg, "0" * 64) == ns02_prereg,
+            "NS-02 preregistration self-check failed")
+    weakened = dict(ns02_prereg)
+    weakened["settings"] = dict(ns02_prereg["settings"], steps=STEPS - 1)
+    try:
+        validate_ns02_preregistration(weakened, "0" * 64)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("NS-02 accepted a reduced solver budget")
     prereg = preregistration_document("0" * 64, "self-check", "offline contract only")
     validate_preregistration(prereg)
     bad = dict(prereg)
@@ -1066,7 +1405,7 @@ def self_check():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-check", action="store_true")
-    parser.add_argument("--mode", choices=("profile", "candidate"), default="profile")
+    parser.add_argument("--mode", choices=("profile", "candidate", "ns02"), default="profile")
     parser.add_argument("--out-dir")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--server-binary", type=Path)

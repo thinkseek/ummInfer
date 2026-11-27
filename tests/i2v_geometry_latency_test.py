@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import i2v_geometry_latency_live as live
 import i2v_geometry_latency_verify as verify
+import ns_interactive_preview_scorecard as scorecard
+import ns_interactive_preview_verify as final_verify
 
 
 class MessagePackTests(unittest.TestCase):
@@ -53,6 +55,64 @@ class PreregistrationTests(unittest.TestCase):
             mutate(changed)
             with self.subTest(mutate=mutate), self.assertRaises(AssertionError):
                 verify.verify_preregistration(changed, "a" * 64)
+    def test_ns02_protocol_rejects_threshold_sampler_or_gate_drift(self):
+        path = (Path(__file__).resolve().parent.parent / "benchmarks" /
+                "ns-interactive-preview" / "preregistration.json")
+        document = json.loads(path.read_text())
+        verify.verify_ns02_preregistration(document, document["profile_report_sha256"])
+        self.assertEqual(live.candidate_schedule("ns02"), verify.expected_schedule("ns02"))
+        self.assertEqual(len(live.candidate_schedule("ns02")), 10)
+        for mutate in (
+                lambda item: item.update(candidate_commit="0" * 40),
+                lambda item: item["settings"].update(steps=19),
+                lambda item: item["settings"].update(candidate_effective_teacache=0.2),
+                lambda item: item["regression_gates"].update(minimum_ssim_all=0.5),
+                lambda item: item.update(repetitions=3)):
+            changed = json.loads(json.dumps(document))
+            mutate(changed)
+            with self.subTest(mutate=mutate), self.assertRaises(AssertionError):
+                verify.verify_ns02_preregistration(changed, document["profile_report_sha256"])
+
+
+class MediaMetricTests(unittest.TestCase):
+    def test_ffmpeg_ssim_all_layout_is_parsed_by_producer_and_verifier(self):
+        import subprocess
+        log = ("[Parsed_ssim_0 @ x] SSIM Y:0.892661 (9.692430) "
+               "U:0.963254 (14.347930) V:0.942325 (12.390132) "
+               "All:0.912704 (10.590055)\n")
+        completed = subprocess.CompletedProcess([], 0, "", log)
+        with mock.patch.object(live.subprocess, "run", return_value=completed):
+            self.assertEqual(live.ssim_all("ffmpeg", "before.mp4", "after.mp4")["all"],
+                             0.912704)
+        with mock.patch.object(verify.subprocess, "run", return_value=completed):
+            self.assertEqual(verify.ns02_ssim("ffmpeg", "before.mp4", "after.mp4")["all"],
+                             0.912704)
+
+
+class ScorecardContractTests(unittest.TestCase):
+    def test_independent_statistics_match_and_thresholds_fail_closed(self):
+        values = [1.0, 2.0, 3.0, 100.0]
+        self.assertEqual(final_verify.summary(values), live.summarize(values))
+        self.assertFalse(scorecard.threshold(values, 50.0)["p95_pass"])
+        self.assertTrue(scorecard.threshold([1.0, 2.0, 3.0], 4.0)["all_runs_pass"])
+        with self.assertRaises(AssertionError):
+            final_verify.close(1.0, 1.1, "deliberate mismatch")
+
+    def test_final_manifest_covers_nested_manifests_and_rejects_extras(self):
+        with tempfile.TemporaryDirectory(prefix="umm-ns-final-manifest-") as directory:
+            root = Path(directory)
+            (root / "nested").mkdir()
+            (root / "nested" / "SHA256SUMS").write_text("nested evidence\n")
+            (root / "scorecard.json").write_text("{}\n")
+            rows = []
+            for path in (root / "scorecard.json", root / "nested" / "SHA256SUMS"):
+                rows.append(f"{final_verify.sha_file(path)}  "
+                            f"{path.relative_to(root).as_posix()}\n")
+            (root / "SHA256SUMS").write_text("".join(sorted(rows)))
+            self.assertEqual(final_verify.manifest(root)[0], 2)
+            (root / "nested" / "extra").write_text("not sealed")
+            with self.assertRaises(AssertionError):
+                final_verify.manifest(root)
 
 
 class VerifierIdentityTests(unittest.TestCase):

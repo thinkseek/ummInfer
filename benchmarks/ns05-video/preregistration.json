@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "experiment": "umminfer_ns05_video_decode_prefill_before_after_v1",
+  "preregistered_on": "2026-11-27",
+  "target_case": "NS-05",
+  "historical_gate_immutable": {
+    "task75_revision0_public_total_relative_improvement": 0.023266061979744568,
+    "required": 0.05,
+    "historical_result": "FAIL_UNCHANGED"
+  },
+  "source": {
+    "asset_class": "REAL_NATURAL_MULTI_SHOT_CC_BY_4_0_NOT_LOOPED_NOT_SYNTHETIC",
+    "upstream_repository": "https://github.com/intel-iot-devkit/sample-videos",
+    "upstream_commit": "57978890822836f2b4743852f04f62fc511757e4",
+    "upstream_path": "driver-action-recognition.mp4",
+    "upstream_url": "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/57978890822836f2b4743852f04f62fc511757e4/driver-action-recognition.mp4",
+    "upstream_sha256": "fd24e652c92a5759127aa9c7f23fea63d73aebb4bcea72763abe72ef06a20cf0",
+    "upstream_duration_seconds": 418.4,
+    "license": "CC-BY-4.0",
+    "license_url": "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/57978890822836f2b4743852f04f62fc511757e4/LICENSE",
+    "license_sha256": "e7edaaaeb0cd6da6a3dd97c54f3e8443ef027be685253fab64bf6eed2419ee7e",
+    "derivative": "One continuous source interval [30,150) seconds, FFmpeg scale 1920x1080 to 768x432, H.264 libx264 fast CRF18 yuv420p, audio removed, faststart. No loops, frame synthesis, reordered shots, or model-generated content.",
+    "derivative_sha256": "ffef335edc161a2f6dead512e0fde96cf48fb997ae6b6491067e36c76eec58d0",
+    "duration_seconds": 120.0,
+    "frames": 3600,
+    "fps": "30/1",
+    "width": 768,
+    "height": 432,
+    "bytes": 19821335,
+    "public_input_limit_bytes": 33554432,
+    "review": "Full upstream timeline and the final derivative were visually reviewed before inference. Opening shots show a male driver holding a phone to his ear and later drinking/rubbing his head. The final shot shows a female driver and a male passenger. Review images remain external evidence."
+  },
+  "client_contract": {
+    "input": "video_url followed by the frozen text question",
+    "frame_selection": "ABSENT; historical default eight-frame uniform path",
+    "advanced_client_controls": "none; no policy, budget, prefix, or scheduling field",
+    "model": "qwen3-native",
+    "stream": true,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "seed": 510075,
+    "max_tokens": 64,
+    "voice_response": "modalities=[text,audio], audio={voice:vivian,format:wav,stream:true}; wav is the required request envelope while streaming output is audio/pcm; this is not a frame/scheduler control",
+    "physical_playback": "NOT_RUN",
+    "barge_in_and_cross_modal_generation": "NOT_RUN_IN_THIS_BOUNDED_EVALUATION"
+  },
+  "cases": [
+    {
+      "id": "phone-action",
+      "question": "What does the man driving in the opening shot do with his phone? Answer in one short sentence.",
+      "canonical_answer": "He holds the phone to his ear to make a call.",
+      "expect_all": ["phone"],
+      "expect_any": ["ear", "call", "talk"],
+      "ground_truth_times_in_derivative_seconds": [5.0],
+      "answer_aliases_after_results": "FORBIDDEN"
+    },
+    {
+      "id": "driver-scene-change",
+      "question": "How does the driver change between the opening shot and the final shot? Answer in one short sentence.",
+      "canonical_answer": "A woman replaces a man as the driver in the final shot.",
+      "expect_all": ["man", "woman"],
+      "expect_any": [],
+      "ground_truth_times_in_derivative_seconds": [5.0, 118.0],
+      "answer_aliases_after_results": "FORBIDDEN"
+    }
+  ],
+  "execution": {
+    "order": ["baseline-A", "candidate-B", "candidate-C", "baseline-D"],
+    "fresh_stack_per_block": true,
+    "physical_gpu": 1,
+    "allowed_stages": ["Qwen3.8-27B VLM", "Qwen3-ASR-1.7B readiness-only no ASR request", "Qwen3-TTS-1.7B-CustomVoice"],
+    "prefix_cache": "disabled; every VLM request must log prefix_reused=0",
+    "warmup_repetitions_per_stack_case": 1,
+    "measured_repetitions_per_stack_case": 8,
+    "case_order": "seeded interleaving with seed 510075 and identical schedule per stack",
+    "requests_per_stack": 18,
+    "requests_total": 72,
+    "paired_measured_requests_per_case": 16,
+    "paired_requests_including_warmup": 36,
+    "request_timeout_seconds": 60,
+    "max_whole_device_memory_mib": 80000,
+    "cleanup": "SIGTERM only recorded task-owned stage/gateway PIDs; require in_flight=0 and GPU1 zero compute processes"
+  },
+  "metrics": {
+    "decode_prefill_ms": "native video_input_ms + vision_ms + prefill_ms",
+    "first_public_text_ms": "first nonempty public text delta from request start",
+    "first_public_voice_ms": "first public audio/pcm artifact chunk from request start",
+    "public_total_ms": "request start through [DONE]",
+    "quality": "casefolded expect_all plus optional expect_any rule; every measured raw answer and miss retained",
+    "distributions": "median, nearest-rank p95, inclusive IQR, MAD, mean, CV, min/max; retain all outliers",
+    "paired": "candidate-minus-baseline by ABBA half, case and repetition; exact two-sided sign test and 20000 deterministic median-bootstrap resamples, seed 510075",
+    "voice_pcm": "base64/chunk order/byte count/SHA-256 validated and exact across each baseline/candidate pair"
+  },
+  "acceptance": {
+    "ns05_response": "All measured first text and first voice p95 values must be below 3000 ms; failures remain visible even if another metric improves.",
+    "promotion": "Require negative median paired first-voice delta, bootstrap 95 percent upper bound below zero, exact sign-test p<=0.05, no TTFT/TTFA/decode-prefill median or p95 regression greater than 1 percent, exact answer/native/PCM parity, and unchanged Task72 controls.",
+    "no_gain_or_unavailable_golden_run": "Remove the parallel second-resize candidate from final default runtime and mark NOT_PROMOTED. Preserve historical diagnostics and do not tune another optimization.",
+    "quality": "Report exact hits/misses per implementation/case; no prompt or alias changes after answers and no generalized/perceptual-quality claim."
+  },
+  "claims_before_run": {
+    "ns05_golden_execution": "NOT_RUN",
+    "candidate_promotion": "NOT_PROMOTED_UNTIL_PASS",
+    "physical_playback_and_perceptual_quality": "NOT_RUN",
+    "barge_in_and_cross_modal_generation": "NOT_RUN"
+  }
+}

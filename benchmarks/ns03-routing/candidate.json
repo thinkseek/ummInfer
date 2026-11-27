@@ -1,0 +1,25 @@
+{
+  "format": "umminfer-ns03-routing-candidate-v1",
+  "candidate_id": "auto-director-four-route-r1",
+  "base_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "benchmark_freeze_commit": "cdb18b834b7dbd6a8a7ca6f68544d26a99227fa7",
+  "harness_fix_commit": "13f94e59ff073d758c5492c6aa18fea9b23d603f",
+  "execution_commit": "806b2e2033b3f63993f4c803a67334917eab03d9",
+  "code_frozen_at_utc": "2026-11-27T11:02:53+00:00",
+  "evaluation_frozen_at_utc": "2026-11-27T12:19:19+00:00",
+  "suite_canonical_sha256": "35769692293fb99828ad23f40f1eaf3dd154b4c3c7e9b66b21d71ee27f61b097",
+  "frozen_before_heldout": true,
+  "bounded_change": "Replace only the default auto narrative director prompt with explicit TEXT_ONLY/STATIC_IMAGE/DYNAMIC_VIDEO intent routing, one-visual cardinality, contextual follow-up abstention, visual-noun disambiguation, concise output, and an explicit multi-beat exception. No parser, public schema, client, frame, model, backend, or training change.",
+  "source_sha256": {
+    "src/pipeline/narrative_prompt.cpp": "ecad59055b103f47f9cb09d7d87519936adb70c93f9bba50e51f692173fbd77a",
+    "src/pipeline/narrative_parser.cpp": "cb864c55f67ca13ae70604a4a3ce1945f68f37b52ac5afa4e59fd3eb355461c8",
+    "src/pipeline/narrative_parser.hpp": "c876b79ae314ebd5a876377a01e8818c7210fa97e55b6bfc0ee33ad5e145e9b3",
+    "src/pipeline/unified.cpp": "6a45488b040cdd35cf2ff304f12c6a57296d90c1bea155e7166229ab2a60a07f",
+    "src/pipeline/unified_schema.cpp": "c62ce75b576f68669ff15c34d0f1ab605fc7dc36bd4034bbdae769e3ce6efe9a"
+  },
+  "deterministic_red_green": {
+    "test": "test_narrative_director_routing_prompt",
+    "red": "candidate test with unmodified director: 9 focused assertions FAIL; other unified steps pass",
+    "green": "candidate commit: unified-test PASS"
+  }
+}

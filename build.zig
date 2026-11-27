@@ -228,6 +228,12 @@ pub fn build(b: *std.Build) void {
     const public_speech_pcm_test = b.step("public-speech-pcm-test", "Run deterministic public/native PCM verifier tests");
     public_speech_pcm_test.dependOn(&public_speech_pcm.step);
 
+    const ns03_routing = b.addSystemCommand(&.{ "python3", "-I" });
+    ns03_routing.addFileArg(b.path("tests/ns03_routing_test.py"));
+    test_step.dependOn(&ns03_routing.step);
+    const ns03_routing_test = b.step("ns03-routing-test", "Run frozen NS-03 routing and scoring contracts");
+    ns03_routing_test.dependOn(&ns03_routing.step);
+
     const bench_step = b.step("cuda-bench", "Measure SHM and CUDA IPC relay latency");
     if (cuda) {
         const bench_exe = b.addExecutable(.{
