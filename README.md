@@ -1,334 +1,128 @@
 # ummInfer
 
-ummInfer is an inference runtime for unified multimodal models. A C++20 control
-plane serves an OpenAI-compatible HTTP/SSE surface plus a WebSocket realtime
-transcription/voice surface (`/v1/realtime`), and drives one native C++/CUDA
-model executor per GPU as an external stage process. No Python, PyTorch, vLLM
-or SGLang is loaded on the serving path; `ldd` on every stage binary lists the
-CUDA runtime, libzmq, libmsgpackc and system libraries only.
+A native C++20/CUDA inference engine for unified multimodal models. ummInfer exposes an OpenAI-compatible HTTP/SSE API (`/v1/chat/completions`, `/v1/audio/*`, `/v1/images/*`, `/v1/videos`, `/v1/visual/render`) and a full-duplex WebSocket voice API (`/v1/realtime`), orchestrating isolated per-GPU native C++/CUDA model stages over ZeroMQ + MessagePack + POSIX shared memory.
+
+The default native serving path loads no Python, PyTorch, vLLM, or SGLang runtime.
+
+## Highlights
+
+- **Five-modality native execution**: ASR, VLM (text + image + video input), Image, streaming TTS (with zero-shot voice cloning), and native T2V / first-frame-anchored I2V Video.
+- **Interleaved multimodal output**: Stream structured text, inline images, videos, and sentence-level PCM16 speech in one response, with in-place image-to-video animation (`POST /v1/visual/render`).
+- **Full-duplex voice (`/v1/realtime`)**: Streaming audio input, server VAD, barge-in cancellation, and playback-acknowledged conversation history.
+- **Clients included**: `umm-infer` CLI & C++ client, single-file browser UI (`web/index.html`), and native macOS SwiftUI client (`clients/ummmlx`).
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-  CLIENT["HTTP / SSE / WebSocket client<br/>curl · umm-infer CLI · C++ client · macOS ummmlx · web"]
-  SERVER["<b>umm-infer serve</b><br/>HTTP + SSE + WS · Coordinator · UnifiedEngine<br/>request ids · abort · /health /ready /metrics"]
-  ZMQ["ZeroMQ + MessagePack control edges<br/>POSIX shared-memory payload relay"]
+flowchart LR
+  CLIENT["Clients<br/>CLI · Web UI · macOS ummmlx · C++"]
+  SERVER["umm-infer serve<br/>HTTP/SSE · /v1/realtime WS<br/>Coordinator · UnifiedEngine"]
+  ZMQ["ZMQ + MessagePack<br/>POSIX SHM"]
 
-  ASRG["<b>umm-native-stage-asr</b><br/>GPU 2 · native/umm_asr_native"]
-  VLM["<b>umm-native-stage-qwen38</b><br/>GPU 3 · native/qwen38 (VLM leg)"]
-  OMNI["<b>umm-native-stage-omni</b><br/>GPU 3, optional VLM · native/omni"]
-  IMGG["<b>umm-native-stage-image</b><br/>GPU 4 · native/image (2512) / native/image2 (2.1)"]
-  TTSG["<b>umm-native-stage-tts</b><br/>GPU 5 · native/tts"]
+  ASR["umm-native-stage-asr<br/>Qwen3-ASR"]
+  VLM["umm-native-stage-qwen38<br/>Qwen3.8-27B (or Omni)"]
+  IMG["umm-native-stage-image<br/>Qwen-Image (or FLUX.2)"]
+  TTS["umm-native-stage-tts<br/>Qwen3-TTS"]
+  VID["umm-native-stage-video<br/>Wan2.2-TI2V-5B"]
 
-  CLIENT --> SERVER
-  SERVER --> ZMQ
-  ZMQ --> ASRG
+  CLIENT --> SERVER --> ZMQ
+  ZMQ --> ASR
   ZMQ --> VLM
-  ZMQ -.-> OMNI
-  ZMQ --> IMGG
-  ZMQ --> TTSG
+  ZMQ --> IMG
+  ZMQ --> TTS
+  ZMQ --> VID
 ```
 
-One request runs an ordered plan: optional ASR, then the VLM leg, then the
-optional image and TTS output legs. Every stage registers with the existing
-`Stage::Config` contract (`recv`, `coordinator`, `abort`, `announce_ready`).
-Each process loads one model on one GPU; stages default to one request at a
-time, while `qwen38` supports opt-in decode continuous batching via
-`--batch-size N` (set to `8` in `service/native-service.json`).
-Exactly one VLM stage runs at a time: `vlm_stage` in the service config picks
-`qwen38` (default) or `omni`.
+Each stage runs one model on one GPU (`kSerial` by default; `qwen38` supports opt-in continuous batching via `--batch-size N`). `/ready` returns `200` once the entry and VLM stages register; optional output legs never gate readiness.
 
-| Path | Stages | Terminal |
-| --- | --- | --- |
-| Text chat | VLM | `complete`; both `qwen38` and `omni` emit `vlm_delta` per token |
-| Audio -> text | ASR -> VLM | `asr_final`, then VLM deltas, then `complete` |
-| Image + text -> text | VLM | `complete` |
-| Text -> speech | VLM -> TTS | `complete` with one `artifact` (WAV), or streamed PCM16 `artifact` chunks when `audio.stream=true` |
-| Text -> image | VLM -> image | `complete` with one `artifact` (PNG) |
-| Text + image + audio -> text + image + audio | ASR -> VLM -> image ∥ TTS | `complete` with two `artifact`s |
+## Supported models
+
+| Modality | Model | Backend | Notes |
+| --- | --- | --- | --- |
+| ASR | Qwen3-ASR 0.6B / 1.7B | `native/umm_asr_native` | 16 kHz mono PCM16, up to 30 s |
+| VLM | Qwen3.8-27B (default) | `native/qwen38` | Text, image, native video input (`4/8/16` frame budgets), prefix KV reuse, `--batch-size N` |
+| VLM (opt.) | Qwen3-Omni thinker | `native/omni` | MoE thinker, pure-text prefix cache |
+| Speech | Qwen3-TTS 0.6B / 1.7B CustomVoice & 1.7B-Base | `native/tts` | Streaming 24 kHz PCM16 / WAV, native ECAPA-TDNN zero-shot cloning |
+| Image | Qwen-Image-2512 / 2.1 | `native/image`, `native/image2` | 512×512 PNG (`--image-backend 2512\|2.1`) |
+| Image (opt.) | FLUX.2-klein-4B | `python/umminfer_flux2_stage.py` | Optional Python/Diffusers stage; 512²/1024² + image editing |
+| Video | Wan2.2-TI2V-5B | `native/video` | Native CUDA T2V & first-frame-anchored I2V (H.264 MP4) |
+
+Full hardware footprints, licenses, and verification status: [docs/model-support.md](docs/model-support.md).
 
 ## Quick start
 
-Build the server (Zig 0.16.0). The native stage executables are a separate
-CMake project and need a CUDA host.
+### 1. Build
 
 ```sh
+# Server, CLI, and C++ client (Zig 0.16.0)
 zig build -Doptimize=ReleaseFast \
   -Ddeps-prefix=/opt/homebrew -Dcurl-prefix=/opt/homebrew/opt/curl
 
+# Native CUDA stages (Linux + CUDA host)
 cmake -S native/stage_cli -B build -DUMM_STAGE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-Add `-DCMAKE_PREFIX_PATH=/path/to/deps` when zmq, msgpack, nlohmann-json or ICU
-are outside the default include and library paths.
+*(Pass `-DCMAKE_PREFIX_PATH=/path/to/deps` if `zmq`, `msgpack`, `nlohmann-json`, or `ICU` are in a custom prefix.)*
 
-Start the server and one stage per model. The server queues requests until a
-stage announces readiness; `/ready` answers 200 after the entry and VLM stages
-are ready, and the optional image/TTS legs never gate it.
+### 2. Run
+
+Launch the multi-stage stack via the supervisor or service script (see [docs/native-service.md](docs/native-service.md)):
 
 ```sh
-IPC=$(mktemp -d /tmp/umminfer-native.XXXXXX)
-
-./zig-out/bin/umm-infer serve --host 127.0.0.1 --port 43301 --model qwen3-native \
-  --entry asr --entry-endpoint "ipc://$IPC/asr" \
-  --vlm-entry qwen38 --vlm-entry-endpoint "ipc://$IPC/qwen38" \
-  --image-entry image --image-entry-endpoint "ipc://$IPC/image" \
-  --tts-entry tts --tts-entry-endpoint "ipc://$IPC/tts" \
-  --completion "ipc://$IPC/completion" --abort "ipc://$IPC/abort"
-
-build/umm-native-stage-asr --kind asr --name asr --model "$ASR_MODEL" --gpu 2 \
-  --recv-endpoint "ipc://$IPC/asr" --coordinator-endpoint "ipc://$IPC/completion" \
-  --abort-endpoint "ipc://$IPC/abort"
-
-build/umm-native-stage-qwen38 --kind qwen38 --name qwen38 \
-  --model "$QWEN38_MODEL" --gpu 3 --max-new-tokens 96 \
-  --recv-endpoint "ipc://$IPC/qwen38" --coordinator-endpoint "ipc://$IPC/completion" \
-  --abort-endpoint "ipc://$IPC/abort"
-
-# Optional output legs.
-build/umm-native-stage-image --kind image --name image --model "$IMAGE_MODEL" --gpu 4 \
-  --recv-endpoint "ipc://$IPC/image" --coordinator-endpoint "ipc://$IPC/completion" \
-  --abort-endpoint "ipc://$IPC/abort"
-build/umm-native-stage-tts --kind tts --name tts --model "$TTS_MODEL" --gpu 5 \
-  --recv-endpoint "ipc://$IPC/tts" --coordinator-endpoint "ipc://$IPC/completion" \
-  --abort-endpoint "ipc://$IPC/abort"
+python3 -I python/umminfer_service.py --config service/native-service.json start
+# or: service/native-service.sh start|stop|status
 ```
 
-One request:
+### 3. Call
 
 ```sh
 curl -sS http://127.0.0.1:43301/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3-native","messages":[{"role":"user",
-       "content":"What is the sea?"}]}'
+  -d '{"model":"qwen3-native","messages":[{"role":"user","content":"What is the sea?"}]}'
 ```
 
-Recorded response from the native Omni stage (abridged; HTTP 200 in 38.2 s).
-The Qwen3.8-27B stage returns the same JSON shape with a different answer:
-
-```json
-{"choices":[{"finish_reason":"stop","index":0,"message":{
-  "content":"The sea is a vast, ever-changing expanse of saltwater that stretches to the horizon.",
-  "role":"assistant"}}],"id":"req-2","model":"qwen3-native",
- "object":"chat.completion"}
-```
-
-Transcription:
+## Tests
 
 ```sh
-curl -sS -F model=qwen3-native -F file=@input_16k.wav \
-  http://127.0.0.1:43301/v1/audio/transcriptions
+# Control plane, API contracts, voice client, and deterministic suites (CPU-only)
+zig build test -Ddeps-prefix=/opt/homebrew -Dcurl-prefix=/opt/homebrew/opt/curl
+
+# Native stage host tests (CPU-only, no weights or GPU required)
+cmake -S native/stage_cli -B build-host && cmake --build build-host -j
+ctest --test-dir build-host --output-on-failure
 ```
-
-On SM90 the same layout is launched by
-`service/native-service.sh start|stop|status`, which reads the
-`UMM_NATIVE_*` environment variables. The supervised path is
-`python3 -I python/umminfer_service.py --config service/native-service.json
-start`, which takes the same layout from that file and restarts unhealthy
-children. Set `UMM_NATIVE_OMNI=1` to serve Omni instead of Qwen3.8-27B as the
-VLM leg. Both paths need `zig-out/bin/umm-infer` and `build/umm-native-stage-*`
-installed in the same directory; see [the SM90 runbook](docs/native-service.md).
-
-## Supported models
-
-Measured on SM90, BF16, greedy decoding, one request in flight. Each engine's
-own document has the full conditions and limits.
-
-| Model | Native implementation | GPU | Measured |
-| --- | --- | --- | --- |
-| Qwen3-ASR 0.6B | `native/umm_asr_native` | 2 | 15.05 s clip -> 46 tokens in ~1.0 s after model load (4.8 s) |
-| Qwen3.8-27B (hybrid linear/full attention) | `native/qwen38` | 3 | text: 0.16 s prefill, 42.0 tok/s; 512x512 image: 1.05 s prefill, 29.2 tok/s |
-| Qwen3-Omni thinker (MoE, 57.87 GiB), optional | `native/omni` | 3 | image case: vision 0.363 s, prefill 0.231 s, decode 30.6 tok/s; text case 14.79 ms/token after the MoE host-path fix |
-| Qwen3-TTS 0.6B CustomVoice | `native/tts` | 5 | 4.24 s speech in 7.2 s after the codec-conv fix (29.1 s before) |
-| Qwen-Image-2512 | `native/image` | 4 | 512x512, 50 steps: 228.8 s (runs: 227.5-229.5 s) |
-| Qwen-Image-2.1 | `native/image2` | 7 | 512x512, 40 steps: 69.8 s, peak 14,763 MiB |
-
-Qwen3.8-27B is the default VLM stage. It has a text decoder and a vision tower
-but no audio tower: audio and video parts, more than one image, `http(s)` image
-URLs and `modalities` containing `audio` are rejected with an error that names
-the field. ASR, Omni and TTS answers are greedy and deterministic.
 
 ## Layout
 
 ```text
-build.zig                       server, client, CLI, C++ contract tests
-include/umminfer/               public C++ headers (client, proto, relay, serve)
-src/                            server: coordinator, unified engine, HTTP/SSE/WS, CLI, metrics
-native/umm_asr_native/          Qwen3-ASR engine + CLI
-native/omni/  native/omni_cli/  Qwen3-Omni thinker engine + CLI
-native/qwen38/                  Qwen3.8-27B executor + CLI
-native/tts/   native/tts_cli/   Qwen3-TTS engine + CLI
-native/image/ native/image_cli/ Qwen-Image-2512 engine + CLI
-native/image2/                  Qwen-Image-2.1 engine + CLI
-native/stage_cli/               the five umm-native-stage-* binaries
-clients/ummmlx/                 native macOS SwiftUI client + Swift unit tests
-web/                            single-file browser client (index.html)
-benchmarks/                     multimodal benchmark manifest (70 cases) and data fetcher
-service/                        SM90 launcher, concurrency stack, supervisor config
-tests/                          C++ contract tests, Python E2E, live/benchmark harnesses
-tools/                          feature-map anchor checker, audio analysis, release publisher
-release/                        public release templates and verify script
-python/                         process supervisor (umminfer_service.py), legacy MLX/TinyASR
-                                stages, and offline RL tooling (not on the native serving path)
-docs/                           feature map, roadmap, contracts, benchmarks, validation, runbooks
-```
-
-`native/omni`, `native/tts`, `native/image`, `native/image2` and
-`native/stage_cli` each have their own CMake project. Qwen3.8-27B builds from
-`native/CMakeLists.txt` with `-DUMM_QWEN38_CUDA=ON`. `native/stage_cli` links
-the accepted engine trees without modifying them.
-
-## Tests and validation
-
-Server and control plane (CPU, no model, no CUDA):
-
-```sh
-zig build test -Ddeps-prefix=/opt/homebrew -Dcurl-prefix=/opt/homebrew/opt/curl
-```
-
-This builds and runs `tests/unified_contract_test.cpp`, the end-to-end contract
-suite. Unit-level suites (`self_check`, `wire_compat`, `runtime_compat`,
-`omni_transport_test`, `omni_serve_test`, `omni_client_test`) were removed in
-`ab51cf5`. A non-zero exit is a real failure.
-
-Host tests that need no weights and no GPU:
-
-```sh
-cmake -S native/omni -B native/omni/build && cmake --build native/omni/build -j
-ctest --test-dir native/omni/build
-
-cmake -S native/stage_cli -B build-host && cmake --build build-host
-ctest --test-dir build-host
-```
-
-`native/tts`, `native/image`, `native/image2` and the Qwen3.8-27B project have
-their own host targets with the same shape. GPU parity and kernel tests run on
-the CUDA host, one project at a time, as `ctest` in each build directory. Gate
-values, golden-data provenance and known gaps are in each executor's document.
-
-The live smoke harness `native/stage_tests/native_stage_smoke.py` and its
-committed evidence were removed in `ab51cf5`. Use the case reproduction below.
-
-Full request-level reproduction of a four-stage deployment:
-
-```sh
-TARGET=<gpu-host> CONTAINER=<gpu-container> sh docs/cases/0001_repro.sh
-```
-
-Case record, per-leg timings and hashes: [docs/cases/0001-end-to-end-native.md](docs/cases/0001-end-to-end-native.md).
-
-CUDA IPC remains separately testable:
-
-```sh
-zig build test -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/homebrew
-zig build cuda-bench -Dcuda -Dcuda-prefix=/usr/local/cuda -Ddeps-prefix=/opt/homebrew -Doptimize=ReleaseFast
+build.zig             server, CLI, C++ client, and contract tests
+include/  src/        C++20 control plane, UnifiedEngine, HTTP/SSE/WS, clients
+native/               C++/CUDA model engines (asr, qwen38, omni, tts, image, image2, video, stage_cli)
+web/                  single-file browser client (index.html)
+clients/ummmlx/       native macOS SwiftUI client
+service/              SM90 launcher and supervisor config
+python/               process supervisor, optional FLUX.2/MLX stages, offline RL tooling
+tests/  benchmarks/   C++/Python E2E, live gates, and multimodal benchmarks
+docs/                 vision, architecture, feature map, contracts, and runbooks
 ```
 
 ## Known limitations
 
-- Stages default to one request at a time (`SimpleScheduler` `kSerial`). Opt-in
-  decode continuous batching is implemented only for `qwen38` (`--batch-size N`,
-  see [docs/batching.md](docs/batching.md)). There is no multi-GPU model split.
-- `max_new_tokens` reaches the `qwen38` and `omni` stages (clamped to
-  `max_seq`; default 96 in the SM90 launcher/config), and `audio.stream` reaches
-  the `tts` stage. `qwen38` also supports `temperature` `[0, 2]`, `top_p`
-  `(0, 1]`, and signed `int64` `seed` (greedy when `temperature=0`,
-  deterministic per seed when sampling); beam search and repetition penalties
-  remain unimplemented, and `omni` stays greedy.
-- Both `qwen38` and `omni` stages stream UTF-8-safe `vlm_delta` chunks per
-  generated token, keep the aggregated terminal result, and support multi-turn
-  prefix KV reuse (`qwen38` on turn boundaries across serial and batched decode;
-  `omni` pure-text prefix reuse via `UMM_OMNI_PREFIX_CACHE`).
-- ASR accepts 16 kHz mono PCM16 only, at most 30 s per request (supports both
-  `Qwen3-ASR-0.6B` and multi-shard `1.7B` via `config.json`).
-- Qwen3.8-27B accepts one still image per request and `max_seq` 8192.
-- Native `umm-native-stage-image` outputs 512x512 PNG (`--image-backend 2512|2.1`);
-  an optional Apache-2.0 `python/umminfer_flux2_stage.py` (`FLUX.2-klein-4B`)
-  supports 512x512/1024x1024 generation and HTTP `image.image` data-URL editing
-  with configurable `image.steps`. Native `umm-native-stage-video`
-  (`Wan2.2-TI2V-5B`, UniPC-BH2) and optional `python/umminfer_video_stage.py`
-  provide MP4 video generation with HTTP `video.num_frames`/`steps`/`guidance_scale`.
-- TTS supports `Qwen3-TTS-12Hz-0.6B` and `1.7B-CustomVoice` (`vivian`, `ryan`,
-  Chinese/English) plus `1.7B-Base` zero-shot voice cloning via CLI `--ref-audio`,
-  stage `--default-ref-audio`, and HTTP `audio.ref_audio` / `/v1/audio/speech`
-  `ref_audio` (native C++ ECAPA-TDNN). Repeated runs differ by sub-LSB
-  PCM16 amounts; waveforms are not bit-exact across runs.
-- Non-streaming mixed output (`stream=false` with `image`/`audio`/`video`
-  modalities) is supported and returns `artifacts` + `legs`; `audio.stream=true`
-  with `stream=false` is rejected with HTTP 400. Streamed TTS chunks propagate
-  `sample_rate` and `channels` dynamically from the stage.
-- The image stage loads its weights on the first request after start (about
-  9.5 s, +11 GiB), so the first render is slower than steady state.
-- Model revisions are `UNKNOWN`; the local model directories carry no `.git`.
-- CUDA IPC carries host-serialized payload bytes, not device tensors. CUDA relay
-  under real model load, zero-copy transfer and multi-host IPC are `NOT_COVERED`.
-- Native VLM stages reject `http(s)` image URLs; they accept `data:` URLs and
-  local paths only.
+- **Single-GPU per stage**: No multi-GPU tensor splitting; decode continuous batching (`--batch-size N`) is implemented for `qwen38` only ([docs/batching.md](docs/batching.md)).
+- **Input bounds**: Native VLM accepts `data:` URLs and local paths (not remote `http(s)` URLs); ASR accepts 16 kHz mono PCM16 up to 30 s.
+- **Optional Python stages**: `FLUX.2-klein-4B` runs via Python/Diffusers rather than native C++/CUDA; native image stages (`2512`/`2.1`) do not yet support image-to-image editing.
+- **CUDA IPC**: Currently transports host-serialized bytes; zero-copy device-tensor IPC and multi-host IPC are `NOT_COVERED` ([docs/cuda-ipc.md](docs/cuda-ipc.md)).
+- **Realtime & video quality gates**: High-concurrency delayed-reader realtime backpressure and natural-video understanding are actively being hardened; perceptual/human quality evaluation remains `NOT_RUN` ([docs/roadmap.md](docs/roadmap.md)).
 
 ## Documentation
 
-### Core index, architecture and contracts
+- **Vision & roadmap**: [docs/vision.md](docs/vision.md) · [docs/roadmap.md](docs/roadmap.md)
+- **Architecture & code map**: [docs/architecture.md](docs/architecture.md) · [docs/feature-map.md](docs/feature-map.md) · [docs/model-support.md](docs/model-support.md)
+- **Protocols**: [docs/mixed-output-contract.md](docs/mixed-output-contract.md) · [docs/full-duplex.md](docs/full-duplex.md) · [native/STAGE_NATIVE.md](native/STAGE_NATIVE.md)
+- **Operations & clients**: [docs/native-service.md](docs/native-service.md) · [docs/observability.md](docs/observability.md) · [docs/client.md](docs/client.md) · [web/README.md](web/README.md) · [clients/ummmlx/README.md](clients/ummmlx/README.md)
+- **Training boundary**: [docs/rl.md](docs/rl.md) · [docs/rl-phase2.md](docs/rl-phase2.md)
 
-| Document | Contents |
-| --- | --- |
-| [docs/architecture.md](docs/architecture.md) | Authoritative system architecture, call chains (sync/stream/cancel/error/lifecycle), local verification matrix, and tracked technical debt |
-| [docs/feature-map.md](docs/feature-map.md) | Code-anchored feature map across interfaces, engines, stages, clients, benchmarks, tests and deployment (verified by `tools/check_feature_map.py`) |
-| [docs/model-support.md](docs/model-support.md) | Model support matrix, Hugging Face license audit, P0/P1/P2 selection roadmap, and real-model verification gates |
-| [docs/roadmap.md](docs/roadmap.md) | Phases, acceptance gates, model support plan, verification split |
-| [docs/mixed-output-contract.md](docs/mixed-output-contract.md) | Frozen text+image+audio request, streaming and artifact contract |
-| [docs/full-duplex.md](docs/full-duplex.md) | Full-duplex voice L1/L2: streaming input, server VAD, endpointing, barge-in |
-| [docs/external_stage.md](docs/external_stage.md) | Stage protocol, C++ stage host and legacy external Python stage path |
-| [docs/cuda-ipc.md](docs/cuda-ipc.md) | CUDA IPC build, relay and fallback rules |
+## License
 
-### Native executors
-
-| Document | Contents |
-| --- | --- |
-| [native/STAGE_NATIVE.md](native/STAGE_NATIVE.md) | The five `umm-native-stage-*` binaries, wire shapes, streaming, cancellation |
-| [native/README.md](native/README.md) | Native Qwen3-ASR 0.6B vertical slice |
-| [native/qwen38/README.md](native/qwen38/README.md) | Qwen3.8-27B architecture, parity harness, limits (default VLM) |
-| [native/OMNI_NATIVE.md](native/OMNI_NATIVE.md) | Qwen3-Omni thinker engine, matmul kernels, prefill/decode measurements (optional VLM) |
-| [native/TTS_NATIVE.md](native/TTS_NATIVE.md) | Qwen3-TTS 0.6B CustomVoice engine, codec, determinism and evidence |
-| [native/IMAGE_NATIVE.md](native/IMAGE_NATIVE.md) | Qwen-Image-2512 pipeline and verification |
-| [native/image2/IMAGE2_NATIVE.md](native/image2/IMAGE2_NATIVE.md) | Qwen-Image-2.1 pipeline, parity, performance |
-
-### Deployment, operations and clients
-
-| Document | Contents |
-| --- | --- |
-| [docs/native-service.md](docs/native-service.md) | SM90 native resident service runbook, topology, supervisor (`umminfer_service.py`) |
-| [docs/observability.md](docs/observability.md) | Prometheus `/metrics`, NVML GPU gauges, `UMM_TRACE=1` JSONL request tracing |
-| [docs/release.md](docs/release.md) | Release packaging (`tools/publish-release.sh`), verification (`release/tools/verify.sh`), rollback |
-| [docs/client.md](docs/client.md) | C++ client library and `umm-infer` CLI |
-| [clients/ummmlx/README.md](clients/ummmlx/README.md) | Native macOS SwiftUI client (`ummmlx`), local speech input, fault gate |
-| [web/README.md](web/README.md) | Single-file browser client (`web/index.html`) |
-
-### Benchmarks, performance and validation
-
-| Document | Contents |
-| --- | --- |
-| [docs/benchmark-system.md](docs/benchmark-system.md) | Multimodal benchmark datasets (70 cases), metrics, stability gate |
-| [docs/multimodal-benchmark-results.md](docs/multimodal-benchmark-results.md) | SM90 real-model multimodal benchmark results (English/Mandarin ASR, GSM8K, VQA, SpokenCOCO) |
-| [docs/batching.md](docs/batching.md) | Qwen3.8 decode continuous batching design and SM90 measurements |
-| [docs/concurrency.md](docs/concurrency.md) | Admission control (`--max-in-flight`), 503 shedding and capacity measurements |
-| [docs/gpu-utilization.md](docs/gpu-utilization.md) | Measured GPU busy fraction, bandwidth, kernel hotspots |
-| [docs/soak.md](docs/soak.md) | Soak and fault recovery on the native SM90 service |
-| [docs/cases/0001-end-to-end-native.md](docs/cases/0001-end-to-end-native.md) | One recorded four-stage end-to-end request with hashes and timings |
-| [docs/validation.md](docs/validation.md) | User journeys, SM90/Mac runs, what remains `NOT_COVERED` |
-| [docs/mac-unified.md](docs/mac-unified.md) | Apple Silicon low-resource unified validation |
-
-### Historical baselines, legacy backends and RL
-
-| Document | Contents |
-| --- | --- |
-| [docs/performance-baseline.md](docs/performance-baseline.md) | Historical SGLang-backed unified performance baseline (2026-11-13) |
-| [docs/joint-optimization.md](docs/joint-optimization.md) | Historical worker-concurrency optimization record (2026-11-13) |
-| [docs/mlx.md](docs/mlx.md) | MLX-LM text backend on Apple Silicon (legacy local path) |
-| [docs/rl.md](docs/rl.md) | RL architecture phase 1: rollout, trajectory export, reward boundary |
-| [docs/rl-phase2.md](docs/rl-phase2.md) | RL phase 2: real optimizer-step validation on SM90 |
-
-Licensed under Apache-2.0. Third-party derivations are listed in
-[native/THIRD_PARTY_NOTICES.md](native/THIRD_PARTY_NOTICES.md) and each
-executor's `NOTICE`.
+Licensed under Apache-2.0. Third-party notices are listed in [native/THIRD_PARTY_NOTICES.md](native/THIRD_PARTY_NOTICES.md).
