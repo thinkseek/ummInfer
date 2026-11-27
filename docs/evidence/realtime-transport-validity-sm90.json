@@ -1,0 +1,117 @@
+{
+  "schema": "umminfer-realtime-transport-validity-sm90/v1",
+  "status": "PASS",
+  "execution_commit": "2b49b5b82739eb0055ae5737595f693b08650b18",
+  "official_main": "6e32233f06b8d73677806e6bba0e3ab76a0b12eb",
+  "accepted_task63_commit": "64bb3bd8eb506f46ce96a84e08b3c0b6c1f8783f",
+  "device": "NVIDIA Hopper SM90 physical GPU 0 only",
+  "preregistration_sha256": "5a731c56aee7857c27cc2aef625c8bb916be8c86bd9ee0bd6a5a8211cf197293",
+  "root_cause": {
+    "library": "libwebsockets 4.3.3",
+    "default_validity_ping_seconds": 300,
+    "default_validity_hangup_seconds": 310,
+    "historical_reset_sessions": 12,
+    "historical_connection_lifetime_minutes": 5.25,
+    "client_ping_confirms_validity": false,
+    "fix": "Refresh validity only for owned ASR/response work or queued generation-complete output; restore idle expiry after release",
+    "response_deadline_changed": false,
+    "queue_or_pcm_rules_changed": false
+  },
+  "deterministic_red_green": {
+    "test_ping_seconds": 1,
+    "test_hangup_seconds": 2,
+    "pre_fix_active_close_seconds": 2.001,
+    "pre_fix_terminal_lost": true,
+    "post_fix_exact_pcm_and_final_ack": true,
+    "post_fix_stall_seconds": 10,
+    "post_fix_idle_cleanup": true,
+    "red_log_sha256": "721014451b46cc97c36283045df0cf8b4c26d28f326c8ec74b7b3d40f775214a",
+    "green_log_sha256": "db613f8a252d30986417a7091481f4e64cab0a64a906910b8730fe20458e2571"
+  },
+  "http": {
+    "responses": 25,
+    "completed": 24,
+    "cancelled": 1,
+    "pcm_legs": 44,
+    "pcm_chunks": 184,
+    "pcm_bytes_including_cancel_prefix": 10698240,
+    "cancel_prefix_chunks": 1,
+    "retry_matches_fresh_repeat": true,
+    "direct_continuation_responses": 4,
+    "direct_continuation_pcm_bytes": 737280,
+    "direct_continuation_pcm_sha256": "3eaa2791bba77428558a314086e2264e3279123b03d89a4998f24a3cce11773d"
+  },
+  "realtime": {
+    "responses_completed_with_final_ack": 29,
+    "turn_failures": 0,
+    "pcm_legs": 493,
+    "pcm_chunks": 4176,
+    "pcm_bytes": 115034880,
+    "native_public_pcm_join_exact": true,
+    "monotonic_cursors": true,
+    "one_terminal_per_response": true,
+    "stale_events": 0,
+    "paused_readers": 29,
+    "native_audio_events": 4125,
+    "public_audio_events": 29,
+    "pending_native_minus_public": 4096,
+    "native_audio_events_during_pause": 4096,
+    "public_audio_events_during_pause": 0,
+    "queue_boundary": 4096
+  },
+  "verification": {
+    "fresh_processes": 2,
+    "byte_identical_reports": true,
+    "report_sha256": "cda99830359798b3a339601babb4c22341d39f582b21bbcb68414f4fe167c716",
+    "raw_evidence_files": 1266,
+    "raw_evidence_manifest_self_excluded": true,
+    "manifest_fresh_processes": 2,
+    "sha256sums_sha256": "3adbd3d50dd4b6a825ce77943a35ba3da4f54c15a1316913692f950ddc1bbb31",
+    "instruction_wav_sha256": "0d44235340c7d9db54a03b8bdfa2fabc2f57b3dd90ab09ee638537b5650972c6"
+  },
+  "binaries": {
+    "umm-infer": "06c507e3f8f1df6cefd4b98cb1db6b1c29548153a66fca976add9d6ac6a3f53d",
+    "umm-native-stage-asr": "5d65a1f64a2285ac30fe1d5355e3bfe1550758238a384346ea95bbf9c5f8a32a",
+    "umm-native-stage-qwen38": "d97af7edde5562da45f97c248c2aa92573733486c08a6a5ea20918135fa01b29",
+    "umm-native-stage-tts": "e4b352ddef7eb8c4b9c3c47a0d07a425d14e06e93495b9c441e0dc8aa0a864c3"
+  },
+  "models": {
+    "asr_manifest": "a16807fc65e05f36687484bdfb8cb9f103c3fb59f6787d1f904f3ffebf8a3005",
+    "vlm_manifest": "fb2a8751df1dfbcdf556988acd8e2ac7c6f7180c609797d5e9b3a8e3e40a1c7e",
+    "tts_manifest": "92db72616c9578462add19ed81720b7abf1c1e9c3f4d225877a1cd6104d2fb27"
+  },
+  "serving_source": {
+    "src/serve/realtime_api.cpp": "a6e586df04623ff74983f497787e2dbbba57c1e8ced2d4edf64d7306119ded60",
+    "include/umminfer/serve/openai_api.hpp": "5d176e60899cd8da397370a97ef173365330bfcf2f66f555b7e531d2c6ecfcb3",
+    "tests/public_speech_pcm_live.py": "91e4d75e1471415a4ea4f142ed3d35ecfb6491d77285afda42b03324de4f149c",
+    "tests/public_speech_pcm_verify.py": "67b7477a8ba2974827386422ea5e3ac0dd9b19e4b3c9fa7e0b708da412c44ea6",
+    "tests/public_speech_pcm_test.py": "348df78377fc1d3ddfddac932c0a6d869b2ebc0b3c012b2f2b1d3feb35bc11bb",
+    "tests/unified_contract_test.cpp": "fe72d9009005cb6ceac341d9c81d1b3e54516e7b131f1dc32f98c53aa8d5ab3d"
+  },
+  "tests": {
+    "umm_test_local": "PASS",
+    "umm_test_local_log_sha256": "27ab0eef7c3717a938ac16a3bc6d6f0b0c65b73d7a2c746213de34ca209f0f67",
+    "public_speech_pcm_regressions": 21,
+    "native_tts_ctest": "3/3 PASS",
+    "native_tts_ctest_log_sha256": "b1bdd7b0cfc878679680c9d1be2818bec74e016bdcf6936d6532a0e028d86b5d",
+    "feature_map_rows": 223,
+    "feature_map_references": 1125,
+    "sm90_build_log_sha256": "0926151860b2e582605dd37ad51fb095a0ba3e7b708996e45c7c9e66d4d3ba51"
+  },
+  "cleanup": {
+    "final_in_flight": 0,
+    "owned_processes_exited": true,
+    "gpu0_memory_used_mib": 3,
+    "gpu0_utilization_percent": 0,
+    "gpu0_compute_processes": [],
+    "resident_service": "untouched"
+  },
+  "limits": {
+    "full_asr_two_gpu_r4": "NOT_RUN",
+    "fair_priority": "NOT_RUN",
+    "physical_playback": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "latency_improvement": "UNCLAIMED",
+    "deployment": "NOT_RUN"
+  }
+}

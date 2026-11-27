@@ -599,6 +599,22 @@ checksums are in [public-speech-pcm-gate](public-speech-pcm-gate.md). Full
 ASR/two-GPU R4, fair-priority, physical playback, perceptual quality, and any
 latency improvement remain `NOT_RUN` or unclaimed.
 
+**Realtime transport-validity lifecycle correction (Task #70, 2026-11-27).**
+Execution commit `2b49b5b` merges official Wave 94 and separates libwebsockets idle
+validity from active ASR/response ownership. The retained 5.25-minute resets are
+reproduced by a deterministic 2.001-second no-PONG regression; active work now
+completes with exact PCM/final ACK while the unchanged 10-second application
+stall and idle-only cleanup still fire. The live verifier requires exactly 29
+paused readers and exactly 4,096 audio-only pending events. Preregistration,
+red/green hashes, and real GPU 0 evidence are linked from
+[public-speech-pcm-gate](public-speech-pcm-gate.md). R2 completed all 29
+responses with final ACKs and exact per-leg PCM joins (493 legs, 4,176 chunks,
+115,034,880 bytes), while all 25 HTTP controls passed. The exact release was
+4,125−29=4,096 with all readers paused. Two fresh verifier reports matched at
+`cda99830…c716`; two manifest checks covered 1,266 files at `3adbd3d5…bb31`.
+GPU 0 returned to 3 MiB. Full R4, fair-priority, deployment, physical playback,
+perceptual quality, and latency improvement remain unclaimed or `NOT_RUN`.
+
 ## Model support plan
 
 These entries are not current deliverables. Their acceptance procedure,

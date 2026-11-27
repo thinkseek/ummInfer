@@ -591,9 +591,6 @@ def realtime_block(args, out, logs, ports, audio, stack):
 
             with ThreadPoolExecutor(max_workers=args.realtime_sessions) as pool:
                 identities.extend(pool.map(turn, enumerate(clients)))
-
-            with ThreadPoolExecutor(max_workers=args.realtime_sessions) as pool:
-                identities.extend(pool.map(turn, enumerate(clients)))
     finally:
         restart_cancel.set()
         restart_thread.join(15)

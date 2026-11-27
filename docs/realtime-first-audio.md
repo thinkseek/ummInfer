@@ -462,3 +462,25 @@ fair-priority evaluation. Exact measurements, binaries, model/config/source
 hashes, evidence checksums, failed attempts, and cleanup are recorded in
 [public-speech-pcm-gate](public-speech-pcm-gate.md). Physical playback and
 perceptual quality remain **NOT_RUN**.
+
+## Task #70 realtime transport-validity lifecycle
+
+The 12 delayed-reader resets were matched to libwebsockets' default 300/310 s
+connection-validity hangup, not to native PCM loss or the unchanged 600 s
+response deadline. Client PING frames do not confirm validity in that library;
+PONG or an explicit confirmation is required. Execution commit `2b49b5b`
+therefore holds transport idle expiry only while ASR/response ownership or
+queued generation-complete output remains, and restores ordinary idle expiry
+after release. It never refreshes the application response deadline.
+
+A real-loopback PING=1 s / hangup=2 s regression failed at 2.001 s before the
+fix, then passed with exact PCM and one final ACK; the independent 10 s stall
+control still timed out and idle-only cleanup remained effective. The public
+verifier now rejects anything other than 29 paused readers and exactly 4,096
+pending audio events. See [public-speech-pcm-gate](public-speech-pcm-gate.md)
+for the preregistration, red/green hashes, and subsequent real GPU evidence.
+The Wave 94 R2 gate passed all 29 responses with one terminal/final ACK each,
+493 exact native/public PCM legs, and the exact 4,125−29=4,096 delayed-reader
+release. All 25 HTTP controls passed, two fresh reports matched, 1,266 evidence
+files passed two manifest checks, and GPU 0 returned to 3 MiB. Full R4 and
+physical playback remain **NOT_RUN**.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic public/native PCM verifier regression tests."""
 
+import ast
 import base64
 import importlib.util
 import json
@@ -285,6 +286,34 @@ class PublicSpeechPcmTest(unittest.TestCase):
         live.BACKPRESSURE_RELEASE.clear()
         with self.assertRaisesRegex(AssertionError, "timed out"):
             ws.wait_for_release_with_heartbeat(0.02)
+
+    def test_realtime_verifier_requires_exact_backlog_and_all_paused_readers(self):
+        for paused, pending in ((28, 4096), (29, 4095)):
+            with self.subTest(paused=paused, pending=pending), \
+                    tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "realtime").mkdir()
+                identities = [{"response_id": f"req-{index}"} for index in range(29)]
+                (root / "realtime/responses.json").write_text(json.dumps(identities))
+                (root / "realtime/turn-failures.jsonl").write_text("")
+                release = {"configured_readers": 29, "paused_readers": paused,
+                           "native_audio_events": pending + 29,
+                           "public_audio_events": 29,
+                           "pending_native_minus_public": pending}
+                (root / "realtime/backpressure-release.json").write_text(json.dumps(release))
+                with self.assertRaisesRegex(AssertionError, "exact audio-only bounded backlog"):
+                    verify.verify_realtime(root, {"realtime": {}}, {}, {}, {}, [])
+
+    def test_realtime_gate_has_exactly_one_measured_response_per_session(self):
+        tree = ast.parse((ROOT / "tests/public_speech_pcm_live.py").read_text())
+        block = next(node for node in ast.walk(tree)
+                     if isinstance(node, ast.FunctionDef) and node.name == "realtime_block")
+        measured = [node for node in ast.walk(block)
+                    if isinstance(node, ast.Call) and
+                    isinstance(node.func, ast.Attribute) and node.func.attr == "map" and
+                    isinstance(node.func.value, ast.Name) and node.func.value.id == "pool"]
+        self.assertEqual(len(measured), 1,
+                         "the 29-session gate must not repeat its paused response round")
 
     def test_masked_websocket_fragment_reconstruction(self):
         payload = json.dumps({"type": "audio.done", "text_cursor": 4}).encode()

@@ -329,6 +329,19 @@ realtime 4,096 audio backlog 达成但仅 17 completed/12 reset，完整 parity 
 R4、物理播放与听评仍 `NOT_RUN`。详见
 [public-speech-pcm-gate](public-speech-pcm-gate.md)。
 
+Task #70 将 12 个 reset 精确定位到 libwebsockets 默认 300/310 秒
+connection-validity hangup：client PING 不会确认 validity，延迟读取在响应仍活跃时
+也可能被误判为 idle transport。`RealtimeApi` 现在仅在 ASR/response ownership 或
+generation-complete 输出仍排队时刷新 transport validity，绝不刷新
+`response_deadline`；ownership 结束后恢复普通 idle 清理。真实 loopback 的 1/2 秒
+门禁修复前在 2.001 秒丢失终态，修复后 PCM/最终 ACK 完整，10 秒 stall timeout 与
+idle-only close 均保持原语义。执行提交 `2b49b5b` 合入 Wave 94。真实 GPU 0 R2
+最终达到 4,125−29=4,096 精确 audio backlog，29/29 responses 均一个终态与最终 ACK，
+493 legs / 4,176 chunks / 115,034,880 PCM bytes 逐字节闭合，25 个 HTTP 控制保持通过。
+两个新进程验证与 1,266 文件 SHA256SUMS 均通过，GPU 0 清理至 3 MiB。结果与证据哈希见
+[public-speech-pcm-gate](public-speech-pcm-gate.md#task-70-real-sm90-outcome-pass) 及
+[机器证据](evidence/realtime-transport-validity-sm90.json)。
+
 ---
 
 ## 3. 本机轻量构建与测试验证矩阵

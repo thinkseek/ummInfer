@@ -33,6 +33,11 @@ struct ApiConfig {
   // until that stage announces stage_ready. The in-process demo keeps false.
   bool external_entry_stage = false;
   double request_timeout_s = 600.0;
+  // Realtime WebSocket connection-validity policy. These are libwebsockets'
+  // defaults; tests may shorten them to exercise idle expiry deterministically.
+  // Active request/response work is governed by request_timeout_s independently.
+  size_t realtime_validity_ping_s = 300;
+  size_t realtime_validity_hangup_s = 310;
   // Admission cap for non-unified local routes (/v1/audio/transcriptions,
   // non-unified /v1/chat/completions) and fixed-upstream proxy routes. Requests
   // past this cap answer 503 with Retry-After: 1 instead of spawning unbounded

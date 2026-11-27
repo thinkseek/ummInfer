@@ -284,12 +284,22 @@ class RealtimeApi::Impl {
 
   bool bind() {
     if (context_) return true;
+    if (config_.realtime_validity_ping_s == 0 ||
+        config_.realtime_validity_ping_s >= config_.realtime_validity_hangup_s ||
+        config_.realtime_validity_hangup_s > 65535) {
+      return false;
+    }
+    validity_policy_.secs_since_valid_ping =
+        static_cast<uint16_t>(config_.realtime_validity_ping_s);
+    validity_policy_.secs_since_valid_hangup =
+        static_cast<uint16_t>(config_.realtime_validity_hangup_s);
     lws_context_creation_info info{};
     info.port = config_.port;
     info.iface = config_.host.empty() ? nullptr : config_.host.c_str();
     info.protocols = protocols;
     info.user = this;
     info.vhost_name = "umminfer";
+    info.retry_and_idle_policy = &validity_policy_;
     info.options = LWS_SERVER_OPTION_DISABLE_IPV6;
     context_ = lws_create_context(&info);
     if (!context_) return false;
@@ -996,6 +1006,19 @@ class RealtimeApi::Impl {
     for (lws* wsi : sessions_) {
       auto* session = static_cast<RealtimeSession*>(lws_wsi_user(wsi));
       if (!session) continue;
+      // libwebsockets otherwise applies its connection-validity hangup even
+      // while intentional delayed reads/backpressure leave application work
+      // active. Keep transport idle expiry separate from request progress: this
+      // never touches response_deadline or request_timeout_s. A completed
+      // response is held only while its already emitted output remains queued;
+      // once ownership is released the ordinary idle policy resumes.
+      const bool active_response =
+          !session->response_request_id.empty() &&
+          (!session->response_generation_complete || !session->outbound.empty());
+      if (!session->close_after_write &&
+          (!session->request_id.empty() || active_response)) {
+        lws_validity_confirmed(wsi);
+      }
       if (!session->response_request_id.empty() &&
           !session->response_generation_complete &&
           now >= session->response_deadline) {
@@ -1419,6 +1442,7 @@ class RealtimeApi::Impl {
   Coordinator& coordinator_;
   ApiConfig config_;
   lws_context* context_ = nullptr;
+  lws_retry_bo_t validity_policy_{};
   lws_sorted_usec_list_t poll_sul_{};
   std::atomic<bool> running_{false};
   std::atomic<size_t> active_session_count_{0};

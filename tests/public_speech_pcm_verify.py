@@ -16,7 +16,7 @@ EXPECTED_CONTINUATION = "like you're in the middle of a thought or a"
 EXPECTED_CONTINUATION_SHA256 = "3eaa2791bba77428558a314086e2264e3279123b03d89a4998f24a3cce11773d"
 TERMINALS = {"complete", "error", "cancelled"}
 WS_STALE = {"audio.delta", "audio.done", "response.text.delta",
-            "response.completed", "response.failed"}
+            "response.completed", "response.failed", "response.cancelled"}
 
 
 def require(condition, message):
@@ -571,17 +571,18 @@ def verify_realtime(root, manifest, submits, streams, finals, all_completion):
     if realtime.get("status") == "NOT_RUN":
         return {"status": "NOT_RUN", "responses": []}
     identities = read_json(root / "realtime/responses.json")
-    require(len(identities) == 29, "realtime response count mismatch")
+    require(len(identities) == 29 and
+            len({identity["response_id"] for identity in identities}) == 29,
+            "realtime response count or response-id uniqueness mismatch")
     require(not read_jsonl(root / "realtime/turn-failures.jsonl"),
             "realtime turn failure records are present")
     release = read_json(root / "realtime/backpressure-release.json")
     require(release.get("configured_readers") == 29 and
-            0 < release.get("paused_readers", 0) <= 29 and
-            release.get("pending_native_minus_public", 0) >= 4096 and
+            release.get("paused_readers", 0) == 29 and
+            release.get("pending_native_minus_public", 0) == 4096 and
             release.get("native_audio_events", 0) -
-            release.get("public_audio_events", 0) ==
-            release["pending_native_minus_public"],
-            f"audio-only bounded backlog was not proven: {release}")
+            release.get("public_audio_events", 0) == 4096,
+            f"exact audio-only bounded backlog was not proven: {release}")
     release_ids = release.get("paused_response_ids")
     require(isinstance(release_ids, list) and
             len(release_ids) == len(set(release_ids)) == release["paused_readers"],

@@ -5871,6 +5871,240 @@ void run_realtime_barge_in_playback_ack_wire_subtest(
   }
 }
 
+// Transport idle validity and application response stalls are different
+// lifecycles. These clients intentionally do not run a receive loop (and so do
+// not answer PING with PONG) until the assertions require the queued wire data.
+void run_realtime_transport_validity_lifecycle_subtest(
+    Harness& h, UnifiedEngine& engine, RealtimeApi& realtime) {
+  std::atomic<bool> cancel{false};
+  const std::string ws_url =
+      "ws://127.0.0.1:" + std::to_string(realtime.bound_port()) +
+      "/v1/realtime?intent=transcription&model=qwen3-unified";
+  struct WireLog {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<json> events;
+    size_t next = 0;
+    bool done = false;
+  };
+  auto start_reader = [](test_http::WebSocket& ws, WireLog& log) {
+    return std::thread([&] {
+      ws.run([&](std::string_view message) {
+        json event = json::parse(message, nullptr, false);
+        if (event.is_discarded()) return;
+        {
+          std::lock_guard<std::mutex> lock(log.mu);
+          log.events.push_back(std::move(event));
+        }
+        log.cv.notify_all();
+      });
+      {
+        std::lock_guard<std::mutex> lock(log.mu);
+        log.done = true;
+      }
+      log.cv.notify_all();
+    });
+  };
+  auto wait_type = [](WireLog& log, const std::string& type,
+                      double timeout_s = 5.0) -> std::optional<json> {
+    std::unique_lock<std::mutex> lock(log.mu);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::duration<double>(timeout_s));
+    while (true) {
+      for (size_t i = log.next; i < log.events.size(); ++i) {
+        if (log.events[i].value("type", "") != type) continue;
+        json found = log.events[i];
+        log.next = i + 1;
+        return found;
+      }
+      if (log.done || log.cv.wait_until(lock, deadline) == std::cv_status::timeout) {
+        return std::nullopt;
+      }
+    }
+  };
+  auto wait_done = [](WireLog& log, double timeout_s) {
+    std::unique_lock<std::mutex> lock(log.mu);
+    return log.cv.wait_for(lock, std::chrono::duration<double>(timeout_s),
+                           [&] { return log.done; });
+  };
+  auto count_type = [](WireLog& log, const std::string& type) {
+    std::lock_guard<std::mutex> lock(log.mu);
+    return static_cast<size_t>(std::count_if(
+        log.events.begin(), log.events.end(), [&](const json& event) {
+          return event.value("type", "") == type;
+        }));
+  };
+
+  std::string voiced(3840, '\0');
+  for (int i = 0; i < 1920; ++i) {
+    const auto sample = static_cast<int16_t>(
+        6000.0 * std::sin(2.0 * 3.14159265358979323846 * 440.0 * i / 16000.0));
+    voiced[static_cast<size_t>(i) * 2] = static_cast<char>(sample & 0xff);
+    voiced[static_cast<size_t>(i) * 2 + 1] =
+        static_cast<char>((static_cast<uint16_t>(sample) >> 8) & 0xff);
+  }
+  const std::string quiet(4800, '\0');
+  auto drive_turn = [&](test_http::WebSocket& ws) {
+    ws.send_text(json{{"type", "session.update"},
+                      {"session",
+                       {{"input_audio_format", "pcm16"},
+                        {"turn_detection",
+                         {{"type", "server_vad"}, {"silence_ms", 100}}},
+                        {"audio_output",
+                         {{"voice", "vivian"}, {"playback_ack", true}}}}}}
+                     .dump());
+    ws.send_text(json{{"type", "input_audio_buffer.append"},
+                      {"audio", util::base64_encode(voiced)}}
+                     .dump());
+    ws.send_text(json{{"type", "input_audio_buffer.append"},
+                      {"audio", util::base64_encode(quiet)}}
+                     .dump());
+    while (auto request = h.next_submit(h.asr_recv)) {
+      if (request->request_id.rfind("realtime-preview-", 0) == 0) {
+        h.complete(request->request_id, "asr", true, text_result("he"));
+        continue;
+      }
+      h.complete(request->request_id, "asr", true, text_result("hello"));
+      break;
+    }
+    auto vlm = h.next_submit(h.vlm_recv);
+    check(vlm.has_value(), "transport-validity turn did not reach VLM");
+    if (vlm) {
+      h.stream(vlm->request_id, "vlm", text_chunk("world", false));
+      h.complete(vlm->request_id, "vlm", true, text_result("world"));
+    }
+    return h.next_submit(h.tts_recv);
+  };
+  auto pcm_chunk = [](const std::string& bytes, int64_t index) {
+    Value::Map chunk;
+    chunk["audio"] = Value::bin(bytes);
+    chunk["index"] = Value(index);
+    chunk["sample_rate"] = Value(int64_t{24000});
+    chunk["channels"] = Value(int64_t{1});
+    chunk["format"] = Value("pcm16");
+    return Value(std::move(chunk));
+  };
+
+  // Active response work must survive beyond PING=1s / hangup=2s even when the
+  // consumer intentionally sends no PONG. request_timeout_s remains 10s.
+  test_http::WebSocket paused(ws_url, client::Milliseconds{5000}, &cancel);
+  auto paused_tts = drive_turn(paused);
+  std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+  check(engine.in_flight() == 1,
+        "transport idle expiry released an active response before terminal");
+  const std::string c0("\x01\x00\x02\x00", 4);
+  const std::string c1("\x03\x00\x04\x00", 4);
+  if (paused_tts && engine.in_flight() != 0) {
+    h.stream(paused_tts->request_id, "tts", pcm_chunk(c0, 0));
+    h.stream(paused_tts->request_id, "tts", pcm_chunk(c1, 1));
+    Value::Map extra;
+    extra["streamed"] = Value(true);
+    h.complete(paused_tts->request_id, "tts", true,
+               artifact_result("audio", "audio/wav",
+                               audio::wav_from_pcm16(c0 + c1, 24000), extra));
+  }
+  WireLog paused_log;
+  auto paused_reader = start_reader(paused, paused_log);
+  auto completed = wait_type(paused_log, "response.completed", 2.0);
+  check(completed.has_value(),
+        "active response lost response.completed after delayed reads");
+  if (completed) {
+    check(completed->value("text_cursor", size_t{0}) == 5,
+          "active response terminal carried the wrong final cursor");
+    paused.send_text(json{{"type", "output_audio_buffer.playback_ack"},
+                          {"response_id", completed->at("response_id")},
+                          {"text_cursor", 5}}
+                         .dump());
+    auto final_ack = wait_type(paused_log, "response.playback_ack", 2.0);
+    check(final_ack && final_ack->value("final", false) &&
+              final_ack->value("text_cursor", size_t{0}) == 5,
+          "active response did not finish with one final playback ACK");
+    if (final_ack) {
+      paused.send_text(json{{"type", "output_audio_buffer.playback_ack"},
+                            {"response_id", completed->at("response_id")},
+                            {"text_cursor", 5}}
+                           .dump());
+    }
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::string joined_pcm;
+  std::string joined_text;
+  size_t previous_cursor = 0;
+  {
+    std::lock_guard<std::mutex> lock(paused_log.mu);
+    for (const json& event : paused_log.events) {
+      const std::string type = event.value("type", "");
+      if (type == "audio.delta") {
+        joined_pcm += util::base64_decode(event.at("audio").get<std::string>(),
+                                         1u << 20);
+        const size_t cursor = event.value("text_cursor", size_t{0});
+        check(cursor >= previous_cursor, "realtime PCM cursors decreased");
+        previous_cursor = cursor;
+      } else if (type == "response.text.delta") {
+        joined_text += event.value("text", "");
+      }
+    }
+  }
+  if (joined_pcm != c0 + c1 || joined_text != "world") {
+    std::cerr << "DIAG: transport reconstruction pcm_bytes=" << joined_pcm.size()
+              << " expected_bytes=" << (c0 + c1).size()
+              << " text=" << json(joined_text).dump() << "\n";
+  }
+  check(joined_pcm == c0 + c1 && joined_text == "world",
+        "active response changed or lost native text/PCM after idle hold");
+  check(count_type(paused_log, "response.completed") == 1 &&
+            count_type(paused_log, "response.failed") == 0 &&
+            count_type(paused_log, "response.playback_ack") == 1,
+        "active response emitted duplicate or failed terminal events");
+  paused.close();
+  paused_reader.join();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "active response stayed in flight after final ACK");
+
+  // With no response activity, the unchanged 10s application deadline must
+  // still win; the transport hold must not refresh response_deadline.
+  test_http::WebSocket stalled(ws_url, client::Milliseconds{5000}, &cancel);
+  auto stalled_tts = drive_turn(stalled);
+  const auto stall_started = std::chrono::steady_clock::now();
+  wait_until([&] { return engine.in_flight() == 0; },
+             "stalled response did not leave flight at its application deadline");
+  const double stall_s = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - stall_started).count();
+  check(stall_s >= 8.0 && stall_s <= 20.0,
+        "transport lifecycle changed the 10s response-stall deadline");
+  WireLog stalled_log;
+  auto stalled_reader = start_reader(stalled, stalled_log);
+  auto failed = wait_type(stalled_log, "response.failed", 2.0);
+  check(failed && failed->value("error", "") == "spoken response timed out",
+        "stalled response did not emit its application timeout terminal");
+  if (stalled_tts) {
+    h.complete(stalled_tts->request_id, "tts", true,
+               artifact_result("audio", "audio/wav",
+                               audio::wav_from_pcm16(c0, 24000)));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  check(count_type(stalled_log, "response.completed") == 0 &&
+            count_type(stalled_log, "audio.delta") == 0 &&
+            count_type(stalled_log, "response.failed") == 1,
+        "stalled response emitted stale audio or duplicate terminals");
+  stalled.close();
+  stalled_reader.join();
+
+  // Once no request/response work is owned, ordinary idle expiry must return.
+  test_http::WebSocket idle(ws_url, client::Milliseconds{5000}, &cancel);
+  std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+  WireLog idle_log;
+  auto idle_reader = start_reader(idle, idle_log);
+  check(wait_done(idle_log, 5.0),
+        "idle session remained open after active-work ownership ended");
+  idle.close();
+  idle_reader.join();
+  check(count_type(idle_log, "response.completed") == 0 &&
+            count_type(idle_log, "response.failed") == 0,
+        "idle validity cleanup emitted a synthetic response terminal");
+}
+
 // Runs both realtime WebSocket wire subtests (ordinary spoken-audio/leg-error
 // and opt-in playback_ack barge-in history) on one RealtimeApi/lws_context so
 // we exercise both modes side-by-side without triggering Homebrew libwebsockets
@@ -5883,6 +6117,8 @@ void test_realtime_spoken_audio_format_and_leg_error() {
   rt_config.model = "qwen3-unified";
   rt_config.entry_stage = "asr";
   rt_config.request_timeout_s = 10.0;
+  rt_config.realtime_validity_ping_s = 1;
+  rt_config.realtime_validity_hangup_s = 2;
   UnifiedEngine engine(h.coordinator, realtime_history_config(h));
   RealtimeApi realtime(h.coordinator, rt_config);
   realtime.attach_unified(engine);
@@ -5896,6 +6132,7 @@ void test_realtime_spoken_audio_format_and_leg_error() {
 
   run_realtime_spoken_audio_format_and_leg_error_subtest(h, engine, realtime);
   run_realtime_barge_in_playback_ack_wire_subtest(h, engine, realtime);
+  run_realtime_transport_validity_lifecycle_subtest(h, engine, realtime);
 
   realtime.stop();
   rt_thread.join();

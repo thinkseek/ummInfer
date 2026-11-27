@@ -176,3 +176,72 @@ The realtime acknowledgement is a digital PCM-consumption protocol result, not
 proof that a physical speaker played audio. No latency improvement, production
 deployment, unseen-prompt determinism, or generalized model-quality claim is
 made.
+
+## Task #70 realtime transport-lifecycle correction
+
+The lifecycle invariant and pass criteria were preregistered before serving edits
+(preregistration SHA-256
+`5a731c56aee7857c27cc2aef625c8bb916be8c86bd9ee0bd6a5a8211cf197293`).
+Execution commit `2b49b5b82739eb0055ae5737595f693b08650b18` merges official
+Wave 94. The retained heartbeat-enabled Task #63 capture shows that the 12
+reset connections were the same 12 libwebsockets sessions destroyed about 5.25
+minutes after establishment. Its 300/310-second validity policy confirms only
+PONG (or an explicit validity refresh), not the client's periodic PING. Delayed
+application reads could therefore be misclassified as an idle transport even
+while their ASR/VLM/TTS response remained active.
+
+`RealtimeApi` now names the production 300/310 policy explicitly and refreshes
+connection validity only while a session owns active ASR/response work, or while
+a generation-complete response still has queued output. It does not modify
+`response_deadline`, `request_timeout_s`, any queue bound, PCM chunking, cursor,
+terminal, ACK, scheduler, or native TTS behavior. Ordinary idle expiry resumes
+once that ownership ends.
+
+The real-loopback deterministic regression used PING=1 s / hangup=2 s and no
+client PONG. Pre-fix, active work was destroyed at 2.001 s, `response.completed`
+was lost, and the 10 s response-stall control also failed at 2.001 s (red log
+SHA-256 `721014451b46cc97c36283045df0cf8b4c26d28f326c8ec74b7b3d40f775214a`).
+Post-fix, exact text/PCM and one final ACK completed, the true stall still ended
+at 10 s, and an idle-only connection closed (green log SHA-256
+`db613f8a252d30986417a7091481f4e64cab0a64a906910b8730fe20458e2571`).
+`umm-test-local` passed, including the complete unified contract binary and 21
+public-PCM regressions. The live driver now runs exactly one measured response
+per session, while independent verification requires all 29 paused readers and
+exactly 4,096—not merely at least 4,096—native-minus-public audio events.
+
+## Task #70 real SM90 outcome: PASS
+
+Execution commit `2b49b5b82739eb0055ae5737595f693b08650b18` merges official
+Wave 94 `6e32233f`, including Task #67, Task #63, and Task #69. An earlier R1
+launcher was empty and exited without creating a capture or using the GPU; it is
+not counted as evidence. R2 used a hash-checked launcher and fresh binaries on
+explicitly idle physical GPU 0 only.
+
+All 25 public HTTP responses retained their prior controls: 24 completed and one
+cancelled, 44 PCM legs, 184 chunks, 10,698,240 bytes including the cancel prefix,
+one-chunk cancellation, exact retry, and four direct-control responses with the
+accepted 737,280-byte continuation hash. The delayed-realtime block then
+completed **all 29 responses with one terminal and one final playback ACK each**.
+Independent per-response/per-leg reconstruction checked **493 TTS legs, 4,176 PCM
+chunks, and 115,034,880 bytes** with exact native/public joins, monotonic
+cursors, and zero stale events or turn failures.
+
+The release retained all 29 paused response ids and was exactly **4,125 native
+TTS audio events minus 29 public `audio.delta` frames = 4,096**. During the
+paused windows there were 4,096 native audio events and zero public audio reads.
+No audio was dropped, reordered, or coalesced, and no terminal, ACK, cursor, PCM,
+queue, or timeout assertion was weakened.
+
+Two fresh verifier processes produced byte-identical 1,691,984-byte reports with
+SHA-256 `cda99830359798b3a339601babb4c22341d39f582b21bbcb68414f4fe167c716`.
+The expanded raw bundle includes the exact instruction WAV, source, driver and
+red/green/build/test records. Two fresh manifest checks covered **1,266 files**
+with self-excluded `SHA256SUMS` SHA-256
+`3adbd3d50dd4b6a825ce77943a35ba3da4f54c15a1316913692f950ddc1bbb31`.
+`umm-test-local`, all 21 focused PCM tests, the 223-row/1,125-reference feature
+map, and all three native TTS tests passed. `in_flight=0`, every task-owned
+process exited, and GPU 0 returned to 3 MiB / 0% with no compute process; the
+resident service and its devices were untouched. Machine-readable identities and
+limits are in [realtime-transport-validity-sm90.json](evidence/realtime-transport-validity-sm90.json).
+Full two-GPU R4, fair-priority, deployment, physical playback, and perceptual
+quality remain **NOT_RUN**; no latency improvement is claimed.
