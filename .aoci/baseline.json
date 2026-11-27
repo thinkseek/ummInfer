@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-27T07:40:41Z",
+  "updated_at": "2026-11-27T07:42:41Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "15bedeb33dcdc6aa2b6ad411516834df282dd1ad069f3604047bdc6ccb745d96",
-      "size": 332138,
-      "normalized_sha256": "15bedeb33dcdc6aa2b6ad411516834df282dd1ad069f3604047bdc6ccb745d96"
+      "sha256": "b30ad87caa6452406a8aa2d7d16af0c28f630b0c228cfa529fddfc74e5c9b13c",
+      "size": 334138,
+      "normalized_sha256": "b30ad87caa6452406a8aa2d7d16af0c28f630b0c228cfa529fddfc74e5c9b13c"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -159,6 +159,12 @@
       "size": 1065,
       "normalized_sha256": "d9c71c00c7e09a1481d81c0df4f415b55add7176915d9f6837c5030478ba10b9"
     },
+    "benchmarks/i2v-geometry-latency/preregistration.json": {
+      "role": "index",
+      "sha256": "8bbb40d632220a8e6826bb5c741be2c4dd80f0d3852c8425ec129db602177343",
+      "size": 2643,
+      "normalized_sha256": "8bbb40d632220a8e6826bb5c741be2c4dd80f0d3852c8425ec129db602177343"
+    },
     "benchmarks/multimodal-stability-sm90.json": {
       "role": "index",
       "sha256": "fcfa46a2812270457db33e199608829a6eec2f7c67b76cb909935acdd53daf97",
@@ -176,6 +182,12 @@
       "sha256": "599963a3851d5ce02d740b8b06c423726bae5c9c1e07d1931708074c83caa9a3",
       "size": 72619,
       "normalized_sha256": "599963a3851d5ce02d740b8b06c423726bae5c9c1e07d1931708074c83caa9a3"
+    },
+    "benchmarks/realtime-first-audio/post-determinism-preregistration.json": {
+      "role": "index",
+      "sha256": "333c836f998aa51d84b91ccaf80d9c5bd076814f2eceb8521727361eff07b355",
+      "size": 9491,
+      "normalized_sha256": "333c836f998aa51d84b91ccaf80d9c5bd076814f2eceb8521727361eff07b355"
     },
     "benchmarks/realtime-first-audio/preregistration.json": {
       "role": "index",
@@ -1001,9 +1013,9 @@
     },
     "build.zig": {
       "role": "index",
-      "sha256": "76558d4bae22691fd3455fc7a5a128ccb0e8d6540073eb49a9ac94c424c16461",
-      "size": 10770,
-      "normalized_sha256": "76558d4bae22691fd3455fc7a5a128ccb0e8d6540073eb49a9ac94c424c16461"
+      "sha256": "bb0263d20b2a4614bcd104b673f4ce5b70ce42eaa0ef0f55d01ff14349d6e372",
+      "size": 10997,
+      "normalized_sha256": "bb0263d20b2a4614bcd104b673f4ce5b70ce42eaa0ef0f55d01ff14349d6e372"
     },
     "clients/ummmlx/.gitignore": {
       "role": "index",
@@ -1277,9 +1289,9 @@
     },
     "docs/architecture.md": {
       "role": "index",
-      "sha256": "6b2cb8da74cc393d0bd8120a2c0492bb6de1f0b971b7f31df8f76475e74fb6e2",
-      "size": 50693,
-      "normalized_sha256": "6b2cb8da74cc393d0bd8120a2c0492bb6de1f0b971b7f31df8f76475e74fb6e2"
+      "sha256": "fa27a7af793e40f7fd606d6a484fb578a28d652b0bbc9df53cd6b5fd414becdc",
+      "size": 51857,
+      "normalized_sha256": "fa27a7af793e40f7fd606d6a484fb578a28d652b0bbc9df53cd6b5fd414becdc"
     },
     "docs/batching.md": {
       "role": "index",
@@ -1376,6 +1388,12 @@
       "sha256": "042574632342f21a9f681909aae3d2cb40585c6ddc59a5c866cc1a27bde875fe",
       "size": 36574,
       "normalized_sha256": "042574632342f21a9f681909aae3d2cb40585c6ddc59a5c866cc1a27bde875fe"
+    },
+    "docs/evidence/i2v-geometry-latency-sm90.json": {
+      "role": "index",
+      "sha256": "02ee9add4430d252621ed36d5b250c6aee17fd69b38a999325c292d33bcdcdeb",
+      "size": 19966,
+      "normalized_sha256": "02ee9add4430d252621ed36d5b250c6aee17fd69b38a999325c292d33bcdcdeb"
     },
     "docs/evidence/image2-request-allocator-sm90.json": {
       "role": "index",
@@ -1547,9 +1565,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "bd31055b6d316bc080c9cb8f7b544667e466c2edea158e6b90fbafe21947dc29",
-      "size": 170508,
-      "normalized_sha256": "bd31055b6d316bc080c9cb8f7b544667e466c2edea158e6b90fbafe21947dc29"
+      "sha256": "671e9083d85776bdf0933384f43c13225d89f5c399f481fef23fcfe4c701ea58",
+      "size": 171802,
+      "normalized_sha256": "671e9083d85776bdf0933384f43c13225d89f5c399f481fef23fcfe4c701ea58"
     },
     "docs/flux2-i2v-continuity.md": {
       "role": "index",
@@ -1568,6 +1586,12 @@
       "sha256": "6677b8ab6c8c54e8d4664a05bb9ad5f4e961ef312c3ee6f169b2e6499f1ce801",
       "size": 19272,
       "normalized_sha256": "6677b8ab6c8c54e8d4664a05bb9ad5f4e961ef312c3ee6f169b2e6499f1ce801"
+    },
+    "docs/i2v-geometry-latency.md": {
+      "role": "index",
+      "sha256": "103fa4a07ec4e14e625931fa8a30b64bb0ac77ea1a3cb99e0c99bd4ceac363a7",
+      "size": 17592,
+      "normalized_sha256": "103fa4a07ec4e14e625931fa8a30b64bb0ac77ea1a3cb99e0c99bd4ceac363a7"
     },
     "docs/index.html": {
       "role": "index",
@@ -1625,9 +1649,9 @@
     },
     "docs/native-service.md": {
       "role": "index",
-      "sha256": "8c842bd1fb8ed077bbc76cdea84589cbef1ffffb271fd961214d79b5727ea7fd",
-      "size": 93982,
-      "normalized_sha256": "8c842bd1fb8ed077bbc76cdea84589cbef1ffffb271fd961214d79b5727ea7fd"
+      "sha256": "8d72bd8906d9f2ff2c4e951a6fb7fa017770fa88ce7a0e8315c9f13fd793711f",
+      "size": 95479,
+      "normalized_sha256": "8d72bd8906d9f2ff2c4e951a6fb7fa017770fa88ce7a0e8315c9f13fd793711f"
     },
     "docs/native-wan-cancel-fault.md": {
       "role": "index",
@@ -1745,9 +1769,9 @@
     },
     "docs/roadmap.md": {
       "role": "index",
-      "sha256": "64333b062da63451ec3b8488a60600cc6c7a351c8142fabc032042a09b900faf",
-      "size": 47346,
-      "normalized_sha256": "64333b062da63451ec3b8488a60600cc6c7a351c8142fabc032042a09b900faf"
+      "sha256": "1f035b0ee7c064e9603dd34c17c14b57881ef6a3c8d1d543ede1cbf98cd5d7ba",
+      "size": 48832,
+      "normalized_sha256": "1f035b0ee7c064e9603dd34c17c14b57881ef6a3c8d1d543ede1cbf98cd5d7ba"
     },
     "docs/showcase.md": {
       "role": "index",
@@ -2831,9 +2855,9 @@
     },
     "native/stage_cli/video_stage.cpp": {
       "role": "index",
-      "sha256": "0f48268e16e8b14ef67710ac14552baa4b3084d2d45cbb9153af3c0adcbea5d5",
-      "size": 6397,
-      "normalized_sha256": "0f48268e16e8b14ef67710ac14552baa4b3084d2d45cbb9153af3c0adcbea5d5"
+      "sha256": "cde7d578ca5bbbb3c989b852acd08e354fc98560299f7846f83abc27dbb05567",
+      "size": 6832,
+      "normalized_sha256": "cde7d578ca5bbbb3c989b852acd08e354fc98560299f7846f83abc27dbb05567"
     },
     "native/stage_cli/video_stage_common_test.cpp": {
       "role": "index",
@@ -3135,15 +3159,15 @@
     },
     "native/video/engine.cpp": {
       "role": "index",
-      "sha256": "f369e7566b0ffddad4b851a37a878f35c40858929b0622de10f0f7a228c9e475",
-      "size": 32899,
-      "normalized_sha256": "f369e7566b0ffddad4b851a37a878f35c40858929b0622de10f0f7a228c9e475"
+      "sha256": "0ed23e40ad6e2c736bd20b35c9fae9adad56637f2e76e02966cbaaeafa002700",
+      "size": 33948,
+      "normalized_sha256": "0ed23e40ad6e2c736bd20b35c9fae9adad56637f2e76e02966cbaaeafa002700"
     },
     "native/video/engine.hpp": {
       "role": "index",
-      "sha256": "6daa71ed12d5f8f1a816ac49113a7a0e01b1b90c548e9c741b7dfffa26934283",
-      "size": 4060,
-      "normalized_sha256": "6daa71ed12d5f8f1a816ac49113a7a0e01b1b90c548e9c741b7dfffa26934283"
+      "sha256": "2c39104ff215a6bd578ae386403203e7ff27e13719a60fcfd3021259968975e3",
+      "size": 4419,
+      "normalized_sha256": "2c39104ff215a6bd578ae386403203e7ff27e13719a60fcfd3021259968975e3"
     },
     "native/video/mp4_encoder.cpp": {
       "role": "index",
@@ -3251,9 +3275,9 @@
     },
     "native/video_tests/test_host.cpp": {
       "role": "index",
-      "sha256": "eef8daa1b390c4fe8d8821dbaf465c69dc30a833ca5651cac2b8603ba1f2d4a8",
-      "size": 76772,
-      "normalized_sha256": "eef8daa1b390c4fe8d8821dbaf465c69dc30a833ca5651cac2b8603ba1f2d4a8"
+      "sha256": "8423df12ac4567bf75f32bd9e8dfe33906944aa1715a8b42b15022f4b9980cb0",
+      "size": 81236,
+      "normalized_sha256": "8423df12ac4567bf75f32bd9e8dfe33906944aa1715a8b42b15022f4b9980cb0"
     },
     "native/video_tests/test_umt5.cpp": {
       "role": "index",
@@ -3954,6 +3978,24 @@
       "sha256": "b7e5192d8f5d764347100f4bb55117690e29b93efc8568ec4c6305c40e0900fe",
       "size": 13204,
       "normalized_sha256": "b7e5192d8f5d764347100f4bb55117690e29b93efc8568ec4c6305c40e0900fe"
+    },
+    "tests/i2v_geometry_latency_live.py": {
+      "role": "observe",
+      "sha256": "b7578aa3c0c8fb75ab1d74e38a46e067bbf469716eba2350f6129e8122c6ab9e",
+      "size": 56549,
+      "normalized_sha256": "b7578aa3c0c8fb75ab1d74e38a46e067bbf469716eba2350f6129e8122c6ab9e"
+    },
+    "tests/i2v_geometry_latency_test.py": {
+      "role": "observe",
+      "sha256": "2a218eb60a65daecd16fac000b9621e344094cd1f37e67971e3aedaa7db32868",
+      "size": 5919,
+      "normalized_sha256": "2a218eb60a65daecd16fac000b9621e344094cd1f37e67971e3aedaa7db32868"
+    },
+    "tests/i2v_geometry_latency_verify.py": {
+      "role": "observe",
+      "sha256": "95b568ea00dcf77b7409e0066abb480129ceaea3c75146d1ac93fe231158db8f",
+      "size": 36787,
+      "normalized_sha256": "95b568ea00dcf77b7409e0066abb480129ceaea3c75146d1ac93fe231158db8f"
     },
     "tests/joint_dpo_live_test.py": {
       "role": "observe",
