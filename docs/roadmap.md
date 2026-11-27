@@ -272,6 +272,21 @@ in [public-narrative-i2v](public-narrative-i2v.md). Perceptual quality,
 generalization, performance baselines, and deployment remain
 `NOT_RUN`/`NOT_COVERED`.
 
+**Phase 4 real native Wan cancellation/fault-recovery gate (Task #67,
+2026-11-27).** On isolated SM90 GPU 7, execution `8efa3ea` passed one valid
+real-generation control, four cancellation windows (serial queued, denoise step
+4/20, MP4 emission with a retained 262,192-byte partial, and post-terminal), one
+native invalid-size rejection, and four following valid requests. All six valid
+MP4s have SHA-256 `b1a4d7d1…7c21`; every request has one owning native terminal,
+zero late public events/artifacts, and final `in_flight=0`. Raw records exposed
+duplicate PUSH/PUB abort terminals; `c88e71c` adds bounded per-Stage/request
+terminal deduplication and a red/green real-socket regression (6→1). Public ACK,
+public terminal, native terminal, and cooperative CUDA-boundary exit are
+separately timed; immediate device preemption is not claimed, and VAE-interior
+cancellation remains `NOT_RUN`. Exact hashes, quantized timing intervals,
+independent remote/local verification, failed attempts, and cleanup are in
+[native-wan-cancel-fault](native-wan-cancel-fault.md).
+
 ### Phase 5 — Unified performance baseline and joint optimization
 
 **Goal.** Establish one measurable baseline for the unified engine, then

@@ -224,6 +224,16 @@ MAE 为 `2.259115` / `5.124479`，新进程双端重放通过，GPU 1 清理至 
 prompt_anchor 与 default fallback 不变。完整证据见
 [public-narrative-i2v.md](public-narrative-i2v.md)；感知质量与泛化仍 `NOT_RUN`/`NOT_COVERED`。
 
+Task #67 在官方 Wave 91 基线的隔离物理 GPU 7 上完成真实原生 Wan2.2 取消/故障门禁：
+1 个先生成的有效控制、4 个取消窗口（serial queued、denoise step 4/20、MP4 emission、
+post-terminal）、1 个原生非法尺寸拒绝及 4 个紧随的精确同 hash 恢复；共 6 个有效真实
+MP4 均为 `b1a4d7d1…7c21`。raw MessagePack 先暴露 PUSH+PUB 对同一 request 各发一次
+native abort terminal 的缺陷，`Stage::abort_request` 现以有界 10 分钟墓碑合并双通道终态；
+确定性回归由 6 个重复终态降为 1 个且后续请求成功。公开 ACK/terminal 与 CUDA cooperative
+exit 分开计时，实测 denoise 退出区间为 432.578–433.578 ms，不声称即时设备抢占。
+VAE 内部取消仍 `NOT_RUN`。完整原始证据、0 late event/artifact、`in_flight=0`、双端新进程
+复核和清理见 [native-wan-cancel-fault.md](native-wan-cancel-fault.md)。
+
 ---
 
 ### 2.3 可选请求级原生分配器遥测与受控消融边界

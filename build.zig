@@ -142,6 +142,15 @@ pub fn build(b: *std.Build) void {
     const online_attestation_test = b.step("online-attestation-test", "Run CPU-only server HTTP attestation tests");
     online_attestation_test.dependOn(&online_attestation.step);
 
+    const wan_cancel_live_self_check = b.addSystemCommand(&.{ "python3", "-I" });
+    wan_cancel_live_self_check.addFileArg(b.path("tests/native_wan_cancel_fault_live.py"));
+    wan_cancel_live_self_check.addArg("--self-check");
+    test_step.dependOn(&wan_cancel_live_self_check.step);
+    const wan_cancel_verify_self_check = b.addSystemCommand(&.{ "python3", "-I" });
+    wan_cancel_verify_self_check.addFileArg(b.path("tests/native_wan_cancel_fault_verify.py"));
+    wan_cancel_verify_self_check.addArg("--self-check");
+    test_step.dependOn(&wan_cancel_verify_self_check.step);
+
     const voice_test_exe = b.addExecutable(.{
         .name = "voice_client_test",
         .root_module = module(b, target, optimize),

@@ -217,11 +217,7 @@ void Stage::start() {
       try {
         if (!control_plane_ || !control_plane_->poll_abort(50)) continue;
         const std::string id = control_plane_->recv_abort().request_id;
-        scheduler_->abort(id);
-        reap_pending(false, id);
-        // The scheduler drops an aborted request without an outbox result, so
-        // the request record and the coordinator still need a terminal event.
-        fail_request(id, "request aborted");
+        abort_request(id);
       } catch (...) {
         if (!running_) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -278,9 +274,7 @@ void Stage::handle_message(Message msg) {
           } else if constexpr (std::is_same_v<T, DataAckMessage>) {
             on_data_ack(value);
           } else if constexpr (std::is_same_v<T, AbortMessage>) {
-            scheduler_->abort(value.request_id);
-            reap_pending(false, value.request_id);
-            fail_request(value.request_id, "request aborted");
+            abort_request(value.request_id);
           } else if constexpr (std::is_same_v<T, ShutdownMessage>) {
             running_ = false;
           } else if constexpr (std::is_same_v<T, AdminMessage>) {
@@ -454,6 +448,30 @@ void Stage::on_data_ready(const DataReadyMessage& msg) {
     send_failure_ack(msg, object_id, e.what());
     fail_request(msg.request_id, e.what());
   }
+}
+
+void Stage::abort_request(const std::string& request_id) {
+  scheduler_->abort(request_id);
+  reap_pending(false, request_id);
+  const auto now = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(requests_mu_);
+    for (auto it = abort_terminal_expiries_.begin();
+         it != abort_terminal_expiries_.end();) {
+      if (it->second <= now) {
+        it = abort_terminal_expiries_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    const auto [unused, inserted] = abort_terminal_expiries_.try_emplace(
+        request_id, now + std::chrono::minutes(10));
+    (void)unused;
+    if (!inserted) return;
+  }
+  // The scheduler drops an aborted request without an outbox result, so the
+  // request record and the coordinator still need exactly one terminal event.
+  fail_request(request_id, "request aborted");
 }
 
 void Stage::fail_request(const std::string& request_id, const std::string& error,

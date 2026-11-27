@@ -1,0 +1,840 @@
+{
+  "binaries": {
+    "native_wan": {
+      "bytes": 3175488,
+      "file": "bin/umm-native-stage-video",
+      "sha256": "754075285c639b2e2e1dbbee1529039208d27ec43bd4ce32348193450fdf530d"
+    },
+    "server": {
+      "bytes": 54818680,
+      "file": "bin/umm-infer",
+      "sha256": "603a87d1b23578fb481e0864a83b612dd80ba86804d293583fcc894d87899046"
+    }
+  },
+  "cases": [
+    {
+      "fault": null,
+      "label": "control",
+      "legs": [
+        {
+          "stage": "video",
+          "state": "completed"
+        }
+      ],
+      "media": {
+        "bytes": 38895,
+        "chunks": 1,
+        "file": "control.mp4",
+        "sha256": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21"
+      },
+      "native_request_id": "http-1:video",
+      "native_terminal_count": 1,
+      "request_id": "http-1",
+      "request_sha256": "0f9d6eebd53bcc92e22ceaa2b0d029155c716c33bfa3c99e21da025a2f5ee852",
+      "terminal_kind": "complete"
+    },
+    {
+      "abort": {
+        "ack_latency_ms": 0.433925,
+        "ack_monotonic_ns": 6095739244487736,
+        "ack_wall_time_ns": 1795736705478192089,
+        "body": {
+          "success": true
+        },
+        "http_status": 200,
+        "request_id": "http-3",
+        "send_monotonic_ns": 6095739244053811,
+        "send_wall_time_ns": 1795736705477632404
+      },
+      "fault": null,
+      "label": "queued-cancel",
+      "legs": [
+        {
+          "error": "request aborted",
+          "stage": "video",
+          "state": "aborted"
+        }
+      ],
+      "media": null,
+      "native_abort_terminal": {
+        "error": "request aborted",
+        "forwarded_monotonic_ns": 6095739245267686,
+        "from_stage": "video",
+        "observed_monotonic_ns": 6095739245016805,
+        "packed_bytes": 113,
+        "packed_sha256": "1176e3baa251f04bce3f245aea4fe8279841d74757718aabc3a0528146ef6a58",
+        "success": false
+      },
+      "native_request_id": "http-3:video",
+      "native_terminal_count": 1,
+      "request_id": "http-3",
+      "request_sha256": "02bdd9ac4b41b0687f0123a28778c4d97f1c28b9c1254a864825cd77720ee4bf",
+      "terminal_kind": "cancelled"
+    },
+    {
+      "abort": {
+        "ack_latency_ms": 0.612149,
+        "ack_monotonic_ns": 6095740744501888,
+        "ack_wall_time_ns": 1795736706978147488,
+        "body": {
+          "success": true
+        },
+        "http_status": 200,
+        "request_id": "http-2",
+        "send_monotonic_ns": 6095740743889739,
+        "send_wall_time_ns": 1795736706977422086
+      },
+      "fault": null,
+      "label": "denoise-cancel",
+      "legs": [
+        {
+          "error": "request aborted",
+          "stage": "video",
+          "state": "aborted"
+        }
+      ],
+      "media": null,
+      "native_abort_log": {
+        "abort_epoch_ms": 1795736707410,
+        "boundary": "aborted at step 4/20",
+        "compute_ms": 1933,
+        "exit_epoch_ms": 1795736707410,
+        "observed_monotonic_ns": 6095741178574550,
+        "raw": "video request aborted backend=native-cuda-wan request_id=http-2:video boundary=\"aborted at step 4/20\" abort_epoch_ms=1795736707410 exit_epoch_ms=1795736707410 compute_ms=1933",
+        "request_id": "http-2:video"
+      },
+      "native_abort_terminal": {
+        "error": "request aborted",
+        "forwarded_monotonic_ns": 6095740746437176,
+        "from_stage": "video",
+        "observed_monotonic_ns": 6095740746284472,
+        "packed_bytes": 113,
+        "packed_sha256": "a936cac3a2a6bb54dcf209a9e6621d64c2624fe0a1f154b3340315af49387fc5",
+        "success": false
+      },
+      "native_request_id": "http-2:video",
+      "native_terminal_count": 1,
+      "request_id": "http-2",
+      "request_sha256": "f4536d7c3b1dd307d8bff883229526bd82c2f40638acac66a7991dea3c990dbf",
+      "terminal_kind": "cancelled"
+    },
+    {
+      "fault": null,
+      "label": "recovery-after-queued-denoise",
+      "legs": [
+        {
+          "stage": "video",
+          "state": "completed"
+        }
+      ],
+      "media": {
+        "bytes": 38895,
+        "chunks": 1,
+        "file": "recovery-after-queued-denoise.mp4",
+        "sha256": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21"
+      },
+      "native_request_id": "http-4:video",
+      "native_terminal_count": 1,
+      "request_id": "http-4",
+      "request_sha256": "94d46bd39ea5720b4086a0c9a290c447b0c3b8a61fb278d92f40e78dfef48ac3",
+      "terminal_kind": "complete"
+    },
+    {
+      "abort": {
+        "ack_latency_ms": 0.603444,
+        "ack_monotonic_ns": 6095761913364856,
+        "ack_wall_time_ns": 1795736728147102694,
+        "body": {
+          "success": true
+        },
+        "http_status": 200,
+        "request_id": "http-5",
+        "send_monotonic_ns": 6095761912761412,
+        "send_wall_time_ns": 1795736728146308560
+      },
+      "fault": null,
+      "label": "artifact-cancel",
+      "legs": [
+        {
+          "error": "request aborted",
+          "stage": "video",
+          "state": "aborted"
+        }
+      ],
+      "media": null,
+      "native_abort_log": {
+        "abort_epoch_ms": 1795736728146,
+        "boundary": "aborted during MP4 encoding",
+        "compute_ms": 20070,
+        "exit_epoch_ms": 1795736728197,
+        "observed_monotonic_ns": 6095761966408629,
+        "raw": "video request aborted backend=native-cuda-wan request_id=http-5:video boundary=\"aborted during MP4 encoding\" abort_epoch_ms=1795736728146 exit_epoch_ms=1795736728197 compute_ms=20070",
+        "request_id": "http-5:video"
+      },
+      "native_abort_terminal": {
+        "error": "request aborted",
+        "forwarded_monotonic_ns": 6095761915309819,
+        "from_stage": "video",
+        "observed_monotonic_ns": 6095761915241966,
+        "packed_bytes": 113,
+        "packed_sha256": "7b9dfc88db5a9958257eacd00bf3e0bc140948a8fd33801bb618177548a71386",
+        "success": false
+      },
+      "native_request_id": "http-5:video",
+      "native_terminal_count": 1,
+      "partial_artifact": {
+        "bounded_by_public_limit": true,
+        "bytes": 262192,
+        "sha256": "02a1bff927606b200d93e3f8483d7ada1eb98675da10102a382b71de9f3a615a"
+      },
+      "request_id": "http-5",
+      "request_sha256": "0ad99bff6244702b6db284df2f3138752f6522b30d4f69a717e5e578c3b1ba1d",
+      "terminal_kind": "cancelled"
+    },
+    {
+      "fault": null,
+      "label": "recovery-after-artifact",
+      "legs": [
+        {
+          "stage": "video",
+          "state": "completed"
+        }
+      ],
+      "media": {
+        "bytes": 38895,
+        "chunks": 1,
+        "file": "recovery-after-artifact.mp4",
+        "sha256": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21"
+      },
+      "native_request_id": "http-6:video",
+      "native_terminal_count": 1,
+      "request_id": "http-6",
+      "request_sha256": "b6946cc84918227f0b96059eb0bf2a566822905ca992ab9d05b4726f1ea38887",
+      "terminal_kind": "complete"
+    },
+    {
+      "abort": {
+        "ack_latency_ms": 0.503078,
+        "ack_monotonic_ns": 6095763429263633,
+        "ack_wall_time_ns": 1795736729662891839,
+        "body": {
+          "success": true
+        },
+        "http_status": 200,
+        "request_id": "http-7",
+        "send_monotonic_ns": 6095763428760555,
+        "send_wall_time_ns": 1795736729662342350
+      },
+      "fault": null,
+      "label": "terminal-then-cancel",
+      "legs": [
+        {
+          "stage": "video",
+          "state": "completed"
+        }
+      ],
+      "media": {
+        "bytes": 38895,
+        "chunks": 1,
+        "file": "terminal-then-cancel.mp4",
+        "sha256": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21"
+      },
+      "native_request_id": "http-7:video",
+      "native_terminal_count": 1,
+      "post_terminal_no_new_events": true,
+      "request_id": "http-7",
+      "request_sha256": "e0d52516bbc5121f55f52bd99b949d3362b22203dc21251a6184ee4d2e01700e",
+      "terminal_kind": "complete"
+    },
+    {
+      "fault": null,
+      "label": "recovery-after-terminal",
+      "legs": [
+        {
+          "stage": "video",
+          "state": "completed"
+        }
+      ],
+      "media": {
+        "bytes": 38895,
+        "chunks": 1,
+        "file": "recovery-after-terminal.mp4",
+        "sha256": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21"
+      },
+      "native_request_id": "http-8:video",
+      "native_terminal_count": 1,
+      "request_id": "http-8",
+      "request_sha256": "bd219f1b7e14034d18ef37ae50cd3f86c6a796237245c91598f6f3061ca29d15",
+      "terminal_kind": "complete"
+    },
+    {
+      "fault": "native Wan 32-pixel alignment rejection",
+      "label": "invalid-input",
+      "legs": [
+        {
+          "error": "video.size 500x480 must be divisible by 32",
+          "stage": "video",
+          "state": "failed"
+        }
+      ],
+      "media": null,
+      "native_fault_terminal": {
+        "error": "video.size 500x480 must be divisible by 32",
+        "forwarded_monotonic_ns": 6095764638034821,
+        "from_stage": "video",
+        "observed_monotonic_ns": 6095764637910000,
+        "packed_bytes": 141,
+        "packed_sha256": "25ddf6268b31b3a8f23d0eb97667af71d78de32f0cdaf122c555ddfe8e64543c",
+        "success": false
+      },
+      "native_request_id": "http-9:video",
+      "native_terminal_count": 1,
+      "request_id": "http-9",
+      "request_sha256": "697b4a5fa6d36edd6928702d5b252a70b2d5b7bd95ba160588f0f94fabdbc7ff",
+      "terminal_kind": "complete"
+    },
+    {
+      "fault": null,
+      "label": "recovery-after-invalid",
+      "legs": [
+        {
+          "stage": "video",
+          "state": "completed"
+        }
+      ],
+      "media": {
+        "bytes": 38895,
+        "chunks": 1,
+        "file": "recovery-after-invalid.mp4",
+        "sha256": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21"
+      },
+      "native_request_id": "http-10:video",
+      "native_terminal_count": 1,
+      "request_id": "http-10",
+      "request_sha256": "1f65d6c33a8a3372c6fc4ea2a82d10f8f9d8736f30e962d3852c4e08ae77695b",
+      "terminal_kind": "complete"
+    }
+  ],
+  "counts": {
+    "active_native_cancellations": 3,
+    "cancellations": 4,
+    "exact_hash_recoveries": 4,
+    "initial_valid_control": 1,
+    "invalid_input_faults": 1,
+    "valid_generations": 6
+  },
+  "coverage_limits": {
+    "forced_process_crash": "NOT_RUN",
+    "generalized_performance": "NOT_RUN",
+    "immediate_cuda_preemption_claimed": false,
+    "perceptual_quality": "NOT_RUN",
+    "real_vlm_narrative": "NOT_RUN (CPU echo text only)",
+    "resident_service": "NOT_TOUCHED",
+    "vae_interior_cancellation": "NOT_RUN"
+  },
+  "defect": {
+    "deterministic_post_fix_terminals": 1,
+    "deterministic_pre_fix_terminals_after_3_push_plus_3_pub": 6,
+    "fix": "bounded ten-minute per-Stage request abort-terminal tombstones shared by PUSH and PUB paths",
+    "pre_fix_execution_commit": "6e69fbf9fcc92d6ac6ce37eb91ec4f220ea8614c",
+    "raw_pre_fix_video_abort_terminals": 2
+  },
+  "execution_commit": "8efa3ea30aa341129441e2e5a91e129e5237406e",
+  "failed_attempts": [
+    {
+      "commit": "7b1bdbf3756dd3dac11f78683f37b2a581c2c4cc",
+      "reason": "pre-generation NVML/container PID namespace assertion",
+      "result": "NOT_COUNTED"
+    },
+    {
+      "commit": "16f37cad0073c356876430f13cc19af85811682c",
+      "reason": "queued window missed because transport-only public ID frame was ignored",
+      "result": "NOT_COUNTED"
+    },
+    {
+      "commit": "1f3e9e3f0c8e0ec1ab58cd88230b457104bbc8b8",
+      "reason": "same queued-window harness issue; request completed and was not labeled cancelled",
+      "result": "NOT_COUNTED"
+    },
+    {
+      "commit": "6e69fbf9fcc92d6ac6ce37eb91ec4f220ea8614c",
+      "reason": "two owning video abort terminals exposed dual-channel duplicate",
+      "result": "RAW_DEFECT"
+    },
+    {
+      "commit": "c88e71c4d07343e2a77026139b59104ea5274bde",
+      "reason": "fixed runtime passed; producer convenience terminal referenced a broadcast recipient instead of video",
+      "result": "SUPERSEDED"
+    }
+  ],
+  "ffmpeg_sha256": "ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+  "ffprobe_sha256": "272f6ebc634a63d9c8b4ca68e964119d980f25154e5aa2c35e5487da48e9a58f",
+  "format": "umminfer-native-wan-cancel-fault-sm90-v1",
+  "fresh_processes": {
+    "local_raw_message_timing_media_replay": "PASS",
+    "remote_model_and_source_rehash": "PASS"
+  },
+  "frozen_requests": {
+    "artifact_cancel": {
+      "fps": 16,
+      "guidance_scale": 5.0,
+      "num_frames": 77,
+      "observed_boundary": "aborted during MP4 encoding",
+      "seed": 42,
+      "size": "1280x704",
+      "steps": 1
+    },
+    "control_and_all_recoveries": {
+      "fps": 16,
+      "guidance_scale": 5.0,
+      "num_frames": 9,
+      "seed": 42,
+      "size": "352x256",
+      "steps": 4
+    },
+    "denoise_cancel": {
+      "fps": 16,
+      "guidance_scale": 5.0,
+      "num_frames": 29,
+      "observed_boundary": "aborted at step 4/20",
+      "seed": 42,
+      "size": "704x480",
+      "steps": 20
+    },
+    "invalid_input": {
+      "expected_error": "video.size 500x480 must be divisible by 32",
+      "size": "500x480"
+    }
+  },
+  "hardware": {
+    "compute_capability": "SM90",
+    "name": "NVIDIA H20",
+    "physical_gpu": 7
+  },
+  "independent_verification": {
+    "active_native_cancellation_count": 3,
+    "base_commit": "ced4b145857e6d8d25e1fa56b2dd538ad2aa0e17",
+    "cancellation_count": 4,
+    "control_count": 1,
+    "control_media_sha256": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21",
+    "cooperative_cuda_preemption_claimed": false,
+    "execution_commit": "8efa3ea30aa341129441e2e5a91e129e5237406e",
+    "fault_count": 1,
+    "final_in_flight": 0,
+    "format": "umminfer-native-wan-cancel-fault-verification-v1",
+    "gpu7_final_memory_mib": 3,
+    "late_cancelled_artifacts": 0,
+    "late_public_events": 0,
+    "media_sha256": {
+      "control": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21",
+      "recovery-after-artifact": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21",
+      "recovery-after-invalid": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21",
+      "recovery-after-queued-denoise": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21",
+      "recovery-after-terminal": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21",
+      "terminal-then-cancel": "b1a4d7d174a6aa8e621b34de57052a78cdec402668b1d6c11f607b96670d7c21"
+    },
+    "model_verification": "all_files_rehashed",
+    "native_terminal_count_per_request": 1,
+    "partial_artifact": {
+      "bytes": 262192,
+      "sha256": "02a1bff927606b200d93e3f8483d7ada1eb98675da10102a382b71de9f3a615a"
+    },
+    "physical_gpu": 7,
+    "recovery_count": 4,
+    "status": "PASS",
+    "timing_ms": {
+      "artifact-cancel": {
+        "abort_ack_ms": 0.603444,
+        "native_boundary_observed_ms": 53.647217,
+        "native_detection_wait_interval_ms": [
+          -0.30859375,
+          0.69140625
+        ],
+        "native_detection_wait_ms": -0.30859375,
+        "native_exit_wait_interval_ms": [
+          50.69140625,
+          51.69140625
+        ],
+        "native_exit_wait_ms": 50.69140625,
+        "native_terminal_ms": 2.480554,
+        "native_unwind_after_detection_ms": 51,
+        "native_wall_clock_quantization_ms": 1.0,
+        "public_terminal_ms": 1.091464
+      },
+      "denoise-cancel": {
+        "abort_ack_ms": 0.612149,
+        "native_boundary_observed_ms": 434.684811,
+        "native_detection_wait_interval_ms": [
+          432.577880859375,
+          433.577880859375
+        ],
+        "native_detection_wait_ms": 432.577880859375,
+        "native_exit_wait_interval_ms": [
+          432.577880859375,
+          433.577880859375
+        ],
+        "native_exit_wait_ms": 432.577880859375,
+        "native_terminal_ms": 2.394733,
+        "native_unwind_after_detection_ms": 0,
+        "native_wall_clock_quantization_ms": 1.0,
+        "public_terminal_ms": 1.170762
+      },
+      "queued-cancel": {
+        "abort_ack_ms": 0.433925,
+        "native_terminal_ms": 0.962994,
+        "public_terminal_ms": 1.050791
+      }
+    },
+    "valid_generation_count": 6,
+    "verifier_sha256": "5b0e039bd3b4f7561ebce625ab3130bd11c16c2835efc64f4f3c95a162a3d2e1"
+  },
+  "independent_verifier_commit": "e64f05ba3649db6b9a04446a7a168cca3ed5a52a",
+  "lifecycle": {
+    "final_in_flight": 0,
+    "gpu7_final_compute_processes": 0,
+    "gpu7_final_memory_mib": 3,
+    "late_cancelled_artifacts": 0,
+    "late_public_events": 0,
+    "native_video_terminal_count_per_request": 1
+  },
+  "model": {
+    "file_count": 30,
+    "files": [
+      {
+        "bytes": 2137,
+        "path": ".gitattributes",
+        "sha256": "013304922f2005c37c14b192860653755b26326b2208093d427ce91cb4b2123a"
+      },
+      {
+        "bytes": 17633,
+        "path": "README.md",
+        "sha256": "b7120bb210ab14defe6cabd7ac4bf568d0f5fde42f88ea4ac3cfec9516dc2c0c"
+      },
+      {
+        "bytes": 202156,
+        "path": "assets/comp_effic.png",
+        "sha256": "75ee012dcfb08365bec67a3ec7afc126fc2817f79b9f80e38711792d4770e32b"
+      },
+      {
+        "bytes": 56322,
+        "path": "assets/logo.png",
+        "sha256": "96cddc0f667293436d0b9f92a299b6346b65b231d38ee49719a33d46c91fe1e3"
+      },
+      {
+        "bytes": 527914,
+        "path": "assets/moe_2.png",
+        "sha256": "4ea471ccb64349bd08bc9a78f336ae000e9ca3b40da9a652b8028b214a8c6093"
+      },
+      {
+        "bytes": 74900,
+        "path": "assets/moe_arch.png",
+        "sha256": "709510625af90bad3f9509c8c9bb6dc779576cd7f80b9bc95d75fe33f2755079"
+      },
+      {
+        "bytes": 306535,
+        "path": "assets/performance.png",
+        "sha256": "97ef99c13c8ae717a8a11c8d8ec927b69077c647cc6689755d08fc38e7fbb830"
+      },
+      {
+        "bytes": 165486,
+        "path": "assets/vae.png",
+        "sha256": "4aaea5e187f1c5908e15ade5bef24c9fb59882986bc3d2ad75f7fe820f3d772f"
+      },
+      {
+        "bytes": 74,
+        "path": "configuration.json",
+        "sha256": "944986533b1b698d0eaacce7c0fbcd981c94f4ad71ec72f26eb0f376ade7ec23"
+      },
+      {
+        "bytes": 250628,
+        "path": "examples/i2v_input.JPG",
+        "sha256": "077e3d965090c9028c69c00931675f42e1acc815c6eb450ab291b3b72d211a8e"
+      },
+      {
+        "bytes": 499,
+        "path": "model_index.json",
+        "sha256": "6a72faeb564b0e894aea8fc4ef27241106eb739e8584e869b61589a65473add7"
+      },
+      {
+        "bytes": 820,
+        "path": "scheduler/scheduler_config.json",
+        "sha256": "571a3eed68bcd943a61b9fea8efa9e141472216ada59f928c8b5128ce24b32e0"
+      },
+      {
+        "bytes": 855,
+        "path": "text_encoder/config.json",
+        "sha256": "a2bcb24699f6c009a2427432bdd483ef8b2b42a712abc9503759cdc77d171f07"
+      },
+      {
+        "bytes": 4935812536,
+        "path": "text_encoder/model-00001-of-00003.safetensors",
+        "sha256": "a8e861969c7433e707cc5a74065d795d36cca07ec96eb6763eb4083df7248f58"
+      },
+      {
+        "bytes": 4983103192,
+        "path": "text_encoder/model-00002-of-00003.safetensors",
+        "sha256": "d57d948ece4837d850b7a859a4415121d57cacf8b9ee1d4db200c67f592902d7"
+      },
+      {
+        "bytes": 1442935480,
+        "path": "text_encoder/model-00003-of-00003.safetensors",
+        "sha256": "0da9ee284e21d1406df708788db1d502d95d75f69faa25cd26151bf8829b7c5f"
+      },
+      {
+        "bytes": 22476,
+        "path": "text_encoder/model.safetensors.index.json",
+        "sha256": "31c4c7bcce679eaa0dd4667462394ddb013dc2f748e0bffc893dc9146a320dab"
+      },
+      {
+        "bytes": 7079,
+        "path": "tokenizer/special_tokens_map.json",
+        "sha256": "456b58fd240a06c743a7c2cf8008bec501240d68ebd1fc4018ea569505fea270"
+      },
+      {
+        "bytes": 4548313,
+        "path": "tokenizer/spiece.model",
+        "sha256": "e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458"
+      },
+      {
+        "bytes": 16837459,
+        "path": "tokenizer/tokenizer.json",
+        "sha256": "20a46ac256746594ed7e1e3ef733b83fbc5a6f0922aa7480eda961743de080ef"
+      },
+      {
+        "bytes": 61758,
+        "path": "tokenizer/tokenizer_config.json",
+        "sha256": "1d8d2a216bf8e70ac15b7ddcea566c4dd0433c024b39a58ca5e4c66bd78defbd"
+      },
+      {
+        "bytes": 495,
+        "path": "transformer/config.json",
+        "sha256": "dc00d9866e72cf77db6b531aaa33be4dc7148fef9338442bd0ae9181f7075e9b"
+      },
+      {
+        "bytes": 4978254344,
+        "path": "transformer/diffusion_pytorch_model-00001-of-00005.safetensors",
+        "sha256": "511bec832a201caa410d09c5ce7dbbf8ad2708c345d82038f684fc74cce982be"
+      },
+      {
+        "bytes": 4846784976,
+        "path": "transformer/diffusion_pytorch_model-00002-of-00005.safetensors",
+        "sha256": "7c42724912b1911429125dc50c0e9a49ccbada5a601b657d4ed2e15e7597c193"
+      },
+      {
+        "bytes": 4972658392,
+        "path": "transformer/diffusion_pytorch_model-00003-of-00005.safetensors",
+        "sha256": "e9c3d0c76de786566382f8258101fea973ae37681c6e9fe0e5fe1fb93b806424"
+      },
+      {
+        "bytes": 4846785080,
+        "path": "transformer/diffusion_pytorch_model-00004-of-00005.safetensors",
+        "sha256": "a331121771790939678db6f585553fd5184609f7d02593c699a4d241b0d834c5"
+      },
+      {
+        "bytes": 354751840,
+        "path": "transformer/diffusion_pytorch_model-00005-of-00005.safetensors",
+        "sha256": "78b655685c47efdb2349f36826bb101264e9f212a16325d584aeb5f53c88e719"
+      },
+      {
+        "bytes": 73297,
+        "path": "transformer/diffusion_pytorch_model.safetensors.index.json",
+        "sha256": "d6c1f72d86fbddef8fb5ef1c03f5b56b2bfdb6ae58032db98c6019fd1dae9021"
+      },
+      {
+        "bytes": 1701,
+        "path": "vae/config.json",
+        "sha256": "d996c340fe9a7df5d7371f76a7d8d6956f6c98256080074d8434fa5eeac11360"
+      },
+      {
+        "bytes": 2818777808,
+        "path": "vae/diffusion_pytorch_model.safetensors",
+        "sha256": "62cd18f19438e35b32ac63020e2852f566e9b02f46b6cdbd87972a356e3c6f4b"
+      }
+    ],
+    "id": "Wan2.2-TI2V-5B-Diffusers",
+    "revision": "UNKNOWN",
+    "root_name": "Wan2.2-TI2V-5B-Diffusers",
+    "tree_sha256": "990af3f115910af2d659a39c73bd9ea0fb727c6ad4ae6120181ddab9c2314f3a"
+  },
+  "official_base_commit": "ced4b145857e6d8d25e1fa56b2dd538ad2aa0e17",
+  "raw_evidence": {
+    "independent_verification_sha256": "ba5f9cd3fd52f267010b9e65cfc644fe28d14ed1e25a073d97ef2eb319aaf61d",
+    "location": "/tmp/umminfer-wan-cancel-67-8efa3ea-evidence/",
+    "retained_file_count": 268,
+    "sha256sums_sha256": "6de1446031f2e07bc272fb9a3fb332eb5a11d33db07e3acefee0515c5403df1f"
+  },
+  "runtime": {
+    "msgpack": "1.2.4",
+    "python": "3.12.3",
+    "pyzmq": "27.1.0"
+  },
+  "runtime_fix_commit": "c88e71c4d07343e2a77026139b59104ea5274bde",
+  "source_identities": [
+    {
+      "bytes": 8697,
+      "path": "native/stage_cli/main.cpp",
+      "sha256": "063292c868b7dedeb8fb326570f7d7ce6f554c2400129cb0286cb0cf747a0bc9"
+    },
+    {
+      "bytes": 33531,
+      "path": "native/stage_cli/stage_common.cpp",
+      "sha256": "940805c1b0303db939b3370bde17883a985b99a9893eecab9c42708680fc7de9"
+    },
+    {
+      "bytes": 11122,
+      "path": "native/stage_cli/stage_common.hpp",
+      "sha256": "a61261bb10b3bf3d8b11d05a153ea6371410dfca15850ebbd8aa8533ed988211"
+    },
+    {
+      "bytes": 6397,
+      "path": "native/stage_cli/video_stage.cpp",
+      "sha256": "0f48268e16e8b14ef67710ac14552baa4b3084d2d45cbb9153af3c0adcbea5d5"
+    },
+    {
+      "bytes": 2471,
+      "path": "native/video/CMakeLists.txt",
+      "sha256": "f3d52ae04e01cf4cb3a1fdd72c00b18e1374d6843f6a8622017da59c026f7bc0"
+    },
+    {
+      "bytes": 9524,
+      "path": "native/video/config.cpp",
+      "sha256": "46f3e87f01b82b4e6776cb4c16e38fc259c452a8cdb60ddbb89a8d2ff80ed5cd"
+    },
+    {
+      "bytes": 2468,
+      "path": "native/video/config.hpp",
+      "sha256": "571439702bf55fd28f8bb84b8d95dd2bd4aea0fe2967bc87ce29cb8fbe0289db"
+    },
+    {
+      "bytes": 5133,
+      "path": "native/video/cuda_kernels.cu",
+      "sha256": "209ae1bd1fffb9580844ad9da934f396401b6e80292ffcd205e2907a9ae52d49"
+    },
+    {
+      "bytes": 1614,
+      "path": "native/video/cuda_kernels.hpp",
+      "sha256": "121bcfa631db2da62a2b834b3966e30cfc644b06b1db7072eebd73dbf40a63d7"
+    },
+    {
+      "bytes": 32899,
+      "path": "native/video/engine.cpp",
+      "sha256": "f369e7566b0ffddad4b851a37a878f35c40858929b0622de10f0f7a228c9e475"
+    },
+    {
+      "bytes": 4060,
+      "path": "native/video/engine.hpp",
+      "sha256": "6daa71ed12d5f8f1a816ac49113a7a0e01b1b90c548e9c741b7dfffa26934283"
+    },
+    {
+      "bytes": 7676,
+      "path": "native/video/mp4_encoder.cpp",
+      "sha256": "348cdb3232e3a23f8534cc72878d07dff61c33345d9049c2c283721943222e8b"
+    },
+    {
+      "bytes": 1124,
+      "path": "native/video/mp4_encoder.hpp",
+      "sha256": "cbed84ae23a3f0c585523aceaaad517fb544d99bc6cdddbedd7a06244190bda6"
+    },
+    {
+      "bytes": 10426,
+      "path": "native/video/safetensors_mmap.cpp",
+      "sha256": "e2b4909469dc551b52566d80d471ea06980df67d205cf7865351ab113101ecb5"
+    },
+    {
+      "bytes": 1957,
+      "path": "native/video/safetensors_mmap.hpp",
+      "sha256": "770d11407fbe0d8b1c6bcc179f9b63b0f96f4ad33a8be324cecd6b0cb67b24fe"
+    },
+    {
+      "bytes": 7842,
+      "path": "native/video/scheduler.cpp",
+      "sha256": "e50913c27412b4498bb136bd510036cbc7781a6e5a698c5216ab9f1d4df02ef2"
+    },
+    {
+      "bytes": 3295,
+      "path": "native/video/scheduler.hpp",
+      "sha256": "1c772ba198f41cb6f0c4fe7e70030d0b9f8bf3207e75a9d06d2b70c6bf83f19a"
+    },
+    {
+      "bytes": 1732,
+      "path": "native/video/umt5_encoder.cpp",
+      "sha256": "bd7e62c0536fbccbbf2fe2eac7dd50180a94a8a778dae1f2a7b075409c4ab7fc"
+    },
+    {
+      "bytes": 1080,
+      "path": "native/video/umt5_encoder.hpp",
+      "sha256": "4e4c23b930cfff1af2a48bbc27f85c437c755c8b7e48db34461954c980a2d08d"
+    },
+    {
+      "bytes": 23466,
+      "path": "native/video/umt5_kernels.cu",
+      "sha256": "cf306b9cafc82e486071d1aca21c946584a903d551d934d4ae2c2f9ab3e8b285"
+    },
+    {
+      "bytes": 12303,
+      "path": "native/video/umt5_tokenizer.cpp",
+      "sha256": "528fd2646a6dd887aa83e996ef76fd686f535edbba1e3266a2c61edf8c48ce84"
+    },
+    {
+      "bytes": 1244,
+      "path": "native/video/umt5_tokenizer.hpp",
+      "sha256": "6b16e31ac0b7e90fcae4b16a948bae9b12e66372770aee25c291068b6c884193"
+    },
+    {
+      "bytes": 17604,
+      "path": "native/video/wan_dit.cpp",
+      "sha256": "5de35075a0ddedd6328967118998aeb04b7f9c8eedf98fd0d0de2dee26973b08"
+    },
+    {
+      "bytes": 17284,
+      "path": "native/video/wan_dit.hpp",
+      "sha256": "bd5bafa95b481a3872b89de4dd1310ded2824826df6d43756f19336c9dcecfff"
+    },
+    {
+      "bytes": 114452,
+      "path": "native/video/wan_dit_kernels.cu",
+      "sha256": "3950ea8ca86534f572ca7bb38a16e940b5d829f16cc3727b621e94409e2a5585"
+    },
+    {
+      "bytes": 3051,
+      "path": "native/video/wan_vae.cpp",
+      "sha256": "3c43bcfc10ea18fa27506e9b1852400d554ba2e5f434cb6d0c23035fb8ba29cf"
+    },
+    {
+      "bytes": 15434,
+      "path": "native/video/wan_vae.hpp",
+      "sha256": "a8673700da64fa9a1824beef29594442ad8a8e822daf2c9c0b4940fc4dc4ce31"
+    },
+    {
+      "bytes": 119092,
+      "path": "native/video/wan_vae_kernels.cu",
+      "sha256": "f3300a2204027f0df2ab5d6f5202fdbdbce64be179c1b18782d53a348cad1cee"
+    },
+    {
+      "bytes": 39375,
+      "path": "src/comm/comm.cpp",
+      "sha256": "f6add0677457e3d72ab0ccf9d929152981322e280157b6aa51a76328c1888fc8"
+    },
+    {
+      "bytes": 43306,
+      "path": "src/pipeline/pipeline.cpp",
+      "sha256": "a8e185031f0c239b3c781a623bd41200f9ff42c7e19b87ac77570756b49a29b2"
+    },
+    {
+      "bytes": 14335,
+      "path": "src/scheduling/simple_scheduler.cpp",
+      "sha256": "fbd9a3a000eef57a877b325cdde20a03fe53dac8330fd13e5cf96d83aa435826"
+    },
+    {
+      "bytes": 51832,
+      "path": "tests/native_wan_cancel_fault_live.py",
+      "sha256": "6bf180fa437a8fcea65708024bdfbd126e728236b1bcf0083e5501620de8f725"
+    },
+    {
+      "bytes": 30220,
+      "path": "tests/native_wan_cancel_fault_verify.py",
+      "sha256": "a1a664294ec99435865f9782d3aec30efb9cc078a584a129bd8dd66a86634d98"
+    }
+  ],
+  "status": "CONTROLLED_LIVE_PASS"
+}

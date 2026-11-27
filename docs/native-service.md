@@ -56,6 +56,22 @@ result changes no resident process or deployment claim. See
 [hash-only evidence](evidence/public-narrative-i2v-sm90.json). Perceptual
 quality and generalized performance remain unverified.
 
+### Task #67 isolated real Wan cancellation/fault gate (not deployed)
+
+Execution `8efa3ea` used only idle physical GPU 7 and passed one real control,
+four cancellation windows (queued, denoise step 4/20, MP4 emission, and
+post-terminal), one native invalid-size rejection, and four exact-hash recovery
+requests. Six valid MP4s share SHA-256 `b1a4d7d1…7c21`; the bounded partial MP4
+is 262,192 bytes with SHA-256 `02a1bff9…615a`. Raw native records exposed two
+PUSH/PUB abort terminals for one video request, fixed by bounded per-Stage/request
+terminal deduplication with a deterministic 6→1 red/green regression. Public
+acknowledgment is not immediate CUDA preemption: denoise cooperative exit was
+432.578–433.578 ms after abort send. VAE-interior cancellation remains `NOT_RUN`.
+All native terminals, raw messages, timing intervals, process/GPU ownership,
+268 checksums, and fresh remote/local verification are recorded in
+[native-wan-cancel-fault.md](native-wan-cancel-fault.md). The resident service
+was untouched and no deployment is claimed.
+
 Stages talk to the server over ZeroMQ and MessagePack, with payloads in POSIX
 shared memory. Endpoints live under `ipc_dir` (`/tmp/umminfer-native-ipc` by
 default): `asr`, `qwen38` (or `omni`), `image`, `tts`, `video`, plus the shared

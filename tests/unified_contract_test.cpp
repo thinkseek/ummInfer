@@ -8330,6 +8330,99 @@ void test_stage_submit_fallback_and_failure_completion() {
   aborts.close();
 }
 
+// The reliable PUSH and low-latency PUB abort channels can both deliver the
+// same request id. A Stage must emit one native abort terminal and remain
+// usable; the Coordinator's stale-event filtering is not a substitute.
+void test_stage_dual_channel_abort_emits_one_terminal() {
+  IpcDir dir = IpcDir::create("stagedualabort");
+  PubSocket aborts(dir.endpoint("abort"));
+  aborts.bind();
+  PullSocket completions(dir.endpoint("done"), /*bind=*/true);
+  completions.start();
+  std::promise<void> entered;
+  auto entered_future = entered.get_future();
+  CancellableComputeFn compute = [&](const Value& input, const AbortCheck& abort) {
+    if (input.as_str() == "block") {
+      entered.set_value();
+      while (!abort || !abort()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      throw RequestAborted("deterministic dual-channel abort");
+    }
+    return input;
+  };
+  Stage::Config config;
+  config.name = "video";
+  config.recv_endpoint = dir.endpoint("video");
+  config.coordinator_endpoint = dir.endpoint("done");
+  config.abort_endpoint = dir.endpoint("abort");
+  Stage stage(config, std::move(compute));
+  std::thread stage_thread([&] { stage.run(); });
+  PushSocket controls(config.recv_endpoint);
+  controls.connect();
+  auto submit = [&](const std::string& id, const std::string& input) {
+    StagePayload payload;
+    payload.request_id = id;
+    payload.request.inputs = Value(input);
+    SubmitMessage message;
+    message.request_id = id;
+    message.data = payload.to_value();
+    controls.send(Message{message});
+  };
+  submit("dual-abort", "block");
+  check(entered_future.wait_for(kStateWait) == std::future_status::ready,
+        "cancellable Stage request did not enter compute");
+  // Let the SUB subscription propagate, then exercise both channels repeatedly.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  for (int index = 0; index < 3; ++index) {
+    controls.send(Message{AbortMessage{"dual-abort"}});
+    aborts.publish(AbortMessage{"dual-abort"});
+  }
+
+  std::vector<CompleteMessage> done;
+  auto receive_until = [&](const std::string& id) {
+    const auto deadline = std::chrono::steady_clock::now() + kStateWait;
+    while (std::chrono::steady_clock::now() < deadline) {
+      auto message = completions.recv_timeout(50);
+      if (!message) continue;
+      if (auto* complete = std::get_if<CompleteMessage>(&*message)) {
+        done.push_back(*complete);
+        if (complete->request_id == id) return;
+      }
+    }
+    check(false, ("Stage did not settle " + id).c_str());
+  };
+  receive_until("dual-abort");
+  submit("abort-recovery", "recovered");
+  receive_until("abort-recovery");
+  // Drain delayed PUB deliveries before asserting the raw terminal count.
+  const auto quiet_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+  while (std::chrono::steady_clock::now() < quiet_deadline) {
+    auto message = completions.recv_timeout(20);
+    if (message && std::holds_alternative<CompleteMessage>(*message)) {
+      done.push_back(std::get<CompleteMessage>(*message));
+    }
+  }
+  stage.stop();
+  stage_thread.join();
+  controls.close();
+  completions.close();
+  aborts.close();
+
+  const size_t abort_terminals = static_cast<size_t>(std::count_if(
+      done.begin(), done.end(), [](const CompleteMessage& complete) {
+        return complete.request_id == "dual-abort" && !complete.success;
+      }));
+  check(abort_terminals == 1,
+        ("dual-channel abort emitted " + std::to_string(abort_terminals) +
+         " native terminals instead of one").c_str());
+  const auto recovery = std::find_if(
+      done.begin(), done.end(), [](const CompleteMessage& complete) {
+        return complete.request_id == "abort-recovery";
+      });
+  check(recovery != done.end() && recovery->success &&
+            recovery->result.as_str() == "recovered",
+        "Stage was not usable after duplicate abort delivery");
+}
+
 // A running Stage re-registers with a brand-new Coordinator on the same IPC
 // endpoints through its periodic stage_ready heartbeat. The gateway (~10 MB)
 // restarts; the stage, which in production holds 120+ GiB of GPU weights, keeps
@@ -13958,6 +14051,7 @@ int main() {
   RUN(test_echo_robust_vad_echo_and_double_talk());
   RUN(test_echo_robust_vad_delay_bounds_and_session_isolation());
   RUN(test_stage_submit_fallback_and_failure_completion());
+  RUN(test_stage_dual_channel_abort_emits_one_terminal());
   RUN(test_stage_heartbeat_reregisters_after_coordinator_restart());
   RUN(test_upstream_media_proxy_routes());
   RUN(test_unified_metrics_cancel_race_and_release_gauge());

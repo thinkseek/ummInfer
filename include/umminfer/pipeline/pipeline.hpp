@@ -100,6 +100,9 @@ class Stage {
   void pump_outbox();
   void fail_request(const std::string& request_id, const std::string& error,
                     Value telemetry_result = {});
+  // PUSH and PUB can both deliver one abort. Keep one bounded-lifetime terminal
+  // tombstone per request so the native protocol also has one terminal outcome.
+  void abort_request(const std::string& request_id);
   void send_failure_ack(const DataReadyMessage& msg, const std::string& object_id,
                         const std::string& error);
   // Drops one pending entry and settles its operation. Never throws.
@@ -122,6 +125,8 @@ class Stage {
 
   std::map<std::string, OmniRequest> requests_;
   std::mutex requests_mu_;
+  std::map<std::string, std::chrono::steady_clock::time_point>
+      abort_terminal_expiries_;
 
   std::map<std::string, PendingTransfer> pending_ops_;
   std::mutex pending_mu_;
