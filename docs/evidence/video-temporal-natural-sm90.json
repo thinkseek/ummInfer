@@ -1,0 +1,5495 @@
+{
+  "schema_version": 1,
+  "experiment": "qwen38_temporal_natural_quality_v1",
+  "fixture_revision": "temporal-natural-r2",
+  "execution": {
+    "official_main_at_launch": "6e32233f06b8d73677806e6bba0e3ab76a0b12eb",
+    "source_commit": "01885029e4dd43e2035483b9a5dd33b9423a4240",
+    "source_state_sha256": "ddcf8d9a794661cdcf652788939709919b409ac630fd3d4a73fde0f348c6ae2d",
+    "native_or_src_runtime_diff_files": [],
+    "physical_gpu": 1,
+    "sequential_stacks": [
+      "serial",
+      "batch4"
+    ],
+    "resident_service_or_other_devices_used": false
+  },
+  "source": {
+    "schema_version": 1,
+    "fixture_revision": "temporal-natural-r2",
+    "frozen_before_any_model_output_for_this_revision": true,
+    "model_outputs_seen_for_this_revision_at_freeze": false,
+    "prior_excluded_natural_outputs_seen_at_freeze": true,
+    "prior_excluded_attempt": "format-duration-r1",
+    "preregistration_sha256": "bec705e56732adab907731da53c139ff953ff184fe0b66df1fb43801ba11e7e2",
+    "manifest_sha256": "10a7a68244be10ce38565e6ae4f7e97b23a83f1717ea083728e51d4ca44204db",
+    "sha256sums_sha256": "be929f176f7d67fb7fe5764e8880b72e7f1dda6c02f6a5ea36633ad91d069eaa",
+    "quality_case_ids": [
+      "natural-01",
+      "natural-02",
+      "natural-03",
+      "natural-04",
+      "natural-05",
+      "natural-06",
+      "natural-07",
+      "natural-08"
+    ],
+    "task66_control_scores_or_fixture_changed": false,
+    "original_commit": "a5d41d39ac6567da53a6ddbb2c4a4534bfdd9104",
+    "original_git_blob_sha1": "fa078dc543b273922dfc8c07e74f63306778a3ed",
+    "original_sha256": "81178f8af6c859d908cd6fa4a5348ed9bbe271c071a94a196ff2488c63f0db2e",
+    "license": "Apache-2.0, the covering repository license at the source commit; no per-asset exception is recorded",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "scope": "EIGHT_NONOVERLAPPING_EXCERPTS_OF_ONE_EXISTING_REAL_FOOTAGE_COMPILATION"
+  },
+  "videos": [
+    {
+      "video": "fixtures/natural-01.mp4",
+      "video_sha256": "22df061c95db2546973d2c4a7a9a74728b0dd1df05ba7c57bab6e2aefa8d7dd7",
+      "video_bytes": 92191,
+      "source_frame_range": [
+        0,
+        29
+      ],
+      "frame_count": 30,
+      "duration_seconds": 1.0,
+      "candidate_count": 30,
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      }
+    },
+    {
+      "video": "fixtures/natural-02.mp4",
+      "video_sha256": "95208b5e7f34271b149073083687e1f969a79d537c3af76bc1d00f282fc1fa58",
+      "video_bytes": 98378,
+      "source_frame_range": [
+        30,
+        59
+      ],
+      "frame_count": 30,
+      "duration_seconds": 1.0,
+      "candidate_count": 30,
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      }
+    },
+    {
+      "video": "fixtures/natural-03.mp4",
+      "video_sha256": "6b3d7ef01d61df8a6995262b3658f0397b79988786f5c03f5d9c8ce0beefac48",
+      "video_bytes": 43435,
+      "source_frame_range": [
+        75,
+        94
+      ],
+      "frame_count": 20,
+      "duration_seconds": 0.666667,
+      "candidate_count": 20,
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      }
+    },
+    {
+      "video": "fixtures/natural-04.mp4",
+      "video_sha256": "86ab1f14ebff6fb8f4825c47c0ac43c1e2619854421de6a8a850d6ea83841015",
+      "video_bytes": 45552,
+      "source_frame_range": [
+        95,
+        114
+      ],
+      "frame_count": 20,
+      "duration_seconds": 0.666667,
+      "candidate_count": 20,
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      }
+    },
+    {
+      "video": "fixtures/natural-05.mp4",
+      "video_sha256": "794e5cd3b7b559b37f0cb6f5fc9083bd21cf4a01cd2be05a627778932f75e9b0",
+      "video_bytes": 40084,
+      "source_frame_range": [
+        115,
+        134
+      ],
+      "frame_count": 20,
+      "duration_seconds": 0.666667,
+      "candidate_count": 20,
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      }
+    },
+    {
+      "video": "fixtures/natural-06.mp4",
+      "video_sha256": "1e342f8ba8d5fabf1a815e0aa64439217da5ed0a446f350d6c0e2ec978dd0c52",
+      "video_bytes": 18411,
+      "source_frame_range": [
+        150,
+        164
+      ],
+      "frame_count": 15,
+      "duration_seconds": 0.5,
+      "candidate_count": 15,
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      }
+    },
+    {
+      "video": "fixtures/natural-07.mp4",
+      "video_sha256": "dc14c71304aeb6a1cc5e5f086b50b666cb4198b7fbcd35fe41879e332e0028b8",
+      "video_bytes": 18408,
+      "source_frame_range": [
+        165,
+        179
+      ],
+      "frame_count": 15,
+      "duration_seconds": 0.5,
+      "candidate_count": 15,
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      }
+    },
+    {
+      "video": "fixtures/natural-08.mp4",
+      "video_sha256": "cce6f3402a97a96e2ec66b9c8ebbb7b29c9e366d3198a2a4925248cc80de2b90",
+      "video_bytes": 18948,
+      "source_frame_range": [
+        180,
+        194
+      ],
+      "frame_count": 15,
+      "duration_seconds": 0.5,
+      "candidate_count": 15,
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      }
+    }
+  ],
+  "requests": {
+    "accepted": 320,
+    "warmup": 80,
+    "measured": 240,
+    "completed": 320,
+    "native_valid": 320,
+    "cold_prefixes": 320,
+    "parity_checks": 304,
+    "all_parity_passed": true,
+    "default_uniform8_byte_identical": true,
+    "temporal_first_last_anchors_passed": true,
+    "temporal2_mrope_consistency_passed": true
+  },
+  "provenances": {
+    "serial": {
+      "schema_version": 1,
+      "stack_id": "task72-serial-r2",
+      "stack_run_id": "task72-serial-r2",
+      "source_commit": "01885029e4dd43e2035483b9a5dd33b9423a4240",
+      "source_state_sha256": "ddcf8d9a794661cdcf652788939709919b409ac630fd3d4a73fde0f348c6ae2d",
+      "physical_gpu": 1,
+      "batch_size": 1,
+      "qwen38_prefix_cache": "disabled",
+      "max_residual_memory_mib": 80000,
+      "gateway": {
+        "pid": 4152733,
+        "sha256": "ffe97f3f10d22c57b4148df1ccc39b1a772588238b7450b2a5ccf1128ab4f455"
+      },
+      "native_stage": {
+        "pid": 4152734,
+        "compute_pid": 3714541,
+        "compute_used_mib": 55606,
+        "sha256": "9b9d7dbf0677726ca2d276be01ec2114e8b4b67717dcdb7a3c50671260116f0e"
+      },
+      "model": {
+        "id": "qwen3-native",
+        "revision": "UNKNOWN_LOCAL_NO_GIT",
+        "files": {
+          "chat_template.jinja": "af16f654968d47d09a6c604e00370b12dbc21f76456f59c9e98b82e84d9f6375",
+          "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+          "crc32.txt": "b42dd291f5f98b05807e458f5b47849969a9b3326acbf0c97d28b05826740b83",
+          "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+          "merges.txt": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d",
+          "model-00001-of-00018.safetensors": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+          "model-00002-of-00018.safetensors": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+          "model-00003-of-00018.safetensors": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+          "model-00004-of-00018.safetensors": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+          "model-00005-of-00018.safetensors": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+          "model-00006-of-00018.safetensors": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+          "model-00007-of-00018.safetensors": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+          "model-00008-of-00018.safetensors": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+          "model-00009-of-00018.safetensors": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+          "model-00010-of-00018.safetensors": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+          "model-00011-of-00018.safetensors": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+          "model-00012-of-00018.safetensors": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+          "model-00013-of-00018.safetensors": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+          "model-00014-of-00018.safetensors": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+          "model-00015-of-00018.safetensors": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+          "model-00016-of-00018.safetensors": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+          "model-00017-of-00018.safetensors": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+          "model-00018-of-00018.safetensors": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+          "model.safetensors.index.json": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df",
+          "preprocessor_config.json": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+          "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+          "tokenizer_config.json": "207c03c41a06a9c3b0cc527d8a56115159c1eac6b59a4ffae85b646e773d074e",
+          "video_preprocessor_config.json": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+          "vocab.json": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+        }
+      }
+    },
+    "batch4": {
+      "schema_version": 1,
+      "stack_id": "task72-batch4-r2",
+      "stack_run_id": "task72-batch4-r2",
+      "source_commit": "01885029e4dd43e2035483b9a5dd33b9423a4240",
+      "source_state_sha256": "ddcf8d9a794661cdcf652788939709919b409ac630fd3d4a73fde0f348c6ae2d",
+      "physical_gpu": 1,
+      "batch_size": 4,
+      "qwen38_prefix_cache": "disabled",
+      "max_residual_memory_mib": 80000,
+      "gateway": {
+        "pid": 4173230,
+        "sha256": "ffe97f3f10d22c57b4148df1ccc39b1a772588238b7450b2a5ccf1128ab4f455"
+      },
+      "native_stage": {
+        "pid": 4173231,
+        "compute_pid": 3751613,
+        "compute_used_mib": 57732,
+        "sha256": "9b9d7dbf0677726ca2d276be01ec2114e8b4b67717dcdb7a3c50671260116f0e"
+      },
+      "model": {
+        "id": "qwen3-native",
+        "revision": "UNKNOWN_LOCAL_NO_GIT",
+        "files": {
+          "chat_template.jinja": "af16f654968d47d09a6c604e00370b12dbc21f76456f59c9e98b82e84d9f6375",
+          "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+          "crc32.txt": "b42dd291f5f98b05807e458f5b47849969a9b3326acbf0c97d28b05826740b83",
+          "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+          "merges.txt": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d",
+          "model-00001-of-00018.safetensors": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+          "model-00002-of-00018.safetensors": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+          "model-00003-of-00018.safetensors": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+          "model-00004-of-00018.safetensors": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+          "model-00005-of-00018.safetensors": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+          "model-00006-of-00018.safetensors": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+          "model-00007-of-00018.safetensors": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+          "model-00008-of-00018.safetensors": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+          "model-00009-of-00018.safetensors": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+          "model-00010-of-00018.safetensors": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+          "model-00011-of-00018.safetensors": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+          "model-00012-of-00018.safetensors": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+          "model-00013-of-00018.safetensors": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+          "model-00014-of-00018.safetensors": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+          "model-00015-of-00018.safetensors": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+          "model-00016-of-00018.safetensors": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+          "model-00017-of-00018.safetensors": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+          "model-00018-of-00018.safetensors": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+          "model.safetensors.index.json": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df",
+          "preprocessor_config.json": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+          "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+          "tokenizer_config.json": "207c03c41a06a9c3b0cc527d8a56115159c1eac6b59a4ffae85b646e773d074e",
+          "video_preprocessor_config.json": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+          "vocab.json": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+        }
+      }
+    }
+  },
+  "analysis_source_sha256": {
+    "python/umminfer_temporal_natural_fixture.py": "82e6944c23453717e8ed59da9cf808e476138ec3671859223f03611ebccac402",
+    "tests/temporal_natural_live.py": "ad197e7533bd5bc6ddbc74b26226ad699eb2f1a607992b17e8ce0b21808bc15d",
+    "tests/temporal_natural_test.py": "16e1bebead5c8ebf44a0db86b78e1b2a1c102b8141afeaf9998898b9b15c2d90",
+    "tests/temporal_natural_verify.py": "1740e52067ca1b22f65612c4d128193e0d8be05d076706b3f9c467e041d1fb7a"
+  },
+  "analysis": {
+    "quality": {
+      "default-8": {
+        "hits": 42,
+        "total": 48,
+        "misses": 6,
+        "accuracy": 0.875,
+        "wilson_95": [
+          0.7529954171361317,
+          0.9414294856142802
+        ]
+      },
+      "uniform-4": {
+        "hits": 48,
+        "total": 48,
+        "misses": 0,
+        "accuracy": 1.0,
+        "wilson_95": [
+          0.9258998703338824,
+          0.9999999999999999
+        ]
+      },
+      "uniform-8": {
+        "hits": 42,
+        "total": 48,
+        "misses": 6,
+        "accuracy": 0.875,
+        "wilson_95": [
+          0.7529954171361317,
+          0.9414294856142802
+        ]
+      },
+      "temporal-4": {
+        "hits": 48,
+        "total": 48,
+        "misses": 0,
+        "accuracy": 1.0,
+        "wilson_95": [
+          0.9258998703338824,
+          0.9999999999999999
+        ]
+      },
+      "temporal-8": {
+        "hits": 42,
+        "total": 48,
+        "misses": 6,
+        "accuracy": 0.875,
+        "wilson_95": [
+          0.7529954171361317,
+          0.9414294856142802
+        ]
+      }
+    },
+    "comparisons": {
+      "primary_temporal8_vs_uniform8": {
+        "baseline": "uniform-8",
+        "candidate": "temporal-8",
+        "paired_case_mode_count": 16,
+        "improved_pairs": 0,
+        "worsened_pairs": 0,
+        "unchanged_pairs": 16,
+        "exact_two_sided_sign_test_p": 1.0,
+        "case_mode_pairs": [
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ],
+            "candidate_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ]
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ],
+            "candidate_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ]
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ],
+            "candidate_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ]
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ],
+            "candidate_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ]
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ],
+            "candidate_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ]
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ],
+            "candidate_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ]
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ],
+            "candidate_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ]
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ],
+            "candidate_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ]
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ],
+            "candidate_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ]
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ],
+            "candidate_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ]
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ],
+            "candidate_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ]
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ],
+            "candidate_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ]
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "baseline_hits": 0,
+            "candidate_hits": 0,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pappina",
+              "Pappina",
+              "Pappina"
+            ],
+            "candidate_answers": [
+              "Pappina",
+              "Pappina",
+              "Pappina"
+            ]
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "baseline_hits": 0,
+            "candidate_hits": 0,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pappina",
+              "Pappina",
+              "Pappina"
+            ],
+            "candidate_answers": [
+              "Pappina",
+              "Pappina",
+              "Pappina"
+            ]
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ],
+            "candidate_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ]
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ],
+            "candidate_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ]
+          }
+        ],
+        "repetition_transition_counts": {
+          "hit_to_hit": 42,
+          "hit_to_miss": 0,
+          "miss_to_hit": 0,
+          "miss_to_miss": 6
+        },
+        "repetition_transitions": [
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-99",
+            "candidate_request_id": "http-91"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-123",
+            "candidate_request_id": "http-116"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-155",
+            "candidate_request_id": "http-147"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-97",
+            "candidate_request_id": "http-89"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-121",
+            "candidate_request_id": "http-113"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-153",
+            "candidate_request_id": "http-145"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-100",
+            "candidate_request_id": "http-92"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-124",
+            "candidate_request_id": "http-115"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-156",
+            "candidate_request_id": "http-148"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-98",
+            "candidate_request_id": "http-90"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-122",
+            "candidate_request_id": "http-114"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-154",
+            "candidate_request_id": "http-146"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-97",
+            "candidate_request_id": "http-90"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-121",
+            "candidate_request_id": "http-113"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-154",
+            "candidate_request_id": "http-145"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-99",
+            "candidate_request_id": "http-91"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-123",
+            "candidate_request_id": "http-115"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-155",
+            "candidate_request_id": "http-147"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-98",
+            "candidate_request_id": "http-89"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-122",
+            "candidate_request_id": "http-114"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-153",
+            "candidate_request_id": "http-146"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-100",
+            "candidate_request_id": "http-92"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-124",
+            "candidate_request_id": "http-116"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-156",
+            "candidate_request_id": "http-148"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-103",
+            "candidate_request_id": "http-94"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-127",
+            "candidate_request_id": "http-118"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-159",
+            "candidate_request_id": "http-150"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-101",
+            "candidate_request_id": "http-93"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-125",
+            "candidate_request_id": "http-117"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-157",
+            "candidate_request_id": "http-149"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-101",
+            "candidate_request_id": "http-95"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-125",
+            "candidate_request_id": "http-117"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-158",
+            "candidate_request_id": "http-149"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-102",
+            "candidate_request_id": "http-94"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-126",
+            "candidate_request_id": "http-118"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-158",
+            "candidate_request_id": "http-150"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-102",
+            "candidate_request_id": "http-93"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-126",
+            "candidate_request_id": "http-119"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-157",
+            "candidate_request_id": "http-151"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-103",
+            "candidate_request_id": "http-95"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-127",
+            "candidate_request_id": "http-119"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-159",
+            "candidate_request_id": "http-151"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-104",
+            "candidate_request_id": "http-96"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-128",
+            "candidate_request_id": "http-120"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-160",
+            "candidate_request_id": "http-152"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-104",
+            "candidate_request_id": "http-96"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-128",
+            "candidate_request_id": "http-120"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-160",
+            "candidate_request_id": "http-152"
+          }
+        ]
+      },
+      "diagnostic_temporal4_vs_uniform4": {
+        "baseline": "uniform-4",
+        "candidate": "temporal-4",
+        "paired_case_mode_count": 16,
+        "improved_pairs": 0,
+        "worsened_pairs": 0,
+        "unchanged_pairs": 16,
+        "exact_two_sided_sign_test_p": 1.0,
+        "case_mode_pairs": [
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ],
+            "candidate_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ]
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ],
+            "candidate_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ]
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ],
+            "candidate_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ]
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ],
+            "candidate_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ]
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ],
+            "candidate_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ]
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ],
+            "candidate_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ]
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ],
+            "candidate_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ]
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ],
+            "candidate_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ]
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ],
+            "candidate_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ]
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ],
+            "candidate_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ]
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ],
+            "candidate_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ]
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ],
+            "candidate_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ]
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Dente di leone",
+              "Dente di leone",
+              "Dente di leone"
+            ],
+            "candidate_answers": [
+              "Dente di leone",
+              "Dente di leone",
+              "Dente di leone"
+            ]
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Dente di leone",
+              "Dente di leone",
+              "Dente di leone"
+            ],
+            "candidate_answers": [
+              "Dente di leone",
+              "Dente di leone",
+              "Dente di leone"
+            ]
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ],
+            "candidate_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ]
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ],
+            "candidate_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ]
+          }
+        ],
+        "repetition_transition_counts": {
+          "hit_to_hit": 48,
+          "hit_to_miss": 0,
+          "miss_to_hit": 0,
+          "miss_to_miss": 0
+        },
+        "repetition_transitions": [
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-27",
+            "candidate_request_id": "http-19"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-43",
+            "candidate_request_id": "http-36"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-59",
+            "candidate_request_id": "http-51"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-25",
+            "candidate_request_id": "http-17"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-41",
+            "candidate_request_id": "http-33"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-57",
+            "candidate_request_id": "http-49"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-28",
+            "candidate_request_id": "http-20"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-44",
+            "candidate_request_id": "http-35"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-60",
+            "candidate_request_id": "http-52"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-26",
+            "candidate_request_id": "http-18"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-42",
+            "candidate_request_id": "http-34"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-58",
+            "candidate_request_id": "http-50"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-25",
+            "candidate_request_id": "http-17"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-41",
+            "candidate_request_id": "http-33"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-57",
+            "candidate_request_id": "http-49"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-27",
+            "candidate_request_id": "http-19"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-43",
+            "candidate_request_id": "http-35"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-59",
+            "candidate_request_id": "http-51"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-26",
+            "candidate_request_id": "http-18"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-42",
+            "candidate_request_id": "http-34"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-58",
+            "candidate_request_id": "http-50"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-28",
+            "candidate_request_id": "http-20"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-44",
+            "candidate_request_id": "http-36"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-60",
+            "candidate_request_id": "http-52"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-31",
+            "candidate_request_id": "http-23"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-47",
+            "candidate_request_id": "http-38"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-63",
+            "candidate_request_id": "http-55"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-29",
+            "candidate_request_id": "http-21"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-45",
+            "candidate_request_id": "http-37"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-61",
+            "candidate_request_id": "http-53"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-29",
+            "candidate_request_id": "http-22"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-45",
+            "candidate_request_id": "http-37"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-61",
+            "candidate_request_id": "http-54"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-30",
+            "candidate_request_id": "http-22"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-46",
+            "candidate_request_id": "http-38"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-62",
+            "candidate_request_id": "http-54"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Dente di leone",
+            "candidate_answer": "Dente di leone",
+            "baseline_request_id": "http-30",
+            "candidate_request_id": "http-21"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Dente di leone",
+            "candidate_answer": "Dente di leone",
+            "baseline_request_id": "http-46",
+            "candidate_request_id": "http-39"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Dente di leone",
+            "candidate_answer": "Dente di leone",
+            "baseline_request_id": "http-62",
+            "candidate_request_id": "http-53"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Dente di leone",
+            "candidate_answer": "Dente di leone",
+            "baseline_request_id": "http-31",
+            "candidate_request_id": "http-23"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Dente di leone",
+            "candidate_answer": "Dente di leone",
+            "baseline_request_id": "http-47",
+            "candidate_request_id": "http-39"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Dente di leone",
+            "candidate_answer": "Dente di leone",
+            "baseline_request_id": "http-63",
+            "candidate_request_id": "http-55"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-32",
+            "candidate_request_id": "http-24"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-48",
+            "candidate_request_id": "http-40"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-64",
+            "candidate_request_id": "http-56"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-32",
+            "candidate_request_id": "http-24"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-48",
+            "candidate_request_id": "http-40"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-64",
+            "candidate_request_id": "http-56"
+          }
+        ]
+      },
+      "temporal8_vs_default8": {
+        "baseline": "default-8",
+        "candidate": "temporal-8",
+        "paired_case_mode_count": 16,
+        "improved_pairs": 0,
+        "worsened_pairs": 0,
+        "unchanged_pairs": 16,
+        "exact_two_sided_sign_test_p": 1.0,
+        "case_mode_pairs": [
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ],
+            "candidate_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ]
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ],
+            "candidate_answers": [
+              "trees",
+              "trees",
+              "trees"
+            ]
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ],
+            "candidate_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ]
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ],
+            "candidate_answers": [
+              "阳光",
+              "阳光",
+              "阳光"
+            ]
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ],
+            "candidate_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ]
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ],
+            "candidate_answers": [
+              "ballena",
+              "ballena",
+              "ballena"
+            ]
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ],
+            "candidate_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ]
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ],
+            "candidate_answers": [
+              "クジラ",
+              "クジラ",
+              "クジラ"
+            ]
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ],
+            "candidate_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ]
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ],
+            "candidate_answers": [
+              "Baleine",
+              "Baleine",
+              "Baleine"
+            ]
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ],
+            "candidate_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ]
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ],
+            "candidate_answers": [
+              "Pusteblume",
+              "Pusteblume",
+              "Pusteblume"
+            ]
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "baseline_hits": 0,
+            "candidate_hits": 0,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pappina",
+              "Pappina",
+              "Pappina"
+            ],
+            "candidate_answers": [
+              "Pappina",
+              "Pappina",
+              "Pappina"
+            ]
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "baseline_hits": 0,
+            "candidate_hits": 0,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "Pappina",
+              "Pappina",
+              "Pappina"
+            ],
+            "candidate_answers": [
+              "Pappina",
+              "Pappina",
+              "Pappina"
+            ]
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ],
+            "candidate_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ]
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "baseline_hits": 3,
+            "candidate_hits": 3,
+            "outcome": "unchanged",
+            "baseline_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ],
+            "candidate_answers": [
+              "sementes",
+              "sementes",
+              "sementes"
+            ]
+          }
+        ],
+        "repetition_transition_counts": {
+          "hit_to_hit": 42,
+          "hit_to_miss": 0,
+          "miss_to_hit": 0,
+          "miss_to_miss": 6
+        },
+        "repetition_transitions": [
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-107",
+            "candidate_request_id": "http-91"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-132",
+            "candidate_request_id": "http-116"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-140",
+            "candidate_request_id": "http-147"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-105",
+            "candidate_request_id": "http-89"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-129",
+            "candidate_request_id": "http-113"
+          },
+          {
+            "case_id": "natural-01",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "trees",
+            "candidate_answer": "trees",
+            "baseline_request_id": "http-137",
+            "candidate_request_id": "http-145"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-108",
+            "candidate_request_id": "http-92"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-131",
+            "candidate_request_id": "http-115"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-139",
+            "candidate_request_id": "http-148"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-106",
+            "candidate_request_id": "http-90"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-130",
+            "candidate_request_id": "http-114"
+          },
+          {
+            "case_id": "natural-02",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "阳光",
+            "candidate_answer": "阳光",
+            "baseline_request_id": "http-138",
+            "candidate_request_id": "http-146"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-105",
+            "candidate_request_id": "http-90"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-130",
+            "candidate_request_id": "http-113"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-137",
+            "candidate_request_id": "http-145"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-107",
+            "candidate_request_id": "http-91"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-131",
+            "candidate_request_id": "http-115"
+          },
+          {
+            "case_id": "natural-03",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "ballena",
+            "candidate_answer": "ballena",
+            "baseline_request_id": "http-139",
+            "candidate_request_id": "http-147"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-106",
+            "candidate_request_id": "http-89"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-129",
+            "candidate_request_id": "http-114"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-138",
+            "candidate_request_id": "http-146"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-108",
+            "candidate_request_id": "http-92"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-132",
+            "candidate_request_id": "http-116"
+          },
+          {
+            "case_id": "natural-04",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "クジラ",
+            "candidate_answer": "クジラ",
+            "baseline_request_id": "http-140",
+            "candidate_request_id": "http-148"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-111",
+            "candidate_request_id": "http-94"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-135",
+            "candidate_request_id": "http-118"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-142",
+            "candidate_request_id": "http-150"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-109",
+            "candidate_request_id": "http-93"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-133",
+            "candidate_request_id": "http-117"
+          },
+          {
+            "case_id": "natural-05",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Baleine",
+            "candidate_answer": "Baleine",
+            "baseline_request_id": "http-141",
+            "candidate_request_id": "http-149"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-109",
+            "candidate_request_id": "http-95"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-133",
+            "candidate_request_id": "http-117"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-141",
+            "candidate_request_id": "http-149"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-110",
+            "candidate_request_id": "http-94"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-134",
+            "candidate_request_id": "http-118"
+          },
+          {
+            "case_id": "natural-06",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "Pusteblume",
+            "candidate_answer": "Pusteblume",
+            "baseline_request_id": "http-142",
+            "candidate_request_id": "http-150"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-110",
+            "candidate_request_id": "http-93"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-134",
+            "candidate_request_id": "http-119"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-143",
+            "candidate_request_id": "http-151"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-111",
+            "candidate_request_id": "http-95"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-135",
+            "candidate_request_id": "http-119"
+          },
+          {
+            "case_id": "natural-07",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "miss_to_miss",
+            "baseline_answer": "Pappina",
+            "candidate_answer": "Pappina",
+            "baseline_request_id": "http-143",
+            "candidate_request_id": "http-151"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-112",
+            "candidate_request_id": "http-96"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-136",
+            "candidate_request_id": "http-120"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "batch4",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-144",
+            "candidate_request_id": "http-152"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 1,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-112",
+            "candidate_request_id": "http-96"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 2,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-136",
+            "candidate_request_id": "http-120"
+          },
+          {
+            "case_id": "natural-08",
+            "mode": "serial",
+            "repetition": 3,
+            "transition": "hit_to_hit",
+            "baseline_answer": "sementes",
+            "candidate_answer": "sementes",
+            "baseline_request_id": "http-144",
+            "candidate_request_id": "http-152"
+          }
+        ]
+      }
+    },
+    "per_case": {
+      "natural-01": {
+        "arms": {
+          "default-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-107",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-132",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-140",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-105",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-129",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-137",
+                "raw_answer": "trees",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-27",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-43",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-59",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-25",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-41",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-57",
+                "raw_answer": "trees",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-99",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-123",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-155",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-97",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-121",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-153",
+                "raw_answer": "trees",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-19",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-36",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-51",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-17",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-33",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-49",
+                "raw_answer": "trees",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-91",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-116",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-147",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-89",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-113",
+                "raw_answer": "trees",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-145",
+                "raw_answer": "trees",
+                "hit": true
+              }
+            ]
+          }
+        }
+      },
+      "natural-02": {
+        "arms": {
+          "default-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-108",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-131",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-139",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-106",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-130",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-138",
+                "raw_answer": "阳光",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-28",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-44",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-60",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-26",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-42",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-58",
+                "raw_answer": "阳光",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-100",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-124",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-156",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-98",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-122",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-154",
+                "raw_answer": "阳光",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-20",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-35",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-52",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-18",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-34",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-50",
+                "raw_answer": "阳光",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-92",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-115",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-148",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-90",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-114",
+                "raw_answer": "阳光",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-146",
+                "raw_answer": "阳光",
+                "hit": true
+              }
+            ]
+          }
+        }
+      },
+      "natural-03": {
+        "arms": {
+          "default-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-105",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-130",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-137",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-107",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-131",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-139",
+                "raw_answer": "ballena",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-25",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-41",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-57",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-27",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-43",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-59",
+                "raw_answer": "ballena",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-97",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-121",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-154",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-99",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-123",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-155",
+                "raw_answer": "ballena",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-17",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-33",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-49",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-19",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-35",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-51",
+                "raw_answer": "ballena",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-90",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-113",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-145",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-91",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-115",
+                "raw_answer": "ballena",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-147",
+                "raw_answer": "ballena",
+                "hit": true
+              }
+            ]
+          }
+        }
+      },
+      "natural-04": {
+        "arms": {
+          "default-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-106",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-129",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-138",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-108",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-132",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-140",
+                "raw_answer": "クジラ",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-26",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-42",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-58",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-28",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-44",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-60",
+                "raw_answer": "クジラ",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-98",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-122",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-153",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-100",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-124",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-156",
+                "raw_answer": "クジラ",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-18",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-34",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-50",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-20",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-36",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-52",
+                "raw_answer": "クジラ",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-89",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-114",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-146",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-92",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-116",
+                "raw_answer": "クジラ",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-148",
+                "raw_answer": "クジラ",
+                "hit": true
+              }
+            ]
+          }
+        }
+      },
+      "natural-05": {
+        "arms": {
+          "default-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-111",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-135",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-142",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-109",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-133",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-141",
+                "raw_answer": "Baleine",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-31",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-47",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-63",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-29",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-45",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-61",
+                "raw_answer": "Baleine",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-103",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-127",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-159",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-101",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-125",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-157",
+                "raw_answer": "Baleine",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-23",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-38",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-55",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-21",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-37",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-53",
+                "raw_answer": "Baleine",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-94",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-118",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-150",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-93",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-117",
+                "raw_answer": "Baleine",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-149",
+                "raw_answer": "Baleine",
+                "hit": true
+              }
+            ]
+          }
+        }
+      },
+      "natural-06": {
+        "arms": {
+          "default-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-109",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-133",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-141",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-110",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-134",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-142",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-29",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-45",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-61",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-30",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-46",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-62",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-101",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-125",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-158",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-102",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-126",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-158",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-22",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-37",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-54",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-22",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-38",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-54",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-95",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-117",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-149",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-94",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-118",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-150",
+                "raw_answer": "Pusteblume",
+                "hit": true
+              }
+            ]
+          }
+        }
+      },
+      "natural-07": {
+        "arms": {
+          "default-8": {
+            "hits": 0,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-110",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-134",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-143",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-111",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-135",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-143",
+                "raw_answer": "Pappina",
+                "hit": false
+              }
+            ]
+          },
+          "uniform-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-30",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-46",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-62",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-31",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-47",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-63",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-8": {
+            "hits": 0,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-102",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-126",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-157",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-103",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-127",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-159",
+                "raw_answer": "Pappina",
+                "hit": false
+              }
+            ]
+          },
+          "temporal-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-21",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-39",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-53",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-23",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-39",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-55",
+                "raw_answer": "Dente di leone",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-8": {
+            "hits": 0,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-93",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-119",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-151",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-95",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-119",
+                "raw_answer": "Pappina",
+                "hit": false
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-151",
+                "raw_answer": "Pappina",
+                "hit": false
+              }
+            ]
+          }
+        }
+      },
+      "natural-08": {
+        "arms": {
+          "default-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-112",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-136",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-144",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-112",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-136",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-144",
+                "raw_answer": "sementes",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-32",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-48",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-64",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-32",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-48",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-64",
+                "raw_answer": "sementes",
+                "hit": true
+              }
+            ]
+          },
+          "uniform-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-104",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-128",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-160",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-104",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-128",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-160",
+                "raw_answer": "sementes",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-4": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-24",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-40",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-56",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-24",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-40",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-56",
+                "raw_answer": "sementes",
+                "hit": true
+              }
+            ]
+          },
+          "temporal-8": {
+            "hits": 6,
+            "total": 6,
+            "answer_anchor_present": true,
+            "answers": [
+              {
+                "mode": "batch4",
+                "repetition": 1,
+                "request_id": "http-96",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 2,
+                "request_id": "http-120",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "batch4",
+                "repetition": 3,
+                "request_id": "http-152",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 1,
+                "request_id": "http-96",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 2,
+                "request_id": "http-120",
+                "raw_answer": "sementes",
+                "hit": true
+              },
+              {
+                "mode": "serial",
+                "repetition": 3,
+                "request_id": "http-152",
+                "raw_answer": "sementes",
+                "hit": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    "every_miss": [
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "default",
+        "budget": 8,
+        "repetition": 1,
+        "request_id": "http-110",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "default",
+        "budget": 8,
+        "repetition": 2,
+        "request_id": "http-134",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "default",
+        "budget": 8,
+        "repetition": 3,
+        "request_id": "http-143",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "temporal",
+        "budget": 8,
+        "repetition": 1,
+        "request_id": "http-93",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "temporal",
+        "budget": 8,
+        "repetition": 2,
+        "request_id": "http-119",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "temporal",
+        "budget": 8,
+        "repetition": 3,
+        "request_id": "http-151",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "uniform",
+        "budget": 8,
+        "repetition": 1,
+        "request_id": "http-102",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "uniform",
+        "budget": 8,
+        "repetition": 2,
+        "request_id": "http-126",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "batch4",
+        "arm": "uniform",
+        "budget": 8,
+        "repetition": 3,
+        "request_id": "http-157",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "default",
+        "budget": 8,
+        "repetition": 1,
+        "request_id": "http-111",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "default",
+        "budget": 8,
+        "repetition": 2,
+        "request_id": "http-135",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "default",
+        "budget": 8,
+        "repetition": 3,
+        "request_id": "http-143",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "temporal",
+        "budget": 8,
+        "repetition": 1,
+        "request_id": "http-95",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "temporal",
+        "budget": 8,
+        "repetition": 2,
+        "request_id": "http-119",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "temporal",
+        "budget": 8,
+        "repetition": 3,
+        "request_id": "http-151",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "uniform",
+        "budget": 8,
+        "repetition": 1,
+        "request_id": "http-103",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "uniform",
+        "budget": 8,
+        "repetition": 2,
+        "request_id": "http-127",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      },
+      {
+        "case_id": "natural-07",
+        "mode": "serial",
+        "arm": "uniform",
+        "budget": 8,
+        "repetition": 3,
+        "request_id": "http-159",
+        "raw_answer": "Pappina",
+        "answer_anchor_present": true
+      }
+    ],
+    "quality_regressions_retained": [],
+    "quality_regression_count": 0,
+    "runtime_change_in_response_to_answers": "FORBIDDEN_NONE_MADE"
+  },
+  "latency_summary": {
+    "serial/default-8": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.4770431444048882,
+        "p95_ms": 3.0395928770303726,
+        "min_ms": 0.848548486828804,
+        "max_ms": 3.113238140940666
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 433.00918117165565,
+        "p95_ms": 442.4758292734623,
+        "min_ms": 426.2954853475094,
+        "max_ms": 443.6872974038124
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 483.6021955125034,
+        "p95_ms": 506.1980336904526,
+        "min_ms": 449.202474206686,
+        "max_ms": 506.4672911539674
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 23.4,
+        "p95_ms": 23.7,
+        "min_ms": 23.2,
+        "max_ms": 23.7
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 286.35,
+        "p95_ms": 289.3,
+        "min_ms": 284.5,
+        "max_ms": 289.3
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 54.8,
+        "p95_ms": 73.3,
+        "min_ms": 18.3,
+        "max_ms": 73.3
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 481.0,
+        "p95_ms": 504,
+        "min_ms": 445,
+        "max_ms": 505
+      }
+    },
+    "serial/uniform-4": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.6452176496386528,
+        "p95_ms": 3.930310718715191,
+        "min_ms": 0.9516449645161629,
+        "max_ms": 4.4151293113827705
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 377.16243090108037,
+        "p95_ms": 438.2632030174136,
+        "min_ms": 303.85993514209986,
+        "max_ms": 438.7600012123585
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 431.52935337275267,
+        "p95_ms": 511.6775343194604,
+        "min_ms": 325.08653309196234,
+        "max_ms": 529.3241878971457
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 17.3,
+        "p95_ms": 17.4,
+        "min_ms": 17.1,
+        "max_ms": 17.4
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 219.6,
+        "p95_ms": 268.4,
+        "min_ms": 171.4,
+        "max_ms": 268.4
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 54.3,
+        "p95_ms": 90.8,
+        "min_ms": 18.1,
+        "max_ms": 90.9
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 427.5,
+        "p95_ms": 508,
+        "min_ms": 321,
+        "max_ms": 527
+      }
+    },
+    "serial/uniform-8": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.4781756326556206,
+        "p95_ms": 3.029691055417061,
+        "min_ms": 0.8575217798352242,
+        "max_ms": 3.0973246321082115
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 432.41321109235287,
+        "p95_ms": 437.8536008298397,
+        "min_ms": 427.2171426564455,
+        "max_ms": 439.54986426979303
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 485.8887488953769,
+        "p95_ms": 502.34564673155546,
+        "min_ms": 450.3719685599208,
+        "max_ms": 506.96729123592377
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 23.3,
+        "p95_ms": 23.5,
+        "min_ms": 23.1,
+        "max_ms": 23.6
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 286.45000000000005,
+        "p95_ms": 289.1,
+        "min_ms": 284.5,
+        "max_ms": 289.3
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 54.8,
+        "p95_ms": 73.2,
+        "min_ms": 18.3,
+        "max_ms": 73.2
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 483.5,
+        "p95_ms": 501,
+        "min_ms": 446,
+        "max_ms": 505
+      }
+    },
+    "serial/temporal-4": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.5812101773917675,
+        "p95_ms": 3.036040812730789,
+        "min_ms": 0.8814996108412743,
+        "max_ms": 3.0421894043684006
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 363.5712522082031,
+        "p95_ms": 415.54109286516905,
+        "min_ms": 310.1013842970133,
+        "max_ms": 510.13375632464886
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 418.5725459828973,
+        "p95_ms": 501.6909670084715,
+        "min_ms": 332.00709987431765,
+        "max_ms": 564.5465347915888
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 17.2,
+        "p95_ms": 17.3,
+        "min_ms": 17.0,
+        "max_ms": 17.3
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 219.45,
+        "p95_ms": 268.2,
+        "min_ms": 171.4,
+        "max_ms": 268.9
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 54.3,
+        "p95_ms": 90.7,
+        "min_ms": 18.1,
+        "max_ms": 90.9
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 416.0,
+        "p95_ms": 500,
+        "min_ms": 328,
+        "max_ms": 562
+      }
+    },
+    "serial/temporal-8": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.4855777844786644,
+        "p95_ms": 3.0148718506097794,
+        "min_ms": 0.8677346631884575,
+        "max_ms": 3.089643083512783
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 440.0340239517391,
+        "p95_ms": 450.622315518558,
+        "min_ms": 431.0573311522603,
+        "max_ms": 451.82898733764887
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 489.785747602582,
+        "p95_ms": 508.6253099143505,
+        "min_ms": 458.61229579895735,
+        "max_ms": 513.5726658627391
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 23.3,
+        "p95_ms": 23.5,
+        "min_ms": 23.1,
+        "max_ms": 23.5
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 286.4,
+        "p95_ms": 289.0,
+        "min_ms": 284.4,
+        "max_ms": 289.1
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 54.8,
+        "p95_ms": 73.2,
+        "min_ms": 18.3,
+        "max_ms": 73.2
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 487.5,
+        "p95_ms": 507,
+        "min_ms": 454,
+        "max_ms": 512
+      }
+    },
+    "batch4/default-8": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.8572951667010784,
+        "p95_ms": 4.423803649842739,
+        "min_ms": 0.859423540532589,
+        "max_ms": 4.461553879082203
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 921.4515746571124,
+        "p95_ms": 1382.0998640730977,
+        "min_ms": 436.6329209879041,
+        "max_ms": 1391.4957186207175
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 1445.8513613790274,
+        "p95_ms": 1487.5753866508603,
+        "min_ms": 1409.7145330160856,
+        "max_ms": 1488.4283747524023
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 23.2,
+        "p95_ms": 23.9,
+        "min_ms": 23.1,
+        "max_ms": 23.9
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 286.54999999999995,
+        "p95_ms": 288.7,
+        "min_ms": 284.9,
+        "max_ms": 289.5
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 532.9,
+        "p95_ms": 1038.0,
+        "min_ms": 29.3,
+        "max_ms": 1038.2
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 1443.5,
+        "p95_ms": 1485,
+        "min_ms": 1397,
+        "max_ms": 1486
+      }
+    },
+    "batch4/uniform-4": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 2.009707037359476,
+        "p95_ms": 3.948155790567398,
+        "min_ms": 0.9043002501130104,
+        "max_ms": 4.002980887889862
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 718.3951330371201,
+        "p95_ms": 1250.4444271326065,
+        "min_ms": 313.9870576560497,
+        "max_ms": 1252.1626884117723
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 1159.3832965008914,
+        "p95_ms": 1410.0279286503792,
+        "min_ms": 933.2238901406527,
+        "max_ms": 1410.939614288509
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 17.1,
+        "p95_ms": 17.6,
+        "min_ms": 17.0,
+        "max_ms": 17.6
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 220.8,
+        "p95_ms": 268.4,
+        "min_ms": 172.8,
+        "max_ms": 268.4
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 426.6,
+        "p95_ms": 956.8,
+        "min_ms": 29.2,
+        "max_ms": 956.8
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 1157.0,
+        "p95_ms": 1408,
+        "min_ms": 917,
+        "max_ms": 1409
+      }
+    },
+    "batch4/uniform-8": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.9705756567418575,
+        "p95_ms": 4.127802327275276,
+        "min_ms": 0.902276486158371,
+        "max_ms": 4.1916267946362495
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 924.2906346917152,
+        "p95_ms": 1380.81865478307,
+        "min_ms": 434.4775415956974,
+        "max_ms": 1391.068390570581
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 1446.086431387812,
+        "p95_ms": 1486.5497760474682,
+        "min_ms": 1407.4899889528751,
+        "max_ms": 1499.4055535644293
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 23.2,
+        "p95_ms": 23.9,
+        "min_ms": 23.1,
+        "max_ms": 23.9
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 286.75,
+        "p95_ms": 288.9,
+        "min_ms": 284.9,
+        "max_ms": 289.6
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 540.45,
+        "p95_ms": 1037.9,
+        "min_ms": 29.4,
+        "max_ms": 1038.0
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 1444.0,
+        "p95_ms": 1484,
+        "min_ms": 1393,
+        "max_ms": 1497
+      }
+    },
+    "batch4/temporal-4": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.9533182494342327,
+        "p95_ms": 4.424688406288624,
+        "min_ms": 0.9221555665135384,
+        "max_ms": 4.428817890584469
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 722.9290306568146,
+        "p95_ms": 1248.596522025764,
+        "min_ms": 325.64245630055666,
+        "max_ms": 1268.388426862657
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 1161.6994617506862,
+        "p95_ms": 1401.305940002203,
+        "min_ms": 944.1294660791755,
+        "max_ms": 1407.5656617060304
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 17.1,
+        "p95_ms": 17.7,
+        "min_ms": 17.0,
+        "max_ms": 18.0
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 220.85000000000002,
+        "p95_ms": 268.1,
+        "min_ms": 172.8,
+        "max_ms": 268.1
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 408.75,
+        "p95_ms": 956.9,
+        "min_ms": 29.2,
+        "max_ms": 957.0
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 1159.5,
+        "p95_ms": 1399,
+        "min_ms": 927,
+        "max_ms": 1406
+      }
+    },
+    "batch4/temporal-8": {
+      "first_event": {
+        "count": 24,
+        "median_ms": 1.881308387964964,
+        "p95_ms": 4.231196828186512,
+        "min_ms": 0.9346054866909981,
+        "max_ms": 4.458840936422348
+      },
+      "ttft": {
+        "count": 24,
+        "median_ms": 922.2192368470132,
+        "p95_ms": 1399.9448716640472,
+        "min_ms": 441.6083814576268,
+        "max_ms": 1401.2322146445513
+      },
+      "total": {
+        "count": 24,
+        "median_ms": 1455.5014870129526,
+        "p95_ms": 1486.6347508504987,
+        "min_ms": 1429.3597340583801,
+        "max_ms": 1504.4249119237065
+      },
+      "vision": {
+        "count": 24,
+        "median_ms": 23.2,
+        "p95_ms": 23.8,
+        "min_ms": 23.1,
+        "max_ms": 23.9
+      },
+      "prefill": {
+        "count": 24,
+        "median_ms": 286.65,
+        "p95_ms": 288.0,
+        "min_ms": 284.9,
+        "max_ms": 288.1
+      },
+      "decode": {
+        "count": 24,
+        "median_ms": 532.9000000000001,
+        "p95_ms": 1038.1,
+        "min_ms": 29.4,
+        "max_ms": 1038.4
+      },
+      "native_elapsed": {
+        "count": 24,
+        "median_ms": 1453.0,
+        "p95_ms": 1482,
+        "min_ms": 1414,
+        "max_ms": 1496
+      }
+    }
+  },
+  "latency_outliers": [],
+  "resources": {
+    "serial": {
+      "whole_device_samples": 812,
+      "whole_device_peak_mib": 55657,
+      "post_stop": {
+        "mode": "serial",
+        "pre_stop_health": {
+          "in_flight": 0,
+          "status": "ok"
+        },
+        "signal": "SIGTERM",
+        "sigkill_used": false,
+        "processes": [
+          {
+            "name": "native",
+            "pid": 4152734,
+            "executable_sha_verified_at_launch": true
+          },
+          {
+            "name": "gateway",
+            "pid": 4152733,
+            "executable_sha_verified_at_launch": true
+          },
+          {
+            "name": "legacy",
+            "pid": 4152732,
+            "executable_sha_verified_at_launch": true
+          }
+        ],
+        "all_recorded_processes_stopped": true,
+        "post_stop_gpu": 1,
+        "post_stop_memory_mib": 3,
+        "post_stop_compute_processes": 0,
+        "passed": true
+      }
+    },
+    "batch4": {
+      "whole_device_samples": 619,
+      "whole_device_peak_mib": 57899,
+      "post_stop": {
+        "mode": "batch4",
+        "pre_stop_health": {
+          "in_flight": 0,
+          "status": "ok"
+        },
+        "signal": "SIGTERM",
+        "sigkill_used": false,
+        "processes": [
+          {
+            "name": "native",
+            "pid": 4173231,
+            "executable_sha_verified_at_launch": true
+          },
+          {
+            "name": "gateway",
+            "pid": 4173230,
+            "executable_sha_verified_at_launch": true
+          },
+          {
+            "name": "legacy",
+            "pid": 4173229,
+            "executable_sha_verified_at_launch": true
+          }
+        ],
+        "all_recorded_processes_stopped": true,
+        "post_stop_gpu": 1,
+        "post_stop_memory_mib": 3,
+        "post_stop_compute_processes": 0,
+        "passed": true
+      }
+    }
+  },
+  "cleanup_checks_all_passed": true,
+  "excluded_attempts": [
+    {
+      "name": "format-duration-r1",
+      "included_in_accepted_results": false,
+      "reason": "INCOMPLETE_PREFLIGHT_OR_TECHNICAL_FAILURE_RETAINED_RAW",
+      "sha256sums_sha256": "e5f82ded3c0670996c5ac51f03e7fc57b80854f9bc8e3349406d913652cbe82c",
+      "report_sha256": "a0a3b7d785968790a2d65ba5c6770933a80c267b44437d0b5d04f45590e954f8",
+      "technical_rejection": "container duration 0.667000 was incorrectly used instead of native stream duration 0.666667 for 20-frame uniform-eight nominal PTS; no r1 answer enters accepted analysis"
+    }
+  ],
+  "historical_task66_control": {
+    "task66_fixture_sha256sums_sha256": "9a0d0389ac38f48e91dd251dacd6d5e1fd398e01fd7ca52a6705b3585468c000",
+    "primary_temporal8_hits": 18,
+    "primary_uniform8_hits": 18,
+    "primary_sign_test_p": 1.0,
+    "included_in_natural_denominator": false,
+    "scores_or_fixture_changed": false,
+    "manifest_sha256": "25c51b6c97cdf9bd6b95991da8a424e8a366ae3105a59099a181d22b65eb2db8",
+    "preregistration_sha256": "74eb3eac15233ec5fe508168dfa6b974259544b5b29ef9c28f74ca3539d24bbe",
+    "sha256sums_sha256": "9a0d0389ac38f48e91dd251dacd6d5e1fd398e01fd7ca52a6705b3585468c000",
+    "scores_or_fixture_bytes_changed": false
+  },
+  "independent_verification": {
+    "local_and_remote_fresh_process_receipts_byte_identical": true,
+    "verifier_source_sha256": "1740e52067ca1b22f65612c4d128193e0d8be05d076706b3f9c467e041d1fb7a",
+    "verification_receipt_sha256": "e187717037316ff2e405f60c7a78c8d4dedbaa284c6ec3d750a45c2a3549b6aa",
+    "evidence_files_hashed": 1665,
+    "frozen_fixture_files_hashed": 34,
+    "task66_control_files_hashed": 138,
+    "full_source_frames_independently_decoded": 165,
+    "requests_independently_validated": 320,
+    "parity_checks": 304,
+    "sha256sums_sha256": "78ed54498a91553a43c00ca867fc90e1f641355f0e5071fe5fd6a60bdda7ca72",
+    "report_sha256": "a2329fc3bc4edb12230777413ed5a2121cf689b43b2bf6b8bb89851163c061ce",
+    "evidence_archive_sha256": "7466274c08c846f25eeeacae707feb5ced267e1c14b94ae58826f08a876247c7"
+  },
+  "gate_pass": true,
+  "gate_reasons": [],
+  "claims": {
+    "real_generation": "MEASURED_PREREGISTERED_NATURAL_FIXTURE",
+    "live_latency": "CONTROLLED_LIVE",
+    "natural_video_fixture_accuracy": "MEASURED_PREREGISTERED_NATURAL_FIXTURE",
+    "perceptual_quality": "NOT_RUN",
+    "generalized_quality_claim": false
+  },
+  "runtime_decision": "EVALUATION_ONLY_FINAL_RUNTIME_UNCHANGED_EVEN_IF_QUALITY_REGRESSIONS_EXIST",
+  "limitations": [
+    "Eight non-overlapping excerpts share one repository footage compilation and only three scene types.",
+    "Substring accuracy on deterministic repeats is not a perceptual-quality metric or an independent-semantic-sample estimate.",
+    "natural-07 remains a miss in every eight-frame arm; Pappina was not added as an observed-answer alias.",
+    "No cross-budget significance claim is made for four-frame versus eight-frame outcomes.",
+    "The sign test has 16 paired case/mode units and cannot support generalized natural-video improvement here."
+  ]
+}

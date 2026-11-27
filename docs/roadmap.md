@@ -256,6 +256,22 @@ quality are `NOT_COVERED`/`NOT_RUN`; no runtime change followed the retained
 regressions. Exact raw answers, misses, outliers, hashes, and cleanup are in
 [video-temporal-heldout](video-temporal-heldout.md).
 
+**Phase 4 natural-footage temporal-understanding gate (Task #72, 2026-11-27).**
+Eight preregistered non-overlapping excerpts of the repository's existing
+Apache-2.0 real-footage compilation, with eight multilingual visually grounded
+questions, ran on sequential isolated SM90 GPU 1 serial/batch-four stacks. The
+accepted r2 run completed 320/320 native-valid requests and 304/304 exact parity
+checks. Primary temporal-8 and uniform-8 both scored 42/48 with zero improved or
+worsened case/mode pairs (`p=1.0`); temporal-4 and uniform-4 both scored 48/48 as
+explicit diagnostics. All 18 misses (the Italian eight-frame `Pappina` case) are
+retained without new aliases, and no latency outliers occurred. Independent local
+and remote processes fully decoded 165 source frames and verified RGB,
+source-PTS/B-frame order, first/last anchors, temporal-2/mRoPE, all checksums, and
+the unchanged Task #66 control. A timing-oracle r1 attempt is retained but
+excluded. Generalized natural-video improvement and perceptual quality remain
+unsupported/`NOT_RUN`; the selector and runtime are unchanged. Exact evidence is
+in [video-temporal-natural](video-temporal-natural.md).
+
 **Phase 4 real public narrative source-slot gate (Task #65, 2026-11-27).** On
 isolated physical GPU 1, one real public VLM request emitted a FLUX.2 image
 slot, an explicit `source=slot-0` native Wan I2V, and clean streaming speech.

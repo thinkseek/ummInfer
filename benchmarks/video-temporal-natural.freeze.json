@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "temporal-natural-r2",
+  "frozen_before_any_model_output_for_this_revision": true,
+  "model_outputs_seen_for_this_revision_at_freeze": false,
+  "prior_excluded_natural_outputs_seen_at_freeze": true,
+  "prior_excluded_attempt": "format-duration-r1",
+  "preregistration_sha256": "bec705e56732adab907731da53c139ff953ff184fe0b66df1fb43801ba11e7e2",
+  "manifest_sha256": "10a7a68244be10ce38565e6ae4f7e97b23a83f1717ea083728e51d4ca44204db",
+  "sha256sums_sha256": "be929f176f7d67fb7fe5764e8880b72e7f1dda6c02f6a5ea36633ad91d069eaa",
+  "quality_case_ids": [
+    "natural-01",
+    "natural-02",
+    "natural-03",
+    "natural-04",
+    "natural-05",
+    "natural-06",
+    "natural-07",
+    "natural-08"
+  ],
+  "task66_control_scores_or_fixture_changed": false
+}

@@ -1,0 +1,5814 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "temporal-natural-r2",
+  "natural_video_claim": true,
+  "natural_video_scope": "EIGHT_NONOVERLAPPING_EXCERPTS_OF_ONE_EXISTING_REAL_FOOTAGE_COMPILATION",
+  "source": {
+    "asset_class": "EXISTING_REPOSITORY_TRACKED_NATURAL_FOOTAGE_EXCERPTS_NOT_PROCEDURAL_NOT_MODEL_OUTPUT",
+    "original_commit": "a5d41d39ac6567da53a6ddbb2c4a4534bfdd9104",
+    "original_commit_subject": "Go minimal: real footage, one line, one engine",
+    "original_path": "docs/assets/umminfer-apple-16x9.mp4",
+    "original_git_blob_sha1": "fa078dc543b273922dfc8c07e74f63306778a3ed",
+    "original_sha256": "81178f8af6c859d908cd6fa4a5348ed9bbe271c071a94a196ff2488c63f0db2e",
+    "original_video_frames": 330,
+    "original_video_fps": 30,
+    "license": "Apache-2.0, the covering repository license at the source commit; no per-asset exception is recorded",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "redistribution_and_evaluation": "permitted by the covering Apache-2.0 license; retain source commit/blob identity and license",
+    "excerpt_encoding": "H.264 libx264, 256x160, 30 fps, CRF 12, two B-frames, exact selected source-frame ranges, PTS reset to zero in presentation order; 256x160 is the exact native smart-resize target; native stream duration takes precedence over container duration for fps and nominal timestamps",
+    "review": "All source endpoints and review sheets were visually inspected before any model request. Only forest, whale, and dandelion real-footage scenes are included; scene transitions, rendered planet, end cards, and text overlays are excluded.",
+    "scope_limit": "Eight non-overlapping clips come from one compilation and three scene types; they are not a representative natural-video corpus."
+  },
+  "preregistration_sha256": "bec705e56732adab907731da53c139ff953ff184fe0b66df1fb43801ba11e7e2",
+  "selection": {
+    "selector": "qwen38_temporal_motion_run_v1",
+    "candidate_stride": 1,
+    "max_candidate_frames": 64,
+    "motion_threshold": 0.02,
+    "scene_threshold": 0.25,
+    "budgets": [
+      4,
+      8
+    ]
+  },
+  "request_contract": {
+    "content_order": [
+      "video_url",
+      "text_question"
+    ],
+    "question_after_context": true,
+    "model": "qwen3-native",
+    "stream": true,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "seed": 510072,
+    "max_tokens": 64,
+    "arms": [
+      "default",
+      "uniform",
+      "temporal"
+    ],
+    "only_frame_selection_changes_between_arms": true,
+    "metadata_sent_to_model": "only neutral video data URLs and exact questions; no source name, answer, expected term, source range, or review metadata"
+  },
+  "measurement": {
+    "schema_version": 1,
+    "warmup_repetitions": 1,
+    "measured_repetitions": 3,
+    "arm_order": "interleaved",
+    "seed": 510072,
+    "cooldown_ms": 0,
+    "modes": {
+      "serial": {
+        "physical_gpu": 1,
+        "concurrency": 1,
+        "batch_size": 1
+      },
+      "batch4": {
+        "physical_gpu": 1,
+        "concurrency": 4,
+        "batch_size": 4
+      }
+    },
+    "mode_execution": "fresh serial stack then fresh batch-four stack on the same explicitly idle physical GPU 1; never simultaneously resident",
+    "prefix_cache": "disabled; prefix_reused=0 for every request including warmup",
+    "allowed_physical_gpus": [
+      1
+    ],
+    "forbidden_physical_gpus": [
+      0,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "forbidden_resident_port": 43301,
+    "arm_budgets": [
+      [
+        "default",
+        8
+      ],
+      [
+        "uniform",
+        4
+      ],
+      [
+        "uniform",
+        8
+      ],
+      [
+        "temporal",
+        4
+      ],
+      [
+        "temporal",
+        8
+      ]
+    ],
+    "requests_per_mode": 160,
+    "requests_total": 320,
+    "warmup_requests_total": 80,
+    "measured_requests_total": 240,
+    "measured_answers_per_arm_budget": 48,
+    "paired_case_mode_units_per_comparison": 16,
+    "expected_parity_checks": 304,
+    "native_evidence": "exact selected RGB, source frame and source PTS/presentation order, temporal-2 pair-first timestamps, grid/token/mRoPE consistency, serial/batch and repetition parity, complete binary/model/source provenance"
+  },
+  "analysis_plan": {
+    "primary_comparison": "temporal-8 versus uniform-8",
+    "secondary_comparisons": [
+      "temporal-4 versus uniform-4 (explicit diagnostic)",
+      "temporal-8 versus default-8"
+    ],
+    "paired_unit": "case x execution mode; sum its three measured hits, then classify improved/worsened/unchanged",
+    "sign_test": "exact two-sided sign test over discordant paired case/mode units; zero discordant pairs gives p=1.0",
+    "uncertainty": "Wilson 95 percent interval over 48 request-level measured answers per arm/budget; repetitions are not independent semantic examples",
+    "per_case_reporting": "every raw answer and hit by case/mode/repetition/arm/budget, plus every miss, improvement, regression, and request identity",
+    "latency_outliers": "Tukey upper fence Q3+1.5*IQR within each measured mode/arm/budget and metric total/native_elapsed; if IQR=0, every value above Q3 is an outlier; no value is removed",
+    "no_regression_technical_gates": [
+      "320 completed and native-valid requests with cold prefixes",
+      "304 exact default/uniform, serial/batch-four, and repetition parity checks",
+      "default-8 and uniform-8 answers and native diagnostics byte-identical",
+      "all selected RGB/source/PTS/temporal-2/mRoPE and temporal first/last-anchor checks pass",
+      "exclusive GPU1, in_flight=0, bounded residual memory, and post-stop cleanup",
+      "complete evidence, frozen fixture, unchanged Task66 control, and checksum verification"
+    ],
+    "acceptance_behavior": "This is an evaluation-only technical gate. Quality improvement is not required and no answer triggers a runtime edit or a generalized significance claim."
+  },
+  "videos": {
+    "natural-01": {
+      "video": "fixtures/natural-01.mp4",
+      "video_sha256": "22df061c95db2546973d2c4a7a9a74728b0dd1df05ba7c57bab6e2aefa8d7dd7",
+      "video_bytes": 92191,
+      "source_frame_range": [
+        0,
+        29
+      ],
+      "frame_count": 30,
+      "candidate_count": 30,
+      "candidate_stride": 1,
+      "duration_seconds": 1.0,
+      "native_decode": {
+        "width": 256,
+        "height": 160,
+        "fps": 30
+      },
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 256,
+            "height": 160,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "30/1",
+            "duration": "1.000000",
+            "nb_frames": "30"
+          }
+        ],
+        "format": {
+          "duration": "1.000000",
+          "size": "92191"
+        }
+      },
+      "content_frames": "content/natural-01.frames.jsonl",
+      "packets": "content/natural-01.packets.json",
+      "review_sheet": "review/natural-01.png",
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      },
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0019301470588235295,
+          0.0234375
+        ],
+        [
+          0.00027573529411764705,
+          0.0
+        ],
+        [
+          0.000980392156862745,
+          0.015625
+        ],
+        [
+          0.0015625,
+          0.01171875
+        ],
+        [
+          0.0028033088235294118,
+          0.01171875
+        ],
+        [
+          0.002527573529411765,
+          0.02734375
+        ],
+        [
+          0.00013786764705882353,
+          0.00390625
+        ],
+        [
+          0.004764093137254902,
+          0.03515625
+        ],
+        [
+          0.0030637254901960784,
+          0.02734375
+        ],
+        [
+          0.0046875,
+          0.02734375
+        ],
+        [
+          0.0015625,
+          0.01171875
+        ],
+        [
+          3.0637254901960784e-05,
+          0.0
+        ],
+        [
+          0.002113970588235294,
+          0.0234375
+        ],
+        [
+          0.002542892156862745,
+          0.02734375
+        ],
+        [
+          0.0022212009803921568,
+          0.0234375
+        ],
+        [
+          0.0036611519607843137,
+          0.03515625
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0018841911764705883,
+          0.01953125
+        ],
+        [
+          0.0018995098039215686,
+          0.01171875
+        ],
+        [
+          0.004258578431372549,
+          0.03125
+        ],
+        [
+          0.002772671568627451,
+          0.0234375
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.011213235294117647,
+          0.046875
+        ],
+        [
+          0.010646446078431373,
+          0.05859375
+        ],
+        [
+          0.009834558823529412,
+          0.0625
+        ],
+        [
+          0.0011795343137254901,
+          0.01171875
+        ],
+        [
+          0.0001838235294117647,
+          0.0
+        ],
+        [
+          0.0015625,
+          0.0234375
+        ],
+        [
+          0.003630514705882353,
+          0.0390625
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_frame_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.333333,
+            0.633333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "a9284e31dea32f49",
+            "984b7eb47bdcfc5a",
+            "0dac18163e30cb73",
+            "dd9a611db389cdaf"
+          ],
+          "content_sha256": [
+            "7f55819c6327627e61eff64ebd4f2195d1197c08d7c82d9a6fecd22bfbc2467b",
+            "2ecc9d752944a5ee1a2639db3bff53b2a2b5cafeec34f752ba0132e97813ed55",
+            "c19cb4d5e99c48932fba2f675959d7467b72f76a2a95b4bb9125fc958f3da4d1",
+            "ffd5aadc46efd0adb57570fb59365dc981fc4dc70dc9c271d1c27c0ee3afbd39"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.633333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ],
+          "source_frame_indices": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4,
+            0.566667,
+            0.7,
+            0.833333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "a9284e31dea32f49",
+            "88a1f72a5688ebe9",
+            "908e0cce90f000ff",
+            "8583b31d9ff2fd8e",
+            "90476df9d4f4d6aa",
+            "448d42d8bd7ef49e",
+            "4edada313e40b520",
+            "dd9a611db389cdaf"
+          ],
+          "content_sha256": [
+            "7f55819c6327627e61eff64ebd4f2195d1197c08d7c82d9a6fecd22bfbc2467b",
+            "593a0ffb438e3ecb782232f29d256250358f6bf5d0f85cc5f4de59e4bd5ad056",
+            "928fb22c8597888982e4eb80d906d84227b8a217a15c89d91170459cbabe912a",
+            "cbbd97920ebc08768a3a5ef1b8e1fc6a3930dce9e65031f42719cbbf5f635774",
+            "1cc036922e67689a32e3e55fe031e6bf7392bd44a20ae7491c1ab658dd41ba4a",
+            "2e0626004519b8ce78d0a72a6d05c1342385d743abbeb4a400c51036e72721b8",
+            "6f98b31be354289db8ab79458fbe0e729090df62200d71e3289a4db466180f78",
+            "ffd5aadc46efd0adb57570fb59365dc981fc4dc70dc9c271d1c27c0ee3afbd39"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.266667,
+            0.566667,
+            0.833333
+          ]
+        }
+      },
+      "expected_uniform": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "source_frame_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.333333,
+            0.633333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "a9284e31dea32f49",
+            "984b7eb47bdcfc5a",
+            "0dac18163e30cb73",
+            "dd9a611db389cdaf"
+          ],
+          "content_sha256": [
+            "7f55819c6327627e61eff64ebd4f2195d1197c08d7c82d9a6fecd22bfbc2467b",
+            "2ecc9d752944a5ee1a2639db3bff53b2a2b5cafeec34f752ba0132e97813ed55",
+            "c19cb4d5e99c48932fba2f675959d7467b72f76a2a95b4bb9125fc958f3da4d1",
+            "ffd5aadc46efd0adb57570fb59365dc981fc4dc70dc9c271d1c27c0ee3afbd39"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.633333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "source_frame_indices": [
+            1,
+            5,
+            9,
+            13,
+            16,
+            20,
+            24,
+            28
+          ],
+          "source_timestamps_seconds": [
+            0.0333333,
+            0.166667,
+            0.3,
+            0.433333,
+            0.533333,
+            0.666667,
+            0.8,
+            0.933333
+          ],
+          "content_fnv1a64": [
+            "a2f08c9d373f645a",
+            "f1de125b5b6f947a",
+            "509f3f2f78920a6d",
+            "2329f58a3c885456",
+            "90476df9d4f4d6aa",
+            "285e920946564abb",
+            "e76ce62cf3c143ec",
+            "9dae3f5ffdb1f429"
+          ],
+          "content_sha256": [
+            "3eb0f6fefd5f703a60dffb768fbeb550248c29ed5eec607bf212551794809a4c",
+            "c5373c511a07bd3cc260d5462e930b0a49c383c3ff13b9ba4ca6a45e9f94bfe7",
+            "d71e3b711c2944fc4ec6e4107f74d9d2a2c95b3ffd462d1c2a0505e5d09a9502",
+            "7746300f42439a45d682574bb1a9c2269c2286124dcf8de12409f593df6a7800",
+            "1cc036922e67689a32e3e55fe031e6bf7392bd44a20ae7491c1ab658dd41ba4a",
+            "32a7d2f5efcbdb446a9703170e3dde007c74bc1c322c4dbaa928dc207cb293d0",
+            "84e2aeca8b589c8e28a979a1dca2f970e8498545b5437efa3a2aed9e47c3a56a",
+            "0e969f2277ea6643e921710350598f58912c932b559c68b9fd1187e1386b03f2"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0333333,
+            0.3,
+            0.533333,
+            0.8
+          ],
+          "source_frame_candidates": [
+            [
+              1
+            ],
+            [
+              5
+            ],
+            [
+              9
+            ],
+            [
+              13
+            ],
+            [
+              16,
+              17
+            ],
+            [
+              20
+            ],
+            [
+              24
+            ],
+            [
+              28
+            ]
+          ],
+          "source_pts_candidates": [
+            [
+              0.0333333
+            ],
+            [
+              0.166667
+            ],
+            [
+              0.3
+            ],
+            [
+              0.433333
+            ],
+            [
+              0.533333,
+              0.566667
+            ],
+            [
+              0.666667
+            ],
+            [
+              0.8
+            ],
+            [
+              0.933333
+            ]
+          ],
+          "source_frame_binding": "AMBIGUOUS_EXACT_REPEATED_SOURCE_RGB_ALL_CANDIDATES_RETAINED",
+          "output_filter_timestamps_seconds": [
+            0.0,
+            0.125,
+            0.25,
+            0.375,
+            0.5,
+            0.625,
+            0.75,
+            0.875
+          ],
+          "native_nominal_timestamps": [
+            0.0,
+            0.125,
+            0.25,
+            0.375,
+            0.5,
+            0.625,
+            0.75,
+            0.875
+          ]
+        }
+      }
+    },
+    "natural-02": {
+      "video": "fixtures/natural-02.mp4",
+      "video_sha256": "95208b5e7f34271b149073083687e1f969a79d537c3af76bc1d00f282fc1fa58",
+      "video_bytes": 98378,
+      "source_frame_range": [
+        30,
+        59
+      ],
+      "frame_count": 30,
+      "candidate_count": 30,
+      "candidate_stride": 1,
+      "duration_seconds": 1.0,
+      "native_decode": {
+        "width": 256,
+        "height": 160,
+        "fps": 30
+      },
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 256,
+            "height": 160,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "30/1",
+            "duration": "1.000000",
+            "nb_frames": "30"
+          }
+        ],
+        "format": {
+          "duration": "1.000000",
+          "size": "98378"
+        }
+      },
+      "content_frames": "content/natural-02.frames.jsonl",
+      "packets": "content/natural-02.packets.json",
+      "review_sheet": "review/natural-02.png",
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      },
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.00900735294117647,
+          0.03125
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.006357230392156863,
+          0.0390625
+        ],
+        [
+          0.006066176470588235,
+          0.046875
+        ],
+        [
+          0.002864583333333333,
+          0.01953125
+        ],
+        [
+          0.0046875,
+          0.05078125
+        ],
+        [
+          7.659313725490196e-05,
+          0.0078125
+        ],
+        [
+          0.002971813725490196,
+          0.0390625
+        ],
+        [
+          0.0016237745098039217,
+          0.0
+        ],
+        [
+          0.005591299019607843,
+          0.0390625
+        ],
+        [
+          0.003998161764705882,
+          0.03515625
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.009957107843137254,
+          0.05859375
+        ],
+        [
+          0.007889093137254902,
+          0.04296875
+        ],
+        [
+          0.015778186274509803,
+          0.0625
+        ],
+        [
+          0.007889093137254902,
+          0.01953125
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.01095281862745098,
+          0.0703125
+        ],
+        [
+          0.008057598039215687,
+          0.0390625
+        ],
+        [
+          0.010416666666666666,
+          0.05078125
+        ],
+        [
+          0.005683210784313725,
+          0.03515625
+        ],
+        [
+          0.00032169117647058823,
+          0.0078125
+        ],
+        [
+          0.00505514705882353,
+          0.04296875
+        ],
+        [
+          0.002542892156862745,
+          0.015625
+        ],
+        [
+          0.0016697303921568627,
+          0.01171875
+        ],
+        [
+          0.0018075980392156864,
+          0.02734375
+        ],
+        [
+          1.5318627450980392e-05,
+          0.0
+        ],
+        [
+          0.0036458333333333334,
+          0.015625
+        ],
+        [
+          0.005713848039215686,
+          0.03515625
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_frame_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.333333,
+            0.633333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "f3de3a73b6427b1c",
+            "22583d83b100ea84",
+            "e051100296bec08f",
+            "bf7e19920d62c508"
+          ],
+          "content_sha256": [
+            "adc89a9b442ec06a4697cc46ef6c25eb529e232e5574fee0bd8d02bddf87a9ec",
+            "cbc41540b003c3da9a49bc9792052861ad4c11614c5bcf2fcfedfd71eec40acc",
+            "bfeb028e3ca38ab0b2b7a4786be84f0754486f47d4a8c7e7c10b07ab4f35bcd3",
+            "45a3e24870172c5e5eb58fbc8e412942f3213b561d23cf06aaaab3b38f0b9cb5"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.633333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ],
+          "source_frame_indices": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4,
+            0.566667,
+            0.7,
+            0.833333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "f3de3a73b6427b1c",
+            "201ecefa3e43e309",
+            "911df3abb75d4f38",
+            "229bba05e77012ad",
+            "477b37712fb5de83",
+            "71792602e42f062e",
+            "9d277137c1ce4f21",
+            "bf7e19920d62c508"
+          ],
+          "content_sha256": [
+            "adc89a9b442ec06a4697cc46ef6c25eb529e232e5574fee0bd8d02bddf87a9ec",
+            "9867499f6704e946723d214daf78a4fcfba5c55237400f1c5dcca576277da5ad",
+            "b6865c5af2fbe16daf0533d560c5ce28b8761c918b2e9d6c4530e3d1cb64461e",
+            "ea8b3ac14120644162effbf4c90c1b4d629b5404b780ed2c87b46bb03da59d9b",
+            "447052eb73a6a51b1439fcc01b2c3ff90f1954c314c4c1d63480c7216888a338",
+            "bf828e952d234769c56aa081fa3e530037b7a8f69ce2bf3214e5689a5d68d05a",
+            "b35626b828d3d6fe710a765c14254b75853c41654b7cec9b3ceeec119b5c03cb",
+            "45a3e24870172c5e5eb58fbc8e412942f3213b561d23cf06aaaab3b38f0b9cb5"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.266667,
+            0.566667,
+            0.833333
+          ]
+        }
+      },
+      "expected_uniform": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "source_frame_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.333333,
+            0.633333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "f3de3a73b6427b1c",
+            "22583d83b100ea84",
+            "e051100296bec08f",
+            "bf7e19920d62c508"
+          ],
+          "content_sha256": [
+            "adc89a9b442ec06a4697cc46ef6c25eb529e232e5574fee0bd8d02bddf87a9ec",
+            "cbc41540b003c3da9a49bc9792052861ad4c11614c5bcf2fcfedfd71eec40acc",
+            "bfeb028e3ca38ab0b2b7a4786be84f0754486f47d4a8c7e7c10b07ab4f35bcd3",
+            "45a3e24870172c5e5eb58fbc8e412942f3213b561d23cf06aaaab3b38f0b9cb5"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.633333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "source_frame_indices": [
+            1,
+            5,
+            9,
+            13,
+            16,
+            20,
+            24,
+            28
+          ],
+          "source_timestamps_seconds": [
+            0.0333333,
+            0.166667,
+            0.3,
+            0.433333,
+            0.533333,
+            0.666667,
+            0.8,
+            0.933333
+          ],
+          "content_fnv1a64": [
+            "a1d393e9cd674f38",
+            "3dc9fd08392b3b4d",
+            "81f017b7b5648802",
+            "b90fe1d47de1ee64",
+            "477b37712fb5de83",
+            "c5d6828106885129",
+            "5786a9bb613d93a4",
+            "5187e7e6ca8f9462"
+          ],
+          "content_sha256": [
+            "08ecba4aee5e189497527894b5c979e8b55dabcc296de04364a66af516241a4a",
+            "5fa87759f5a381244c307c41ffbe7a1a9c589f7ead29de72a0b7756759089ad2",
+            "9a355e07f343b2bcedf5316459d60243c8772ddf256d9c35a8c2e015260c6805",
+            "191b7f7d7af2e3b6cde36568f82269dc10be9b3b36ad0b1074a2515f8e965d57",
+            "447052eb73a6a51b1439fcc01b2c3ff90f1954c314c4c1d63480c7216888a338",
+            "7376ded26188a5d5438919496f5e296a87d828eb635681ee53e41b16f7618858",
+            "38e65be6f69d8404f8a0a54ed95511fa97496df0db5463da08f843093573b31c",
+            "812fddce9855ce9b7acd55f3581705402ed8262d97b2ccfbe0e8ddc5df17bf4f"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0333333,
+            0.3,
+            0.533333,
+            0.8
+          ],
+          "source_frame_candidates": [
+            [
+              1,
+              2
+            ],
+            [
+              5
+            ],
+            [
+              9
+            ],
+            [
+              13
+            ],
+            [
+              16,
+              17
+            ],
+            [
+              20
+            ],
+            [
+              24
+            ],
+            [
+              28
+            ]
+          ],
+          "source_pts_candidates": [
+            [
+              0.0333333,
+              0.0666667
+            ],
+            [
+              0.166667
+            ],
+            [
+              0.3
+            ],
+            [
+              0.433333
+            ],
+            [
+              0.533333,
+              0.566667
+            ],
+            [
+              0.666667
+            ],
+            [
+              0.8
+            ],
+            [
+              0.933333
+            ]
+          ],
+          "source_frame_binding": "AMBIGUOUS_EXACT_REPEATED_SOURCE_RGB_ALL_CANDIDATES_RETAINED",
+          "output_filter_timestamps_seconds": [
+            0.0,
+            0.125,
+            0.25,
+            0.375,
+            0.5,
+            0.625,
+            0.75,
+            0.875
+          ],
+          "native_nominal_timestamps": [
+            0.0,
+            0.125,
+            0.25,
+            0.375,
+            0.5,
+            0.625,
+            0.75,
+            0.875
+          ]
+        }
+      }
+    },
+    "natural-03": {
+      "video": "fixtures/natural-03.mp4",
+      "video_sha256": "6b3d7ef01d61df8a6995262b3658f0397b79988786f5c03f5d9c8ce0beefac48",
+      "video_bytes": 43435,
+      "source_frame_range": [
+        75,
+        94
+      ],
+      "frame_count": 20,
+      "candidate_count": 20,
+      "candidate_stride": 1,
+      "duration_seconds": 0.666667,
+      "native_decode": {
+        "width": 256,
+        "height": 160,
+        "fps": 30
+      },
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 256,
+            "height": 160,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "30/1",
+            "duration": "0.666667",
+            "nb_frames": "20"
+          }
+        ],
+        "format": {
+          "duration": "0.667000",
+          "size": "43435"
+        }
+      },
+      "content_frames": "content/natural-03.frames.jsonl",
+      "packets": "content/natural-03.packets.json",
+      "review_sheet": "review/natural-03.png",
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      },
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.002297794117647059,
+          0.02734375
+        ],
+        [
+          0.00012254901960784314,
+          0.0
+        ],
+        [
+          0.0024969362745098037,
+          0.01953125
+        ],
+        [
+          0.0024050245098039217,
+          0.0234375
+        ],
+        [
+          0.0024509803921568627,
+          0.015625
+        ],
+        [
+          0.0023743872549019606,
+          0.015625
+        ],
+        [
+          7.659313725490196e-05,
+          0.0
+        ],
+        [
+          0.0023131127450980392,
+          0.0234375
+        ],
+        [
+          0.0022212009803921568,
+          0.015625
+        ],
+        [
+          0.0024509803921568627,
+          0.02734375
+        ],
+        [
+          0.0025122549019607845,
+          0.02734375
+        ],
+        [
+          6.127450980392157e-05,
+          0.0
+        ],
+        [
+          0.002542892156862745,
+          0.01171875
+        ],
+        [
+          0.0031096813725490194,
+          0.02734375
+        ],
+        [
+          0.003002450980392157,
+          0.03515625
+        ],
+        [
+          0.003737745098039216,
+          0.01953125
+        ],
+        [
+          4.5955882352941176e-05,
+          0.0
+        ],
+        [
+          0.004105392156862745,
+          0.03515625
+        ],
+        [
+          0.004457720588235294,
+          0.03515625
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "c28bd15d2e797028",
+            "2635404184fc9725",
+            "37d072f479079980",
+            "4b04849a349ee24d"
+          ],
+          "content_sha256": [
+            "e05f831f78e3e5dc54bca1fb93f3b01ed91d61ecada2ac4186dc981315ed07d0",
+            "263e9e0ca52365210ce021eb818357152828f2605e0f1045205ce119eba657db",
+            "f3005defe1df824ec05c512280a6321a4d5225809526eae9cd3e4297b5d661a0",
+            "1e1b7025b79fdeabe3f03484e38e2ec2b947c309d24c6cb0ebf1d1e53d5b4120"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.1,
+            0.166667,
+            0.266667,
+            0.366667,
+            0.466667,
+            0.533333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "c28bd15d2e797028",
+            "425d81d1d9a9c572",
+            "841cbb4d0963d769",
+            "da653801348fc545",
+            "79d59c36811ce108",
+            "67ee41233ff3f131",
+            "aed720a3b5cec7e3",
+            "4b04849a349ee24d"
+          ],
+          "content_sha256": [
+            "e05f831f78e3e5dc54bca1fb93f3b01ed91d61ecada2ac4186dc981315ed07d0",
+            "20e3de3d2891b9e1c7020e840d17a5af243e3d9109760922ea9cfa7f0e7d2926",
+            "e77d8cc25f6dd1c204ee86e17f5b2601bfa2ef21c05f503e37dfe836130b56f7",
+            "e2073da47cf29f24e9d8e0de583d0a4407f6554539dd21ca9484f6e9878e62e0",
+            "578beb3eb6de3d35a01cb595e2b32b943503e2f57c743ee011ecc88b99652dc4",
+            "f438902ba197db6b7feeec765bf6a2ff6155d4329fc8b6ed0c7b02b62d35cfd0",
+            "c42eb179c7052d8f6108fe0060beafb1b5f5439fa3a926d0d557fdca02ce685e",
+            "1e1b7025b79fdeabe3f03484e38e2ec2b947c309d24c6cb0ebf1d1e53d5b4120"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.166667,
+            0.366667,
+            0.533333
+          ]
+        }
+      },
+      "expected_uniform": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "c28bd15d2e797028",
+            "2635404184fc9725",
+            "37d072f479079980",
+            "4b04849a349ee24d"
+          ],
+          "content_sha256": [
+            "e05f831f78e3e5dc54bca1fb93f3b01ed91d61ecada2ac4186dc981315ed07d0",
+            "263e9e0ca52365210ce021eb818357152828f2605e0f1045205ce119eba657db",
+            "f3005defe1df824ec05c512280a6321a4d5225809526eae9cd3e4297b5d661a0",
+            "1e1b7025b79fdeabe3f03484e38e2ec2b947c309d24c6cb0ebf1d1e53d5b4120"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "source_frame_indices": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ],
+          "source_timestamps_seconds": [
+            0.0333333,
+            0.1,
+            0.2,
+            0.266667,
+            0.366667,
+            0.433333,
+            0.533333,
+            0.6
+          ],
+          "content_fnv1a64": [
+            "3195f4a69a4d859a",
+            "425d81d1d9a9c572",
+            "2635404184fc9725",
+            "da653801348fc545",
+            "79d59c36811ce108",
+            "37d072f479079980",
+            "aed720a3b5cec7e3",
+            "2768c48803c5b9e4"
+          ],
+          "content_sha256": [
+            "65dbfc21e16205784aa187e6228545fdc8a5eddf7e2cbb5979cfe5b1ef7354b8",
+            "20e3de3d2891b9e1c7020e840d17a5af243e3d9109760922ea9cfa7f0e7d2926",
+            "263e9e0ca52365210ce021eb818357152828f2605e0f1045205ce119eba657db",
+            "e2073da47cf29f24e9d8e0de583d0a4407f6554539dd21ca9484f6e9878e62e0",
+            "578beb3eb6de3d35a01cb595e2b32b943503e2f57c743ee011ecc88b99652dc4",
+            "f3005defe1df824ec05c512280a6321a4d5225809526eae9cd3e4297b5d661a0",
+            "c42eb179c7052d8f6108fe0060beafb1b5f5439fa3a926d0d557fdca02ce685e",
+            "ddf8404ab3620f29332f4e42b3546c552725df5259a853976c1f53f30ec7aca0"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0333333,
+            0.2,
+            0.366667,
+            0.533333
+          ],
+          "source_frame_candidates": [
+            [
+              1
+            ],
+            [
+              3
+            ],
+            [
+              6
+            ],
+            [
+              8
+            ],
+            [
+              11
+            ],
+            [
+              13
+            ],
+            [
+              16
+            ],
+            [
+              18
+            ]
+          ],
+          "source_pts_candidates": [
+            [
+              0.0333333
+            ],
+            [
+              0.1
+            ],
+            [
+              0.2
+            ],
+            [
+              0.266667
+            ],
+            [
+              0.366667
+            ],
+            [
+              0.433333
+            ],
+            [
+              0.533333
+            ],
+            [
+              0.6
+            ]
+          ],
+          "source_frame_binding": "EXACT",
+          "output_filter_timestamps_seconds": [
+            0.0,
+            0.0833333,
+            0.166667,
+            0.25,
+            0.333333,
+            0.416667,
+            0.5,
+            0.583333
+          ],
+          "native_nominal_timestamps": [
+            0.0,
+            0.083333375,
+            0.16666675,
+            0.250000125,
+            0.3333335,
+            0.416666875,
+            0.50000025,
+            0.583333625
+          ]
+        }
+      }
+    },
+    "natural-04": {
+      "video": "fixtures/natural-04.mp4",
+      "video_sha256": "86ab1f14ebff6fb8f4825c47c0ac43c1e2619854421de6a8a850d6ea83841015",
+      "video_bytes": 45552,
+      "source_frame_range": [
+        95,
+        114
+      ],
+      "frame_count": 20,
+      "candidate_count": 20,
+      "candidate_stride": 1,
+      "duration_seconds": 0.666667,
+      "native_decode": {
+        "width": 256,
+        "height": 160,
+        "fps": 30
+      },
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 256,
+            "height": 160,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "30/1",
+            "duration": "0.666667",
+            "nb_frames": "20"
+          }
+        ],
+        "format": {
+          "duration": "0.667000",
+          "size": "45552"
+        }
+      },
+      "content_frames": "content/natural-04.frames.jsonl",
+      "packets": "content/natural-04.packets.json",
+      "review_sheet": "review/natural-04.png",
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      },
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.004871323529411765,
+          0.02734375
+        ],
+        [
+          6.127450980392157e-05,
+          0.0
+        ],
+        [
+          0.005346200980392157,
+          0.04296875
+        ],
+        [
+          0.0049479166666666664,
+          0.03515625
+        ],
+        [
+          0.004381127450980392,
+          0.04296875
+        ],
+        [
+          0.0049938725490196074,
+          0.046875
+        ],
+        [
+          0.00015318627450980392,
+          0.00390625
+        ],
+        [
+          0.006449142156862745,
+          0.03515625
+        ],
+        [
+          0.0057444852941176475,
+          0.01953125
+        ],
+        [
+          0.00586703431372549,
+          0.01953125
+        ],
+        [
+          0.0058823529411764705,
+          0.0390625
+        ],
+        [
+          3.0637254901960784e-05,
+          0.0
+        ],
+        [
+          0.0058823529411764705,
+          0.04296875
+        ],
+        [
+          0.005392156862745098,
+          0.03125
+        ],
+        [
+          0.010493259803921568,
+          0.05078125
+        ],
+        [
+          0.0058823529411764705,
+          0.04296875
+        ],
+        [
+          1.5318627450980392e-05,
+          0.0
+        ],
+        [
+          0.005545343137254902,
+          0.03515625
+        ],
+        [
+          0.005821078431372549,
+          0.03125
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "0c9f303d1a5cae0f",
+            "acaeeb7fad278cc7",
+            "8378390e5be5c8a2",
+            "89ced40d14af4daf"
+          ],
+          "content_sha256": [
+            "c3f3739863a3bea77875b012f7a16b98282b1d88eb943fdd498cf96e94dd1964",
+            "3c1556e0a26711006b236aedc693fedc9168e30cbdab031092c7d2141a4fef90",
+            "174f1a75e9bd53ddec07fa60f6391b27d6c0b0c9f5a3f6c662b8c0cb0e0f458f",
+            "66f9cf0249058da9fc5829c3a19e03da303f48d69c018e11ba754f6fe2355304"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.1,
+            0.166667,
+            0.266667,
+            0.366667,
+            0.466667,
+            0.533333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "0c9f303d1a5cae0f",
+            "179636574e6c3f89",
+            "3aecc7b416a6b78c",
+            "40ffe635da9de902",
+            "6fd04aea25a45cad",
+            "344a4224dfdce740",
+            "afe470b362c9e8e7",
+            "89ced40d14af4daf"
+          ],
+          "content_sha256": [
+            "c3f3739863a3bea77875b012f7a16b98282b1d88eb943fdd498cf96e94dd1964",
+            "ffa0741f7a64b17339ce7691c7a24caa439823a01dec071fedb0b59d455fd134",
+            "157f566b24a93213ca278f126293b782540c764b3e112fc84da012c06ff72f40",
+            "e40bb3244b7976180f33381655b75b72603bf91476278ff22c4f970b3259d559",
+            "e344a9f62c69bd237e15eb569c495b6b6ac1ad9be750174083988b1b0e91bf2d",
+            "7e90d1be2022f7955046d66b14b0991fd27946ad998ea46631ed15692d7a1e6d",
+            "8dfac0401405ef517197a7d58bc661e681c77324f867bb8a70b548ddab430638",
+            "66f9cf0249058da9fc5829c3a19e03da303f48d69c018e11ba754f6fe2355304"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.166667,
+            0.366667,
+            0.533333
+          ]
+        }
+      },
+      "expected_uniform": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "0c9f303d1a5cae0f",
+            "acaeeb7fad278cc7",
+            "8378390e5be5c8a2",
+            "89ced40d14af4daf"
+          ],
+          "content_sha256": [
+            "c3f3739863a3bea77875b012f7a16b98282b1d88eb943fdd498cf96e94dd1964",
+            "3c1556e0a26711006b236aedc693fedc9168e30cbdab031092c7d2141a4fef90",
+            "174f1a75e9bd53ddec07fa60f6391b27d6c0b0c9f5a3f6c662b8c0cb0e0f458f",
+            "66f9cf0249058da9fc5829c3a19e03da303f48d69c018e11ba754f6fe2355304"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "source_frame_indices": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ],
+          "source_timestamps_seconds": [
+            0.0333333,
+            0.1,
+            0.2,
+            0.266667,
+            0.366667,
+            0.433333,
+            0.533333,
+            0.6
+          ],
+          "content_fnv1a64": [
+            "6540ec25b1bd3956",
+            "179636574e6c3f89",
+            "acaeeb7fad278cc7",
+            "40ffe635da9de902",
+            "6fd04aea25a45cad",
+            "8378390e5be5c8a2",
+            "afe470b362c9e8e7",
+            "112f77d59c6909e2"
+          ],
+          "content_sha256": [
+            "49b9f091f3d4f60512f2f3907d00d145eb5023a1147f36aac85d77c9cbdd85ec",
+            "ffa0741f7a64b17339ce7691c7a24caa439823a01dec071fedb0b59d455fd134",
+            "3c1556e0a26711006b236aedc693fedc9168e30cbdab031092c7d2141a4fef90",
+            "e40bb3244b7976180f33381655b75b72603bf91476278ff22c4f970b3259d559",
+            "e344a9f62c69bd237e15eb569c495b6b6ac1ad9be750174083988b1b0e91bf2d",
+            "174f1a75e9bd53ddec07fa60f6391b27d6c0b0c9f5a3f6c662b8c0cb0e0f458f",
+            "8dfac0401405ef517197a7d58bc661e681c77324f867bb8a70b548ddab430638",
+            "145fc4f060bf736866673eadff26ac4b64ede337867665cebfe2e5426931ccdd"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0333333,
+            0.2,
+            0.366667,
+            0.533333
+          ],
+          "source_frame_candidates": [
+            [
+              1
+            ],
+            [
+              3
+            ],
+            [
+              6
+            ],
+            [
+              8
+            ],
+            [
+              11
+            ],
+            [
+              13
+            ],
+            [
+              16
+            ],
+            [
+              18
+            ]
+          ],
+          "source_pts_candidates": [
+            [
+              0.0333333
+            ],
+            [
+              0.1
+            ],
+            [
+              0.2
+            ],
+            [
+              0.266667
+            ],
+            [
+              0.366667
+            ],
+            [
+              0.433333
+            ],
+            [
+              0.533333
+            ],
+            [
+              0.6
+            ]
+          ],
+          "source_frame_binding": "EXACT",
+          "output_filter_timestamps_seconds": [
+            0.0,
+            0.0833333,
+            0.166667,
+            0.25,
+            0.333333,
+            0.416667,
+            0.5,
+            0.583333
+          ],
+          "native_nominal_timestamps": [
+            0.0,
+            0.083333375,
+            0.16666675,
+            0.250000125,
+            0.3333335,
+            0.416666875,
+            0.50000025,
+            0.583333625
+          ]
+        }
+      }
+    },
+    "natural-05": {
+      "video": "fixtures/natural-05.mp4",
+      "video_sha256": "794e5cd3b7b559b37f0cb6f5fc9083bd21cf4a01cd2be05a627778932f75e9b0",
+      "video_bytes": 40084,
+      "source_frame_range": [
+        115,
+        134
+      ],
+      "frame_count": 20,
+      "candidate_count": 20,
+      "candidate_stride": 1,
+      "duration_seconds": 0.666667,
+      "native_decode": {
+        "width": 256,
+        "height": 160,
+        "fps": 30
+      },
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 256,
+            "height": 160,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "30/1",
+            "duration": "0.666667",
+            "nb_frames": "20"
+          }
+        ],
+        "format": {
+          "duration": "0.667000",
+          "size": "40084"
+        }
+      },
+      "content_frames": "content/natural-05.frames.jsonl",
+      "packets": "content/natural-05.packets.json",
+      "review_sheet": "review/natural-05.png",
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      },
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.005453431372549019,
+          0.03515625
+        ],
+        [
+          7.659313725490196e-05,
+          0.00390625
+        ],
+        [
+          0.004503676470588235,
+          0.0390625
+        ],
+        [
+          0.00390625,
+          0.04296875
+        ],
+        [
+          0.003783700980392157,
+          0.02734375
+        ],
+        [
+          0.0038756127450980393,
+          0.02734375
+        ],
+        [
+          7.659313725490196e-05,
+          0.00390625
+        ],
+        [
+          0.0031862745098039215,
+          0.015625
+        ],
+        [
+          0.0028339460784313725,
+          0.01171875
+        ],
+        [
+          0.00274203431372549,
+          0.04296875
+        ],
+        [
+          0.003829656862745098,
+          0.02734375
+        ],
+        [
+          7.659313725490196e-05,
+          0.0
+        ],
+        [
+          0.003002450980392157,
+          0.0234375
+        ],
+        [
+          0.0026041666666666665,
+          0.01953125
+        ],
+        [
+          0.0026348039215686276,
+          0.03515625
+        ],
+        [
+          0.0031862745098039215,
+          0.015625
+        ],
+        [
+          1.5318627450980392e-05,
+          0.0
+        ],
+        [
+          0.0023897058823529414,
+          0.01953125
+        ],
+        [
+          0.002650122549019608,
+          0.02734375
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "60a3e0ddee42da0a",
+            "7244b5a42145256d",
+            "473929d85e17f30f",
+            "74ffacde15a236b0"
+          ],
+          "content_sha256": [
+            "d13a974624abf7b9db48ab189b77d83c2355a73da252aa3932285bca06eca44a",
+            "52f0b0e15200cdd451b8e360d793e5dc25b37fd51ac83067cf3e1bc8fbd6b9d0",
+            "2e385b9c6b6798ba945c81934dc79a49a79f5a14c6ebd8f6a0d1c6959b150451",
+            "450b1f8bd4155e116b1fdaee66ee92703a542866c9731cec8164d8bd9ec240b6"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.1,
+            0.166667,
+            0.266667,
+            0.366667,
+            0.466667,
+            0.533333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "60a3e0ddee42da0a",
+            "983290d6cd848f14",
+            "8d6a5e6fd8029b7f",
+            "84cc0222592eaab3",
+            "c24cf5b3a2518eba",
+            "eb7858f1f2b1d018",
+            "cad5d6cc527232d0",
+            "74ffacde15a236b0"
+          ],
+          "content_sha256": [
+            "d13a974624abf7b9db48ab189b77d83c2355a73da252aa3932285bca06eca44a",
+            "f628b09db2581006d171a35618bcb1bd954521a30b0c098550201444155e9c98",
+            "ba774efa8f507ad68b562604e8e691b9da5ef84c033b060261f2bcc177834f0f",
+            "5f3c41b75996d8f7537f9b2100bb0ecb426b8301a7d085f0820bcde6c4d540be",
+            "f94745160a10124b6eed484ea674b37b6e6128c90054e3a43d1a5c6f7853ba18",
+            "816787e86a959b92999807905e41f4087092767c5c3d8c2f9018dda26c6b3f37",
+            "7b0a32874710d65b8e89f7c3b24bdb8e07856cdfc7054dff1b29dda0565d45e1",
+            "450b1f8bd4155e116b1fdaee66ee92703a542866c9731cec8164d8bd9ec240b6"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.166667,
+            0.366667,
+            0.533333
+          ]
+        }
+      },
+      "expected_uniform": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "60a3e0ddee42da0a",
+            "7244b5a42145256d",
+            "473929d85e17f30f",
+            "74ffacde15a236b0"
+          ],
+          "content_sha256": [
+            "d13a974624abf7b9db48ab189b77d83c2355a73da252aa3932285bca06eca44a",
+            "52f0b0e15200cdd451b8e360d793e5dc25b37fd51ac83067cf3e1bc8fbd6b9d0",
+            "2e385b9c6b6798ba945c81934dc79a49a79f5a14c6ebd8f6a0d1c6959b150451",
+            "450b1f8bd4155e116b1fdaee66ee92703a542866c9731cec8164d8bd9ec240b6"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "source_frame_indices": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ],
+          "source_timestamps_seconds": [
+            0.0333333,
+            0.1,
+            0.2,
+            0.266667,
+            0.366667,
+            0.433333,
+            0.533333,
+            0.6
+          ],
+          "content_fnv1a64": [
+            "cb7407324dedd258",
+            "983290d6cd848f14",
+            "7244b5a42145256d",
+            "84cc0222592eaab3",
+            "c24cf5b3a2518eba",
+            "473929d85e17f30f",
+            "cad5d6cc527232d0",
+            "92c12867bbb676c5"
+          ],
+          "content_sha256": [
+            "10d35ded4ea26f0d3d5fbd0cf7086164f4bdc141290ec58de996ec3555641de3",
+            "f628b09db2581006d171a35618bcb1bd954521a30b0c098550201444155e9c98",
+            "52f0b0e15200cdd451b8e360d793e5dc25b37fd51ac83067cf3e1bc8fbd6b9d0",
+            "5f3c41b75996d8f7537f9b2100bb0ecb426b8301a7d085f0820bcde6c4d540be",
+            "f94745160a10124b6eed484ea674b37b6e6128c90054e3a43d1a5c6f7853ba18",
+            "2e385b9c6b6798ba945c81934dc79a49a79f5a14c6ebd8f6a0d1c6959b150451",
+            "7b0a32874710d65b8e89f7c3b24bdb8e07856cdfc7054dff1b29dda0565d45e1",
+            "0114a313f713d96f5ab505b1e7f19c2415cf55cc4bddb79224ca2d68688d6b55"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0333333,
+            0.2,
+            0.366667,
+            0.533333
+          ],
+          "source_frame_candidates": [
+            [
+              1
+            ],
+            [
+              3
+            ],
+            [
+              6
+            ],
+            [
+              8
+            ],
+            [
+              11
+            ],
+            [
+              13
+            ],
+            [
+              16
+            ],
+            [
+              18
+            ]
+          ],
+          "source_pts_candidates": [
+            [
+              0.0333333
+            ],
+            [
+              0.1
+            ],
+            [
+              0.2
+            ],
+            [
+              0.266667
+            ],
+            [
+              0.366667
+            ],
+            [
+              0.433333
+            ],
+            [
+              0.533333
+            ],
+            [
+              0.6
+            ]
+          ],
+          "source_frame_binding": "EXACT",
+          "output_filter_timestamps_seconds": [
+            0.0,
+            0.0833333,
+            0.166667,
+            0.25,
+            0.333333,
+            0.416667,
+            0.5,
+            0.583333
+          ],
+          "native_nominal_timestamps": [
+            0.0,
+            0.083333375,
+            0.16666675,
+            0.250000125,
+            0.3333335,
+            0.416666875,
+            0.50000025,
+            0.583333625
+          ]
+        }
+      }
+    },
+    "natural-06": {
+      "video": "fixtures/natural-06.mp4",
+      "video_sha256": "1e342f8ba8d5fabf1a815e0aa64439217da5ed0a446f350d6c0e2ec978dd0c52",
+      "video_bytes": 18411,
+      "source_frame_range": [
+        150,
+        164
+      ],
+      "frame_count": 15,
+      "candidate_count": 15,
+      "candidate_stride": 1,
+      "duration_seconds": 0.5,
+      "native_decode": {
+        "width": 256,
+        "height": 160,
+        "fps": 30
+      },
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 256,
+            "height": 160,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "30/1",
+            "duration": "0.500000",
+            "nb_frames": "15"
+          }
+        ],
+        "format": {
+          "duration": "0.500000",
+          "size": "18411"
+        }
+      },
+      "content_frames": "content/natural-06.frames.jsonl",
+      "packets": "content/natural-06.packets.json",
+      "review_sheet": "review/natural-06.png",
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      },
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.000704656862745098,
+          0.0
+        ],
+        [
+          0.0006433823529411765,
+          0.00390625
+        ],
+        [
+          9.191176470588235e-05,
+          0.0
+        ],
+        [
+          0.000428921568627451,
+          0.00390625
+        ],
+        [
+          0.0004901960784313725,
+          0.00390625
+        ],
+        [
+          0.00022977941176470588,
+          0.00390625
+        ],
+        [
+          0.00022977941176470588,
+          0.0
+        ],
+        [
+          0.0007199754901960785,
+          0.01171875
+        ],
+        [
+          0.000352328431372549,
+          0.01171875
+        ],
+        [
+          0.00012254901960784314,
+          0.00390625
+        ],
+        [
+          0.0005514705882352941,
+          0.0078125
+        ],
+        [
+          0.0001685049019607843,
+          0.00390625
+        ],
+        [
+          0.0003982843137254902,
+          0.0078125
+        ],
+        [
+          0.0007965686274509804,
+          0.015625
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "f2744628fedc7897",
+            "c2baadf688fdb040",
+            "987f0a2d15240836",
+            "f053b252e3c35428"
+          ],
+          "content_sha256": [
+            "ca77eb66f52d32e9d42191a5d77e8a9a5f56a9d651bd68deb28482f2f8c5a2c5",
+            "5e817df3c94b45e83d1b608b30c5b0f62e98c0229e383f219b88c3e28b2fc7f5",
+            "686320f09df1c61de445eab14d8e1c5a02cf6d6a2bbc88adfab14c58273c4829",
+            "681d2968f45410b99303e7fad3b94d79998b49d7569f47a7c770d483defb6027"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "f2744628fedc7897",
+            "dd8b8494c5e27867",
+            "d9a00da57dd25a4c",
+            "46c95f738ad7efb4",
+            "1c15cfcea37299bf",
+            "fa1f670ab17620d0",
+            "1035995c3530052a",
+            "f053b252e3c35428"
+          ],
+          "content_sha256": [
+            "ca77eb66f52d32e9d42191a5d77e8a9a5f56a9d651bd68deb28482f2f8c5a2c5",
+            "4e3535487829b77456999848a713b1e3834c4d1776df6abf49a9c2d8bd76c100",
+            "abd36156b580e7fb89be85392c3db6f662bf189a22b7537a5fa70c884ce1cf63",
+            "3f4fa6da8c946129d466ea5e293dcf3412c439ab4e7ce75425b7f95b30c8d936",
+            "58fd972dd8e2e4e662b7917ffd742a3c9e6749da1ae96f5ae80392e348dcb318",
+            "143f6c420eeeb0060dd7a1040e6a49b3fb91ad20e6aaf4cb786fa2e2c64c0165",
+            "fa67c8abd8b93fdde5e3db4ef22f1d7b148ea330b6d3a75b20909e492334aecf",
+            "681d2968f45410b99303e7fad3b94d79998b49d7569f47a7c770d483defb6027"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ]
+        }
+      },
+      "expected_uniform": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "f2744628fedc7897",
+            "c2baadf688fdb040",
+            "987f0a2d15240836",
+            "f053b252e3c35428"
+          ],
+          "content_sha256": [
+            "ca77eb66f52d32e9d42191a5d77e8a9a5f56a9d651bd68deb28482f2f8c5a2c5",
+            "5e817df3c94b45e83d1b608b30c5b0f62e98c0229e383f219b88c3e28b2fc7f5",
+            "686320f09df1c61de445eab14d8e1c5a02cf6d6a2bbc88adfab14c58273c4829",
+            "681d2968f45410b99303e7fad3b94d79998b49d7569f47a7c770d483defb6027"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "f2744628fedc7897",
+            "dd8b8494c5e27867",
+            "d9a00da57dd25a4c",
+            "46c95f738ad7efb4",
+            "1c15cfcea37299bf",
+            "fa1f670ab17620d0",
+            "1035995c3530052a",
+            "f053b252e3c35428"
+          ],
+          "content_sha256": [
+            "ca77eb66f52d32e9d42191a5d77e8a9a5f56a9d651bd68deb28482f2f8c5a2c5",
+            "4e3535487829b77456999848a713b1e3834c4d1776df6abf49a9c2d8bd76c100",
+            "abd36156b580e7fb89be85392c3db6f662bf189a22b7537a5fa70c884ce1cf63",
+            "3f4fa6da8c946129d466ea5e293dcf3412c439ab4e7ce75425b7f95b30c8d936",
+            "58fd972dd8e2e4e662b7917ffd742a3c9e6749da1ae96f5ae80392e348dcb318",
+            "143f6c420eeeb0060dd7a1040e6a49b3fb91ad20e6aaf4cb786fa2e2c64c0165",
+            "fa67c8abd8b93fdde5e3db4ef22f1d7b148ea330b6d3a75b20909e492334aecf",
+            "681d2968f45410b99303e7fad3b94d79998b49d7569f47a7c770d483defb6027"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ],
+          "source_frame_candidates": [
+            [
+              0
+            ],
+            [
+              2
+            ],
+            [
+              4
+            ],
+            [
+              6
+            ],
+            [
+              8
+            ],
+            [
+              10
+            ],
+            [
+              12
+            ],
+            [
+              14
+            ]
+          ],
+          "source_pts_candidates": [
+            [
+              0.0
+            ],
+            [
+              0.0666667
+            ],
+            [
+              0.133333
+            ],
+            [
+              0.2
+            ],
+            [
+              0.266667
+            ],
+            [
+              0.333333
+            ],
+            [
+              0.4
+            ],
+            [
+              0.466667
+            ]
+          ],
+          "source_frame_binding": "EXACT",
+          "output_filter_timestamps_seconds": [
+            0.0,
+            0.0625,
+            0.125,
+            0.1875,
+            0.25,
+            0.3125,
+            0.375,
+            0.4375
+          ],
+          "native_nominal_timestamps": [
+            0.0,
+            0.0625,
+            0.125,
+            0.1875,
+            0.25,
+            0.3125,
+            0.375,
+            0.4375
+          ]
+        }
+      }
+    },
+    "natural-07": {
+      "video": "fixtures/natural-07.mp4",
+      "video_sha256": "dc14c71304aeb6a1cc5e5f086b50b666cb4198b7fbcd35fe41879e332e0028b8",
+      "video_bytes": 18408,
+      "source_frame_range": [
+        165,
+        179
+      ],
+      "frame_count": 15,
+      "candidate_count": 15,
+      "candidate_stride": 1,
+      "duration_seconds": 0.5,
+      "native_decode": {
+        "width": 256,
+        "height": 160,
+        "fps": 30
+      },
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 256,
+            "height": 160,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "30/1",
+            "duration": "0.500000",
+            "nb_frames": "15"
+          }
+        ],
+        "format": {
+          "duration": "0.500000",
+          "size": "18408"
+        }
+      },
+      "content_frames": "content/natural-07.frames.jsonl",
+      "packets": "content/natural-07.packets.json",
+      "review_sheet": "review/natural-07.png",
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      },
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.00012254901960784314,
+          0.0
+        ],
+        [
+          0.0006127450980392157,
+          0.00390625
+        ],
+        [
+          0.000352328431372549,
+          0.0
+        ],
+        [
+          0.00010723039215686274,
+          0.0
+        ],
+        [
+          0.00078125,
+          0.00390625
+        ],
+        [
+          0.0006280637254901961,
+          0.00390625
+        ],
+        [
+          0.00022977941176470588,
+          0.0
+        ],
+        [
+          0.00032169117647058823,
+          0.00390625
+        ],
+        [
+          0.0006587009803921569,
+          0.01171875
+        ],
+        [
+          0.0006433823529411765,
+          0.0078125
+        ],
+        [
+          0.00045955882352941176,
+          0.0078125
+        ],
+        [
+          0.0006587009803921569,
+          0.0078125
+        ],
+        [
+          0.0003829656862745098,
+          0.0
+        ],
+        [
+          9.191176470588235e-05,
+          0.00390625
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "252527dec76a21e6",
+            "1f0ce5c4aef65d17",
+            "da38c259d65efa72",
+            "068f93b360c969a2"
+          ],
+          "content_sha256": [
+            "89177913cbe6b7c9dc4ef94f3000a5d86398bab43a897f0f02787b4f30a4c98a",
+            "3d77db1223e7eea28acc89f150069121bcb7488a35a3ada02f0bbf7d962c62ad",
+            "2df41e91fa2144b25451c82abdcd0f40c83f0d9ec1d524bdcd86a102f8d5d06e",
+            "19fc05bafb1b53ddb4eef0335347da322099344f5e40fc9326c23149c5e9153f"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "252527dec76a21e6",
+            "04d0bc7aadbbc30e",
+            "bb39924b46c76a80",
+            "93ae1c543c952212",
+            "50ac67b27fb1b85e",
+            "30ce3802d3ab7157",
+            "4de9a8ad4937c9aa",
+            "068f93b360c969a2"
+          ],
+          "content_sha256": [
+            "89177913cbe6b7c9dc4ef94f3000a5d86398bab43a897f0f02787b4f30a4c98a",
+            "973d1f4ecb148798e4b38bdbff06f8874ac2692e1784da53dba3d371e7e8a890",
+            "aedfc693300183779bf9f6ecec8fab88f246ac7244ca4992566aa334252c8388",
+            "6b14438968c3992c1ea214e3a815784f57782ea6e8ffe5bab78adf2ff7005e21",
+            "f44bb99574d74d99bae82aee379404542d46a745b81b3f3d94966de9b93126d4",
+            "14d16196697126c1d6e622b5685dd5ab95f7bbcb363696f34a49fa55c65645f6",
+            "3c78fe70886bca75b64f0ee4a7658d5b1b39c26e31f4adcb24e76bfd787c9aea",
+            "19fc05bafb1b53ddb4eef0335347da322099344f5e40fc9326c23149c5e9153f"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ]
+        }
+      },
+      "expected_uniform": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "252527dec76a21e6",
+            "1f0ce5c4aef65d17",
+            "da38c259d65efa72",
+            "068f93b360c969a2"
+          ],
+          "content_sha256": [
+            "89177913cbe6b7c9dc4ef94f3000a5d86398bab43a897f0f02787b4f30a4c98a",
+            "3d77db1223e7eea28acc89f150069121bcb7488a35a3ada02f0bbf7d962c62ad",
+            "2df41e91fa2144b25451c82abdcd0f40c83f0d9ec1d524bdcd86a102f8d5d06e",
+            "19fc05bafb1b53ddb4eef0335347da322099344f5e40fc9326c23149c5e9153f"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "252527dec76a21e6",
+            "04d0bc7aadbbc30e",
+            "bb39924b46c76a80",
+            "93ae1c543c952212",
+            "50ac67b27fb1b85e",
+            "30ce3802d3ab7157",
+            "4de9a8ad4937c9aa",
+            "068f93b360c969a2"
+          ],
+          "content_sha256": [
+            "89177913cbe6b7c9dc4ef94f3000a5d86398bab43a897f0f02787b4f30a4c98a",
+            "973d1f4ecb148798e4b38bdbff06f8874ac2692e1784da53dba3d371e7e8a890",
+            "aedfc693300183779bf9f6ecec8fab88f246ac7244ca4992566aa334252c8388",
+            "6b14438968c3992c1ea214e3a815784f57782ea6e8ffe5bab78adf2ff7005e21",
+            "f44bb99574d74d99bae82aee379404542d46a745b81b3f3d94966de9b93126d4",
+            "14d16196697126c1d6e622b5685dd5ab95f7bbcb363696f34a49fa55c65645f6",
+            "3c78fe70886bca75b64f0ee4a7658d5b1b39c26e31f4adcb24e76bfd787c9aea",
+            "19fc05bafb1b53ddb4eef0335347da322099344f5e40fc9326c23149c5e9153f"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ],
+          "source_frame_candidates": [
+            [
+              0
+            ],
+            [
+              2
+            ],
+            [
+              4
+            ],
+            [
+              6
+            ],
+            [
+              8
+            ],
+            [
+              10
+            ],
+            [
+              12
+            ],
+            [
+              14
+            ]
+          ],
+          "source_pts_candidates": [
+            [
+              0.0
+            ],
+            [
+              0.0666667
+            ],
+            [
+              0.133333
+            ],
+            [
+              0.2
+            ],
+            [
+              0.266667
+            ],
+            [
+              0.333333
+            ],
+            [
+              0.4
+            ],
+            [
+              0.466667
+            ]
+          ],
+          "source_frame_binding": "EXACT",
+          "output_filter_timestamps_seconds": [
+            0.0,
+            0.0625,
+            0.125,
+            0.1875,
+            0.25,
+            0.3125,
+            0.375,
+            0.4375
+          ],
+          "native_nominal_timestamps": [
+            0.0,
+            0.0625,
+            0.125,
+            0.1875,
+            0.25,
+            0.3125,
+            0.375,
+            0.4375
+          ]
+        }
+      }
+    },
+    "natural-08": {
+      "video": "fixtures/natural-08.mp4",
+      "video_sha256": "cce6f3402a97a96e2ec66b9c8ebbb7b29c9e366d3198a2a4925248cc80de2b90",
+      "video_bytes": 18948,
+      "source_frame_range": [
+        180,
+        194
+      ],
+      "frame_count": 15,
+      "candidate_count": 15,
+      "candidate_stride": 1,
+      "duration_seconds": 0.5,
+      "native_decode": {
+        "width": 256,
+        "height": 160,
+        "fps": 30
+      },
+      "ffprobe": {
+        "programs": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "profile": "High",
+            "width": 256,
+            "height": 160,
+            "has_b_frames": 2,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "30/1",
+            "duration": "0.500000",
+            "nb_frames": "15"
+          }
+        ],
+        "format": {
+          "duration": "0.500000",
+          "size": "18948"
+        }
+      },
+      "content_frames": "content/natural-08.frames.jsonl",
+      "packets": "content/natural-08.packets.json",
+      "review_sheet": "review/natural-08.png",
+      "decode_order": {
+        "decode_order_pts_nonmonotonic": true,
+        "decode_order_dts_strictly_increasing": true
+      },
+      "candidate_scores_motion_scene": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0007199754901960785,
+          0.01171875
+        ],
+        [
+          0.0002144607843137255,
+          0.0
+        ],
+        [
+          0.000428921568627451,
+          0.00390625
+        ],
+        [
+          0.0005361519607843138,
+          0.0078125
+        ],
+        [
+          3.0637254901960784e-05,
+          0.00390625
+        ],
+        [
+          0.00032169117647058823,
+          0.00390625
+        ],
+        [
+          0.0008272058823529412,
+          0.0078125
+        ],
+        [
+          9.191176470588235e-05,
+          0.0
+        ],
+        [
+          0.00029105392156862745,
+          0.00390625
+        ],
+        [
+          0.00078125,
+          0.00390625
+        ],
+        [
+          0.0005821078431372549,
+          0.0
+        ],
+        [
+          0.0003829656862745098,
+          0.00390625
+        ],
+        [
+          0.0007199754901960785,
+          0.0078125
+        ],
+        [
+          0.0006740196078431372,
+          0.00390625
+        ]
+      ],
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "950c29f8e7fb9234",
+            "2ea5a852123ac310",
+            "7e0683fa7a01263e",
+            "07da30100372d197"
+          ],
+          "content_sha256": [
+            "ece9992246778033a11ca12cd26dc6860a1b3c71a1370f481db26962eca9c8a1",
+            "34b8b505c47fdb8c41bd2a77dfed0a953ccdbad851df04a118560121795a0fcf",
+            "56fd84ae46795f8f2fb7e9a1f44ee5675d50a0d8f2af864409143457f73046af",
+            "beddd3d2ecb61477f2241a0a205fae078673f6d5e94327a8e37ea8febc757939"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "950c29f8e7fb9234",
+            "cdb6de787975726e",
+            "925ac9f5cc1897e1",
+            "b4ffea0ed82ac1e6",
+            "01b68a298f381b2f",
+            "0aa4a0ae9b2c9993",
+            "6f032baf13c634e7",
+            "07da30100372d197"
+          ],
+          "content_sha256": [
+            "ece9992246778033a11ca12cd26dc6860a1b3c71a1370f481db26962eca9c8a1",
+            "477cff9638444837b342c18412826627f67f2b71f8a937e37fb6c74e8ebcede9",
+            "aa81a62945a5e4f0d5bf9b9bbcc9422639d7566a0ca40d8cac0373528cb555d5",
+            "9614751485feec60ea0520762ca5e1da7fb7c08254b204ee5f39642bcf2f3895",
+            "9b9f7a2839edac9109c9d0600ebdfe4b947969ce850e242c30449f5c9a6e424e",
+            "8afeb4087dda979f1bf64a5dfa52946e0db347ff043e63c8587825cf7161ed22",
+            "513e1dcd7d3731fba0a6e845d36e0dab8338bfdbf78edfc696a9313d9871f987",
+            "beddd3d2ecb61477f2241a0a205fae078673f6d5e94327a8e37ea8febc757939"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ]
+        }
+      },
+      "expected_uniform": {
+        "4": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "950c29f8e7fb9234",
+            "2ea5a852123ac310",
+            "7e0683fa7a01263e",
+            "07da30100372d197"
+          ],
+          "content_sha256": [
+            "ece9992246778033a11ca12cd26dc6860a1b3c71a1370f481db26962eca9c8a1",
+            "34b8b505c47fdb8c41bd2a77dfed0a953ccdbad851df04a118560121795a0fcf",
+            "56fd84ae46795f8f2fb7e9a1f44ee5675d50a0d8f2af864409143457f73046af",
+            "beddd3d2ecb61477f2241a0a205fae078673f6d5e94327a8e37ea8febc757939"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "950c29f8e7fb9234",
+            "cdb6de787975726e",
+            "925ac9f5cc1897e1",
+            "b4ffea0ed82ac1e6",
+            "01b68a298f381b2f",
+            "0aa4a0ae9b2c9993",
+            "6f032baf13c634e7",
+            "07da30100372d197"
+          ],
+          "content_sha256": [
+            "ece9992246778033a11ca12cd26dc6860a1b3c71a1370f481db26962eca9c8a1",
+            "477cff9638444837b342c18412826627f67f2b71f8a937e37fb6c74e8ebcede9",
+            "aa81a62945a5e4f0d5bf9b9bbcc9422639d7566a0ca40d8cac0373528cb555d5",
+            "9614751485feec60ea0520762ca5e1da7fb7c08254b204ee5f39642bcf2f3895",
+            "9b9f7a2839edac9109c9d0600ebdfe4b947969ce850e242c30449f5c9a6e424e",
+            "8afeb4087dda979f1bf64a5dfa52946e0db347ff043e63c8587825cf7161ed22",
+            "513e1dcd7d3731fba0a6e845d36e0dab8338bfdbf78edfc696a9313d9871f987",
+            "beddd3d2ecb61477f2241a0a205fae078673f6d5e94327a8e37ea8febc757939"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ],
+          "source_frame_candidates": [
+            [
+              0
+            ],
+            [
+              2
+            ],
+            [
+              4
+            ],
+            [
+              6
+            ],
+            [
+              8
+            ],
+            [
+              10
+            ],
+            [
+              12
+            ],
+            [
+              14
+            ]
+          ],
+          "source_pts_candidates": [
+            [
+              0.0
+            ],
+            [
+              0.0666667
+            ],
+            [
+              0.133333
+            ],
+            [
+              0.2
+            ],
+            [
+              0.266667
+            ],
+            [
+              0.333333
+            ],
+            [
+              0.4
+            ],
+            [
+              0.466667
+            ]
+          ],
+          "source_frame_binding": "EXACT",
+          "output_filter_timestamps_seconds": [
+            0.0,
+            0.0625,
+            0.125,
+            0.1875,
+            0.25,
+            0.3125,
+            0.375,
+            0.4375
+          ],
+          "native_nominal_timestamps": [
+            0.0,
+            0.0625,
+            0.125,
+            0.1875,
+            0.25,
+            0.3125,
+            0.375,
+            0.4375
+          ]
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "natural-01",
+      "video_id": "natural-01",
+      "language": "en",
+      "question": "What large living things dominate this landscape? Answer with one noun.",
+      "expect_all": [
+        "tree"
+      ],
+      "expect_any_group": true,
+      "evaluation_role": "quality_scored",
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "trees",
+        "derivation": "Multiple large trees with trunks and dense canopies are directly visible around the grass clearing throughout the excerpt.",
+        "source_frames": [
+          0,
+          15,
+          29
+        ]
+      },
+      "video": "fixtures/natural-01.mp4",
+      "video_sha256": "22df061c95db2546973d2c4a7a9a74728b0dd1df05ba7c57bab6e2aefa8d7dd7",
+      "candidate_count": 30,
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_frame_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.333333,
+            0.633333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "a9284e31dea32f49",
+            "984b7eb47bdcfc5a",
+            "0dac18163e30cb73",
+            "dd9a611db389cdaf"
+          ],
+          "content_sha256": [
+            "7f55819c6327627e61eff64ebd4f2195d1197c08d7c82d9a6fecd22bfbc2467b",
+            "2ecc9d752944a5ee1a2639db3bff53b2a2b5cafeec34f752ba0132e97813ed55",
+            "c19cb4d5e99c48932fba2f675959d7467b72f76a2a95b4bb9125fc958f3da4d1",
+            "ffd5aadc46efd0adb57570fb59365dc981fc4dc70dc9c271d1c27c0ee3afbd39"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.633333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ],
+          "source_frame_indices": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4,
+            0.566667,
+            0.7,
+            0.833333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "a9284e31dea32f49",
+            "88a1f72a5688ebe9",
+            "908e0cce90f000ff",
+            "8583b31d9ff2fd8e",
+            "90476df9d4f4d6aa",
+            "448d42d8bd7ef49e",
+            "4edada313e40b520",
+            "dd9a611db389cdaf"
+          ],
+          "content_sha256": [
+            "7f55819c6327627e61eff64ebd4f2195d1197c08d7c82d9a6fecd22bfbc2467b",
+            "593a0ffb438e3ecb782232f29d256250358f6bf5d0f85cc5f4de59e4bd5ad056",
+            "928fb22c8597888982e4eb80d906d84227b8a217a15c89d91170459cbabe912a",
+            "cbbd97920ebc08768a3a5ef1b8e1fc6a3930dce9e65031f42719cbbf5f635774",
+            "1cc036922e67689a32e3e55fe031e6bf7392bd44a20ae7491c1ab658dd41ba4a",
+            "2e0626004519b8ce78d0a72a6d05c1342385d743abbeb4a400c51036e72721b8",
+            "6f98b31be354289db8ab79458fbe0e729090df62200d71e3289a4db466180f78",
+            "ffd5aadc46efd0adb57570fb59365dc981fc4dc70dc9c271d1c27c0ee3afbd39"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.266667,
+            0.566667,
+            0.833333
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          1,
+          5,
+          9,
+          13,
+          16,
+          20,
+          24,
+          28
+        ],
+        "source_timestamps_seconds": [
+          0.0333333,
+          0.166667,
+          0.3,
+          0.433333,
+          0.533333,
+          0.666667,
+          0.8,
+          0.933333
+        ],
+        "content_fnv1a64": [
+          "a2f08c9d373f645a",
+          "f1de125b5b6f947a",
+          "509f3f2f78920a6d",
+          "2329f58a3c885456",
+          "90476df9d4f4d6aa",
+          "285e920946564abb",
+          "e76ce62cf3c143ec",
+          "9dae3f5ffdb1f429"
+        ],
+        "content_sha256": [
+          "3eb0f6fefd5f703a60dffb768fbeb550248c29ed5eec607bf212551794809a4c",
+          "c5373c511a07bd3cc260d5462e930b0a49c383c3ff13b9ba4ca6a45e9f94bfe7",
+          "d71e3b711c2944fc4ec6e4107f74d9d2a2c95b3ffd462d1c2a0505e5d09a9502",
+          "7746300f42439a45d682574bb1a9c2269c2286124dcf8de12409f593df6a7800",
+          "1cc036922e67689a32e3e55fe031e6bf7392bd44a20ae7491c1ab658dd41ba4a",
+          "32a7d2f5efcbdb446a9703170e3dde007c74bc1c322c4dbaa928dc207cb293d0",
+          "84e2aeca8b589c8e28a979a1dca2f970e8498545b5437efa3a2aed9e47c3a56a",
+          "0e969f2277ea6643e921710350598f58912c932b559c68b9fd1187e1386b03f2"
+        ],
+        "temporal2_pair_first_timestamps": [
+          0.0333333,
+          0.3,
+          0.533333,
+          0.8
+        ],
+        "source_frame_candidates": [
+          [
+            1
+          ],
+          [
+            5
+          ],
+          [
+            9
+          ],
+          [
+            13
+          ],
+          [
+            16,
+            17
+          ],
+          [
+            20
+          ],
+          [
+            24
+          ],
+          [
+            28
+          ]
+        ],
+        "source_pts_candidates": [
+          [
+            0.0333333
+          ],
+          [
+            0.166667
+          ],
+          [
+            0.3
+          ],
+          [
+            0.433333
+          ],
+          [
+            0.533333,
+            0.566667
+          ],
+          [
+            0.666667
+          ],
+          [
+            0.8
+          ],
+          [
+            0.933333
+          ]
+        ],
+        "source_frame_binding": "AMBIGUOUS_EXACT_REPEATED_SOURCE_RGB_ALL_CANDIDATES_RETAINED",
+        "output_filter_timestamps_seconds": [
+          0.0,
+          0.125,
+          0.25,
+          0.375,
+          0.5,
+          0.625,
+          0.75,
+          0.875
+        ],
+        "native_nominal_timestamps": [
+          0.0,
+          0.125,
+          0.25,
+          0.375,
+          0.5,
+          0.625,
+          0.75,
+          0.875
+        ]
+      },
+      "anchor_audit": {
+        "default-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            5,
+            9,
+            13,
+            16,
+            20,
+            24,
+            28
+          ]
+        },
+        "uniform-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            10,
+            19,
+            29
+          ]
+        },
+        "uniform-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            5,
+            9,
+            13,
+            16,
+            20,
+            24,
+            28
+          ]
+        },
+        "temporal-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            10,
+            19,
+            29
+          ]
+        },
+        "temporal-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ]
+        }
+      }
+    },
+    {
+      "id": "natural-02",
+      "video_id": "natural-02",
+      "language": "zh",
+      "question": "穿过树冠、照亮草地的是什么？只回答名称。",
+      "expect_all": [
+        "阳光"
+      ],
+      "expect_any_group": true,
+      "evaluation_role": "quality_scored",
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "阳光",
+        "derivation": "明亮的太阳及穿过树冠射向草地的光束在所有证据帧直接可见。",
+        "source_frames": [
+          30,
+          45,
+          59
+        ]
+      },
+      "video": "fixtures/natural-02.mp4",
+      "video_sha256": "95208b5e7f34271b149073083687e1f969a79d537c3af76bc1d00f282fc1fa58",
+      "candidate_count": 30,
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_frame_indices": [
+            0,
+            10,
+            19,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.333333,
+            0.633333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "f3de3a73b6427b1c",
+            "22583d83b100ea84",
+            "e051100296bec08f",
+            "bf7e19920d62c508"
+          ],
+          "content_sha256": [
+            "adc89a9b442ec06a4697cc46ef6c25eb529e232e5574fee0bd8d02bddf87a9ec",
+            "cbc41540b003c3da9a49bc9792052861ad4c11614c5bcf2fcfedfd71eec40acc",
+            "bfeb028e3ca38ab0b2b7a4786be84f0754486f47d4a8c7e7c10b07ab4f35bcd3",
+            "45a3e24870172c5e5eb58fbc8e412942f3213b561d23cf06aaaab3b38f0b9cb5"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.633333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ],
+          "source_frame_indices": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4,
+            0.566667,
+            0.7,
+            0.833333,
+            0.966667
+          ],
+          "content_fnv1a64": [
+            "f3de3a73b6427b1c",
+            "201ecefa3e43e309",
+            "911df3abb75d4f38",
+            "229bba05e77012ad",
+            "477b37712fb5de83",
+            "71792602e42f062e",
+            "9d277137c1ce4f21",
+            "bf7e19920d62c508"
+          ],
+          "content_sha256": [
+            "adc89a9b442ec06a4697cc46ef6c25eb529e232e5574fee0bd8d02bddf87a9ec",
+            "9867499f6704e946723d214daf78a4fcfba5c55237400f1c5dcca576277da5ad",
+            "b6865c5af2fbe16daf0533d560c5ce28b8761c918b2e9d6c4530e3d1cb64461e",
+            "ea8b3ac14120644162effbf4c90c1b4d629b5404b780ed2c87b46bb03da59d9b",
+            "447052eb73a6a51b1439fcc01b2c3ff90f1954c314c4c1d63480c7216888a338",
+            "bf828e952d234769c56aa081fa3e530037b7a8f69ce2bf3214e5689a5d68d05a",
+            "b35626b828d3d6fe710a765c14254b75853c41654b7cec9b3ceeec119b5c03cb",
+            "45a3e24870172c5e5eb58fbc8e412942f3213b561d23cf06aaaab3b38f0b9cb5"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.266667,
+            0.566667,
+            0.833333
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          1,
+          5,
+          9,
+          13,
+          16,
+          20,
+          24,
+          28
+        ],
+        "source_timestamps_seconds": [
+          0.0333333,
+          0.166667,
+          0.3,
+          0.433333,
+          0.533333,
+          0.666667,
+          0.8,
+          0.933333
+        ],
+        "content_fnv1a64": [
+          "a1d393e9cd674f38",
+          "3dc9fd08392b3b4d",
+          "81f017b7b5648802",
+          "b90fe1d47de1ee64",
+          "477b37712fb5de83",
+          "c5d6828106885129",
+          "5786a9bb613d93a4",
+          "5187e7e6ca8f9462"
+        ],
+        "content_sha256": [
+          "08ecba4aee5e189497527894b5c979e8b55dabcc296de04364a66af516241a4a",
+          "5fa87759f5a381244c307c41ffbe7a1a9c589f7ead29de72a0b7756759089ad2",
+          "9a355e07f343b2bcedf5316459d60243c8772ddf256d9c35a8c2e015260c6805",
+          "191b7f7d7af2e3b6cde36568f82269dc10be9b3b36ad0b1074a2515f8e965d57",
+          "447052eb73a6a51b1439fcc01b2c3ff90f1954c314c4c1d63480c7216888a338",
+          "7376ded26188a5d5438919496f5e296a87d828eb635681ee53e41b16f7618858",
+          "38e65be6f69d8404f8a0a54ed95511fa97496df0db5463da08f843093573b31c",
+          "812fddce9855ce9b7acd55f3581705402ed8262d97b2ccfbe0e8ddc5df17bf4f"
+        ],
+        "temporal2_pair_first_timestamps": [
+          0.0333333,
+          0.3,
+          0.533333,
+          0.8
+        ],
+        "source_frame_candidates": [
+          [
+            1,
+            2
+          ],
+          [
+            5
+          ],
+          [
+            9
+          ],
+          [
+            13
+          ],
+          [
+            16,
+            17
+          ],
+          [
+            20
+          ],
+          [
+            24
+          ],
+          [
+            28
+          ]
+        ],
+        "source_pts_candidates": [
+          [
+            0.0333333,
+            0.0666667
+          ],
+          [
+            0.166667
+          ],
+          [
+            0.3
+          ],
+          [
+            0.433333
+          ],
+          [
+            0.533333,
+            0.566667
+          ],
+          [
+            0.666667
+          ],
+          [
+            0.8
+          ],
+          [
+            0.933333
+          ]
+        ],
+        "source_frame_binding": "AMBIGUOUS_EXACT_REPEATED_SOURCE_RGB_ALL_CANDIDATES_RETAINED",
+        "output_filter_timestamps_seconds": [
+          0.0,
+          0.125,
+          0.25,
+          0.375,
+          0.5,
+          0.625,
+          0.75,
+          0.875
+        ],
+        "native_nominal_timestamps": [
+          0.0,
+          0.125,
+          0.25,
+          0.375,
+          0.5,
+          0.625,
+          0.75,
+          0.875
+        ]
+      },
+      "anchor_audit": {
+        "default-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            5,
+            9,
+            13,
+            16,
+            20,
+            24,
+            28
+          ]
+        },
+        "uniform-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            10,
+            19,
+            29
+          ]
+        },
+        "uniform-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            5,
+            9,
+            13,
+            16,
+            20,
+            24,
+            28
+          ]
+        },
+        "temporal-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            10,
+            19,
+            29
+          ]
+        },
+        "temporal-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            4,
+            8,
+            12,
+            17,
+            21,
+            25,
+            29
+          ]
+        }
+      }
+    },
+    {
+      "id": "natural-03",
+      "video_id": "natural-03",
+      "language": "es",
+      "question": "¿Qué animal está saliendo del océano? Responde solo con el nombre del animal.",
+      "expect_all": [
+        "ballena"
+      ],
+      "expect_any_group": true,
+      "evaluation_role": "quality_scored",
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "ballena",
+        "derivation": "La cabeza, la boca y el cuerpo de la ballena que emerge son directamente visibles durante todo el fragmento.",
+        "source_frames": [
+          75,
+          85,
+          94
+        ]
+      },
+      "video": "fixtures/natural-03.mp4",
+      "video_sha256": "6b3d7ef01d61df8a6995262b3658f0397b79988786f5c03f5d9c8ce0beefac48",
+      "candidate_count": 20,
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "c28bd15d2e797028",
+            "2635404184fc9725",
+            "37d072f479079980",
+            "4b04849a349ee24d"
+          ],
+          "content_sha256": [
+            "e05f831f78e3e5dc54bca1fb93f3b01ed91d61ecada2ac4186dc981315ed07d0",
+            "263e9e0ca52365210ce021eb818357152828f2605e0f1045205ce119eba657db",
+            "f3005defe1df824ec05c512280a6321a4d5225809526eae9cd3e4297b5d661a0",
+            "1e1b7025b79fdeabe3f03484e38e2ec2b947c309d24c6cb0ebf1d1e53d5b4120"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.1,
+            0.166667,
+            0.266667,
+            0.366667,
+            0.466667,
+            0.533333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "c28bd15d2e797028",
+            "425d81d1d9a9c572",
+            "841cbb4d0963d769",
+            "da653801348fc545",
+            "79d59c36811ce108",
+            "67ee41233ff3f131",
+            "aed720a3b5cec7e3",
+            "4b04849a349ee24d"
+          ],
+          "content_sha256": [
+            "e05f831f78e3e5dc54bca1fb93f3b01ed91d61ecada2ac4186dc981315ed07d0",
+            "20e3de3d2891b9e1c7020e840d17a5af243e3d9109760922ea9cfa7f0e7d2926",
+            "e77d8cc25f6dd1c204ee86e17f5b2601bfa2ef21c05f503e37dfe836130b56f7",
+            "e2073da47cf29f24e9d8e0de583d0a4407f6554539dd21ca9484f6e9878e62e0",
+            "578beb3eb6de3d35a01cb595e2b32b943503e2f57c743ee011ecc88b99652dc4",
+            "f438902ba197db6b7feeec765bf6a2ff6155d4329fc8b6ed0c7b02b62d35cfd0",
+            "c42eb179c7052d8f6108fe0060beafb1b5f5439fa3a926d0d557fdca02ce685e",
+            "1e1b7025b79fdeabe3f03484e38e2ec2b947c309d24c6cb0ebf1d1e53d5b4120"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.166667,
+            0.366667,
+            0.533333
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          1,
+          3,
+          6,
+          8,
+          11,
+          13,
+          16,
+          18
+        ],
+        "source_timestamps_seconds": [
+          0.0333333,
+          0.1,
+          0.2,
+          0.266667,
+          0.366667,
+          0.433333,
+          0.533333,
+          0.6
+        ],
+        "content_fnv1a64": [
+          "3195f4a69a4d859a",
+          "425d81d1d9a9c572",
+          "2635404184fc9725",
+          "da653801348fc545",
+          "79d59c36811ce108",
+          "37d072f479079980",
+          "aed720a3b5cec7e3",
+          "2768c48803c5b9e4"
+        ],
+        "content_sha256": [
+          "65dbfc21e16205784aa187e6228545fdc8a5eddf7e2cbb5979cfe5b1ef7354b8",
+          "20e3de3d2891b9e1c7020e840d17a5af243e3d9109760922ea9cfa7f0e7d2926",
+          "263e9e0ca52365210ce021eb818357152828f2605e0f1045205ce119eba657db",
+          "e2073da47cf29f24e9d8e0de583d0a4407f6554539dd21ca9484f6e9878e62e0",
+          "578beb3eb6de3d35a01cb595e2b32b943503e2f57c743ee011ecc88b99652dc4",
+          "f3005defe1df824ec05c512280a6321a4d5225809526eae9cd3e4297b5d661a0",
+          "c42eb179c7052d8f6108fe0060beafb1b5f5439fa3a926d0d557fdca02ce685e",
+          "ddf8404ab3620f29332f4e42b3546c552725df5259a853976c1f53f30ec7aca0"
+        ],
+        "temporal2_pair_first_timestamps": [
+          0.0333333,
+          0.2,
+          0.366667,
+          0.533333
+        ],
+        "source_frame_candidates": [
+          [
+            1
+          ],
+          [
+            3
+          ],
+          [
+            6
+          ],
+          [
+            8
+          ],
+          [
+            11
+          ],
+          [
+            13
+          ],
+          [
+            16
+          ],
+          [
+            18
+          ]
+        ],
+        "source_pts_candidates": [
+          [
+            0.0333333
+          ],
+          [
+            0.1
+          ],
+          [
+            0.2
+          ],
+          [
+            0.266667
+          ],
+          [
+            0.366667
+          ],
+          [
+            0.433333
+          ],
+          [
+            0.533333
+          ],
+          [
+            0.6
+          ]
+        ],
+        "source_frame_binding": "EXACT",
+        "output_filter_timestamps_seconds": [
+          0.0,
+          0.0833333,
+          0.166667,
+          0.25,
+          0.333333,
+          0.416667,
+          0.5,
+          0.583333
+        ],
+        "native_nominal_timestamps": [
+          0.0,
+          0.083333375,
+          0.16666675,
+          0.250000125,
+          0.3333335,
+          0.416666875,
+          0.50000025,
+          0.583333625
+        ]
+      },
+      "anchor_audit": {
+        "default-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ]
+        },
+        "uniform-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            6,
+            13,
+            19
+          ]
+        },
+        "uniform-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ]
+        },
+        "temporal-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            6,
+            13,
+            19
+          ]
+        },
+        "temporal-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ]
+        }
+      }
+    },
+    {
+      "id": "natural-04",
+      "video_id": "natural-04",
+      "language": "ja",
+      "question": "海から姿を見せている動物は何ですか？動物名だけで答えてください。",
+      "expect_all": [
+        "クジラ",
+        "鯨",
+        "くじら"
+      ],
+      "expect_any_group": true,
+      "evaluation_role": "quality_scored",
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "クジラ",
+        "derivation": "海面から現れる大型海洋生物の頭部、口、体型からクジラと直接同定できる。",
+        "source_frames": [
+          95,
+          105,
+          114
+        ]
+      },
+      "video": "fixtures/natural-04.mp4",
+      "video_sha256": "86ab1f14ebff6fb8f4825c47c0ac43c1e2619854421de6a8a850d6ea83841015",
+      "candidate_count": 20,
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "0c9f303d1a5cae0f",
+            "acaeeb7fad278cc7",
+            "8378390e5be5c8a2",
+            "89ced40d14af4daf"
+          ],
+          "content_sha256": [
+            "c3f3739863a3bea77875b012f7a16b98282b1d88eb943fdd498cf96e94dd1964",
+            "3c1556e0a26711006b236aedc693fedc9168e30cbdab031092c7d2141a4fef90",
+            "174f1a75e9bd53ddec07fa60f6391b27d6c0b0c9f5a3f6c662b8c0cb0e0f458f",
+            "66f9cf0249058da9fc5829c3a19e03da303f48d69c018e11ba754f6fe2355304"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.1,
+            0.166667,
+            0.266667,
+            0.366667,
+            0.466667,
+            0.533333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "0c9f303d1a5cae0f",
+            "179636574e6c3f89",
+            "3aecc7b416a6b78c",
+            "40ffe635da9de902",
+            "6fd04aea25a45cad",
+            "344a4224dfdce740",
+            "afe470b362c9e8e7",
+            "89ced40d14af4daf"
+          ],
+          "content_sha256": [
+            "c3f3739863a3bea77875b012f7a16b98282b1d88eb943fdd498cf96e94dd1964",
+            "ffa0741f7a64b17339ce7691c7a24caa439823a01dec071fedb0b59d455fd134",
+            "157f566b24a93213ca278f126293b782540c764b3e112fc84da012c06ff72f40",
+            "e40bb3244b7976180f33381655b75b72603bf91476278ff22c4f970b3259d559",
+            "e344a9f62c69bd237e15eb569c495b6b6ac1ad9be750174083988b1b0e91bf2d",
+            "7e90d1be2022f7955046d66b14b0991fd27946ad998ea46631ed15692d7a1e6d",
+            "8dfac0401405ef517197a7d58bc661e681c77324f867bb8a70b548ddab430638",
+            "66f9cf0249058da9fc5829c3a19e03da303f48d69c018e11ba754f6fe2355304"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.166667,
+            0.366667,
+            0.533333
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          1,
+          3,
+          6,
+          8,
+          11,
+          13,
+          16,
+          18
+        ],
+        "source_timestamps_seconds": [
+          0.0333333,
+          0.1,
+          0.2,
+          0.266667,
+          0.366667,
+          0.433333,
+          0.533333,
+          0.6
+        ],
+        "content_fnv1a64": [
+          "6540ec25b1bd3956",
+          "179636574e6c3f89",
+          "acaeeb7fad278cc7",
+          "40ffe635da9de902",
+          "6fd04aea25a45cad",
+          "8378390e5be5c8a2",
+          "afe470b362c9e8e7",
+          "112f77d59c6909e2"
+        ],
+        "content_sha256": [
+          "49b9f091f3d4f60512f2f3907d00d145eb5023a1147f36aac85d77c9cbdd85ec",
+          "ffa0741f7a64b17339ce7691c7a24caa439823a01dec071fedb0b59d455fd134",
+          "3c1556e0a26711006b236aedc693fedc9168e30cbdab031092c7d2141a4fef90",
+          "e40bb3244b7976180f33381655b75b72603bf91476278ff22c4f970b3259d559",
+          "e344a9f62c69bd237e15eb569c495b6b6ac1ad9be750174083988b1b0e91bf2d",
+          "174f1a75e9bd53ddec07fa60f6391b27d6c0b0c9f5a3f6c662b8c0cb0e0f458f",
+          "8dfac0401405ef517197a7d58bc661e681c77324f867bb8a70b548ddab430638",
+          "145fc4f060bf736866673eadff26ac4b64ede337867665cebfe2e5426931ccdd"
+        ],
+        "temporal2_pair_first_timestamps": [
+          0.0333333,
+          0.2,
+          0.366667,
+          0.533333
+        ],
+        "source_frame_candidates": [
+          [
+            1
+          ],
+          [
+            3
+          ],
+          [
+            6
+          ],
+          [
+            8
+          ],
+          [
+            11
+          ],
+          [
+            13
+          ],
+          [
+            16
+          ],
+          [
+            18
+          ]
+        ],
+        "source_pts_candidates": [
+          [
+            0.0333333
+          ],
+          [
+            0.1
+          ],
+          [
+            0.2
+          ],
+          [
+            0.266667
+          ],
+          [
+            0.366667
+          ],
+          [
+            0.433333
+          ],
+          [
+            0.533333
+          ],
+          [
+            0.6
+          ]
+        ],
+        "source_frame_binding": "EXACT",
+        "output_filter_timestamps_seconds": [
+          0.0,
+          0.0833333,
+          0.166667,
+          0.25,
+          0.333333,
+          0.416667,
+          0.5,
+          0.583333
+        ],
+        "native_nominal_timestamps": [
+          0.0,
+          0.083333375,
+          0.16666675,
+          0.250000125,
+          0.3333335,
+          0.416666875,
+          0.50000025,
+          0.583333625
+        ]
+      },
+      "anchor_audit": {
+        "default-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ]
+        },
+        "uniform-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            6,
+            13,
+            19
+          ]
+        },
+        "uniform-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ]
+        },
+        "temporal-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            6,
+            13,
+            19
+          ]
+        },
+        "temporal-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ]
+        }
+      }
+    },
+    {
+      "id": "natural-05",
+      "video_id": "natural-05",
+      "language": "fr",
+      "question": "Quel mammifère marin est visible hors de l'eau ? Réponds avec un seul nom.",
+      "expect_all": [
+        "baleine"
+      ],
+      "expect_any_group": true,
+      "evaluation_role": "quality_scored",
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "baleine",
+        "derivation": "La tête, la bouche et le corps massif hors de l'eau identifient directement une baleine dans les images sources.",
+        "source_frames": [
+          115,
+          125,
+          134
+        ]
+      },
+      "video": "fixtures/natural-05.mp4",
+      "video_sha256": "794e5cd3b7b559b37f0cb6f5fc9083bd21cf4a01cd2be05a627778932f75e9b0",
+      "candidate_count": 20,
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            6,
+            13,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.2,
+            0.433333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "60a3e0ddee42da0a",
+            "7244b5a42145256d",
+            "473929d85e17f30f",
+            "74ffacde15a236b0"
+          ],
+          "content_sha256": [
+            "d13a974624abf7b9db48ab189b77d83c2355a73da252aa3932285bca06eca44a",
+            "52f0b0e15200cdd451b8e360d793e5dc25b37fd51ac83067cf3e1bc8fbd6b9d0",
+            "2e385b9c6b6798ba945c81934dc79a49a79f5a14c6ebd8f6a0d1c6959b150451",
+            "450b1f8bd4155e116b1fdaee66ee92703a542866c9731cec8164d8bd9ec240b6"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.433333
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_frame_indices": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.1,
+            0.166667,
+            0.266667,
+            0.366667,
+            0.466667,
+            0.533333,
+            0.633333
+          ],
+          "content_fnv1a64": [
+            "60a3e0ddee42da0a",
+            "983290d6cd848f14",
+            "8d6a5e6fd8029b7f",
+            "84cc0222592eaab3",
+            "c24cf5b3a2518eba",
+            "eb7858f1f2b1d018",
+            "cad5d6cc527232d0",
+            "74ffacde15a236b0"
+          ],
+          "content_sha256": [
+            "d13a974624abf7b9db48ab189b77d83c2355a73da252aa3932285bca06eca44a",
+            "f628b09db2581006d171a35618bcb1bd954521a30b0c098550201444155e9c98",
+            "ba774efa8f507ad68b562604e8e691b9da5ef84c033b060261f2bcc177834f0f",
+            "5f3c41b75996d8f7537f9b2100bb0ecb426b8301a7d085f0820bcde6c4d540be",
+            "f94745160a10124b6eed484ea674b37b6e6128c90054e3a43d1a5c6f7853ba18",
+            "816787e86a959b92999807905e41f4087092767c5c3d8c2f9018dda26c6b3f37",
+            "7b0a32874710d65b8e89f7c3b24bdb8e07856cdfc7054dff1b29dda0565d45e1",
+            "450b1f8bd4155e116b1fdaee66ee92703a542866c9731cec8164d8bd9ec240b6"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.166667,
+            0.366667,
+            0.533333
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          1,
+          3,
+          6,
+          8,
+          11,
+          13,
+          16,
+          18
+        ],
+        "source_timestamps_seconds": [
+          0.0333333,
+          0.1,
+          0.2,
+          0.266667,
+          0.366667,
+          0.433333,
+          0.533333,
+          0.6
+        ],
+        "content_fnv1a64": [
+          "cb7407324dedd258",
+          "983290d6cd848f14",
+          "7244b5a42145256d",
+          "84cc0222592eaab3",
+          "c24cf5b3a2518eba",
+          "473929d85e17f30f",
+          "cad5d6cc527232d0",
+          "92c12867bbb676c5"
+        ],
+        "content_sha256": [
+          "10d35ded4ea26f0d3d5fbd0cf7086164f4bdc141290ec58de996ec3555641de3",
+          "f628b09db2581006d171a35618bcb1bd954521a30b0c098550201444155e9c98",
+          "52f0b0e15200cdd451b8e360d793e5dc25b37fd51ac83067cf3e1bc8fbd6b9d0",
+          "5f3c41b75996d8f7537f9b2100bb0ecb426b8301a7d085f0820bcde6c4d540be",
+          "f94745160a10124b6eed484ea674b37b6e6128c90054e3a43d1a5c6f7853ba18",
+          "2e385b9c6b6798ba945c81934dc79a49a79f5a14c6ebd8f6a0d1c6959b150451",
+          "7b0a32874710d65b8e89f7c3b24bdb8e07856cdfc7054dff1b29dda0565d45e1",
+          "0114a313f713d96f5ab505b1e7f19c2415cf55cc4bddb79224ca2d68688d6b55"
+        ],
+        "temporal2_pair_first_timestamps": [
+          0.0333333,
+          0.2,
+          0.366667,
+          0.533333
+        ],
+        "source_frame_candidates": [
+          [
+            1
+          ],
+          [
+            3
+          ],
+          [
+            6
+          ],
+          [
+            8
+          ],
+          [
+            11
+          ],
+          [
+            13
+          ],
+          [
+            16
+          ],
+          [
+            18
+          ]
+        ],
+        "source_pts_candidates": [
+          [
+            0.0333333
+          ],
+          [
+            0.1
+          ],
+          [
+            0.2
+          ],
+          [
+            0.266667
+          ],
+          [
+            0.366667
+          ],
+          [
+            0.433333
+          ],
+          [
+            0.533333
+          ],
+          [
+            0.6
+          ]
+        ],
+        "source_frame_binding": "EXACT",
+        "output_filter_timestamps_seconds": [
+          0.0,
+          0.0833333,
+          0.166667,
+          0.25,
+          0.333333,
+          0.416667,
+          0.5,
+          0.583333
+        ],
+        "native_nominal_timestamps": [
+          0.0,
+          0.083333375,
+          0.16666675,
+          0.250000125,
+          0.3333335,
+          0.416666875,
+          0.50000025,
+          0.583333625
+        ]
+      },
+      "anchor_audit": {
+        "default-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ]
+        },
+        "uniform-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            6,
+            13,
+            19
+          ]
+        },
+        "uniform-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            1,
+            3,
+            6,
+            8,
+            11,
+            13,
+            16,
+            18
+          ]
+        },
+        "temporal-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            6,
+            13,
+            19
+          ]
+        },
+        "temporal-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            3,
+            5,
+            8,
+            11,
+            14,
+            16,
+            19
+          ]
+        }
+      }
+    },
+    {
+      "id": "natural-06",
+      "video_id": "natural-06",
+      "language": "de",
+      "question": "Welche Blume mit weißen, sich lösenden Samen ist zu sehen? Antworte nur mit dem Namen.",
+      "expect_all": [
+        "löwenzahn",
+        "pusteblume"
+      ],
+      "expect_any_group": true,
+      "evaluation_role": "quality_scored",
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "Löwenzahn",
+        "derivation": "Die weiße runde Pusteblume mit sich ablösenden Samenschirmchen ist im Vordergrund eindeutig sichtbar.",
+        "source_frames": [
+          150,
+          157,
+          164
+        ]
+      },
+      "video": "fixtures/natural-06.mp4",
+      "video_sha256": "1e342f8ba8d5fabf1a815e0aa64439217da5ed0a446f350d6c0e2ec978dd0c52",
+      "candidate_count": 15,
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "f2744628fedc7897",
+            "c2baadf688fdb040",
+            "987f0a2d15240836",
+            "f053b252e3c35428"
+          ],
+          "content_sha256": [
+            "ca77eb66f52d32e9d42191a5d77e8a9a5f56a9d651bd68deb28482f2f8c5a2c5",
+            "5e817df3c94b45e83d1b608b30c5b0f62e98c0229e383f219b88c3e28b2fc7f5",
+            "686320f09df1c61de445eab14d8e1c5a02cf6d6a2bbc88adfab14c58273c4829",
+            "681d2968f45410b99303e7fad3b94d79998b49d7569f47a7c770d483defb6027"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "f2744628fedc7897",
+            "dd8b8494c5e27867",
+            "d9a00da57dd25a4c",
+            "46c95f738ad7efb4",
+            "1c15cfcea37299bf",
+            "fa1f670ab17620d0",
+            "1035995c3530052a",
+            "f053b252e3c35428"
+          ],
+          "content_sha256": [
+            "ca77eb66f52d32e9d42191a5d77e8a9a5f56a9d651bd68deb28482f2f8c5a2c5",
+            "4e3535487829b77456999848a713b1e3834c4d1776df6abf49a9c2d8bd76c100",
+            "abd36156b580e7fb89be85392c3db6f662bf189a22b7537a5fa70c884ce1cf63",
+            "3f4fa6da8c946129d466ea5e293dcf3412c439ab4e7ce75425b7f95b30c8d936",
+            "58fd972dd8e2e4e662b7917ffd742a3c9e6749da1ae96f5ae80392e348dcb318",
+            "143f6c420eeeb0060dd7a1040e6a49b3fb91ad20e6aaf4cb786fa2e2c64c0165",
+            "fa67c8abd8b93fdde5e3db4ef22f1d7b148ea330b6d3a75b20909e492334aecf",
+            "681d2968f45410b99303e7fad3b94d79998b49d7569f47a7c770d483defb6027"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          0,
+          2,
+          4,
+          6,
+          8,
+          10,
+          12,
+          14
+        ],
+        "source_timestamps_seconds": [
+          0.0,
+          0.0666667,
+          0.133333,
+          0.2,
+          0.266667,
+          0.333333,
+          0.4,
+          0.466667
+        ],
+        "content_fnv1a64": [
+          "f2744628fedc7897",
+          "dd8b8494c5e27867",
+          "d9a00da57dd25a4c",
+          "46c95f738ad7efb4",
+          "1c15cfcea37299bf",
+          "fa1f670ab17620d0",
+          "1035995c3530052a",
+          "f053b252e3c35428"
+        ],
+        "content_sha256": [
+          "ca77eb66f52d32e9d42191a5d77e8a9a5f56a9d651bd68deb28482f2f8c5a2c5",
+          "4e3535487829b77456999848a713b1e3834c4d1776df6abf49a9c2d8bd76c100",
+          "abd36156b580e7fb89be85392c3db6f662bf189a22b7537a5fa70c884ce1cf63",
+          "3f4fa6da8c946129d466ea5e293dcf3412c439ab4e7ce75425b7f95b30c8d936",
+          "58fd972dd8e2e4e662b7917ffd742a3c9e6749da1ae96f5ae80392e348dcb318",
+          "143f6c420eeeb0060dd7a1040e6a49b3fb91ad20e6aaf4cb786fa2e2c64c0165",
+          "fa67c8abd8b93fdde5e3db4ef22f1d7b148ea330b6d3a75b20909e492334aecf",
+          "681d2968f45410b99303e7fad3b94d79998b49d7569f47a7c770d483defb6027"
+        ],
+        "temporal2_pair_first_timestamps": [
+          0.0,
+          0.133333,
+          0.266667,
+          0.4
+        ],
+        "source_frame_candidates": [
+          [
+            0
+          ],
+          [
+            2
+          ],
+          [
+            4
+          ],
+          [
+            6
+          ],
+          [
+            8
+          ],
+          [
+            10
+          ],
+          [
+            12
+          ],
+          [
+            14
+          ]
+        ],
+        "source_pts_candidates": [
+          [
+            0.0
+          ],
+          [
+            0.0666667
+          ],
+          [
+            0.133333
+          ],
+          [
+            0.2
+          ],
+          [
+            0.266667
+          ],
+          [
+            0.333333
+          ],
+          [
+            0.4
+          ],
+          [
+            0.466667
+          ]
+        ],
+        "source_frame_binding": "EXACT",
+        "output_filter_timestamps_seconds": [
+          0.0,
+          0.0625,
+          0.125,
+          0.1875,
+          0.25,
+          0.3125,
+          0.375,
+          0.4375
+        ],
+        "native_nominal_timestamps": [
+          0.0,
+          0.0625,
+          0.125,
+          0.1875,
+          0.25,
+          0.3125,
+          0.375,
+          0.4375
+        ]
+      },
+      "anchor_audit": {
+        "default-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        },
+        "uniform-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            5,
+            9,
+            14
+          ]
+        },
+        "uniform-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        },
+        "temporal-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            5,
+            9,
+            14
+          ]
+        },
+        "temporal-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        }
+      }
+    },
+    {
+      "id": "natural-07",
+      "video_id": "natural-07",
+      "language": "it",
+      "question": "Quale pianta con un'infiorescenza bianca e soffice occupa il primo piano? Rispondi solo con il nome.",
+      "expect_all": [
+        "dente di leone",
+        "tarassaco",
+        "soffione"
+      ],
+      "expect_any_group": true,
+      "evaluation_role": "quality_scored",
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "dente di leone",
+        "derivation": "Il soffione bianco in primo piano e gli acheni che si staccano identificano direttamente il dente di leone.",
+        "source_frames": [
+          165,
+          172,
+          179
+        ]
+      },
+      "video": "fixtures/natural-07.mp4",
+      "video_sha256": "dc14c71304aeb6a1cc5e5f086b50b666cb4198b7fbcd35fe41879e332e0028b8",
+      "candidate_count": 15,
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "252527dec76a21e6",
+            "1f0ce5c4aef65d17",
+            "da38c259d65efa72",
+            "068f93b360c969a2"
+          ],
+          "content_sha256": [
+            "89177913cbe6b7c9dc4ef94f3000a5d86398bab43a897f0f02787b4f30a4c98a",
+            "3d77db1223e7eea28acc89f150069121bcb7488a35a3ada02f0bbf7d962c62ad",
+            "2df41e91fa2144b25451c82abdcd0f40c83f0d9ec1d524bdcd86a102f8d5d06e",
+            "19fc05bafb1b53ddb4eef0335347da322099344f5e40fc9326c23149c5e9153f"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "252527dec76a21e6",
+            "04d0bc7aadbbc30e",
+            "bb39924b46c76a80",
+            "93ae1c543c952212",
+            "50ac67b27fb1b85e",
+            "30ce3802d3ab7157",
+            "4de9a8ad4937c9aa",
+            "068f93b360c969a2"
+          ],
+          "content_sha256": [
+            "89177913cbe6b7c9dc4ef94f3000a5d86398bab43a897f0f02787b4f30a4c98a",
+            "973d1f4ecb148798e4b38bdbff06f8874ac2692e1784da53dba3d371e7e8a890",
+            "aedfc693300183779bf9f6ecec8fab88f246ac7244ca4992566aa334252c8388",
+            "6b14438968c3992c1ea214e3a815784f57782ea6e8ffe5bab78adf2ff7005e21",
+            "f44bb99574d74d99bae82aee379404542d46a745b81b3f3d94966de9b93126d4",
+            "14d16196697126c1d6e622b5685dd5ab95f7bbcb363696f34a49fa55c65645f6",
+            "3c78fe70886bca75b64f0ee4a7658d5b1b39c26e31f4adcb24e76bfd787c9aea",
+            "19fc05bafb1b53ddb4eef0335347da322099344f5e40fc9326c23149c5e9153f"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          0,
+          2,
+          4,
+          6,
+          8,
+          10,
+          12,
+          14
+        ],
+        "source_timestamps_seconds": [
+          0.0,
+          0.0666667,
+          0.133333,
+          0.2,
+          0.266667,
+          0.333333,
+          0.4,
+          0.466667
+        ],
+        "content_fnv1a64": [
+          "252527dec76a21e6",
+          "04d0bc7aadbbc30e",
+          "bb39924b46c76a80",
+          "93ae1c543c952212",
+          "50ac67b27fb1b85e",
+          "30ce3802d3ab7157",
+          "4de9a8ad4937c9aa",
+          "068f93b360c969a2"
+        ],
+        "content_sha256": [
+          "89177913cbe6b7c9dc4ef94f3000a5d86398bab43a897f0f02787b4f30a4c98a",
+          "973d1f4ecb148798e4b38bdbff06f8874ac2692e1784da53dba3d371e7e8a890",
+          "aedfc693300183779bf9f6ecec8fab88f246ac7244ca4992566aa334252c8388",
+          "6b14438968c3992c1ea214e3a815784f57782ea6e8ffe5bab78adf2ff7005e21",
+          "f44bb99574d74d99bae82aee379404542d46a745b81b3f3d94966de9b93126d4",
+          "14d16196697126c1d6e622b5685dd5ab95f7bbcb363696f34a49fa55c65645f6",
+          "3c78fe70886bca75b64f0ee4a7658d5b1b39c26e31f4adcb24e76bfd787c9aea",
+          "19fc05bafb1b53ddb4eef0335347da322099344f5e40fc9326c23149c5e9153f"
+        ],
+        "temporal2_pair_first_timestamps": [
+          0.0,
+          0.133333,
+          0.266667,
+          0.4
+        ],
+        "source_frame_candidates": [
+          [
+            0
+          ],
+          [
+            2
+          ],
+          [
+            4
+          ],
+          [
+            6
+          ],
+          [
+            8
+          ],
+          [
+            10
+          ],
+          [
+            12
+          ],
+          [
+            14
+          ]
+        ],
+        "source_pts_candidates": [
+          [
+            0.0
+          ],
+          [
+            0.0666667
+          ],
+          [
+            0.133333
+          ],
+          [
+            0.2
+          ],
+          [
+            0.266667
+          ],
+          [
+            0.333333
+          ],
+          [
+            0.4
+          ],
+          [
+            0.466667
+          ]
+        ],
+        "source_frame_binding": "EXACT",
+        "output_filter_timestamps_seconds": [
+          0.0,
+          0.0625,
+          0.125,
+          0.1875,
+          0.25,
+          0.3125,
+          0.375,
+          0.4375
+        ],
+        "native_nominal_timestamps": [
+          0.0,
+          0.0625,
+          0.125,
+          0.1875,
+          0.25,
+          0.3125,
+          0.375,
+          0.4375
+        ]
+      },
+      "anchor_audit": {
+        "default-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        },
+        "uniform-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            5,
+            9,
+            14
+          ]
+        },
+        "uniform-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        },
+        "temporal-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            5,
+            9,
+            14
+          ]
+        },
+        "temporal-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        }
+      }
+    },
+    {
+      "id": "natural-08",
+      "video_id": "natural-08",
+      "language": "pt",
+      "question": "O que se desprende da planta e flutua pelo ar? Responda apenas com o nome.",
+      "expect_all": [
+        "semente"
+      ],
+      "expect_any_group": true,
+      "evaluation_role": "quality_scored",
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "sementes",
+        "derivation": "Pequenas sementes com estruturas plumosas se soltam da inflorescência e flutuam à direita nos quadros de evidência.",
+        "source_frames": [
+          180,
+          187,
+          194
+        ]
+      },
+      "video": "fixtures/natural-08.mp4",
+      "video_sha256": "cce6f3402a97a96e2ec66b9c8ebbb7b29c9e366d3198a2a4925248cc80de2b90",
+      "candidate_count": 15,
+      "expected_temporal": {
+        "4": {
+          "candidate_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            5,
+            9,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.166667,
+            0.3,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "950c29f8e7fb9234",
+            "2ea5a852123ac310",
+            "7e0683fa7a01263e",
+            "07da30100372d197"
+          ],
+          "content_sha256": [
+            "ece9992246778033a11ca12cd26dc6860a1b3c71a1370f481db26962eca9c8a1",
+            "34b8b505c47fdb8c41bd2a77dfed0a953ccdbad851df04a118560121795a0fcf",
+            "56fd84ae46795f8f2fb7e9a1f44ee5675d50a0d8f2af864409143457f73046af",
+            "beddd3d2ecb61477f2241a0a205fae078673f6d5e94327a8e37ea8febc757939"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.3
+          ]
+        },
+        "8": {
+          "candidate_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_frame_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "source_timestamps_seconds": [
+            0.0,
+            0.0666667,
+            0.133333,
+            0.2,
+            0.266667,
+            0.333333,
+            0.4,
+            0.466667
+          ],
+          "content_fnv1a64": [
+            "950c29f8e7fb9234",
+            "cdb6de787975726e",
+            "925ac9f5cc1897e1",
+            "b4ffea0ed82ac1e6",
+            "01b68a298f381b2f",
+            "0aa4a0ae9b2c9993",
+            "6f032baf13c634e7",
+            "07da30100372d197"
+          ],
+          "content_sha256": [
+            "ece9992246778033a11ca12cd26dc6860a1b3c71a1370f481db26962eca9c8a1",
+            "477cff9638444837b342c18412826627f67f2b71f8a937e37fb6c74e8ebcede9",
+            "aa81a62945a5e4f0d5bf9b9bbcc9422639d7566a0ca40d8cac0373528cb555d5",
+            "9614751485feec60ea0520762ca5e1da7fb7c08254b204ee5f39642bcf2f3895",
+            "9b9f7a2839edac9109c9d0600ebdfe4b947969ce850e242c30449f5c9a6e424e",
+            "8afeb4087dda979f1bf64a5dfa52946e0db347ff043e63c8587825cf7161ed22",
+            "513e1dcd7d3731fba0a6e845d36e0dab8338bfdbf78edfc696a9313d9871f987",
+            "beddd3d2ecb61477f2241a0a205fae078673f6d5e94327a8e37ea8febc757939"
+          ],
+          "temporal2_pair_first_timestamps": [
+            0.0,
+            0.133333,
+            0.266667,
+            0.4
+          ]
+        }
+      },
+      "expected_uniform_8": {
+        "candidate_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "source_frame_indices": [
+          0,
+          2,
+          4,
+          6,
+          8,
+          10,
+          12,
+          14
+        ],
+        "source_timestamps_seconds": [
+          0.0,
+          0.0666667,
+          0.133333,
+          0.2,
+          0.266667,
+          0.333333,
+          0.4,
+          0.466667
+        ],
+        "content_fnv1a64": [
+          "950c29f8e7fb9234",
+          "cdb6de787975726e",
+          "925ac9f5cc1897e1",
+          "b4ffea0ed82ac1e6",
+          "01b68a298f381b2f",
+          "0aa4a0ae9b2c9993",
+          "6f032baf13c634e7",
+          "07da30100372d197"
+        ],
+        "content_sha256": [
+          "ece9992246778033a11ca12cd26dc6860a1b3c71a1370f481db26962eca9c8a1",
+          "477cff9638444837b342c18412826627f67f2b71f8a937e37fb6c74e8ebcede9",
+          "aa81a62945a5e4f0d5bf9b9bbcc9422639d7566a0ca40d8cac0373528cb555d5",
+          "9614751485feec60ea0520762ca5e1da7fb7c08254b204ee5f39642bcf2f3895",
+          "9b9f7a2839edac9109c9d0600ebdfe4b947969ce850e242c30449f5c9a6e424e",
+          "8afeb4087dda979f1bf64a5dfa52946e0db347ff043e63c8587825cf7161ed22",
+          "513e1dcd7d3731fba0a6e845d36e0dab8338bfdbf78edfc696a9313d9871f987",
+          "beddd3d2ecb61477f2241a0a205fae078673f6d5e94327a8e37ea8febc757939"
+        ],
+        "temporal2_pair_first_timestamps": [
+          0.0,
+          0.133333,
+          0.266667,
+          0.4
+        ],
+        "source_frame_candidates": [
+          [
+            0
+          ],
+          [
+            2
+          ],
+          [
+            4
+          ],
+          [
+            6
+          ],
+          [
+            8
+          ],
+          [
+            10
+          ],
+          [
+            12
+          ],
+          [
+            14
+          ]
+        ],
+        "source_pts_candidates": [
+          [
+            0.0
+          ],
+          [
+            0.0666667
+          ],
+          [
+            0.133333
+          ],
+          [
+            0.2
+          ],
+          [
+            0.266667
+          ],
+          [
+            0.333333
+          ],
+          [
+            0.4
+          ],
+          [
+            0.466667
+          ]
+        ],
+        "source_frame_binding": "EXACT",
+        "output_filter_timestamps_seconds": [
+          0.0,
+          0.0625,
+          0.125,
+          0.1875,
+          0.25,
+          0.3125,
+          0.375,
+          0.4375
+        ],
+        "native_nominal_timestamps": [
+          0.0,
+          0.0625,
+          0.125,
+          0.1875,
+          0.25,
+          0.3125,
+          0.375,
+          0.4375
+        ]
+      },
+      "anchor_audit": {
+        "default-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        },
+        "uniform-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            5,
+            9,
+            14
+          ]
+        },
+        "uniform-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        },
+        "temporal-4": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            5,
+            9,
+            14
+          ]
+        },
+        "temporal-8": {
+          "answer_anchor_present": true,
+          "evidence_source_frames_present": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ]
+        }
+      }
+    }
+  ],
+  "claims": {
+    "real_generation": "NOT_RUN",
+    "live_latency": "NOT_RUN",
+    "natural_video_fixture_accuracy": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "generalized_quality_claim": false
+  },
+  "historical_task66_control": {
+    "manifest_sha256": "25c51b6c97cdf9bd6b95991da8a424e8a366ae3105a59099a181d22b65eb2db8",
+    "preregistration_sha256": "74eb3eac15233ec5fe508168dfa6b974259544b5b29ef9c28f74ca3539d24bbe",
+    "sha256sums_sha256": "9a0d0389ac38f48e91dd251dacd6d5e1fd398e01fd7ca52a6705b3585468c000",
+    "primary_temporal8_hits": 18,
+    "primary_uniform8_hits": 18,
+    "primary_sign_test_p": 1.0,
+    "included_in_natural_denominator": false,
+    "scores_or_fixture_bytes_changed": false
+  }
+}

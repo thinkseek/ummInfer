@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "temporal-natural-r2",
+  "preregistered_on": "2026-11-27",
+  "purpose": "Measure native Qwen3.8 understanding on eight existing natural-footage excerpts without changing the accepted selector or any runtime file after answers are seen.",
+  "freeze_contract": {
+    "required_before_any_model_response": true,
+    "receipt": "benchmarks/video-temporal-natural.freeze.json",
+    "post_freeze_source_prompt_answer_scoring_population_or_analysis_changes": "forbidden",
+    "observed_answer_aliases": "forbidden",
+    "selector_threshold_or_runtime_changes_after_answers": "forbidden",
+    "incomplete_or_preflight_failed_attempts": "retain but exclude from accepted results",
+    "task66_procedural_fixture_and_scores": "immutable regression control outside the natural denominator"
+  },
+  "source": {
+    "asset_class": "EXISTING_REPOSITORY_TRACKED_NATURAL_FOOTAGE_EXCERPTS_NOT_PROCEDURAL_NOT_MODEL_OUTPUT",
+    "original_commit": "a5d41d39ac6567da53a6ddbb2c4a4534bfdd9104",
+    "original_commit_subject": "Go minimal: real footage, one line, one engine",
+    "original_path": "docs/assets/umminfer-apple-16x9.mp4",
+    "original_git_blob_sha1": "fa078dc543b273922dfc8c07e74f63306778a3ed",
+    "original_sha256": "81178f8af6c859d908cd6fa4a5348ed9bbe271c071a94a196ff2488c63f0db2e",
+    "original_video_frames": 330,
+    "original_video_fps": 30,
+    "license": "Apache-2.0, the covering repository license at the source commit; no per-asset exception is recorded",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "redistribution_and_evaluation": "permitted by the covering Apache-2.0 license; retain source commit/blob identity and license",
+    "excerpt_encoding": "H.264 libx264, 256x160, 30 fps, CRF 12, two B-frames, exact selected source-frame ranges, PTS reset to zero in presentation order; 256x160 is the exact native smart-resize target; native stream duration takes precedence over container duration for fps and nominal timestamps",
+    "review": "All source endpoints and review sheets were visually inspected before any model request. Only forest, whale, and dandelion real-footage scenes are included; scene transitions, rendered planet, end cards, and text overlays are excluded.",
+    "scope_limit": "Eight non-overlapping clips come from one compilation and three scene types; they are not a representative natural-video corpus."
+  },
+  "selection": {
+    "selector": "qwen38_temporal_motion_run_v1",
+    "candidate_stride": 1,
+    "max_candidate_frames": 64,
+    "motion_threshold": 0.02,
+    "scene_threshold": 0.25,
+    "budgets": [4, 8],
+    "default_budget": 8,
+    "first_and_last_temporal_anchors_required": true,
+    "runtime_changes": "none; evaluation starts at official main 413cc9b4114ac83696925aeb43577e39853977a8",
+    "quality_anchor_rule": "Every preregistered answer is directly visible in declared source frames. All five arm/budget selections must contain evidence before freezing; no case is excluded for a selection miss."
+  },
+  "scoring": {
+    "metric": "preregistered_casefold_substring_accuracy",
+    "quality_case_count": 8,
+    "all_cases_in_quality_denominator": true,
+    "expect_all_semantics": "every preregistered term must occur in the casefolded raw answer",
+    "expect_any_group_semantics": "at least one preregistered canonical-language term must occur in the casefolded raw answer",
+    "quality_misses_fail_transport_gate": false,
+    "raw_answers_every_miss_and_outlier_retained": true,
+    "limitations": [
+      "substring matching can over- or under-count linguistic variants",
+      "three deterministic repetitions are not independent semantic examples",
+      "eight excerpts from one footage compilation and three scene types do not establish generalized natural-video or perceptual quality"
+    ]
+  },
+  "request_contract": {
+    "content_order": ["video_url", "text_question"],
+    "question_after_context": true,
+    "model": "qwen3-native",
+    "stream": true,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "seed": 510072,
+    "max_tokens": 64,
+    "arms": ["default", "uniform", "temporal"],
+    "only_frame_selection_changes_between_arms": true,
+    "metadata_sent_to_model": "only neutral video data URLs and exact questions; no source name, answer, expected term, source range, or review metadata"
+  },
+  "measurement": {
+    "schema_version": 1,
+    "warmup_repetitions": 1,
+    "measured_repetitions": 3,
+    "arm_order": "interleaved",
+    "seed": 510072,
+    "cooldown_ms": 0,
+    "modes": {
+      "serial": {"physical_gpu": 1, "concurrency": 1, "batch_size": 1},
+      "batch4": {"physical_gpu": 1, "concurrency": 4, "batch_size": 4}
+    },
+    "mode_execution": "fresh serial stack then fresh batch-four stack on the same explicitly idle physical GPU 1; never simultaneously resident",
+    "prefix_cache": "disabled; prefix_reused=0 for every request including warmup",
+    "allowed_physical_gpus": [1],
+    "forbidden_physical_gpus": [0, 2, 3, 4, 5, 6, 7],
+    "forbidden_resident_port": 43301,
+    "arm_budgets": [["default", 8], ["uniform", 4], ["uniform", 8], ["temporal", 4], ["temporal", 8]],
+    "requests_per_mode": 160,
+    "requests_total": 320,
+    "warmup_requests_total": 80,
+    "measured_requests_total": 240,
+    "measured_answers_per_arm_budget": 48,
+    "paired_case_mode_units_per_comparison": 16,
+    "expected_parity_checks": 304,
+    "native_evidence": "exact selected RGB, source frame and source PTS/presentation order, temporal-2 pair-first timestamps, grid/token/mRoPE consistency, serial/batch and repetition parity, complete binary/model/source provenance"
+  },
+  "analysis_plan": {
+    "primary_comparison": "temporal-8 versus uniform-8",
+    "secondary_comparisons": ["temporal-4 versus uniform-4 (explicit diagnostic)", "temporal-8 versus default-8"],
+    "paired_unit": "case x execution mode; sum its three measured hits, then classify improved/worsened/unchanged",
+    "sign_test": "exact two-sided sign test over discordant paired case/mode units; zero discordant pairs gives p=1.0",
+    "uncertainty": "Wilson 95 percent interval over 48 request-level measured answers per arm/budget; repetitions are not independent semantic examples",
+    "per_case_reporting": "every raw answer and hit by case/mode/repetition/arm/budget, plus every miss, improvement, regression, and request identity",
+    "latency_outliers": "Tukey upper fence Q3+1.5*IQR within each measured mode/arm/budget and metric total/native_elapsed; if IQR=0, every value above Q3 is an outlier; no value is removed",
+    "no_regression_technical_gates": [
+      "320 completed and native-valid requests with cold prefixes",
+      "304 exact default/uniform, serial/batch-four, and repetition parity checks",
+      "default-8 and uniform-8 answers and native diagnostics byte-identical",
+      "all selected RGB/source/PTS/temporal-2/mRoPE and temporal first/last-anchor checks pass",
+      "exclusive GPU1, in_flight=0, bounded residual memory, and post-stop cleanup",
+      "complete evidence, frozen fixture, unchanged Task66 control, and checksum verification"
+    ],
+    "acceptance_behavior": "This is an evaluation-only technical gate. Quality improvement is not required and no answer triggers a runtime edit or a generalized significance claim."
+  },
+  "claims_before_live": {
+    "real_generation": "NOT_RUN",
+    "live_latency": "NOT_RUN",
+    "natural_video_fixture_accuracy": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "generalized_quality_claim": false
+  },
+  "cases": [
+    {
+      "id": "natural-01",
+      "video_id": "natural-01",
+      "language": "en",
+      "evaluation_role": "quality_scored",
+      "source_frame_range": [0, 29],
+      "question": "What large living things dominate this landscape? Answer with one noun.",
+      "expect_all": ["tree"],
+      "expect_any_group": true,
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "trees",
+        "derivation": "Multiple large trees with trunks and dense canopies are directly visible around the grass clearing throughout the excerpt.",
+        "source_frames": [0, 15, 29]
+      }
+    },
+    {
+      "id": "natural-02",
+      "video_id": "natural-02",
+      "language": "zh",
+      "evaluation_role": "quality_scored",
+      "source_frame_range": [30, 59],
+      "question": "穿过树冠、照亮草地的是什么？只回答名称。",
+      "expect_all": ["阳光"],
+      "expect_any_group": true,
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "阳光",
+        "derivation": "明亮的太阳及穿过树冠射向草地的光束在所有证据帧直接可见。",
+        "source_frames": [30, 45, 59]
+      }
+    },
+    {
+      "id": "natural-03",
+      "video_id": "natural-03",
+      "language": "es",
+      "evaluation_role": "quality_scored",
+      "source_frame_range": [75, 94],
+      "question": "¿Qué animal está saliendo del océano? Responde solo con el nombre del animal.",
+      "expect_all": ["ballena"],
+      "expect_any_group": true,
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "ballena",
+        "derivation": "La cabeza, la boca y el cuerpo de la ballena que emerge son directamente visibles durante todo el fragmento.",
+        "source_frames": [75, 85, 94]
+      }
+    },
+    {
+      "id": "natural-04",
+      "video_id": "natural-04",
+      "language": "ja",
+      "evaluation_role": "quality_scored",
+      "source_frame_range": [95, 114],
+      "question": "海から姿を見せている動物は何ですか？動物名だけで答えてください。",
+      "expect_all": ["クジラ", "鯨", "くじら"],
+      "expect_any_group": true,
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "クジラ",
+        "derivation": "海面から現れる大型海洋生物の頭部、口、体型からクジラと直接同定できる。",
+        "source_frames": [95, 105, 114]
+      }
+    },
+    {
+      "id": "natural-05",
+      "video_id": "natural-05",
+      "language": "fr",
+      "evaluation_role": "quality_scored",
+      "source_frame_range": [115, 134],
+      "question": "Quel mammifère marin est visible hors de l'eau ? Réponds avec un seul nom.",
+      "expect_all": ["baleine"],
+      "expect_any_group": true,
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "baleine",
+        "derivation": "La tête, la bouche et le corps massif hors de l'eau identifient directement une baleine dans les images sources.",
+        "source_frames": [115, 125, 134]
+      }
+    },
+    {
+      "id": "natural-06",
+      "video_id": "natural-06",
+      "language": "de",
+      "evaluation_role": "quality_scored",
+      "source_frame_range": [150, 164],
+      "question": "Welche Blume mit weißen, sich lösenden Samen ist zu sehen? Antworte nur mit dem Namen.",
+      "expect_all": ["löwenzahn", "pusteblume"],
+      "expect_any_group": true,
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "Löwenzahn",
+        "derivation": "Die weiße runde Pusteblume mit sich ablösenden Samenschirmchen ist im Vordergrund eindeutig sichtbar.",
+        "source_frames": [150, 157, 164]
+      }
+    },
+    {
+      "id": "natural-07",
+      "video_id": "natural-07",
+      "language": "it",
+      "evaluation_role": "quality_scored",
+      "source_frame_range": [165, 179],
+      "question": "Quale pianta con un'infiorescenza bianca e soffice occupa il primo piano? Rispondi solo con il nome.",
+      "expect_all": ["dente di leone", "tarassaco", "soffione"],
+      "expect_any_group": true,
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "dente di leone",
+        "derivation": "Il soffione bianco in primo piano e gli acheni che si staccano identificano direttamente il dente di leone.",
+        "source_frames": [165, 172, 179]
+      }
+    },
+    {
+      "id": "natural-08",
+      "video_id": "natural-08",
+      "language": "pt",
+      "evaluation_role": "quality_scored",
+      "source_frame_range": [180, 194],
+      "question": "O que se desprende da planta e flutua pelo ar? Responda apenas com o nome.",
+      "expect_all": ["semente"],
+      "expect_any_group": true,
+      "ground_truth": {
+        "evidence_visible_throughout_excerpt": true,
+        "answer": "sementes",
+        "derivation": "Pequenas sementes com estruturas plumosas se soltam da inflorescência e flutuam à direita nos quadros de evidência.",
+        "source_frames": [180, 187, 194]
+      }
+    }
+  ]
+}

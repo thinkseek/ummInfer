@@ -1,0 +1,116 @@
+{
+  "packet_count": 15,
+  "decode_order_pts": [
+    0,
+    3,
+    1,
+    2,
+    4,
+    7,
+    5,
+    6,
+    10,
+    8,
+    9,
+    13,
+    11,
+    12,
+    14
+  ],
+  "decode_order_dts": [
+    -2,
+    -1,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ],
+  "decode_order_pts_nonmonotonic": true,
+  "decode_order_dts_strictly_increasing": true,
+  "packets": [
+    {
+      "pts": 0,
+      "dts": -2,
+      "flags": "K_"
+    },
+    {
+      "pts": 3,
+      "dts": -1,
+      "flags": "__"
+    },
+    {
+      "pts": 1,
+      "dts": 0,
+      "flags": "__"
+    },
+    {
+      "pts": 2,
+      "dts": 1,
+      "flags": "__"
+    },
+    {
+      "pts": 4,
+      "dts": 2,
+      "flags": "__"
+    },
+    {
+      "pts": 7,
+      "dts": 3,
+      "flags": "__"
+    },
+    {
+      "pts": 5,
+      "dts": 4,
+      "flags": "__"
+    },
+    {
+      "pts": 6,
+      "dts": 5,
+      "flags": "__"
+    },
+    {
+      "pts": 10,
+      "dts": 6,
+      "flags": "__"
+    },
+    {
+      "pts": 8,
+      "dts": 7,
+      "flags": "__"
+    },
+    {
+      "pts": 9,
+      "dts": 8,
+      "flags": "__"
+    },
+    {
+      "pts": 13,
+      "dts": 9,
+      "flags": "__"
+    },
+    {
+      "pts": 11,
+      "dts": 10,
+      "flags": "__"
+    },
+    {
+      "pts": 12,
+      "dts": 11,
+      "flags": "__"
+    },
+    {
+      "pts": 14,
+      "dts": 12,
+      "flags": "__"
+    }
+  ]
+}

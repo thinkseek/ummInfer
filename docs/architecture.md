@@ -166,6 +166,17 @@ batch-four，完成 560/560 请求和 500/500 parity。primary temporal-8 与 un
 泛化提升；自然视频与感知质量仍 `NOT_COVERED`/`NOT_RUN`，最终 runtime 不变。详见
 [video-temporal-heldout.md](video-temporal-heldout.md)。
 
+Task #72 在不改 accepted selector 或 runtime 的前提下，将同一仓库历史 Apache-2.0
+real-footage 源切成 8 个不重叠自然视频片段，冻结 8 种语言的视觉可判定问题、源帧范围、
+RGB/PTS/B-frame 顺序、评分、population 与分析后，在同一空闲 SM90 物理 GPU 1 顺序运行
+serial 与 batch-four。accepted r2 完成 320/320 native-valid 请求、304/304 parity；
+primary temporal-8 与 uniform-8 均 42/48，16 个 case/mode 无改进或回退，`p=1.0`；
+budget-4 双臂均 48/48。`natural-07` 的 18 个八帧 `Pappina` miss 全部保留且不新增别名，
+latency outlier 为 0。双端独立新进程重解码 165 帧并复核全部 RGB/source/PTS、首末锚点、
+temporal-2/mRoPE、Task #66 控制与校验和。早期 duration oracle r1 被排除但完整保留；
+自然视频结果仍限于单源三类场景，感知质量 `NOT_RUN`，不支持泛化提升。详见
+[video-temporal-natural.md](video-temporal-natural.md)。
+
 ---
 
 ### 2.2 显式叙事图像槽位 → I2V 引用与内容寻址绑定
