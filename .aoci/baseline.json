@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-27T07:42:41Z",
+  "updated_at": "2026-11-27T07:48:46Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "b30ad87caa6452406a8aa2d7d16af0c28f630b0c228cfa529fddfc74e5c9b13c",
-      "size": 334138,
-      "normalized_sha256": "b30ad87caa6452406a8aa2d7d16af0c28f630b0c228cfa529fddfc74e5c9b13c"
+      "sha256": "c5ca98677ec2725d2c9ac6f9ad69db5eb75a0ec6258b59ee9d9e80dd0e4c80eb",
+      "size": 335482,
+      "normalized_sha256": "c5ca98677ec2725d2c9ac6f9ad69db5eb75a0ec6258b59ee9d9e80dd0e4c80eb"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1443,6 +1443,12 @@
       "size": 9400,
       "normalized_sha256": "d17079e3b072a93beea5d631bfd59c39f2262fe0037aa927b99e1a70b33f652f"
     },
+    "docs/evidence/online-grpo-optimizer-task71-sm90.json": {
+      "role": "index",
+      "sha256": "defda7dadfb79e2804a435b51e290acb885c59dd3c410e17d1fdc509d94a0702",
+      "size": 22137,
+      "normalized_sha256": "defda7dadfb79e2804a435b51e290acb885c59dd3c410e17d1fdc509d94a0702"
+    },
     "docs/evidence/online-grpo-preflight-cpu.json": {
       "role": "index",
       "sha256": "6760951ed4856dc2c35f1b51390ed2449ff02b894e30d7c2b65a693f0f589698",
@@ -1565,9 +1571,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "671e9083d85776bdf0933384f43c13225d89f5c399f481fef23fcfe4c701ea58",
-      "size": 171802,
-      "normalized_sha256": "671e9083d85776bdf0933384f43c13225d89f5c399f481fef23fcfe4c701ea58"
+      "sha256": "3cf6211673da49f484ab20215b03f76e57c84bc3699070a3496c4c4ce3fa0575",
+      "size": 172210,
+      "normalized_sha256": "3cf6211673da49f484ab20215b03f76e57c84bc3699070a3496c4c4ce3fa0575"
     },
     "docs/flux2-i2v-continuity.md": {
       "role": "index",
@@ -1607,9 +1613,9 @@
     },
     "docs/joint-training.md": {
       "role": "index",
-      "sha256": "0fa92718c718b73211ce2aa2177d79a29d5c6be9be100f64ee368a9ac6b75327",
-      "size": 72411,
-      "normalized_sha256": "0fa92718c718b73211ce2aa2177d79a29d5c6be9be100f64ee368a9ac6b75327"
+      "sha256": "e61680064c7000387729a3d4cf128a496e51c612b0761dcd2c2cf7474088fe4e",
+      "size": 74188,
+      "normalized_sha256": "e61680064c7000387729a3d4cf128a496e51c612b0761dcd2c2cf7474088fe4e"
     },
     "docs/mac-unified.md": {
       "role": "index",
@@ -1661,9 +1667,9 @@
     },
     "docs/north-star-cases.md": {
       "role": "index",
-      "sha256": "b26a4958d4de99be7b6f0b004050f441861d534470d45e2743caae2a494d50ea",
-      "size": 9209,
-      "normalized_sha256": "b26a4958d4de99be7b6f0b004050f441861d534470d45e2743caae2a494d50ea"
+      "sha256": "2dcc105bb652392237d600b5e3348430019ce1c7e5c6d3af7d95432c8184dd29",
+      "size": 9487,
+      "normalized_sha256": "2dcc105bb652392237d600b5e3348430019ce1c7e5c6d3af7d95432c8184dd29"
     },
     "docs/objective-mix-ablation.md": {
       "role": "index",
@@ -1691,9 +1697,9 @@
     },
     "docs/online-grpo-optimizer.md": {
       "role": "index",
-      "sha256": "be344274ca5159a2c2d3a06aa085765abaaf1304e5acb098d97787ba72afc14f",
-      "size": 13016,
-      "normalized_sha256": "be344274ca5159a2c2d3a06aa085765abaaf1304e5acb098d97787ba72afc14f"
+      "sha256": "8afbb618b7e06e2f4309e8396964e5d4f40d7ae4b9c584e1d1782013187f9b86",
+      "size": 22413,
+      "normalized_sha256": "8afbb618b7e06e2f4309e8396964e5d4f40d7ae4b9c584e1d1782013187f9b86"
     },
     "docs/online-grpo-preflight.md": {
       "role": "index",
@@ -1706,6 +1712,12 @@
       "sha256": "c76e85ad3da869dc74563aed1683b21a7ec851f288ec6c093b51ba94a3151ba8",
       "size": 16980,
       "normalized_sha256": "c76e85ad3da869dc74563aed1683b21a7ec851f288ec6c093b51ba94a3151ba8"
+    },
+    "docs/online-grpo-task71-preregistration.md": {
+      "role": "index",
+      "sha256": "a60e427ccc8ae83b676e17742d4c93fb6c6f09826506b9578a9d7271cdcaa145",
+      "size": 5150,
+      "normalized_sha256": "a60e427ccc8ae83b676e17742d4c93fb6c6f09826506b9578a9d7271cdcaa145"
     },
     "docs/online-rollout-live.md": {
       "role": "index",
@@ -1763,15 +1775,15 @@
     },
     "docs/rl.md": {
       "role": "index",
-      "sha256": "0409b4df2c9aaffa6eb6bd5ec4744f4f255504ba1a651f7e53c07ebda54b9918",
-      "size": 39482,
-      "normalized_sha256": "0409b4df2c9aaffa6eb6bd5ec4744f4f255504ba1a651f7e53c07ebda54b9918"
+      "sha256": "ea99a6fd0b0634cc69551aa21ce73cba716e8a5236271d1b6e02d020d7097a79",
+      "size": 40641,
+      "normalized_sha256": "ea99a6fd0b0634cc69551aa21ce73cba716e8a5236271d1b6e02d020d7097a79"
     },
     "docs/roadmap.md": {
       "role": "index",
-      "sha256": "1f035b0ee7c064e9603dd34c17c14b57881ef6a3c8d1d543ede1cbf98cd5d7ba",
-      "size": 48832,
-      "normalized_sha256": "1f035b0ee7c064e9603dd34c17c14b57881ef6a3c8d1d543ede1cbf98cd5d7ba"
+      "sha256": "c91ca4782baeae1ce5666540f22986127030c73506c4d4cc8672db92af3d5c28",
+      "size": 50338,
+      "normalized_sha256": "c91ca4782baeae1ce5666540f22986127030c73506c4d4cc8672db92af3d5c28"
     },
     "docs/showcase.md": {
       "role": "index",
@@ -3369,15 +3381,15 @@
     },
     "python/umminfer_online_evidence_audit.py": {
       "role": "index",
-      "sha256": "2e568f20980e8bc6793b6246045940fef2fd64e09188f54eb24f17984b32362a",
-      "size": 151118,
-      "normalized_sha256": "2e568f20980e8bc6793b6246045940fef2fd64e09188f54eb24f17984b32362a"
+      "sha256": "1da0ddf97e9dc8265948513bb67de2bd19e45d7f4cfb11970b9242b32660b5a4",
+      "size": 151173,
+      "normalized_sha256": "1da0ddf97e9dc8265948513bb67de2bd19e45d7f4cfb11970b9242b32660b5a4"
     },
     "python/umminfer_online_grpo_optimizer.py": {
       "role": "index",
-      "sha256": "2669bced43ba0dd813c4fcdd2cca8b91b9b924d1c96ea887d00a53d2cf7e333e",
-      "size": 51163,
-      "normalized_sha256": "2669bced43ba0dd813c4fcdd2cca8b91b9b924d1c96ea887d00a53d2cf7e333e"
+      "sha256": "5f74d00f059d0019ba7baa641293a8ca55859fcecf01b057f502ed30daf44eaf",
+      "size": 51335,
+      "normalized_sha256": "5f74d00f059d0019ba7baa641293a8ca55859fcecf01b057f502ed30daf44eaf"
     },
     "python/umminfer_online_grpo_preflight.py": {
       "role": "index",
@@ -3441,9 +3453,9 @@
     },
     "python/umminfer_rl_reward.py": {
       "role": "index",
-      "sha256": "f516ee2610e18ec00830acccf78ba378b29d20d5ecbb7769923e8054f58fe893",
-      "size": 12520,
-      "normalized_sha256": "f516ee2610e18ec00830acccf78ba378b29d20d5ecbb7769923e8054f58fe893"
+      "sha256": "2ce273c0d6c4666f543210f6d72e41e5ab68a5d62c3d701778f30a61592cdc78",
+      "size": 12569,
+      "normalized_sha256": "2ce273c0d6c4666f543210f6d72e41e5ab68a5d62c3d701778f30a61592cdc78"
     },
     "python/umminfer_rl_run.py": {
       "role": "index",
@@ -4149,15 +4161,15 @@
     },
     "tests/online_grpo_optimizer_live.py": {
       "role": "observe",
-      "sha256": "0651bd304f274e4cc3a31ae600fdbe2f6360beca9b952e50fd8ae33cc089084c",
-      "size": 30097,
-      "normalized_sha256": "0651bd304f274e4cc3a31ae600fdbe2f6360beca9b952e50fd8ae33cc089084c"
+      "sha256": "1d6c22fae78b74e3a127eded7f006c0064d6f2e6645d9bfa0454d006c988ef9b",
+      "size": 30166,
+      "normalized_sha256": "1d6c22fae78b74e3a127eded7f006c0064d6f2e6645d9bfa0454d006c988ef9b"
     },
     "tests/online_grpo_optimizer_test.py": {
       "role": "observe",
-      "sha256": "ee118b439b5e82da1597eb617b0dab1355fa047c8abb2f2eed38716fbea1504b",
-      "size": 19971,
-      "normalized_sha256": "ee118b439b5e82da1597eb617b0dab1355fa047c8abb2f2eed38716fbea1504b"
+      "sha256": "cb5b6b1239258fa82587b877a0cc961a7dd613b69b419da336ad453304ba9a4f",
+      "size": 21653,
+      "normalized_sha256": "cb5b6b1239258fa82587b877a0cc961a7dd613b69b419da336ad453304ba9a4f"
     },
     "tests/online_grpo_optimizer_verify.py": {
       "role": "observe",
