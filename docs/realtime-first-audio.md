@@ -441,3 +441,24 @@ the earlier diagnostic latency improvement is **not unlocked**. Public HTTP
 speech is **NOT_RUN** because its required unified VLM entry is outside this
 native-TTS task; the failed launch-only attempt produced no speech evidence.
 Perceptual listening and physical playback remain **NOT_COVERED**.
+
+## Task #63 public HTTP/native PCM follow-up
+
+The remaining public-speech gate is implemented by
+`tests/public_speech_pcm_live.py` and independently checked by
+`tests/public_speech_pcm_verify.py`. It uses one isolated GPU 0 unified
+VLM+TTS stack and retains raw public HTTP/SSE/JSON, realtime WebSocket, and
+native MessagePack records. Fresh-process verification binds every public PCM
+chunk and text cursor to exact native-stage bytes, checks repeats,
+cancel/retry, seeded fragmentation, delayed reads, final playback ACKs, and
+`in_flight=0` cleanup. The exact direct continuation control is not conflated
+with the VLM's independently retained `you'r` output.
+
+The delayed-reader release uses only native TTS audio minus public
+`audio.delta`, with a hard 4,096-event threshold and a fail-closed timeout.
+Text and control events cannot force release. This is a bounded-lossless and
+byte-parity gate, not a rerun of the seven-arm/two-GPU R4 benchmark or a
+fair-priority evaluation. Exact measurements, binaries, model/config/source
+hashes, evidence checksums, failed attempts, and cleanup are recorded in
+[public-speech-pcm-gate](public-speech-pcm-gate.md). Physical playback and
+perceptual quality remain **NOT_RUN**.

@@ -1,0 +1,73 @@
+{
+  "schema": "umminfer-public-speech-pcm-gate/v1",
+  "status": "HTTP_PASS_REALTIME_BLOCKED",
+  "source_commit": "50adb075011adc2a99a518e8239274304818c562",
+  "official_base": "ced4b145",
+  "device": "NVIDIA Hopper SM90 physical GPU 0 only",
+  "http": {
+    "status": "PASS",
+    "responses": 25,
+    "completed": 24,
+    "cancelled": 1,
+    "pcm_legs": 44,
+    "pcm_chunks": 184,
+    "public_pcm_bytes_including_cancel_prefix": 10698240,
+    "repeat_groups_exact": true,
+    "cancel_prefix_chunks": 1,
+    "retry_exact": true,
+    "direct_continuation_responses": 4,
+    "direct_continuation_pcm_bytes": 737280,
+    "direct_continuation_pcm_sha256": "3eaa2791bba77428558a314086e2264e3279123b03d89a4998f24a3cce11773d",
+    "independent_verification_sha256": "e7fbb1304f14a6966ac20f762853bc5687e9b50e59ae374b02c1726f7da25720"
+  },
+  "realtime": {
+    "status": "BLOCKED",
+    "responses": 29,
+    "completed_with_final_playback_ack": 17,
+    "reset_before_terminal": 12,
+    "native_audio_events": 4125,
+    "public_audio_events": 29,
+    "pending_native_minus_public": 4096,
+    "paused_response_ids": 29,
+    "audio_only_backlog_reached": true,
+    "full_parity_pass": false,
+    "final_verification_report": "NOT_GENERATED_FAILED_RUN",
+    "complete_evidence_manifest": "NOT_GENERATED_FAILED_RUN"
+  },
+  "binaries": {
+    "umm-infer": "bfee9ff8e9bb111f0ae48dd97ed596c46340749dc15f03d31258138ed1ac0f5c",
+    "umm-native-stage-asr": "688de7b55b551bed365ae9ee57140b6317a282faf33c2520ac1ce8b15180ebf9",
+    "umm-native-stage-qwen38": "38294a513d1ea5d26592ad871fdcef808a86606923c6181c4e19a80770c68b8a",
+    "umm-native-stage-tts": "978e29069888438e84242009d95e83ef51d2bef5fbaa1fadb0bd9cad4c49f069"
+  },
+  "models": {
+    "asr_manifest": "a16807fc65e05f36687484bdfb8cb9f103c3fb59f6787d1f904f3ffebf8a3005",
+    "vlm_manifest": "fb2a8751df1dfbcdf556988acd8e2ac7c6f7180c609797d5e9b3a8e3e40a1c7e",
+    "tts_manifest": "92db72616c9578462add19ed81720b7abf1c1e9c3f4d225877a1cd6104d2fb27",
+    "asr_config": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f",
+    "vlm_config": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+    "tts_config": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
+  },
+  "source": {
+    "native_tts_cuda_kernels": "18e8ccf5dddcdee1968472811f22c72b854ea448c0d4c98a13486fe303c1079e",
+    "live_harness": "529a04517aad6a93a1e6aba51c56786b56429e38613ff68802d64eb3815a542f",
+    "independent_verifier": "f0778a4a1929a6937dc4c06312aefb1a023c89a93a98be368b88738260e30cd6",
+    "deterministic_tests": "eb3585d3469a348594ae5620756e4fcb493f49f9ba1b395c3ae1e6c290f3afe9",
+    "realtime_instruction_wav": "0d44235340c7d9db54a03b8bdfa2fabc2f57b3dd90ab09ee638537b5650972c6"
+  },
+  "tests": {
+    "deterministic_regressions": 19,
+    "umm_test_local": "PASS",
+    "native_tts_cuda_ctest": "3/3 PASS",
+    "feature_map_rows": 222,
+    "feature_map_anchors": 1109,
+    "serving_runtime_changes": 0
+  },
+  "limits": {
+    "full_asr_two_gpu_r4": "NOT_RUN",
+    "fair_priority": "NOT_RUN",
+    "physical_playback": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "latency_improvement": "UNCLAIMED"
+  }
+}

@@ -297,6 +297,30 @@ seeded fragmentation。完整双 GPU R4、fair-priority 候选、感知质量均
 
 ---
 
+### 2.5 公开 HTTP 语音与原生 PCM 逐字节门禁
+
+Task #63 在隔离 SM90 物理 GPU 0 上同时运行统一 Qwen3.8 VLM 与原生 TTS
+entries，保留 HTTP/SSE/JSON、直接 `/v1/audio/speech`、Realtime WebSocket 与
+ZMQ/MessagePack 原始记录。独立新进程把每个公开 PCM chunk 绑定到实际 native
+TTS chunk、提交文本和 UTF-8 游标，覆盖 fresh repeats、取消/重试、延迟读取与最终
+`response.playback_ack`。直接精确文本控制复现 Task #59 continuation PCM，但不把
+VLM 实际生成的不同拼写改写成该控制文本。
+
+Realtime 背压只以 native TTS audio chunks 减去公开 `audio.delta` 帧数证明至少
+4,096 条待交付音频事件；VLM 文本、ASR、ACK 与终态事件均不计入释放条件。至少
+一个 reader 正在暂停且达到该条件后才恢复所有当前暂停 reader，未暂停 reader 继续
+消费以避免后续 VLM/text 阻塞首音；暂停 reader 由独立线程每 30 秒发送既有
+WebSocket PING，PING/PONG 不计入音频背压且不改变 response deadline；这些 heartbeat
+仍未阻止后续 reset，相关 timeout 实验未进入最终源码。最终证据为 HTTP 独立 PASS，
+realtime 4,096 audio backlog 达成但仅 17 completed/12 reset，完整 parity blocked。
+最终 29 个响应仍要求逐字节 PCM、游标、终态和
+`in_flight=0` 全部成立，否则证据 fail closed。实现仅新增验证驱动、独立校验器与
+回归测试，未改变 serving schema、scheduler、阈值或 native TTS kernel。完整双 GPU
+R4、物理播放与听评仍 `NOT_RUN`。详见
+[public-speech-pcm-gate](public-speech-pcm-gate.md)。
+
+---
+
 ## 3. 本机轻量构建与测试验证矩阵
 
 > 环境：macOS 25.3.0 (ARM64), Zig 0.16.0, AppleClang 21.0.0, CMake, Swift, Python 3.13.7（系统 Python 无 `msgpack`/`pyzmq`/`mlx`/`websockets` 第三方包），无 NVIDIA CUDA GPU。

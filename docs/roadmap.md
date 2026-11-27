@@ -565,6 +565,21 @@ their hashes remain negative evidence; deterministic tests and GPU 7 cleanup
 pass. Exact identities and scope are in
 [online-grpo-optimizer](online-grpo-optimizer.md). No quality or generalized
 improvement is claimed.
+**Native public HTTP speech/PCM parity gate (2026-11-27).** Task #63 adds a
+single-GPU-0 public serving gate over the accepted Task #59 TTS fix and the
+Wave 91 integrated tree. Raw HTTP/SSE/JSON/direct-speech and native MessagePack
+records bind each public PCM chunk and UTF-8 cursor to its actual native TTS
+leg, with fresh repeats, cancellation/retry, seeded fragmentation, delayed
+reads, final playback ACKs, and independent fresh-process reconstruction. The
+exact direct continuation control remains separate from the VLM's retained
+prose. A 29-session realtime block releases only after proving at least 4,096
+native-minus-public audio events, then requires lossless drain and cleanup.
+HTTP passed independently; the final no-serving-change capture released exactly
+4,125−29=4,096 audio events but completed only 17 responses while 12 reset, so
+full realtime parity is blocked. Commands, binary/model/config/source hashes, measured results, and evidence
+checksums are in [public-speech-pcm-gate](public-speech-pcm-gate.md). Full
+ASR/two-GPU R4, fair-priority, physical playback, perceptual quality, and any
+latency improvement remain `NOT_RUN` or unclaimed.
 
 ## Model support plan
 

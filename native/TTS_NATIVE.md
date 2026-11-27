@@ -99,6 +99,21 @@ identical on the tested SM90 path. These measurements do not promote the full
 two-GPU R4 gate, unseen prompts, other hardware, or perceptual quality; those
 remain outside this determinism claim.
 
+Task #63 adds public serving evidence rather than another direct-native replay.
+The isolated GPU 0 unified VLM+TTS stack retains raw HTTP/SSE/JSON and native
+MessagePack records. Fresh-process verification binds public PCM and UTF-8 text
+cursors to exact native chunks, covers fresh repeats, cancellation/retry,
+seeded fragmentation, delayed readers, and final realtime playback ACKs. A
+direct `/v1/audio/speech` control repeats the exact accepted continuation text
+and PCM hash; it is kept separate from the VLM's actual generated prose. The
+realtime backlog releases only on at least 4,096 native-minus-public audio
+chunks, never on text or control events. HTTP passed independently; realtime
+ended with 17 completed and 12 reset, so full parity is blocked rather than
+claimed. No kernel, scheduler, threshold, or public schema changed. Exact
+results and evidence hashes are in
+[Public speech PCM gate](../docs/public-speech-pcm-gate.md). Full R4, physical
+playback, and perceptual quality remain outside the claim.
+
 ## Build and test
 
 The current host suite covers prompt/tokenizer, WAV, decode helpers, config,
