@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "request_telemetry_stage.hpp"
 
+#include "stage_common.hpp"
+
 #include <exception>
 #include <utility>
 
@@ -32,6 +34,14 @@ CancellableComputeFn with_native_request_telemetry(
     config.execution = options.batch_size > 1
                            ? obs::NativeTelemetryExecution::kBatched
                            : obs::NativeTelemetryExecution::kSerial;
+    if (std::string_view(compiled_kind()) == "image") {
+      const bool image21 =
+          parse_image_backend(options.image_backend) == ImageBackend::kQwen21;
+      config.backend = image21 ? "qwen-image-2.1" : "qwen-image-2512";
+      // Both backends share one executable, but only image2 routes every direct
+      // device allocation/free through the request-owner adapter.
+      config.instrumented = instrumented && image21;
+    }
     if (std::string_view(compiled_kind()) == "video") {
       config.backend = options.video_backend.empty() ? "video-cuda"
                        : options.video_backend == "contract-stub"

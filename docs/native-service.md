@@ -207,7 +207,8 @@ Current coverage is deliberately narrow:
 | Qwen3-TTS native stage, serial CustomVoice | Every explicit native device `cudaMalloc`/`cudaFree` in Talker, Code Predictor, codec/KV, control buffers, and scratch is owner-routed; `COVERED` with truthful zero events when a request only uses pre-request pools |
 | Qwen3.8 `--batch-size > 1` | `NOT_COVERED`, reason `batched_request_attribution_unavailable`; configured capacity and request identity remain attached |
 | Concurrent/shared execution or overlapping serial epochs | `NOT_COVERED`; no peer subtraction or shared-counter split |
-| Native Omni and Image stages | `NOT_COVERED`, `backend_not_instrumented` |
+| Qwen-Image-2.1 native stage, serial | Every explicit image2 device `cudaMalloc`/`cudaFree` in BF16/FP32 tensors, text input, and DiT target masks is owner-routed; `COVERED` when serial attribution invariants hold |
+| Native Omni and Qwen-Image-2512 stages | `NOT_COVERED`, `backend_not_instrumented` |
 | Video `contract-stub` | `NOT_COVERED`, `contract_stub_has_no_cuda_allocator` |
 | Python/Diffusers/FLUX stages and fixed external proxies | No truthful native epoch is inferred; absent/missing terminal data is normalized to `NOT_COVERED` |
 
@@ -407,6 +408,91 @@ unchanged by the two subsequent live-harness-only commits.
 This is allocator/protocol coverage only. ASR accuracy, perceptual quality,
 production deployment, generalized performance, batched/overlapping ASR
 attribution, and driver/graph/external-library internals are not claimed.
+
+### SM90 Qwen-Image-2.1 validation gate — PASS (2026-11-27)
+
+Task #69 ran the native image2 backend with serial Qwen3.8 and Qwen3-ASR on one
+isolated physical GPU 1. The gateway used `max_in_flight=1`, Qwen used
+`--batch-size 1`, and the resident service was not contacted. Execution commit
+`47f8388912f64bcab476a1f48e175d06242db7a2` is based on official main
+`ced4b145857e6d8d25e1fa56b2dd538ad2aa0e17`; commit
+`02fbb1d59d2dd4ec4885863104c19edd08016f19` corrects only the independent
+verifier's JSON-map-order assumption. For integration, the unchanged Task #69
+runtime was rebased onto official Wave 93
+`413cc9b4114ac83696925aeb43577e39853977a8` as
+`8f3dcff2e7aab440614a9c4aa5e8e14afaff0bc8`; the verifier-only correction became
+`56af007014eb8b43c275b25a78c33e3cab5940f9`. This preserves the Task #67 Wan
+cancellation/fault and Task #63 public-speech records.
+
+- Every direct image2 `cudaMalloc`/`cudaFree` now uses the existing request-owner
+  adapter, including BF16/FP32 tensor construction, move/destruction, text input
+  ids, and DiT target masks. The standalone image2 CLI remains unwrapped. The
+  2512 backend remains `NOT_COVERED` with `backend_not_instrumented`; batched and
+  overlapping execution, host memory, CUDA driver/context, and cuBLAS/library
+  internals are outside this metric.
+- The real-CUDA fixture exercises image2 `DeviceTensor` and `DeviceTensorF`:
+  the cold epoch reaches **768 bytes**, two allocations, one free, and a
+  512-byte final before a late free updates only its original owner. Warm
+  zero-event epochs perform no direct allocation. A separate warm-owned epoch
+  reaches **96 bytes** with two allocations/two frees and final zero. Failed,
+  cancelled, unsupported, and batched fixture contracts also pass.
+- An initial telemetry-off request performed the real **6,040 ms** model load;
+  all six later successful native renders logged `load_ms=0`, proving warm
+  reuse and excluding those pre-request weights. Nine public requests produced
+  five covered image terminal records at unique monotonic epochs **1, 2, 3, 4,
+  6**. The JSON-on, warm-repeat, SSE-on, and post-cancel recovery epochs each
+  report allocated/reserved peak **607,110,944 bytes**, final **0**, and **299
+  allocations / 299 frees**. No successful warm image epoch is zero-event.
+- A valid public edit input reached the existing native Qwen-Image rejection
+  boundary and retained covered **failed** epoch 4 with zero bytes/events because
+  validation failed before allocation. Cancellation was sent after a traced
+  `outputs_started` snapshot showed the image child running. Public cancellation
+  returned the documented `stage_terminal_snapshot_missing` with null image
+  bytes; the native log independently records `http-8:image` aborting at
+  **denoise step 1** after 1,511 ms. A subsequent covered request succeeded.
+- Fixed-seed two-step JSON off/on/warm/recovery projections match at SHA-256
+  `1c95f3df…31ead`; SSE off/on matches at `2c10e61f…94a3`. All seven successful
+  renders are the same **434,038-byte** RGBA8 PNG, SHA-256
+  `ee6485605f06893d686482d555ff6dceff807866f2fc04181b48eaf8c7e4fa14`; decoded
+  RGBA SHA-256 is `b3e379c5…ade74`. Default-off responses contain no telemetry.
+  Protocol comparison excludes transport identity/time and opt-in telemetry,
+  including the nested internal artifact `request_telemetry`; media bytes are
+  compared exactly.
+- Independent whole-device NVML sampling retained **496 samples** at 50 ms,
+  ranging from **58,726 to 87,966 MiB**, and stayed separate from request-owned
+  accounting. Fresh remote and local stdlib-only verifiers independently reread
+  raw JSON/SSE/PNG, epochs, event counts, lifecycle, warm reuse, and checksums
+  without importing the producer. The sealed set has **74 producer files** and
+  **76/76 independent checksums PASS**; `SHA256SUMS.independent` SHA-256 is
+  `46be9d45a00794d878979e4a699b948401096e27ec31ea2d137903ab798cbc04`.
+- After only the recorded task-owned processes were stopped, GPU 1 returned to
+  **3 MiB** with zero compute processes. The pids remain zombie entries awaiting
+  container-parent reaping and have no executing threads.
+
+The integrated Wave 93 rerun rebuilt the rebased source and repeated all nine
+public requests on a fresh cold GPU 1 stack. It reproduced image epochs **1, 2,
+3, 4, 6**, all four successful **607,110,944 B / final 0 / 299+299 event**
+records, the failed zero-event epoch, and the same missing-snapshot cancellation
+boundary. The native cancellation was again observed at denoise step 1 (1,506
+ms), and all seven successful PNG/RGBA hashes were unchanged. Warmup took 5,999
+ms and every later successful render retained `load_ms=0`; 496 separate NVML
+samples again spanned 58,726–87,966 MiB. Only the integrated task-owned processes
+were stopped, and GPU 1 returned to 3 MiB. Fresh remote and local independent
+verification passed **54/54 checksums** over 52 producer files plus verification
+records; `SHA256SUMS.independent` SHA-256 is
+`32e2f22ab1476bef693a20c07c3dc7de14b9305abc29acf5c8d9f6347937190f`.
+The independently sealed integrated evidence is in
+`/tmp/umminfer-task69-wave93/evidence/`.
+
+The first attempt is retained: its normalized SSE check initially omitted the
+nested opt-in artifact telemetry key, while all six produced PNGs already had the
+same hash. Only harness normalization was corrected before a fresh cold rerun;
+no image quality, sampler, schema, or attribution code was changed to obtain the
+result. The compact record, exact model/config/binary/source hashes, and limits
+are in [image2-request-allocator-sm90.json](evidence/image2-request-allocator-sm90.json).
+Image/perceptual quality, production deployment, generalized performance, native
+2512/Omni, batched/overlapping attribution, and host/driver/library internals
+remain `NOT_RUN` or `NOT_COVERED` as declared.
 
 ## Operate
 

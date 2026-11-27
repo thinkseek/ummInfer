@@ -17,12 +17,12 @@ size_t product(const std::vector<int64_t>& shape) {
 
 DeviceTensor::DeviceTensor(std::vector<int64_t> dims) : shape(std::move(dims)) {
   numel = product(shape);
-  IMG_CUDA_CHECK(cudaMalloc(&data, numel * sizeof(Bf16)));
+  IMG_CUDA_CHECK(request_cuda_malloc(&data, numel * sizeof(Bf16)));
 }
 
 DeviceTensor& DeviceTensor::operator=(DeviceTensor&& o) noexcept {
   if (this != &o) {
-    if (data) cudaFree(data);
+    if (data) request_cuda_free(data);
     shape = std::move(o.shape);
     data = o.data;
     numel = o.numel;
@@ -33,7 +33,7 @@ DeviceTensor& DeviceTensor::operator=(DeviceTensor&& o) noexcept {
 }
 
 DeviceTensor::~DeviceTensor() {
-  if (data) cudaFree(data);
+  if (data) request_cuda_free(data);
 }
 
 void DeviceTensor::zeros_() {

@@ -10,6 +10,8 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
+#include "common/cuda_request_allocator.hpp"
+
 namespace umminfer::image2 {
 
 using Bf16 = __nv_bfloat16;
@@ -67,8 +69,10 @@ struct DeviceTensorF {
   float* data = nullptr;
   size_t numel = 0;
   DeviceTensorF() = default;
-  explicit DeviceTensorF(size_t n) : numel(n) { IMG_CUDA_CHECK(cudaMalloc(&data, n * sizeof(float))); }
-  ~DeviceTensorF() { if (data) cudaFree(data); }
+  explicit DeviceTensorF(size_t n) : numel(n) {
+    IMG_CUDA_CHECK(request_cuda_malloc(&data, n * sizeof(float)));
+  }
+  ~DeviceTensorF() { if (data) request_cuda_free(data); }
   DeviceTensorF(const DeviceTensorF&) = delete;
   DeviceTensorF& operator=(const DeviceTensorF&) = delete;
   DeviceTensorF(DeviceTensorF&& o) noexcept : data(o.data), numel(o.numel) {
@@ -76,7 +80,7 @@ struct DeviceTensorF {
   }
   DeviceTensorF& operator=(DeviceTensorF&& o) noexcept {
     if (this != &o) {
-      if (data) cudaFree(data);
+      if (data) request_cuda_free(data);
       data = o.data; numel = o.numel;
       o.data = nullptr; o.numel = 0;
     }

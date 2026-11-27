@@ -105,7 +105,7 @@ that device; a device that refuses a reading emits 0 for that field.
 Off by default. `POST /v1/chat/completions` accepts
 `telemetry: {"native_allocator": true}` and returns a terminal `telemetry`
 envelope only for that request. Serial instrumented Qwen3.8, Qwen3-ASR, Wan2.2,
-and native Qwen3-TTS stages report allocated/reserved byte peaks for explicit
+native Qwen3-TTS, and native Qwen-Image-2.1 stages report allocated/reserved byte peaks for explicit
 native CUDA blocks first owned by a new request epoch. Batches,
 concurrent/shared execution, uninstrumented stages, external proxies, and
 malformed/missing data remain `NOT_COVERED` with null peaks. No request-only
@@ -134,9 +134,14 @@ covered failure, truthful immediate-cancellation boundaries, and 3 MiB cleanup,
 and a separate isolated physical GPU 7 gate passed serial Qwen3-ASR with English
 and Mandarin PCM16, warm repeats, exact off/on JSON/SSE/transcript parity, seven
 unique zero-event pool-reuse epochs, covered native failure, actual native
-cancellation, and 3 MiB cleanup. Batched, concurrent/shared, Base-TTS live
-telemetry, and other-backend request attribution remains
-`NOT_COVERED`/`NOT_RUN`; host/fake-allocator tests alone are not GPU evidence.
+cancellation, and 3 MiB cleanup. On 2026-11-27, an isolated physical GPU 1
+Qwen-Image-2.1 gate passed nine public requests, exact JSON/SSE/PNG parity,
+four successful 607,110,944-byte request-owned peaks with final zero, covered
+native failure, traced denoise cancellation, warm recovery, 496 separate NVML
+samples, independent raw verification, and 3 MiB cleanup. Batched,
+concurrent/shared, Base-TTS live telemetry, native 2512/Omni, and other-backend
+request attribution remains `NOT_COVERED`/`NOT_RUN`; host/fake-allocator tests
+alone are not GPU evidence.
 
 ## Request tracing
 

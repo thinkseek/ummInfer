@@ -159,7 +159,7 @@ DeviceTensor DiT::forward(const DeviceTensor& img_packed, const DeviceTensor& tx
   std::vector<int> target_host(joint, 0);
   for (int i = txt_len; i < joint; ++i) target_host[i] = 1;
   int* is_target = nullptr;
-  IMG_CUDA_CHECK(cudaMalloc(&is_target, joint * sizeof(int)));
+  IMG_CUDA_CHECK(request_cuda_malloc(&is_target, joint * sizeof(int)));
   IMG_CUDA_CHECK(cudaMemcpy(is_target, target_host.data(), joint * sizeof(int),
                             cudaMemcpyHostToDevice));
 
@@ -224,7 +224,7 @@ DeviceTensor DiT::forward(const DeviceTensor& img_packed, const DeviceTensor& tx
   linear_forward(rt_, scaled.data, proj_out_w.data, nullptr, velocity.data, s_img, kChannels,
                  inner);
 
-  IMG_CUDA_CHECK(cudaFree(is_target));
+  IMG_CUDA_CHECK(request_cuda_free(is_target));
   rt_.sync();
   return velocity;
 }

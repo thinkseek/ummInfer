@@ -1,0 +1,186 @@
+{
+  "schema": "umminfer-image2-request-native-allocator-sm90-v1",
+  "status": "PASS",
+  "date": "2026-11-27",
+  "base_commit": "ced4b145857e6d8d25e1fa56b2dd538ad2aa0e17",
+  "execution_commit": "47f8388912f64bcab476a1f48e175d06242db7a2",
+  "verification_commit": "02fbb1d59d2dd4ec4885863104c19edd08016f19",
+  "integrated_base_commit": "413cc9b4114ac83696925aeb43577e39853977a8",
+  "integrated_execution_commit": "8f3dcff2e7aab440614a9c4aa5e8e14afaff0bc8",
+  "integrated_verification_commit": "56af007014eb8b43c275b25a78c33e3cab5940f9",
+  "integrated_validation": {
+    "status": "PASS",
+    "preserved_official_records": ["Task #67 Wan cancellation/fault", "Task #63 public speech PCM"],
+    "public_requests": 9,
+    "covered_image_epochs": [1, 2, 3, 4, 6],
+    "successful_allocated_bytes_peak": [607110944, 607110944, 607110944, 607110944],
+    "successful_allocated_bytes_final": [0, 0, 0, 0],
+    "successful_allocation_events": [299, 299, 299, 299],
+    "successful_free_events": [299, 299, 299, 299],
+    "warmup_load_ms": 5999,
+    "measured_warm_load_ms": 0,
+    "native_cancel": "denoise step 1",
+    "native_compute_ms": 1506,
+    "public_cancel_coverage": "NOT_COVERED stage_terminal_snapshot_missing",
+    "png_sha256": "ee6485605f06893d686482d555ff6dceff807866f2fc04181b48eaf8c7e4fa14",
+    "rgba_sha256": "b3e379c55a6f9caade35018cfe2227e95a2e61d34a04224f7ff694e7386ade74",
+    "nvml_samples": 496,
+    "nvml_min_mib": 58726,
+    "nvml_max_mib": 87966,
+    "gpu_cleanup_mib": 3,
+    "evidence_directory": "/tmp/umminfer-task69-wave93/evidence/",
+    "producer_file_count": 52,
+    "independent_checksum_count": 54,
+    "producer_manifest_sha256": "ecbca4c2df616863c7b251807c621f6f8425c64dec38216c363c3ad9bd03f724",
+    "independent_manifest_sha256": "32e2f22ab1476bef693a20c07c3dc7de14b9305abc29acf5c8d9f6347937190f",
+    "independent_report_sha256": "b7451799774d2babdc42042c491eec8062313fd0e7fa68333bd4d0d6113ad743",
+    "independent_fresh_processes": "remote and separate local raw copy PASS without producer import"
+  },
+  "integrated_provenance": {
+    "model_file_count": 90,
+    "model_manifest_sha256": {
+      "Qwen/Qwen-Image-2.1": "45a1f83d078eaeee9987347a3bbae843558146dbd20c23dde1241d1aff565bb8",
+      "Qwen3.8-27B": "80827771fb9c96b88d964ce2b34cab7e83dcb55e572fd7c81a7065f8cb47149f",
+      "Qwen3-ASR-1.7B": "321ee75ee0ec780c1921f1fe980a494b67c32f16d20f25783fc1388ebba6fadf"
+    },
+    "binary_sha256": {
+      "umm-infer": "da5097d22f3c9be73033b385452f0e274fb03c89d3d8275fa985858eeb247e6d",
+      "umm-native-stage-asr": "5413af80412735afe025d99ec99770f359a62235f2752ac93dad6df62fe3b81d",
+      "umm-native-stage-qwen38": "3ac27544431e0bbd8eb3b5736c2bbc346a55af8be994a0bf9010c69ada6cbef4",
+      "umm-native-stage-image": "28c255a306b537629a4aca5bcb7bc202d5332bfda101e4d6f1664f5e2d089b5b",
+      "image2_request_allocator_test": "03d83322228c2e1960c5a0df0aa5d2296a3fbca3c7b9831e7335b30076e4eb6f"
+    },
+    "source_and_build_record_count": 841,
+    "source_and_build_record_aggregate_sha256": "2baa2593f0819359dcbf55f6f29b68586c8aac8c3302b1e838ec5faa7b792bb1",
+    "source_record_scope": "retained execution-snapshot source plus root-level build records; not presented as a tracked-file count"
+  },
+  "hardware": {
+    "profile": "NVIDIA Hopper SM90",
+    "physical_device_index": 1,
+    "execution": "serial",
+    "native_batch_capacity": 1,
+    "gateway": "isolated loopback Qwen3-ASR plus serial Qwen3.8 plus native Qwen-Image-2.1",
+    "resident_service_contacted": false,
+    "other_devices_used": []
+  },
+  "coverage": {
+    "scope": "every explicit native image2 cudaMalloc/cudaFree block first owned by one request epoch",
+    "resident_weights": "loaded by uninstrumented warmup and excluded from later request epochs",
+    "warmup_load_ms": 6040,
+    "measured_warm_load_ms": 0,
+    "host_memory": "NOT_COVERED",
+    "cuda_driver_context_and_external_library_internals": "NOT_COVERED",
+    "native_image_2512": "NOT_COVERED backend_not_instrumented",
+    "batched_or_overlapping_attribution": "NOT_COVERED",
+    "standalone_image2_cli": "unchanged direct CUDA calls with no request telemetry"
+  },
+  "real_cuda_fixture": {
+    "cold_allocated_bytes_peak": 768,
+    "cold_reserved_bytes_peak": 768,
+    "cold_allocated_bytes_final": 512,
+    "cold_allocation_events": 2,
+    "cold_free_events_before_terminal": 1,
+    "late_free_original_owner_only": true,
+    "warm_zero_event_epochs": "covered and truthful because those epochs perform no direct allocation",
+    "warm_owned_allocated_bytes_peak": 96,
+    "warm_owned_allocated_bytes_final": 0,
+    "warm_owned_allocation_events": 2,
+    "warm_owned_free_events": 2,
+    "failed_and_cancelled_peaks_retained": true,
+    "unsupported_and_batched_null_not_covered": true
+  },
+  "public_requests": {
+    "count": 9,
+    "successful_media_requests": 7,
+    "covered_image_terminal_count": 5,
+    "covered_image_epochs": [1, 2, 3, 4, 6],
+    "unique_monotonic_epochs": true,
+    "records": [
+      {"case": "image2-warmup-off", "request_id": "http-1", "telemetry": "off", "image_epoch": null, "purpose": "real model load before covered epochs"},
+      {"case": "image2-json-off", "request_id": "http-2", "telemetry": "off", "image_epoch": null},
+      {"case": "image2-json-on", "request_id": "http-3", "image_epoch": 1, "lifecycle": "completed", "allocated_bytes_peak": 607110944, "allocated_bytes_final": 0, "allocation_events": 299, "free_events": 299},
+      {"case": "image2-json-warm-on", "request_id": "http-4", "image_epoch": 2, "lifecycle": "completed", "allocated_bytes_peak": 607110944, "allocated_bytes_final": 0, "allocation_events": 299, "free_events": 299},
+      {"case": "image2-sse-off", "request_id": "http-5", "telemetry": "off", "image_epoch": null},
+      {"case": "image2-sse-on", "request_id": "http-6", "image_epoch": 3, "lifecycle": "completed", "allocated_bytes_peak": 607110944, "allocated_bytes_final": 0, "allocation_events": 299, "free_events": 299},
+      {"case": "image2-native-failed", "request_id": "http-7", "image_epoch": 4, "lifecycle": "failed", "allocated_bytes_peak": 0, "allocated_bytes_final": 0, "allocation_events": 0, "free_events": 0, "zero_meaning": "existing native edit rejection occurred before any direct request allocation"},
+      {"case": "image2-cancelled", "request_id": "http-8", "public_image_epoch": null, "public_coverage": "NOT_COVERED", "reason": "stage_terminal_snapshot_missing", "byte_fields": null, "native_abort": "denoise step 1", "native_compute_ms": 1511},
+      {"case": "image2-after-cancel-on", "request_id": "http-9", "image_epoch": 6, "lifecycle": "completed", "allocated_bytes_peak": 607110944, "allocated_bytes_final": 0, "allocation_events": 299, "free_events": 299}
+    ],
+    "zero_event_meaning": "No successful warm live image epoch is zero. Zero events are limited to pre-allocation native validation failure and fixture epochs that perform no direct allocation; unsupported coverage uses null bytes."
+  },
+  "protocol_and_media": {
+    "sampler": {"size": "512x512", "steps": 2, "image_seed": 1234, "vlm_temperature": 0, "vlm_top_p": 1, "vlm_seed": 42, "max_tokens": 1},
+    "cancellation_steps": 40,
+    "json_off_on_normalized_sha256": "1c95f3dfcc4f7afe082ec3a67fe02d5704ecf6506586fac035bbf211dc831ead",
+    "json_warm_and_recovery_normalized_sha256": "1c95f3dfcc4f7afe082ec3a67fe02d5704ecf6506586fac035bbf211dc831ead",
+    "sse_off_on_normalized_sha256": "2c10e61fda8e4dabd9242b3b4f7e673063c44fc094ae71199a4ab26470ae94a3",
+    "default_off_has_no_telemetry_field": true,
+    "png_bytes": 434038,
+    "png_sha256": "ee6485605f06893d686482d555ff6dceff807866f2fc04181b48eaf8c7e4fa14",
+    "rgba_bytes": 1048576,
+    "rgba_sha256": "b3e379c55a6f9caade35018cfe2227e95a2e61d34a04224f7ff694e7386ade74",
+    "successful_media_byte_identical": true
+  },
+  "whole_device_nvml": {
+    "scope": "whole-device-used-memory",
+    "poll_interval_ms": 50,
+    "sample_count": 496,
+    "memory_used_mib_first": 58726,
+    "memory_used_mib_min": 58726,
+    "memory_used_mib_max": 87966,
+    "memory_used_mib_last": 87386,
+    "request_peaks_inferred_from_nvml": false
+  },
+  "provenance": {
+    "model_revision": "UNKNOWN",
+    "model_file_count": 90,
+    "model_manifests": {
+      "Qwen/Qwen-Image-2.1": {"files": 48, "aggregate_sha256": "45a1f83d078eaeee9987347a3bbae843558146dbd20c23dde1241d1aff565bb8"},
+      "Qwen3.8-27B": {"files": 29, "aggregate_sha256": "80827771fb9c96b88d964ce2b34cab7e83dcb55e572fd7c81a7065f8cb47149f"},
+      "Qwen3-ASR-1.7B": {"files": 13, "aggregate_sha256": "321ee75ee0ec780c1921f1fe980a494b67c32f16d20f25783fc1388ebba6fadf"}
+    },
+    "binary_sha256": {
+      "umm-infer": "9a93522344750ef6db60cbe05d04627b23954a68a9ac46baf3570ea3d96fb082",
+      "umm-native-stage-asr": "f05fcd1e0c9c49fb2bdba30611213e778fc1f056df4ec94ae13ef28c5d4d764b",
+      "umm-native-stage-qwen38": "969a340fd56e7a57ba963f81eb932c93ec90e9903423fa8897a6fbddb92f9b01",
+      "umm-native-stage-image": "a6c13e38334b0aa8d9f1a98955610773ab968a54f8e0c1a79243c5a18ca1343d",
+      "image2_request_allocator_test": "cfb15be7141d8b82fce62e81513259d3ca54a878e5dd16ebd0fb66d1177ea9b5"
+    },
+    "source_file_count": 839,
+    "source_aggregate_sha256": "72635040dad5929adf5c7366ad9d074edf55e13d15da7b65ed15ea979f653fee",
+    "source_record_scope": "retained execution-snapshot source plus root-level build records; not presented as a tracked-file count",
+    "command_records": "commands.txt and stack/stack-processes.json"
+  },
+  "verification": {
+    "native_stage_host_ctest": "10/10 PASS",
+    "focused_sm90_ctest": "3/3 PASS",
+    "standalone_image2_host_ctest": "1/1 PASS",
+    "umm_test_local": "PASS",
+    "controlled_measurement_test": "38/38 PASS",
+    "independent_fresh_processes": "remote and separate local raw copy PASS without producer import",
+    "independent_report_sha256": "8bd23111716258d7bc3587f7a15080abfcf71ffed6ff56922257b6b61b5b47d3",
+    "first_attempt": "retained; only normalized SSE comparison omitted nested opt-in request_telemetry, while all six produced PNG hashes matched",
+    "verification_correction": "removed an incorrect JSON-map execution-order assumption; no producer or runtime record changed"
+  },
+  "evidence": {
+    "directory": "/tmp/umminfer-task69-r1/evidence/",
+    "producer_file_count": 74,
+    "independent_checksum_count": 76,
+    "producer_manifest_sha256": "aaa6254cdf2a083baca9ac7a59c646c6be2237fd72e273b0bb33dd2f79a9d63d",
+    "independent_manifest_sha256": "46be9d45a00794d878979e4a699b948401096e27ec31ea2d137903ab798cbc04"
+  },
+  "cleanup": {
+    "only_recorded_task_processes_signaled": true,
+    "gpu_1_memory_used_mib": 3,
+    "gpu_1_compute_processes": 0,
+    "recorded_pid_state": "zombie entries with no executing threads; container parent owns reaping"
+  },
+  "claims": {
+    "image_quality_or_perceptual_review": "NOT_RUN",
+    "production_deployment": "NOT_RUN",
+    "generalized_performance": "NOT_RUN",
+    "native_2512_and_omni": "NOT_COVERED",
+    "batched_or_overlapping_attribution": "NOT_COVERED",
+    "host_driver_cuda_library_internal_allocation": "NOT_COVERED"
+  }
+}

@@ -156,6 +156,28 @@ removed in `ab51cf5`, so the target no longer builds. `native/image2/CMakeLists.
 still names the removed directory; that is a known build break outside this
 document.
 
+## Request-owned allocator telemetry
+
+The native stage build routes every explicit image2 `cudaMalloc`/`cudaFree`
+through `native/common/cuda_request_allocator.hpp`, including BF16/FP32 tensor
+owners, text input ids, and DiT target masks. With the public
+`telemetry.native_allocator=true` opt-in, each serial request creates a fresh
+ownership epoch; late frees remain assigned to their original owner. The 2512
+backend is not instrumented and reports `NOT_COVERED` with null byte fields.
+
+The standalone `umm-image2-native` CLI intentionally keeps direct CUDA calls and
+emits no request telemetry. Pre-request resident weights/workspaces, host memory,
+CUDA context/driver activity, cuBLAS/library internals, and unsupported batched
+or overlapping attribution are excluded. A warm zero-event epoch is valid only
+when no direct request allocation occurs; normal image2 generation allocates
+per-request tensors and must not inherit the TTS/ASR zero-event convention.
+
+Task #69 passed the real serial SM90 GPU 1 public JSON/SSE/PNG gate with warm
+reuse, failure/cancellation/recovery, independent fresh-process verification,
+and separate whole-device NVML samples. Exact hashes and limits are in
+[docs/native-service.md](../../docs/native-service.md#sm90-qwen-image-21-validation-gate--pass-2026-11-27).
+This is allocator/protocol evidence, not an image-quality or deployment claim.
+
 ## Known limitations
 
 - Text-to-image only. Condition images, editing and true CFG are absent.

@@ -16,6 +16,8 @@ Suites:
   asr           real Qwen3-ASR + serial Qwen3.8, English/Mandarin PCM16,
                 warm repeats, JSON/SSE/transcript parity, failure/cancel, and
                 independent 50 ms whole-device NVML (isolated stack required)
+  image2        real serial Qwen-Image-2.1 + Qwen3.8, JSON/SSE/PNG parity,
+                warm reuse, native failure/cancel, and independent NVML
   batched       Qwen3.8 --batch-size>1 must be NOT_COVERED with null peaks
   contract-stub Wan2.2 contract-stub must be NOT_COVERED with null peaks
 
@@ -39,6 +41,8 @@ import sys
 import threading
 import time
 import urllib.error
+import struct
+import zlib
 import urllib.parse
 import urllib.request
 import wave
@@ -63,11 +67,12 @@ def sha256_bytes(value):
 
 
 def normalize(value, request_id=None):
-    """Remove transport identity/time, retaining model and artifact bytes."""
+    """Remove transport identity/time and opt-in telemetry, retaining media bytes."""
     if isinstance(value, dict):
         return {key: normalize(item, request_id) for key, item in value.items()
                 if key not in ("created", "session_id", "telemetry",
-                               "denoise_ms", "encode_ms", "first_frame_ms",
+                               "request_telemetry", "denoise_ms", "encode_ms",
+                               "first_frame_ms",
                                "total_ms", "first_audio_ms", "elapsed_ms")}
     if isinstance(value, list):
         return [normalize(item, request_id) for item in value]
@@ -251,7 +256,8 @@ class Gate:
         return status, parsed, path
 
     def stream(self, name, body, abort_first_frame=False,
-               abort_first_audio=False, abort_delay_s=0.0):
+               abort_first_audio=False, abort_delay_s=0.0,
+               abort_image_after_running=False):
         raw_request = canonical(body)
         self.request_hashes[name] = sha256_bytes(raw_request)
         (self.evidence / f"{name}.request.json").write_bytes(raw_request + b"\n")
@@ -263,6 +269,48 @@ class Gate:
         response = connection.getresponse()
         frames, pending, raw_lines = [], [], bytearray()
         abort_result = None
+        trace_abort = {}
+        trace_thread = None
+        trace_stop = threading.Event()
+
+        def start_trace_abort(request_id):
+            def watch():
+                try:
+                    deadline = time.monotonic() + 30
+                    while time.monotonic() < deadline and not trace_stop.is_set():
+                        if self.args.image_trace.exists():
+                            for line in self.args.image_trace.read_text(
+                                    errors="replace").splitlines():
+                                try:
+                                    event = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                legs = event.get("legs", [])
+                                if (event.get("request_id") == request_id and
+                                        event.get("event") == "legs_snapshot" and
+                                        event.get("phase") == "outputs_started" and
+                                        any(leg.get("stage") == "image" and
+                                            leg.get("state") == "running"
+                                            for leg in legs)):
+                                    trace_abort["event"] = event
+                                    # The trace is emitted immediately after the
+                                    # child submit. Let native compute cross its
+                                    # first boundary before sending the abort.
+                                    time.sleep(0.75)
+                                    trace_abort["abort"] = self.abort(request_id)
+                                    self.save_json(f"{name}.trace-trigger.json",
+                                                   trace_abort)
+                                    return
+                        trace_stop.wait(0.02)
+                    if "abort" not in trace_abort and not trace_stop.is_set():
+                        trace_abort["error"] = "image outputs_started trace timeout"
+                except Exception as exc:
+                    trace_abort["error"] = str(exc)
+
+            trace_thread = threading.Thread(target=watch, daemon=True)
+            trace_thread.start()
+            return trace_thread
+
         try:
             for raw in response:
                 raw_lines.extend(raw)
@@ -278,6 +326,11 @@ class Gate:
                     break
                 frame = json.loads(data)
                 frames.append(frame)
+                if abort_image_after_running and trace_thread is None:
+                    request_id = frame.get("id")
+                    require(isinstance(request_id, str) and request_id,
+                            "image trace abort frame has no request id")
+                    trace_thread = start_trace_abort(request_id)
                 if abort_first_audio and abort_result is None:
                     unified = frame.get("unified", {})
                     artifact = unified.get("artifact", {})
@@ -296,6 +349,15 @@ class Gate:
                     abort_result = self.abort(request_id)
         finally:
             connection.close()
+            trace_stop.set()
+            if trace_thread is not None:
+                trace_thread.join(timeout=35)
+            require(trace_thread is None or not trace_thread.is_alive(),
+                    "image trace abort thread did not stop")
+            if "error" in trace_abort:
+                raise GateFailure(trace_abort["error"])
+            if "abort" in trace_abort:
+                abort_result = trace_abort["abort"]
         (self.evidence / f"{name}.response.sse").write_bytes(bytes(raw_lines))
         self.save_json(f"{name}.frames.json", frames)
         return response.status, frames, abort_result
@@ -818,6 +880,333 @@ class Gate:
         require(all(peak == 0 for peak in self.peaks.get("asr", [])),
                 "ASR pool-reuse peak was not the measured zero")
 
+    def image2_body(self, telemetry=False, stream=False, steps=2, edit=False):
+        body = self.text_body(telemetry=telemetry, stream=stream, max_tokens=1)
+        body["messages"] = [{"role": "user", "content": "Reply with exactly K."}]
+        body["modalities"] = ["text", "image"]
+        body["image"] = {
+            "prompt": "A red fox sitting in a snowy forest at dawn",
+            "size": "512x512", "steps": steps, "seed": 1234,
+            "output_format": "png",
+        }
+        if edit:
+            # Valid public edit input reaches the existing native Qwen-Image
+            # rejection boundary; no fault injection or schema change is used.
+            body["image"]["image"] = (
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+        return body
+
+    def save_png(self, name, png):
+        require(png[:8] == b"\x89PNG\r\n\x1a\n", f"{name} is not PNG")
+        offset = 8
+        idat = bytearray()
+        width = height = None
+        ended = False
+        while offset < len(png):
+            require(offset + 12 <= len(png), f"{name} truncated PNG chunk")
+            size = struct.unpack(">I", png[offset:offset + 4])[0]
+            kind = png[offset + 4:offset + 8]
+            end = offset + 12 + size
+            require(end <= len(png), f"{name} overflowing PNG chunk")
+            payload = png[offset + 8:offset + 8 + size]
+            expected_crc = struct.unpack(">I", png[offset + 8 + size:end])[0]
+            require((zlib.crc32(kind + payload) & 0xffffffff) == expected_crc,
+                    f"{name} PNG CRC mismatch")
+            if kind == b"IHDR":
+                width, height, depth, color, compression, filtering, interlace = \
+                    struct.unpack(">IIBBBBB", payload)
+                require((width, height, depth, color, compression, filtering,
+                         interlace) == (512, 512, 8, 6, 0, 0, 0),
+                        f"{name} is not 512x512 non-interlaced RGBA8")
+            elif kind == b"IDAT":
+                idat.extend(payload)
+            elif kind == b"IEND":
+                require(size == 0 and end == len(png), f"{name} invalid PNG IEND")
+                ended = True
+            offset = end
+        require(ended and width == 512 and height == 512 and idat,
+                f"{name} incomplete PNG")
+        decoded = zlib.decompress(bytes(idat))
+        row_bytes = 512 * 4
+        require(len(decoded) == (row_bytes + 1) * 512,
+                f"{name} decoded RGBA length mismatch")
+        rows = [decoded[y * (row_bytes + 1):(y + 1) * (row_bytes + 1)]
+                for y in range(512)]
+        require(all(row[0] == 0 for row in rows),
+                f"{name} unexpectedly changed native PNG filter type")
+        pixels = b"".join(row[1:] for row in rows)
+        require(len(set(pixels)) > 1, f"{name} decoded to a constant image")
+        (self.evidence / f"{name}.png").write_bytes(png)
+        self.media_hashes[name] = {
+            "png_sha256": sha256_bytes(png), "png_bytes": len(png),
+            "rgba_sha256": sha256_bytes(pixels), "rgba_bytes": len(pixels),
+            "width": width, "height": height, "color_type": "RGBA8",
+        }
+        return sha256_bytes(png)
+
+    def save_nonstream_png(self, name, body):
+        artifacts = [item for item in body.get("artifacts", [])
+                     if item.get("media_type") == "image"]
+        require(len(artifacts) == 1, f"{name} did not return one image artifact")
+        artifact = artifacts[0]
+        require("request_telemetry" not in artifact,
+                "internal image telemetry leaked into an artifact")
+        png = base64.b64decode(artifact["data"], validate=True)
+        require(len(png) == artifact.get("bytes") and
+                sha256_bytes(png) == artifact.get("sha256"),
+                f"{name} image SHA-256/byte count mismatch")
+        return self.save_png(name, png)
+
+    def save_stream_png(self, name, frames):
+        chunks = {}
+        totals = {}
+        expected = {}
+        for frame in frames:
+            unified = frame.get("unified", {})
+            if unified.get("kind") != "artifact":
+                continue
+            artifact = unified.get("artifact", {})
+            if artifact.get("mime_type") != "image/png":
+                continue
+            identity = artifact["artifact_id"]
+            index, total = artifact["index"], artifact["total"]
+            require(type(index) is int and type(total) is int and
+                    0 <= index < total,
+                    f"{name} invalid image chunk index/total")
+            # Totals are fixed for one artifact and every index arrives once.
+            require(totals.setdefault(identity, total) == total,
+                    f"{name} image chunk total changed")
+            parts = chunks.setdefault(identity, {})
+            require(index not in parts, f"{name} duplicate image chunk {index}")
+            parts[index] = base64.b64decode(artifact["data"], validate=True)
+            if "sha256" in artifact:
+                require(index + 1 == total, f"{name} digest arrived before final chunk")
+                expected[identity] = (artifact["sha256"], artifact["bytes"])
+        require(len(chunks) == 1 and expected.keys() == chunks.keys(),
+                f"{name} did not stream one complete PNG")
+        identity = next(iter(chunks))
+        require(set(chunks[identity]) == set(range(totals[identity])),
+                f"{name} PNG chunk indexes are incomplete")
+        png = b"".join(chunks[identity][index]
+                       for index in range(totals[identity]))
+        digest, size = expected[identity]
+        require(size == len(png) and digest == sha256_bytes(png),
+                f"{name} streamed PNG digest/size mismatch")
+        return self.save_png(name, png)
+
+    def require_image2_covered(self, envelope, lifecycle="completed",
+                               nonzero=True):
+        stage = require_covered(envelope, "image", self.args.device,
+                                lifecycle=lifecycle, nonzero=nonzero)
+        require(stage.get("backend") == "qwen-image-2.1",
+                f"wrong image backend identity: {stage.get('backend')}")
+        samples = stage["sample_coverage"]
+        if nonzero:
+            require(samples["allocation_events"] > 0 and
+                    samples["free_events"] == samples["allocation_events"] and
+                    stage["allocated_bytes_final"] == 0 and
+                    stage["reserved_bytes_final"] == 0,
+                    "image2 direct request blocks did not close at native terminal")
+        else:
+            require(samples["allocation_events"] == 0 and
+                    samples["free_events"] == 0 and
+                    stage["allocated_bytes_peak"] == 0 and
+                    stage["allocated_bytes_final"] == 0,
+                    "native input-validation failure invented direct allocations")
+        return stage
+
+    def image2(self):
+        status, health = self.get_json("/health")
+        require(status == 200 and health.get("in_flight") == 0,
+                f"initial health is not idle: {health}")
+        status, ready = self.get_json("/ready")
+        require(status == 200 and ready.get("status") == "ready",
+                "Qwen/Image2 stack is not ready")
+        image_log_offset = self.args.image_log.stat().st_size
+
+        # Load and retain model weights before the first covered epoch. This
+        # makes the pre-request exclusion observable instead of charging lazy
+        # model construction to the first measured request.
+        nonstream = {}
+        for name, enabled in (("image2-warmup-off", False),
+                              ("image2-json-off", False),
+                              ("image2-json-on", True),
+                              ("image2-json-warm-on", True)):
+            status, response, path = self.chat(
+                name, self.image2_body(telemetry=enabled))
+            require(status == 200, f"{name} HTTP {status}: {response}")
+            envelope = response_telemetry(response)
+            if enabled:
+                require_covered(envelope, "qwen38", self.args.device)
+                self.require_image2_covered(envelope)
+                self.note_epochs(envelope)
+                self.remember_terminal(path)
+            else:
+                require(envelope is None and "telemetry" not in response,
+                        f"default image JSON emitted telemetry: {name}")
+            self.save_nonstream_png(name, response)
+            nonstream[name] = response
+        parity = self.compare(
+            nonstream["image2-json-off"], nonstream["image2-json-on"],
+            nonstream["image2-json-off"].get("id"),
+            nonstream["image2-json-on"].get("id"))
+        self.record("image2-json-off-on-protocol-parity", "PASS", parity)
+        warm_parity = self.compare(
+            nonstream["image2-json-on"], nonstream["image2-json-warm-on"],
+            nonstream["image2-json-on"].get("id"),
+            nonstream["image2-json-warm-on"].get("id"))
+        self.record("image2-warm-repeat-protocol-parity", "PASS", warm_parity)
+
+        streamed = {}
+        for name, enabled in (("image2-sse-off", False),
+                              ("image2-sse-on", True)):
+            status, frames, _ = self.stream(
+                name, self.image2_body(telemetry=enabled, stream=True))
+            require(status == 200 and frames, f"{name} SSE failed")
+            envelopes = [frame_telemetry(frame) for frame in frames
+                         if frame_telemetry(frame) is not None]
+            if enabled:
+                require(len(envelopes) == 1,
+                        "image2 SSE did not emit one terminal envelope")
+                require_covered(envelopes[0], "qwen38", self.args.device)
+                self.require_image2_covered(envelopes[0])
+                self.note_epochs(envelopes[0])
+            else:
+                require(not envelopes and
+                        all("telemetry" not in frame for frame in frames),
+                        "default image SSE emitted telemetry")
+            self.save_stream_png(name, frames)
+            streamed[name] = frames
+        sse_parity = self.compare(
+            streamed["image2-sse-off"], streamed["image2-sse-on"],
+            streamed["image2-sse-off"][0].get("id"),
+            streamed["image2-sse-on"][0].get("id"))
+        self.record("image2-sse-off-on-protocol-parity", "PASS", sse_parity)
+
+        status, failed, path = self.chat(
+            "image2-native-failed", self.image2_body(telemetry=True, edit=True))
+        require(status == 200, f"optional image failure became HTTP {status}")
+        require(any(leg.get("stage") == "image" and leg.get("state") == "failed"
+                    for leg in failed.get("legs", [])),
+                f"native image failure was not reported in legs: {failed}")
+        failed_envelope = response_telemetry(failed)
+        require_covered(failed_envelope, "qwen38", self.args.device)
+        failed_stage = self.require_image2_covered(
+            failed_envelope, lifecycle="failed", nonzero=False)
+        require(failed_stage["epoch"]["id"] > 0, "failed image epoch missing")
+        self.note_epochs(failed_envelope)
+        self.remember_terminal(path)
+
+        status, frames, abort = self.stream(
+            "image2-cancelled", self.image2_body(
+                telemetry=True, stream=True, steps=40),
+            abort_image_after_running=True)
+        require(status == 200 and abort and abort.get("status") == 200,
+                f"image in-flight abort failed: {abort}")
+        envelopes = [frame_telemetry(frame) for frame in frames
+                     if frame_telemetry(frame) is not None]
+        require(len(envelopes) == 1 and
+                envelopes[0].get("lifecycle_status") == "cancelled",
+                "image cancellation did not emit one cancelled envelope")
+        cancel_envelope = envelopes[0]
+        image_rows = [row for row in cancel_envelope.get("stages", [])
+                      if row.get("stage") == "image"]
+        require(len(image_rows) == 1, "image cancellation lost its image boundary")
+        if image_rows[0].get("native_stage") == "image":
+            self.require_image2_covered(
+                cancel_envelope, lifecycle="cancelled", nonzero=True)
+            self.note_epochs(cancel_envelope)
+        else:
+            require_not_covered(image_rows[0], "stage_terminal_snapshot_missing")
+        self.save_json("image2-cancelled-boundary.json", {
+            "abort": abort, "telemetry": cancel_envelope,
+            "boundary": "abort after traced native image child was running",
+        })
+
+        request_id = cancel_envelope["request_id"]
+        marker = ("image request aborted backend=2.1 request_id=" +
+                  request_id + ":image").encode()
+        native_log = b""
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            native_log = self.args.image_log.read_bytes()[image_log_offset:]
+            if marker in native_log and b"denoise step" in native_log:
+                break
+            time.sleep(0.05)
+        (self.evidence / "image2-native-log-tail.txt").write_bytes(native_log)
+        require(marker in native_log and b"denoise step" in native_log,
+                "native image log did not prove denoise cancellation")
+
+        status, recovered, path = self.chat(
+            "image2-after-cancel-on", self.image2_body(telemetry=True))
+        require(status == 200, f"post-cancel image request failed: {recovered}")
+        recovered_envelope = response_telemetry(recovered)
+        require_covered(recovered_envelope, "qwen38", self.args.device)
+        self.require_image2_covered(recovered_envelope)
+        self.note_epochs(recovered_envelope)
+        self.remember_terminal(path)
+        self.save_nonstream_png("image2-after-cancel-on", recovered)
+        recovery_parity = self.compare(
+            nonstream["image2-json-on"], recovered,
+            nonstream["image2-json-on"].get("id"), recovered.get("id"))
+        self.record("image2-post-cancel-protocol-parity", "PASS", recovery_parity)
+
+        success_names = (
+            "image2-warmup-off", "image2-json-off", "image2-json-on",
+            "image2-json-warm-on", "image2-sse-off", "image2-sse-on",
+            "image2-after-cancel-on")
+        digests = {self.media_hashes[name]["png_sha256"] for name in success_names}
+        require(len(digests) == 1,
+                f"fixed-seed off/on/warm/SSE/recovery PNG bytes differ: {digests}")
+        self.record("image2-all-success-png-byte-parity", "PASS", next(iter(digests)))
+
+        # Native timings prove the first uninstrumented request loaded the model
+        # and all measured successful repeats reused those resident components.
+        final_native_log = self.args.image_log.read_bytes()[image_log_offset:]
+        (self.evidence / "image2-native-log-tail.txt").write_bytes(final_native_log)
+        request_ids = {name: response["id"] for name, response in nonstream.items()}
+        request_ids.update({name: frames[0]["id"] for name, frames in streamed.items()})
+        request_ids["image2-after-cancel-on"] = recovered["id"]
+        load_records = {}
+        for name in ("image2-warmup-off", "image2-json-off", "image2-json-on",
+                     "image2-json-warm-on", "image2-sse-off", "image2-sse-on",
+                     "image2-after-cancel-on"):
+            child = request_ids[name] + ":image"
+            match = re.search(
+                rb"image request backend=2\.1 request_id=" + re.escape(child.encode()) +
+                rb"[^\n]*\bload_ms=([0-9]+)(?:\.[0-9]+)?", final_native_log)
+            require(match is not None, f"missing native load timing for {child}")
+            load_ms = int(match.group(1))
+            if name == "image2-warmup-off":
+                require(load_ms > 0, "warmup did not perform the actual model load")
+            else:
+                require(load_ms == 0, f"{name} did not reuse pre-request model weights")
+            load_records[name] = {"request_id": request_ids[name], "load_ms": load_ms}
+        self.save_json("image2-warm-reuse.json", load_records)
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            _, health = self.get_json("/health")
+            if health.get("in_flight") == 0:
+                break
+            time.sleep(0.1)
+        require(health.get("in_flight") == 0, f"in_flight did not drain: {health}")
+        self.save_json("image2-final-health.json", health)
+        for terminal_path, digest in self.terminal_files:
+            require(sha256_bytes(terminal_path.read_bytes()) == digest,
+                    f"terminal response was rewritten: {terminal_path.name}")
+        require(len(self.epochs.get("image", [])) >= 5,
+                "insufficient unique covered image2 request epochs")
+        require(len(self.request_hashes) == 9,
+                f"expected nine public image2 requests, got {len(self.request_hashes)}")
+        self.save_json("image2-zero-event-contract.json", {
+            "successful_live_epochs": "nonzero direct request allocations required",
+            "native_validation_failure": "zero events because parsing failed before allocation",
+            "warm_fixture_zero": "truthful only because that fixture epoch performs no direct allocation",
+            "unsupported": "NOT_COVERED with null bytes, never zero",
+        })
+
     def compare(self, off, on, off_id=None, on_id=None):
         left = canonical(normalize(off, off_id))
         right = canonical(normalize(on, on_id))
@@ -1026,6 +1415,8 @@ class Gate:
                 self.batched()
             elif self.args.suite == "tts":
                 self.tts()
+            elif self.args.suite == "image2":
+                self.image2()
             else:
                 self.contract_stub()
         finally:
@@ -1044,6 +1435,7 @@ class Gate:
             "transcripts": self.transcripts,
             "input_audio": self.input_audio,
             "canonical_request_sha256": self.request_hashes,
+            "public_request_count": len(self.request_hashes),
             "whole_device_nvml": "independent 50 ms samples; never request-only peaks",
         }
         self.save_json("summary.json", summary)
@@ -1062,7 +1454,8 @@ def main(argv=None):
     parser.add_argument("--model", default="qwen3-native")
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--suite", choices=("serial", "asr", "tts", "batched", "contract-stub"),
+    parser.add_argument("--suite", choices=("serial", "asr", "tts", "image2",
+                                            "batched", "contract-stub"),
                         default="serial")
     parser.add_argument("--audio", help="optional real PCM16 WAV for uninstrumented ASR")
     parser.add_argument("--audio-en", help="real English 16 kHz mono PCM16 WAV for ASR suite")
@@ -1070,6 +1463,10 @@ def main(argv=None):
     parser.add_argument("--asr-log", help="fresh native ASR log for cancellation evidence")
     parser.add_argument("--qwen-log", help="optional stage log for prefix_reused evidence")
     parser.add_argument("--tts-log", help="fresh native TTS log for cancellation evidence")
+    parser.add_argument("--image-log", type=Path,
+                        help="fresh native image2 log for cancellation evidence")
+    parser.add_argument("--image-trace", type=Path,
+                        help="fresh gateway UMM_TRACE_FILE for image-running cancellation")
     parser.add_argument("--timeout-s", type=float, default=600)
     args = parser.parse_args(argv)
     parsed = urllib.parse.urlsplit(args.base_url)
@@ -1080,6 +1477,10 @@ def main(argv=None):
         parser.error("device must be nonnegative and timeout positive")
     if args.suite == "asr" and not (args.audio_en and args.audio_zh and args.asr_log):
         parser.error("ASR suite requires --audio-en, --audio-zh, and --asr-log")
+    if args.suite == "image2" and not (args.image_log and args.image_trace):
+        parser.error("image2 suite requires --image-log and --image-trace")
+    if args.suite == "image2" and args.device != 1:
+        parser.error("image2 suite requires explicitly isolated physical GPU 1")
     if os.environ.get("UMMINFER_LIVE_OPT_IN") != "1":
         print("BLOCKED set UMMINFER_LIVE_OPT_IN=1 for the isolated live gate")
         return 0

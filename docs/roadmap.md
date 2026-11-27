@@ -323,6 +323,24 @@ cancel/retry checks. Exact records are in
 The full two-GPU R4 replay, fair-priority reconsideration, generalized latency
 acceptance, and perceptual quality remain `NOT_RUN`/`NOT_COVERED`.
 
+**Phase 5 native Qwen-Image-2.1 request allocator gate (Task #69,
+2026-11-27).** Commit `47f8388` (rebased onto Wave 93 as `8f3dcff`) routes every direct image2 CUDA allocation/free
+through the existing request-owner adapter while preserving standalone CLI,
+2512, sampler, and public-schema behavior. On isolated serial SM90 GPU 1, nine
+public requests passed off/on JSON/SSE and exact PNG parity, warm reuse, covered
+native failure, traced denoise cancellation, recovery, and fresh-process raw
+verification. Four successful covered epochs each report 607,110,944 owned
+bytes peak and zero final with 299 allocations/frees; immediate public image
+cancellation retains the documented missing-terminal `NOT_COVERED` boundary.
+The real-CUDA fixture independently proves a nonzero 768-byte cold peak and
+96-byte warm-owned peak. Exact provenance, 496 separate NVML samples, evidence
+checksums, and GPU cleanup are in
+[native-service.md](native-service.md#sm90-qwen-image-21-validation-gate--pass-2026-11-27).
+The complete real gate was rebuilt and rerun on the Wave 93 integrated source,
+preserving Task #67/#63 records and reproducing every owned-byte and media result.
+Image quality, deployment, generalized performance, batching/overlap, host and
+library internals remain unclaimed.
+
 The existing MLX text-chat optimization record keeps its own convention; it is
 not a unified-engine baseline. [docs/mlx.md](mlx.md) gives the
 number and its conditions.

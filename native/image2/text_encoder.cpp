@@ -42,11 +42,11 @@ DeviceTensor TextEncoder::forward(const std::vector<int>& ids) {
   auto& s = rt_.stream;
 
   int* id_dev = nullptr;
-  IMG_CUDA_CHECK(cudaMalloc(&id_dev, seq * sizeof(int)));
+  IMG_CUDA_CHECK(request_cuda_malloc(&id_dev, seq * sizeof(int)));
   IMG_CUDA_CHECK(cudaMemcpy(id_dev, ids.data(), seq * sizeof(int), cudaMemcpyHostToDevice));
   DeviceTensor hidden(std::vector<int64_t>{seq, kHidden});
   gather_rows(embed_.data, id_dev, hidden.data, seq, kHidden, s);
-  IMG_CUDA_CHECK(cudaFree(id_dev));
+  IMG_CUDA_CHECK(request_cuda_free(id_dev));
 
   // Text-only Qwen3-VL mRoPE: all three axes share the same position, so the
   // interleaved layout degenerates to standard 1-D rotate_half RoPE.

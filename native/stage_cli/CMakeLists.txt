@@ -92,6 +92,12 @@ add_executable(request_telemetry_test
 target_link_libraries(request_telemetry_test PRIVATE umm_stage_common)
 add_test(NAME request_telemetry_test COMMAND request_telemetry_test)
 
+add_executable(image_request_telemetry_test
+  image_request_telemetry_test.cpp
+)
+target_link_libraries(image_request_telemetry_test PRIVATE umm_stage_common)
+add_test(NAME image_request_telemetry_test COMMAND image_request_telemetry_test)
+
 add_executable(stage_common_test
   stage_common_test.cpp
 )
@@ -310,7 +316,9 @@ if(UMM_STAGE_CUDA)
     ${NATIVE_DIR}/image2/cuda_kernels.cu
   )
   target_include_directories(umm_image21_backend PRIVATE
-    ${NATIVE_DIR}/image2 ${NATIVE_DIR} ${CUDAToolkit_INCLUDE_DIRS})
+    ${NATIVE_DIR}/image2 ${NATIVE_DIR} ${UMM_ROOT}/include ${CUDAToolkit_INCLUDE_DIRS})
+  target_compile_definitions(umm_image21_backend PRIVATE
+    UMM_NATIVE_REQUEST_ALLOCATOR=1)
   target_link_libraries(umm_image21_backend PRIVATE
     CUDA::cudart CUDA::cublas CUDA::cublasLt ZLIB::ZLIB)
   if(nlohmann_json_FOUND)
@@ -320,12 +328,28 @@ if(UMM_STAGE_CUDA)
   endif()
   set_target_properties(umm_image21_backend PROPERTIES CUDA_ARCHITECTURES 90)
 
+  add_executable(image2_request_allocator_test
+    image2_request_allocator_test.cpp
+    ${NATIVE_DIR}/common/cuda_request_allocator.cpp
+  )
+  target_include_directories(image2_request_allocator_test PRIVATE
+    ${NATIVE_DIR} ${UMM_ROOT}/include ${CUDAToolkit_INCLUDE_DIRS})
+  target_compile_definitions(image2_request_allocator_test PRIVATE
+    UMM_NATIVE_REQUEST_ALLOCATOR=1)
+  target_link_libraries(image2_request_allocator_test PRIVATE
+    umm_image21_backend umm_stage_core CUDA::cudart CUDA::cublas CUDA::cublasLt)
+  set_target_properties(image2_request_allocator_test PROPERTIES CUDA_ARCHITECTURES 90)
+  add_test(NAME image2_request_allocator_test COMMAND image2_request_allocator_test)
+
   add_executable(umm-native-stage-image
     main.cpp image_stage.cpp
+    ${NATIVE_DIR}/common/cuda_request_allocator.cpp
     $<TARGET_OBJECTS:umm_image2512_backend>
     $<TARGET_OBJECTS:umm_image21_backend>
   )
   target_include_directories(umm-native-stage-image PRIVATE ${NATIVE_DIR})
+  target_compile_definitions(umm-native-stage-image PRIVATE
+    UMM_NATIVE_REQUEST_ALLOCATOR=1)
   target_link_libraries(umm-native-stage-image PRIVATE
     umm_stage_common CUDA::cudart CUDA::cublas CUDA::cublasLt ZLIB::ZLIB)
   set_target_properties(umm-native-stage-image PROPERTIES CUDA_ARCHITECTURES 90)
