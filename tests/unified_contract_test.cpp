@@ -9773,6 +9773,17 @@ void test_narrative_cancel_aborts_slots_and_tts() {
   check(terminal && terminal->kind == UnifiedEvent::Kind::kCancelled &&
             log.terminal_count(id) == 1,
         "cancelled narrative request did not produce one cancelled terminal");
+  bool cancelled_slot_aborted = false;
+  if (terminal && terminal->legs.is_array()) {
+    for (const Value& leg : terminal->legs.as_array()) {
+      if (leg.find("slot_id") != nullptr &&
+          leg.find("slot_id")->as_str() == "slot-0") {
+        cancelled_slot_aborted = leg.find("state")->as_str() == "aborted";
+      }
+    }
+  }
+  check(cancelled_slot_aborted,
+        "cancelled public terminal omitted the finalized aborted slot");
   check(engine.in_flight() == 0,
         "in_flight nonzero after narrative cancel");
   engine.release(id);
@@ -9897,8 +9908,28 @@ void test_narrative_vlm_failure_aborts_slots() {
   const auto terminal = log.terminal_for(id);
   check(terminal && terminal->kind == UnifiedEvent::Kind::kError,
         "failed narrative request did not end in an error terminal");
+  bool error_slot_aborted = false;
+  if (terminal && terminal->legs.is_array()) {
+    for (const Value& leg : terminal->legs.as_array()) {
+      if (leg.find("slot_id") != nullptr &&
+          leg.find("slot_id")->as_str() == "slot-0") {
+        error_slot_aborted = leg.find("state")->as_str() == "aborted";
+      }
+    }
+  }
+  check(error_slot_aborted,
+        "failed public terminal omitted the finalized aborted slot");
   check(engine.in_flight() == 0,
         "in_flight nonzero after a failed narrative request");
+  const auto failed_legs = engine.legs_snapshot(id);
+  bool failed_slot_aborted = false;
+  for (const LegSnapshot& leg : failed_legs) {
+    if (leg.slot_id == "slot-0") {
+      failed_slot_aborted = leg.state == LegState::kAborted;
+    }
+  }
+  check(failed_slot_aborted,
+        "VLM failure left a running narrative slot in the finalized request");
   engine.release(id);
 }
 
@@ -12047,6 +12078,144 @@ void run_explicit_anchor_completion(bool immediate) {
 void test_explicit_anchor_completion() {
   run_explicit_anchor_completion(true);
   run_explicit_anchor_completion(false);
+}
+
+void check_explicit_image_submit(const std::optional<SubmitMessage>& submit,
+                                 const std::string& child_id,
+                                 const std::string& source_bytes,
+                                 int source_index) {
+  check(submit.has_value() && submit->request_id == child_id,
+        "explicit image-edit slot was not submitted");
+  if (!submit) return;
+  const StagePayload payload = StagePayload::from_value(submit->data);
+  const std::string digest = util::sha256_hex(source_bytes);
+  const Value* image = payload.request.inputs.find("image");
+  const Value* anchor = payload.request.inputs.find("anchor_slot_index");
+  const Value* sha = payload.request.inputs.find("anchor_sha256");
+  const Value* explicit_flag = payload.request.inputs.find("anchor_explicit");
+  check(image != nullptr && image->is_bin() && image->as_bin() == source_bytes &&
+            util::sha256_hex(image->as_bin()) == digest,
+        "explicit image edit did not bind exact settled source bytes");
+  check(anchor != nullptr && anchor->as_int() == source_index &&
+            sha != nullptr && sha->as_str() == digest &&
+            explicit_flag != nullptr && explicit_flag->as_bool() &&
+            payload.request.inputs.find("anchor_crop") == nullptr,
+        "explicit image edit has wrong source identity or Wan-only crop metadata");
+  const Value* prompt = payload.request.inputs.find("prompt");
+  check(prompt != nullptr && prompt->is_str() &&
+            prompt->as_str().find("source=") == std::string::npos,
+        "explicit image-edit reference leaked into its render prompt");
+}
+
+void test_explicit_image_reference_chain() {
+  {
+    Harness h("explicitimagechain");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request(3));
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    const std::string source0 = "CHARACTER-STYLE-SLOT-0";
+    const std::string source1 = "DEPENDENT-EDIT-SLOT-1";
+    h.stream(vlm->request_id, "vlm", text_chunk("[[image: establish]]", false));
+    auto first = h.next_submit(h.image_recv);
+    if (first) {
+      h.complete(first->request_id, "image", true,
+                 artifact_result("image", "image/png", source0));
+    }
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[image: same character at night | source=slot-0]]", false));
+    auto second = h.next_submit(h.image_recv);
+    check_explicit_image_submit(second, id + ":slot:1", source0, 0);
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[video: camera orbits | source=slot-1]]", false));
+    check(h.no_submit(h.video_recv),
+          "I2V dependent dispatched before the selected edited image completed");
+    if (second) {
+      h.complete(second->request_id, "image", true,
+                 artifact_result("image", "image/png", source1));
+    }
+    auto video = h.next_submit(h.video_recv);
+    check_explicit_anchor_submit(video, id + ":slot:2", source1, 1);
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    if (video) {
+      h.complete(video->request_id, "video", true,
+                 artifact_result("video", "video/mp4", "CHAINED-I2V"));
+    }
+    check(engine.wait(id, 5.0), "image-edit -> I2V reference chain did not settle");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+              log.terminal_count(id) == 1,
+          "image-edit reference chain did not produce exactly one complete terminal");
+    if (terminal && terminal->legs.is_array()) {
+      check(terminal->legs.as_array().size() == 3,
+            "three-slot reference chain lost terminal legs");
+      for (const Value& leg : terminal->legs.as_array()) {
+        check(leg.find("state")->as_str() == "completed",
+              "three-slot reference chain contains a non-completed leg");
+        if (leg.find("slot_id")->as_str() == "slot-1") {
+          const Value* anchor = leg.find("anchor_slot_index");
+          const Value* sha = leg.find("anchor_sha256");
+          check(anchor != nullptr && anchor->as_int() == 0 && sha != nullptr &&
+                    sha->as_str() == util::sha256_hex(source0),
+                "edited image terminal does not name slot-0 and its exact SHA-256");
+        }
+        if (leg.find("slot_id")->as_str() == "slot-2") {
+          const Value* anchor = leg.find("anchor_slot_index");
+          const Value* sha = leg.find("anchor_sha256");
+          check(anchor != nullptr && anchor->as_int() == 1 && sha != nullptr &&
+                    sha->as_str() == util::sha256_hex(source1),
+                "I2V terminal does not name slot-1 and its exact SHA-256");
+        }
+      }
+    }
+    check(count_kind(log, UnifiedEvent::Kind::kArtifact) == 3,
+          "three-slot reference chain did not emit exactly three artifacts");
+    engine.release(id);
+  }
+  {
+    // A failed intermediate image must fail its already-pending dependent too;
+    // otherwise the public request can never join after the VLM completes.
+    Harness h("explicitimagecascadefailure");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request(3));
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[image: root]]"
+                        "[[image: edit | source=slot-0]]"
+                        "[[video: move | source=slot-1]]", false));
+    auto root = h.next_submit(h.image_recv);
+    check(h.no_submit(h.image_recv) && h.no_submit(h.video_recv),
+          "dependent chain dispatched before its sources settled");
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    if (root) {
+      h.complete(root->request_id, "image", false, Value(),
+                 std::string("root source failed"));
+    }
+    check(engine.wait(id, 5.0), "failed source left a transitive dependent pending");
+    check(h.no_submit(h.image_recv) && h.no_submit(h.video_recv),
+          "failed source chain generated a dependent artifact");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && log.terminal_count(id) == 1,
+          "failed source chain did not produce exactly one public terminal");
+    size_t failed = 0;
+    if (terminal && terminal->legs.is_array()) {
+      for (const Value& leg : terminal->legs.as_array()) {
+        if (leg.find("state")->as_str() == "failed") ++failed;
+      }
+    }
+    check(failed == 3 && count_kind(log, UnifiedEvent::Kind::kLegError) == 3,
+          "failed source chain did not finalize every dependent as failed");
+    engine.release(id);
+  }
 }
 
 void test_explicit_anchor_failure_cancel_and_validation() {
@@ -14296,6 +14465,7 @@ int main() {
   RUN(test_public_http_video_teacache_thresh());
   RUN(test_narrative_continuity_http_and_engine());
   RUN(test_explicit_anchor_completion());
+  RUN(test_explicit_image_reference_chain());
   RUN(test_explicit_anchor_failure_cancel_and_validation());
   RUN(test_explicit_anchor_http_wire());
   RUN(test_public_http_request_native_allocator_telemetry());

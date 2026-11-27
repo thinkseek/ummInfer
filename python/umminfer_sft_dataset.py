@@ -506,12 +506,13 @@ def _validate_linkages(record, slots):
                 "integrity_error", f"invalid anchor SHA-256: {slot_id}")
         if explicit and leg["state"] == "completed" and not digest:
             raise _IntegrityError(
-                "integrity_error", f"completed explicit I2V lacks digest: {slot_id}")
+                "integrity_error", f"completed explicit visual lacks digest: {slot_id}")
         if explicit and leg["state"] == "completed" and not outputs:
             raise _IntegrityError(
-                "integrity_error", f"completed explicit I2V has no artifact: {slot_id}")
+                "integrity_error", f"completed explicit visual has no artifact: {slot_id}")
         for output in outputs:
-            if output.get("media_type") != "video":
+            if output.get("media_type") != slot["media_type"] \
+                    or slot["media_type"] not in ("image", "video"):
                 raise _IntegrityError(
                     "integrity_error", f"invalid anchored modality: {slot_id}")
             if explicit or "anchor_slot_index" in output \
@@ -526,7 +527,7 @@ def _validate_linkages(record, slots):
                     "integrity_error", f"invalid artifact anchor digest: {slot_id}")
             if explicit and output_digest is None:
                 raise _IntegrityError(
-                    "integrity_error", f"explicit I2V artifact lacks digest: {slot_id}")
+                    "integrity_error", f"explicit visual artifact lacks digest: {slot_id}")
             if digest is not None and output_digest != digest:
                 raise _IntegrityError(
                     "integrity_error", f"artifact/terminal anchor mismatch: {slot_id}")
@@ -534,13 +535,14 @@ def _validate_linkages(record, slots):
                                       for output in outputs):
             if explicit and leg["state"] == "completed":
                 raise _IntegrityError(
-                    "integrity_error", f"completed explicit I2V has no artifact: {slot_id}")
+                    "integrity_error", f"completed explicit visual has no artifact: {slot_id}")
             continue
         resolved = digest if digest is not None else outputs[0]["anchor_sha256"]
         source = by_index.get(anchor)
         if source is None or anchor >= slot["slot_index"] \
                 or source["media_type"] != "image" \
-                or slot["media_type"] != "video":
+                or slot["media_type"] not in ("image", "video") \
+                or (slot["media_type"] == "image" and not explicit):
             raise _IntegrityError(
                 "integrity_error", f"anchor is not an earlier image: {slot_id}")
         source_outputs = [item for item in outputs_by_slot.get(
@@ -746,7 +748,7 @@ def reconstruct_director_target(record, *, verified_on_disk=False):
             marker = format_beat_marker(slot["media_type"], prompt)
         bound = artifact_by_slot.get(slot["slot_id"])
         if bound is not None and bound.get("anchor_explicit", False):
-            if slot["media_type"] != "video" \
+            if slot["media_type"] not in ("image", "video") \
                     or bound.get("anchor_slot_index") != slot.get("anchor_slot_index") \
                     or not _sha256(bound.get("anchor_sha256")):
                 raise ValueError(f"invalid explicit anchor marker for {slot['slot_id']}")

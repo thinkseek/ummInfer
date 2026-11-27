@@ -1,0 +1,277 @@
+{
+  "format": "umminfer-cross-slot-visual-continuity-evidence-v1",
+  "task": 76,
+  "date": "2026-11-27",
+  "result": "CONTROLLED_LIVE_PASS",
+  "official_base_commit": "a4320e7678748a2336f74e3c2477c21b30805fb8",
+  "runtime_and_live_execution_commit": "a37a84a7464c3e31ad9762bde46b6d64cf09a215",
+  "verifier_correction_commit": "4f40318d9c4e384f5adf8ca18ce6d8a26ff8664a",
+  "hardware": "NVIDIA Hopper SM90 H20, physical GPU 7 only",
+  "public_gate": {
+    "request_id": "http-3",
+    "terminal": "complete",
+    "terminal_count": 1,
+    "event_count": 139,
+    "event_counts": {
+      "artifact": 68,
+      "complete": 1,
+      "visual_slot": 3,
+      "vlm_delta": 67
+    },
+    "artifact_count": 68,
+    "artifact_chunk_count": 68,
+    "raw_sse_bytes": 3354341,
+    "raw_sse_sha256": "9e507cfdd7abadcad9f85820fa303603798fbb0dd3b4fdabf97d86ac04a6b15c",
+    "requests_sha256": "ad800a642827181bc28ec6410425b6c398591fad9dd2d1d5bb811cf637af6ebe",
+    "clean_text_sha256": "f5e70a918ef6a6877f6cdcc75a4549e212c3422ff8d3febaf1a0ef9b1e4563c1",
+    "in_flight_final": 0
+  },
+  "reference_chain": [
+    {
+      "dependent": "slot-1/image/FLUX.2 edit",
+      "source_slot": 0,
+      "source_sha256": "01af1c29f95aa2362b57067bd6592a032617b8c46d91509e7b946d7b0d4e150b",
+      "source_bytes": 301844,
+      "source_dimensions": "512x512",
+      "dependent_request_id": "http-3:slot:1",
+      "native_submit_sha256": "0df64ea9f5c5b600b7ef932f24a4ee5f1e3326c8bb8df272bfa7a4592e8e99e7",
+      "native_binary_source_equal": true,
+      "dependent_artifact_sha256": "1eddde7e82a79401e3710f4e6750c68df81c0c8b0da76f5c78c40958bf3e45b3",
+      "dependent_artifact_bytes": 336884,
+      "dependent_dimensions": "512x512",
+      "anchor_crop_absent_for_image_edit": true
+    },
+    {
+      "dependent": "slot-2/video/native Wan2.2 I2V",
+      "source_slot": 1,
+      "source_sha256": "1eddde7e82a79401e3710f4e6750c68df81c0c8b0da76f5c78c40958bf3e45b3",
+      "source_bytes": 336884,
+      "source_dimensions": "512x512",
+      "dependent_request_id": "http-3:slot:2",
+      "native_submit_sha256": "46bd6e2322ada5fe1b42f3ee790e3625572e1d7d72045c32bc95f38315e29775",
+      "native_binary_source_equal": true,
+      "anchor_crop": "center_cover",
+      "native_i2v": 1,
+      "native_t2v": 0,
+      "dependent_artifact_sha256": "1866e18d5bbe035ebd5be123fcebb0396c54731c781bb7e465a4469c83131dcf",
+      "dependent_artifact_bytes": 137640,
+      "dependent_dimensions": "704x480",
+      "codec": "h264",
+      "pixel_format": "yuv420p",
+      "frames": 29,
+      "fps": 16
+    }
+  ],
+  "terminal_visual_legs": {
+    "slot-0": "completed",
+    "slot-1": {
+      "state": "completed",
+      "anchor_slot_index": 0,
+      "anchor_sha256": "01af1c29f95aa2362b57067bd6592a032617b8c46d91509e7b946d7b0d4e150b"
+    },
+    "slot-2": {
+      "state": "completed",
+      "anchor_slot_index": 1,
+      "anchor_sha256": "1eddde7e82a79401e3710f4e6750c68df81c0c8b0da76f5c78c40958bf3e45b3"
+    }
+  },
+  "negative_and_recovery_controls": {
+    "wrong_self_reference": {
+      "public_request_id": "http-1",
+      "public_terminal": "complete",
+      "dependent_leg": "failed",
+      "error": "source slot slot-0 is not an earlier slot in this request",
+      "public_artifacts": 0,
+      "native_video_submits": 0,
+      "raw_sse_sha256": "fdba4ffaab0f590bde97b1d21b33d0e9cb0734089ecce0a583b711a226978298"
+    },
+    "real_cancellation": {
+      "public_request_id": "http-2",
+      "public_terminal": "cancelled",
+      "terminal_count": 1,
+      "visual_slots": 3,
+      "visual_legs_aborted": 3,
+      "visual_artifacts": 0,
+      "preterminal_audio_artifacts": 25,
+      "native_image_submits": 1,
+      "native_video_submits": 0,
+      "source_abort_boundary": "FLUX denoising step 20/50",
+      "raw_sse_sha256": "5a95215641b232121fd5f1df70efeb8b150a7e49db09dbf3971d56c0f57f1fd8",
+      "late_public_events_or_visual_artifacts": 0,
+      "valid_retry_request_id": "http-3"
+    },
+    "native_wrong_hash": {
+      "request_id": "native-76-wrong-hash",
+      "exact_source_sha256": "01af1c29f95aa2362b57067bd6592a032617b8c46d91509e7b946d7b0d4e150b",
+      "declared_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "submit_sha256": "6a257dc386b5a520a01a7183d9efb5876b1615d75ab99b5ee1c776de3281ee17",
+      "output_msgpack_sha256": "f2628e189426c88b96cae15e968f7b9198830efcf7de7d7ce59c8eb3bf4decf7",
+      "success": false,
+      "error": "image does not match anchor_sha256",
+      "generation": "REJECTED_BEFORE_DIFFUSERS"
+    },
+    "native_valid_recovery": {
+      "request_id": "native-76-valid-retry",
+      "source_and_declared_sha256": "01af1c29f95aa2362b57067bd6592a032617b8c46d91509e7b946d7b0d4e150b",
+      "submit_sha256": "9d976f6eb7cc9dac70c01143d6746b5bcb1af8ffab981e30cff494ec28362e3b",
+      "output_msgpack_sha256": "7dd58abe81e4781b8d61fe500c97d596fba8bf7a55ef38f97dde33e150c19651",
+      "success": true,
+      "png_sha256": "dc568834635d847d8a708e64b7521d6693f8d0b6dd4e29fff10c3aba31c43e3c",
+      "png_bytes": 317716,
+      "decoded_dimensions": "512x512"
+    }
+  },
+  "speech_text_join": {
+    "tts_legs": 9,
+    "public_pcm_chunks": 65,
+    "pcm_bytes": 1693440,
+    "pcm_sha256_concatenated": "b41e6085d206287664de082362c34e12cd26d47beeb94d1b6421fc8b08f6c5c4",
+    "joined_native_tts_text_sha256": "3ae12f4527ca8c25a667c8d005c0ed1adf2282c8c4ce4e877a7125b458ef7dd3",
+    "clean_prose_equal_beyond_documented_span_whitespace": true,
+    "directive_or_source_leakage": false,
+    "all_native_public_pcm_chunks_equal_terminal_wav_pcm": true,
+    "legs": [
+      {
+        "id": "tts:0",
+        "chunks": 2,
+        "pcm_bytes": 34560,
+        "pcm_sha256": "e256b75e26355821ff3f267c2c58ef89d74679b31f5702fd7b0c1c8d3670376d",
+        "terminal_wav_sha256": "4177e723787852db4f78dc53c2a37bae7ed77b1e75b7641c3c192966b2761e76"
+      },
+      {
+        "id": "tts:1",
+        "chunks": 10,
+        "pcm_bytes": 268800,
+        "pcm_sha256": "56ad08563774d54bb9ca36d36789c202d166a81cff90344a8e69f0050b1455e5",
+        "terminal_wav_sha256": "a608f08788ae54d138cac8588c2abbeebfcbceb2f143f8986ca7b6c9bb52b976"
+      },
+      {
+        "id": "tts:2",
+        "chunks": 8,
+        "pcm_bytes": 222720,
+        "pcm_sha256": "ef3ddfec3cf127dfbec31138ee3f4311e1da4944a0351c008f97baeabae4a2b1",
+        "terminal_wav_sha256": "a56a46cc8c78c64b6b48ff028577a90b2606c10eccbdb5f649a11a26c4c24291"
+      },
+      {
+        "id": "tts:3",
+        "chunks": 10,
+        "pcm_bytes": 276480,
+        "pcm_sha256": "f6de57ebe9b6abbb1f584e2a983cfc11830c9c907c8bbab99de77b358611909f",
+        "terminal_wav_sha256": "658639dde14dedaf14af05433d0885ece93a7a13fc0048d6a39a80509046d478"
+      },
+      {
+        "id": "tts:4",
+        "chunks": 10,
+        "pcm_bytes": 284160,
+        "pcm_sha256": "46254d004a29698c202e8209353b3173cc3ddbe482031130a1899e0274c6e213",
+        "terminal_wav_sha256": "efd2cf9590c3248a38f5a4c8d2d405cae1852adf492ac5ec6a27aa4b6044bf1b"
+      },
+      {
+        "id": "tts:5",
+        "chunks": 5,
+        "pcm_bytes": 111360,
+        "pcm_sha256": "e934c970fc18af92b6186f39b5629c07dd226a2dba89431d42ac8236c7334e2e",
+        "terminal_wav_sha256": "c028f25d4a7c52f8e050d9196fe121123bcba4f8daa9042a49e65029cb29b742"
+      },
+      {
+        "id": "tts:6",
+        "chunks": 9,
+        "pcm_bytes": 226560,
+        "pcm_sha256": "d2cdb947eb8290654eab97f6d8b92d92b34c19fecc7d661e5a508901e6038dec",
+        "terminal_wav_sha256": "1735fcfbf15490c41faa66cbb94026e5a921a84682500b91bc2403a08e11790f"
+      },
+      {
+        "id": "tts:7",
+        "chunks": 9,
+        "pcm_bytes": 234240,
+        "pcm_sha256": "ca1563f8c0c0156f797414fadb93d7213a2140116e900dc4e1e1f3b937f3bc43",
+        "terminal_wav_sha256": "7d5d945352d1f0a5b9c0144f557538ba37ad22a1de4ce30d0806556c0d744b2c"
+      },
+      {
+        "id": "tts:8",
+        "chunks": 2,
+        "pcm_bytes": 34560,
+        "pcm_sha256": "f74b1959697d08e69e00563a0115ff7666229ec8d5f63aa5545df0915683bbaa",
+        "terminal_wav_sha256": "758118d5d2d8d2c82cb93c0ab40cffef9992bca3b69db90223d7eedadab0378f"
+      }
+    ]
+  },
+  "numeric_media_proxies": {
+    "metric_version": "center-cover-64x40-rgb8-frame0-frame28-v1",
+    "source_for_i2v": "slot-1",
+    "first_frame_mae": 2.21862,
+    "motion_mae_frame0_frame28": 11.511328,
+    "first_frame_gate_max": 48.0,
+    "motion_gate_min": 1.0,
+    "interpretation": "numeric continuity/motion proxies only, not perceptual similarity"
+  },
+  "provenance": {
+    "server_binary_sha256": "241681951bd2cde69032c84d30984ea2713428fa38d8f2280710207c53862509",
+    "vlm_binary_sha256": "472dbe3758df7eaa830cd460df2cdc58dc3981966468206ca6e1f63e6da76a25",
+    "tts_binary_sha256": "0a2b3af3ce14063918ee73d04b7fe5eb43a1584ec811755882201c036c257997",
+    "wan_binary_sha256": "0f4b5df70061b1bbe092996abc12a585e69cebeeec7bedf6fa1d53b13c0c9284",
+    "flux_stage_sha256": "ab88ae88f3a9207151d4774e4bb000fd385353724e22e7720cf94345a922ef74",
+    "live_harness_sha256": "a9e8f9f1b64577fc7ced9af4d2fd200fed522403dd09e559d39782c56e8f54d2",
+    "portable_path_correction_commit": "665e217d2d85fb30b0366757afc19b4da66e658b",
+    "current_portable_live_harness_sha256": "2857fa56b67973b669cccb83b7e7f38aa541de62bc9ddf901e820012834ff35e",
+    "current_portable_contract_test_sha256": "d301c5ef9512fcd4f7febc0f216f8c545d42530b40871a2eb5cc4d6150729081",
+    "shared_live_helpers_sha256": "895db1cb1943b277d197abffc4e731e00c49b2d895aec017f8fc5a3ad68cacdf",
+    "producer_verifier_sha256": "cc712a000a0703a70504db38df1e1f46ef1624d06eebca4718520adc68823b98",
+    "corrected_verifier_sha256": "cc712a000a0703a70504db38df1e1f46ef1624d06eebca4718520adc68823b98",
+    "model_tree_sha256": {
+      "qwen38_27b_29_files": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304",
+      "flux2_klein_4b_25_files": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997",
+      "qwen3_tts_1_7b_customvoice_14_files": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d",
+      "wan22_ti2v_5b_30_files": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+    },
+    "model_revisions": "UNKNOWN; exact local file/tree hashes are the identity"
+  },
+  "independent_verification": {
+    "report_sha256": "ee21cc780c9ea77486ead5f6b46996b3c00df2d23ee01dbc5ba69ebb9b7fa883",
+    "independent_verification_json_sha256": "86f6ef553b63f53b5736ceccc853efedba6ce9b8b934c2079ff42d774b4074b0",
+    "summary_json_sha256": "ded3b562e67784b4dd2b44a4a77044c90d286fdf0f7d4300617a034c6d5fda2d",
+    "manifest_files": 439,
+    "manifest_sha256": "b135ba7f664d3dc74043ffc9c32ead23a2aa81f3ab4472967fdc1c0fd1c0c29f",
+    "manifest_excludes": [
+      "SHA256SUMS itself",
+      "task-owned run sockets"
+    ],
+    "remote_manifest_fresh_check_sha256": "be4550e05093faf7d781ad064b68733c7a66697bfd35d03265586c7fdb28a6e1",
+    "local_fresh_check_sha256": "c400c31366190699d2c6e6bb5859bf42a84be88c381a258b83d084d069917c57",
+    "local_external_binary_and_model_rehash": "SKIPPED_EXTERNAL_PATHS_NOT_PRESENT; raw evidence and all 596 recorded files rehashed",
+    "producer_imports": false,
+    "path_correction_fresh_local_check_sha256": "c400c31366190699d2c6e6bb5859bf42a84be88c381a258b83d084d069917c57",
+    "path_correction_raw_evidence": "UNCHANGED; no GPU or new model output"
+  },
+  "cleanup": {
+    "all_six_task_owned_process_returncodes": 0,
+    "gpu7_memory_mib_final": 3,
+    "gpu7_utilization_percent_final": 0,
+    "gpu7_compute_processes_final": 0,
+    "resident_service": "NOT_CONTACTED",
+    "gpus_0_1_2_3_4_5_6": "NOT_USED"
+  },
+  "offline_checks": {
+    "umm_test_local": "PASS",
+    "flux2_contract_remote": "16/16 PASS, zero skips",
+    "native_video_stage_ctest_remote": "4/4 premerge focused PASS; final merged stage_video_common_test and official first_audio_scheduler_test PASS",
+    "native_public_video_contract_stub": "completed/cancelled/failed/recovery PASS, in_flight=0; not real generation",
+    "narrative_and_sse_replay": "PASS including image/image/video CAS chain and wrong-hash/tamper rejection",
+    "task74_geometry": "8/8 deterministic evidence tests and inherited feature-map anchors PASS"
+  },
+  "limits": {
+    "perceptual_quality": "NOT_RUN",
+    "human_character_or_style_review": "NOT_RUN",
+    "generalized_quality": "NOT_COVERED",
+    "deployment_or_resident_service_validation": "NOT_RUN",
+    "training_or_optimizer": "NOT_RUN",
+    "performance_improvement_claim": "NONE"
+  },
+  "premerge_execution": {
+    "commit": "04e9f3c30a3efaff2a9f905880c5dd2bd952d7a6",
+    "report_sha256": "5ea8b5bbe3a8bf66d616d1faf36f04e0de2faed997b2989151fb62115326d0a7",
+    "raw_sse_sha256": "bd2954ddb75e65f5ebd31a83dd7f87292f0aeae15ad811631ff76d1bdaa92a74",
+    "manifest_sha256": "472c7d0c79aaab48d7c54b123208931db48f281aae3888eb69d15093b190c047",
+    "result": "PASS; superseded only for final merged-runtime identity, not a failed control"
+  }
+}

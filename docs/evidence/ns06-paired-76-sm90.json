@@ -1,0 +1,205 @@
+{
+  "format": "umminfer-ns06-ns08-scorecard-76-v1",
+  "date": "2026-11-27",
+  "result": "PAIRED_TECHNICAL_PASS_WITH_EXPLICIT_LIMITS",
+  "parent_runtime_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "candidate_runtime_commit": "a37a84a7464c3e31ad9762bde46b6d64cf09a215",
+  "candidate_integrated_tree_commit": "6fbfadd43b411430fab9cd8660d86c6a9efe7eb0",
+  "execution_harness_commit": "8dd14321de4b6a0bd0a50e1490fd1494f8985d28",
+  "final_verifier_commit": "dcb81010fc07dd08854fe646c91fdaae0a9b8152",
+  "preregistration_sha256": "25dc4e5798d73294edfcae43c12923a7b41fd9d6a79cbf8133766da5b2efe38c",
+  "hardware": "NVIDIA Hopper SM90 H20, physical GPU 7 only",
+  "execution_policy": {
+    "same_frozen_sketch_voice_text_and_settings": true,
+    "arm_order": ["before", "after"],
+    "fresh_processes_per_arm": true,
+    "no_post_observation_prompt_or_reference_plan_mutation": true,
+    "alternate_candidates_or_training": "NOT_RUN",
+    "scope": "direct public protocol with one frozen six-slot bound and auto visual mode; no per-shot controls; not a default-UI acceptance PASS"
+  },
+  "inputs": {
+    "sketch_png": {"bytes": 5900, "dimensions": "512x512", "sha256": "81316a1bbe8ddc8011b7ee216721da341a87a581332045cb411f3abbdc19b28f"},
+    "voice_wav_16k": {"bytes": 814158, "duration_seconds": 25.44, "sha256": "5edef38d213623331061c79dcdf58d6a930b10d8e54eac03cadd0742d9eea13e"},
+    "voice_real_tts_24k_source_sha256": "695e86756931dd3b35315539480f879817d113fc36d920c1538d7d655a1b0e1d",
+    "asr_final_sha256_both": "d21b3ac93f62287ab174298b53a526288d84fba975f69d50e2993d0a6918f855"
+  },
+  "technical_gain": {
+    "before_keyframes": 1,
+    "before_i2v": 1,
+    "after_keyframes": 3,
+    "after_i2v": 3,
+    "after_exact_image_edit_links": 2,
+    "after_exact_i2v_links": 3,
+    "shared_slot0_and_slot1_media_byte_identical_across_arms": true,
+    "clean_prose_asr_pcm_identical_across_arms": true,
+    "interpretation": "parent cannot bind the three requested chains; candidate binds all three with exact bytes and no unconditioned fallback"
+  },
+  "per_shot_after": [
+    {
+      "shot": 1,
+      "keyframe_slot": 0,
+      "keyframe_sha256": "6d7c77f39a955e2f6fe25eca00a96bd0cdc7d4c47a61e2bfe4c2118b90ff5713",
+      "keyframe_dimensions": "512x512",
+      "i2v_slot": 1,
+      "i2v_source_slot": 0,
+      "i2v_sha256": "817a0744d6a17e0a3f098b8bdca3d6a52b1d29da7687d39e0c7dce0ce5b85851",
+      "i2v_native_submit_sha256": "23633fa79d58f3e2ad14045cfccc80c1e199f93dfafbc7763a52e703fb5bb961",
+      "i2v_dimensions": "704x480 H.264 yuv420p 29 frames 16 fps",
+      "first_frame_mae": 3.825130,
+      "motion_mae": 27.079818,
+      "reference_and_media_gate": "PASS",
+      "same_in_before": true
+    },
+    {
+      "shot": 2,
+      "keyframe_slot": 2,
+      "edit_source_slot": 0,
+      "edit_native_submit_sha256": "ccfbb9a94c165dd63c06f7517dee5aa9d5b75e5d6e5372b7e27dfd959753bf5f",
+      "keyframe_sha256": "5f405f3c718b5148c913c1e6cd7304f2c3469a794c417c784de2c9e0db45a4bf",
+      "keyframe_dimensions": "512x512",
+      "i2v_slot": 3,
+      "i2v_source_slot": 2,
+      "i2v_sha256": "4da5754685585c898c71450a6015f7b7abefe9bc9bce7439dec51f9256fc8105",
+      "i2v_native_submit_sha256": "386dbfde109e65037805969a6f0f0c349ee8aa65e43595d171eca0e0af79cd53",
+      "i2v_dimensions": "704x480 H.264 yuv420p 29 frames 16 fps",
+      "first_frame_mae": 4.049870,
+      "motion_mae": 7.072396,
+      "reference_and_media_gate": "PASS",
+      "same_in_before": false
+    },
+    {
+      "shot": 3,
+      "keyframe_slot": 4,
+      "edit_source_slot": 0,
+      "edit_native_submit_sha256": "1a563637bbfb7049ece7fb6f0249808584e90eaa8f7fdab762ce9093dbdf44ec",
+      "keyframe_sha256": "65e04f3c46e20050b62295a0e6206b665a324779d5ef8e8e6e781cc0a68e4592",
+      "keyframe_dimensions": "512x512",
+      "i2v_slot": 5,
+      "i2v_source_slot": 4,
+      "i2v_sha256": "dd45f0336f364f31a8b8f1bf183e5babd861468c6819b762a093e14c87719cc1",
+      "i2v_native_submit_sha256": "05e4a59eef3d8db18cada99d7a4e6ff04f1ac1f4bacd6a31563c2b2e6efa79d9",
+      "i2v_dimensions": "704x480 H.264 yuv420p 29 frames 16 fps",
+      "first_frame_mae": 4.124740,
+      "motion_mae": 24.247396,
+      "reference_and_media_gate": "PASS",
+      "same_in_before": false
+    }
+  ],
+  "before_failures": [
+    {"slot": 2, "kind": "image", "state": "failed", "native_submit": false, "reason": "parent rejects image-edit references"},
+    {"slot": 3, "kind": "video", "state": "failed", "native_submit": false, "reason": "selected edited source slot-2 failed"},
+    {"slot": 4, "kind": "image", "state": "failed", "native_submit": false, "reason": "parent rejects image-edit references"},
+    {"slot": 5, "kind": "video", "state": "failed", "native_submit": false, "reason": "selected edited source slot-4 failed"}
+  ],
+  "public_streams": {
+    "before": {"events": 51, "artifacts": 15, "raw_bytes": 1722028, "raw_sha256": "a7a1e77c6e564664ed8beef08d7cc24b520e526abddf4fb2c267638c72e29f44", "visual_states": ["completed", "completed", "failed", "failed", "failed", "failed"]},
+    "after": {"events": 51, "artifacts": 19, "raw_bytes": 3845433, "raw_sha256": "797ba63e683fe8fcd4385b1a3c3b5bfeb87f3b92daa7312a09a24e864d7f6029", "visual_states": ["completed", "completed", "completed", "completed", "completed", "completed"]},
+    "both": {"main_terminal_count": 1, "main_terminal": "complete", "post_terminal_abort": "inert ACK", "late_events": 0, "reconnect_terminal": "complete", "reconnect_text": "READY", "health_in_flight": 0}
+  },
+  "narration": {
+    "sentences": ["Mira enters the cafe.", "She checks her watch.", "She turns and smiles."],
+    "clean_prose_sha256_both": "56e040c0df23e8fb1014f57961ba00ae9d6ac816170d457ff4fe4f953c2c0e48",
+    "native_legs_before": 4,
+    "native_legs_after": 4,
+    "preregistered_native_leg_target": 3,
+    "target_met": false,
+    "failure": "existing first-clause policy emits 'Mira enters' then 'the cafe.'; no prompt or splitter change was made",
+    "pcm_bytes_both": 303360,
+    "pcm_sha256_both": "0d9debe47b27416258d9d4c2e2938b89361fb618dd1150f8b0bc16d2392aaf44",
+    "joined_text_sha256_both": "25abbf921239620168f7497494959084cae4d77a3896669c6b3e2358df5c06d9",
+    "all_native_public_terminal_wav_joins_exact": true,
+    "pcm_non_silent_24khz_mono_pcm16": true
+  },
+  "ns08_lifecycle": {
+    "production_web_client_sha256": "7e67b7306ff5b31b71e1924a8d24655513f8ab3ff687703327cfdf99bb8671fe",
+    "unmodified_helpers": ["buildSessionExportJson", "newChat", "parseImportedSessionJson", "applyImportedSessionWithContext"],
+    "sequence": "real public record -> export JSON/Markdown -> newChat clear -> parse/apply import with network forbidden -> exact re-export -> real text-only reconnect using imported history",
+    "before_after_exact_reexport": true,
+    "text_artifact_hash_bytes_and_reference_metadata_restored": true,
+    "clear_import_reconnect": true,
+    "offline_lifecycle_network_calls": 0,
+    "fresh_node_replay_byte_identical": true,
+    "raw_media_and_pcm_restoration": "NOT_SUPPORTED_BY_EXISTING_SCHEMA; importedMediaOmitted is preserved",
+    "no_regression": true,
+    "human_default_ui_walkthrough": "NOT_RUN",
+    "full_ns08_pass": false
+  },
+  "ns06_thresholds": {
+    "reference_propagation": "PASS",
+    "decoded_numeric_continuity_and_motion": "PASS",
+    "native_narration_leg_target": "NOT_MET",
+    "human_character_style_judging": "NOT_RUN",
+    "full_ns06_pass": false,
+    "score_update": "NONE"
+  },
+  "provenance": {
+    "parent_binary_sha256": {
+      "server": "fcf4e43840fe4794a16fbc4a9c711652e6f68aa09da0921cd1b81f6076d1983c",
+      "vlm": "10107ed609952d86288c2074c876969624939d58cbf38e471aa74f8684719474",
+      "asr": "eca7273e1945b35b631dd15ebc26859dc45564b6c4ac64f9bb1b51fa12c95911",
+      "tts": "d5ad3e825f30f77f918949b253b685d6070171d946a2fe4065547430a928afd3",
+      "wan": "fb0ff974192f2fb78377dbe2c5e9585754b49cfbba95ff491f7396a54b463e9d"
+    },
+    "candidate_binary_sha256": {
+      "server": "241681951bd2cde69032c84d30984ea2713428fa38d8f2280710207c53862509",
+      "vlm": "472dbe3758df7eaa830cd460df2cdc58dc3981966468206ca6e1f63e6da76a25",
+      "asr": "268124424db9a52cb84bffa18fd7e415ee9161d914b6de91c7b10eae319e207d",
+      "tts": "0a2b3af3ce14063918ee73d04b7fe5eb43a1584ec811755882201c036c257997",
+      "wan": "0f4b5df70061b1bbe092996abc12a585e69cebeeec7bedf6fa1d53b13c0c9284"
+    },
+    "model_tree_sha256_both": {
+      "vlm": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304",
+      "asr": "2b634d66b56817e11496d76402b9c282fb59235ff1a5df22a4e5e261f8bf1d06",
+      "flux2": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997",
+      "tts": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d",
+      "wan22": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+    },
+    "live_harness_sha256": "8cf8639b4cab686f42d8ca45a457c85f801d2636882f72d238895b83b6cc460b",
+    "portable_path_correction_commit": "665e217d2d85fb30b0366757afc19b4da66e658b",
+    "current_portable_live_harness_sha256": "4c3d387d7bfbbea96ca2aebbab0d15eae33d3435af2d16cdd6c551a6e3814389",
+    "current_portable_contract_test_sha256": "d301c5ef9512fcd4f7febc0f216f8c545d42530b40871a2eb5cc4d6150729081",
+    "producer_verifier_sha256": "349eaa003844d28f39b45b9c1c5f87e94261b61debe6e4663aa6ebabc1c00ff3",
+    "final_verifier_sha256": "88c95e4991a12839684ce52fd218b2c5e2a4a97010c56004de326aabfeb75a79",
+    "node_sha256": "94efd062ed066c1a0b332e18249859c905e920eeada5df55d24c99b919629a90",
+    "ffmpeg_sha256": "ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+    "ffprobe_sha256": "272f6ebc634a63d9c8b4ca68e964119d980f25154e5aa2c35e5487da48e9a58f"
+  },
+  "verification": {
+    "report_sha256": "1e00192fcbf33bffd6c5b9f55a694049e76aa5d75b9b6b68ba7320ae3bcc74b0",
+    "independent_verification_sha256": "c2685c4b0f727fa47fcfee297292bf16d7c3de9d4cb954f80afdae559182549e",
+    "summary_sha256": "0a879679e39a67add56155587886e6a4b1d1460cead9b79b3a79022289bbdd42",
+    "manifest_files": 305,
+    "manifest_sha256": "593bb5da128f434ec9db893e35442081e61766212d9e45aa6702b76d24dcd532",
+    "manifest_self_excluded": true,
+    "remote_fresh_manifest_check_sha256": "54988bd98e67939b55f784bf1ddf1497d1f35931fd28a82c2b3bdda27047141f",
+    "local_fresh_raw_and_client_replay_sha256": "421a60c4223519c10dc641bdfb26f1b590ca43bd40df1220e6792f46849d7b22",
+    "local_external_binary_model_rehash": "SKIPPED_EXTERNAL_PATHS_NOT_PRESENT; all 305 copied evidence files checked",
+    "producer_imports_by_independent_verifier": false,
+    "path_correction_fresh_local_check_sha256": "421a60c4223519c10dc641bdfb26f1b590ca43bd40df1220e6792f46849d7b22",
+    "path_correction_raw_evidence": "UNCHANGED; no GPU or new model output"
+  },
+  "cleanup": {
+    "task_owned_processes_per_arm": 7,
+    "all_returncodes": 0,
+    "gpu7_memory_mib": 3,
+    "gpu7_utilization_percent": 0,
+    "gpu7_compute_processes": 0,
+    "resident_service": "NOT_CONTACTED",
+    "other_gpus": "NOT_USED"
+  },
+  "retained_execution_failures": [
+    "24 kHz voice was rejected by the 16 kHz public ASR boundary before model execution; fixed by frozen 16 kHz transport with no prompt/reference change",
+    "Node was initially absent inside the container after a parent model run; explicit hash-recorded Node 22 runtime was supplied without changing the plan",
+    "ASR-resident Wan OOM and a metric-only ASR wait were harness failures; final harness stops ASR on exact completed leg_end before Wan",
+    "four native narration legs versus the frozen target of three are NOT_MET in both accepted arms",
+    "verifier-only slot-key, unresolved-reference, fresh-directory, and Node-path corrections required no media regeneration and retain distinct source hashes",
+    "Review-only path correction 665e217 removes both task-specific absolute output defaults; live mode requires caller-selected --out-dir and all measured raw results remain unchanged"
+  ],
+  "limits": {
+    "perceptual_quality": "NOT_RUN",
+    "generalized_quality": "NOT_COVERED",
+    "deployment": "NOT_RUN",
+    "training_optimizer": "NOT_RUN",
+    "performance_improvement_claim": "NONE"
+  }
+}

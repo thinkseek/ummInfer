@@ -369,12 +369,13 @@ def _validate_linkages(record, slots):
         if digest is not None and not _sha256(digest):
             raise ValueError(f"invalid anchor SHA-256 for {slot_id}")
         if explicit and leg["state"] == "completed" and not digest:
-            raise ValueError(f"completed explicit I2V slot lacks digest: {slot_id}")
+            raise ValueError(f"completed explicit visual slot lacks digest: {slot_id}")
         if explicit and leg["state"] == "completed" and not outputs:
-            raise ValueError(f"completed explicit I2V has no artifact: {slot_id}")
+            raise ValueError(f"completed explicit visual has no artifact: {slot_id}")
 
         for output in outputs:
-            if output.get("media_type") != "video":
+            if output.get("media_type") != slot["media_type"] \
+                    or slot["media_type"] not in ("image", "video"):
                 raise ValueError(f"anchored artifact modality is invalid: {slot_id}")
             if explicit or "anchor_slot_index" in output \
                     or "anchor_sha256" in output:
@@ -385,20 +386,21 @@ def _validate_linkages(record, slots):
             if output_digest is not None and not _sha256(output_digest):
                 raise ValueError(f"invalid artifact anchor digest: {slot_id}")
             if explicit and output_digest is None:
-                raise ValueError(f"explicit I2V artifact lacks digest: {slot_id}")
+                raise ValueError(f"explicit visual artifact lacks digest: {slot_id}")
             if digest is not None and output_digest != digest:
                 raise ValueError(f"artifact/terminal anchor mismatch: {slot_id}")
         if digest is None and not any("anchor_sha256" in output
                                       for output in outputs):
             if explicit and leg["state"] == "completed":
-                raise ValueError(f"completed explicit I2V has no artifact: {slot_id}")
+                raise ValueError(f"completed explicit visual has no artifact: {slot_id}")
             continue
 
         resolved = digest if digest is not None else outputs[0]["anchor_sha256"]
         source = by_index.get(anchor)
         if source is None or anchor >= slot["slot_index"] \
                 or source["media_type"] != "image" \
-                or slot["media_type"] != "video":
+                or slot["media_type"] not in ("image", "video") \
+                or (slot["media_type"] == "image" and not explicit):
             raise ValueError(f"resolved anchor is not an earlier image: {slot_id}")
         source_outputs = [item for item in outputs_by_slot.get(
                               source["slot_id"], [])

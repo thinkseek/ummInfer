@@ -30,7 +30,9 @@ struct NarrativeDirective {
   std::string kind;
   // Trimmed directive body with an optional reference suffix removed. Never
   // empty for an ordinary directive; an empty body without a reference is
-  // dropped. The explicit suffix is `| source=slot-N` on a video directive.
+  // dropped. The explicit suffix is `| source=slot-N` on an image or video
+  // directive. Image references select exact FLUX edit bytes; video references
+  // select exact native I2V anchor bytes.
   std::string prompt;
   // Same-request image slot named by the explicit reference suffix. Empty when
   // the directive has no valid reference.

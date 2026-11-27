@@ -175,6 +175,42 @@ class RawSSEReplayTests(unittest.TestCase):
             self.assertIn("RAW_SSE_REPLAY: PASS", proc.stdout)
             self.assertEqual(out.read_bytes(), recorder.jsonl_path.read_bytes())
 
+    def test_cross_slot_image_edit_and_i2v_reference_chain(self):
+        with tempfile.TemporaryDirectory(prefix="umm-sse-cross-slot-") as tmp:
+            recorder, record = capture_bytes(
+                fixture.sse_bytes(fixture.cross_slot_events()), Path(tmp) / "live")
+            worker.validate_trajectory(recorder.jsonl_path)
+            self.assertEqual(len(record["visual_slots"]), 3)
+            self.assertEqual(record["artifacts"][1]["media_type"], "image")
+            self.assertEqual(record["artifacts"][1]["anchor_slot_index"], 0)
+            self.assertEqual(record["artifacts"][1]["anchor_sha256"],
+                             record["artifacts"][0]["sha256"])
+            self.assertEqual(record["artifacts"][2]["media_type"], "video")
+            self.assertEqual(record["artifacts"][2]["anchor_slot_index"], 1)
+            self.assertEqual(record["artifacts"][2]["anchor_sha256"],
+                             record["artifacts"][1]["sha256"])
+            replayed_recorder, replayed = replay_copy(
+                record, recorder, Path(tmp) / "replayed")
+            self.assertEqual(replayed, record)
+            worker.validate_trajectory(replayed_recorder.jsonl_path)
+
+            wrong = copy.deepcopy(record)
+            wrong.pop("sse_replay")
+            for event in wrong["events"]:
+                for key in ("source_event_index", "source_event_sha256",
+                            "source_event_tick"):
+                    event.pop(key, None)
+                if event["type"] == "artifact" \
+                        and event["artifact"].get("slot_id") == "slot-1":
+                    event["artifact"]["anchor_sha256"] = "0" * 64
+                if event["type"] == "complete":
+                    event["legs"][1]["anchor_sha256"] = "0" * 64
+            wrong["artifacts"][1]["anchor_sha256"] = "0" * 64
+            wrong["terminal_legs"][1]["anchor_sha256"] = "0" * 64
+            recorder.jsonl_path.write_bytes(traj.canonical_json(wrong) + b"\n")
+            with self.assertRaisesRegex(ValueError, "anchor"):
+                worker.validate_trajectory(recorder.jsonl_path)
+
     def test_narrative_source_tamper_and_wrong_anchor_rejected(self):
         with tempfile.TemporaryDirectory(prefix="umm-sse-anchor-tamper-") as tmp:
             root = Path(tmp)

@@ -155,6 +155,27 @@ pub fn build(b: *std.Build) void {
     i2v_geometry_latency_test.addFileArg(b.path("tests/i2v_geometry_latency_test.py"));
     test_step.dependOn(&i2v_geometry_latency_test.step);
 
+    const cross_slot_live_self_check = b.addSystemCommand(&.{ "python3", "-I" });
+    cross_slot_live_self_check.addFileArg(b.path("tests/cross_slot_visual_continuity_live.py"));
+    cross_slot_live_self_check.addArg("--self-check");
+    test_step.dependOn(&cross_slot_live_self_check.step);
+    const cross_slot_verify_self_check = b.addSystemCommand(&.{ "python3", "-I" });
+    cross_slot_verify_self_check.addFileArg(b.path("tests/cross_slot_visual_continuity_verify.py"));
+    cross_slot_verify_self_check.addArg("--self-check");
+    test_step.dependOn(&cross_slot_verify_self_check.step);
+
+    const ns06_contract_test = b.addSystemCommand(&.{ "python3", "-I" });
+    ns06_contract_test.addFileArg(b.path("tests/ns06_cross_slot_test.py"));
+    test_step.dependOn(&ns06_contract_test.step);
+    const ns06_live_self_check = b.addSystemCommand(&.{ "python3", "-I" });
+    ns06_live_self_check.addFileArg(b.path("tests/ns06_cross_slot_live.py"));
+    ns06_live_self_check.addArg("--self-check");
+    test_step.dependOn(&ns06_live_self_check.step);
+    const ns06_verify_self_check = b.addSystemCommand(&.{ "python3", "-I" });
+    ns06_verify_self_check.addFileArg(b.path("tests/ns06_cross_slot_verify.py"));
+    ns06_verify_self_check.addArg("--self-check");
+    test_step.dependOn(&ns06_verify_self_check.step);
+
     const voice_test_exe = b.addExecutable(.{
         .name = "voice_client_test",
         .root_module = module(b, target, optimize),

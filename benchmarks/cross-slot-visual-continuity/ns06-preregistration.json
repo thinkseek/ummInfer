@@ -1,0 +1,133 @@
+{
+  "format": "umminfer-ns06-paired-preregistration-v1",
+  "task": 76,
+  "date": "2026-11-27",
+  "frozen_before_any_before_after_output": true,
+  "before_runtime_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "after_runtime_commit": "a37a84a7464c3e31ad9762bde46b6d64cf09a215",
+  "after_integrated_tree_commit": "6fbfadd43b411430fab9cd8660d86c6a9efe7eb0",
+  "physical_gpu": 7,
+  "execution_policy": {
+    "one_main_request_per_arm": true,
+    "arm_order": ["before", "after"],
+    "fresh_processes_per_arm": true,
+    "same_models_inputs_prompt_settings_and_harness": true,
+    "no_post_observation_prompt_or_reference_plan_mutation": true,
+    "no_retries_or_alternate_candidates": true,
+    "post_terminal_abort_probe": true,
+    "one_text_only_reconnect_request_after_import": true,
+    "resident_service_forbidden": true
+  },
+  "input_assets": {
+    "sketch": {
+      "path_role": "external caller-supplied PNG",
+      "bytes": 5900,
+      "dimensions": "512x512",
+      "sha256": "81316a1bbe8ddc8011b7ee216721da341a87a581332045cb411f3abbdc19b28f",
+      "description": "deterministic external cafe/Mira line-sketch input; not a tracked fixture"
+    },
+    "voice": {
+      "path_role": "external caller-supplied 16 kHz ASR transport WAV",
+      "bytes": 814158,
+      "duration_seconds": 25.44,
+      "sample_rate": 16000,
+      "channels": 1,
+      "format": "PCM16 WAV",
+      "sha256": "5edef38d213623331061c79dcdf58d6a930b10d8e54eac03cadd0742d9eea13e",
+      "generated_by": "real Qwen3-TTS-12Hz-1.7B-CustomVoice, then one fixed FFmpeg PCM16 mono resample before either paired arm",
+      "generated_24k_source": {
+        "bytes": 1221164,
+        "sha256": "695e86756931dd3b35315539480f879817d113fc36d920c1538d7d655a1b0e1d"
+      },
+      "derivation": "FFmpeg bitexact input; map_metadata=-1; pcm_s16le; mono; 16000 Hz; no filtering or editing of spoken text",
+      "pre_output_correction": "The first HTTP attempt rejected the 24 kHz source before ASR/VLM execution; no model output was observed and the prompt/reference plan did not change",
+      "spoken_text": "Make a three-shot short-film storyboard for Mira. Shot one, she enters a rainy night cafe. Shot two, she sits by the window and checks her watch. Shot three, she turns and smiles. Include narration and motion previews."
+    }
+  },
+  "request": {
+    "stream": true,
+    "modalities": ["text", "image", "audio", "video"],
+    "content_order": ["frozen text plan", "sketch image_url", "voice input_audio"],
+    "narrative": {
+      "enabled": true,
+      "visual_mode": "auto",
+      "max_slots": 6,
+      "allow_text_only": false,
+      "continuity_mode": "i2v_chain"
+    },
+    "zero_manual_control_scope": "one frozen protocol-level six-slot bound; auto modality selection; no UI edits, per-shot controls, or post-observation changes",
+    "image": {"size": "512x512", "steps": 4, "seed": 42, "output_format": "png"},
+    "video": {"size": "704x480", "num_frames": 29, "steps": 20, "fps": 16, "guidance_scale": 5.0, "seed": 42, "output_format": "mp4"},
+    "audio": {"voice": "vivian", "format": "wav", "stream": true},
+    "max_tokens": 512,
+    "temperature": 0,
+    "seed": 42
+  },
+  "exact_text_plan": "Use the attached sketch and spoken request. Output exactly the following three sentences and six markers in this order, with no shot labels, additional prose, or additional markers. Preserve Mira's short dark hair, yellow raincoat, and warm cinematic rainy-night style through the explicit source references.\nMira enters the cafe.\n[[image: Mira, a short dark-haired woman in a yellow raincoat, opens the door of a rainy night cafe, warm cinematic light, detailed character establishing keyframe]]\n[[video: Mira steps inside as rain falls and the camera gently pushes forward | source=slot-0]]\nShe checks her watch.\n[[image: the same Mira in the same yellow raincoat sits by the cafe window and checks her watch, preserve her face, clothing, and warm cinematic style | source=slot-0]]\n[[video: Mira raises her wrist and raindrops move across the window | source=slot-2]]\nShe turns and smiles.\n[[image: the same Mira in the same yellow raincoat turns from the cafe window and smiles, preserve her face, clothing, and warm cinematic style | source=slot-0]]\n[[video: Mira turns toward the camera and smiles as warm lights glow | source=slot-4]]",
+  "expected_clean_prose_sentences": [
+    "Mira enters the cafe.",
+    "She checks her watch.",
+    "She turns and smiles."
+  ],
+  "slots": [
+    {"index": 0, "kind": "image", "source": null, "shot": 1},
+    {"index": 1, "kind": "video", "source": 0, "shot": 1},
+    {"index": 2, "kind": "image", "source": 0, "shot": 2},
+    {"index": 3, "kind": "video", "source": 2, "shot": 2},
+    {"index": 4, "kind": "image", "source": 0, "shot": 3},
+    {"index": 5, "kind": "video", "source": 4, "shot": 3}
+  ],
+  "expected_outcomes": {
+    "before": {
+      "visual_leg_states": ["completed", "completed", "failed", "failed", "failed", "failed"],
+      "keyframe_count": 1,
+      "i2v_count": 1,
+      "narration_leg_count": 3,
+      "technical_interpretation": "parent lacks image-edit references and cannot complete the three requested chains"
+    },
+    "after": {
+      "visual_leg_states": ["completed", "completed", "completed", "completed", "completed", "completed"],
+      "keyframe_count": 3,
+      "i2v_count": 3,
+      "narration_leg_count": 3,
+      "technical_interpretation": "candidate binds all three keyframe-to-I2V references and both image-edit references with exact bytes"
+    },
+    "both": {
+      "public_terminal": "complete",
+      "terminal_count": 1,
+      "post_terminal_abort_has_no_effect": true,
+      "reconnect_terminal": "complete",
+      "reconnect_text": "READY",
+      "before_after_clean_prose_equal": true,
+      "before_after_pcm_equal": true
+    }
+  },
+  "numeric_media_gates": {
+    "decoded_keyframe_dimensions": "512x512",
+    "decoded_video": "704x480 H.264 yuv420p, 29 frames, 16 fps",
+    "metric_version": "center-cover-64x40-rgb8-frame0-frame28-v1",
+    "first_frame_mae_max": 48.0,
+    "motion_mae_min": 1.0,
+    "missing_parent_media": "NOT_RUN, never substituted"
+  },
+  "ns08_lifecycle": {
+    "unmodified_production_helpers": [
+      "buildSessionExportJson",
+      "newChat",
+      "parseImportedSessionJson",
+      "applyImportedSessionWithContext"
+    ],
+    "sequence": "real public record -> export JSON -> actual newChat clear -> parse/apply import with network forbidden -> re-export -> reconnect using imported history",
+    "required_exact": ["text", "visual slot identities", "artifact SHA-256/bytes", "reference metadata", "re-export JSON", "reconnect request history"],
+    "existing_limit": "raw media bytes and PCM audio are omitted by the existing session schema and importedMediaOmitted=true; this is NOT_SUPPORTED restoration, not a fabricated full NS-08 PASS",
+    "regression_rule": "both arms must have identical lifecycle/schema behavior and the candidate must additionally preserve all resolved reference metadata"
+  },
+  "claim_boundaries": {
+    "promotable_technical_gain": "three exact keyframe/I2V chains versus one in the parent, plus exact image-edit links",
+    "ns06_human_character_style_threshold": "NOT_RUN / NOT_MET; no perceptual consistency or full NS-06 PASS",
+    "ns08_human_cross_client_walkthrough": "NOT_RUN",
+    "generalized_quality": "NOT_COVERED",
+    "training_optimizer": "NOT_RUN",
+    "deployment": "NOT_RUN"
+  }
+}

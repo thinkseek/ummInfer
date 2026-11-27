@@ -139,6 +139,43 @@ def linked_events(*, delayed=False):
     return events
 
 
+def cross_slot_events():
+    """Image establishment -> exact image edit -> exact edited-image I2V."""
+    edited_png = PNG + b"-edited"
+    source0_sha = hashlib.sha256(PNG).hexdigest()
+    source1_sha = hashlib.sha256(edited_png).hexdigest()
+    return [
+        envelope(0, "vlm_delta", FIRST_TEXT),
+        visual_slot(1, 0, "image", "establish the character", len(FIRST_TEXT),
+                    continuity_mode="i2v_chain"),
+        artifact(2, "art-cross-0", "image", "image/png", PNG, "image",
+                 slot_id="slot-0", slot_index=0),
+        visual_slot(3, 1, "image", "same character at night", len(FIRST_TEXT),
+                    continuity_mode="i2v_chain", anchor_slot_index=0,
+                    anchor_explicit=True),
+        artifact(4, "art-cross-1", "image", "image/png", edited_png, "image",
+                 slot_id="slot-1", slot_index=1, anchor_slot_index=0,
+                 anchor_explicit=True, anchor_sha256=source0_sha),
+        visual_slot(5, 2, "video", "the character turns", len(FIRST_TEXT),
+                    continuity_mode="i2v_chain", anchor_slot_index=1,
+                    anchor_explicit=True),
+        artifact(6, "art-cross-2", "video", "video/mp4", MP4, "video",
+                 slot_id="slot-2", slot_index=2, anchor_slot_index=1,
+                 anchor_explicit=True, anchor_sha256=source1_sha),
+        envelope(7, "vlm_delta", SECOND_TEXT),
+        envelope(8, "complete", CLEAN_TEXT, legs=[
+            {"stage": "image", "slot_id": "slot-0", "slot_index": 0,
+             "state": "completed"},
+            {"stage": "image", "slot_id": "slot-1", "slot_index": 1,
+             "state": "completed", "anchor_slot_index": 0,
+             "anchor_explicit": True, "anchor_sha256": source0_sha},
+            {"stage": "video", "slot_id": "slot-2", "slot_index": 2,
+             "state": "completed", "anchor_slot_index": 1,
+             "anchor_explicit": True, "anchor_sha256": source1_sha},
+        ]),
+    ]
+
+
 def cancelled_events():
     source = narrative_events()
     # Keep only the first image/audio chunks; video has completed. Renumber the

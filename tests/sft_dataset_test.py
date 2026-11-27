@@ -961,6 +961,33 @@ class SftDatasetBuilderTests(unittest.TestCase):
                 require_artifact_dir=True)
             self.assertTrue(ok, (category, message))
 
+    def test_cross_slot_image_reference_reconstruction(self):
+        with tempfile.TemporaryDirectory(prefix="umm-sft-cross-slot-") as tmp:
+            recorder = traj.TrajectoryRecorder(Path(tmp) / "linked.jsonl")
+            body = {"model": "m", "stream": True,
+                    "messages": [{"role": "user", "content": "continue the character"}]}
+            with _canned_server(fixture.sse_bytes(fixture.cross_slot_events())) as url:
+                record = traj.record_chat_completion(url, body, recorder, "linked")
+            ok, category, message, _ = ds.verify_record_integrity(
+                record, artifact_dir=recorder.artifact_dir,
+                require_artifact_dir=True)
+            self.assertTrue(ok, (category, message))
+            target, clean, slots, _ = ds.reconstruct_director_target(
+                record, verified_on_disk=True)
+            self.assertEqual(clean, fixture.CLEAN_TEXT)
+            self.assertEqual(
+                target,
+                fixture.FIRST_TEXT
+                + "[[image: establish the character]]"
+                + "[[image: same character at night | source=slot-0]]"
+                + "[[video: the character turns | source=slot-1]]"
+                + fixture.SECOND_TEXT)
+            self.assertEqual(slots[1]["media_type"], "image")
+            self.assertEqual(slots[1]["anchor_slot_index"], 0)
+            self.assertEqual(slots[2]["anchor_slot_index"], 1)
+            self.assertEqual(slots[2]["anchor_sha256"],
+                             hashlib.sha256(fixture.PNG + b"-edited").hexdigest())
+
     def test_serving_path_isolation_and_zero_ml_framework_dependencies(self):
         for directory in (ROOT / "src", ROOT / "include"):
             if not directory.is_dir():

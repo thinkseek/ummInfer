@@ -900,7 +900,9 @@ bool UnifiedEngine::bind_chained_anchor_locked(
   }
   inputs["anchor_slot_index"] = Value(static_cast<int64_t>(leg.anchor_slot_index));
   inputs["anchor_sha256"] = Value(digest);
-  inputs["anchor_crop"] = Value("center_cover");
+  if (leg.modality == UnifiedModality::kVideo) {
+    inputs["anchor_crop"] = Value("center_cover");
+  }
   leg.anchor_sha256 = digest;
   return true;
 }
@@ -941,12 +943,10 @@ void UnifiedEngine::dispatch_narrative_slot_locked(
     if (record.narrative_continuity_mode != "i2v_chain") {
       dependency_error =
           "an explicit source reference requires narrative.continuity_mode=i2v_chain";
-    } else if (image) {
-      dependency_error = "an explicit source reference requires a video slot";
-    } else if (const auto existing = record.video_options.find("image");
-               existing != record.video_options.end() &&
-               !existing->second.is_nil()) {
-      dependency_error = "video.image conflicts with an explicit source reference";
+    } else if (const auto existing = options.find("image");
+               existing != options.end() && !existing->second.is_nil()) {
+      dependency_error = std::string(image ? "image.image" : "video.image") +
+                         " conflicts with an explicit source reference";
     } else {
       const OutputLeg* source = nullptr;
       for (const OutputLeg& candidate : record.slot_legs) {
@@ -1145,6 +1145,10 @@ void UnifiedEngine::release_chained_slots_locked(
       leg_error.anchor_slot_index = leg.anchor_slot_index;
       leg_error.anchor_explicit = leg.anchor_explicit;
       dispatch_queue_.push_back(std::move(leg_error));
+      // This slot may itself be the selected source of a later image edit or
+      // I2V slot. Fail that transitive chain now instead of leaving it pending
+      // forever after the VLM has completed.
+      release_chained_slots_locked(request_id, record, leg.slot_index, "");
       continue;
     }
     leg.submitted = true;
@@ -1273,7 +1277,12 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
       record.vlm_error = event.error;
     }
     for (OutputLeg& leg : record.slot_legs) {
-      if (leg.state == LegState::kPending) leg.state = LegState::kAborted;
+      // A primary VLM failure aborts every unresolved slot. Late native
+      // completions are dropped after the terminal, so a running state here
+      // would otherwise remain stuck forever in the public terminal legs.
+      if (leg.state == LegState::kPending || leg.state == LegState::kRunning) {
+        leg.state = LegState::kAborted;
+      }
     }
   }
   for (OutputLeg& leg : record.slot_legs) {
@@ -1319,6 +1328,12 @@ UnifiedEvent UnifiedEngine::finish_locked(const std::string& request_id,
     trace.tts_ms = record.tts_ms;
     trace.video_ms = record.video_ms;
     obs::Metrics::instance().trace(trace);
+  }
+  // Optional-output cancellation and primary failure also carry the finalized
+  // public leg states. The default text-only terminal remains byte-compatible.
+  if (record.narrative_enabled || record.image_leg.enabled ||
+      record.video_leg.enabled || record.tts_enabled) {
+    event.legs = legs_value_locked(record);
   }
   return event;
 }

@@ -8,6 +8,7 @@ the ZMQ protocol tests run when pyzmq and msgpack are installed.
 """
 
 import base64
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -166,6 +167,34 @@ class RequestParsingTests(unittest.TestCase):
         url = "data:image/png;base64," + base64.b64encode(TINY_PNG).decode()
         parsed = stage.parse_request(self._message(prompt="sunset", image=url))
         self.assertEqual(parsed.image_bytes, TINY_PNG)
+
+    def test_parse_request_accepts_content_addressed_binary_edit(self):
+        stage = self._stage()
+        digest = hashlib.sha256(TINY_PNG).hexdigest()
+        parsed = stage.parse_request(self._message(
+            prompt="same character, night scene", image=TINY_PNG,
+            anchor_explicit=True, anchor_slot_index=0, anchor_sha256=digest))
+        self.assertEqual(parsed.image_bytes, TINY_PNG)
+
+    def test_parse_request_rejects_bad_content_addressed_edit(self):
+        stage = self._stage()
+        digest = hashlib.sha256(TINY_PNG).hexdigest()
+        for inputs in (
+            {"prompt": "x", "image": TINY_PNG, "anchor_explicit": True,
+             "anchor_slot_index": 0, "anchor_sha256": "0" * 64},
+            {"prompt": "x", "image": TINY_PNG + b"tampered",
+             "anchor_explicit": True, "anchor_slot_index": 0,
+             "anchor_sha256": digest},
+            {"prompt": "x", "anchor_explicit": True,
+             "anchor_slot_index": 0, "anchor_sha256": digest},
+            {"prompt": "x", "image": TINY_PNG, "anchor_explicit": "true",
+             "anchor_slot_index": 0, "anchor_sha256": digest},
+            {"prompt": "x", "image": TINY_PNG, "anchor_explicit": True,
+             "anchor_slot_index": -1, "anchor_sha256": digest},
+            {"prompt": "x", "image": TINY_PNG, "anchor_sha256": digest},
+        ):
+            with self.assertRaises(ValueError, msg=json.dumps(inputs, default=str)):
+                stage.parse_request(self._message(**inputs))
 
     def test_parse_request_rejects_invalid_input(self):
         stage = self._stage()

@@ -314,6 +314,7 @@ class TapProxy:
                 message = msgpack.unpackb(packed, raw=False)
                 request_id = message.get("request_id")
                 record = {"tap": self.name, "request_id": request_id,
+                          "message_type": message.get("type"),
                           "observed_monotonic_ns": tick,
                           "packed_sha256": sha256_bytes(packed),
                           "packed_bytes": len(packed)}
@@ -345,15 +346,43 @@ class TapProxy:
                     elif message_type == "complete":
                         result = message.get("result") or {}
                         wav = result.get("data")
-                        require(isinstance(wav, bytes) and bool(wav),
-                                "native TTS terminal lacks WAV bytes")
                         record.update({"success": message.get("success"),
                                        "streamed": result.get("streamed"),
-                                       "wav_sha256": sha256_bytes(wav), "wav_bytes": len(wav)})
+                                       "error": message.get("error")})
+                        if message.get("success") is True:
+                            require(isinstance(wav, bytes) and bool(wav),
+                                    "successful native TTS terminal lacks WAV bytes")
+                            record.update({"wav_sha256": sha256_bytes(wav),
+                                           "wav_bytes": len(wav)})
+                        else:
+                            # Cancelled/failed native terminals are control
+                            # evidence, not media-producing speech legs.
+                            require(wav is None,
+                                    "failed native TTS terminal unexpectedly carries WAV")
                     packed_name = (f"{self.name}-{len(self.records)}-"
                                    f"{record['packed_sha256']}.msgpack")
                     (self.evidence_dir / packed_name).write_bytes(packed)
                     record["packed_file"] = packed_name
+                    forwarded = False
+                    while not forwarded and not self.stop_requested:
+                        try:
+                            push.send(packed, zmq.NOBLOCK)
+                            forwarded = True
+                        except zmq.Again:
+                            time.sleep(0.005)
+                    if not forwarded:
+                        break
+                    record["forwarded_monotonic_ns"] = clock_ns()
+                    self.records.append(record)
+                    continue
+                packed_name = (f"{self.name}-{len(self.records)}-"
+                               f"{record['packed_sha256']}.msgpack")
+                record["packed_file"] = packed_name
+                if message.get("type") != "submit":
+                    (self.evidence_dir / packed_name).write_bytes(packed)
+                    # Abort broadcasts share the reliable PUSH channel with
+                    # submits. Retain and forward them without interpreting
+                    # their empty inputs as a TTS/image/video generation job.
                     forwarded = False
                     while not forwarded and not self.stop_requested:
                         try:
@@ -380,6 +409,20 @@ class TapProxy:
                         "image_sha256": sha256_bytes(image), "image_bytes": len(image),
                         "anchor_slot_index": inputs.get("anchor_slot_index"),
                         "anchor_explicit": inputs.get("anchor_explicit"),
+                        "anchor_sha256": inputs.get("anchor_sha256"),
+                        "anchor_crop": inputs.get("anchor_crop"),
+                    })
+                elif self.name == "image":
+                    image = inputs.get("image")
+                    if image is not None:
+                        require(isinstance(image, bytes) and bool(image),
+                                "explicit FLUX edit lacks binary source image")
+                    record.update({
+                        "prompt": inputs.get("prompt"),
+                        "image_sha256": sha256_bytes(image) if image is not None else None,
+                        "image_bytes": len(image) if image is not None else 0,
+                        "anchor_slot_index": inputs.get("anchor_slot_index"),
+                        "anchor_explicit": inputs.get("anchor_explicit", False),
                         "anchor_sha256": inputs.get("anchor_sha256"),
                         "anchor_crop": inputs.get("anchor_crop"),
                     })

@@ -489,9 +489,10 @@ class UnifiedEngine {
   // references use binary bytes; implicit mainline links keep their data URL.
   bool bind_chained_anchor_locked(Record& record, OutputLeg& leg,
                                   Value::Map& inputs, std::string& error) const;
-  // Releases any deferred i2v_chain video slots waiting on `anchor_slot_index`.
-  // Attaches `anchor_image_data_url` when non-empty, falls back to T2V when
-  // empty, or aborts them cleanly if the request was cancelled.
+  // Releases deferred i2v_chain image-edit or video slots waiting on
+  // `anchor_slot_index`. Attaches `anchor_image_data_url` when non-empty,
+  // preserves implicit T2V fallback, and fails explicit transitive dependents
+  // without generation when their selected source failed or was aborted.
   void release_chained_slots_locked(const std::string& request_id,
                                     Record& record, int anchor_slot_index,
                                     const std::string& anchor_image_data_url);

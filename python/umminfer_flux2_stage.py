@@ -7,7 +7,9 @@ plugs into `umm-infer serve --image-entry image --image-entry-endpoint
 ipc://...` without changing the C++ control plane.
 
 Supports text-to-image (`inputs.prompt`) and image editing (`inputs.image`,
-a base64 data URL) through the same `Flux2KleinPipeline`.
+a base64 data URL or exact MessagePack binary) through the same
+`Flux2KleinPipeline`. Explicit narrative references additionally bind the binary
+source to `anchor_slot_index` and a verified `anchor_sha256` before generation.
 """
 
 import argparse
@@ -15,6 +17,7 @@ import base64
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import hashlib
 import io
 import json
 import math
@@ -140,6 +143,23 @@ def decode_data_url(value, max_bytes=MAX_INPUT_IMAGE_BYTES):
         raise ValueError(f"data URL payload is not valid base64: {exc}") from exc
     if not raw:
         raise ValueError("data URL payload is empty")
+    if len(raw) > max_bytes:
+        raise ValueError(
+            f"decoded image ({len(raw)} bytes) exceeds {max_bytes} byte limit")
+    if not (raw.startswith(PNG_SIGNATURE) or raw.startswith(b"\xff\xd8\xff")):
+        raise ValueError("decoded image is not PNG or JPEG")
+    return raw
+
+
+def decode_image_input(value, max_bytes=MAX_INPUT_IMAGE_BYTES):
+    """Decode a legacy data URL or validate exact internal binary image bytes."""
+    if isinstance(value, str):
+        return decode_data_url(value, max_bytes=max_bytes)
+    if not isinstance(value, (bytes, bytearray)):
+        raise ValueError("image must be a base64 data URL or MessagePack binary")
+    raw = bytes(value)
+    if not raw:
+        raise ValueError("binary image payload is empty")
     if len(raw) > max_bytes:
         raise ValueError(
             f"decoded image ({len(raw)} bytes) exceeds {max_bytes} byte limit")
@@ -570,7 +590,28 @@ class Flux2Stage:
 
         image_bytes = None
         if inputs.get("image") is not None:
-            image_bytes = decode_data_url(inputs["image"])
+            image_bytes = decode_image_input(inputs["image"])
+
+        if "anchor_crop" in inputs:
+            raise ValueError("anchor_crop is only valid for native video I2V")
+        explicit = inputs.get("anchor_explicit", False)
+        if not isinstance(explicit, bool):
+            raise ValueError("image.anchor_explicit must be boolean")
+        has_anchor_metadata = any(
+            key in inputs for key in ("anchor_slot_index", "anchor_sha256"))
+        if has_anchor_metadata and not explicit:
+            raise ValueError("image anchor metadata requires anchor_explicit=true")
+        if explicit:
+            if image_bytes is None:
+                raise ValueError("explicit image reference requires image bytes")
+            anchor_index = inputs.get("anchor_slot_index")
+            if isinstance(anchor_index, bool) or not isinstance(anchor_index, int) \
+                    or anchor_index < 0:
+                raise ValueError("image.anchor_slot_index must be a non-negative integer")
+            declared = inputs.get("anchor_sha256")
+            actual = hashlib.sha256(image_bytes).hexdigest()
+            if not isinstance(declared, str) or declared != actual:
+                raise ValueError("image does not match anchor_sha256")
 
         return Flux2Request(
             prompt=prompt.strip(), width=width, height=height, steps=steps,

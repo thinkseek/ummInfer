@@ -94,6 +94,30 @@ Perceptual quality,
 character/style consistency, deployment, and resident-service validation remain
 `NOT_RUN`; the resident service was not contacted.
 
+### Task #76 isolated cross-slot image-edit → I2V gate (not deployed)
+
+Final merged execution `a37a84a` used only idle physical GPU 7 and real public VLM narrative
+orchestration. FLUX.2 slot 0 established a 512×512 PNG; slot 1 consumed those exact
+bytes as a content-addressed FLUX edit; native Wan slot 2 consumed the edited PNG
+for 704×480, 29-frame I2V. Exact source SHA-256 values are `01af1c29…150b` and
+`1eddde7e…45b3`; output MP4 is `1866e18d…dcf`. Wrong/self and wrong-hash inputs
+were rejected before generation, a real three-slot cancellation finalized every
+visual leg as aborted, and the following valid request completed. Nine TTS legs /
+65 PCM chunks joined native/public/terminal-WAV bytes exactly. Fresh remote/local
+verification passed the 439-file self-excluded manifest. All task processes
+returned 0 and GPU 7 closed at 3 MiB/0% with zero compute processes. This changes
+no resident process or deployment claim. Human/perceptual character or style
+review remains `NOT_RUN`. See
+[cross-slot-visual-continuity.md](cross-slot-visual-continuity.md) and the
+[compact evidence](evidence/cross-slot-visual-continuity-sm90.json). The paired
+NS-06/NS-08 follow-up used the untouched parent `91310b3` and candidate `a37a84a`
+with identical frozen inputs: 1 versus 3 completed keyframes/I2V, exact source bytes,
+identical ASR/prose/PCM, and no export/clear/import/reconnect regression. The frozen
+three-native-narration-leg target is NOT_MET at four; raw media/PCM import remains
+unsupported, so no full NS-06/NS-08 PASS or score increase is claimed. See the
+[paired scorecard](evidence/ns06-paired-76-sm90.json). All 14 paired task processes
+returned 0 and both GPU 7 closeouts reached 3 MiB/0% with zero compute processes.
+
 Stages talk to the server over ZeroMQ and MessagePack, with payloads in POSIX
 shared memory. Endpoints live under `ipc_dir` (`/tmp/umminfer-native-ipc` by
 default): `asr`, `qwen38` (or `omni`), `image`, `tts`, `video`, plus the shared

@@ -90,7 +90,7 @@ void parse_reference(NarrativeDirective& directive, std::string body) {
     return;
   }
   if (directive.prompt.empty()) {
-    directive.reference_error = "referenced video requires a non-empty prompt";
+    directive.reference_error = "referenced visual requires a non-empty prompt";
     return;
   }
   directive.source_slot = slot;
