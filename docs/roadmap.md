@@ -621,6 +621,28 @@ their hashes remain negative evidence; deterministic tests and GPU 7 cleanup
 pass. Exact identities and scope are in
 [online-grpo-optimizer](online-grpo-optimizer.md). No quality or generalized
 improvement is claimed.
+
+**Phase 6 real online-GRPO optimizer and exact checkpoint/resume gate
+(2026-11-27, Task #71).** A single preregistered R1 batch produced two complete
+three-member groups, each with rewards `[1,1,0]` and population std
+`0.4714045207910317`; no prompts, rewards, seeds, or memberships were changed
+after observation. Six strong v2 exports, 43/43 supervised sampled tokens,
+byte-identical replay, preflight reconstruction, and independent audit passed
+before training. On isolated SM90 GPU 7, the exact Qwen3.8 base executed two
+rank-1 FP32 LoRA AdamW updates (17,408 parameters) with real clipped-surrogate/
+Schulman-KL objectives, nonzero raw gradients, moments, and parameter deltas.
+Uninterrupted versus split/fresh-resumed updates, checkpoints, RNG/cursor/source
+identities, references, and all raw tensors were byte-identical. The independent
+stdlib verifier passed with objective maxabs `4.216757951492635e-16`; five tamper
+controls rejected without reports. Two real-evidence-only fixes repaired nested
+resume tensor rows and the harness's gradient-norm diagnostic matcher, each with
+red/green deterministic regression evidence and no new rollout. Final run id is
+`398b867627358015c903e8e42a5368bc76c21d95b358eeafea5bc7ce6cc99843`; the final
+integrated base is Wave 93 `413cc9b`. Exact hashes, failed-attempt lineage, tests,
+and cleanup are in [online-grpo-optimizer](online-grpo-optimizer.md). Model
+quality, generalized improvement, production training, and deployment remain
+`NOT_RUN`/unclaimed.
+
 **Native public HTTP speech/PCM parity gate (2026-11-27).** Task #63 adds a
 single-GPU-0 public serving gate over the accepted Task #59 TTS fix and the
 Wave 91 integrated tree. Raw HTTP/SSE/JSON/direct-speech and native MessagePack

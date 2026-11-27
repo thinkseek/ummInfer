@@ -236,6 +236,7 @@ class VerifiableArithmeticReward(Reward):
         "online-arithmetic-3274x8957": 29325218,
         "online-arithmetic-8642x7351": 63527342,
         "online-arithmetic-6287x5399": 33943513,
+        "online-arithmetic-9173x6842": 62761666,
     }
 
     def score(self, record):

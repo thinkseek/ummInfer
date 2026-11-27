@@ -660,9 +660,10 @@ streams complete model-file manifests with bounded memory, and accepts Qwen's
 12/12 while Task #52's sealed pre-fix checkpoint disagreements remain intact.
 Exact preflight run id, tolerances, raw per-token/group evidence, failed pre-GPU
 attempts, tests, and cleanup are in
-[online-grpo-real-model](online-grpo-real-model.md). Real optimizer execution,
-exact resume/update, new online generation, model quality, and generalized
-improvement remain `NOT_RUN`.
+[online-grpo-real-model](online-grpo-real-model.md). At that Task #60 boundary,
+real optimizer execution, exact resume/update, new online generation, model
+quality, and generalized improvement remained `NOT_RUN`; Task #71's separate
+fresh-generation and optimizer result follows below.
 
 ### Task #64 bounded online optimizer and frozen variance outcome
 
@@ -679,12 +680,37 @@ The frozen final R6 plan nevertheless failed the real training gate before
 optimizer execution: six fresh attested `COVERED` rollouts and 43 supervised
 sampled tokens yielded one nonzero group (`[1,1,0]`, std `0.4714045207910317`) and
 one zero group (`[0,0,0]`). Both groups are required; no failed-source offline
-continuation or subgroup repetition is used. Actual real-model gradients,
-parameter deltas, checkpoints, and resumed second updates remain `NOT_RUN`.
+continuation or subgroup repetition is used. Task #64's actual real-model
+gradients, parameter deltas, checkpoints, and resumed second updates remained
+`NOT_RUN`; this historical blocked batch was not reused by Task #71.
 Nine focused CPU tests pass, including raw AdamW/tamper/zero-variance controls;
 R1–R6 negative evidence and cleanup are in
 [online-grpo-optimizer](online-grpo-optimizer.md). No quality or generalized
 improvement claim is made.
+
+### Task #71 real bounded optimizer and exact resume PASS
+
+Task #71 froze a new two-group/three-member plan before generation. Both groups
+produced rewards `[1,1,0]`; the six fresh covered records contain 43 supervised
+sampled tokens and passed strong v2 token export, independent native replay,
+byte-identical online replay, preflight reconstruction, and independent audit.
+The exact Qwen3.8 base then executed two real rank-1 FP32 LoRA AdamW updates on
+isolated SM90 GPU 7. Raw gradient norms were `0.0017040768871083856` and
+`0.002331538824364543`; 12,288 and 17,408 scalars changed respectively, with
+nonzero parameter deltas and frozen base/reference weights.
+
+Uninterrupted, split-after-one, and fresh-resumed executions produced identical
+updates, checkpoints, references, RNG/cursor/source identities, and raw tensors.
+The independent stdlib verifier recomputed the clipped objective and separate
+Schulman KL with maximum absolute difference `4.216757951492635e-16`; all five
+tamper controls rejected without reports. Focused commits `66bcefb1` and
+`58feb7d5` repair only the real-evidence resume row nesting and harness gradient
+norm diagnostic matching, each with a pre-fix failing regression. Final run id is
+`398b867627358015c903e8e42a5368bc76c21d95b358eeafea5bc7ce6cc99843`. Exact
+preregistration, metrics, failed-attempt lineage, and hashes are in
+[online-grpo-optimizer](online-grpo-optimizer.md). This is bounded optimizer
+mechanics evidence only; model quality, generalized improvement, fresh generation
+from the updated policy, production hot-loading, and deployment remain `NOT_RUN`.
 
 ## Bounded real joint-SFT optimizer gate
 

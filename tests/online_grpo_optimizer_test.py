@@ -27,6 +27,7 @@ import umminfer_online_grpo_optimizer as optimizer  # noqa: E402
 import umminfer_online_evidence_audit as independent_audit  # noqa: E402
 import umminfer_rl_reward as rewards  # noqa: E402
 import online_grpo_optimizer_verify as verify  # noqa: E402
+import online_grpo_optimizer_live as live  # noqa: E402
 
 TARGET_A = "model.language_model.layers.3.self_attn.q_proj.lora_A.weight"
 TARGET_B = "model.language_model.layers.3.self_attn.q_proj.lora_B.weight"
@@ -159,7 +160,8 @@ class VerifiableArithmeticRewardTests(unittest.TestCase):
                                   ("online-arithmetic-4597x6839", "31438883"),
                                   ("online-arithmetic-3274x8957", "29325218"),
                                   ("online-arithmetic-8642x7351", "63527342"),
-                                  ("online-arithmetic-6287x5399", "33943513")):
+                                  ("online-arithmetic-6287x5399", "33943513"),
+                                  ("online-arithmetic-9173x6842", "62761666")):
             record = {"schema_version": 2, "clean_text": answer,
                       "ablation": {"prompt_id": prompt_id}}
             self.assertEqual(reward.score(record), 1.0)
@@ -366,6 +368,44 @@ class OptimizerPreparationTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("NOT_RUN", result.stdout)
                 self.assertFalse(out.exists())
+
+
+class ResumeTensorRowTests(unittest.TestCase):
+    def test_resume_byte_checks_use_one_flat_row_per_tensor(self):
+        class FakeTensor:
+            def __init__(self, values):
+                self.values = values
+
+            def detach(self):
+                return self
+
+            def to(self, *, device):
+                self.device = device
+                return self
+
+            def view(self, *shape):
+                self.shape = shape
+                return self
+
+            def tolist(self):
+                return list(self.values)
+
+        tensors = [FakeTensor([0.0, 1.0]), FakeTensor([-2.0, 3.5])]
+        rows = optimizer._tensor_rows_for_resume(tensors)
+        self.assertEqual(rows, [[0.0, 1.0], [-2.0, 3.5]])
+        self.assertEqual([tensor.device for tensor in tensors], ["cpu", "cpu"])
+        self.assertEqual([tensor.shape for tensor in tensors], [(-1,), (-1,)])
+        self.assertEqual(optimizer._float32_bytes(rows),
+                         struct.pack("<4f", 0.0, 1.0, -2.0, 3.5))
+
+
+class TamperDiagnosticTests(unittest.TestCase):
+    def test_gradient_norm_mismatch_is_the_expected_semantic_rejection(self):
+        diagnostic = "independent optimizer verification error: gradient norm mismatch"
+        self.assertTrue(live.tamper_diagnostic_matches("gradient", diagnostic))
+        self.assertFalse(live.tamper_diagnostic_matches("objective-value", diagnostic))
+        self.assertFalse(live.tamper_diagnostic_matches(
+            "gradient", "independent optimizer verification error: unrelated error"))
 
 
 if __name__ == "__main__":

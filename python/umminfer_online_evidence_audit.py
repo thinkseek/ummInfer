@@ -805,6 +805,7 @@ def independent_reward(record, spec):
             "online-arithmetic-3274x8957": "29325218",
             "online-arithmetic-8642x7351": "63527342",
             "online-arithmetic-6287x5399": "33943513",
+            "online-arithmetic-9173x6842": "62761666",
         }
         prompt_id = record["ablation"]["prompt_id"]
         require(prompt_id in answers, "UNKNOWN_ARITHMETIC_PROMPT", "ablation.prompt_id")

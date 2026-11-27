@@ -353,6 +353,11 @@ def prepare_run(args):
             "preflight_bundle": args.preflight_bundle, "online_pack": args.online_pack}
 
 
+def _tensor_rows_for_resume(tensors):
+    """Return exactly one flat Python-value row per restored tensor."""
+    return [tensor.detach().to(device="cpu").view(-1).tolist() for tensor in tensors]
+
+
 def _float32_bytes(values):
     flat = []
     for value in values:
@@ -614,8 +619,8 @@ def execute_live(prepared):
                         and parameter.dtype == resume_payload["model_state"][name].dtype,
                         f"resume shape/dtype mismatch: {name}")
                 parameter.copy_(resume_payload["model_state"][name])
-        restored_after = [[parameter.detach().to(device="cpu").view(-1).tolist()]
-                          for _name, parameter in trainable]
+        restored_after = _tensor_rows_for_resume(
+            [parameter for _name, parameter in trainable])
         require(sha256_bytes(_float32_bytes(restored_after))
                 == prior_update["parameters"]["after"]["sha256"],
                 "resume model state differs from retained first-update after bytes")
@@ -636,8 +641,8 @@ def execute_live(prepared):
                     and bool(torch.isfinite(state["exp_avg_sq"]).all().item()),
                     "resume AdamW state shape/dtype/step/finite mismatch")
         for key in ("exp_avg", "exp_avg_sq"):
-            values = [[saved_optimizer["state"][index][key].detach().to(
-                device="cpu").view(-1).tolist()] for index in range(len(trainable))]
+            values = _tensor_rows_for_resume([saved_optimizer["state"][index][key]
+                                              for index in range(len(trainable))])
             require(sha256_bytes(_float32_bytes(values))
                     == prior_update["moments_after"][key]["sha256"],
                     f"resume AdamW {key} differs from retained first-update bytes")

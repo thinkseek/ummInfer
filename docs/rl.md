@@ -558,8 +558,24 @@ failure, preserved the failed verdict, and verified the focused dataset-group-id
 fix with zero post-fix v1/v2 disagreements. See
 [online-evidence-audit.md](online-evidence-audit.md#failed-checkpoint-finding) and
 [online-grpo-preflight.md](online-grpo-preflight.md) for commands, exact hashes,
-and future acceptance gates. Online optimizer, current/reference forwards, GPU
-training, and model-quality outcomes remain `NOT_RUN`.
+and future acceptance gates. At that CPU-preflight boundary, online optimizer,
+current/reference forwards, GPU training, and model-quality outcomes remained
+`NOT_RUN`.
+
+Task #71 subsequently passed the bounded real gate on isolated SM90 GPU 7 using
+one frozen two-group/three-member batch. Both groups had nonzero reward variance;
+all six strong exports, 43 supervised sampled tokens, native replay, online replay,
+preflight reconstruction, and independent audit passed before training. Two real
+rank-1 FP32 LoRA AdamW updates produced nonzero gradients and deltas while the
+BF16 base and adapter-disabled reference stayed frozen. Uninterrupted and fresh
+checkpoint-resumed updates, checkpoints, RNG/cursor/source identities, references,
+and raw tensors were byte-identical. The stdlib-only independent verifier passed
+with objective maxabs `4.216757951492635e-16`, and all five tamper controls
+rejected without reports. Two focused real-evidence fixes have red/green
+regressions and did not regenerate the batch. Exact identities, failures, metrics,
+and cleanup are in [online-grpo-optimizer](online-grpo-optimizer.md). This proves
+bounded optimizer mechanics only; model quality, fresh generation from the updated
+policy, generalized improvement, and production deployment remain `NOT_RUN`.
 
 ## Rewards
 
