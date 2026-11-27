@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-27T07:48:46Z",
+  "updated_at": "2026-11-27T07:56:02Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c5ca98677ec2725d2c9ac6f9ad69db5eb75a0ec6258b59ee9d9e80dd0e4c80eb",
-      "size": 335482,
-      "normalized_sha256": "c5ca98677ec2725d2c9ac6f9ad69db5eb75a0ec6258b59ee9d9e80dd0e4c80eb"
+      "sha256": "624e07ff1178f1d5a81159f022ad44c308d6a4ce097e12bd90eccce73ddc0d14",
+      "size": 335429,
+      "normalized_sha256": "624e07ff1178f1d5a81159f022ad44c308d6a4ce097e12bd90eccce73ddc0d14"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1667,9 +1667,9 @@
     },
     "docs/north-star-cases.md": {
       "role": "index",
-      "sha256": "2dcc105bb652392237d600b5e3348430019ce1c7e5c6d3af7d95432c8184dd29",
-      "size": 9487,
-      "normalized_sha256": "2dcc105bb652392237d600b5e3348430019ce1c7e5c6d3af7d95432c8184dd29"
+      "sha256": "d6004a9e30b0ec65280606c6dc56e125319951a1a994e454605d16ea2113e329",
+      "size": 10686,
+      "normalized_sha256": "d6004a9e30b0ec65280606c6dc56e125319951a1a994e454605d16ea2113e329"
     },
     "docs/objective-mix-ablation.md": {
       "role": "index",
