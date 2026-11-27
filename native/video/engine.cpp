@@ -364,6 +364,18 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
   double umt5_ms = 0.0;
   double dit_ms = 0.0;
   double vae_ms = 0.0;
+  double image_decode_ms = 0.0;
+  double image_resize_ms = 0.0;
+  double vae_encode_ms = 0.0;
+  double vae_decode_ms = 0.0;
+  double latent_init_ms = 0.0;
+  int init_image_width = 0;
+  int init_image_height = 0;
+  const auto elapsed_ms = [](std::chrono::steady_clock::time_point started) {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - started)
+        .count();
+  };
 
   if (mode_ == VideoBackendMode::kCuda) {
 #if !defined(UMM_VIDEO_CUDA) || !defined(UMM_VIDEO_WAN_FULL)
@@ -424,18 +436,24 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     if (has_init_image) {
       check_abort(abort, "aborted before init image encode");
       const auto vae_enc_started = std::chrono::steady_clock::now();
+      const auto image_decode_started = std::chrono::steady_clock::now();
       const RgbImage image = decode_init_image(params.init_image_bytes);
+      image_decode_ms = elapsed_ms(image_decode_started);
+      init_image_width = image.width;
+      init_image_height = image.height;
+      const auto image_resize_started = std::chrono::steady_clock::now();
       const std::vector<float> rgb =
           resize_image_to_nchw(image, params.width, params.height);
+      image_resize_ms = elapsed_ms(image_resize_started);
+      const auto vae_encode_started = std::chrono::steady_clock::now();
       const WanVaeEncoded encoded =
           wan_cuda_->vae
               ? wan_cuda_->vae->encode_image(rgb, params.height, params.width)
               : encode_wan_vae_image_fp32(
                     std::filesystem::path(model_dir_) / "vae", rgb,
                     params.height, params.width, gpu_);
-      vae_ms += std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - vae_enc_started)
-                    .count();
+      vae_encode_ms = elapsed_ms(vae_encode_started);
+      vae_ms += elapsed_ms(vae_enc_started);
       update_peak_vram(encoded.peak_native_device_bytes);
       if (encoded.shape.size() != 5 || encoded.shape[0] != 1 ||
           encoded.shape[1] != channels || encoded.shape[2] != 1 ||
@@ -455,6 +473,7 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       }
     };
 
+    const auto latent_init_started = std::chrono::steady_clock::now();
     std::mt19937_64 rng(params.seed);
     std::normal_distribution<float> dist(0.0f, 1.0f);
     std::vector<float> latents(latent_count);
@@ -462,6 +481,7 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       latents[i] = dist(rng);
     }
     if (has_init_image) pin_first_frame(latents);
+    latent_init_ms = elapsed_ms(latent_init_started);
 
     // Wan2.2-TI2V-5B ships UniPCMultistepScheduler with solver_order=2,
     // solver_type="bh2", predict_x0=true, lower_order_final=true and
@@ -545,9 +565,8 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
     if (wan_cuda_->vae) {
       WanVaeRgbOutput decoded =
           wan_cuda_->vae->decode_rgb8(latents, latent_shape);
-      vae_ms += std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - vae_dec_started)
-                    .count();
+      vae_decode_ms = elapsed_ms(vae_dec_started);
+      vae_ms += vae_decode_ms;
       update_peak_vram(decoded.peak_native_device_bytes);
       if (decoded.shape.size() != 5 || decoded.shape[0] != 1 ||
           decoded.shape[1] != 3 || decoded.shape[2] != params.num_frames ||
@@ -560,9 +579,8 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
       const WanVaeOutput decoded = decode_wan_vae_fp32(
           std::filesystem::path(model_dir_) / "vae", latents, latent_shape,
           gpu_);
-      vae_ms += std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - vae_dec_started)
-                    .count();
+      vae_decode_ms = elapsed_ms(vae_dec_started);
+      vae_ms += vae_decode_ms;
       update_peak_vram(decoded.peak_native_device_bytes);
       if (decoded.shape.size() != 5 || decoded.shape[0] != 1 ||
           decoded.shape[1] != 3 || decoded.shape[2] != params.num_frames ||
@@ -762,6 +780,13 @@ GenerateResult VideoEngine::generate(const GenerateParams& params,
   result.vae_ms = vae_ms;
   result.denoise_ms = denoise_ms;
   result.encode_ms = encode_ms;
+  result.image_decode_ms = image_decode_ms;
+  result.image_resize_ms = image_resize_ms;
+  result.vae_encode_ms = vae_encode_ms;
+  result.vae_decode_ms = vae_decode_ms;
+  result.latent_init_ms = latent_init_ms;
+  result.init_image_width = init_image_width;
+  result.init_image_height = init_image_height;
   result.peak_gpu_bytes = peak_gpu_bytes;
   result.teacache_thresh = effective_teacache;
   result.teacache_hits = teacache_hits;

@@ -151,6 +151,10 @@ pub fn build(b: *std.Build) void {
     wan_cancel_verify_self_check.addArg("--self-check");
     test_step.dependOn(&wan_cancel_verify_self_check.step);
 
+    const i2v_geometry_latency_test = b.addSystemCommand(&.{ "python3", "-I" });
+    i2v_geometry_latency_test.addFileArg(b.path("tests/i2v_geometry_latency_test.py"));
+    test_step.dependOn(&i2v_geometry_latency_test.step);
+
     const voice_test_exe = b.addExecutable(.{
         .name = "voice_client_test",
         .root_module = module(b, target, optimize),

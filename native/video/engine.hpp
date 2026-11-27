@@ -86,6 +86,15 @@ struct GenerateResult {
   double vae_ms = 0.0;
   double denoise_ms = 0.0;
   double encode_ms = 0.0;
+  // Internal phase diagnostics. These do not alter the public video result
+  // schema; the Stage logs them for controlled latency decomposition.
+  double image_decode_ms = 0.0;
+  double image_resize_ms = 0.0;
+  double vae_encode_ms = 0.0;
+  double vae_decode_ms = 0.0;
+  double latent_init_ms = 0.0;
+  int init_image_width = 0;
+  int init_image_height = 0;
   size_t peak_gpu_bytes = 0;
   float teacache_thresh = 0.0f;
   int teacache_hits = 0;

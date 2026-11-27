@@ -1,0 +1,45 @@
+{
+  "format": "umminfer-i2v-latency-preregistration-v1",
+  "profile_report_sha256": "fd31b126ba9147acdd3ca37398d21770b8d1b40ce351a205db39f1ac9948df9e",
+  "profile_independent_verification_sha256": "07de97d1e6ad1ebc5210e0b5062015012a4030c64a40bf4bf94237620eb0c6cf",
+  "profile_baseline_wan_binary_sha256": "6ec9f172f203532c14bc076c7c9a132832bb7c7b54deccb758195d59a37a466f",
+  "profile_largest_measured_component": {
+    "name": "native Wan Batched-CFG DiT",
+    "pooled_median_dit_ms": 8811.12,
+    "pooled_median_native_denoise_ms": 10974.4,
+    "pooled_median_public_complete_artifact_ms": 11119.138157,
+    "pooled_median_vae_decode_ms": 1993.03,
+    "pooled_median_mp4_encode_ms": 124.284,
+    "selection_reason": "DiT is the largest measured native component; no historical timing is used as a candidate baseline"
+  },
+  "candidate_id": "i2v-pinned-cfg-velocity",
+  "candidate_description": "Add an internal read-only pinned-output view for the existing default Batched-CFG forward path. VideoEngine consumes that pinned velocity before the next forward instead of allocating and copying a std::vector on every denoise step. Preserve the existing copying WanDit::forward_cfg API and all other paths.",
+  "implementation_bound": "Only WanDit CFG output ownership/readback and VideoEngine's consumption may change; no sampler arithmetic, model precision, CUDA kernel, scheduler semantics, default quality, frame count, public schema, or terminal behavior changes.",
+  "primary_metric": "median_paired_public_complete_artifact_ms",
+  "repetitions": 3,
+  "warmup_per_shape_per_block": 1,
+  "interleaving_seed": 74062,
+  "schedule": "per repetition, seeded arm order; fixed wide,tall,square order within arm",
+  "cold_prefix_policy": "model loading and one warmup per shape per fresh stage block are reported separately and excluded from warm statistics; no cold-prefix mixing",
+  "source_policy": "exact frozen real public FLUX.2 PNG bytes from the profile",
+  "settings": {
+    "frames": 29,
+    "steps": 20,
+    "fps": 16,
+    "guidance": 5.0,
+    "seed": 42,
+    "teacache_thresh": 0.0
+  },
+  "regression_gates": {
+    "exact_mp4_parity_with_profile_and_paired_baseline": true,
+    "decoded_dimensions_frames_codec": true,
+    "first_frame_mae_max": 48.0,
+    "motion_mae_min": 1.0,
+    "source_hash_and_native_submit_binding": true,
+    "malformed_dimension_rejection_and_valid_recovery": true,
+    "one_native_terminal_and_final_public_in_flight_zero": true,
+    "maximum_median_latency_regression_percent": 5.0
+  },
+  "analysis": "retain every observation and IQR outlier; report median/p95/IQR/MAD",
+  "perceptual_quality": "NOT_RUN"
+}

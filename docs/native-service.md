@@ -72,6 +72,28 @@ All native terminals, raw messages, timing intervals, process/GPU ownership,
 [native-wan-cancel-fault.md](native-wan-cancel-fault.md). The resident service
 was untouched and no deployment is claimed.
 
+### Task #74 isolated public I2V geometry/latency gate (not deployed)
+
+Execution commits `198393e` (profile) and `7cf8519` (candidate) used only isolated
+GPU 1 and public `/v1/visual/render`. Real FLUX.2 wide/tall/square sources drove
+native Wan at exact requested 704×480, 480×704, and center-covered 704×480 output;
+source-byte binding, decoded dimensions, first-frame/motion, malformed-size
+rejection, exact recovery, and one-terminal behavior passed. Existing center-cover
+runtime geometry was retained. The measured dominant component was DiT
+(`8,811.12 ms` pooled median). A historical pinned Batched-CFG candidate showed
+nine exact-MP4-parity pairs and median paired public complete-artifact change
+**−3.687044 ms (−0.0331393%)**, but only 6/9 deltas were negative, paired MAD was
+`7.398493 ms`, and candidate IQR/MAD increased. It is **NOT_PROMOTED**;
+`56ddc30` removes its API, switch, fixture, and default call site. The final runtime
+has zero candidate-related performance change and retains only focused phase
+instrumentation. Remote and local fresh-process verification passed the 292-file
+profile and 1,076-file historical candidate manifests; a fresh final-tree raw
+baseline replay also passed without GPU execution. GPU 1 closed at 3 MiB/0% with
+no compute process. See [i2v-geometry-latency.md](i2v-geometry-latency.md).
+Perceptual quality,
+character/style consistency, deployment, and resident-service validation remain
+`NOT_RUN`; the resident service was not contacted.
+
 Stages talk to the server over ZeroMQ and MessagePack, with payloads in POSIX
 shared memory. Endpoints live under `ipc_dir` (`/tmp/umminfer-native-ipc` by
 default): `asr`, `qwen38` (or `omni`), `image`, `tts`, `video`, plus the shared

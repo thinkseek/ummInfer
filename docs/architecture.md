@@ -245,6 +245,20 @@ exit 分开计时，实测 denoise 退出区间为 432.578–433.578 ms，不声
 VAE 内部取消仍 `NOT_RUN`。完整原始证据、0 late event/artifact、`in_flight=0`、双端新进程
 复核和清理见 [native-wan-cancel-fault.md](native-wan-cancel-fault.md)。
 
+Task #74 在官方 `a4320e7` 基线的隔离 GPU 1 上通过真实公共
+`/v1/visual/render` 覆盖 FLUX.2 宽幅 704×480、竖幅 480×704 与方形
+512×512→704×480 center-cover 锚定。现有单次等比缩放/中心裁切无需运行时修复；
+原生日志新增实际 source_size 与 decode/resize/VAE encode/DiT/VAE decode/MP4 分项
+计时，公开 schema 不变。实测 DiT 中位 `8811.12 ms` 为最大分项。历史候选
+`76fe857` 曾临时加入 pinned velocity view；真实 CUDA 6144 元素逐位一致，九对
+public A/B 及 profile MP4 全部字节一致，但公共完整产物配对中位差仅
+`−3.687044 ms`（`−0.0331393%`），6/9 为负差、paired MAD `7.398493 ms`，且
+candidate IQR/MAD 增大，不能证明用户可感知收益。因此该候选 **NOT_PROMOTED**；
+`56ddc30` 已移除 candidate-only API、copy switch、测试夹具与默认调用点，最终运行时
+仅保留几何验证和低开销分项计时，不声明任何性能提升。双端新进程复核及最终原始
+baseline 复验见 [i2v-geometry-latency.md](i2v-geometry-latency.md)；感知质量、
+角色/风格一致性与部署均未验证。
+
 ---
 
 ### 2.3 可选请求级原生分配器遥测与受控消融边界

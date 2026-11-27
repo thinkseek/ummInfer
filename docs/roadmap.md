@@ -303,6 +303,28 @@ cancellation remains `NOT_RUN`. Exact hashes, quantized timing intervals,
 independent remote/local verification, failed attempts, and cleanup are in
 [native-wan-cancel-fault](native-wan-cancel-fault.md).
 
+**Phase 4/5 public I2V geometry and bounded latency gate (Task #74,
+2026-11-27).** On isolated physical GPU 1, real public `/v1/visual/render`
+FLUX.2 → native Wan I2V requests covered 704×480 wide, 480×704 tall, and
+512×512→704×480 center-cover anchors. Exact public/native source binding, decoded
+dimensions, one-terminal/artifact behavior, malformed-size rejection, and exact
+recovery passed; first-frame/motion MAE were `1.962058/5.305492`,
+`1.936932/8.516162`, and `1.886932/4.622601`. Existing geometry required no
+runtime fix. The profile identified DiT as dominant (`8,811.12 ms` pooled median).
+A historical preregistered pinned Batched-CFG output view showed direct CUDA
+bitwise parity and exact MP4 parity across all nine baseline/candidate pairs and
+the profile. Median paired public complete-artifact latency changed by
+**−3.687044 ms (−0.0331393%)**; IQR was `16.829435 ms`, MAD `7.398493 ms`, six of
+nine deltas were negative, and both outliers were retained. This mixed-sign,
+sub-0.04% diagnostic is **NOT_PROMOTED**. Commit
+`56ddc30e8079cca6924d0a3d1f9124f4f2ef0f5a` removes the candidate-only API and
+default call site; the final runtime retains only geometry validation and focused
+phase instrumentation, with zero candidate-related performance change. Complete
+cold/warm decomposition, corrections, non-promotion rationale, and fresh
+remote/local verification are in
+[i2v-geometry-latency](i2v-geometry-latency.md). Perceptual quality remains
+`NOT_RUN`.
+
 ### Phase 5 — Unified performance baseline and joint optimization
 
 **Goal.** Establish one measurable baseline for the unified engine, then

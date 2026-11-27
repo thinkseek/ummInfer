@@ -144,6 +144,13 @@ CancellableComputeFn make_compute(const StageOptions& options) {
               << " fps=" << generated.fps << " steps=" << generated.steps
               << " seed=" << generated.seed
               << " i2v=" << (input.init_image_bytes.empty() ? 0 : 1)
+              << " source_size=" << generated.init_image_width << "x"
+              << generated.init_image_height
+              << " image_decode_ms=" << generated.image_decode_ms
+              << " image_resize_ms=" << generated.image_resize_ms
+              << " vae_encode_ms=" << generated.vae_encode_ms
+              << " vae_decode_ms=" << generated.vae_decode_ms
+              << " latent_init_ms=" << generated.latent_init_ms
               << " teacache_thresh=" << generated.teacache_thresh
               << " teacache_hits=" << generated.teacache_hits << "/"
               << generated.teacache_total_calls

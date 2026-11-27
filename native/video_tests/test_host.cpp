@@ -1643,6 +1643,106 @@ void test_i2v_center_crop_preserves_aspect_ratio() {
   }
 }
 
+void test_i2v_asymmetric_fiducial_geometry() {
+  using namespace umminfer::video;
+  struct GeometryCase {
+    const char* name;
+    int src_width;
+    int src_height;
+    int dst_width;
+    int dst_height;
+    double scale;
+    double offset_x;
+    double offset_y;
+  };
+  // Every source coordinate is integer or exactly half-integer. The expected
+  // values below come from analytic linear fiducials, not from a second copy of
+  // the production bilinear loop. R=X+1, G=Y+3, B=X+2Y+5 make independent X/Y
+  // scaling, center offsets, channel order, and transposition observable.
+  const GeometryCase cases[] = {
+      {"wide-to-square-center-crop", 80, 40, 40, 40, 1.0, 20.0, 0.0},
+      {"tall-to-square-center-crop", 40, 80, 40, 40, 1.0, 0.0, 20.0},
+      {"square-to-wide-uniform-scale-crop", 40, 40, 20, 10, 2.0, 0.0, 10.0},
+      {"square-to-tall-uniform-scale-crop", 40, 40, 10, 20, 2.0, 10.0, 0.0},
+      {"wide-to-wide-no-crop", 80, 40, 40, 20, 2.0, 0.0, 0.0},
+      {"tall-to-tall-no-crop", 40, 80, 20, 40, 2.0, 0.0, 0.0},
+  };
+  const auto fiducial = [](int width, int height) {
+    std::vector<uint8_t> rgb(static_cast<size_t>(width) * height * 3);
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        const size_t at = (static_cast<size_t>(y) * width + x) * 3;
+        rgb[at] = static_cast<uint8_t>(x + 1);
+        rgb[at + 1] = static_cast<uint8_t>(y + 3);
+        rgb[at + 2] = static_cast<uint8_t>(x + 2 * y + 5);
+      }
+    }
+    return rgb;
+  };
+  const auto normalized = [](double value) {
+    return static_cast<float>(value / 127.5 - 1.0);
+  };
+
+  for (const auto& item : cases) {
+    const std::vector<uint8_t> source = fiducial(item.src_width, item.src_height);
+    const std::vector<float> actual = resize_center_crop_rgb_to_nchw(
+        source.data(), item.src_width, item.src_height,
+        item.dst_width, item.dst_height);
+    const size_t plane = static_cast<size_t>(item.dst_width) * item.dst_height;
+    check(actual.size() == 3 * plane,
+          std::string(item.name) + " output shape");
+    for (int y = 0; y < item.dst_height; ++y) {
+      for (int x = 0; x < item.dst_width; ++x) {
+        const double source_x =
+            item.offset_x + (static_cast<double>(x) + 0.5) * item.scale - 0.5;
+        const double source_y =
+            item.offset_y + (static_cast<double>(y) + 0.5) * item.scale - 0.5;
+        const double expected[] = {
+            source_x + 1.0, source_y + 3.0, source_x + 2.0 * source_y + 5.0};
+        const size_t pixel = static_cast<size_t>(y) * item.dst_width + x;
+        for (size_t channel = 0; channel < 3; ++channel) {
+          check(std::fabs(actual[channel * plane + pixel] -
+                          normalized(expected[channel])) < 2.0e-6f,
+                std::string(item.name) + " analytic fiducial at " +
+                    std::to_string(x) + "," + std::to_string(y) + " channel " +
+                    std::to_string(channel));
+        }
+      }
+    }
+  }
+
+  // A non-uniform stretch maps the first interior wide-source output X to 2,
+  // while center-cover maps it to 21. This explicit red control proves that the
+  // fiducial oracle cannot silently accept the historical stretch behavior.
+  const std::vector<uint8_t> wide = fiducial(80, 40);
+  const std::vector<float> cover =
+      resize_center_crop_rgb_to_nchw(wide.data(), 80, 40, 40, 40);
+  check(std::fabs(cover[1] - normalized(3.0)) > 0.01f,
+        "wide-source red control distinguishes stretch from center-cover");
+  const std::vector<uint8_t> tall = fiducial(40, 80);
+  const std::vector<float> tall_cover =
+      resize_center_crop_rgb_to_nchw(tall.data(), 40, 80, 40, 40);
+  check(std::fabs(tall_cover[40] - normalized(3.0)) > 0.01f,
+        "tall-source red control distinguishes stretch from center-cover");
+
+  for (int invalid = 0; invalid < 3; ++invalid) {
+    bool threw = false;
+    try {
+      if (invalid == 0) {
+        (void)resize_center_crop_rgb_to_nchw(nullptr, 40, 40, 40, 40);
+      } else if (invalid == 1) {
+        (void)resize_center_crop_rgb_to_nchw(wide.data(), 0, 40, 40, 40);
+      } else {
+        (void)resize_center_crop_rgb_to_nchw(wide.data(), 80, 40, 40, -1);
+      }
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    check(threw, "I2V resize rejects malformed geometry " +
+                     std::to_string(invalid));
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1671,6 +1771,8 @@ int main() {
       {"unipc_bh2_matches_diffusers", test_unipc_bh2_matches_diffusers},
       {"i2v_center_crop_preserves_aspect_ratio",
        test_i2v_center_crop_preserves_aspect_ratio},
+      {"i2v_asymmetric_fiducial_geometry",
+       test_i2v_asymmetric_fiducial_geometry},
       {"mp4_encode_and_abort", test_mp4_encode_and_abort},
       {"engine_contract_stub_and_cuda_gate", test_engine_contract_stub_and_cuda_gate},
   };
