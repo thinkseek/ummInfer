@@ -315,6 +315,12 @@ class TransportAndStatsTests(unittest.TestCase):
         self.assertEqual(len(metric["samples"]), 5)
         self.assertEqual([row["value"] for row in metric["outliers"]], [100])
 
+    def test_stable_mean_is_order_independent_and_cross_version_repeatable(self):
+        values = [0.1, 0.2, 0.3, 1e16, 1.0]
+        self.assertEqual(audit.stable_mean(values), 2000000000000000.5)
+        self.assertEqual(audit.stable_mean(list(reversed(values))), 2000000000000000.5)
+        self.assertNotEqual(sum(values) / len(values), audit.stable_mean(values))
+
 
 class FixtureTests(unittest.TestCase):
     def setUp(self):

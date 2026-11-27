@@ -238,6 +238,43 @@ class SchedulerTests(unittest.TestCase):
             live.normalize_vlm_messages([
                 {"role": "user", "content": [{"type": "image_url", "url": "not-text"}]}])
 
+    def test_barge_playback_callback_runs_before_next_turn_waits(self):
+        spec = importlib.util.spec_from_file_location(
+            "umminfer_realtime_network_live_cancel_test", ROOT / "tests/realtime_network_live.py")
+        live = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = live
+        spec.loader.exec_module(live)
+        client = live.LiveClient.__new__(live.LiveClient)
+        client.cancel_schedule = []
+        client.terminal_callbacks = []
+        client.stream = lambda pcm: None
+        calls = []
+        records = {
+            "server barge-in cancellation": {"event_index": 2, "capture_index": 2,
+                "arrival_ns": 20, "event": {"type": "response.cancelled",
+                "response_id": "req-old", "text_cursor": 3, "history_recorded": True}},
+            "post-barge endpoint": {"event_index": 3, "event": {
+                "type": "input_audio_buffer.speech_stopped", "segment_id": 1}},
+            "post-barge real ASR final": {"event_index": 4, "event": {
+                "type": "transcription.completed", "segment_id": 1}},
+        }
+        class FakeSocket:
+            def mark(self):
+                return 0
+            def wait_for(self, predicate, after, timeout, description):
+                calls.append(description)
+                record = records[description]
+                assert predicate(record["event"])
+                return record
+            def since(self, *args, **kwargs):
+                return []
+        client.ws = FakeSocket()
+        result = client.barge({"response_id": "req-old"}, b"new-speech", 3, False,
+                              on_cancelled=lambda record: calls.append("virtual-playback-silence"))
+        self.assertEqual(result["completed"], records["post-barge real ASR final"])
+        self.assertEqual(calls, ["server barge-in cancellation", "virtual-playback-silence",
+                                 "post-barge endpoint", "post-barge real ASR final"])
+
     def test_wire_decoder_handles_masking_and_fragment_boundaries(self):
         event = {"type": "x", "text": "pcm" * 100}
         for tx in (False, True):

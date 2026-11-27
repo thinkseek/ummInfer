@@ -69,6 +69,9 @@ class Stage {
     // engine that declares itself thread-safe (see EngineContract).
     int max_concurrency = 1;
     EngineContract engine_contract = EngineContract::kSerial;
+    // Optional serial-only request class. Empty preserves the legacy FIFO.
+    // Native TTS uses this for first-audio legs; it is never a wire field.
+    RequestPriorityFn request_priority;
     // Relay options forwarded to CommRouter (slot_size_mb, credits, worker_id).
     std::map<std::string, Value> comm_config;
     // Replaces every relay the router builds. Test seam only.

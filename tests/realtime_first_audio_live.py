@@ -196,6 +196,29 @@ def run_turn(client, user, arm, schedule, session, arm_root):
             "text_sha256": sha(snapshot["text"].encode()), "pcm_sha256": snapshot["pcm_sha256"]}
 
 
+def consume_timed_playback_prefix(client, snapshot, cursor):
+    """Consume one exact cursor-covering PCM prefix at its 24 kHz sample clock.
+
+    This is digital virtual playback, not a physical device. The returned bytes
+    and accepted ACK are independently rechecked against raw WebSocket frames.
+    """
+    require(cursor > 0, "timed playback needs a positive cursor")
+    records = [record for record in snapshot["audio"]
+               if int(record["event"]["text_end_cursor"]) <= cursor]
+    require(records, "no PCM covers the selected playback cursor")
+    played = b"".join(base.base64.b64decode(record["event"]["audio"]) for record in records)
+    for record in records:
+        pcm = base.base64.b64decode(record["event"]["audio"])
+        time.sleep(len(pcm) / 48000.0)
+    marker = client.ws.mark()
+    client.ack(snapshot["response_id"], cursor, 0, "timed-virtual-playback-prefix")
+    accepted = client.ws.wait_for(
+        lambda event: event.get("type") == "response.playback_ack" and
+        event.get("response_id") == snapshot["response_id"] and
+        event.get("text_cursor") == cursor, marker, 10, "timed playback prefix ACK")
+    return {"pcm": played, "accepted": accepted}
+
+
 def run_regressions(ports, user, arm_root):
     """Delayed barge-in plus the retained echo/double-talk public PCM gate."""
     delayed = base.LiveClient(90, 0, ports[1], arm_root)
@@ -203,9 +226,27 @@ def run_regressions(ports, user, arm_root):
         turn = delayed.send_user(user)
         rid, after = delayed.response_identity(turn["completed"]["event_index"] + 1)
         snapshot = delayed.response_snapshot(rid, after, wait_terminal=True)
-        cursor = delayed.exercise_acks(snapshot, 5, final=False)
+        cursor = snapshot["positive_cursors"][0] if snapshot["positive_cursors"] else 0
         require(cursor > 0, "delayed barge-in needs a positive acknowledged cursor")
-        next_turn = delayed.barge(snapshot, user, cursor, immediate=False)
+        # The first valid partial ACK follows exact sample-clocked consumption.
+        # Existing duplicate/foreign/decreasing ACK controls then remain intact
+        # and cannot extend retained history.
+        playback = consume_timed_playback_prefix(delayed, snapshot, cursor)
+        require(delayed.exercise_acks(snapshot, 5, final=False) == cursor,
+                "existing ACK controls changed the timed playback cursor")
+        pending_playback = bytearray(snapshot["pcm"])
+        del pending_playback[:len(playback["pcm"])]
+        cancelled_timing = {}
+
+        def stop_virtual_playback(cancelled):
+            require(cancelled["event"].get("text_cursor") == cursor,
+                    "cancellation exceeded the timed playback ACK")
+            cancelled_timing["cancel_received_monotonic_ns"] = cancelled["arrival_ns"]
+            pending_playback.clear()
+            cancelled_timing["virtual_playback_silence_monotonic_ns"] = time.monotonic_ns()
+
+        next_turn = delayed.barge(snapshot, user, cursor, immediate=False,
+                                  on_cancelled=stop_virtual_playback)
         cancelled = next_turn["cancelled"]
         stale = delayed.ws.since(cancelled["event_index"] + 1, types=base.STALE_TYPES,
                                  response_id=rid)
@@ -213,11 +254,23 @@ def run_regressions(ports, user, arm_root):
         next_id, next_after = delayed.response_identity(next_turn["completed"]["event_index"] + 1)
         next_snapshot = delayed.response_snapshot(next_id, next_after, wait_terminal=True)
         delayed.exercise_acks(next_snapshot, 5, final=True)
-        delayed_record = {"response_id": rid, "cancelled_response_id": cancelled["event"]["response_id"],
+        delayed_record = {"response_id": rid, "connection": delayed.name,
+                          "cancelled_response_id": cancelled["event"]["response_id"],
                           "text_cursor": cancelled["event"]["text_cursor"],
                           "acknowledged_text_sha256": sha(cancelled["event"]["acknowledged_text"].encode()),
                           "history_recorded": cancelled["event"]["history_recorded"],
-                          "stale_events": len(stale)}
+                          "stale_events": len(stale),
+                          "barge_started_monotonic_ns": next_turn["started_ns"],
+                          "timed_playback_pcm_bytes": len(playback["pcm"]),
+                          "timed_playback_pcm_sha256": sha(playback["pcm"]),
+                          "accepted_playback_ack_monotonic_ns": playback["accepted"]["arrival_ns"],
+                          "cancel_received_monotonic_ns": cancelled_timing[
+                              "cancel_received_monotonic_ns"],
+                          "virtual_playback_silence_monotonic_ns": cancelled_timing[
+                              "virtual_playback_silence_monotonic_ns"],
+                          "unplayed_pcm_bytes_discarded": len(snapshot["pcm"]) - len(playback["pcm"]),
+                          "cancel_to_virtual_playback_silence_ns": cancelled_timing[
+                              "virtual_playback_silence_monotonic_ns"] - cancelled["arrival_ns"]}
     finally:
         delayed.close()
     echo_client = base.LiveClient(91, 0, ports[1], arm_root)

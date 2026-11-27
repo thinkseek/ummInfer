@@ -247,6 +247,83 @@ def _empty_response(connection, response_id, segment, first_ns):
             "terminals": [], "accepted_cursors": [], "accepted_seen": set()}
 
 
+def verify_delayed_playback_timing(delayed, records):
+    """Bind ACK-anchored virtual-playback timing to independent raw WS frames."""
+    rid = delayed.get("response_id")
+    cursor = delayed.get("text_cursor")
+    require(isinstance(rid, str) and rid and type(cursor) is int and cursor > 0,
+            "delayed playback timing lacks a positive response cursor")
+    cancelled = [row for row in records if row["direction"] == "rx" and
+                 row.get("event", {}).get("type") == "response.cancelled" and
+                 row["event"].get("response_id") == rid]
+    require(len(cancelled) == 1, "delayed playback needs exactly one raw cancellation")
+    cancelled = cancelled[0]
+    require(cancelled["event"].get("text_cursor") == cursor,
+            "raw cancellation cursor differs from timed playback")
+    cancel_ns = cancelled["monotonic_ns"]
+    accepted = [row for row in records if row["direction"] == "rx" and
+                row.get("event", {}).get("type") == "response.playback_ack" and
+                row["event"].get("response_id") == rid and
+                row["event"].get("text_cursor") == cursor and
+                row["monotonic_ns"] < cancel_ns]
+    require(accepted, "no accepted playback ACK preceded cancellation")
+    accepted_ns = delayed.get("accepted_playback_ack_monotonic_ns")
+    require(accepted_ns in [row["monotonic_ns"] for row in accepted],
+            "declared timed playback ACK is absent from raw frames")
+    audio = [row for row in records if row["direction"] == "rx" and
+             row.get("event", {}).get("type") == "audio.delta" and
+             row["event"].get("response_id") == rid and
+             row["monotonic_ns"] < cancel_ns]
+    played = b"".join(base64.b64decode(row["event"]["audio"], validate=True)
+                      for row in audio if row["event"].get("text_end_cursor") <= cursor)
+    require(played and sha256(played) == delayed.get("timed_playback_pcm_sha256") and
+            len(played) == delayed.get("timed_playback_pcm_bytes"),
+            "timed playback PCM prefix does not match raw audio")
+    all_pcm_bytes = sum(len(base64.b64decode(row["event"]["audio"], validate=True))
+                        for row in audio)
+    require(all_pcm_bytes >= len(played) and
+            delayed.get("unplayed_pcm_bytes_discarded") == all_pcm_bytes - len(played),
+            "virtual playback discard does not match the unacknowledged PCM suffix")
+    started_ns = delayed.get("barge_started_monotonic_ns")
+    require(type(started_ns) is int, "barge-in start timestamp is missing")
+    appends = [row for row in records if row["direction"] == "tx" and
+               row.get("event", {}).get("type") == "input_audio_buffer.append" and
+               started_ns <= row["monotonic_ns"] <= cancel_ns]
+    require(appends, "barge-in has no initiating raw PCM append")
+    speech = [row for row in records if row["direction"] == "rx" and
+              row.get("event", {}).get("type") == "input_audio_buffer.speech_started" and
+              row["event"].get("interrupted_response_id") == rid]
+    require(len(speech) == 1, "barge-in speech-start notification is missing")
+    for field in ("accepted_playback_ack_monotonic_ns", "cancel_received_monotonic_ns",
+                  "virtual_playback_silence_monotonic_ns"):
+        require(type(delayed.get(field)) is int, f"missing playback timing field: {field}")
+    require(delayed["accepted_playback_ack_monotonic_ns"] == accepted_ns and
+            delayed["cancel_received_monotonic_ns"] == cancel_ns,
+            "driver timing does not match raw receive timestamps")
+    silence_ns = delayed["virtual_playback_silence_monotonic_ns"]
+    require(accepted_ns < cancel_ns <= silence_ns and
+            delayed.get("cancel_to_virtual_playback_silence_ns") == silence_ns - cancel_ns,
+            "invalid cancel-to-virtual-playback-silence interval")
+    return {
+        "response_id": rid, "text_cursor": cursor,
+        "timed_playback_pcm_bytes": len(played),
+        "timed_playback_pcm_sha256": sha256(played),
+        "unplayed_pcm_bytes_discarded": all_pcm_bytes - len(played),
+        "first_append_monotonic_ns": appends[0]["monotonic_ns"],
+        "speech_started_notification_monotonic_ns": speech[0]["monotonic_ns"],
+        "cancel_received_monotonic_ns": cancel_ns,
+        "virtual_playback_silence_monotonic_ns": silence_ns,
+        "first_append_to_cancel_including_vad_ns": cancel_ns - appends[0]["monotonic_ns"],
+        # The production server emits response.cancelled before speech_started.
+        # Preserve the resulting signed notification interval; never clamp it.
+        "speech_started_notification_to_cancel_signed_ns": cancel_ns - speech[0]["monotonic_ns"],
+        "accepted_playback_ack_to_cancel_ns": cancel_ns - accepted_ns,
+        "cancel_to_virtual_playback_silence_ns": silence_ns - cancel_ns,
+        "timing_class": "DIGITAL_TIMED_VIRTUAL_PLAYBACK_WITH_ACCEPTED_ACK",
+        "physical_playback": "NOT_COVERED",
+    }
+
+
 def analyze(root, verify_sealed=False):
     """Independently decode one complete seven-arm run and return its report."""
     root = Path(root)
@@ -723,6 +800,7 @@ def analyze(root, verify_sealed=False):
 
     # Driver-supplied regression indices are only locators; raw bytes decide the outcome.
     regression = run.get("regression", {})
+    delayed_timing = None
     if regression:
         echo = regression.get("echo_ab", {})
         last_arm = plan["arms"][-1]["name"]
@@ -746,6 +824,10 @@ def analyze(root, verify_sealed=False):
         require(regression.get("delayed_barge", {}).get("history_recorded") is True and
                 regression["delayed_barge"].get("stale_events") == 0,
                 "delayed barge-in driver record is incomplete")
+        delayed = regression["delayed_barge"]
+        delayed_records = audit.decode_capture(
+            last_root / "frames" / f"{delayed['connection']}.jsonl")
+        delayed_timing = verify_delayed_playback_timing(delayed, delayed_records)
 
     rendered_metrics = {name: _summary(samples) for name, samples in sorted(metrics.items())}
     by_arm = {}
@@ -813,6 +895,7 @@ def analyze(root, verify_sealed=False):
                             "native_log_resolution": "native decimal-ms durations converted exactly to integer ns; observer and WS clocks remain original integer ns"}},
         "history_turns": history_turns,
         "regression": {"delayed_barge": regression.get("delayed_barge", {}),
+                       "delayed_barge_timing": delayed_timing if delayed_timing is not None else "NOT_RUN",
                        "echo_and_double_talk": "PASS_FROM_RAW_FRAMES" if regression else "NOT_RUN"},
         "cleanup": run["cleanup"], "final_health": run["final_health"],
         "gpu_preflight": run.get("gpu_preflight"), "gpu_postflight": run.get("gpu_postflight"),

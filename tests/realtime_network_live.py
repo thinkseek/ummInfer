@@ -631,7 +631,7 @@ class LiveClient:
             self.ack(response_id, 0, 0, "decreasing-final-after-release")
         return cursor
 
-    def barge(self, snapshot, user, ack_cursor, immediate):
+    def barge(self, snapshot, user, ack_cursor, immediate, on_cancelled=None):
         response_id = snapshot["response_id"] if snapshot else None
         marker = self.ws.mark()
         started = time.monotonic_ns()
@@ -650,6 +650,10 @@ class LiveClient:
             require(cancelled["event"]["history_recorded"] is True,
                     "barge-in history was not recorded")
             self.terminal_callbacks.append("response.cancelled")
+            if on_cancelled is not None:
+                # Run before waiting for the next endpoint/ASR final. The callback
+                # is a test-only client playback boundary, not server emission time.
+                on_cancelled(cancelled)
         stream_thread.join()
         stopped = self.ws.wait_for(lambda e: e.get("type") == "input_audio_buffer.speech_stopped",
                                    marker, 30, "post-barge endpoint")

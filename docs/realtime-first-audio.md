@@ -482,5 +482,20 @@ for the preregistration, red/green hashes, and subsequent real GPU evidence.
 The Wave 94 R2 gate passed all 29 responses with one terminal/final ACK each,
 493 exact native/public PCM legs, and the exact 4,125−29=4,096 delayed-reader
 release. All 25 HTTP controls passed, two fresh reports matched, 1,266 evidence
-files passed two manifest checks, and GPU 0 returned to 3 MiB. Full R4 and
-physical playback remain **NOT_RUN**.
+files passed two manifest checks, and GPU 0 returned to 3 MiB. At that Task #70
+checkpoint, full R4 and physical playback remained **NOT_RUN**.
+
+## Task #73 post-determinism R4 and first-audio candidate
+
+The combined Task #59 continuation determinism and Task #70 transport-validity
+fixes subsequently passed a fresh four-run, two-GPU R4 gate. A newly
+preregistered serial-TTS fair-alternation candidate—not an acceptance of the old
+Task #55 evidence—reduced concurrent-cold-short median TTFA by 46.161% and
+45.921% in two interleaved A/B pairs, with exact PCM/text/prompt/cursor identity
+and exact same-policy A/A controls. All 324 measured responses and all
+regressions passed. Full per-arm tradeoffs, retained misses, raw report/manifest
+hashes, and ACK-anchored virtual-playback cancellation timing are in
+[Post-determinism R4](realtime-r4-post-determinism.md). The candidate also passed
+the real 30-response network/reconnect gate and the 25-HTTP + 29/29 delayed-reader
+public PCM gate, with exact final ACKs and cleanup. Physical playback, perceptual
+quality, deployment, and genuinely long real openings remain **NOT_COVERED**.

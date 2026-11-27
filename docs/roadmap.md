@@ -628,8 +628,26 @@ responses with final ACKs and exact per-leg PCM joins (493 legs, 4,176 chunks,
 115,034,880 bytes), while all 25 HTTP controls passed. The exact release was
 4,125−29=4,096 with all readers paused. Two fresh verifier reports matched at
 `cda99830…c716`; two manifest checks covered 1,266 files at `3adbd3d5…bb31`.
-GPU 0 returned to 3 MiB. Full R4, fair-priority, deployment, physical playback,
-perceptual quality, and latency improvement remain unclaimed or `NOT_RUN`.
+GPU 0 returned to 3 MiB. At that checkpoint, full R4, fair-priority, deployment,
+physical playback, perceptual quality, and latency improvement remained
+unclaimed or `NOT_RUN`.
+
+**Post-determinism two-GPU R4 and first-audio gate (Task #73, 2026-11-27).**
+Execution `c63d4f3f` preserves Task #59 and Task #70 and adds only serial native
+TTS fair alternation under a fresh frozen contract. Four complete interleaved
+runs passed all seven arms and 324 measured responses. Both A/B pairs retain
+exact transcript/text/prompt/cursor/PCM identity and reduce primary median TTFA
+by 46.161% and 45.921%; primary p95 falls by 60.263% and 60.048%, with serial
+median changes within +0.046%/−0.011%. Same-policy A/A comparisons also have
+zero PCM mismatches. The long-named alternate arm remains unchanged, native
+compute overlap costs are retained, and no physical/perceptual/generalized claim
+is made. Exact binaries, raw evidence hashes, paired misses, ACK-anchored virtual
+playback timing, and negative attempts are in
+[realtime-r4-post-determinism](realtime-r4-post-determinism.md).
+The same candidate also passed the real six-session network/reconnect gate (30
+server responses, nine barge-ins) and the complete public HTTP + 29/29 delayed
+reader gate with exact PCM/final ACKs. HTTP, realtime parity, digital ACK timing,
+physical playback, and perceptual quality remain separate claims.
 
 ## Model support plan
 

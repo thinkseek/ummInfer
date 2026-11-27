@@ -298,6 +298,58 @@ class FirstAudioTests(unittest.TestCase):
             with self.assertRaises(first.FirstAudioError):
                 first.compare_reports(left_report, right_report)
 
+    @staticmethod
+    def playback_timing_fixture():
+        records = [
+            {"direction": "rx", "monotonic_ns": 1000, "event": {
+                "type": "audio.delta", "response_id": "req-old",
+                "audio": base64.b64encode(b"abcdef").decode(), "text_end_cursor": 3}},
+            {"direction": "rx", "monotonic_ns": 1100, "event": {
+                "type": "audio.delta", "response_id": "req-old",
+                "audio": base64.b64encode(b"ghijkl").decode(), "text_end_cursor": 6}},
+            {"direction": "rx", "monotonic_ns": 1300, "event": {
+                "type": "response.playback_ack", "response_id": "req-old", "text_cursor": 3}},
+            {"direction": "rx", "monotonic_ns": 1320, "event": {
+                "type": "response.playback_ack", "response_id": "req-old", "text_cursor": 3}},
+            {"direction": "tx", "monotonic_ns": 1400, "event": {
+                "type": "input_audio_buffer.append"}},
+            {"direction": "rx", "monotonic_ns": 1500, "event": {
+                "type": "response.cancelled", "response_id": "req-old", "text_cursor": 3}},
+            {"direction": "rx", "monotonic_ns": 1600, "event": {
+                "type": "input_audio_buffer.speech_started",
+                "interrupted_response_id": "req-old"}},
+        ]
+        delayed = {"response_id": "req-old", "text_cursor": 3,
+                   "barge_started_monotonic_ns": 1350,
+                   "timed_playback_pcm_bytes": 6,
+                   "timed_playback_pcm_sha256": sha(b"abcdef"),
+                   "accepted_playback_ack_monotonic_ns": 1300,
+                   "cancel_received_monotonic_ns": 1500,
+                   "virtual_playback_silence_monotonic_ns": 1550,
+                   "unplayed_pcm_bytes_discarded": 6,
+                   "cancel_to_virtual_playback_silence_ns": 50}
+        return delayed, records
+
+    def test_ack_anchored_barge_timing_uses_client_receive_and_signed_notification(self):
+        delayed, records = self.playback_timing_fixture()
+        result = first.verify_delayed_playback_timing(delayed, records)
+        self.assertEqual(result["first_append_to_cancel_including_vad_ns"], 100)
+        self.assertEqual(result["speech_started_notification_to_cancel_signed_ns"], -100)
+        self.assertEqual(result["accepted_playback_ack_to_cancel_ns"], 200)
+        self.assertEqual(result["cancel_to_virtual_playback_silence_ns"], 50)
+        self.assertEqual(result["physical_playback"], "NOT_COVERED")
+
+    def test_ack_anchored_barge_timing_rejects_pcm_or_clock_tampering(self):
+        delayed, records = self.playback_timing_fixture()
+        delayed["timed_playback_pcm_sha256"] = sha(b"tampered")
+        with self.assertRaisesRegex(first.FirstAudioError, "PCM prefix"):
+            first.verify_delayed_playback_timing(delayed, records)
+        delayed, records = self.playback_timing_fixture()
+        delayed["virtual_playback_silence_monotonic_ns"] = 1499
+        delayed["cancel_to_virtual_playback_silence_ns"] = -1
+        with self.assertRaisesRegex(first.FirstAudioError, "silence interval"):
+            first.verify_delayed_playback_timing(delayed, records)
+
 
 if __name__ == "__main__":
     unittest.main()

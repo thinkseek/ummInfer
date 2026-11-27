@@ -50,6 +50,12 @@ def require(condition, message):
         raise AuditError(str(message))
 
 
+def stable_mean(values):
+    """Use correctly rounded summation, independent of Python's float-sum version."""
+    require(values, "stable_mean requires at least one value")
+    return math.fsum(values) / len(values)
+
+
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -1219,7 +1225,7 @@ def analyze(root, profile):
                                  "rss_growth_from_first_to_max_bytes": growth,
                                  "cpu_percent_min": min(cpu) if cpu else None,
                                  "cpu_percent_max": max(cpu) if cpu else None,
-                                 "cpu_percent_mean": sum(cpu) / len(cpu) if cpu else None}
+                                 "cpu_percent_mean": stable_mean(cpu) if cpu else None}
         if name == "server":
             bound = run["resource_bounds"]["server_rss_growth_max_bytes"]
             require(growth <= bound, "server RSS growth exceeds recorded bound")

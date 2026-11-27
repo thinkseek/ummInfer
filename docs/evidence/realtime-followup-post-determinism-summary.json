@@ -1,0 +1,289 @@
+{
+  "auditor_fix_commit": "e5bb1fff87ad4038dee0590c47742fcb3325417f",
+  "evidence_policy": {
+    "compact_derivative_only": true,
+    "external_raw_preserved_unmodified": true,
+    "tracked_json_is_raw_evidence_substitute": false,
+    "raw_verifiers": [
+      "tests/realtime_network_verify.py",
+      "tests/realtime_latency_audit_verify.py",
+      "tests/public_speech_pcm_verify.py"
+    ],
+    "verification_rule": "Fresh processes independently decode external raw WS/MessagePack/HTTP/PCM and recompute every full report before this compact projection is accepted."
+  },
+  "evidence_log_sha256": {
+    "candidate-control-build.log": "a38965f32618c47f265ef48ffe8643579d5d373927e38e78282375cd25f380fb",
+    "candidate-source.sha256": "eb48b795e281d40d6ce82235775b3a1a0492ef732fee12cfccbf07c4e191108e",
+    "fair-r1-local-verify-r1.log": "3b474f3f607f00c558436ffb53c567f48801c19b6c3fe8cfe38448b56b60941a",
+    "fair-r1-local-verify-r2.log": "3b474f3f607f00c558436ffb53c567f48801c19b6c3fe8cfe38448b56b60941a",
+    "fair-r2-local-verify-r1.log": "361995e60c445f45529ee15d08e26d4272dbe3ec008be92fb3f50b9f6affa625",
+    "fair-r2-local-verify-r2.log": "361995e60c445f45529ee15d08e26d4272dbe3ec008be92fb3f50b9f6affa625",
+    "fifo-r1-local-verify-r1.log": "077d8e79c0210a2b743f6b25682bb8d9defe5348743737bf42525bfacc86058d",
+    "fifo-r1-local-verify-r2.log": "077d8e79c0210a2b743f6b25682bb8d9defe5348743737bf42525bfacc86058d",
+    "fifo-r2-local-verify-r1.log": "d38c48786d64a2a5edf17dc1d5f6039055182d94733576ab09e7aa45bd6170dd",
+    "fifo-r2-local-verify-r2.log": "d38c48786d64a2a5edf17dc1d5f6039055182d94733576ab09e7aa45bd6170dd",
+    "first-audio-scheduler-asan-ubsan.log": "2e1836b6238a99a7a169eaacf4787e5f7d5b4fe7d97a300c7450f3fbb09fa519",
+    "followup-local-first-attempt.log": "1c6c9fce387689d66205014e379b27f6b7190afdc5424edf53f8f47312960f9d",
+    "native-stage-host.log": "de59514d7010a7d4941c02af5985c3c669872f4b7dd4f5f5ccfa2b6bbbbad2eb",
+    "network-latency-local-r1.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "network-local-r1.log": "a96ff0b8853a56c7980eaa3c34ee01ec8868f018f498f10ed14d736cd2c1105c",
+    "network-pass-historical-audit-profile-mismatch.log": "e7bd2e7fcba73a0251bae0f4bffc6b6bc3086ab8bc284bd1cc8ba5478446f3e8",
+    "public-local-r1.log": "05a4e9add130d19ad75abe13b1a7f73f416ed66123822f6b1ff988220e91dfe1",
+    "public-local-r2.log": "05a4e9add130d19ad75abe13b1a7f73f416ed66123822f6b1ff988220e91dfe1",
+    "public-network-followup.log": "81915308e62c1da662f183c534b99129ab24aa4bcfb56c8359f76ebc2e69f73f",
+    "r4-four-run-sequence.log": "8a78a38d3df5ac35a6a2893d2434fc5555ffd2160bbec2b057a526b8c4722da2",
+    "r4-profile-baseline.log": "9eece62e92c37fc8140a07ffd5842dafed172916c6929c5045b8c3622f95a7b1",
+    "realtime-stress-3360.log": "a9f5cda135a256f9e2eb7f7624ec8837ad048e5dfad29443d2000ca2d2925300",
+    "realtime-stress-asan-ubsan.log": "7f6cca8e53e85e1a32d94a5f1de3f78d53d8f7b4fc09c315cc0f8e15e35f5d06",
+    "realtime-stress-tsan.log": "bb1b5bf80201e1d46488afe13feb4c22c12c307a89f79f0f1df188276ab6f989",
+    "realtime-unified-candidate.log": "d9db03feb72a90eebc2194aa24221473687b72339fade61bc70aec432eb6338c",
+    "timing-probe-r1-not-launched.log": "aa4a32e05086a6b2e4cac83470db22b29367c4b26861e46d128915154babd254",
+    "timing-probe-r2.log": "a954b8fe6c605a02e3c5eff844dfe597f355e45ffbd45b46cbb0eac175d1fb43",
+    "umm-test-local-candidate.log": "fd0391650e1d391b23ab4fc46af325c6af35f81dfeae3fbe1942c0f581d9ff3f",
+    "unified-asan-ubsan-not-completed.log": "e5f21c1ca4b871339f978d13980f43fd516c9c54c1742aa69f108877b2567cf1"
+  },
+  "execution_commit": "c63d4f3fdb07729162744cb58fa4fceaed9881db",
+  "limits": {
+    "aoci_cli": "NOT_AVAILABLE_MANUAL_INDEX_AND_BASELINE_ONLY",
+    "deployment": "NOT_RUN",
+    "generalized_improvement": "NOT_CLAIMED",
+    "perceptual_acoustic_quality": "NOT_COVERED",
+    "physical_playback": "NOT_COVERED",
+    "public_report_full_r4_field": "The public verifier retains its capture-local NOT_RUN label; Task #73 R4 is recorded independently, never by rewriting that report.",
+    "wan": "NOT_COVERED"
+  },
+  "negative_or_diagnostic_attempts": [
+    {
+      "action": "No analyzer assertion edited; reran documented generic profile. The network verifier itself passed before this audit mismatch.",
+      "actual_audio_frames": 1019,
+      "attempt": "network latency task41-r3 profile",
+      "expected_audio_frames": 1024,
+      "result": "REJECTED_HISTORICAL_COUNT_GATE"
+    },
+    {
+      "action": "Focused stable_mean red/green fix; R4 hashes unchanged; final stable report byte-identical across hosts.",
+      "attempt": "initial cross-host generic latency comparison",
+      "result": "BYTE_MISMATCH_3_CPU_MEANS_ONLY"
+    },
+    {
+      "action": "No report generated; two fresh local passes followed with msgpack 1.2.4.",
+      "attempt": "public local verifier before isolated dependency setup",
+      "result": "NOT_RUN_MISSING_MSGPACK"
+    }
+  ],
+  "network": {
+    "cleanup": {
+      "owned_processes_exited": true,
+      "selected_gpus_idle": true
+    },
+    "counts": {
+      "accepted_playback_acks": 66,
+      "ack_only_non_server_connection_identities": 11,
+      "asr_finals": 30,
+      "audio_delta_frames": 1019,
+      "barge_in_cancellations": 9,
+      "cancelled_callbacks": 9,
+      "completed_callbacks": 18,
+      "connection_scoped_response_identities": 41,
+      "connections": 15,
+      "foreign_ack_only_connection_identities": 8,
+      "foreign_ack_only_identities": 8,
+      "history_turns": 21,
+      "ignored_playback_acks": 81,
+      "native_vlm_prompts": 30,
+      "playback_ack_requests": 147,
+      "reconnects": 9,
+      "recorded_ack_schedule_entries": 147,
+      "recorded_cancel_schedule_entries": 6,
+      "response_identities_both_directions": 38,
+      "rounds": 3,
+      "server_responses": 30,
+      "sessions": 6,
+      "stale_server_response_connection_identities": 3,
+      "terminal_callbacks": 27
+    },
+    "final_health": {
+      "in_flight": 0,
+      "status": "ok"
+    },
+    "gpu_postflight": {
+      "0": {
+        "compute_processes": [],
+        "index": 0,
+        "memory_used_mib": 3,
+        "utilization_percent": 0
+      },
+      "1": {
+        "compute_processes": [],
+        "index": 1,
+        "memory_used_mib": 3,
+        "utilization_percent": 0
+      }
+    },
+    "independent_report_sha256": "ac971ecfb82ff81b1c85bfafd502da0c9f21406bab8d25d2d514cc0a420e7873",
+    "manifest_sha256": "f593a02150fc194b494bc99b1e906fd3fc2c354ac93f007fc402a92794fa20cd",
+    "protocol": {
+      "accepted_decreasing_cursors": 0,
+      "accepted_unissued_cursors": 0,
+      "cancelled_only_responses": 3,
+      "completed_then_cancelled_responses": 6,
+      "cross_session_or_connection_response_leaks": 0,
+      "duplicate_terminal_callback_kinds": 0,
+      "final_in_flight": 0,
+      "ignored_ack_categories": {
+        "decreasing": 12,
+        "duplicate_after_release": 12,
+        "foreign_ack_only": 18,
+        "stale_after_reconnect": 3,
+        "unissued": 36
+      },
+      "no_terminal_due_to_connection_close": 9,
+      "non_monotonic_capture_clocks": 0,
+      "stale_events_after_cancel": 0,
+      "unsolicited_playback_acks": 0
+    },
+    "raw_files": 44,
+    "raw_run_sha256": "e2e6350647be784818d8152a4643863932652043200dbd0de5fc022592ceb394",
+    "stable_audit_remote_local_byte_identical": true,
+    "stable_audit_sha256": "cdb94f01bf729477427231fde3f0fa43847f39062a03090b8b9b9ba6100ad01c",
+    "status": "PASS",
+    "timing_ms": {
+      "barge_cancel_to_speech_started": {
+        "count": 9,
+        "iqr": 0.028275,
+        "mad": 0.015574,
+        "max": 0.114074,
+        "median": 0.06034,
+        "min": 0.036489,
+        "p95": 0.109708,
+        "q1": 0.049789,
+        "q3": 0.078064
+      },
+      "barge_final_old_audio_to_cancel": {
+        "count": 8,
+        "iqr": 928.2394015,
+        "mad": 458.2602775,
+        "max": 4950.219758,
+        "median": 536.518511,
+        "min": 59.833957,
+        "p95": 3840.312372,
+        "q1": 83.83550325,
+        "q3": 1012.07490475
+      },
+      "barge_first_append_to_cancel": {
+        "count": 9,
+        "iqr": 2.780255,
+        "mad": 2.548856,
+        "max": 42.512629,
+        "median": 2.996942,
+        "min": 0.315327,
+        "p95": 27.1685102,
+        "q1": 0.444094,
+        "q3": 3.224349
+      },
+      "playback_ack_round_trip": {
+        "count": 66,
+        "iqr": 0.03236975,
+        "mad": 0.0129085,
+        "max": 35.710434,
+        "median": 0.0419555,
+        "min": 0.023442,
+        "p95": 28.70174525,
+        "q1": 0.03048075,
+        "q3": 0.0628505
+      }
+    }
+  },
+  "public": {
+    "cancel_retry": {
+      "cancel_prefix_chunks": 1,
+      "cancel_terminal": "cancelled",
+      "retry_matches_fresh_repeat": true
+    },
+    "cleanup": {
+      "final_in_flight": 0,
+      "gpu_postflight": {
+        "0": {
+          "compute_processes": [],
+          "index": 0,
+          "memory_used_mib": 3,
+          "utilization_percent": 0
+        }
+      },
+      "owned_processes_exited": true
+    },
+    "counts": {
+      "cancelled_public_http_responses": 1,
+      "public_http_pcm_bytes": 10698240,
+      "public_http_pcm_chunks": 184,
+      "public_http_pcm_legs": 44,
+      "public_http_responses": 25,
+      "realtime_pcm_bytes": 115034880,
+      "realtime_pcm_chunks": 4176,
+      "realtime_pcm_legs": 493,
+      "realtime_responses": 29,
+      "successful_public_http_responses": 24
+    },
+    "direct_continuation": {
+      "accepted_continuation_legs": 4,
+      "accepted_continuation_pcm_bytes": 737280,
+      "accepted_continuation_pcm_sha256": "3eaa2791bba77428558a314086e2264e3279123b03d89a4998f24a3cce11773d"
+    },
+    "fresh_process_verifications": {
+      "all_byte_identical": true,
+      "local": 2,
+      "local_msgpack": "1.2.4 isolated temporary environment",
+      "remote": 3
+    },
+    "full_report_retained_but_not_committed": "Contains task-local capture paths; exact SHA-256 above binds the sealed report.",
+    "http_status": "PASS",
+    "manifest_sha256": "b1f2f34fd7cd0e0d865ddcd65b16677d143d773bf21bc9472946315d5beafff5",
+    "native_public_pcm_and_utf8_cursors_exact": true,
+    "one_terminal_and_final_ack_per_realtime_response": true,
+    "raw_files": 1251,
+    "realtime_delayed_reader_status": "PASS",
+    "release": {
+      "bounded_queue_boundary": 4096,
+      "configured_readers": 29,
+      "monotonic_ns": 6114418579669855,
+      "native_audio_events": 4125,
+      "paused_readers": 29,
+      "paused_response_ids": [
+        "req-10",
+        "req-11",
+        "req-12",
+        "req-13",
+        "req-14",
+        "req-15",
+        "req-16",
+        "req-17",
+        "req-18",
+        "req-19",
+        "req-20",
+        "req-21",
+        "req-22",
+        "req-23",
+        "req-24",
+        "req-25",
+        "req-26",
+        "req-27",
+        "req-28",
+        "req-29",
+        "req-30",
+        "req-31",
+        "req-32",
+        "req-33",
+        "req-5",
+        "req-6",
+        "req-7",
+        "req-8",
+        "req-9"
+      ],
+      "pending_native_minus_public": 4096,
+      "public_audio_events": 29
+    },
+    "verification_sha256": "fa24b43d78d351bd209566b60a37ba2cba0b7504296d0dfe2f6c8b02a045023a"
+  },
+  "schema": "umminfer-realtime-post-determinism-followup/v1",
+  "status": "PASS"
+}

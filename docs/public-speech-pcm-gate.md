@@ -243,5 +243,27 @@ map, and all three native TTS tests passed. `in_flight=0`, every task-owned
 process exited, and GPU 0 returned to 3 MiB / 0% with no compute process; the
 resident service and its devices were untouched. Machine-readable identities and
 limits are in [realtime-transport-validity-sm90.json](evidence/realtime-transport-validity-sm90.json).
-Full two-GPU R4, fair-priority, deployment, physical playback, and perceptual
-quality remain **NOT_RUN**; no latency improvement is claimed.
+At that Task #70 checkpoint, full two-GPU R4, fair-priority, deployment, physical
+playback, and perceptual quality remained **NOT_RUN**; no latency improvement was
+claimed.
+
+## Task #73 final candidate regression: PASS
+
+The Task #73 fair-alternation candidate reran this complete public gate on its
+exact fair binaries after the two-GPU R4 and real network gates passed. HTTP again
+passed all 25 controls (24 completed + one cancelled), including exact retry and
+four direct 737,280-byte continuation controls. All **29/29** delayed-realtime
+responses completed with one terminal/final ACK and exact native/public PCM:
+493 legs, 4,176 chunks, 115,034,880 bytes. Release remained exactly
+4,125−29=4,096 with every reader paused and zero public reads during the pause.
+
+Three remote plus two isolated-local fresh verifier reports are byte-identical at
+`fa24b43d78d351bd209566b60a37ba2cba0b7504296d0dfe2f6c8b02a045023a`; the
+1,251-file self-excluded manifest SHA-256 is
+`b1f2f34fd7cd0e0d865ddcd65b16677d143d773bf21bc9472946315d5beafff5`.
+All owned processes exited, `in_flight=0`, and GPU 0 returned to 3 MiB / 0% with
+no compute process. The public verifier's `full_asr_two_gpu_r4=NOT_RUN` field is
+capture-local and remains unmodified; Task #73's actual R4 result is recorded
+separately in [realtime-r4-post-determinism](realtime-r4-post-determinism.md),
+along with network/reconnect evidence, exact hashes, and unchanged physical /
+perceptual limitations.

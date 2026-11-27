@@ -74,11 +74,23 @@ SimpleScheduler::SimpleScheduler(ComputeFn compute_fn,
 }
 
 void SimpleScheduler::enqueue(IncomingMessage msg) {
-  // Runs on the stage loop, so the arrival hook must not block.
+  // Runs on the stage loop, so both hooks must not block.
   if (msg.type == "new_request" && request_arrival_hook_) {
     request_arrival_hook_(msg.data);
   }
-  inbox_.put(std::move(msg));
+  const bool priority = msg.type == "new_request" && request_priority_fn_ &&
+                        request_priority_fn_(msg);
+  inbox_.put(std::move(msg), priority);
+}
+
+void SimpleScheduler::set_request_priority_fn(RequestPriorityFn fn) {
+  if (running_ || stopped_) {
+    throw ProtocolError("request priority must be configured before scheduler start");
+  }
+  if (fn && (batch_fn_ || max_concurrency_ != 1)) {
+    throw ProtocolError("request priority requires serial, non-batched scheduling");
+  }
+  request_priority_fn_ = std::move(fn);
 }
 
 void SimpleScheduler::reap_aborted() {

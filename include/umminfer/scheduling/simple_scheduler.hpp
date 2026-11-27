@@ -29,6 +29,8 @@ struct IncomingMessage {
   Value::Map params = {};
 };
 
+using RequestPriorityFn = std::function<bool(const IncomingMessage&)>;
+
 struct OutgoingMessage {
   std::string request_id;
   std::string type;  // result, error
@@ -39,41 +41,56 @@ struct OutgoingMessage {
 template <typename T>
 class MessageQueue {
  public:
-  void put(T msg) {
+  // Priority is opt-in per put. With both classes queued, alternate them so
+  // latency-sensitive first work cannot starve previously queued ordinary work.
+  // Each class is independently FIFO; the all-ordinary path is unchanged.
+  void put(T msg, bool priority = false) {
     {
       std::lock_guard<std::mutex> lock(mu_);
-      items_.push_back(std::move(msg));
+      if (priority) {
+        priority_items_.push_back(std::move(msg));
+      } else {
+        items_.push_back(std::move(msg));
+      }
     }
     cv_.notify_one();
   }
   std::optional<T> get(double timeout_s = -1) {
     std::unique_lock<std::mutex> lock(mu_);
+    auto ready = [this] { return !items_.empty() || !priority_items_.empty(); };
     if (timeout_s < 0) {
-      cv_.wait(lock, [this] { return !items_.empty(); });
-    } else if (!cv_.wait_for(lock, std::chrono::duration<double>(timeout_s),
-                             [this] { return !items_.empty(); })) {
+      cv_.wait(lock, ready);
+    } else if (!cv_.wait_for(lock, std::chrono::duration<double>(timeout_s), ready)) {
       return std::nullopt;
     }
-    T item = std::move(items_.front());
-    items_.pop_front();
-    return item;
+    return take_locked();
   }
   std::optional<T> get_nowait() {
     std::lock_guard<std::mutex> lock(mu_);
-    if (items_.empty()) return std::nullopt;
-    T item = std::move(items_.front());
-    items_.pop_front();
-    return item;
+    if (items_.empty() && priority_items_.empty()) return std::nullopt;
+    return take_locked();
   }
   size_t size() const {
     std::lock_guard<std::mutex> lock(mu_);
-    return items_.size();
+    return items_.size() + priority_items_.size();
   }
 
  private:
+  T take_locked() {
+    const bool priority = !priority_items_.empty() &&
+                          (items_.empty() || !last_priority_);
+    auto& queue = priority ? priority_items_ : items_;
+    T item = std::move(queue.front());
+    queue.pop_front();
+    last_priority_ = priority;
+    return item;
+  }
+
   mutable std::mutex mu_;
   std::condition_variable cv_;
   std::deque<T> items_;
+  std::deque<T> priority_items_;
+  bool last_priority_ = false;
 };
 
 // Raised by a cancellable compute function when the request was aborted. The
@@ -149,6 +166,9 @@ class SimpleScheduler {
   MessageQueue<OutgoingMessage>& outbox() { return outbox_; }
 
   void enqueue(IncomingMessage msg);
+  // Optional serial-only admission class. Install before start(); ordinary
+  // requests and every scheduler without this hook retain strict FIFO.
+  void set_request_priority_fn(RequestPriorityFn fn);
   // Installs the compute path that can observe its own cancellation. It takes
   // precedence over the plain compute function; an empty value restores it.
   void set_cancellable_compute(CancellableComputeFn fn);
@@ -186,6 +206,7 @@ class SimpleScheduler {
   std::function<void(const std::string&)> abort_callback_;
   std::function<void()> shutdown_callback_;
   RequestArrivalHook request_arrival_hook_;
+  RequestPriorityFn request_priority_fn_;
 
   MessageQueue<IncomingMessage> inbox_;
   MessageQueue<OutgoingMessage> outbox_;

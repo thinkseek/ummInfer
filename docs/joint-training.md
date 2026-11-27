@@ -104,7 +104,7 @@ SFT mask when a token crosses span types. Deterministic tests compare this
 export against `reconstruct_director_target`, `parse_interleaved_spans`, and the
 real adapter's `_token_loss_mask`, including route/body/closing coverage and
 multibyte text. The full schema, strong re-encode/decode validation command, and
-hash/tamper rules are in [rl.md](rl.md#optional-token-id-and-source-span-export-format-v1).
+hash/tamper rules are in [rl.md](rl.md#optional-token-id-and-source-span-export-formats-v1-and-v2).
 
 This export does not change dataset JSONL version 1, dataset deduplication,
 splitting, scores, pair identities, or GRPO packing. DPO chosen/rejected response

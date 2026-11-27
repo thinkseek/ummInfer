@@ -154,7 +154,11 @@ Stage::Stage(Config config, ComputeFn compute_fn)
                 return names;
               }(),
               config_.stage_gpu_ids, {}, config_.comm_config,
-              config_.injected_relay) {}
+              config_.injected_relay) {
+  if (config_.request_priority) {
+    scheduler_->set_request_priority_fn(config_.request_priority);
+  }
+}
 
 Stage::Stage(Config config, CancellableComputeFn compute_fn)
     : Stage(std::move(config), ComputeFn{}) {

@@ -353,6 +353,25 @@ idle-only close 均保持原语义。执行提交 `2b49b5b` 合入 Wave 94。真
 [public-speech-pcm-gate](public-speech-pcm-gate.md#task-70-real-sm90-outcome-pass) 及
 [机器证据](evidence/realtime-transport-validity-sm90.json)。
 
+### 2.6 原生 TTS 首音公平交替与双 GPU R4
+
+Task #73 在新冻结合约下为串行 native TTS 增加内部 `request_priority`：
+`:tts:0` 与一次性 `:tts` 进入 first-audio FIFO 类，后续 `:tts:N` 和普通请求
+留在原 FIFO 类；两类同时非空时交替取出，绝不抢占正在执行的 CUDA compute。
+未安装 hook 的 scheduler 保持严格 FIFO，batch/concurrent 配置拒绝该 hook。
+公开 schema、取消墓碑、响应 deadline、队列上限、采样默认值和 PCM/cursor 均未改变。
+
+四轮 `fair → FIFO → fair → FIFO` 完整 R4 均通过七臂、所有回归和独立原始证据
+校验，共 324 个 measured responses。两组 A/B 的 primary median 分别降低
+46.161%/45.921%，p95 降低 60.263%/60.048%，serial 变化在 ±0.05% 内；跨策略与
+同策略 A/A 的 transcript/text/prompt/cursor/PCM 全部精确相等。native compute
+提前与 VLM 共享 GPU 的额外开销及 alternate arm 无收益均保留，不作泛化声明。
+候选另通过 30-response 真实 network/reconnect 门禁和 25 HTTP + 29/29 delayed
+reader 公共 PCM 门禁，终态、最终 ACK 与 4,125−29=4,096 精确释放均保持。
+ACK-anchored cancel→silence 是数字虚拟播放队列清空时间，不是物理扬声器实测。
+完整实现边界、逐臂数据、原始证据哈希和负结果见
+[realtime-r4-post-determinism](realtime-r4-post-determinism.md)。
+
 ---
 
 ## 3. 本机轻量构建与测试验证矩阵

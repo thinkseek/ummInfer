@@ -15,6 +15,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "stage_kind.hpp"
@@ -148,6 +149,18 @@ int main(int argc, char** argv) {
       // work into it. This is the thread-safe contract, not serial compute.
       config.max_concurrency = options.batch_size;
       config.engine_contract = umminfer::EngineContract::kThreadSafe;
+    }
+    if (kind == "tts") {
+      // Unified streamed first legs are :tts:0 and one-shot legs are :tts.
+      // Later :tts:N chunks stay FIFO with ordinary work and share fair drain.
+      config.request_priority = [](const umminfer::IncomingMessage& msg) {
+        auto ends = [&msg](std::string_view suffix) {
+          return msg.request_id.size() >= suffix.size() &&
+                 std::string_view(msg.request_id).substr(
+                     msg.request_id.size() - suffix.size()) == suffix;
+        };
+        return msg.type == "new_request" && (ends(":tts:0") || ends(":tts"));
+      };
     }
     config.peer_endpoints[config.name] = recv;
     for (const auto& [key, value] : repeats) {

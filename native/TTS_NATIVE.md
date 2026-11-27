@@ -111,8 +111,19 @@ chunks, never on text or control events. HTTP passed independently; realtime
 ended with 17 completed and 12 reset, so full parity is blocked rather than
 claimed. No kernel, scheduler, threshold, or public schema changed. Exact
 results and evidence hashes are in
-[Public speech PCM gate](../docs/public-speech-pcm-gate.md). Full R4, physical
-playback, and perceptual quality remain outside the claim.
+[Public speech PCM gate](../docs/public-speech-pcm-gate.md). At that checkpoint,
+full R4, physical playback, and perceptual quality remained outside the claim.
+
+Task #73 subsequently adds serial-only fair alternation between first-audio TTS
+legs and the FIFO continuation/ordinary class. It does not change Talker,
+repetition-penalty, codec, sampling, or PCM bytes. Two complete interleaved
+two-GPU R4 A/B pairs pass exact transcript/text/prompt/cursor/PCM parity and
+reduce primary median first-audio latency by 46.161% and 45.921%; same-policy
+A/A controls are also byte-identical. See
+[Post-determinism R4](../docs/realtime-r4-post-determinism.md) for the frozen
+contract, all per-arm results, retained negative cases, and raw evidence hashes.
+This is digital-loopback evidence, not physical playback, listening quality,
+generalized performance, or deployment acceptance.
 
 ## Build and test
 

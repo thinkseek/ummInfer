@@ -110,6 +110,12 @@ add_executable(native_identity_test
 target_link_libraries(native_identity_test PRIVATE umm_stage_common)
 add_test(NAME native_identity_test COMMAND native_identity_test)
 
+add_executable(first_audio_scheduler_test
+  first_audio_scheduler_test.cpp
+)
+target_link_libraries(first_audio_scheduler_test PRIVATE umm_stage_core)
+add_test(NAME first_audio_scheduler_test COMMAND first_audio_scheduler_test)
+
 # Stage CLI hooks. Links video_stage.cpp, so the checks run against the same
 # parse_stage_flag the executable uses, on a host with no CUDA.
 add_executable(stage_flag_test
