@@ -533,6 +533,40 @@ voice conflicts):
   generation, passing through untouched when idle), and `Cmd/Ctrl+Enter` in the
   prompt composer (Send).
 
+#### Interactive Storyboard revision, terminal lifecycle, and verified replay
+
+The Web Storyboard preset supports a complete user-directed visual workflow:
+
+- **Revise** on a decoded image attaches the exact content-addressed bytes as
+  both the next request's `image_url` visual context and `image.image` FLUX edit
+  source, and places an editable `Revise existing visual slot-N:` direction in
+  the composer. Removing/replacing the attachment or starting a new chat clears
+  this binding.
+- HTTP Stop and server cancellation settle unresolved slot cards as aborted,
+  stop scheduled PCM, and preserve the cancelled outcome. A `complete` terminal
+  with missing, pending, running, or artifact-less slots is shown as **Visual
+  output incomplete**, never as a clean visual completion. Foreign session or
+  request events and duplicate artifact chunks/deliveries fail closed.
+- New chat/import stop stale visual-render requests, microphone tracks and
+  media playback, revoke browser object URLs, and clear prompt, attachments and
+  revision state. Imported cancelled prose is retained for review but excluded
+  from follow-up history.
+- Existing modality/routing/sampling controls remain nonessential behind
+  **Advanced**. Natural fresh sessions use narrative auto, three slots, and I2V
+  continuity without a preset or manual modality/frame selection.
+- Default **Export JSON** (`umminfer-web-session-replay-v1`) retains exact raw
+  SSE bytes/chunk boundaries, direct-render media, original/current visual
+  variants, narrative-event indices, content-addressed PCM/WAV, visual
+  references, terminal legs and outcomes. Explicit **Compact JSON** retains the
+  legacy base64-free metadata schema. Import verifies before mutation, restores
+  verified media without replaying old audio, and **Replay raw SSE** reconstructs
+  locally without network traffic.
+
+The independent verifier is `tests/storyboard_replay_verify.py`; it is stdlib-
+only and does not import the producer. See [web/README.md](../web/README.md#raw-sse-session-replay)
+for the size bounds and external-manifest check. Physical microphone/speaker
+execution and perceptual listening remain separate hardware-gated claims.
+
 ## Direct Speech (`POST /v1/audio/speech`)
 
 `OpenAIClient::speech(const SpeechRequest&)` and the `umm-infer speech`

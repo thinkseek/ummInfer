@@ -1,0 +1,116 @@
+{
+  "schema": "umminfer-ns07-six-way-negative-attempts/v1",
+  "claim": "All entries are failed, blocked, interrupted, or short diagnostic evidence. None is a passing NS-07 gate.",
+  "attempts": [
+    {
+      "id": "before-diagnostic-r1",
+      "status": "FAIL",
+      "elapsed_s": 3.209233517,
+      "failures": "FLUX CUDA-unavailable process exit; session propagation and early harness defects retained",
+      "manifest_file_count": 136,
+      "manifest_sha256": "eb2bfb0934127aba0565e90f3e7e8a2638997426192f5c6b34926e8cdc375290",
+      "verification_sha256": null
+    },
+    {
+      "id": "before-diagnostic-r2",
+      "status": "INTERRUPTED",
+      "elapsed_s": null,
+      "failures": "System-cuDNN FLUX error and a narrative lease that had not yet gained fail-fast handling; owned processes were manually cleaned",
+      "manifest_file_count": null,
+      "manifest_sha256": null,
+      "verification_sha256": null,
+      "gpu0_cleanup": "3 MiB, 0%, no compute process"
+    },
+    {
+      "id": "before-diagnostic-r3",
+      "status": "FAIL_SHORT_AND_MISSING_VIDEO",
+      "elapsed_s": 180.000530811,
+      "failures": "180-second duration and model narrative omitted video; all other correctness, recovery, PCM, and resource checks passed",
+      "manifest_file_count": 1627,
+      "manifest_sha256": "519e580ec3ba90f3e6649f9e9a2a21e8822506010888bf0cfd772bf8d7b9e852",
+      "verification_sha256": "8a7fbfb134be0c5d29bbf1470529f328feee5e26de746fefc2732d400a4db6bc"
+    },
+    {
+      "id": "before-diagnostic-r4",
+      "status": "BLOCKED_BEFORE_LAUNCH",
+      "elapsed_s": 0.0,
+      "failures": "Non-task GPU0 processes appeared before stack launch; no request or owned process started and no process was killed",
+      "manifest_file_count": 3,
+      "manifest_sha256": "4eaaa3efd3d6c62a143540c5c8b902469c91e21d159aecd27d49b632cf6adb06",
+      "verification_sha256": "61cec042f3344e3f2a08a4ea431af5dd08fc0a1a5749df3b075c297509d09951"
+    },
+    {
+      "id": "before-diagnostic-r5",
+      "status": "BLOCKED_BEFORE_LAUNCH",
+      "elapsed_s": 0.0,
+      "failures": "A non-task 12 GiB GPU0 process appeared before stack launch; no request or owned process started and no process was killed",
+      "manifest_file_count": 3,
+      "manifest_sha256": "b5f93736700df72dd17af19abfb8ccc900e93903821c0ce21b29113b3fbbf54a",
+      "verification_sha256": "6e736f1899df0eaf11e794c387b33c44a7b89b934c5fc5781e00c1c2c1fe796b"
+    },
+    {
+      "id": "before-diagnostic-r6",
+      "status": "FAIL_SHORT_AND_INVALID_PID_NAMESPACE_COMPARISON",
+      "elapsed_s": 120.000704651,
+      "failures": "120-second duration plus the since-corrected direct NVML-host/container PID comparison; all six modalities and native/public PCM passed",
+      "manifest_file_count": 692,
+      "manifest_sha256": "e9b1efc54091ae9ed68c75a0d77a27233643a01189b3f9a405df2e00c72624bc",
+      "verification_sha256": "afd22f0ad2ed19a3b15d98886e54d9acea4d15d90c99168fc91694a9423c435e"
+    },
+    {
+      "id": "before-full-r1",
+      "status": "FAIL_EARLY",
+      "elapsed_s": 475.581969447,
+      "failures": "Single-cursor realtime timeout stopped the window early; old stable-topology handling also retained excess samples",
+      "manifest_file_count": 2095,
+      "manifest_sha256": "55a2a02f4713fdbf6a8b004870678338b7e1ae782a19225d593ffe2d966cd067",
+      "verification_sha256": "8f197fb59e557f57b9c4f6b9332b4c6bb8e5b22c97010637d6218c0d8d512e29"
+    },
+    {
+      "id": "before-full-r2",
+      "status": "FAIL_EARLY",
+      "elapsed_s": 490.063816487,
+      "failures": "Stale positive-cursor wait prevented the normal zero-cursor completion path; one collateral narrative error",
+      "manifest_file_count": 2539,
+      "manifest_sha256": "d68b92b903a570881ad0fe94326c0a79bb339a5d9ed27b6d434c2866b8c9611e",
+      "verification_sha256": "70c0c2c4e5ba753d0f62bb1d408ff381c25bbd89576a6969f913857d71e6a126"
+    },
+    {
+      "id": "before-full-r3",
+      "status": "INTENTIONALLY_INTERRUPTED",
+      "elapsed_s": 0.0,
+      "failures": "Stopped because first-audio-only decisions produced no barge-in; short/interrupted, incomplete drain, and no gate claim",
+      "manifest_file_count": 2594,
+      "manifest_sha256": "118d4dc553b094e6b34214b5809ff7cca0a85f9f107c65d1f8f6919e220dfb23",
+      "verification_sha256": "899b40c1136daeacb3524f9bc1c8356c31dd3bb5ffd7cb683d3e23ee4507fdf6"
+    },
+    {
+      "id": "before-diagnostic-r7-balanced-control",
+      "status": "FAIL_SHORT_ONLY",
+      "elapsed_s": 180.000909277,
+      "failures": "Only the intentional 180-second duration failed; all six lanes, I2V, three barge-in pairs, PCM, 38/38 recoveries, resources, and cleanup passed",
+      "manifest_file_count": 1008,
+      "manifest_sha256": "8f95c7d4d320050c38c8562be76894a17e9f5d8a99c8e702129fee45fb317906",
+      "verification_sha256": "7bc2098e3fa0fdab77a2177b0019b20df7036b3e0bf73b1e707023e12a38da2b"
+    },
+    {
+      "id": "before-full-r4-paired-baseline",
+      "status": "FAIL_FULL_DURATION",
+      "elapsed_s": 1800.000690572,
+      "failures": "One real narrative stream reached the 600-second timeout and ended without a unified terminal; every other hard engineering metric passed",
+      "manifest_file_count": 8032,
+      "manifest_sha256": "adc929802d555bfe7b60ccdff55c113f2e7178293b54397fc8edaf4fc06278cb",
+      "verification_sha256": "19a42113d5c56c1f319f4ebbef7b771587beafc243be46a4f97150b517fd672d"
+    },
+    {
+      "id": "after-full-paired-candidate",
+      "status": "FAIL_FULL_DURATION",
+      "elapsed_s": 1800.000769254,
+      "failures": "One real narrative stream timed out without a unified terminal, plus one raw playback-ACK acceptance mismatch; candidate NOT_PROMOTED",
+      "manifest_file_count": 8323,
+      "manifest_sha256": "4819cdafe347988631279f3a0af119407f85b02ec933c455ca90abcf8ca73f18",
+      "verification_sha256": "cb4750651c31e98446310bc0aa0acb0ad73a8259fc59eef7d0ea3ceead912da8"
+    }
+  ],
+  "raw_rule": "All raw events, media, logs, process records, and resource samples remain in caller-selected external evidence roots. Null hashes mean no final sealed verification exists; nothing is inferred from a missing report."
+}

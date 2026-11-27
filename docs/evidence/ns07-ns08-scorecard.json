@@ -1,0 +1,1023 @@
+{
+  "candidate_promotion": "NOT_PROMOTED",
+  "case_order": [
+    "NS-01",
+    "NS-02",
+    "NS-03",
+    "NS-04",
+    "NS-05",
+    "NS-06",
+    "NS-07",
+    "NS-08"
+  ],
+  "cases": [
+    {
+      "after": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "before": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "case_id": "NS-01",
+      "contract_drivers": [
+        {
+          "args": [
+            "--self-check"
+          ],
+          "driver": "tests/narrative_live_e2e.py",
+          "driver_sha256": "908bd9630191501bc56335e06e8a5046fd29df28b1d81cb84f2006a9451289dc",
+          "exit_code": 0,
+          "log": {
+            "bytes": 2217,
+            "file": "contracts/NS-01/tests_narrative_live_e2e.py.log",
+            "sha256": "53d09605f418fac7a3d007fabd976ab41d9daa91367cc4ec8789bf7f503bba45"
+          },
+          "status": "PASS"
+        }
+      ],
+      "contract_scope": "Narrative parser, terminal, artifact, and latency-recording contracts only.",
+      "contract_status": "PASS",
+      "hard_thresholds": {
+        "first_image_ms_max_exclusive": 2000,
+        "i2v_ms_max_exclusive": 5000,
+        "protocol_tag_leaks": 0,
+        "ttfa_ms_max_exclusive": 800,
+        "ttft_ms_max_exclusive": 800
+      },
+      "live_requirements": [
+        "real native multimodal server",
+        "decoded image and I2V media",
+        "human narrative review"
+      ],
+      "north_star_hard_gate": "NOT_RUN",
+      "paired": null,
+      "title": "Autonomous interleaved text, image, video, and speech"
+    },
+    {
+      "after": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "before": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "case_id": "NS-02",
+      "contract_drivers": [
+        {
+          "args": [],
+          "driver": "tests/i2v_geometry_latency_test.py",
+          "driver_sha256": "2a218eb60a65daecd16fac000b9621e344094cd1f37e67971e3aedaa7db32868",
+          "exit_code": 0,
+          "log": {
+            "bytes": 106,
+            "file": "contracts/NS-02/tests_i2v_geometry_latency_test.py.log",
+            "sha256": "60bb849356ffbc091f601e17fc6ae0b2eb5e26d734d433da020c6e775efbf97f"
+          },
+          "status": "PASS"
+        },
+        {
+          "args": [
+            "--self-check"
+          ],
+          "driver": "tests/native_wan_cancel_fault_live.py",
+          "driver_sha256": "6bf180fa437a8fcea65708024bdfbd126e728236b1bcf0083e5501620de8f725",
+          "exit_code": 0,
+          "log": {
+            "bytes": 565,
+            "file": "contracts/NS-02/tests_native_wan_cancel_fault_live.py.log",
+            "sha256": "b15213bb92292180347d3ab69646dcdbf08777950d8c96c9587a5fd9bd678dc4"
+          },
+          "status": "PASS"
+        }
+      ],
+      "contract_scope": "I2V geometry and native cancellation fail-closed contracts; no new real render is implied.",
+      "contract_status": "PASS",
+      "hard_thresholds": {
+        "aspect_ratios": 3,
+        "cancel_response_ms_max_exclusive": 500,
+        "playable_preview_ms_max_exclusive": 5000,
+        "retry_success_rate": 1.0
+      },
+      "live_requirements": [
+        "wide, tall, and square real renders",
+        "cancel and fresh retry",
+        "human first-frame review"
+      ],
+      "north_star_hard_gate": "NOT_RUN",
+      "paired": null,
+      "title": "In-place Animate, source-bound revision, cancellation, and retry"
+    },
+    {
+      "after": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "before": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "case_id": "NS-03",
+      "contract_drivers": [
+        {
+          "args": [
+            "--self-check"
+          ],
+          "driver": "tests/narrative_slot_reference_live.py",
+          "driver_sha256": "d5bccd0f9ff7e9f6a15d16b90163b05104df3cb361138af91b21a4e8ebe1aa96",
+          "exit_code": 0,
+          "log": {
+            "bytes": 173,
+            "file": "contracts/NS-03/tests_narrative_slot_reference_live.py.log",
+            "sha256": "67b629121baeb6cefb1365c87465adf2394a998aa7a2ef542fdd9b8b8593e512"
+          },
+          "status": "PASS"
+        }
+      ],
+      "contract_scope": "Narrative slot parser only; four-class routing accuracy is NOT_COVERED by this driver.",
+      "contract_status": "PASS",
+      "hard_thresholds": {
+        "decision_accuracy_min": 0.9,
+        "redundant_visual_rate_max_exclusive": 0.05
+      },
+      "live_requirements": [
+        "frozen four-class routing prompt set",
+        "real autonomous model decisions"
+      ],
+      "north_star_hard_gate": "NOT_RUN",
+      "paired": null,
+      "title": "Autonomous modality routing with zero client selection"
+    },
+    {
+      "after": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "before": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "case_id": "NS-04",
+      "contract_drivers": [
+        {
+          "args": [],
+          "driver": "tests/public_speech_pcm_test.py",
+          "driver_sha256": "348df78377fc1d3ddfddac932c0a6d869b2ebc0b3c012b2f2b1d3feb35bc11bb",
+          "exit_code": 0,
+          "log": {
+            "bytes": 120,
+            "file": "contracts/NS-04/tests_public_speech_pcm_test.py.log",
+            "sha256": "d36364a9815f4dce4c5147229e55f354b472ce6b6433c593bb5c2f11a51ec45b"
+          },
+          "status": "PASS"
+        },
+        {
+          "args": [],
+          "driver": "tests/realtime_network_test.py",
+          "driver_sha256": "a9e56719f6f736517f406e7d9543c30c323ed5101b4b016e76d4b375ab38d56a",
+          "exit_code": 0,
+          "log": {
+            "bytes": 1530,
+            "file": "contracts/NS-04/tests_realtime_network_test.py.log",
+            "sha256": "da7d6b12fb707746fd3ff74ec1aad6906e9e3919a304714fec909dc61e9e7d55"
+          },
+          "status": "PASS"
+        }
+      ],
+      "contract_scope": "Digital PCM, cursor, terminal, reconnect, and delayed-reader contracts; physical acoustics are excluded.",
+      "contract_status": "PASS",
+      "hard_thresholds": {
+        "barge_in_to_silence_ms_max_exclusive": 300,
+        "echo_false_barge_in_rate": 0.0,
+        "history_truncation_accuracy": 1.0,
+        "new_first_audio_ms_max_exclusive": 800,
+        "slow_reader_resets": 0
+      },
+      "live_requirements": [
+        "real ASR, VLM, and TTS",
+        "physical microphone and speaker for acoustic gate",
+        "playback ACK and barge-in capture"
+      ],
+      "north_star_hard_gate": "NOT_RUN",
+      "paired": null,
+      "title": "Global full-duplex voice, barge-in, and playback acknowledgement"
+    },
+    {
+      "after": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "before": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "case_id": "NS-05",
+      "contract_drivers": [
+        {
+          "args": [],
+          "driver": "tests/temporal_natural_test.py",
+          "driver_sha256": "16e1bebead5c8ebf44a0db86b78e1b2a1c102b8141afeaf9998898b9b15c2d90",
+          "exit_code": 0,
+          "log": {
+            "bytes": 2680,
+            "file": "contracts/NS-05/tests_temporal_natural_test.py.log",
+            "sha256": "662462c11d7722f373568c86f35bfb1de40e061de26cb2e7fa487c4362ebc93e"
+          },
+          "status": "PASS"
+        }
+      ],
+      "contract_scope": "Frozen natural-footage scorer and verifier tests; no new minute-scale video or voice run is implied.",
+      "contract_status": "PASS",
+      "hard_thresholds": {
+        "grounded_accuracy_human_review": "REQUIRED",
+        "post_barge_in_visual_generation": true,
+        "video_first_response_ms_max_exclusive": 3000
+      },
+      "live_requirements": [
+        "one-to-three-minute natural video",
+        "real video prefill and voice barge-in",
+        "human groundedness review"
+      ],
+      "north_star_hard_gate": "NOT_RUN",
+      "paired": null,
+      "title": "Natural long-video understanding and spoken visual co-creation"
+    },
+    {
+      "after": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "before": {
+        "reason": "no normalized arm result was supplied",
+        "result_sha256": null,
+        "status": "NOT_RUN"
+      },
+      "case_id": "NS-06",
+      "contract_drivers": [
+        {
+          "args": [],
+          "driver": "tests/storyboard_replay_verify_test.py",
+          "driver_sha256": "a200e85a1380350d75cede030f4ad4a76507f14e282776095903a138c80c4d8f",
+          "exit_code": 0,
+          "log": {
+            "bytes": 109,
+            "file": "contracts/NS-06/tests_storyboard_replay_verify_test.py.log",
+            "sha256": "55fa698d97f0a791f43c7198f7f8d937a35875b19bc39d0a29b6d77a07a7c444"
+          },
+          "status": "PASS"
+        }
+      ],
+      "contract_scope": "Independent raw-replay and tamper contracts; character/style consistency remains a human gate.",
+      "contract_status": "PASS",
+      "hard_thresholds": {
+        "human_character_style_consistency": "REQUIRED",
+        "shots": 3,
+        "source_bound_revision": true
+      },
+      "live_requirements": [
+        "natural reference and spoken input",
+        "three real keyframes and I2V previews",
+        "human character/style review"
+      ],
+      "north_star_hard_gate": "NOT_RUN",
+      "paired": null,
+      "title": "Three-shot interactive storyboard with consistent protagonist and style"
+    },
+    {
+      "after": {
+        "binary_identities": {
+          "asr": "bcfa08a7e391d556b1b2adc74149796711a9da1ae374f7e4d4fc5d3c4a5bb246",
+          "server": "50922358d0295355ae070512c6f1f3fa4054bdab001e70740ab9a8762822a45c",
+          "tts": "0c3746d5629d362b8c8312b8635c87d97bad1011a103a129c0651dd8f1874656",
+          "vlm": "3284e636cc6e672354e3b358e7b2a3f3055b7a6ed5116412308cae2f2dc0f9a2",
+          "wan": "041f5fc80c17f26584bd10dadf290402e4b316b93ea897699221515ad27ac615"
+        },
+        "config_identity": {
+          "asr": {
+            "config.json": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f"
+          },
+          "flux": {
+            "model_index.json": "51a76cb1cf3ed37423a1128c79c22faee8e6fbe7f5aaeb737f0a258930dbaac0"
+          },
+          "tts": {
+            "config.json": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
+          },
+          "vlm": {
+            "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+          },
+          "wan": {
+            "model_index.json": "6a72faeb564b0e894aea8fc4ef27241106eb739e8584e869b61589a65473add7"
+          }
+        },
+        "coverage": {
+          "abort_retry": true,
+          "all_six_lanes_active": true,
+          "delayed_read_observed": true,
+          "foreign_gpu_process_count": 0,
+          "full_duplex_barge_in": true,
+          "gpu0_idle_after_cleanup": true,
+          "gpu_pid_namespaces_compared_directly": false,
+          "interleaved_visual": true,
+          "lease_violation_count": 0,
+          "malformed_audio": true,
+          "malformed_dimensions": true,
+          "native_pcm_join_counts": {
+            "http": 15,
+            "realtime": 305
+          },
+          "native_public_pcm_exact": true,
+          "natural_video_input": true,
+          "output_stage_overlap_count": 0,
+          "owned_processes_exited": true,
+          "perceptual_quality": "NOT_RUN",
+          "physical_playback": "NOT_RUN",
+          "playback_ack_after_virtual_consumption": false,
+          "production": "NOT_RUN",
+          "provenance_rehash": "EXACT",
+          "server_max_in_flight": 8,
+          "text_code": true
+        },
+        "declared_full_gate_status": "NOT_RUN",
+        "deployment_scope": "TASK_OWNED_LOOPBACK_PHYSICAL_GPU0_ONLY",
+        "failures": [
+          "interleaved_visual-0000300: producer retained an unexpected error",
+          "server playback ACK acceptance differs from raw capture",
+          "hard gate unexpected_error_count_zero failed",
+          "hard gate playback_ack_after_virtual_consumption failed"
+        ],
+        "hard_gates": {
+          "all_fault_families_covered": true,
+          "all_modalities_covered": true,
+          "all_six_lanes_active": true,
+          "client_count_exact": true,
+          "cross_session_event_count_zero": true,
+          "delayed_read_observed": true,
+          "device_growth_bounded": true,
+          "driver_completed": true,
+          "duplicate_terminal_count_zero": true,
+          "elapsed_at_least_1800": true,
+          "final_in_flight_zero": true,
+          "gpu0_exclusive_samples": true,
+          "gpu0_idle_after_cleanup": true,
+          "lease_violation_zero": true,
+          "native_public_pcm_exact": true,
+          "output_stage_overlap_zero": true,
+          "owned_processes_exited": true,
+          "pcm_mismatch_count_zero": true,
+          "playback_ack_after_virtual_consumption": false,
+          "ports_isolated": true,
+          "process_crash_count_zero": true,
+          "provenance_exact": true,
+          "recovery_complete": true,
+          "requests_present": true,
+          "rss_growth_bounded": true,
+          "server_admission_parallel": true,
+          "stale_event_count_zero": true,
+          "unexpected_error_count_zero": false
+        },
+        "limitations": [
+          "five-GPU resident production NOT_RUN",
+          "physical acoustics NOT_RUN",
+          "perceptual quality NOT_RUN",
+          "deployment NOT_RUN"
+        ],
+        "metrics": {
+          "cancelled_count": 336,
+          "client_count": 6,
+          "completed_count": 1945,
+          "cross_session_event_count": 0,
+          "device_growth_mib": 0.0,
+          "duplicate_terminal_count": 0,
+          "elapsed_s": 1800.000769254,
+          "expected_fault_count": 344,
+          "final_in_flight": 0,
+          "latency_p95_ms": 5483.147751,
+          "pcm_mismatch_count": 0,
+          "process_crash_count": 0,
+          "recovery_attempt_count": 344,
+          "recovery_success_count": 344,
+          "request_count": 2290,
+          "rss_growth_mib": 46.7421875,
+          "stale_event_count": 0,
+          "unexpected_error_count": 1
+        },
+        "model_identities": {
+          "asr": {
+            "file_count": 13,
+            "model_id": "Qwen/Qwen3-ASR-1.7B",
+            "tree_sha256": "2b634d66b56817e11496d76402b9c282fb59235ff1a5df22a4e5e261f8bf1d06"
+          },
+          "flux": {
+            "file_count": 25,
+            "model_id": "black-forest-labs/FLUX.2-klein-4B",
+            "tree_sha256": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997"
+          },
+          "tts": {
+            "file_count": 14,
+            "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            "tree_sha256": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d"
+          },
+          "vlm": {
+            "file_count": 29,
+            "model_id": "Qwen/Qwen3.8-27B",
+            "tree_sha256": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304"
+          },
+          "wan": {
+            "file_count": 30,
+            "model_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "tree_sha256": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+          }
+        },
+        "production_status": "NOT_RUN",
+        "raw_evidence": {
+          "arm_manifest": {
+            "file_count": 7,
+            "self_excluded": true,
+            "sha256": "1309f732fb03860c4b9db245366001cac0e8263de9b1717d6f3ab4f235b7217f"
+          },
+          "input_sha256": {
+            "barge_in_wav": "64fbd9f7ecafc160ba457595570f4a8b338f10e16acc0933be30aedc7eedf86d",
+            "natural_video": "22df061c95db2546973d2c4a7a9a74728b0dd1df05ba7c57bab6e2aefa8d7dd7",
+            "voice_wav": "9fe58914522a29ac7afde36af931f83b028f6540f23b29bb06d48ae1f98a1d4a"
+          },
+          "manifest": "SHA256SUMS",
+          "manifest_file_count": 8323,
+          "manifest_self_excluded": true,
+          "run_sha256": "bd2bf6d9a70d29cd13e0eecc657ed21659df7cad5be0789ac0ab1667e8ae41e7",
+          "verification_sha256": "52b0a731f6e5bd6368e71cb761e249ddbd2ce832699bf8c2c6bb323aa786cd7c"
+        },
+        "result_sha256": "f00fc0de3313323308f12e460903c4d70cddb60c630f62acf02c8b8a254961b2",
+        "source_identity": {
+          "commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
+          "execution_commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
+          "hardware": {
+            "accelerator": "NVIDIA H20",
+            "physical_gpu": 0
+          },
+          "harness_sha256": "568ecdc8370b629f42a6f781e3214d2834ba2cdc90a961d0895c3784452c128e",
+          "preregistration_sha256": "71bacf0ed2a0c3cfe77a056d7c9878c48761eb0633e40a15e1f0d4ae798be621",
+          "source_tree_sha256": "d92d0f9d04c9fda59a4a7371b8ee24020ecfcd34"
+        },
+        "status": "FAIL"
+      },
+      "before": {
+        "binary_identities": {
+          "asr": "bcfa08a7e391d556b1b2adc74149796711a9da1ae374f7e4d4fc5d3c4a5bb246",
+          "server": "50922358d0295355ae070512c6f1f3fa4054bdab001e70740ab9a8762822a45c",
+          "tts": "0c3746d5629d362b8c8312b8635c87d97bad1011a103a129c0651dd8f1874656",
+          "vlm": "3284e636cc6e672354e3b358e7b2a3f3055b7a6ed5116412308cae2f2dc0f9a2",
+          "wan": "041f5fc80c17f26584bd10dadf290402e4b316b93ea897699221515ad27ac615"
+        },
+        "config_identity": {
+          "asr": {
+            "config.json": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f"
+          },
+          "flux": {
+            "model_index.json": "51a76cb1cf3ed37423a1128c79c22faee8e6fbe7f5aaeb737f0a258930dbaac0"
+          },
+          "tts": {
+            "config.json": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
+          },
+          "vlm": {
+            "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+          },
+          "wan": {
+            "model_index.json": "6a72faeb564b0e894aea8fc4ef27241106eb739e8584e869b61589a65473add7"
+          }
+        },
+        "coverage": {
+          "abort_retry": true,
+          "all_six_lanes_active": true,
+          "delayed_read_observed": true,
+          "foreign_gpu_process_count": 91,
+          "full_duplex_barge_in": true,
+          "gpu0_idle_after_cleanup": true,
+          "gpu_pid_namespaces_compared_directly": false,
+          "interleaved_visual": true,
+          "lease_violation_count": 0,
+          "malformed_audio": true,
+          "malformed_dimensions": true,
+          "native_pcm_join_counts": {
+            "http": 15,
+            "realtime": 23
+          },
+          "native_public_pcm_exact": true,
+          "natural_video_input": true,
+          "output_stage_overlap_count": 0,
+          "owned_processes_exited": true,
+          "perceptual_quality": "NOT_RUN",
+          "physical_playback": "NOT_RUN",
+          "playback_ack_after_virtual_consumption": true,
+          "production": "NOT_RUN",
+          "provenance_rehash": "EXACT",
+          "server_max_in_flight": 8,
+          "text_code": true
+        },
+        "declared_full_gate_status": "NOT_RUN",
+        "deployment_scope": "TASK_OWNED_LOOPBACK_PHYSICAL_GPU0_ONLY",
+        "failures": [
+          "excess GPU 0 compute process appeared in retained resource samples",
+          "hard gate elapsed_at_least_1800 failed",
+          "hard gate gpu0_exclusive_samples failed",
+          "hard gate driver_completed failed"
+        ],
+        "hard_gates": {
+          "all_fault_families_covered": true,
+          "all_modalities_covered": true,
+          "all_six_lanes_active": true,
+          "client_count_exact": true,
+          "cross_session_event_count_zero": true,
+          "delayed_read_observed": true,
+          "device_growth_bounded": true,
+          "driver_completed": false,
+          "duplicate_terminal_count_zero": true,
+          "elapsed_at_least_1800": false,
+          "final_in_flight_zero": true,
+          "gpu0_exclusive_samples": false,
+          "gpu0_idle_after_cleanup": true,
+          "lease_violation_zero": true,
+          "native_public_pcm_exact": true,
+          "output_stage_overlap_zero": true,
+          "owned_processes_exited": true,
+          "pcm_mismatch_count_zero": true,
+          "playback_ack_after_virtual_consumption": true,
+          "ports_isolated": true,
+          "process_crash_count_zero": true,
+          "provenance_exact": true,
+          "recovery_complete": true,
+          "requests_present": true,
+          "rss_growth_bounded": true,
+          "server_admission_parallel": true,
+          "stale_event_count_zero": true,
+          "unexpected_error_count_zero": true
+        },
+        "limitations": [
+          "five-GPU resident production NOT_RUN",
+          "physical acoustics NOT_RUN",
+          "perceptual quality NOT_RUN",
+          "deployment NOT_RUN"
+        ],
+        "metrics": {
+          "cancelled_count": 91,
+          "client_count": 6,
+          "completed_count": 449,
+          "cross_session_event_count": 0,
+          "device_growth_mib": 0.0,
+          "duplicate_terminal_count": 0,
+          "elapsed_s": 475.581969447,
+          "expected_fault_count": 97,
+          "final_in_flight": 0,
+          "latency_p95_ms": 5421.070175,
+          "pcm_mismatch_count": 0,
+          "process_crash_count": 0,
+          "recovery_attempt_count": 97,
+          "recovery_success_count": 97,
+          "request_count": 546,
+          "rss_growth_mib": 47.6796875,
+          "stale_event_count": 0,
+          "unexpected_error_count": 0
+        },
+        "model_identities": {
+          "asr": {
+            "file_count": 13,
+            "model_id": "Qwen/Qwen3-ASR-1.7B",
+            "tree_sha256": "2b634d66b56817e11496d76402b9c282fb59235ff1a5df22a4e5e261f8bf1d06"
+          },
+          "flux": {
+            "file_count": 25,
+            "model_id": "black-forest-labs/FLUX.2-klein-4B",
+            "tree_sha256": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997"
+          },
+          "tts": {
+            "file_count": 14,
+            "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            "tree_sha256": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d"
+          },
+          "vlm": {
+            "file_count": 29,
+            "model_id": "Qwen/Qwen3.8-27B",
+            "tree_sha256": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304"
+          },
+          "wan": {
+            "file_count": 30,
+            "model_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "tree_sha256": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+          }
+        },
+        "production_status": "NOT_RUN",
+        "raw_evidence": {
+          "arm_manifest": {
+            "file_count": 7,
+            "self_excluded": true,
+            "sha256": "d9dd1b649f3ab7de57ba76b90bebc909105a9e2193f15513bd83413470ac4fc5"
+          },
+          "input_sha256": {
+            "barge_in_wav": "64fbd9f7ecafc160ba457595570f4a8b338f10e16acc0933be30aedc7eedf86d",
+            "natural_video": "22df061c95db2546973d2c4a7a9a74728b0dd1df05ba7c57bab6e2aefa8d7dd7",
+            "voice_wav": "9fe58914522a29ac7afde36af931f83b028f6540f23b29bb06d48ae1f98a1d4a"
+          },
+          "manifest": "SHA256SUMS",
+          "manifest_file_count": 2095,
+          "manifest_self_excluded": true,
+          "run_sha256": "f020a6cadc210e52eeca75f910fa211cf31dbf93fab0a01fe2360a00b36ca9cb",
+          "verification_sha256": "2cd398e2914f1b75f76f55c1867d992ef9230d0bc7de85042ee5b39bfe9702a3"
+        },
+        "result_sha256": "27bc1c2a933be263f3914a8ad3ad638bac8f69f786059e54fab33bc78011a75c",
+        "source_identity": {
+          "commit": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7",
+          "execution_commit": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7",
+          "hardware": {
+            "accelerator": "NVIDIA H20",
+            "physical_gpu": 0
+          },
+          "harness_sha256": "2085d4e10768f35f27fe97cadf8ac293ca45b6bdf651906d83def229c1736942",
+          "preregistration_sha256": "3a64718ced0a389aece8f7a532a2888f9103c84a6805eba0dd4ec71574e94687",
+          "source_tree_sha256": "0fb8b6f4f9fd57771ffb571f39326472703bcb62"
+        },
+        "status": "FAIL"
+      },
+      "case_id": "NS-07",
+      "contract_drivers": [
+        {
+          "args": [],
+          "driver": "tests/ns07_six_way_soak_test.py",
+          "driver_sha256": "3aa149d9bdbf220819019fe8e2fdb8993998e31720948c585641b2a078d51589",
+          "exit_code": 0,
+          "log": {
+            "bytes": 1874,
+            "file": "contracts/NS-07/tests_ns07_six_way_soak_test.py.log",
+            "sha256": "d8a228ffa77a4e72ae90753fef814670fc59ca35c46fb10834c75d5b2c5feaeb"
+          },
+          "status": "PASS"
+        }
+      ],
+      "contract_scope": "Deterministic schedule, event accounting, and fail-closed scorecard tests; not a real soak.",
+      "contract_status": "PASS",
+      "hard_thresholds": {
+        "client_count": 6,
+        "cross_session_or_stale_events": 0,
+        "duplicate_terminals": 0,
+        "duration_s_min": 1800,
+        "fault_recovery_rate": 1.0,
+        "final_in_flight": 0,
+        "pcm_mismatches": 0,
+        "process_crashes": 0
+      },
+      "live_requirements": [
+        "six simultaneous logical clients",
+        "1800 seconds",
+        "real text, visual, voice, and natural-video stages"
+      ],
+      "north_star_hard_gate": "FAIL",
+      "paired": {
+        "after_minus_before": {
+          "cancelled_count": 245,
+          "client_count": 0,
+          "completed_count": 1496,
+          "cross_session_event_count": 0,
+          "device_growth_mib": 0.0,
+          "duplicate_terminal_count": 0,
+          "elapsed_s": 1324.4187998070001,
+          "expected_fault_count": 247,
+          "final_in_flight": 0,
+          "latency_p95_ms": 62.07757600000059,
+          "pcm_mismatch_count": 0,
+          "process_crash_count": 0,
+          "recovery_attempt_count": 247,
+          "recovery_success_count": 247,
+          "request_count": 1744,
+          "rss_growth_mib": -0.9375,
+          "stale_event_count": 0,
+          "unexpected_error_count": 1
+        },
+        "failures": [
+          "Before did not execute the full six-client 1800-second schedule",
+          "Before/After harness_sha256 differs",
+          "Before/After preregistration_sha256 differs",
+          "After isolated engineering gate is not ISOLATED_PASS",
+          "After unexpected_error_count is nonzero"
+        ],
+        "no_regression": false,
+        "status": "NOT_PROMOTED"
+      },
+      "title": "Six-way mixed-modality resilience and fault recovery"
+    },
+    {
+      "after": {
+        "binary_identities": {
+          "browser_executable_sha256": "377a9fc07b495c3b8d0ab8ec1fdfd153641759f9756fea34d8dfce4de82f5025",
+          "macos_executable": "NOT_RUN"
+        },
+        "config_identity": {
+          "advanced_default": "collapsed",
+          "keyboard_action_network_requests": 0,
+          "registry": "benchmarks/north-star/cases.json"
+        },
+        "coverage": {
+          "chromium_default_dom": "PASS",
+          "human_walkthrough": "NOT_RUN",
+          "macos_real": "NOT_RUN",
+          "macos_static": "PASS",
+          "physical_audio": "NOT_RUN",
+          "web_contract": "PASS"
+        },
+        "declared_full_gate_status": "NOT_RUN",
+        "deployment_scope": "UNSPECIFIED",
+        "failures": [],
+        "hard_gates": {
+          "advanced_initially_collapsed": true,
+          "human_walkthrough": "NOT_RUN",
+          "macos_static": "PASS",
+          "real_macos": "NOT_RUN",
+          "web_contracts": "PASS",
+          "zero_default_developer_controls": true
+        },
+        "limitations": [
+          "Chromium default-DOM and deterministic replay checks are not a human NS journey.",
+          "Real macOS ummmlx execution, microphone/speaker acoustics, and perceptual quality are NOT_RUN.",
+          "Full NS-08 PASS is not permitted from this arm report."
+        ],
+        "metrics": {
+          "browser_checks_failed": 0,
+          "cancellation_retry_exact": 1,
+          "contract_checks_failed": 0,
+          "export_import_exact": 1,
+          "reconnect_exact": 1,
+          "source_bound_revision": 1,
+          "visible_frame_control_count": 0,
+          "visible_modality_control_count": 0,
+          "visible_routing_control_count": 0,
+          "visible_sampling_control_count": 0,
+          "visible_voice_routing_control_count": 0
+        },
+        "model_identities": {},
+        "production_status": "NOT_RUN",
+        "raw_evidence": {
+          "arm_manifest": {
+            "file_count": 7,
+            "self_excluded": true,
+            "sha256": "1309f732fb03860c4b9db245366001cac0e8263de9b1717d6f3ab4f235b7217f"
+          },
+          "browser_result_sha256": "87fb979e51ec9c72eb4a2042f271335bcea0cf5681cd6cfa2e91f5873d53f6a2",
+          "contract_logs": [
+            {
+              "driver": "tests/web_ui_contract_test.py",
+              "exit_code": 0,
+              "log_bytes": 564,
+              "log_sha256": "c4003765af94d064155e04fb52b1ad4304c3a945773f82cf9a943e9578a3746f",
+              "status": "PASS"
+            },
+            {
+              "driver": "tests/macos_zero_control_test.py",
+              "exit_code": 0,
+              "log_bytes": 104,
+              "log_sha256": "62cfbeb2911bb226088bfb0918eb4b05008ea70b20bce854ee2ca8a564bd37a5",
+              "status": "PASS"
+            }
+          ],
+          "default_screenshot_sha256": "bfe15e9113eee96d0bb087c8c7b445b23432d9ec2269579d1aa574efa3b6a66d"
+        },
+        "result_sha256": "9cdcdc00e1b67e17711ea9119e890ba85769fe51109011dd352c7597f18d42fc",
+        "source_identity": {
+          "adapter_sha256": "cb0b0205c72a6ec45603e4e6f275eb61496d94e929dd0c81ed558c4ba60165bf",
+          "app_swift_sha256": "60c62007f18320694c2a811c41ce9d7514f76589e400fd32bc549529c604d89d",
+          "chat_model_sha256": "788b8482cfe197240c4be3f31417f72af764dc77f6302fd9044433b4c919c74b",
+          "commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
+          "web_sha256": "4f3939e2e80f9e980529e308737a117a0c5fc5bce1fd9e8da668593a8666032b"
+        },
+        "status": "CONTRACT_PASS"
+      },
+      "before": {
+        "binary_identities": {
+          "browser_executable_sha256": "377a9fc07b495c3b8d0ab8ec1fdfd153641759f9756fea34d8dfce4de82f5025",
+          "macos_executable": "NOT_RUN"
+        },
+        "config_identity": {
+          "advanced_default": "collapsed",
+          "keyboard_action_network_requests": 0,
+          "registry": "benchmarks/north-star/cases.json"
+        },
+        "coverage": {
+          "chromium_default_dom": "FAIL",
+          "human_walkthrough": "NOT_RUN",
+          "macos_real": "NOT_RUN",
+          "macos_static": "NOT_COVERED",
+          "physical_audio": "NOT_RUN",
+          "web_contract": "PASS"
+        },
+        "declared_full_gate_status": "NOT_RUN",
+        "deployment_scope": "UNSPECIFIED",
+        "failures": [
+          "zero default developer controls"
+        ],
+        "hard_gates": {
+          "advanced_initially_collapsed": true,
+          "human_walkthrough": "NOT_RUN",
+          "macos_static": "NOT_COVERED",
+          "real_macos": "NOT_RUN",
+          "web_contracts": "PASS",
+          "zero_default_developer_controls": false
+        },
+        "limitations": [
+          "Chromium default-DOM and deterministic replay checks are not a human NS journey.",
+          "Real macOS ummmlx execution, microphone/speaker acoustics, and perceptual quality are NOT_RUN.",
+          "Full NS-08 PASS is not permitted from this arm report."
+        ],
+        "metrics": {
+          "browser_checks_failed": 1,
+          "cancellation_retry_exact": 1,
+          "contract_checks_failed": 0,
+          "export_import_exact": 1,
+          "reconnect_exact": 1,
+          "source_bound_revision": 1,
+          "visible_frame_control_count": 0,
+          "visible_modality_control_count": 0,
+          "visible_routing_control_count": 0,
+          "visible_sampling_control_count": 0,
+          "visible_voice_routing_control_count": 2
+        },
+        "model_identities": {},
+        "production_status": "NOT_RUN",
+        "raw_evidence": {
+          "arm_manifest": {
+            "file_count": 7,
+            "self_excluded": true,
+            "sha256": "d9dd1b649f3ab7de57ba76b90bebc909105a9e2193f15513bd83413470ac4fc5"
+          },
+          "browser_result_sha256": "7d65cbb532f6ed0d10f08e1670b73876c229cb13cb419ecf736b4799a05fec0e",
+          "contract_logs": [
+            {
+              "driver": "tests/web_ui_contract_test.py",
+              "exit_code": 0,
+              "log_bytes": 564,
+              "log_sha256": "c4003765af94d064155e04fb52b1ad4304c3a945773f82cf9a943e9578a3746f",
+              "status": "PASS"
+            },
+            {
+              "driver": "tests/macos_zero_control_test.py",
+              "exit_code": null,
+              "log_sha256": null,
+              "status": "NOT_COVERED"
+            }
+          ],
+          "default_screenshot_sha256": "9760ede66561baba30b3edccaff1f4aef60d3b80332a0c114cff4e58efa73c0c"
+        },
+        "result_sha256": "17cbb7c057c0d4c95aa42d7ac23a167fc9e794b61a94449895a89d9c6e934483",
+        "source_identity": {
+          "adapter_sha256": "cb0b0205c72a6ec45603e4e6f275eb61496d94e929dd0c81ed558c4ba60165bf",
+          "app_swift_sha256": "a0dfbd057967811903b9f27913a38703d14d429163fb7f6c47bd347474bd9c45",
+          "chat_model_sha256": "044aefbd39185b3dd0890935ba631dd093e814bd8f18de755ddc3c472188f3bd",
+          "commit": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7",
+          "web_sha256": "963434a7e0f737860ddb3d02d559474d29385ee93cc8e096b3c88ca4d7abd43b"
+        },
+        "status": "FAIL"
+      },
+      "case_id": "NS-08",
+      "contract_drivers": [
+        {
+          "args": [],
+          "driver": "tests/web_ui_contract_test.py",
+          "driver_sha256": "6e24f89ca5112d5a6bf9a1d6ac18d162170d15c08b096310708da40524d6ec23",
+          "exit_code": 0,
+          "log": {
+            "bytes": 564,
+            "file": "contracts/NS-08/tests_web_ui_contract_test.py.log",
+            "sha256": "c4003765af94d064155e04fb52b1ad4304c3a945773f82cf9a943e9578a3746f"
+          },
+          "status": "PASS"
+        },
+        {
+          "args": [],
+          "driver": "tests/ns08_zero_control_test.py",
+          "driver_sha256": "691af1c7011eb9212c311519022a9a06fe6ac6b0ceb4893eaa6105747a91c766",
+          "exit_code": 0,
+          "log": {
+            "bytes": 104,
+            "file": "contracts/NS-08/tests_ns08_zero_control_test.py.log",
+            "sha256": "bfbc056a35d4f8e02168daee35a768fb736497f3a5ffd2892af4bf0955385137"
+          },
+          "status": "PASS"
+        }
+      ],
+      "contract_scope": "Web wire/UI contracts and macOS static UI boundary; not macOS execution or a human walkthrough.",
+      "contract_status": "PASS",
+      "hard_thresholds": {
+        "blocking_defects": 0,
+        "manual_modality_or_frame_control_interactions": 0,
+        "session_round_trip_exact": true,
+        "web_and_macos_human_walkthrough": "REQUIRED"
+      },
+      "live_requirements": [
+        "real Web journey",
+        "real macOS ummmlx journey",
+        "human NS-01/02/04/05 walkthrough",
+        "export, clear, import, and reconnect"
+      ],
+      "north_star_hard_gate": "NOT_RUN",
+      "paired": {
+        "after_minus_before": {
+          "browser_checks_failed": -1,
+          "cancellation_retry_exact": 0,
+          "contract_checks_failed": 0,
+          "export_import_exact": 0,
+          "reconnect_exact": 0,
+          "source_bound_revision": 0,
+          "visible_frame_control_count": 0,
+          "visible_modality_control_count": 0,
+          "visible_routing_control_count": 0,
+          "visible_sampling_control_count": 0,
+          "visible_voice_routing_control_count": -2
+        },
+        "after_visible_developer_controls": 0,
+        "before_visible_developer_controls": 2,
+        "failures": [],
+        "no_regression": true,
+        "status": "PAIRED_ENGINEERING_IMPROVEMENT"
+      },
+      "title": "Zero-control Web and macOS journey with lossless session restoration"
+    }
+  ],
+  "claim_boundary": "Offline contracts and isolated engineering evidence never substitute for production, macOS, physical-acoustic, perceptual-quality, or human hard gates.",
+  "execution": {
+    "contract_timeout_s": 900,
+    "contracts_skipped": false,
+    "python_version": "3.11.2"
+  },
+  "macos_and_human_ns08": "NOT_RUN",
+  "registry_sha256": "c8913c5729d73401b114475fda5819d0987a56d5902639b792420afdd7def464",
+  "resident_production_ns07": "FAIL",
+  "schema": "umminfer-ns-scorecard/v1",
+  "scoreboard_update_allowed": false,
+  "source_identity": {
+    "commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
+    "harness_sha256": "743df02b948aded6b24f2c10f2716aea0fd35416aa8a89945a26190beb662614",
+    "registry_sha256": "c8913c5729d73401b114475fda5819d0987a56d5902639b792420afdd7def464",
+    "tracked_runtime_dirty": false
+  },
+  "target_outcomes": {
+    "NS-07": {
+      "after_minus_before": {
+        "cancelled_count": 245,
+        "client_count": 0,
+        "completed_count": 1496,
+        "cross_session_event_count": 0,
+        "device_growth_mib": 0.0,
+        "duplicate_terminal_count": 0,
+        "elapsed_s": 1324.4187998070001,
+        "expected_fault_count": 247,
+        "final_in_flight": 0,
+        "latency_p95_ms": 62.07757600000059,
+        "pcm_mismatch_count": 0,
+        "process_crash_count": 0,
+        "recovery_attempt_count": 247,
+        "recovery_success_count": 247,
+        "request_count": 1744,
+        "rss_growth_mib": -0.9375,
+        "stale_event_count": 0,
+        "unexpected_error_count": 1
+      },
+      "failures": [
+        "Before did not execute the full six-client 1800-second schedule",
+        "Before/After harness_sha256 differs",
+        "Before/After preregistration_sha256 differs",
+        "After isolated engineering gate is not ISOLATED_PASS",
+        "After unexpected_error_count is nonzero"
+      ],
+      "no_regression": false,
+      "status": "NOT_PROMOTED"
+    },
+    "NS-08": {
+      "after_minus_before": {
+        "browser_checks_failed": -1,
+        "cancellation_retry_exact": 0,
+        "contract_checks_failed": 0,
+        "export_import_exact": 0,
+        "reconnect_exact": 0,
+        "source_bound_revision": 0,
+        "visible_frame_control_count": 0,
+        "visible_modality_control_count": 0,
+        "visible_routing_control_count": 0,
+        "visible_sampling_control_count": 0,
+        "visible_voice_routing_control_count": -2
+      },
+      "after_visible_developer_controls": 0,
+      "before_visible_developer_controls": 2,
+      "failures": [],
+      "no_regression": true,
+      "status": "PAIRED_ENGINEERING_IMPROVEMENT"
+    }
+  }
+}

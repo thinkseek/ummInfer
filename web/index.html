@@ -108,6 +108,8 @@
     padding: 12px 16px; background: var(--surface);
   }
   #settings label { display: flex; flex-direction: column; gap: 4px; font-size: var(--f-caption); color: var(--secondary); }
+  #settings label.developer-control { display: none; }
+  #settings:has(#advanced[open]) label.developer-control { display: flex; }
   #settings label.check { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 6px; }
   #settings label.dimmed { opacity: .48; }
   #settings input:disabled, #settings select:disabled { opacity: .5; cursor: default; }
@@ -447,7 +449,8 @@
   </select>
   <div class="export-group" role="group" aria-label="Export session">
     <select id="exportFormat" aria-label="Export format" disabled>
-      <option value="json" selected>JSON</option>
+      <option value="replay" selected>JSON</option>
+      <option value="json">Compact JSON (metadata only)</option>
       <option value="markdown">Markdown</option>
     </select>
     <button id="exportSession" type="button" disabled
@@ -466,29 +469,29 @@
 <section id="settings">
   <label>Base URL<input id="endpoint" value="http://127.0.0.1:30000/v1" spellcheck="false"></label>
   <label>Model<input id="model" value="Qwen2.5-0.5B-Instruct-4bit" spellcheck="false"></label>
-  <label class="check"><input type="checkbox" id="image"> Image</label>
-  <label class="check"><input type="checkbox" id="audio"> Audio</label>
-  <label class="check"><input type="checkbox" id="video"> Video</label>
-  <label>Voice<input id="voice" value="vivian" spellcheck="false"></label>
-  <label class="check"><input type="checkbox" id="narrative" checked> Narrative</label>
-  <label>Visuals<select id="visualMode">
+  <label class="check developer-control"><input type="checkbox" id="image"> Image</label>
+  <label class="check developer-control"><input type="checkbox" id="audio"> Audio</label>
+  <label class="check developer-control"><input type="checkbox" id="video"> Video</label>
+  <label class="developer-control">Voice<input id="voice" value="vivian" spellcheck="false"></label>
+  <label class="check developer-control"><input type="checkbox" id="narrative" checked> Narrative</label>
+  <label class="developer-control">Visuals<select id="visualMode">
     <option value="auto">Auto: Img+Vid</option>
     <option value="image">Image only</option>
     <option value="video">Video only</option>
   </select></label>
-  <label>Max slots<input id="maxSlots" type="number" min="1" max="4" value="3" style="width:64px"></label>
-  <label class="check" title="In Narrative mode, allow pure-text responses for math, code, or factual prompts without redundant visuals"><input type="checkbox" id="allowTextOnly" checked> Smart text-only</label>
-  <label title="Cross-slot visual continuity across narrative visual beats">Continuity<select id="narrativeContinuity">
-    <option value="off" selected>Off</option>
+  <label class="developer-control">Max slots<input id="maxSlots" type="number" min="1" max="4" value="3" style="width:64px"></label>
+  <label class="check developer-control" title="In Narrative mode, allow pure-text responses for math, code, or factual prompts without redundant visuals"><input type="checkbox" id="allowTextOnly" checked> Smart text-only</label>
+  <label class="developer-control" title="Cross-slot visual continuity across narrative visual beats">Continuity<select id="narrativeContinuity">
+    <option value="off">Off</option>
     <option value="prompt_anchor">Prompt anchor</option>
-    <option value="i2v_chain">I2V chain</option>
+    <option value="i2v_chain" selected>I2V chain</option>
   </select></label>
-  <label title="Optional cross-slot style cue (max 256 UTF-8 bytes)">Style anchor<input id="styleAnchor" type="text" placeholder="Optional style cue (≤256B)" style="width:190px"></label>
-  <label class="check" title="Enable Wan2.2 TeaCache (0.05) for sub-10s video generation"><input type="checkbox" id="fastVideo"> Fast video</label>
+  <label class="developer-control" title="Optional cross-slot style cue (max 256 UTF-8 bytes)">Style anchor<input id="styleAnchor" type="text" placeholder="Optional style cue (≤256B)" style="width:190px"></label>
+  <label class="check developer-control" title="Enable Wan2.2 TeaCache (0.05) for sub-10s video generation"><input type="checkbox" id="fastVideo"> Fast video</label>
   <details id="advanced">
     <summary>Options</summary>
     <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;align-items:center;">
-      <label>Max tokens<input id="maxTokens" type="number" min="1" max="4096" value="256" style="width:76px"></label>
+      <label>Max tokens<input id="maxTokens" type="number" min="1" max="4096" value="512" style="width:76px"></label>
       <label>Temp<input id="temperature" type="number" step="0.1" min="0" max="2" value="0" style="width:64px"></label>
       <label>top_p<input id="topP" type="number" step="0.05" min="0.05" max="1" placeholder="1.0" style="width:68px"></label>
       <label>Seed<input id="seed" type="number" step="1" placeholder="auto" style="width:84px"></label>
@@ -819,6 +822,7 @@ async function decodeAudioToWav16kBase64(arrayBuffer) {
 let attachedImage = null; // { name, dataURL }
 let attachedVideo = null; // { name, dataURL }
 let attachedAudio = null; // { name, wavBase64 }
+let revisionSource = null; // { slotId, dataURL, sha256 }
 let micState = null;      // { stream, ctx, src, proc, chunks, sampleRate }
 
 function renderAttachments() {
@@ -836,7 +840,7 @@ function renderAttachments() {
   };
   if (attachedImage) {
     addChip(`Image: ${attachedImage.name}`, () => {
-      attachedImage = null; ui.askImage.value = ''; renderAttachments();
+      attachedImage = null; revisionSource = null; ui.askImage.value = ''; renderAttachments();
     });
   }
   if (attachedVideo) {
@@ -859,6 +863,7 @@ ui.askImage.addEventListener('change', async () => {
   try {
     const dataURL = await readFileAsDataURL(ui.askImage);
     attachedImage = { name: file.name, dataURL };
+    revisionSource = null;
     attachedVideo = null; ui.askVideo.value = '';
     renderAttachments();
   } catch (err) { showError(err.message); }
@@ -876,7 +881,7 @@ ui.askVideo.addEventListener('change', async () => {
   try {
     const dataURL = await readFileAsDataURL(ui.askVideo);
     attachedVideo = { name: file.name, dataURL };
-    attachedImage = null; ui.askImage.value = '';
+    attachedImage = null; revisionSource = null; ui.askImage.value = '';
     renderAttachments();
     if (ui.status.textContent === SHOWCASE_PRESETS.temporal_video_qa.missingVideoHint) {
       setStatus('Ready', false);
@@ -1554,6 +1559,9 @@ function addTurn(role, text) {
     asrText: '', tailText: null, interruptedBadgeEl: null,
     interrupted: false, spokenBytes: null,
     slots: new Map(), nonSlotVisuals: [], telemetry: null,
+    events: [], mediaArtifacts: [], rawChunks: [], rawCaptureBytes: 0, rawCaptureError: null,
+    directRenders: [], completedArtifactIds: new Set(),
+    requestId: '', terminal: null, outcome: null, visualReference: null,
   };
 }
 
@@ -1863,18 +1871,25 @@ function createSlot(id, prompt, kind, continuity = null) {
   const regen = document.createElement('button');
   regen.type = 'button';
   regen.textContent = 'Regenerate';
+  const revise = document.createElement('button');
+  revise.type = 'button';
+  revise.textContent = 'Revise';
+  revise.disabled = true;
+  revise.title = 'Use this exact image as visual context and the edit source for a directed follow-up';
   const dl = document.createElement('a');
   dl.className = 'dl';
   dl.textContent = 'Download';
   dl.hidden = true;
-  actions.append(swap, regen, dl);
+  actions.append(swap, regen, revise, dl);
 
   el.append(head, media, actions);
 
   const slot = { id, prompt, kind, el, head, caption, continuityEl,
-                 continuityMeta: null, media, badge, swap, regen, dl,
+                 continuityMeta: null, media, badge, swap, regen, revise, dl,
                  url: '', cache: {}, loading: false, hasError: false,
-                 error: '', bytes: null, sha256: '' };
+                 error: '', bytes: null, sha256: '', terminalState: 'pending',
+                 artifactMeta: {}, imageSha256: '',
+                 renderEpoch: 0, renderController: null };
   swap.addEventListener('click', () => {
     renderSlot(slot, slot.kind === 'video' ? 'image' : 'video');
   });
@@ -1882,11 +1897,28 @@ function createSlot(id, prompt, kind, continuity = null) {
     delete slot.cache[slot.kind];
     renderSlot(slot, slot.kind);
   });
+  revise.addEventListener('click', () => beginSlotRevision(slot));
   return slot;
+}
+
+function beginSlotRevision(slot) {
+  if (running || !slot?.imageDataURL) return false;
+  attachedImage = { name: `${slot.id}-revision-source.png`, dataURL: slot.imageDataURL };
+  revisionSource = { slotId: slot.id, dataURL: slot.imageDataURL, sha256: slot.imageSha256 || slot.sha256 || '' };
+  ui.imageFile.value = '';
+  attachedVideo = null;
+  ui.askVideo.value = '';
+  ui.prompt.value = `Revise existing visual ${slot.id}: `;
+  renderAttachments();
+  ui.prompt.focus();
+  ui.prompt.setSelectionRange(ui.prompt.value.length, ui.prompt.value.length);
+  setStatus(`Revising ${slot.id} · exact source attached`, false);
+  return true;
 }
 
 function showSlotLoading(slot) {
   slot.hasError = false;
+  slot.terminalState = 'running';
   slot.error = '';
   if (slot.el?.dataset) {
     delete slot.el.dataset.error;
@@ -1903,6 +1935,7 @@ function showSlotLoading(slot) {
 
 function showSlotError(slot, message) {
   slot.hasError = true;
+  slot.terminalState = 'failed';
   slot.error = typeof message === 'string' ? message : '';
   if (slot.el?.dataset) {
     slot.el.dataset.error = 'true';
@@ -1916,6 +1949,24 @@ function showSlotError(slot, message) {
   note.textContent = `${message || 'Generation failed'} · tap Regenerate`;
   overlay.append(note);
   slot.media.replaceChildren(overlay);
+}
+
+function showSlotCancelled(slot, message = 'Cancelled before visual completion') {
+  slot.hasError = false;
+  slot.error = '';
+  slot.terminalState = 'aborted';
+  slot.el?.classList?.remove('has-error');
+  if (slot.el?.dataset) {
+    delete slot.el.dataset.error;
+    slot.el.dataset.terminalState = 'aborted';
+  }
+  const note = document.createElement('div');
+  note.className = 'slot-imported-note slot-cancelled-note';
+  note.setAttribute('role', 'status');
+  note.textContent = message;
+  slot.media.replaceChildren(note);
+  slot.swap.disabled = true;
+  slot.regen.disabled = false;
 }
 
 function showSlotImportedMetadata(slot) {
@@ -1936,6 +1987,11 @@ function showSlotImportedMetadata(slot) {
   slot.media.replaceChildren(note);
 }
 
+function recordSlotVariant(slot, kind, bytes, sha256) {
+  slot.artifactMeta[kind] = { kind, bytes, sha256 };
+  if (kind === 'image') slot.imageSha256 = sha256 || slot.imageSha256;
+}
+
 function setSlotMedia(slot, kind, url) {
   slot.hasError = false;
   slot.error = '';
@@ -1946,6 +2002,11 @@ function setSlotMedia(slot, kind, url) {
   slot.el?.classList?.remove('has-error');
   slot.kind = kind;
   slot.url = url;
+  const variant = slot.artifactMeta[kind];
+  if (variant) {
+    slot.bytes = variant.bytes;
+    slot.sha256 = variant.sha256;
+  }
   slot.cache[kind] = url;
   slot.media.replaceChildren();
   if (kind === 'video') {
@@ -1975,6 +2036,10 @@ function setSlotMedia(slot, kind, url) {
   slot.dl.href = url;
   slot.dl.download = kind === 'video' ? 'slot.mp4' : 'slot.png';
   slot.dl.hidden = false;
+  slot.swap.disabled = false;
+  slot.regen.disabled = false;
+  slot.revise.disabled = !slot.imageDataURL;
+  slot.terminalState = 'completed';
 }
 
 function recordSlotContinuityTelemetry(targetTurn, meta) {
@@ -2008,6 +2073,7 @@ function onVisualSlot(unified) {
   const continuity = visualSlotContinuityBadge(unified);
   recordSlotContinuityTelemetry(turn, unified);
   const slot = createSlot(slotId, unified.prompt || '', kind, continuity);
+  slot.slotIndex = Number.isInteger(unified.slot_index) ? unified.slot_index : undefined;
   slot.continuityMeta = {
     continuity_mode: typeof unified?.continuity_mode === 'string' ? unified.continuity_mode : '',
     anchor_slot_index: Number.isInteger(unified?.anchor_slot_index) && unified.anchor_slot_index >= 0
@@ -2027,6 +2093,10 @@ async function renderSlot(slot, kind) {
     return;
   }
   slot.loading = true;
+  const epoch = ++slot.renderEpoch;
+  const renderSession = sessionID;
+  const renderController = new AbortController();
+  slot.renderController = renderController;
   showSlotLoading(slot);
   try {
     const body = { kind, prompt: slot.prompt };
@@ -2051,6 +2121,7 @@ async function renderSlot(slot, kind) {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
+      signal: renderController.signal,
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
@@ -2061,17 +2132,63 @@ async function renderSlot(slot, kind) {
     const actual = hinted === 'video' ? 'video' : 'image';
     const blob = await res.blob();
     const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (slot.renderEpoch !== epoch || sessionID !== renderSession || !slot.el.isConnected) return;
     slot.bytes = bytes.length;
     slot.sha256 = '';
+    const artifactSha = await sha256Hex(bytes);
+    let sourceSha = '';
+    if (body.image) {
+      sourceSha = await sha256Hex(decodeBase64(body.image.split(';base64,')[1] || ''));
+    }
+    if (slot.renderEpoch !== epoch || sessionID !== renderSession || !slot.el.isConnected) return;
+    recordSlotVariant(slot, actual, bytes.length, artifactSha);
     if (actual === 'image') {
       slot.imageDataURL = dataURLFor(type || blob.type || 'image/png', bytes);
+    }
+    const ownerTurn = sessionTurns.find((entry) =>
+      [...(entry.assistantTurn?.slots?.values?.() || [])].includes(slot))?.assistantTurn;
+    if (ownerTurn) {
+      const options = { ...body };
+      delete options.image;
+      ownerTurn.directRenders.push({
+        slot_id: slot.id, kind: actual, mime_type: type || blob.type,
+        bytes: bytes.length, sha256: artifactSha, source_sha256: sourceSha || null,
+        prompt: slot.prompt, request_options: options,
+        response_base64: encodeBase64(bytes),
+      });
     }
     setSlotMedia(slot, actual, URL.createObjectURL(new Blob([bytes], { type: type || blob.type })));
     scrollToEnd();
   } catch (err) {
-    showSlotError(slot, err.message);
+    if (err.name !== 'AbortError' && slot.renderEpoch === epoch && slot.el.isConnected) {
+      showSlotError(slot, err.message);
+    }
   } finally {
-    slot.loading = false;
+    if (slot.renderEpoch === epoch) {
+      slot.loading = false;
+      slot.renderController = null;
+    }
+  }
+}
+
+function cancelSlotRender(slot) {
+  slot.renderEpoch += 1;
+  slot.renderController?.abort();
+  slot.renderController = null;
+  slot.loading = false;
+}
+
+function applyDirectRenders(targetTurn) {
+  for (const record of targetTurn.directRenders || []) {
+    const slot = targetTurn.slots.get(record.slot_id);
+    if (!slot) throw new Error(`Replay direct render references missing ${record.slot_id}.`);
+    const bytes = record.bytesData || decodeBase64(record.response_base64);
+    recordSlotVariant(slot, record.kind, bytes.length, record.sha256);
+    if (record.kind === 'image') {
+      slot.imageDataURL = dataURLFor(record.mime_type || 'image/png', bytes);
+      slot.imageSha256 = record.sha256;
+    }
+    setSlotMedia(slot, record.kind, URL.createObjectURL(new Blob([bytes], { type: record.mime_type })));
   }
 }
 
@@ -3018,18 +3135,40 @@ async function sha256Hex(bytes) {
   return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+const ARTIFACT_STABLE_FIELDS = Object.freeze([
+  'mime_type', 'media_type', 'slot_id', 'slot_index', 'stream_index',
+  'format', 'sample_rate', 'channels',
+]);
+
+function requireStableArtifactAttribution(first, chunk) {
+  for (const field of ARTIFACT_STABLE_FIELDS) {
+    if (!Object.is(first[field], chunk[field])) {
+      throw new Error(`Artifact ${chunk.artifact_id} changed ${field} between chunks.`);
+    }
+  }
+}
+
 async function ingestArtifact(chunk) {
+  const targetTurn = turn;
+  if (!targetTurn) throw new Error('Artifact arrived without an owning turn.');
   if (!chunk || typeof chunk !== 'object') throw new Error('Artifact is missing.');
   if (chunk.encoding !== 'base64') throw new Error('Artifact encoding must be base64.');
   if (!(chunk.total >= 1) || !(chunk.index >= 0) || chunk.index >= chunk.total) {
     throw new Error('Artifact chunk index is out of range.');
   }
+  if (!chunk.artifact_id || typeof chunk.artifact_id !== 'string') throw new Error('Artifact id is missing.');
+  if (targetTurn.completedArtifactIds.has(chunk.artifact_id)) {
+    throw new Error(`Artifact ${chunk.artifact_id} was delivered more than once.`);
+  }
   let slot = inflight.get(chunk.artifact_id);
   if (!slot) {
-    slot = { mime: chunk.mime_type, total: chunk.total, parts: [] };
+    slot = { mime: chunk.mime_type, total: chunk.total, parts: [], first: chunk };
     inflight.set(chunk.artifact_id, slot);
   }
+  requireStableArtifactAttribution(slot.first, chunk);
   if (slot.total !== chunk.total) throw new Error('Artifact total changed between chunks.');
+  if (slot.mime !== chunk.mime_type) throw new Error('Artifact MIME type changed between chunks.');
+  if (slot.parts[chunk.index]) throw new Error(`Artifact chunk ${chunk.index} was duplicated.`);
   slot.parts[chunk.index] = decodeBase64(chunk.data);
   if (chunk.index + 1 < chunk.total) return;
 
@@ -3047,6 +3186,12 @@ async function ingestArtifact(chunk) {
       throw new Error(`Artifact ${chunk.artifact_id} failed its sha256 check.`);
     }
   }
+  if (turn !== targetTurn || stopped || !running) {
+    const err = new Error('Artifact completed after its owning turn was cancelled.');
+    err.cancelled = true;
+    throw err;
+  }
+  targetTurn.completedArtifactIds.add(chunk.artifact_id);
   deliver(chunk, bytes);
 }
 
@@ -3069,6 +3214,20 @@ function recordFirstAudio() {
 
 function deliver(chunk, bytes) {
   const mime = chunk.mime_type;
+  turn.mediaArtifacts.push({
+    artifact_id: chunk.artifact_id,
+    media_type: chunk.media_type || null,
+    mime_type: mime,
+    bytes: bytes.length,
+    sha256: normalizeAnchorSha256(chunk.sha256) || null,
+    slot_id: chunk.slot_id || null,
+    slot_index: Number.isInteger(chunk.slot_index) ? chunk.slot_index : null,
+    stream_index: Number.isInteger(chunk.stream_index) ? chunk.stream_index : null,
+    sample_rate: Number.isInteger(chunk.sample_rate) ? chunk.sample_rate : null,
+    channels: Number.isInteger(chunk.channels) ? chunk.channels : null,
+    anchor_slot_index: Number.isInteger(chunk.anchor_slot_index) ? chunk.anchor_slot_index : null,
+    anchor_sha256: normalizeAnchorSha256(chunk.anchor_sha256) || null,
+  });
   log('artifact', chunk.artifact_id, mime, bytes.length + ' bytes');
   if (mime === 'audio/pcm') {
     recordFirstAudio();
@@ -3085,6 +3244,7 @@ function deliver(chunk, bytes) {
     if (kindHint === 'image' && mime.startsWith('image/')) {
       slot.imageDataURL = dataURLFor(mime, bytes);
     }
+    recordSlotVariant(slot, kindHint, bytes.length, artifactSha);
     updateSlotContinuity(slot, chunk);
     recordSlotContinuityTelemetry(turn, chunk);
     setSlotMedia(slot, kindHint, url);
@@ -3152,7 +3312,7 @@ function deliver(chunk, bytes) {
 
 // ---------- SSE ----------
 
-async function* readLines(res) {
+async function* readLines(res, onChunk = null) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let rest = '';
@@ -3160,6 +3320,7 @@ async function* readLines(res) {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (onChunk) onChunk(value);
       rest += decoder.decode(value, { stream: true });
       let cut;
       while ((cut = rest.indexOf('\n')) >= 0) {
@@ -3199,12 +3360,18 @@ async function consume(payload, st) {
   const unified = root.unified;
   if (unified != null) {
     if (st.terminal) throw new Error('A unified event follows the terminal event.');
+    validateUnifiedOwnership(st, unified);
     if (unified.seq !== st.seq) {
       throw new Error(`Unified seq ${unified.seq} arrived, expected ${st.seq}.`);
     }
     st.seq += 1;
     st.sawUnified = true;
     if (unified.session_id) st.sessionID = unified.session_id;
+    if (unified.request_id) {
+      st.requestID = unified.request_id;
+      if (turn) turn.requestId = unified.request_id;
+    }
+    recordNarrativeEvent(turn, unified);
     log('event', unified.kind, unified.seq, unified.stage);
     switch (unified.kind) {
       case 'asr_final':
@@ -3234,24 +3401,21 @@ async function consume(payload, st) {
         break;
       case 'complete':
         st.terminal = 1;
-        if (Array.isArray(unified.legs)) {
-          for (const leg of unified.legs) {
-            if (!leg || typeof leg !== 'object' || typeof leg.slot_id !== 'string') continue;
-            if (!turn.slots.has(leg.slot_id)) continue;
-            const slot = turn.slots.get(leg.slot_id);
-            updateSlotContinuity(slot, leg);
-            recordSlotContinuityTelemetry(turn, leg);
-            if (leg.state === 'failed' && typeof leg.error === 'string' && leg.error
-                && !slot.url && !slot.hasError) {
-              showSlotError(slot, leg.error);
-            }
-          }
+        for (const leg of Array.isArray(unified.legs) ? unified.legs : []) {
+          if (!leg || typeof leg.slot_id !== 'string' || !turn.slots.has(leg.slot_id)) continue;
+          updateSlotContinuity(turn.slots.get(leg.slot_id), leg);
+          recordSlotContinuityTelemetry(turn, leg);
         }
+        settleTurnTerminal(turn, 'complete', unified.legs);
         recordTurnTotal(turn);
         break;
-      case 'error': st.terminal = 1; throw new Error(unified.error || 'The request failed.');
+      case 'error':
+        st.terminal = 1;
+        settleTurnTerminal(turn, 'error', unified.legs);
+        throw new Error(unified.error || 'The request failed.');
       case 'cancelled': {
         st.terminal = 1;
+        settleTurnTerminal(turn, 'cancelled', unified.legs);
         recordTurnTotal(turn);
         const err = new Error('The server cancelled the request.');
         err.cancelled = true;
@@ -3342,6 +3506,7 @@ async function imageConfig() {
   }
   const editImageUrl = await readFileAsDataURL(ui.imageFile);
   if (editImageUrl) config.image = editImageUrl;
+  else if (revisionSource?.dataURL) config.image = revisionSource.dataURL;
   return config;
 }
 
@@ -3606,6 +3771,84 @@ function updateSlotContinuity(slot, incoming) {
 }
 // NARRATIVE_CONTINUITY_END
 
+// STORYBOARD_LIFECYCLE_BEGIN
+function validateUnifiedOwnership(st, unified) {
+  if (!st || !unified || typeof unified !== 'object') {
+    throw new Error('Unified event ownership is missing.');
+  }
+  if (st.sessionID && unified.session_id && unified.session_id !== st.sessionID) {
+    throw new Error(`Cross-session event rejected: expected ${st.sessionID}, got ${unified.session_id}.`);
+  }
+  if (st.requestID && unified.request_id && unified.request_id !== st.requestID) {
+    throw new Error(`Cross-request event rejected: expected ${st.requestID}, got ${unified.request_id}.`);
+  }
+}
+
+function settleTurnTerminal(targetTurn, kind, legs = []) {
+  if (!targetTurn) return { outcome: kind, unresolved: 0 };
+  const outcome = kind === 'complete' ? 'completed' : (kind === 'cancelled' ? 'cancelled' : 'error');
+  const terminalLegs = Array.isArray(legs) ? legs.filter(isPlainObject).map((leg) => ({ ...leg })) : [];
+  targetTurn.terminal = {
+    state: outcome,
+    request_id: targetTurn.requestId || null,
+    legs: terminalLegs,
+  };
+  targetTurn.outcome = outcome;
+  if (kind === 'cancelled' && !targetTurn.text &&
+      !(targetTurn.slots?.size) && !targetTurn.artifacts?.childElementCount) {
+    targetTurn.legs.textContent = 'Cancelled before response output.';
+  }
+  const bySlot = new Map();
+  for (const leg of terminalLegs) {
+    if (typeof leg.slot_id === 'string') bySlot.set(leg.slot_id, leg);
+  }
+  let unresolved = 0;
+  for (const slot of targetTurn.slots?.values?.() || []) {
+    const leg = bySlot.get(slot.id);
+    const state = typeof leg?.state === 'string' ? leg.state : '';
+    slot.terminalState = state || (kind === 'cancelled' ? 'aborted' : 'unknown');
+    if (kind === 'cancelled') {
+      if (!slot.url) showSlotCancelled(slot);
+      continue;
+    }
+    if (kind !== 'complete') {
+      if (!slot.url) showSlotError(slot, state === 'failed' ? (leg.error || 'Visual generation failed') : 'Response ended before visual completion');
+      unresolved += 1;
+      continue;
+    }
+    if (state === 'failed') {
+      if (!slot.url && !slot.hasError) showSlotError(slot, leg.error || 'Visual generation failed');
+      unresolved += 1;
+    } else if (state !== 'completed' || !slot.url) {
+      unresolved += 1;
+      if (!slot.url) {
+        if (state === 'aborted') showSlotCancelled(slot, 'Visual slot aborted before completion');
+        else showSlotError(slot, `Visual slot unresolved at terminal (${state || 'missing terminal leg'})`);
+      }
+    } else {
+      slot.terminalState = 'completed';
+    }
+  }
+  if (unresolved > 0) {
+    targetTurn.outcome = 'incomplete';
+    targetTurn.legs.textContent = `${unresolved} visual slot${unresolved === 1 ? '' : 's'} did not complete cleanly.`;
+  }
+  return { outcome: targetTurn.outcome, unresolved };
+}
+
+function recordNarrativeEvent(targetTurn, unified) {
+  if (!targetTurn || !unified) return;
+  const event = JSON.parse(JSON.stringify(unified));
+  if (event.artifact && typeof event.artifact === 'object') {
+    if (typeof event.artifact.data === 'string') {
+      event.artifact.data_base64_bytes = event.artifact.data.length;
+      delete event.artifact.data;
+    }
+  }
+  targetTurn.events.push(event);
+}
+// STORYBOARD_LIFECYCLE_END
+
 async function send() {
   if (running) return;
   const text = ui.prompt.value.trim();
@@ -3736,7 +3979,8 @@ async function send() {
   ].filter(Boolean).join(' ');
   const sentImage = attachedImage;
   const sentVideo = attachedVideo;
-  attachedImage = null; ui.askImage.value = '';
+  const sentRevisionSource = revisionSource;
+  attachedImage = null; revisionSource = null; ui.askImage.value = '';
   attachedVideo = null; ui.askVideo.value = '';
   attachedAudio = null; ui.askAudio.value = '';
   renderAttachments();
@@ -3748,6 +3992,14 @@ async function send() {
   setBusy(true);
   setStatus('Connecting…');
   const userTurn = addTurn('user', userLabel);
+  if (sentRevisionSource) {
+    userTurn.visualReference = {
+      slot_id: sentRevisionSource.slotId,
+      sha256: sentRevisionSource.sha256 || null,
+      source_attached: true,
+      edit_source_attached: true,
+    };
+  }
   if (sentImage) {
     const thumb = document.createElement('img');
     thumb.src = sentImage.dataURL;
@@ -3786,8 +4038,9 @@ async function send() {
   if (body.audio?.stream) player.begin(ui.voiceWave);
 
   controller = new AbortController();
+  const requestTurn = turn;
   const st = {
-    seq: 0, terminal: 0, sawUnified: false, done: false, text: '', finish: '', sessionID,
+    seq: 0, terminal: 0, sawUnified: false, done: false, text: '', finish: '', sessionID, requestID: '',
     behaviorRequested, behaviorEvidenceHeader: '',
   };
   log('request', url.href, JSON.stringify({ ...body, messages: '[redacted media]' }));
@@ -3822,7 +4075,17 @@ async function send() {
 
     // One data line carries one event (docs/mixed-output-contract.md), the same
     // flush rule ChatClient.SSEParser uses.
-    for await (const line of readLines(res)) {
+    for await (const line of readLines(res, (chunk) => {
+      if (requestTurn.rawCaptureError) return;
+      if (requestTurn.rawCaptureBytes + chunk.byteLength > MAX_REPLAY_RAW_BYTES) {
+        requestTurn.rawChunks = [];
+        requestTurn.rawCaptureBytes = 0;
+        requestTurn.rawCaptureError = 'Raw SSE capture exceeded 96 MiB; replay is unavailable for this turn.';
+        return;
+      }
+      requestTurn.rawChunks.push(new Uint8Array(chunk));
+      requestTurn.rawCaptureBytes += chunk.byteLength;
+    })) {
       if (!line.startsWith('data:')) continue;
       let payload = line.slice(5);
       if (payload.startsWith(' ')) payload = payload.slice(1);
@@ -3849,23 +4112,23 @@ async function send() {
     recordTurnTotal(turn);
     turn.tailText?.classList.remove('caret');
     player.end();
-    setStatus(st.finish ? `Completed · ${st.finish}` : 'Completed');
+    setStatus(turn.outcome === 'incomplete'
+      ? 'Visual output incomplete'
+      : (st.finish ? `Completed · ${st.finish}` : 'Completed'));
     setBusy(false);
   } catch (err) {
     player.stop();
     const aborted = stopped || err.name === 'AbortError' || err.cancelled;
+    if (turn && !turn.terminal) settleTurnTerminal(turn, aborted ? 'cancelled' : 'error');
     turn.tailText?.classList.remove('caret');
     setBusy(false);
     if (aborted) {
       setStatus('Stopped');
       if (!turn.text && !turn.flow.querySelector('.slot') && !turn.artifacts.childElementCount) {
-        turn.el.remove();
-        sessionEntry.assistantTurn = null;
-        syncEmptyState();
-      } else {
-        finalizeBehaviorEvidence(turn, st.behaviorRequested, st.behaviorEvidenceHeader);
-        recordTurnTotal(turn);
+        turn.legs.textContent = 'Cancelled before response output.';
       }
+      finalizeBehaviorEvidence(turn, st.behaviorRequested, st.behaviorEvidenceHeader);
+      recordTurnTotal(turn);
     } else {
       setStatus('Error');
       let msg = err.message || String(err);
@@ -3889,6 +4152,7 @@ function limit(text) {
 function stopGeneration() {
   if (!running) return false;
   stopped = true;
+  settleTurnTerminal(turn, 'cancelled');
   player.stop();
   setStatus('Stopping…');
   controller?.abort();
@@ -3931,6 +4195,10 @@ ui.showcasePresets?.addEventListener('click', (event) => {
 });
 // SESSION_EXPORT_BEGIN
 const SESSION_EXPORT_SCHEMA = 'umminfer-web-session-export-v1';
+const SESSION_REPLAY_SCHEMA = 'umminfer-web-session-replay-v1';
+function isSessionObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
 
 function canExportSession(turnCount, busy = false) {
   return !busy && Number.isInteger(turnCount) && turnCount > 0;
@@ -3967,6 +4235,8 @@ function normalizeVisualSlotForExport(rawSlot, fallbackIndex = 0) {
       ? rawSlot.slot_id.trim() : `slot-${fallbackIndex}`);
   const kind = (rawSlot.kind || rawSlot.media_type) === 'video' ? 'video' : 'image';
   const out = { id, kind };
+  const slotIndex = rawSlot.slot_index ?? rawSlot.slotIndex;
+  if (Number.isInteger(slotIndex) && slotIndex >= 0) out.slot_index = slotIndex;
   const prompt = scrubInlineDataUri(typeof rawSlot.prompt === 'string' ? rawSlot.prompt.trim() : '');
   if (prompt) out.prompt = prompt;
   if (typeof rawSlot.bytes === 'number' && Number.isSafeInteger(rawSlot.bytes) && rawSlot.bytes >= 0) {
@@ -3974,6 +4244,18 @@ function normalizeVisualSlotForExport(rawSlot, fallbackIndex = 0) {
   }
   const sha256 = normalizeAnchorSha256(rawSlot.sha256);
   if (sha256) out.sha256 = sha256;
+  const rawVariants = Array.isArray(rawSlot.variants) ? rawSlot.variants
+    : (isSessionObject(rawSlot.artifactMeta) ? Object.values(rawSlot.artifactMeta) : []);
+  const variants = [];
+  for (const variant of rawVariants) {
+    if (!isSessionObject(variant) || !['image', 'video'].includes(variant.kind) ||
+        !Number.isSafeInteger(variant.bytes) || variant.bytes < 0 ||
+        !normalizeAnchorSha256(variant.sha256)) continue;
+    variants.push({ kind: variant.kind, bytes: variant.bytes,
+                    sha256: normalizeAnchorSha256(variant.sha256) });
+  }
+  variants.sort((a, b) => a.kind.localeCompare(b.kind));
+  if (variants.length) out.variants = variants;
 
   const continuityMode = typeof rawSlot.continuity_mode === 'string' && rawSlot.continuity_mode
     ? rawSlot.continuity_mode
@@ -4001,6 +4283,9 @@ function normalizeVisualSlotForExport(rawSlot, fallbackIndex = 0) {
   const errorText = typeof rawSlot.error === 'string' && rawSlot.error.trim()
     ? rawSlot.error.trim() : '';
   if (errorText) out.error = errorText;
+  if (['pending', 'running', 'completed', 'failed', 'aborted', 'unknown'].includes(rawSlot.terminal_state ?? rawSlot.terminalState)) {
+    out.terminal_state = rawSlot.terminal_state ?? rawSlot.terminalState;
+  }
 
   return out;
 }
@@ -4186,6 +4471,21 @@ function buildSessionExportJson(state = {}) {
       );
       if (spoken !== null) turnOut.spoken_bytes = spoken;
     }
+    const visualReference = rawTurn.visual_reference ?? rawTurn.visualReference;
+    if (isSessionObject(visualReference) && typeof visualReference.slot_id === 'string' && visualReference.slot_id) {
+      turnOut.visual_reference = {
+        slot_id: visualReference.slot_id,
+        sha256: normalizeAnchorSha256(visualReference.sha256) || null,
+        source_attached: visualReference.source_attached === true,
+        edit_source_attached: visualReference.edit_source_attached === true,
+      };
+    }
+    if (['completed', 'incomplete', 'cancelled', 'error'].includes(rawTurn.outcome)) {
+      turnOut.outcome = rawTurn.outcome;
+    }
+    if (isSessionObject(rawTurn.terminal)) {
+      turnOut.terminal = JSON.parse(JSON.stringify(rawTurn.terminal));
+    }
     turnOut.visual_slots = visualSlots;
     if (telemetryJson !== null) turnOut.telemetry = telemetryJson;
     turns.push(turnOut);
@@ -4204,6 +4504,86 @@ function buildSessionExportJson(state = {}) {
   if (frameSelection) report.video_frame_selection = frameSelection;
   return report;
 }
+
+// RAW_SSE_REPLAY_EXPORT_BEGIN
+const MAX_REPLAY_RAW_BYTES = 96 * 1024 * 1024;
+
+function concatRawChunks(chunks) {
+  const list = Array.isArray(chunks) ? chunks : [];
+  const total = list.reduce((sum, chunk) => sum + (chunk?.byteLength || 0), 0);
+  if (total > MAX_REPLAY_RAW_BYTES) throw new Error('Raw SSE capture exceeds the 96 MiB replay limit.');
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of list) {
+    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+    joined.set(bytes, offset);
+    offset += bytes.length;
+  }
+  return joined;
+}
+
+function splitRawChunks(rawBytes, lengths) {
+  const chunks = [];
+  let offset = 0;
+  for (const length of lengths) {
+    chunks.push(rawBytes.slice(offset, offset + length));
+    offset += length;
+  }
+  if (offset !== rawBytes.length) throw new Error('Replay transport chunk lengths do not match raw SSE bytes.');
+  return chunks;
+}
+
+async function buildSessionReplayJson(state = {}) {
+  const report = buildSessionExportJson(state);
+  report.schema = SESSION_REPLAY_SCHEMA;
+  report.replay_format = 'umminfer-raw-sse-replay-v1';
+  const rawTurns = Array.isArray(state?.turns) ? state.turns.filter(isSessionObject) : [];
+  let artifactCount = 0;
+  let directRenderCount = 0;
+  for (let i = 0; i < report.turns.length; i += 1) {
+    const rawTurn = rawTurns[i] || {};
+    const rawChunks = Array.isArray(rawTurn.raw_chunks) ? rawTurn.raw_chunks : [];
+    const events = Array.isArray(rawTurn.events) ? JSON.parse(JSON.stringify(rawTurn.events)) : [];
+    const mediaArtifacts = Array.isArray(rawTurn.media_artifacts)
+      ? JSON.parse(JSON.stringify(rawTurn.media_artifacts)) : [];
+    if (rawTurn.raw_capture_error) throw new Error(rawTurn.raw_capture_error);
+    if (events.length) report.turns[i].narrative_events = events;
+    if (mediaArtifacts.length) report.turns[i].media_artifacts = mediaArtifacts;
+    artifactCount += mediaArtifacts.length;
+    const directRenders = Array.isArray(rawTurn.direct_renders) ? rawTurn.direct_renders : [];
+    if (directRenders.length) {
+      report.turns[i].direct_renders = [];
+      for (const record of directRenders) {
+        const bytes = record.bytesData || decodeBase64(record.response_base64);
+        if (await sha256Hex(bytes) !== record.sha256 || bytes.length !== record.bytes) {
+          throw new Error(`Direct render ${record.slot_id} failed its export hash check.`);
+        }
+        const clean = {
+          slot_id: record.slot_id, kind: record.kind, mime_type: record.mime_type,
+          bytes: record.bytes, sha256: record.sha256, source_sha256: record.source_sha256 || null,
+          prompt: record.prompt || '', request_options: record.request_options || {},
+          response_base64: record.response_base64 || encodeBase64(bytes),
+        };
+        report.turns[i].direct_renders.push(clean);
+        directRenderCount += 1;
+      }
+    }
+    if (!rawChunks.length) continue;
+    const rawBytes = concatRawChunks(rawChunks);
+    report.turns[i].replay = {
+      transport: 'raw-sse',
+      raw_sse: encodeBase64(rawBytes),
+      raw_sse_bytes: rawBytes.length,
+      raw_sse_sha256: await sha256Hex(rawBytes),
+      chunk_lengths: rawChunks.map((chunk) => chunk.byteLength),
+      terminal_required: !['cancelled', 'error'].includes(rawTurn.outcome),
+    };
+  }
+  report.replay_artifact_count = artifactCount;
+  if (directRenderCount) report.direct_render_count = directRenderCount;
+  return report;
+}
+// RAW_SSE_REPLAY_EXPORT_END
 
 function buildSessionExportMarkdown(state = {}) {
   const safeState = state && typeof state === 'object' ? state : {};
@@ -4281,16 +4661,7 @@ function buildSessionExportMarkdown(state = {}) {
   return lines.join('\n') + '\n';
 }
 
-function triggerSessionExportDownload(state, format = 'json') {
-  const isMarkdown = format === 'markdown' || format === 'md';
-  const content = isMarkdown
-    ? buildSessionExportMarkdown(state)
-    : JSON.stringify(buildSessionExportJson(state), null, 2) + '\n';
-  const mime = isMarkdown ? 'text/markdown;charset=utf-8' : 'application/json;charset=utf-8';
-  const filename = buildSessionExportFilename(
-    state?.session_id ?? state?.sessionId ?? '',
-    isMarkdown ? 'markdown' : 'json',
-  );
+function downloadSessionText(content, mime, filename) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -4308,13 +4679,33 @@ function triggerSessionExportDownload(state, format = 'json') {
   }
   return { filename, mime, bytes: blob.size };
 }
+
+function triggerSessionExportDownload(state, format = 'json') {
+  const isMarkdown = format === 'markdown' || format === 'md';
+  const isReplay = format === 'replay';
+  const filename = buildSessionExportFilename(
+    state?.session_id ?? state?.sessionId ?? '',
+    isMarkdown ? 'markdown' : 'json',
+  );
+  const mime = isMarkdown ? 'text/markdown;charset=utf-8' : 'application/json;charset=utf-8';
+  if (isReplay) {
+    return buildSessionReplayJson(state).then((report) => downloadSessionText(
+      JSON.stringify(report, null, 2) + '\n', mime, filename.replace(/\.json$/, '.replay.json')));
+  }
+  const content = isMarkdown
+    ? buildSessionExportMarkdown(state)
+    : JSON.stringify(buildSessionExportJson(state), null, 2) + '\n';
+  return downloadSessionText(content, mime, filename);
+}
 // SESSION_EXPORT_END
 
 // SESSION_IMPORT_BEGIN
 const MAX_IMPORT_SESSION_BYTES = 2 * 1024 * 1024;
+const MAX_IMPORT_FILE_BYTES = 128 * 1024 * 1024;
 const MAX_IMPORT_TURNS = 1000;
 const SUPPORTED_IMPORT_SCHEMAS = Object.freeze(new Set([
   'umminfer-web-session-export-v1',
+  'umminfer-web-session-replay-v1',
   'umminfer-session-export-v1',
 ]));
 const VALID_IMPORT_TURN_ROLES = Object.freeze(new Set(['user', 'assistant', 'turn']));
@@ -4398,10 +4789,29 @@ function parseImportedVisualSlot(rawSlot, turnLabel, slotIdx) {
   const rawAnchorSha = parseOptionalStringField(rawSlot, 'anchor_sha256', ctx);
   const anchorSha256 = rawAnchorSha ? normalizeAnchorSha256(rawAnchorSha) : '';
   const errorText = parseOptionalStringField(rawSlot, 'error', ctx) || '';
+  const terminalState = parseOptionalStringField(rawSlot, 'terminal_state', ctx) || '';
+  if (terminalState && !['pending', 'running', 'completed', 'failed', 'aborted', 'unknown'].includes(terminalState)) {
+    throw new Error(`${ctx}.terminal_state is unsupported.`);
+  }
+  const variants = [];
+  if (rawSlot.variants !== undefined && rawSlot.variants !== null) {
+    if (!Array.isArray(rawSlot.variants)) throw new Error(`${ctx}.variants must be an array.`);
+    for (const [variantIndex, variant] of rawSlot.variants.entries()) {
+      if (!isPlainObject(variant) || !['image', 'video'].includes(variant.kind)) {
+        throw new Error(`${ctx}.variants[${variantIndex}] has invalid kind.`);
+      }
+      const variantBytes = parseOptionalNonNegInt(variant, 'bytes', `${ctx}.variants[${variantIndex}]`);
+      const variantSha = parseOptionalStringField(variant, 'sha256', `${ctx}.variants[${variantIndex}]`);
+      if (variantBytes === null || !/^[0-9a-f]{64}$/i.test(variantSha || '')) {
+        throw new Error(`${ctx}.variants[${variantIndex}] requires exact bytes and SHA-256.`);
+      }
+      variants.push({ kind: variant.kind, bytes: variantBytes, sha256: variantSha.toLowerCase() });
+    }
+  }
 
   return {
     id: rawId.trim(),
-    slot_index: slotIndex !== null ? slotIndex : slotIdx,
+    slot_index: slotIndex,
     kind: rawSlot.kind,
     prompt,
     bytes,
@@ -4411,6 +4821,8 @@ function parseImportedVisualSlot(rawSlot, turnLabel, slotIdx) {
     anchor_explicit: anchorExplicit,
     anchor_sha256: anchorSha256,
     error: errorText,
+    terminal_state: terminalState || null,
+    variants,
   };
 }
 
@@ -4556,13 +4968,331 @@ function buildImportedTelemetryRecord(rawTelemetry, visualSlots, turnLabel) {
   };
 }
 
+// RAW_SSE_REPLAY_IMPORT_BEGIN
+function canonicalJson(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + canonicalJson(value[key])).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+function parseImportedReplay(rawReplay, turnLabel) {
+  const ctx = `${turnLabel}.replay`;
+  if (!isPlainObject(rawReplay) || rawReplay.transport !== 'raw-sse') {
+    throw new Error(`${ctx} must be a raw-sse object.`);
+  }
+  const encoded = parseOptionalStringField(rawReplay, 'raw_sse', ctx);
+  const rawSha = parseOptionalStringField(rawReplay, 'raw_sse_sha256', ctx);
+  const rawBytesDeclared = parseOptionalNonNegInt(rawReplay, 'raw_sse_bytes', ctx);
+  if (!encoded || !/^[0-9a-f]{64}$/.test(rawSha || '') || rawBytesDeclared === null) {
+    throw new Error(`${ctx} requires canonical raw SSE bytes and a SHA-256 digest.`);
+  }
+  if (encoded.length > Math.ceil(MAX_REPLAY_RAW_BYTES / 3) * 4 + 4) {
+    throw new Error(`${ctx} exceeds the 96 MiB raw SSE limit.`);
+  }
+  const rawBytes = decodeBase64(encoded);
+  if (encodeBase64(rawBytes) !== encoded) throw new Error(`${ctx}.raw_sse must be canonical base64.`);
+  if (rawBytes.length !== rawBytesDeclared || rawBytes.length > MAX_REPLAY_RAW_BYTES) {
+    throw new Error(`${ctx}.raw_sse_bytes does not match the decoded bytes.`);
+  }
+  if (!Array.isArray(rawReplay.chunk_lengths) || !rawReplay.chunk_lengths.length) {
+    throw new Error(`${ctx}.chunk_lengths must be a non-empty array.`);
+  }
+  for (const length of rawReplay.chunk_lengths) {
+    if (!Number.isSafeInteger(length) || length < 0) throw new Error(`${ctx}.chunk_lengths contains an invalid length.`);
+  }
+  const chunks = splitRawChunks(rawBytes, rawReplay.chunk_lengths);
+  return {
+    rawBytes,
+    rawSha,
+    chunks,
+    terminalRequired: rawReplay.terminal_required === true,
+  };
+}
+
+function rawSsePayloads(rawBytes) {
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(rawBytes); }
+  catch { throw new Error('Raw SSE replay is not valid UTF-8.'); }
+  const payloads = [];
+  for (let line of text.split('\n')) {
+    if (line.endsWith('\r')) line = line.slice(0, -1);
+    if (!line.startsWith('data:')) continue;
+    let payload = line.slice(5);
+    if (payload.startsWith(' ')) payload = payload.slice(1);
+    payloads.push(payload);
+  }
+  return payloads;
+}
+
+function verifyTerminalAndVisualSlots(item, events, actualMedia, ownership, turnIndex) {
+  const terminalEvent = events.find((event) => ['complete', 'cancelled', 'error'].includes(event.kind)) || null;
+  const expectedState = terminalEvent
+    ? ({ complete: 'completed', cancelled: 'cancelled', error: 'error' }[terminalEvent.kind])
+    : (['cancelled', 'error'].includes(item.outcome) ? item.outcome : null);
+  if (!item.terminal || item.terminal.state !== expectedState) {
+    throw new Error(`turns[${turnIndex}] terminal kind does not match its recorded outcome.`);
+  }
+  if (ownership.requestID && item.terminal.request_id !== ownership.requestID) {
+    throw new Error(`turns[${turnIndex}] terminal request id mismatch.`);
+  }
+  if (canonicalJson(item.terminal.legs || []) !== canonicalJson(terminalEvent?.legs || [])) {
+    throw new Error(`turns[${turnIndex}] terminal legs do not match raw SSE.`);
+  }
+  if (terminalEvent?.kind === 'complete' && !['completed', 'incomplete'].includes(item.outcome)) {
+    throw new Error(`turns[${turnIndex}] raw complete conflicts with outcome ${item.outcome}.`);
+  }
+  if (terminalEvent?.kind === 'cancelled' && item.outcome !== 'cancelled') {
+    throw new Error(`turns[${turnIndex}] raw cancellation conflicts with outcome ${item.outcome}.`);
+  }
+  const rawSlots = new Map();
+  for (const event of events) {
+    if (event.kind === 'visual_slot' && typeof event.slot_id === 'string') {
+      if (rawSlots.has(event.slot_id)) throw new Error(`turns[${turnIndex}] has duplicate raw slot ids.`);
+      rawSlots.set(event.slot_id, event);
+    }
+  }
+  const exportedSlots = item.visual_slots || [];
+  const exportedById = new Map();
+  for (const slot of exportedSlots) {
+    if (exportedById.has(slot.id)) throw new Error(`turns[${turnIndex}] has duplicate exported slot ids.`);
+    exportedById.set(slot.id, slot);
+  }
+  for (const id of rawSlots.keys()) {
+    if (!exportedById.has(id)) throw new Error(`turns[${turnIndex}] omits raw visual slot ${id}.`);
+  }
+  const mediaBySlot = new Map(actualMedia.filter((entry) => entry.slot_id).map((entry) => [entry.slot_id, entry]));
+  const mediaById = new Map(actualMedia.map((entry) => [entry.artifact_id, entry]));
+  const legs = new Map((terminalEvent?.legs || []).filter((leg) => typeof leg.slot_id === 'string').map((leg) => [leg.slot_id, leg]));
+  const position = (slot) => Number.isInteger(slot.slot_index) ? slot.slot_index
+    : (/^slot-(\d+)$/.test(slot.id) ? Number(slot.id.slice(5)) : null);
+  for (const [id, slot] of exportedById) {
+    const raw = rawSlots.get(id);
+    if (!raw) {
+      const media = mediaById.get(id);
+      if (!media || media.sha256 !== slot.sha256 || media.bytes !== slot.bytes) {
+        throw new Error(`turns[${turnIndex}] has an unbound non-slot visual ${id}.`);
+      }
+      continue;
+    }
+    const variants = Array.isArray(slot.variants) ? slot.variants : [];
+    const rawVariant = variants.find((variant) => variant.kind === raw.media_type) ||
+      (slot.kind === raw.media_type ? slot : null);
+    const hasDisplayedDirectVariant = slot.kind === raw.media_type ||
+      (item.direct_renders || []).some((record) => record.slot_id === id && record.kind === slot.kind);
+    if (!rawVariant || !hasDisplayedDirectVariant ||
+        (slot.slot_index !== null && slot.slot_index !== undefined && slot.slot_index !== raw.slot_index)) {
+      throw new Error(`turns[${turnIndex}] slot identity/variant mismatch for ${id}.`);
+    }
+    for (const field of ['continuity_mode', 'anchor_slot_index', 'anchor_explicit']) {
+      const matches = field === 'anchor_explicit'
+        ? Boolean(slot[field]) === Boolean(raw[field])
+        : ((slot[field] ?? null) === (raw[field] ?? null) || (field === 'continuity_mode' && !slot[field] && !raw[field]));
+      if (!matches) throw new Error(`turns[${turnIndex}] slot ${field} mismatch for ${id}.`);
+    }
+    if (terminalEvent && legs.has(id) && slot.terminal_state !== legs.get(id).state) {
+      throw new Error(`turns[${turnIndex}] terminal slot state mismatch for ${id}.`);
+    }
+    if (slot.terminal_state === 'completed') {
+      const media = mediaBySlot.get(id);
+      if (!media || media.sha256 !== rawVariant.sha256 || media.bytes !== rawVariant.bytes) {
+        throw new Error(`turns[${turnIndex}] completed slot ${id} does not match its artifact.`);
+      }
+    }
+    if (item.outcome === 'cancelled' && ['pending', 'running'].includes(slot.terminal_state)) {
+      throw new Error(`turns[${turnIndex}] cancelled slot ${id} remains unresolved.`);
+    }
+    if (Number.isInteger(slot.anchor_slot_index)) {
+      const source = exportedSlots.find((candidate) => position(candidate) === slot.anchor_slot_index);
+      const sourceImageSha = source ? ((source.variants || []).find((variant) => variant.kind === 'image')?.sha256 ||
+        (source.kind === 'image' ? source.sha256 : null)) : null;
+      if (!source || source.terminal_state !== 'completed' || !sourceImageSha ||
+          position(source) === null || position(source) >= position(slot) || !/^[0-9a-f]{64}$/.test(sourceImageSha)) {
+        throw new Error(`turns[${turnIndex}] slot ${id} lacks an earlier completed image anchor.`);
+      }
+      if (slot.anchor_explicit === true &&
+          (!/^[0-9a-f]{64}$/.test(slot.anchor_sha256 || '') || slot.anchor_sha256 !== sourceImageSha)) {
+        throw new Error(`turns[${turnIndex}] explicit anchor ${id} has no exact source digest.`);
+      }
+    }
+  }
+}
+
+function parseDirectRenderRecord(raw, turnLabel, index) {
+  const ctx = `${turnLabel}.direct_renders[${index}]`;
+  if (!isPlainObject(raw) || typeof raw.slot_id !== 'string' || !raw.slot_id ||
+      !['image', 'video'].includes(raw.kind)) {
+    throw new Error(`${ctx} requires a slot id and image/video kind.`);
+  }
+  const bytes = parseOptionalNonNegInt(raw, 'bytes', ctx);
+  const sha = parseOptionalStringField(raw, 'sha256', ctx);
+  const encoded = parseOptionalStringField(raw, 'response_base64', ctx);
+  const mime = parseOptionalStringField(raw, 'mime_type', ctx);
+  const sourceSha = parseOptionalStringField(raw, 'source_sha256', ctx);
+  if (bytes === null || !/^[0-9a-f]{64}$/i.test(sha || '') || !encoded || !mime ||
+      (sourceSha && !/^[0-9a-f]{64}$/i.test(sourceSha))) {
+    throw new Error(`${ctx} requires exact media metadata.`);
+  }
+  const bytesData = decodeBase64(encoded);
+  if (encodeBase64(bytesData) !== encoded || bytesData.length !== bytes || bytes > 48 * 1024 * 1024) {
+    throw new Error(`${ctx} response bytes are noncanonical, oversized, or inconsistent.`);
+  }
+  const options = raw.request_options === undefined || raw.request_options === null ? {} : raw.request_options;
+  if (!isPlainObject(options) || canonicalJson(options).includes('base64,')) {
+    throw new Error(`${ctx}.request_options must not contain media payloads.`);
+  }
+  return {
+    slot_id: raw.slot_id, kind: raw.kind, mime_type: mime, bytes, sha256: sha.toLowerCase(),
+    source_sha256: sourceSha ? sourceSha.toLowerCase() : null,
+    prompt: typeof raw.prompt === 'string' ? raw.prompt : '', request_options: options,
+    response_base64: encoded, bytesData,
+  };
+}
+
+async function verifyImportedReplay(parsed) {
+  if (parsed.schema !== SESSION_REPLAY_SCHEMA) return { turns: 0, artifacts: 0 };
+  let artifactTotal = 0;
+  for (let turnIndex = 0; turnIndex < parsed.turns.length; turnIndex += 1) {
+    const item = parsed.turns[turnIndex];
+    const replay = item.replay;
+    if (!replay) continue;
+    if (await sha256Hex(replay.rawBytes) !== replay.rawSha) {
+      throw new Error(`turns[${turnIndex}] raw SSE SHA-256 mismatch.`);
+    }
+    const payloads = replay.payloads || rawSsePayloads(replay.rawBytes);
+    const expectedEvents = [];
+    const ownership = { sessionID: parsed.session_id || '', requestID: '' };
+    const artifacts = new Map();
+    let seq = 0;
+    let terminal = 0;
+    let done = 0;
+    for (const payload of payloads) {
+      if (payload === '[DONE]') { done += 1; continue; }
+      const root = JSON.parse(payload);
+      if (!root.unified) continue;
+      const unified = root.unified;
+      validateUnifiedOwnership(ownership, unified);
+      if (terminal) throw new Error(`turns[${turnIndex}] has an event after its terminal.`);
+      if (unified.seq !== seq) throw new Error(`turns[${turnIndex}] has a non-contiguous unified sequence.`);
+      seq += 1;
+      ownership.requestID ||= unified.request_id || '';
+      if (['complete', 'cancelled', 'error'].includes(unified.kind)) terminal += 1;
+      recordNarrativeEvent({ events: expectedEvents }, unified);
+      const chunk = unified.artifact;
+      if (unified.kind !== 'artifact' || !chunk) continue;
+      if (typeof chunk.artifact_id !== 'string' || !chunk.artifact_id) throw new Error('Replay artifact id is missing.');
+      let assembly = artifacts.get(chunk.artifact_id);
+      if (!assembly) {
+        assembly = { chunk, parts: [], complete: false };
+        artifacts.set(chunk.artifact_id, assembly);
+      }
+      requireStableArtifactAttribution(assembly.chunk, chunk);
+      if (assembly.complete || !Number.isSafeInteger(chunk.index) || !Number.isSafeInteger(chunk.total) ||
+          chunk.total < 1 || chunk.index < 0 || chunk.index >= chunk.total ||
+          chunk.total !== assembly.chunk.total || assembly.parts[chunk.index]) {
+        throw new Error(`Replay artifact ${chunk.artifact_id} has duplicate or inconsistent chunks.`);
+      }
+      assembly.parts[chunk.index] = decodeBase64(chunk.data);
+      if (chunk.index + 1 === chunk.total) {
+        assembly.complete = true;
+        assembly.finalChunk = chunk;
+      }
+    }
+    const actualEventProjection = canonicalJson(expectedEvents);
+    const indexedEventProjection = canonicalJson(item.narrative_events || []);
+    if (actualEventProjection !== indexedEventProjection) {
+      let mismatchAt = 0;
+      while (actualEventProjection[mismatchAt] === indexedEventProjection[mismatchAt]) mismatchAt += 1;
+      throw new Error(`turns[${turnIndex}] narrative event projection mismatch at ${mismatchAt}: raw=${actualEventProjection.slice(mismatchAt, mismatchAt + 120)} index=${indexedEventProjection.slice(mismatchAt, mismatchAt + 120)}`);
+    }
+    if (replay.terminalRequired && (terminal !== 1 || done !== 1)) {
+      throw new Error(`turns[${turnIndex}] requires exactly one terminal and one [DONE].`);
+    }
+    if (terminal > 1 || done > 1) throw new Error(`turns[${turnIndex}] has duplicate terminal or [DONE].`);
+    const actualMedia = [];
+    for (const [artifactId, assembly] of artifacts) {
+      if (!assembly.complete || assembly.parts.length !== assembly.chunk.total ||
+          assembly.parts.some((part) => !(part instanceof Uint8Array))) {
+        throw new Error(`Replay artifact ${artifactId} is incomplete.`);
+      }
+      const bytes = concatRawChunks(assembly.parts);
+      if (bytes.length > MAX_REPLAY_RAW_BYTES) throw new Error(`Replay artifact ${artifactId} exceeds the size limit.`);
+      const finalChunk = assembly.finalChunk;
+      const digest = await sha256Hex(bytes);
+      if (digest !== String(finalChunk.sha256 || '').toLowerCase()) {
+        throw new Error(`Replay artifact ${artifactId} SHA-256 mismatch.`);
+      }
+      if (Number.isSafeInteger(finalChunk.bytes) && finalChunk.bytes !== bytes.length) {
+        throw new Error(`Replay artifact ${artifactId} byte count mismatch.`);
+      }
+      actualMedia.push({
+        artifact_id: artifactId,
+        media_type: finalChunk.media_type || null,
+        mime_type: finalChunk.mime_type,
+        bytes: bytes.length,
+        sha256: digest,
+        slot_id: finalChunk.slot_id || null,
+        slot_index: Number.isInteger(finalChunk.slot_index) ? finalChunk.slot_index : null,
+        stream_index: Number.isInteger(finalChunk.stream_index) ? finalChunk.stream_index : null,
+        sample_rate: Number.isInteger(finalChunk.sample_rate) ? finalChunk.sample_rate : null,
+        channels: Number.isInteger(finalChunk.channels) ? finalChunk.channels : null,
+        anchor_slot_index: Number.isInteger(finalChunk.anchor_slot_index) ? finalChunk.anchor_slot_index : null,
+        anchor_sha256: normalizeAnchorSha256(finalChunk.anchor_sha256) || null,
+      });
+    }
+    const expectedMedia = new Map((item.media_artifacts || []).map((entry) => [entry.artifact_id, entry]));
+    if (expectedMedia.size !== (item.media_artifacts || []).length || actualMedia.length !== (item.media_artifacts || []).length ||
+        actualMedia.some((entry) => canonicalJson(entry) !== canonicalJson(expectedMedia.get(entry.artifact_id)))) {
+      throw new Error(`turns[${turnIndex}] content-addressed media index does not match raw SSE.`);
+    }
+    artifactTotal += actualMedia.length;
+    const visualById = new Map((item.visual_slots || []).map((slot) => [slot.id, slot]));
+    for (const record of item.direct_renders || []) {
+      const slot = visualById.get(record.slot_id);
+      const bytes = record.bytesData || decodeBase64(record.response_base64);
+      if (!slot || await sha256Hex(bytes) !== record.sha256 || bytes.length !== record.bytes) {
+        throw new Error(`turns[${turnIndex}] direct render hash/slot mismatch.`);
+      }
+      const variant = (slot.variants || []).find((entry) => entry.kind === record.kind);
+      if (!variant || variant.sha256 !== record.sha256 || variant.bytes !== record.bytes) {
+        throw new Error(`turns[${turnIndex}] direct render variant is not preserved.`);
+      }
+      const rawSlot = expectedEvents.find((event) => event.kind === 'visual_slot' && event.slot_id === record.slot_id);
+      if (record.kind === 'video' && rawSlot?.media_type === 'image') {
+        const imageSha = (slot.variants || []).find((entry) => entry.kind === 'image')?.sha256;
+        if (!record.source_sha256 || record.source_sha256 !== imageSha) {
+          throw new Error(`turns[${turnIndex}] Animate source does not match the retained image.`);
+        }
+      }
+    }
+    verifyTerminalAndVisualSlots(item, expectedEvents, actualMedia, ownership, turnIndex);
+    replay.payloads = payloads;
+    replay.verified = true;
+  }
+  const earlierSlots = [];
+  for (const [turnIndex, item] of parsed.turns.entries()) {
+    const reference = item.visual_reference;
+    if (reference) {
+      const candidates = earlierSlots.filter((slot) => slot.id === reference.slot_id &&
+        (!reference.sha256 || slot.sha256 === reference.sha256 ||
+         (slot.variants || []).some((variant) => variant.sha256 === reference.sha256)));
+      if (!candidates.length || reference.source_attached !== true || reference.edit_source_attached !== true) {
+        throw new Error(`turns[${turnIndex}] visual revision does not resolve to an existing exact image.`);
+      }
+    }
+    earlierSlots.push(...(item.visual_slots || []));
+  }
+  return { turns: parsed.turns.filter((item) => item.replay).length, artifacts: artifactTotal };
+}
+// RAW_SSE_REPLAY_IMPORT_END
+
 function parseImportedSessionJson(text) {
   if (typeof text !== 'string') {
     throw new Error('Imported session must be a JSON string.');
   }
-  if (text.length > MAX_IMPORT_SESSION_BYTES ||
-      new TextEncoder().encode(text).length > MAX_IMPORT_SESSION_BYTES) {
-    throw new Error('Imported session JSON exceeds the 2 MiB size limit.');
+  if (text.length > MAX_IMPORT_FILE_BYTES) {
+    throw new Error('Imported session JSON exceeds the 128 MiB file limit.');
   }
   let root;
   validateVideoFrameBudgetJson(text);
@@ -4577,6 +5307,16 @@ function parseImportedSessionJson(text) {
   if (typeof root.schema !== 'string' || !SUPPORTED_IMPORT_SCHEMAS.has(root.schema)) {
     const label = typeof root.schema === 'string' && root.schema ? root.schema : '(missing)';
     throw new Error(`Unsupported session export schema: ${label}.`);
+  }
+  const isReplay = root.schema === SESSION_REPLAY_SCHEMA;
+  const textBytes = new TextEncoder().encode(text).length;
+  if ((!isReplay && textBytes > MAX_IMPORT_SESSION_BYTES) || textBytes > MAX_IMPORT_FILE_BYTES) {
+    throw new Error(isReplay
+      ? 'Imported replay JSON exceeds the 128 MiB file limit.'
+      : 'Imported session JSON exceeds the 2 MiB size limit.');
+  }
+  if (isReplay && root.replay_format !== 'umminfer-raw-sse-replay-v1') {
+    throw new Error('Replay session must use umminfer-raw-sse-replay-v1.');
   }
   const sessionId = parseOptionalStringField(root, 'session_id', 'root');
   const model = parseOptionalStringField(root, 'model', 'root');
@@ -4643,6 +5383,41 @@ function parseImportedSessionJson(text) {
 
     const telemetry = buildImportedTelemetryRecord(rawTurn.telemetry, visualSlots, label);
     const resolvedRole = role || (prompt && response ? 'turn' : (response ? 'assistant' : (prompt ? 'user' : 'turn')));
+    const outcome = parseOptionalStringField(rawTurn, 'outcome', label);
+    if (outcome && !['completed', 'incomplete', 'cancelled', 'error'].includes(outcome)) {
+      throw new Error(`${label}.outcome is unsupported.`);
+    }
+    if (rawTurn.terminal !== undefined && rawTurn.terminal !== null && !isSessionObject(rawTurn.terminal)) {
+      throw new Error(`${label}.terminal must be an object.`);
+    }
+    const terminal = isSessionObject(rawTurn.terminal) ? JSON.parse(JSON.stringify(rawTurn.terminal)) : null;
+    if (terminal && !['completed', 'incomplete', 'cancelled', 'error'].includes(terminal.state)) {
+      throw new Error(`${label}.terminal.state is unsupported.`);
+    }
+    const rawReference = rawTurn.visual_reference;
+    let visualReference = null;
+    if (rawReference !== undefined && rawReference !== null) {
+      if (!isPlainObject(rawReference)) throw new Error(`${label}.visual_reference must be an object.`);
+      const slotId = parseOptionalStringField(rawReference, 'slot_id', `${label}.visual_reference`);
+      const referenceSha = parseOptionalStringField(rawReference, 'sha256', `${label}.visual_reference`);
+      if (!slotId || (referenceSha && !/^[0-9a-f]{64}$/i.test(referenceSha))) {
+        throw new Error(`${label}.visual_reference requires a slot id and valid optional SHA-256.`);
+      }
+      visualReference = {
+        slot_id: slotId,
+        sha256: referenceSha ? referenceSha.toLowerCase() : null,
+        source_attached: rawReference.source_attached === true,
+        edit_source_attached: rawReference.edit_source_attached === true,
+      };
+    }
+    const narrativeEvents = isReplay && Array.isArray(rawTurn.narrative_events)
+      ? JSON.parse(JSON.stringify(rawTurn.narrative_events)) : [];
+    const mediaArtifacts = isReplay && Array.isArray(rawTurn.media_artifacts)
+      ? JSON.parse(JSON.stringify(rawTurn.media_artifacts)) : [];
+    const replay = isReplay && rawTurn.replay !== undefined && rawTurn.replay !== null
+      ? parseImportedReplay(rawTurn.replay, label) : null;
+    const directRenders = isReplay && Array.isArray(rawTurn.direct_renders)
+      ? rawTurn.direct_renders.map((record, replayIndex) => parseDirectRenderRecord(record, label, replayIndex)) : [];
 
     turns.push({
       index: i + 1,
@@ -4654,6 +5429,13 @@ function parseImportedSessionJson(text) {
       spoken_bytes: spokenBytes,
       visual_slots: visualSlots,
       telemetry,
+      outcome,
+      terminal,
+      visual_reference: visualReference,
+      narrative_events: narrativeEvents,
+      media_artifacts: mediaArtifacts,
+      direct_renders: directRenders,
+      replay,
     });
   }
 
@@ -4705,13 +5487,21 @@ function applyImportedSessionWithContext(parsed, ctx) {
       !item.asr_text && !item.interrupted && item.visual_slots.length === 0 && !item.telemetry);
     const hasAssistant = Boolean(item.response) || Boolean(item.asr_text) ||
       item.interrupted === true || item.visual_slots.length > 0 ||
-      item.telemetry !== null || item.role === 'assistant';
+      item.telemetry !== null || item.role === 'assistant' || Boolean(item.outcome) || Boolean(item.replay);
 
     if (hasUser) {
       userTurn = ctx.addTurn('user', item.prompt);
+      userTurn.visualReference = item.visual_reference || null;
     }
     if (hasAssistant) {
       assistantTurn = ctx.addTurn('assistant', '');
+      assistantTurn.outcome = item.outcome || null;
+      assistantTurn.terminal = item.terminal || null;
+      assistantTurn.events = item.narrative_events || [];
+      assistantTurn.mediaArtifacts = item.media_artifacts || [];
+      assistantTurn.directRenders = item.direct_renders || [];
+      assistantTurn.requestId = item.terminal?.request_id || '';
+      if (item.replay) assistantTurn.rawChunks = item.replay.chunks;
       if (item.asr_text) {
         assistantTurn.asrText = item.asr_text;
         assistantTurn.asrEl.textContent = `ASR: ${item.asr_text}`;
@@ -4724,6 +5514,8 @@ function applyImportedSessionWithContext(parsed, ctx) {
         const slotMeta = item.visual_slots[j];
         ctx.addImportedVisualSlot(assistantTurn, slotMeta, j);
       }
+      if (item.direct_renders?.length) applyDirectRenders(assistantTurn);
+      if (item.replay) ctx.addReplayControl?.(assistantTurn);
       if (item.interrupted === true) {
         assistantTurn.interrupted = true;
         assistantTurn.spokenBytes = item.spoken_bytes;
@@ -4735,7 +5527,7 @@ function applyImportedSessionWithContext(parsed, ctx) {
         ctx.renderTelemetry(assistantTurn);
       }
     }
-    ctx.recordTurn(userTurn, assistantTurn, item.prompt, item.response);
+    ctx.recordTurn(userTurn, assistantTurn, item.prompt, item.response, item.outcome);
   }
 
   const chip = formatImportedSessionChip(parsed.session_id);
@@ -4756,12 +5548,13 @@ function applyImportedSessionWithContext(parsed, ctx) {
 
 function applyImportedSession(parsed) {
   return applyImportedSessionWithContext(parsed, {
-    isBusy: () => running || Boolean(realtime.activeResponseId),
+    isBusy: () => running || Boolean(realtime.activeResponseId) || Boolean(micState),
     stopActiveAudio() {
       stopRealtime();
       player.stop();
     },
     resetState(nextSessionId) {
+      clearComposerAndSessionResources();
       stopped = false;
       inflight = new Map();
       turn = null;
@@ -4790,6 +5583,7 @@ function applyImportedSession(parsed) {
     addImportedVisualSlot(assistantTurn, slotMeta, idx) {
       const continuity = visualSlotContinuityBadge(slotMeta);
       const slot = createSlot(slotMeta.id, slotMeta.prompt || '', slotMeta.kind, continuity);
+      slot.slotIndex = slotMeta.slot_index;
       slot.continuityMeta = {
         continuity_mode: slotMeta.continuity_mode || '',
         anchor_slot_index: slotMeta.anchor_slot_index,
@@ -4798,8 +5592,15 @@ function applyImportedSession(parsed) {
       };
       slot.bytes = slotMeta.bytes;
       slot.sha256 = slotMeta.sha256 || '';
+      for (const variant of slotMeta.variants || []) {
+        slot.artifactMeta[variant.kind] = { ...variant };
+        if (variant.kind === 'image') slot.imageSha256 = variant.sha256;
+      }
+      slot.terminalState = slotMeta.terminal_state || null;
       if (slotMeta.error) {
         showSlotError(slot, slotMeta.error);
+      } else if (slotMeta.terminal_state === 'aborted') {
+        showSlotCancelled(slot);
       } else {
         showSlotImportedMetadata(slot);
       }
@@ -4813,10 +5614,21 @@ function applyImportedSession(parsed) {
     },
     attachInterruptedBadge: attachRealtimeInterruptedBadge,
     renderTelemetry: renderTurnTelemetry,
-    recordTurn(userTurn, assistantTurn, promptText, responseText) {
+    recordTurn(userTurn, assistantTurn, promptText, responseText, outcome) {
       sessionTurns.push({ userTurn, assistantTurn });
       if (promptText) history.push({ role: 'user', content: promptText });
-      if (responseText) history.push({ role: 'assistant', content: responseText });
+      if (responseText && outcome !== 'cancelled' && outcome !== 'error') {
+        history.push({ role: 'assistant', content: responseText });
+      }
+    },
+    addReplayControl(assistantTurn) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'replay-turn';
+      button.textContent = 'Replay raw SSE';
+      button.setAttribute('aria-label', 'Replay this response locally from verified raw SSE');
+      button.addEventListener('click', () => replaySessionTurn(assistantTurn));
+      assistantTurn.legs.append(button);
     },
     setSessionChip(chip) {
       ui.session.hidden = false;
@@ -4826,6 +5638,128 @@ function applyImportedSession(parsed) {
     syncUI: syncEmptyState,
     setStatus,
   });
+}
+
+async function replaySessionTurn(targetTurn, { playAudio = true } = {}) {
+  if (running || !targetTurn?.rawChunks?.length) return false;
+  const rawChunks = targetTurn.rawChunks.slice();
+  const expectedEvents = canonicalJson(targetTurn.events || []);
+  const originalOutcome = targetTurn.outcome || 'completed';
+  const originalTerminal = targetTurn.terminal ? JSON.parse(JSON.stringify(targetTurn.terminal)) : null;
+  const originalTelemetry = targetTurn.telemetry;
+  const originalRequestId = targetTurn.requestId || targetTurn.terminal?.request_id || '';
+  revokeTurnMedia(targetTurn);
+  targetTurn.flow.replaceChildren();
+  targetTurn.artifacts.replaceChildren();
+  targetTurn.legs.replaceChildren();
+  targetTurn.text = '';
+  targetTurn.tailText = null;
+  targetTurn.asrText = '';
+  targetTurn.asrEl.textContent = '';
+  targetTurn.slots = new Map();
+  targetTurn.nonSlotVisuals = [];
+  targetTurn.events = [];
+  targetTurn.mediaArtifacts = [];
+  targetTurn.completedArtifactIds = new Set();
+  targetTurn.telemetry = null;
+  targetTurn.terminal = null;
+  targetTurn.outcome = null;
+  targetTurn.requestId = originalRequestId;
+  turn = targetTurn;
+  stopped = false;
+  inflight = new Map();
+  controller = new AbortController();
+  setBusy(true);
+  setStatus('Replaying raw SSE locally…');
+  const st = {
+    seq: 0, terminal: 0, sawUnified: false, done: false, text: '', finish: '',
+    sessionID, requestID: originalRequestId,
+    behaviorRequested: false, behaviorEvidenceHeader: '',
+  };
+  let replaySucceeded = false;
+  try {
+    const rawBytes = concatRawChunks(rawChunks);
+    const hasPcm = rawSsePayloads(rawBytes).some((payload) => {
+      if (payload === '[DONE]') return false;
+      try {
+        const artifact = JSON.parse(payload).unified?.artifact;
+        return artifact?.mime_type === 'audio/pcm';
+      } catch { return false; }
+    });
+    if (hasPcm && playAudio) player.begin(ui.voiceWave);
+    for await (const line of readLines(new Response(rawBytes))) {
+      if (stopped) throw new DOMException('Replay stopped', 'AbortError');
+      if (!line.startsWith('data:')) continue;
+      let payload = line.slice(5);
+      if (payload.startsWith(' ')) payload = payload.slice(1);
+      try {
+        await consume(payload, st);
+      } catch (err) {
+        if (!(originalOutcome === 'cancelled' && err.cancelled && !stopped)) throw err;
+      }
+      if (st.done) break;
+    }
+    if (!st.done && !['cancelled', 'error'].includes(originalOutcome)) throw new Error('Replay ended before [DONE].');
+    if (st.sawUnified && st.terminal !== 1 && !['cancelled', 'error'].includes(originalOutcome)) {
+      throw new Error('Replay ended without a unified terminal.');
+    }
+    if (inflight.size) throw new Error('Replay ended with an incomplete artifact.');
+    if (['cancelled', 'error'].includes(originalOutcome) && !targetTurn.terminal) {
+      settleTurnTerminal(targetTurn, originalOutcome === 'cancelled' ? 'cancelled' : 'error');
+    }
+    if (canonicalJson(targetTurn.events) !== expectedEvents) {
+      throw new Error('Replayed narrative events diverge from the imported event index.');
+    }
+    applyDirectRenders(targetTurn);
+    player.end();
+    replaySucceeded = true;
+    setStatus(`Replay ${targetTurn.outcome || originalOutcome}`, false);
+  } catch (err) {
+    player.stop();
+    if (stopped || err.name === 'AbortError' || err.cancelled) {
+      setStatus('Replay stopped · original outcome preserved', false);
+    } else {
+      showError(`Replay failed: ${err.message}`);
+      setStatus('Replay failed', false);
+    }
+  } finally {
+    if (!replaySucceeded) {
+      targetTurn.terminal = originalTerminal;
+      targetTurn.outcome = originalOutcome;
+    }
+    targetTurn.telemetry = originalTelemetry;
+    renderTurnTelemetry(targetTurn);
+    targetTurn.rawChunks = rawChunks;
+    targetTurn.completedArtifactIds = new Set(targetTurn.mediaArtifacts.map((item) => item.artifact_id));
+    controller = null;
+    turn = null;
+    inflight = new Map();
+    stopped = false;
+    setBusy(false);
+    const entry = sessionTurns.find((item) => item.assistantTurn === targetTurn);
+    if (entry && originalTelemetry) entry.assistantTurn.telemetry = originalTelemetry;
+    const replayButton = document.createElement('button');
+    replayButton.type = 'button';
+    replayButton.className = 'replay-turn';
+    replayButton.textContent = 'Replay raw SSE';
+    replayButton.setAttribute('aria-label', 'Replay this response locally from verified raw SSE');
+    replayButton.addEventListener('click', () => replaySessionTurn(targetTurn));
+    targetTurn.legs.append(replayButton);
+  }
+  return true;
+}
+
+async function restoreImportedMedia() {
+  for (const entry of sessionTurns) {
+    const assistant = entry.assistantTurn;
+    if (assistant?.rawChunks?.length) {
+      await replaySessionTurn(assistant, { playAudio: false });
+    } else if (assistant?.outcome === 'cancelled' && !assistant.text &&
+               !assistant.slots?.size && !assistant.artifacts?.childElementCount) {
+      // A client-side stop can precede all response bytes, so no replay object exists.
+      assistant.legs.textContent = 'Cancelled before response output.';
+    }
+  }
 }
 
 function collectSessionExportState(exportedAt = new Date().toISOString()) {
@@ -4845,6 +5779,7 @@ function collectSessionExportState(exportedAt = new Date().toISOString()) {
           slots.push({
             id: slot.id,
             kind: slot.kind,
+            slot_index: slot.slotIndex,
             prompt: slot.prompt || '',
             bytes: slot.bytes,
             sha256: slot.sha256,
@@ -4853,6 +5788,8 @@ function collectSessionExportState(exportedAt = new Date().toISOString()) {
             anchor_explicit: slot.continuityMeta?.anchor_explicit === true,
             anchor_sha256: slot.continuityMeta?.anchor_sha256 || '',
             error: slot.hasError ? (slot.error || 'Generation failed') : '',
+            terminal_state: slot.terminalState || null,
+            variants: Object.values(slot.artifactMeta || {}),
           });
         }
       }
@@ -4864,6 +5801,14 @@ function collectSessionExportState(exportedAt = new Date().toISOString()) {
         response: a?.text || '',
         visual_slots: slots,
         telemetry: a?.telemetry || null,
+        visual_reference: u?.visualReference || null,
+        outcome: a?.outcome || null,
+        terminal: a?.terminal || null,
+        events: a?.events || [],
+        media_artifacts: a?.mediaArtifacts || [],
+        raw_chunks: a?.rawChunks || [],
+        raw_capture_error: a?.rawCaptureError || null,
+        direct_renders: a?.directRenders || [],
       };
       if (a?.asrText) record.asr_text = a.asrText;
       if (a?.interrupted === true) {
@@ -4879,15 +5824,24 @@ function collectSessionExportState(exportedAt = new Date().toISOString()) {
 
 function exportSession(format) {
   if (!canExportSession(sessionTurns.length, running)) return false;
-  const normalized = format === 'markdown' || format === 'md' ? 'markdown' : 'json';
+  const normalized = format === 'replay' ? 'replay' : (format === 'markdown' || format === 'md' ? 'markdown' : 'json');
   const result = triggerSessionExportDownload(collectSessionExportState(), normalized);
+  if (normalized === 'replay') {
+    setStatus('Preparing verified replay archive…', false);
+    result.then((download) => setStatus(`Exported ${download.filename}`, false))
+      .catch((err) => {
+        showError(`Replay export failed: ${err.message}`);
+        setStatus('Replay export failed', false);
+      });
+    return true;
+  }
   setStatus(`Exported ${result.filename}`, false);
   return true;
 }
 
 function openImportDialog() {
-  if (running || realtime.enabled || realtime.activeResponseId) {
-    showError('Cannot import a session while a response or live voice session is active.');
+  if (running || realtime.enabled || realtime.activeResponseId || micState) {
+    showError('Cannot import a session while a response, recording, or live voice session is active.');
     return false;
   }
   ui.importSessionInput.value = '';
@@ -4895,10 +5849,64 @@ function openImportDialog() {
   return true;
 }
 
+function hasActiveSlotRender() {
+  return sessionTurns.some((entry) => [...(entry.assistantTurn?.slots?.values?.() || [])]
+    .some((slot) => slot.loading || slot.renderController));
+}
+
+function revokeTurnMedia(targetTurn) {
+  if (!targetTurn?.el) return;
+  const urls = new Set();
+  for (const slot of targetTurn.slots?.values?.() || []) {
+    cancelSlotRender(slot);
+    for (const url of [slot.url, ...Object.values(slot.cache || {})]) {
+      if (typeof url === 'string' && url.startsWith('blob:')) urls.add(url);
+    }
+  }
+  for (const node of targetTurn.el.querySelectorAll('img, audio, video, a')) {
+    if (typeof node.pause === 'function') node.pause();
+    for (const attr of ['src', 'href']) {
+      const url = node.getAttribute(attr) || '';
+      if (url.startsWith('blob:')) urls.add(url);
+    }
+  }
+  for (const url of urls) URL.revokeObjectURL(url);
+}
+
+function clearComposerAndSessionResources() {
+  for (const entry of sessionTurns) revokeTurnMedia(entry.assistantTurn);
+  for (const media of ui.transcript.querySelectorAll('audio, video')) media.pause();
+  if (micState) {
+    const activeMic = micState;
+    micState = null;
+    activeMic.proc.disconnect();
+    activeMic.src.disconnect();
+    activeMic.stream.getTracks().forEach((track) => track.stop());
+    activeMic.ctx.close().catch(() => {});
+  }
+  ui.mic.classList.remove('recording');
+  ui.mic.textContent = 'Mic';
+  attachedImage = null;
+  attachedVideo = null;
+  attachedAudio = null;
+  revisionSource = null;
+  ui.askImage.value = '';
+  ui.askVideo.value = '';
+  ui.askAudio.value = '';
+  ui.imageFile.value = '';
+  ui.refAudio.value = '';
+  ui.prompt.value = '';
+  renderAttachments();
+}
+
 function newChat() {
   if (running) return false;
   stopRealtime();
   player.stop();
+  clearComposerAndSessionResources();
+  turn = null;
+  inflight = new Map();
+  stopped = false;
   history.length = 0;
   sessionTurns.length = 0;
   ui.transcript.replaceChildren(ui.emptyState);
@@ -4911,6 +5919,7 @@ function newChat() {
   syncVideoFrameControls();
   clearError();
   setStatus('Ready', false);
+  ui.prompt.focus();
   return true;
 }
 
@@ -4991,7 +6000,7 @@ function handleGlobalShortcut(event, ctx = {}) {
       if (isBusy || !hasTurns) {
         return { action, handled: false, prevented: true, reason: isBusy ? 'busy' : 'empty' };
       }
-      ctx.exportSession?.('json');
+      ctx.exportSession?.(ctx.defaultExportFormat || 'json');
       return { action, handled: true, prevented: true };
     case 'export_markdown':
       if (isBusy || !hasTurns) {
@@ -5024,7 +6033,7 @@ function handleGlobalShortcut(event, ctx = {}) {
 // KEYBOARD_SHORTCUTS_END
 
 ui.exportSession.addEventListener('click', (event) => {
-  const selected = ui.exportFormat.value === 'markdown' ? 'markdown' : 'json';
+  const selected = ['json', 'markdown', 'replay'].includes(ui.exportFormat.value) ? ui.exportFormat.value : 'json';
   const format = event?.shiftKey ? (selected === 'markdown' ? 'json' : 'markdown') : selected;
   exportSession(format);
 });
@@ -5037,20 +6046,26 @@ ui.importSessionInput.addEventListener('change', async () => {
   const file = ui.importSessionInput.files?.[0];
   ui.importSessionInput.value = '';
   if (!file) return;
-  if (running || realtime.enabled || realtime.activeResponseId) {
-    showError('Cannot import a session while a response or live voice session is active.');
+  if (running || realtime.enabled || realtime.activeResponseId || micState) {
+    showError('Cannot import a session while a response, recording, or live voice session is active.');
     return;
   }
-  if (typeof file.size === 'number' && file.size > MAX_IMPORT_SESSION_BYTES) {
-    showError('Imported session JSON exceeds the 2 MiB size limit.');
+  if (typeof file.size === 'number' && file.size > MAX_IMPORT_FILE_BYTES) {
+    showError('Imported session JSON exceeds the 128 MiB file limit.');
     setStatus('Import failed', false);
     return;
   }
   try {
     const text = await file.text();
     const parsed = parseImportedSessionJson(text);
+    await verifyImportedReplay(parsed);
     applyImportedSession(parsed);
+    if (parsed.schema === SESSION_REPLAY_SCHEMA) await restoreImportedMedia();
+    setStatus(parsed.schema === SESSION_REPLAY_SCHEMA
+      ? `Imported ${parsed.turns.length} turns · verified media restored`
+      : `Imported ${parsed.turns.length} turns · media omitted in compact export`, false);
   } catch (err) {
+    console.error('Session import failed', err?.stack || err);
     showError('Session import failed: ' + (err?.message || String(err)));
     setStatus('Import failed', false);
   }
@@ -5069,6 +6084,7 @@ document.addEventListener('keydown', (event) => {
     isLiveVoiceActive: () => Boolean(realtime.enabled || realtime.activeResponseId),
     hasTurns: () => sessionTurns.length > 0,
     isExportMenuOpen: () => false,
+    defaultExportFormat: ui.exportFormat.value,
     exportSession,
     openImportDialog,
     newChat,

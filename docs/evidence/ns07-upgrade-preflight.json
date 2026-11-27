@@ -1,0 +1,20 @@
+{
+  "after_arm_sha256": "f00fc0de3313323308f12e460903c4d70cddb60c630f62acf02c8b8a254961b2",
+  "candidate_sha256": "d0412f902e367640b74c255faed1837bb0e93546ddb6baed07bedbc0cbc8c22b",
+  "checks_failed": [
+    "isolated engineering gate",
+    "unexpected_error_count"
+  ],
+  "network_or_process_actions": 0,
+  "owner_authorization_required": true,
+  "resident_preflight": "STATIC_IDENTITY_AND_ISOLATED_HEALTH_ONLY",
+  "resident_rollback": "NOT_RUN",
+  "resident_upgrade": "NOT_RUN",
+  "schema": "umminfer-ns07-upgrade-preflight/v1",
+  "source_commits": {
+    "after": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
+    "before": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7"
+  },
+  "status": "FAIL",
+  "verifier_sha256": "007157f64341d9ed2d628699e78412631b4c305339187222cff02408dda87ed8"
+}

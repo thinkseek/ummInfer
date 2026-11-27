@@ -67,10 +67,19 @@ def check_markup(html):
                 'id="exportFormat"', 'id="exportSession"',
                 'id="importSession"', 'id="importSessionInput"'):
         require(tag in html, f"missing element: {tag}")
-    require('<option value="off" selected>Off</option>' in html,
-            "narrativeContinuity must default to Off")
+    require('<option value="i2v_chain" selected>I2V chain</option>' in html,
+            "natural narrative continuity must default to I2V chain")
+    require(re.search(r'id="maxTokens"[^>]*value="512"', html) is not None,
+            "natural three-shot default must retain enough tokens to avoid directive truncation")
+    for control in ('image', 'audio', 'video', 'voice', 'narrative', 'visualMode',
+                    'maxSlots', 'allowTextOnly', 'narrativeContinuity', 'styleAnchor', 'fastVideo'):
+        require(re.search(rf'<label[^>]*class="[^"]*developer-control[^"]*"[^>]*>.*id="{control}"', html)
+                is not None, f"{control} must remain nonessential behind Advanced")
+    require('#settings label.developer-control { display: none; }' in html and
+            '#settings:has(#advanced[open]) label.developer-control { display: flex; }' in html,
+            "developer modality/routing controls must be hidden until Advanced opens")
     require('<option value="prompt_anchor">Prompt anchor</option>' in html
-            and '<option value="i2v_chain">I2V chain</option>' in html,
+            and re.search(r'<option value="i2v_chain"(?: selected)?>I2V chain</option>', html),
             "narrativeContinuity must expose prompt_anchor and i2v_chain options")
     require('<input type="checkbox" id="fastVideo">' in html,
             "fastVideo checkbox must default to unchecked")
@@ -800,8 +809,8 @@ def check_realtime(html, script):
 
     # The existing HTTP/SSE implementation is still separate and present.
     require("const player = {" in script and "async function send()" in script and
-            "for await (const line of readLines(res))" in script,
-            "the existing HTTP/SSE chat and narrative path must remain intact")
+            "for await (const line of readLines(res," in script,
+            "the existing HTTP/SSE chat and narrative path must remain intact with raw capture")
 
 
 def check_realtime_behavior(script):
@@ -1794,7 +1803,8 @@ def check_session_export(html, script):
     for snippet in (
         'class="export-group"',
         'id="exportFormat"',
-        '<option value="json" selected>JSON</option>',
+        '<option value="replay" selected>JSON</option>',
+        '<option value="json">Compact JSON (metadata only)</option>',
         '<option value="markdown">Markdown</option>',
         'id="exportSession"',
         '.export-group',
@@ -3133,6 +3143,149 @@ def check_theme_tokens(html):
         require(metric in html, f"the page must keep the metric {metric}")
 
 
+def check_storyboard_readiness(html, script):
+    """Execute Storyboard ownership, terminal, and raw-replay regressions in Node."""
+    for hook in (
+        'function beginSlotRevision(', 'config.image = revisionSource.dataURL',
+        'source_attached: true', 'function settleTurnTerminal(',
+        'function validateUnifiedOwnership(', 'completedArtifactIds.has(chunk.artifact_id)',
+        'function clearComposerAndSessionResources(', 'function replaySessionTurn(',
+        'rawCaptureBytes + chunk.byteLength > MAX_REPLAY_RAW_BYTES',
+        'const originalTerminal = targetTurn.terminal', 'revokeTurnMedia(targetTurn)',
+        "ui.imageFile.value = '';", "JSON.parse(payload).unified?.artifact",
+        '<option value="replay" selected>JSON</option>',
+        'ctx.defaultExportFormat || \'json\'',
+    ):
+        require(hook in (html + script), f"missing storyboard readiness hook: {hook}")
+    node = shutil.which("node")
+    if not node:
+        print("skip storyboard readiness behavior: node is not installed", flush=True)
+        return
+    lifecycle = script.split("// STORYBOARD_LIFECYCLE_BEGIN", 1)[1].split(
+        "// STORYBOARD_LIFECYCLE_END", 1)[0]
+    raw_export = script.split("// RAW_SSE_REPLAY_EXPORT_BEGIN", 1)[1].split(
+        "// RAW_SSE_REPLAY_EXPORT_END", 1)[0]
+    raw_import = script.split("// RAW_SSE_REPLAY_IMPORT_BEGIN", 1)[1].split(
+        "// RAW_SSE_REPLAY_IMPORT_END", 1)[0]
+    restore = re.search(r"async function restoreImportedMedia\(\) \{.*?\n\}", script, re.S)
+    require(restore is not None, "could not extract no-raw-capture import restoration")
+    stable = re.search(
+        r"const ARTIFACT_STABLE_FIELDS =.*?function requireStableArtifactAttribution\(.*?\n\}",
+        script, re.S,
+    )
+    require(stable is not None, "could not extract immutable artifact attribution checks")
+    helpers = re.search(
+        r"function isPlainObject\(value\) \{.*?function parseOptionalNonNegMs\(.*?\n\}",
+        script, re.S,
+    )
+    require(helpers is not None, "could not extract replay import scalar validators")
+    harness = (
+        "const SESSION_REPLAY_SCHEMA = 'umminfer-web-session-replay-v1';\n"
+        "const encodeBase64 = (bytes) => Buffer.from(bytes).toString('base64');\n"
+        "const decodeBase64 = (text) => new Uint8Array(Buffer.from(text, 'base64'));\n"
+        "async function sha256Hex(bytes) { return Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex'); }\n"
+        "function normalizeAnchorSha256(value) { return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : ''; }\n"
+        "function showSlotCancelled(slot) { slot.cancelled = true; slot.terminalState = 'aborted'; }\n"
+        "function showSlotError(slot, message) { slot.error = message; slot.terminalState = 'failed'; }\n"
+        + helpers.group(0) + "\n" + stable.group(0) + "\n" + lifecycle + "\n" + raw_export + "\n" + raw_import + "\n" + restore.group(0) + r"""
+const sessionTurns = [];
+async function replaySessionTurn() { throw new Error('no-raw turn must not call replay'); }
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const rejects = async (fn, label) => {
+  let rejected = false;
+  try { await fn(); } catch { rejected = true; }
+  assert(rejected, label + ' must reject');
+};
+(async () => {
+  const pcm = new Uint8Array([0, 1, 2, 3]);
+  const pcmSha = await sha256Hex(pcm);
+  const unified = [
+    { seq: 0, kind: 'vlm_delta', request_id: 'r1', session_id: 'session-a', stage: 'vlm', text: 'clean' },
+    { seq: 1, kind: 'visual_slot', request_id: 'r1', session_id: 'session-a', stage: 'image', slot_id: 'slot-0', slot_index: 0, media_type: 'image', prompt: 'keyframe' },
+    { seq: 2, kind: 'artifact', request_id: 'r1', session_id: 'session-a', stage: 'tts', artifact: {
+      artifact_id: 'audio-0', media_type: 'audio', mime_type: 'audio/pcm', encoding: 'base64',
+      data: encodeBase64(pcm), index: 0, total: 1, bytes: 4, sha256: pcmSha,
+      format: 'pcm16', sample_rate: 24000, channels: 1, stream_index: 0,
+    } },
+    { seq: 3, kind: 'complete', request_id: 'r1', session_id: 'session-a', stage: 'vlm', text: 'clean', legs: [] },
+  ];
+  const rawBytes = new TextEncoder().encode(unified.map((event) => 'data: ' + JSON.stringify({ unified: event }) + '\r\n\r\n').join('') + 'data: [DONE]\r\n\r\n');
+  const expectedEvents = [];
+  for (const event of unified) recordNarrativeEvent({ events: expectedEvents }, event);
+  const media = {
+    artifact_id: 'audio-0', media_type: 'audio', mime_type: 'audio/pcm', bytes: 4, sha256: pcmSha,
+    slot_id: null, slot_index: null, stream_index: 0, sample_rate: 24000, channels: 1,
+    anchor_slot_index: null, anchor_sha256: null,
+  };
+  const makeParsed = (session = 'session-a') => ({ schema: SESSION_REPLAY_SCHEMA, session_id: session, turns: [{
+    outcome: 'incomplete', terminal: { state: 'completed', request_id: 'r1', legs: [] },
+    visual_slots: [{ id: 'slot-0', kind: 'image', slot_index: 0, terminal_state: 'unknown' }],
+    narrative_events: JSON.parse(JSON.stringify(expectedEvents)), media_artifacts: [media], replay: {
+      rawBytes: rawBytes.slice(), rawSha: '', chunks: splitRawChunks(rawBytes, [1, 7, rawBytes.length - 8]),
+      terminalRequired: true, payloads: null,
+    },
+  }] });
+  const valid = makeParsed();
+  valid.turns[0].replay.rawSha = await sha256Hex(rawBytes);
+  const summary = await verifyImportedReplay(valid);
+  assert(summary.turns === 1 && summary.artifacts === 1 && valid.turns[0].replay.verified === true,
+         'valid raw SSE/PCM replay did not verify');
+
+  const foreign = makeParsed('session-b');
+  foreign.turns[0].replay.rawSha = await sha256Hex(rawBytes);
+  await rejects(() => verifyImportedReplay(foreign), 'foreign session');
+
+  const projectedMismatch = makeParsed();
+  projectedMismatch.turns[0].narrative_events[0].text = 'tampered';
+  projectedMismatch.turns[0].replay.rawSha = await sha256Hex(rawBytes);
+  await rejects(() => verifyImportedReplay(projectedMismatch), 'event projection mismatch');
+
+  const duplicateUnified = [unified[0], unified[2], unified[2], unified[3]];
+  const duplicateRaw = new TextEncoder().encode(duplicateUnified.map((event) => 'data: ' + JSON.stringify({ unified: event }) + '\n\n').join('') + 'data: [DONE]\n\n');
+  const duplicate = makeParsed();
+  duplicate.turns[0].replay.rawBytes = duplicateRaw;
+  duplicate.turns[0].replay.chunks = [duplicateRaw];
+  duplicate.turns[0].replay.rawSha = await sha256Hex(duplicateRaw);
+  await rejects(() => verifyImportedReplay(duplicate), 'duplicate artifact');
+
+  const makeTurn = () => ({ requestId: 'r1', legs: { textContent: '' }, slots: new Map([
+    ['slot-0', { id: 'slot-0', url: '', hasError: false }],
+  ]) });
+  const cancelled = makeTurn();
+  settleTurnTerminal(cancelled, 'cancelled', []);
+  assert(cancelled.outcome === 'cancelled' && cancelled.terminal.state === 'cancelled' &&
+         cancelled.slots.get('slot-0').cancelled === true, 'cancelled slot was not settled');
+  const emptyCancelled = { requestId: 'r-empty', text: '', artifacts: { childElementCount: 0 },
+                           legs: { textContent: '' }, slots: new Map() };
+  settleTurnTerminal(emptyCancelled, 'cancelled', []);
+  assert(emptyCancelled.legs.textContent === 'Cancelled before response output.',
+         'empty cancellation notice must survive import/replay');
+  const noRawCancelled = { outcome: 'cancelled', text: '', slots: new Map(),
+                           artifacts: { childElementCount: 0 }, legs: { textContent: '' } };
+  sessionTurns.push({ assistantTurn: noRawCancelled });
+  await restoreImportedMedia();
+  assert(noRawCancelled.legs.textContent === 'Cancelled before response output.',
+         'stop-before-response must restore even without a replay object');
+  const unresolved = makeTurn();
+  const result = settleTurnTerminal(unresolved, 'complete', [{ slot_id: 'slot-0', state: 'running' }]);
+  assert(result.unresolved === 1 && unresolved.outcome === 'incomplete' &&
+         /running/.test(unresolved.slots.get('slot-0').error), 'running slot was presented as complete');
+  const complete = makeTurn();
+  complete.slots.get('slot-0').url = 'blob:valid';
+  const completeResult = settleTurnTerminal(complete, 'complete', [{ slot_id: 'slot-0', state: 'completed' }]);
+  assert(completeResult.unresolved === 0 && complete.outcome === 'completed', 'valid terminal was rejected');
+  assert(true, 'storyboard readiness behavior passed');
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "storyboard-readiness.mjs"
+        path.write_text(harness, encoding="utf-8")
+        result = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=60)
+    require(result.returncode == 0,
+            f"storyboard readiness behavior failed: {result.stderr.strip()[:1600]}")
+
+
 class WebUIContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -3207,6 +3360,9 @@ class WebUIContractTest(unittest.TestCase):
     def test_keyboard_shortcuts_behavior(self):
         check_keyboard_shortcuts_behavior(self.script)
 
+    def test_storyboard_readiness(self):
+        check_storyboard_readiness(self.html, self.script)
+
     def test_theme(self):
         check_theme_tokens(self.html)
 
@@ -3239,6 +3395,7 @@ def main():
         ("session_import_behavior", lambda: check_session_import_behavior(script)),
         ("keyboard_shortcuts", lambda: check_keyboard_shortcuts(html, script)),
         ("keyboard_shortcuts_behavior", lambda: check_keyboard_shortcuts_behavior(script)),
+        ("storyboard_readiness", lambda: check_storyboard_readiness(html, script)),
         ("theme", lambda: check_theme_tokens(html)),
     ]
     failures = 0

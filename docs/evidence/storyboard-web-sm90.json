@@ -1,0 +1,104 @@
+{
+  "schema": "umminfer-interactive-storyboard-web-sm90/v1",
+  "status": "ISOLATED_CANDIDATE_PASS",
+  "resident_readiness_or_deployment": "NOT_CLAIMED",
+  "source": {
+    "official_main": "a4320e7678748a2336f74e3c2477c21b30805fb8",
+    "accepted_task_73_merged": "e3b97ac6df001e0d5f0b4ca189995a1be8f7cbca",
+    "execution_commit": "1176aa83dbb3038bbb44a1f5778b9d816d6efd5a",
+    "web_sha256": "08ea1cec41482836b028f47c731c73452dcaec43adfc843e712597a34dd2b568",
+    "web_test_sha256": "47b47a00f1e0e88da4abe9cb874c28da94b2474d9518cffa348684affa1f533c",
+    "independent_verifier_sha256": "252811c7ca21406a5e7af82ad0260e7a50da40f4387a975e8e98c794a26460ff",
+    "verifier_test_sha256": "a39d4055306b74f75b0dfce92a87f6b30319514f93389a032e29beec8d2d2acc"
+  },
+  "hardware": {
+    "accelerator": "NVIDIA H20 SM90",
+    "physical_gpu": 0,
+    "before": {"memory_used_mib": 3, "utilization_percent": 0, "compute_processes": 0},
+    "supervisor_last_sample": {"memory_used_mib": 3, "utilization_percent": 1, "compute_processes": 0},
+    "independent_final_sample": {"memory_used_mib": 3, "utilization_percent": 0, "compute_processes": 0},
+    "serial_residency": "VLM resident; exactly one of FLUX.2, native TTS, or native Wan resident at a time"
+  },
+  "real_browser": {
+    "browser": "Chrome for Testing 156.0.8078.4 headless; Playwright 1.65.1",
+    "story_journey": {"checks_passed": 13, "checks_failed": 0, "result_sha256": "3c3a40886571495c09761808724b00ef0a990aea2b7222444dd93b7d8efad9b2"},
+    "video_frame_matrix": {"requests": 5, "checks_passed": 10, "checks_failed": 0, "cases": ["uniform-default-omitted", "uniform-4", "uniform-8", "uniform-16", "temporal-16"], "result_sha256": "859d35a7f25b4f9fec03b7c8ec41a3c65071d30623204f945c2050440619fac5"},
+    "mixed_wav_journey": {"checks_passed": 5, "checks_failed": 0, "wav_bytes": 602924, "wav_duration_seconds": 12.56, "result_sha256": "7e4b8273de2f9fcdf1e5df0678ea17a51617ab8414fe0d63510fc4c1cd251d5f"},
+    "story_revision_archive": {"sha256": "ebc9c915d920ff8d8ba39429d7bc62cfc98a85471f55de8fc239ece01438297d", "bytes": 5475946, "turns": 2, "events": 137, "artifacts": 63, "pcm_bytes": 1470720, "verification_sha256": "b0887f3feb1d29a265d9849d45dd014da6736581434447bbc6a072f876df9b98"},
+    "cancelled_archive": {"sha256": "cf9ce7a9b558dd1e6466ba87e1fa131c1001e4060139195fb983933131f662f1", "bytes": 13311, "events": 17, "completed_media_artifacts": 0, "outcome": "cancelled", "verification_sha256": "b35520d50d7df0ef63ffe95638eb4fea47e38e8fa1c55371f4a37ff66463c26a"},
+    "wav_archive": {"sha256": "7b002ac58c0812d023d0c1b94c5d67f18683caac504563b1e4c683236deb47f0", "bytes": 1637920, "events": 31, "artifacts": 2, "verification_sha256": "5899c5a5c605acb1e3a09b47207dee628783848c6070770d187ca88f3d36e7ea"},
+    "source_image_sha256": "212083df654daf894d07ec0a7b220f1289a047cbae553a1872ca1bb22aa06cb0",
+    "revision_vlm_and_edit_source_sha256": "212083df654daf894d07ec0a7b220f1289a047cbae553a1872ca1bb22aa06cb0",
+    "initial_video_sha256": "efd20687bb3c8c357f93e1baefaaba0c63abac49a245fed0550ffdad8a77ccc2",
+    "revision_video_sha256": "0d14bc012100ec4d2e6eafa02f574208482f3283e7828514fd964f233eabab6f",
+    "duplicate_terminals": 0,
+    "cross_session_or_request_events": 0,
+    "stale_post_cancel_updates": 0,
+    "unresolved_slots_presented_complete": 0,
+    "raw_replay_network_requests": 0,
+    "cancelled_prose_added_to_retry_history": false
+  },
+  "deterministic_browser": {
+    "checks_passed": 23,
+    "checks_failed": 0,
+    "includes": ["keyboard preset/send/stop/new-chat/export", "source-bound revision", "raw export/import/replay/re-export", "cancel/retry", "unresolved-terminal rejection", "default/4/8/16 wire omission"],
+    "result_sha256": "1b9a97aa465a0772254d1fecb48a18c6f7b9be3f9dcfab13808cd3781d4306ab",
+    "log_sha256": "8099f44cf1c1adf27a091c859d36b01034b6ce7a075d32ffa403830cb2ad523c",
+    "real_model": false
+  },
+  "tests": {
+    "umm_test_local": {"status": "PASS", "log_sha256": "f09539e7e5ab1c071a62b0bcb4d4a23d67bd7dc1a8cdb820a1841a948cfb7297"},
+    "web_ui_contract": {"checks": 24, "status": "PASS", "log_sha256": "6fe8ecc3ad317fc42fb6410a37bd042c4174fc7ccc9a21a59e81a92c9ec40c68"},
+    "storyboard_replay_verifier_fresh_process_tests": {"tests": 8, "status": "PASS", "log_sha256": "10def50f0d703bd20ef77ecfffa3fdb7874881b07720b8a49a2adab5c6061e6b"},
+    "existing_showcase_tests": {"tests": 28, "status": "PASS"},
+    "existing_client_media_tests": {"tests": 13, "status": "PASS", "log_sha256": "8ca214d47f2591a00e31a500f21545158b5e15490073ba8de0feeedae9c2d860"},
+    "existing_raw_sse_replay_tests": {"tests": 10, "status": "PASS", "log_sha256": "c4b91d92512220713642b20d3d5b9905d76bf0e1e6e76e273eef100af4dce34d"},
+    "existing_narrative_reference_self_check": {"status": "PASS", "log_sha256": "67b629121baeb6cefb1365c87465adf2394a998aa7a2ef542fdd9b8b8593e512"},
+    "existing_public_pcm_tests": {"tests": 21, "status": "PASS", "log_sha256": "a695aa26f951d6b7d68a096faaa36991ca3baaec1d0157aa529bc7f68fe665fa"}
+  },
+  "provenance": {
+    "binary_sha256": {
+      "gateway": "c7898fc0f7c22958cac2da2cd0393939a6b7e55bf54a3b216c4dd99ef0e9f18e",
+      "qwen38_stage": "9c2f692b7f7b69d32fe31f36bde67c1b455361677ae23fbd5c3c54ebc6e3a9ef",
+      "tts_stage": "b311ed10a230008c6e43d8cafb7654ac203374a03774c58ce850343d4979d456",
+      "wan_stage": "19ab38c8b83e274e0762d220daea18d31818606c2faa7738d31e6760179d9b2a"
+    },
+    "model_tree_sha256": {
+      "Qwen/Qwen3.8-27B": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304",
+      "black-forest-labs/FLUX.2-klein-4B": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997",
+      "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d",
+      "Wan-AI/Wan2.2-TI2V-5B-Diffusers": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+    },
+    "model_revisions": "UNKNOWN; exact local tree hashes are authoritative",
+    "stack_report_sha256": "9cddc34d1756f6ff574fa492e7a21c6f13b28860fc518268bd57f2fe7b17f0b2",
+    "server_trace_sha256": "8e9041fa4e36bdc0ed052873494be9d5f29028110321e59692381d3f20d8885a"
+  },
+  "screenshots_sha256": {
+    "01-live-story": "c468ef259b4e1bdeac6f22d219652135bcc58cc3325aa08ed19cccdc64a16e23",
+    "02-live-revision": "843ba2771f355cc566b8355df91368eb6bff48e73f87a22ec2fac3440002410b",
+    "03-live-raw-replay": "8de6d4e3b71fe68f6289452b42fed81036f21c0ea0da7102b65b4706a0a0a161",
+    "04-live-cancel": "b6132071e68c009967abac3bffb07901f77acbe237c9bd019715d88a2c571e94",
+    "05-live-retry": "248fb5aabb5c6ab2ad2c7433562ec4b18643bab34dffc46a0806db2e77d997fb"
+  },
+  "external_evidence": {
+    "files": 109,
+    "manifest_excludes_itself": true,
+    "manifest_sha256": "a28b2c01122df3c671113f008c0692d80ec008a905564d5e10f56bec5f05e0bb",
+    "fresh_manifest_and_raw_verification_sha256": "ee166904c5deccc7c514937f98cb1a28479a48c418e73665eba5dc57c82acee6",
+    "raw_media_screenshots_and_per_event_payloads_committed_to_git": false
+  },
+  "negative_attempts": [
+    "Initial external supervisor missed its trace trigger; the request hit the 600-second deadline and was aborted. Raw trace/report retained; GPU 0 cleaned to 3 MiB.",
+    "One harness incorrectly required finish_reason=stop and rejected Completed · length. The assertion was corrected; slot/artifact gates were not weakened.",
+    "Independent review found revision-source, terminal/slot binding, chunk-attribution, replay-stop, cleanup, capture-bound, and PCM-format defects; all were repaired before this final run."
+  ],
+  "limits": {
+    "physical_microphone_and_speaker": "NOT_RUN",
+    "active_audio_barge_in": "NOT_RUN; final cancellation preceded a completed PCM artifact",
+    "realtime_websocket_reconnect": "NOT_RUN; HTTP page reload/reconnect passed",
+    "macos_execution": "NOT_RUN",
+    "perceptual_or_acoustic_quality": "NOT_RUN",
+    "generalized_performance": "NOT_RUN",
+    "resident_service_upgrade": "NOT_RUN"
+  }
+}

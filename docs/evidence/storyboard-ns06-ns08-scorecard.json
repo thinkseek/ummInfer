@@ -1,0 +1,193 @@
+{
+  "after": {
+    "advanced_initially_open": false,
+    "asr_required_terms": {
+      "cafe": true,
+      "smile": true,
+      "three": true,
+      "watch": true
+    },
+    "asr_text_sha256": "4c6eb4cffafa1e03f7128cf32c03bfc5f017a5e1f02630af385160ed47572237",
+    "cancel_no_shimmer": true,
+    "cancel_no_stale": true,
+    "checks_failed": 0,
+    "checks_passed": 19,
+    "clean_without_directives": true,
+    "developer_control_visibility": [
+      {
+        "display": "none",
+        "id": "image"
+      },
+      {
+        "display": "none",
+        "id": "audio"
+      },
+      {
+        "display": "none",
+        "id": "video"
+      },
+      {
+        "display": "none",
+        "id": "voice"
+      },
+      {
+        "display": "none",
+        "id": "narrative"
+      },
+      {
+        "display": "none",
+        "id": "visualMode"
+      },
+      {
+        "display": "none",
+        "id": "maxSlots"
+      },
+      {
+        "display": "none",
+        "id": "allowTextOnly"
+      },
+      {
+        "display": "none",
+        "id": "narrativeContinuity"
+      },
+      {
+        "display": "none",
+        "id": "styleAnchor"
+      },
+      {
+        "display": "none",
+        "id": "fastVideo"
+      }
+    ],
+    "exact_text_history": true,
+    "export": {
+      "direct_renders": 3,
+      "schema": "umminfer-web-session-replay-v1",
+      "sha256": "1baa2f66c7f9adc9a8ce9f8c0a5254a3203133569f367df3583c4ba65985cc50",
+      "turn_count": 4
+    },
+    "export_file_sha256": "1baa2f66c7f9adc9a8ce9f8c0a5254a3203133569f367df3583c4ba65985cc50",
+    "failures": [],
+    "followup_uses_history": true,
+    "i2v_previews_after_animate": 3,
+    "initial_keyframes": 3,
+    "initial_video_slots": 0,
+    "media_omitted_after_import": 0,
+    "native_pcm_artifacts": 129,
+    "raw_sse_sha256": "7ad486c9a41581d12c196fb0f6f11a2ccead4cbb8f48ba18186096e6e3256e1b",
+    "reconnect_preserved_history": true,
+    "retry_completed": true,
+    "revision_produces_visual": true,
+    "revision_supported": true,
+    "script_labels_detected": 3,
+    "source_binding": {
+      "exact": true,
+      "original_sha256": "9f6273e4bbe97df4f0a685d81d518e28ce93703a567d3170539ff8e287e826f5",
+      "requests": [
+        {
+          "image_edit_sha256": "9f6273e4bbe97df4f0a685d81d518e28ce93703a567d3170539ff8e287e826f5",
+          "image_input_sha256": "9f6273e4bbe97df4f0a685d81d518e28ce93703a567d3170539ff8e287e826f5"
+        }
+      ]
+    },
+    "stack_execution_commit": "655e906b475441d2918da6f3ca4556cfec5ba864",
+    "stack_report_sha256": "6ff9cad8c90022a49508de748e785a128a39efa60f8379f563c874f76a65f878",
+    "unique_initial_terminal": true,
+    "zero_manual_modality_or_frame_controls": true
+  },
+  "after_independent_raw_verification": {
+    "archive_hash_matches": true,
+    "sha256": "9ea1fe799bd2270b219e77c1827dead7ca1d9f53696bd7dc11f7ed3b4cbf0888",
+    "status": "PASS"
+  },
+  "before": {
+    "advanced_initially_open": false,
+    "asr_required_terms": {
+      "cafe": true,
+      "smile": true,
+      "three": true,
+      "watch": true
+    },
+    "asr_text_sha256": "4c6eb4cffafa1e03f7128cf32c03bfc5f017a5e1f02630af385160ed47572237",
+    "cancel_no_shimmer": true,
+    "cancel_no_stale": true,
+    "checks_failed": 4,
+    "checks_passed": 14,
+    "clean_without_directives": false,
+    "developer_control_visibility": [],
+    "exact_text_history": false,
+    "export": {
+      "direct_renders": 0,
+      "schema": "umminfer-web-session-export-v1",
+      "sha256": "5d21f791c8e8da1f4563b5dd66157fd30ab5663e76368b5310f4400c38af0afb",
+      "turn_count": 3
+    },
+    "export_file_sha256": "5d21f791c8e8da1f4563b5dd66157fd30ab5663e76368b5310f4400c38af0afb",
+    "failures": [
+      "clean narrative without directives",
+      "natural three keyframes",
+      "three click-to-animate I2V previews",
+      "exact text/history restored"
+    ],
+    "followup_uses_history": true,
+    "i2v_previews_after_animate": 1,
+    "initial_keyframes": 1,
+    "initial_video_slots": 0,
+    "media_omitted_after_import": 2,
+    "native_pcm_artifacts": 161,
+    "raw_sse_sha256": "cbf4a70d0896730adc185e828fd840015d7b19263923e1e2a5dd8ba7253eb438",
+    "reconnect_preserved_history": true,
+    "retry_completed": true,
+    "revision_produces_visual": false,
+    "revision_supported": false,
+    "script_labels_detected": 2,
+    "source_binding": {
+      "exact": false,
+      "original_sha256": null,
+      "requests": []
+    },
+    "stack_execution_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+    "stack_report_sha256": "9fd8937b8fd3265f36e0abc7770713213ea0ed9bfee942d1edf5db34b760a441",
+    "unique_initial_terminal": true,
+    "zero_manual_modality_or_frame_controls": true
+  },
+  "deployment_or_resident_readiness": "NOT_CLAIMED",
+  "engineering_gates": {
+    "no_after_regression": "MET",
+    "ns06_counts_revision_cancel_retry": "MET",
+    "ns08_default_export_import_reconnect": "MET",
+    "paired_raw_binary_model_identity": "MET"
+  },
+  "north_star_hard_gates": {
+    "NS-06": "NOT_MET \u2014 human character/style consistency NOT_RUN",
+    "NS-08": "NOT_RUN \u2014 macOS and human walkthrough NOT_RUN"
+  },
+  "paired_outcome": "PAIRED_ENGINEERING_IMPROVEMENT_ONLY",
+  "preregistration_sha256": "0bbecc117e6f4d759667ed0128d62c851b978adacd75ba2d21cd8b2af6da550b",
+  "schema": "umminfer-ns06-ns08-paired-scorecard/v1",
+  "scoreboard_update_allowed": false,
+  "shared_model_identities": true,
+  "shared_model_tree_sha256": {
+    "asr": "2b634d66b56817e11496d76402b9c282fb59235ff1a5df22a4e5e261f8bf1d06",
+    "flux2": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997",
+    "tts": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d",
+    "vlm": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304",
+    "wan22": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+  },
+  "shared_native_binaries": true,
+  "shared_native_binary_sha256": {
+    "asr": "bcfa08a7e391d556b1b2adc74149796711a9da1ae374f7e4d4fc5d3c4a5bb246",
+    "server": "50922358d0295355ae070512c6f1f3fa4054bdab001e70740ab9a8762822a45c",
+    "tts": "0c3746d5629d362b8c8312b8635c87d97bad1011a103a129c0651dd8f1874656",
+    "vlm": "3284e636cc6e672354e3b358e7b2a3f3055b7a6ed5116412308cae2f2dc0f9a2",
+    "wan": "041f5fc80c17f26584bd10dadf290402e4b316b93ea897699221515ad27ac615"
+  },
+  "source_commits": {
+    "after": "655e906b475441d2918da6f3ca4556cfec5ba864",
+    "before": "91310b36184c86a1c147debb27db8643cc0cb3e4"
+  },
+  "source_hash_matches": {
+    "after": true,
+    "before": true
+  }
+}

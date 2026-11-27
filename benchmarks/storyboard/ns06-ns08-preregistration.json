@@ -1,0 +1,66 @@
+{
+  "schema": "umminfer-ns06-ns08-storyboard-preregistration/v1",
+  "registered_at": "2026-11-27T09:56:48Z",
+  "target_cases": ["NS-06", "NS-08"],
+  "claim_boundary": "Engineering completion only. Human character/style review and macOS are not executed; neither full NS-06 nor full NS-08 PASS is permitted.",
+  "before": {
+    "runtime_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+    "web_sha256": "7e67b7306ff5b31b71e1924a8d24655513f8ab3ff687703327cfdf99bb8671fe",
+    "reason": "Current official-main parent runtime and Web client before Task #77 natural-default changes.",
+    "natural_max_tokens": 256
+  },
+  "after": {
+    "runtime_commit": "655e906b475441d2918da6f3ca4556cfec5ba864",
+    "web_sha256": "963434a7e0f737860ddb3d02d559474d29385ee93cc8e096b3c88ca4d7abd43b",
+    "reason": "Same serving/native runtime; collapsed nonessential developer controls, natural three-slot I2V default, 512-token nontruncating storyboard budget, and lossless default JSON export/replay.",
+    "natural_max_tokens": 512
+  },
+  "common_conditions": {
+    "physical_gpu": 0,
+    "accelerator": "NVIDIA H20 SM90",
+    "hardware_model_and_serving_binaries_identical": true,
+    "natural_reference_png_sha256": "21f3092c4e2ca7dc115478a6110f61083e4c2c1074ad3872d1ff6ac8dd855173",
+    "natural_prompt_wav_sha256": "f3ab51c2d5d0ff9f3b834ea4ac143eabaf61ab24009f9a36c43ed478bd549749",
+    "natural_prompt_text_sha256": "8bf67b1e5ea466d364d41abd63d0fda7cfb7d90b2a52b6870659c425cd54f088",
+    "reference_svg_sha256": "33fcbeec2add45721ed70d15144c0eae61609b2dafa9a11534602989db694f63",
+    "reference_description": "Frozen 512x512 hand-drawn rain-cafe protagonist reference; actual bytes are external and not committed.",
+    "spoken_prompt_duration_seconds": 14.62,
+    "spoken_prompt_format": "16 kHz mono PCM16 WAV generated once with local Flite slt; physical microphone NOT_RUN",
+    "fresh_browser_context_per_arm": true,
+    "advanced_panel_opened_or_controls_changed": false,
+    "manual_modality_routing_or_frame_budget_changes": 0
+  },
+  "natural_input": {
+    "canonical_chinese": "做 3 个镜头的短片分镜：镜头 1 主角推开雨夜咖啡馆门，镜头 2 坐窗边看表，镜头 3 转身微笑，配旁白",
+    "frozen_english_audio_text": "Make a three shot short film storyboard. Shot 1: the protagonist pushes open the door of a rainy nighttime cafe. Shot 2: the protagonist sits by the window and checks their watch. Shot 3: the protagonist turns and smiles. Add narration.",
+    "allowed_user_actions": ["upload reference image", "upload spoken prompt", "send", "click Animate on each generated keyframe", "click Revise and supply natural direction", "Stop/Escape", "Export default JSON", "New chat/clear", "Import JSON", "reconnect/reload"],
+    "forbidden_user_actions": ["activate a Storyboard preset", "toggle Image/Audio/Video/Narrative", "select Visuals/Continuity/Fast Video", "change frame policy/budget/thresholds", "edit request JSON or sampling/seed fields"]
+  },
+  "workflow_requirements": {
+    "natural_story": {"scripts": 3, "keyframes": 3, "i2v_previews": 3, "native_narration_audio": true, "clean_text_without_directives": true},
+    "source_bound_revision": {"references_existing_visual": true, "vlm_and_edit_source_hash_equal_original": true},
+    "cancellation_retry": {"one_cancelled_turn": true, "aborted_or_completed_slots_only": true, "zero_stale_post_cancel_events_or_audio": true, "fresh_retry_terminal": true},
+    "default_json_round_trip": {"export_clear_import_reconnect": true, "exact_text_artifacts_audio_visual_references_and_history": true, "zero_unresolved_complete_slots": true},
+    "transport": {"unique_terminal_per_request": true, "gap_free_sequences": true, "zero_cross_session_or_request_events": true}
+  },
+  "asr_prompt_gate": {
+    "required_casefold_substrings": ["three", "cafe", "watch", "smile"],
+    "rule": "Evaluate only the actual final ASR text. Missing terms remain failures; no post-hoc aliases."
+  },
+  "hard_thresholds": {
+    "zero_stale_events_or_audio": true,
+    "zero_cross_session_artifacts_or_references": true,
+    "zero_duplicate_terminals": true,
+    "zero_unresolved_slots_presented_complete": true,
+    "zero_manual_modality_or_frame_control_interactions": true,
+    "ns06_human_character_style_consistency": "NOT_RUN; NS-06 full hard gate remains NOT_MET",
+    "ns08_macos_and_human_walkthrough": "NOT_RUN; NS-08 full hard gate remains NOT_RUN"
+  },
+  "paired_decision_rule": {
+    "required_after_improvement": "After must preserve all NS-06 engineering counts and improve NS-08 default export/import from metadata-only to exact raw media/history restoration.",
+    "regression_rule": "Any After reduction in script/keyframe/I2V/narration counts, source binding, cancellation cleanup, or terminal integrity is NOT_PROMOTED and leaves North-Star scores unchanged.",
+    "before_missing_features": "Record actual Before failures; never backport candidate features or substitute deterministic fixtures.",
+    "human_gate_rule": "Even a paired engineering improvement cannot produce full NS-06/NS-08 PASS while the human/macOS checks are NOT_RUN."
+  },
+  "evidence_rule": "Preserve raw requests, SSE, media, ASR text, browser actions, console/audio instrumentation, screenshots, logs, source/binary/model/config identities, and a self-excluded external manifest outside Git. Commit only compact counts, thresholds, outcomes, and hashes."
+}

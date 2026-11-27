@@ -1,0 +1,21 @@
+{
+  "candidate_promotion": "NOT_PROMOTED",
+  "case_count": 8,
+  "case_statuses": {
+    "NS-01": "NOT_RUN",
+    "NS-02": "NOT_RUN",
+    "NS-03": "NOT_RUN",
+    "NS-04": "NOT_RUN",
+    "NS-05": "NOT_RUN",
+    "NS-06": "NOT_RUN",
+    "NS-07": "FAIL",
+    "NS-08": "NOT_RUN"
+  },
+  "manifest_file_count": 16,
+  "manifest_sha256": "d44fb9e118fa9d99977d931886ee4dda83651db8cd24d4bfb5dbc9e0395ebdec",
+  "producer_imported": false,
+  "schema": "umminfer-ns-scorecard-independent-verification/v1",
+  "scorecard_sha256": "929611300d5fb16cf844fb4d7cb64ec04b3b108693918fd918443b86bf1d609a",
+  "status": "PASS",
+  "verifier_sha256": "23a90ffc522502f5fb9256e617b98abe84328892a59dd5a84ca3869f1a93223b"
+}

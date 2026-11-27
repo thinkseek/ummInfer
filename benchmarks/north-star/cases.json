@@ -1,0 +1,89 @@
+{
+  "schema": "umminfer-north-star-case-registry/v1",
+  "case_order": ["NS-01", "NS-02", "NS-03", "NS-04", "NS-05", "NS-06", "NS-07", "NS-08"],
+  "cases": [
+    {
+      "case_id": "NS-01",
+      "title": "Autonomous interleaved text, image, video, and speech",
+      "contract_drivers": ["tests/narrative_live_e2e.py"],
+      "contract_args": ["--self-check"],
+      "contract_scope": "Narrative parser, terminal, artifact, and latency-recording contracts only.",
+      "live_requirements": ["real native multimodal server", "decoded image and I2V media", "human narrative review"],
+      "hard_thresholds": {"ttft_ms_max_exclusive": 800, "ttfa_ms_max_exclusive": 800, "first_image_ms_max_exclusive": 2000, "i2v_ms_max_exclusive": 5000, "protocol_tag_leaks": 0},
+      "arm_metrics": []
+    },
+    {
+      "case_id": "NS-02",
+      "title": "In-place Animate, source-bound revision, cancellation, and retry",
+      "contract_drivers": ["tests/i2v_geometry_latency_test.py", "tests/native_wan_cancel_fault_live.py"],
+      "contract_args": ["--self-check"],
+      "contract_args_by_driver": {"tests/i2v_geometry_latency_test.py": []},
+      "contract_scope": "I2V geometry and native cancellation fail-closed contracts; no new real render is implied.",
+      "live_requirements": ["wide, tall, and square real renders", "cancel and fresh retry", "human first-frame review"],
+      "hard_thresholds": {"aspect_ratios": 3, "cancel_response_ms_max_exclusive": 500, "retry_success_rate": 1.0, "playable_preview_ms_max_exclusive": 5000},
+      "arm_metrics": []
+    },
+    {
+      "case_id": "NS-03",
+      "title": "Autonomous modality routing with zero client selection",
+      "contract_drivers": ["tests/narrative_slot_reference_live.py"],
+      "contract_args": ["--self-check"],
+      "contract_scope": "Narrative slot parser only; four-class routing accuracy is NOT_COVERED by this driver.",
+      "live_requirements": ["frozen four-class routing prompt set", "real autonomous model decisions"],
+      "hard_thresholds": {"decision_accuracy_min": 0.9, "redundant_visual_rate_max_exclusive": 0.05},
+      "arm_metrics": []
+    },
+    {
+      "case_id": "NS-04",
+      "title": "Global full-duplex voice, barge-in, and playback acknowledgement",
+      "contract_drivers": ["tests/public_speech_pcm_test.py", "tests/realtime_network_test.py"],
+      "contract_args": [],
+      "contract_scope": "Digital PCM, cursor, terminal, reconnect, and delayed-reader contracts; physical acoustics are excluded.",
+      "live_requirements": ["real ASR, VLM, and TTS", "physical microphone and speaker for acoustic gate", "playback ACK and barge-in capture"],
+      "hard_thresholds": {"echo_false_barge_in_rate": 0.0, "barge_in_to_silence_ms_max_exclusive": 300, "new_first_audio_ms_max_exclusive": 800, "history_truncation_accuracy": 1.0, "slow_reader_resets": 0},
+      "arm_metrics": []
+    },
+    {
+      "case_id": "NS-05",
+      "title": "Natural long-video understanding and spoken visual co-creation",
+      "contract_drivers": ["tests/temporal_natural_test.py"],
+      "contract_args": [],
+      "contract_scope": "Frozen natural-footage scorer and verifier tests; no new minute-scale video or voice run is implied.",
+      "live_requirements": ["one-to-three-minute natural video", "real video prefill and voice barge-in", "human groundedness review"],
+      "hard_thresholds": {"video_first_response_ms_max_exclusive": 3000, "post_barge_in_visual_generation": true, "grounded_accuracy_human_review": "REQUIRED"},
+      "arm_metrics": []
+    },
+    {
+      "case_id": "NS-06",
+      "title": "Three-shot interactive storyboard with consistent protagonist and style",
+      "contract_drivers": ["tests/storyboard_replay_verify_test.py"],
+      "contract_args": [],
+      "contract_scope": "Independent raw-replay and tamper contracts; character/style consistency remains a human gate.",
+      "live_requirements": ["natural reference and spoken input", "three real keyframes and I2V previews", "human character/style review"],
+      "hard_thresholds": {"shots": 3, "source_bound_revision": true, "human_character_style_consistency": "REQUIRED"},
+      "arm_metrics": []
+    },
+    {
+      "case_id": "NS-07",
+      "title": "Six-way mixed-modality resilience and fault recovery",
+      "contract_drivers": ["tests/ns07_six_way_soak_test.py"],
+      "contract_args": [],
+      "contract_scope": "Deterministic schedule, event accounting, and fail-closed scorecard tests; not a real soak.",
+      "live_requirements": ["six simultaneous logical clients", "1800 seconds", "real text, visual, voice, and natural-video stages"],
+      "hard_thresholds": {"duration_s_min": 1800, "client_count": 6, "process_crashes": 0, "cross_session_or_stale_events": 0, "duplicate_terminals": 0, "pcm_mismatches": 0, "fault_recovery_rate": 1.0, "final_in_flight": 0},
+      "arm_metrics": ["elapsed_s", "client_count", "request_count", "completed_count", "cancelled_count", "expected_fault_count", "unexpected_error_count", "process_crash_count", "cross_session_event_count", "stale_event_count", "duplicate_terminal_count", "pcm_mismatch_count", "recovery_attempt_count", "recovery_success_count", "final_in_flight", "device_growth_mib", "rss_growth_mib", "latency_p95_ms"],
+      "paired_target": true
+    },
+    {
+      "case_id": "NS-08",
+      "title": "Zero-control Web and macOS journey with lossless session restoration",
+      "contract_drivers": ["tests/web_ui_contract_test.py", "tests/ns08_zero_control_test.py"],
+      "contract_args": [],
+      "contract_scope": "Web wire/UI contracts and macOS static UI boundary; not macOS execution or a human walkthrough.",
+      "live_requirements": ["real Web journey", "real macOS ummmlx journey", "human NS-01/02/04/05 walkthrough", "export, clear, import, and reconnect"],
+      "hard_thresholds": {"manual_modality_or_frame_control_interactions": 0, "blocking_defects": 0, "session_round_trip_exact": true, "web_and_macos_human_walkthrough": "REQUIRED"},
+      "arm_metrics": ["visible_modality_control_count", "visible_routing_control_count", "visible_sampling_control_count", "visible_frame_control_count", "visible_voice_routing_control_count", "contract_checks_failed", "browser_checks_failed", "export_import_exact", "reconnect_exact", "source_bound_revision", "cancellation_retry_exact"],
+      "paired_target": true
+    }
+  ]
+}

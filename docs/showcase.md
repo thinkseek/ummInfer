@@ -90,6 +90,15 @@ python3 -I tools/umminfer_showcase.py \
 
 When enabled, `video_frame_selection` (including `max_frames` when `--video-frame-budget` is set) is attached to Turn 1's `video_url` object (preserved in the conversation history for Turns 2–3), recorded under `journeys.journey_3.video_frame_selection` in `showcase_report.json`, and displayed in both the Executive Summary table and the Journey 3 section of `showcase_report.md`.
 
+## Interactive Web Storyboard and raw replay
+
+The browser-specific Storyboard journey adds source-bound visual revision,
+terminal/cancellation settlement, clean reset, and a default-lossless
+raw-SSE/media replay archive (compact metadata-only JSON remains nondefault). Its isolated candidate/readiness record, real-versus-simulated
+boundaries, independent verification, and hardware limits are in
+[storyboard-showcase.md](storyboard-showcase.md). The protected documentation
+video/poster assets are not modified by that validation.
+
 ## Optional Native Allocator Telemetry
 
 Pass `--native-allocator-telemetry` to send `"telemetry": {"native_allocator": true}` on `/v1/chat/completions` requests and strictly validate/report request-native allocator telemetry (`COVERED`, `PARTIAL`, or `NOT_COVERED` / `N/C`). Default OFF omits the `telemetry` field completely.
