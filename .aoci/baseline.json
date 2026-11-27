@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-27T04:14:53Z",
+  "updated_at": "2026-11-27T06:53:04Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -35,15 +35,15 @@
     },
     "README.md": {
       "role": "index",
-      "sha256": "3212536bad5a7a0a7439d58abeb9833d6c9009f912c4223260549f95136c4157",
-      "size": 6876,
-      "normalized_sha256": "3212536bad5a7a0a7439d58abeb9833d6c9009f912c4223260549f95136c4157"
+      "sha256": "0edd6d20f1a06727ce79dda8f9c51087bbc8f79eb220e44d80fb9a6c6593a3c8",
+      "size": 6932,
+      "normalized_sha256": "0edd6d20f1a06727ce79dda8f9c51087bbc8f79eb220e44d80fb9a6c6593a3c8"
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "76115e8e4f5f9377d81801ccddf2de0df3b1f377edb1939e68dc8dd68b39b2f8",
-      "size": 330300,
-      "normalized_sha256": "76115e8e4f5f9377d81801ccddf2de0df3b1f377edb1939e68dc8dd68b39b2f8"
+      "sha256": "7134a7bc685a03c6eecd2444fe4cc821002684644caba3102a589e2d61877b88",
+      "size": 330712,
+      "normalized_sha256": "7134a7bc685a03c6eecd2444fe4cc821002684644caba3102a589e2d61877b88"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1623,6 +1623,12 @@
       "size": 12158,
       "normalized_sha256": "12617663f0284e6c0ddae7bfc918c3ad9df47434eaab9a7d8942618eed42b474"
     },
+    "docs/north-star-cases.md": {
+      "role": "index",
+      "sha256": "b26a4958d4de99be7b6f0b004050f441861d534470d45e2743caae2a494d50ea",
+      "size": 9209,
+      "normalized_sha256": "b26a4958d4de99be7b6f0b004050f441861d534470d45e2743caae2a494d50ea"
+    },
     "docs/objective-mix-ablation.md": {
       "role": "index",
       "sha256": "94b6515e5767b7313123f88bde0cfb2bc03a86059821196c0e8c3ca54dd5aea4",
@@ -1793,9 +1799,9 @@
     },
     "docs/vision.md": {
       "role": "index",
-      "sha256": "a0c06d5282f8b35bdd0871c7e307fbf398a8c9d20b66f7e69850afec1cf1be04",
-      "size": 8029,
-      "normalized_sha256": "a0c06d5282f8b35bdd0871c7e307fbf398a8c9d20b66f7e69850afec1cf1be04"
+      "sha256": "aa1d8a0eee4ce9ffe2b6ab84bbc1e134b1b20e3aa8e79f19d80b1e396ce49bd0",
+      "size": 8126,
+      "normalized_sha256": "aa1d8a0eee4ce9ffe2b6ab84bbc1e134b1b20e3aa8e79f19d80b1e396ce49bd0"
     },
     "docs/voice-strategy-ablation.md": {
       "role": "index",

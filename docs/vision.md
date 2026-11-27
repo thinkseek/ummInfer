@@ -2,7 +2,7 @@
 
 > 本文记录 ummInfer 从「多模态原生推理引擎」迈向「原生全双工、自主模态选择、训推消融闭环的统一多模态系统（UMM）」的终局目标、核心场景与分阶段演进路线。
 >
-> 当前已落地能力的逐行代码锚点见 [feature-map.md](feature-map.md)，当前工程架构见 [architecture.md](architecture.md)，既有阶段门禁与实测边界见 [roadmap.md](roadmap.md) 与 [rl-phase2.md](rl-phase2.md)。
+> 当前已落地能力的逐行代码锚点见 [feature-map.md](feature-map.md)，理想态端到端标杆用例与进度计分板见 [north-star-cases.md](north-star-cases.md)，当前工程架构见 [architecture.md](architecture.md)，既有阶段门禁与实测边界见 [roadmap.md](roadmap.md) 与 [rl-phase2.md](rl-phase2.md)。
 
 ---
 

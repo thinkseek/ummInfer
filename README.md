@@ -117,7 +117,7 @@ docs/                 vision, architecture, feature map, contracts, and runbooks
 
 ## Documentation
 
-- **Vision & roadmap**: [docs/vision.md](docs/vision.md) · [docs/roadmap.md](docs/roadmap.md)
+- **Vision & roadmap**: [docs/vision.md](docs/vision.md) · [docs/north-star-cases.md](docs/north-star-cases.md) · [docs/roadmap.md](docs/roadmap.md)
 - **Architecture & code map**: [docs/architecture.md](docs/architecture.md) · [docs/feature-map.md](docs/feature-map.md) · [docs/model-support.md](docs/model-support.md)
 - **Protocols**: [docs/mixed-output-contract.md](docs/mixed-output-contract.md) · [docs/full-duplex.md](docs/full-duplex.md) · [native/STAGE_NATIVE.md](native/STAGE_NATIVE.md)
 - **Operations & clients**: [docs/native-service.md](docs/native-service.md) · [docs/observability.md](docs/observability.md) · [docs/client.md](docs/client.md) · [web/README.md](web/README.md) · [clients/ummmlx/README.md](clients/ummmlx/README.md)
