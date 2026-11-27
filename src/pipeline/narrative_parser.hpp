@@ -10,8 +10,9 @@
 //
 // False positives are handled without stalling prose: a "[[..." prefix that
 // cannot become one of the three tags is emitted as prose one byte at a time,
-// which also keeps overlapping "[[[" cases intact. A directive candidate that
-// never closes is bounded by kMaxDirectiveBytes and then released as prose.
+// which also keeps overlapping "[[[" cases intact. At EOF a reserved directive
+// prefix or unclosed candidate is finalized as removed directive bytes, never as
+// public prose/TTS. The legacy over-limit non-EOF fallback remains unchanged.
 #pragma once
 
 #include <cstddef>
@@ -59,7 +60,8 @@ class NarrativeStreamParser {
   std::string feed(std::string_view chunk,
                    std::vector<NarrativeDirective>& out);
 
-  // End of input: any held "[" prefix or unclosed candidate becomes prose.
+  // End of input: a literal held "[" remains prose; a reserved directive prefix
+  // or unclosed candidate is removed and bound in removed_spans().
   std::string flush(std::vector<NarrativeDirective>& out);
 
   // Total clean prose bytes emitted so far.

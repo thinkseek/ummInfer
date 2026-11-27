@@ -5988,25 +5988,38 @@ void run_realtime_transport_validity_lifecycle_subtest(
 
   // Active response work must survive beyond PING=1s / hangup=2s even when the
   // consumer intentionally sends no PONG. request_timeout_s remains 10s.
-  test_http::WebSocket paused(ws_url, client::Milliseconds{5000}, &cancel);
+  test_http::WebSocket paused(ws_url, client::Milliseconds{120000}, &cancel);
   auto paused_tts = drive_turn(paused);
   std::this_thread::sleep_for(std::chrono::milliseconds(3200));
   check(engine.in_flight() == 1,
         "transport idle expiry released an active response before terminal");
   const std::string c0("\x01\x00\x02\x00", 4);
   const std::string c1("\x03\x00\x04\x00", 4);
+  // One delayed long narration exceeds the 1,024-frame per-socket high-water
+  // boundary. Backpressure must retain and later drain every event, not reset.
+  constexpr size_t kDelayedAudioChunks = 1025;
+  std::string delayed_pcm;
   if (paused_tts && engine.in_flight() != 0) {
-    h.stream(paused_tts->request_id, "tts", pcm_chunk(c0, 0));
-    h.stream(paused_tts->request_id, "tts", pcm_chunk(c1, 1));
+    for (size_t index = 0; index < kDelayedAudioChunks; ++index) {
+      std::string bytes(8192, static_cast<char>(index));
+      const uint16_t first = static_cast<uint16_t>(index);
+      const uint16_t second = static_cast<uint16_t>(index ^ 0x5a5a);
+      bytes[0] = static_cast<char>(first & 0xff);
+      bytes[1] = static_cast<char>(first >> 8);
+      bytes[2] = static_cast<char>(second & 0xff);
+      bytes[3] = static_cast<char>(second >> 8);
+      delayed_pcm += bytes;
+      h.stream(paused_tts->request_id, "tts", pcm_chunk(bytes, index));
+    }
     Value::Map extra;
     extra["streamed"] = Value(true);
     h.complete(paused_tts->request_id, "tts", true,
                artifact_result("audio", "audio/wav",
-                               audio::wav_from_pcm16(c0 + c1, 24000), extra));
+                               audio::wav_from_pcm16(delayed_pcm, 24000), extra));
   }
   WireLog paused_log;
   auto paused_reader = start_reader(paused, paused_log);
-  auto completed = wait_type(paused_log, "response.completed", 2.0);
+  auto completed = wait_type(paused_log, "response.completed", 60.0);
   check(completed.has_value(),
         "active response lost response.completed after delayed reads");
   if (completed) {
@@ -6046,13 +6059,15 @@ void run_realtime_transport_validity_lifecycle_subtest(
       }
     }
   }
-  if (joined_pcm != c0 + c1 || joined_text != "world") {
+  if (joined_pcm != delayed_pcm || joined_text != "world") {
     std::cerr << "DIAG: transport reconstruction pcm_bytes=" << joined_pcm.size()
-              << " expected_bytes=" << (c0 + c1).size()
+              << " expected_bytes=" << delayed_pcm.size()
               << " text=" << json(joined_text).dump() << "\n";
   }
-  check(joined_pcm == c0 + c1 && joined_text == "world",
+  check(joined_pcm == delayed_pcm && joined_text == "world",
         "active response changed or lost native text/PCM after idle hold");
+  check(count_type(paused_log, "audio.delta") == kDelayedAudioChunks,
+        "delayed long narration did not drain all 1,025 public audio events");
   check(count_type(paused_log, "response.completed") == 1 &&
             count_type(paused_log, "response.failed") == 0 &&
             count_type(paused_log, "response.playback_ack") == 1,
@@ -6956,6 +6971,254 @@ void test_streamed_tts_sentence_fanout() {
         "the streamed request did not end in one complete terminal");
   check(h.no_submit(h.tts_recv),
         "a fourth TTS leg started after the stream was flushed");
+  engine.release(id);
+}
+
+// Markdown presentation stays in public text but is not fed to the native
+// Talker. Skipped markup-only spans still advance the original UTF-8 cursors.
+void test_streamed_tts_markdown_spans_and_cursors() {
+  Harness h("ttsmarkdown");
+  UnifiedEngine engine(h.coordinator, realtime_history_config(h));
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::vector<std::string> spans = {
+      "### 1. 黑洞吸积盘：accretion disk\n",
+      "**示意图：**\n",
+      "---\n",
+      "`event horizon` 与 **gravitational lensing**。\n",
+      "*重点。*\n",
+      "_下划线_。\n",
+      "计算 2 * 3 * 4，2*3*4。\n",
+  };
+  const std::vector<std::string> expected_speech = {
+      "1. 黑洞吸积盘：accretion disk",
+      "示意图：",
+      "event horizon 与 gravitational lensing。",
+      "重点。",
+      "下划线。",
+      "计算 2 * 3 * 4，2*3*4。",
+  };
+  std::string full;
+  for (const std::string& span : spans) full += span;
+  const std::string id = engine.submit(realtime_playback_request("markdown-spans"));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "Markdown request did not reach VLM");
+  const std::string vlm_id = vlm ? vlm->request_id : id + ":vlm";
+  for (const std::string& span : spans) {
+    h.stream(vlm_id, "vlm", text_chunk(span, false));
+  }
+
+  std::vector<std::string> leg_ids;
+  std::vector<std::string> actual_speech;
+  for (size_t i = 0; i < expected_speech.size(); ++i) {
+    auto submit = h.next_submit(h.tts_recv);
+    check(submit.has_value(), "a speakable Markdown span did not reach TTS");
+    if (!submit) break;
+    leg_ids.push_back(submit->request_id);
+    actual_speech.push_back(StagePayload::from_value(submit->data)
+                                .request.inputs.find("text")->as_str());
+  }
+  check(actual_speech == expected_speech,
+        "native TTS received Markdown presentation tokens or dropped prose");
+  check(h.no_submit(h.tts_recv),
+        "the horizontal-rule-only span incorrectly started a native TTS leg");
+  h.complete(vlm_id, "vlm", true, text_result(full));
+
+  for (size_t i = 0; i < leg_ids.size(); ++i) {
+    const std::string pcm(8, static_cast<char>(i + 1));
+    Value::Map chunk;
+    chunk["audio"] = Value::bin(pcm);
+    chunk["index"] = Value(int64_t{0});
+    chunk["sample_rate"] = Value(int64_t{24000});
+    chunk["channels"] = Value(int64_t{1});
+    h.stream(leg_ids[i], "tts", Value(std::move(chunk)));
+    Value::Map extra;
+    extra["streamed"] = Value(true);
+    h.complete(leg_ids[i], "tts", true,
+               artifact_result("audio", "audio/wav",
+                               audio::wav_from_pcm16(pcm, 24000), extra));
+  }
+  check(engine.wait(id, 5.0), "Markdown stream did not complete");
+
+  size_t raw_begin = 0;
+  size_t speech_index = 0;
+  size_t audio_events = 0;
+  std::string public_text;
+  for (const UnifiedEvent& event : log.snapshot()) {
+    if (event.kind == UnifiedEvent::Kind::kVlmDelta) public_text += event.text;
+    if (event.kind != UnifiedEvent::Kind::kArtifact) continue;
+    ++audio_events;
+    while (speech_index + 1 < spans.size() && spans[speech_index] == "---\n") {
+      raw_begin += spans[speech_index].size();
+      ++speech_index;
+    }
+    check(speech_index < spans.size(), "audio has no source Markdown span");
+    if (speech_index >= spans.size()) break;
+    const Value* begin = event.artifact.find("text_cursor");
+    const Value* end = event.artifact.find("text_end_cursor");
+    const size_t span_end = raw_begin + spans[speech_index].size();
+    check(begin != nullptr && end != nullptr &&
+              begin->as_int() == static_cast<int64_t>(raw_begin) &&
+              end->as_int() > static_cast<int64_t>(raw_begin) &&
+              end->as_int() <= static_cast<int64_t>(span_end) &&
+              (speech_index >= 4 ||
+               end->as_int() == static_cast<int64_t>(span_end)),
+          "speech normalization corrupted original playback ACK cursors");
+    raw_begin = span_end;
+    ++speech_index;
+  }
+  check(public_text == full, "Markdown was removed from the public prose stream");
+  check(audio_events == expected_speech.size() && raw_begin == full.size(),
+        "a Markdown span or its source range was dropped");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+            terminal->text == full,
+        "Markdown request terminal changed public text");
+  check(engine.complete_realtime_playback(id, "markdown-spans", full.size()),
+        "final playback ACK did not cover the complete original text");
+  engine.release(id);
+
+  // A markup-only response has no intended narration leg and must still finish.
+  const std::string markup_id = engine.submit(streamed_audio_request());
+  auto markup_vlm = h.next_submit(h.vlm_recv);
+  check(markup_vlm.has_value(), "markup-only request did not reach VLM");
+  h.stream(markup_vlm->request_id, "vlm", text_chunk("---\n", false));
+  h.complete(markup_vlm->request_id, "vlm", true, text_result("---\n"));
+  check(h.no_submit(h.tts_recv), "markup-only response started native TTS");
+  check(engine.wait(markup_id, 5.0),
+        "markup-only response did not reach a terminal without native TTS");
+  engine.release(markup_id);
+}
+
+// Streamed PCM chunks are consumed independently under bounded transport
+// backpressure; they are not one terminal aggregate artifact. Deliver 62 MiB
+// losslessly while preserving the existing per-chunk and nonstreamed caps.
+void test_streamed_tts_long_stream_drains_past_aggregate_cap() {
+  Harness h("ttslongstream");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id = engine.submit(streamed_audio_request());
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "long stream did not reach VLM");
+  const std::string vlm_id = vlm ? vlm->request_id : id + ":vlm";
+  h.stream(vlm_id, "vlm", text_chunk("Long narration. ", false));
+  auto leg = h.next_submit(h.tts_recv);
+  check(leg.has_value(), "long stream did not start TTS");
+  const std::string leg_id = leg ? leg->request_id : id + ":tts:0";
+
+  constexpr size_t kChunks = 31;
+  constexpr size_t kChunkBytes = 2u << 20;
+  std::string expected;
+  expected.reserve(kChunks * kChunkBytes);
+  for (size_t index = 0; index < kChunks; ++index) {
+    const std::string pcm(kChunkBytes, static_cast<char>(index));
+    expected += pcm;
+    Value::Map chunk;
+    chunk["audio"] = Value::bin(pcm);
+    chunk["index"] = Value(static_cast<int64_t>(index));
+    chunk["sample_rate"] = Value(int64_t{24000});
+    chunk["channels"] = Value(int64_t{1});
+    h.stream(leg_id, "tts", Value(std::move(chunk)));
+  }
+  check(!h.saw_abort(leg_id),
+        "independent streamed chunks incorrectly exhausted the terminal aggregate cap");
+  h.complete(vlm_id, "vlm", true, text_result("Long narration. "));
+  Value::Map extra;
+  extra["streamed"] = Value(true);
+  h.complete(leg_id, "tts", true,
+             artifact_result("audio", "audio/wav", audio::wav_from_pcm16("PCMM", 24000),
+                             extra));
+  check(engine.wait(id, 10.0), "long lossless stream did not settle");
+
+  std::string actual;
+  actual.reserve(expected.size());
+  size_t artifacts = 0;
+  size_t errors = 0;
+  for (const UnifiedEvent& event : log.snapshot()) {
+    if (event.kind == UnifiedEvent::Kind::kLegError) ++errors;
+    if (event.kind != UnifiedEvent::Kind::kArtifact) continue;
+    ++artifacts;
+    check(event.artifact_bytes && event.artifact_offset == 0 &&
+              event.artifact_length == kChunkBytes,
+          "long-stream chunk was sliced, dropped, or coalesced");
+    actual.append(event.artifact_bytes->data(), event.artifact_length);
+  }
+  check(errors == 0 && artifacts == kChunks && actual == expected &&
+            util::sha256_hex(actual) == util::sha256_hex(expected),
+        "long streamed PCM did not drain byte-for-byte");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete,
+        "long streamed PCM did not end complete");
+  engine.release(id);
+}
+
+// The 32-leg bound limits active native children, not total narration. Completed
+// children release capacity and every later sentence remains a separate leg.
+void test_streamed_tts_active_bound_drains_all_sentences() {
+  Harness h("ttsactivebound");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  constexpr size_t kSentences = 40;
+  std::vector<std::string> expected;
+  std::string full;
+  for (size_t index = 0; index < kSentences; ++index) {
+    expected.push_back("第" + std::to_string(index) + "段。");
+    full += expected.back() + "\n";
+  }
+  const std::string id = engine.submit(streamed_audio_request());
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "active-bound request did not reach VLM");
+  h.stream(vlm->request_id, "vlm", text_chunk(full, false));
+
+  std::vector<std::string> pending;
+  std::vector<std::string> actual;
+  auto collect = [&] {
+    while (auto message = h.tts_recv.recv_timeout(20)) {
+      if (!std::holds_alternative<SubmitMessage>(*message)) continue;
+      const StagePayload payload = StagePayload::from_value(
+          std::get<SubmitMessage>(*message).data);
+      pending.push_back(std::get<SubmitMessage>(*message).request_id);
+      actual.push_back(payload.request.inputs.find("text")->as_str());
+    }
+  };
+  collect();
+  check(pending.size() == kMaxStreamedTtsLegs,
+        "streamed TTS did not respect its 32-active-child high-water mark");
+  h.complete(vlm->request_id, "vlm", true, text_result(full));
+  collect();
+  check(actual.size() == kMaxStreamedTtsLegs,
+        "VLM EOF bypassed the active bound or coalesced a giant final tail");
+
+  size_t settled = 0;
+  size_t high_water = pending.size();
+  while (!pending.empty()) {
+    const std::string child = pending.front();
+    pending.erase(pending.begin());
+    Value::Map extra;
+    extra["streamed"] = Value(true);
+    h.complete(child, "tts", true,
+               artifact_result("audio", "audio/wav",
+                               audio::wav_from_pcm16("PCMM", 24000), extra));
+    ++settled;
+    collect();
+    high_water = std::max(high_water, pending.size());
+    check(high_water <= kMaxStreamedTtsLegs,
+          "completed TTS children did not release bounded capacity");
+  }
+  check(settled == kSentences && actual == expected,
+        "long narration dropped, reordered, or coalesced a sentence leg");
+  check(engine.wait(id, 5.0), "bounded long narration did not complete");
   engine.release(id);
 }
 
@@ -9357,8 +9620,14 @@ void test_narrative_parser_unit() {
     check(parser.feed("[[image: unclosed", out).empty() && out.empty(),
           "an unclosed directive leaked into prose before EOF");
     const std::string tail = parser.flush(out);
-    check(tail == "[[image: unclosed",
-          "EOF flush did not release an unclosed candidate as prose");
+    check(tail.empty() && out.empty(),
+          "EOF leaked an unterminated reserved directive into prose/TTS");
+    check(parser.removed_spans().size() == 2 &&
+              parser.removed_spans()[1].begin == std::string("[[image:   ]]").size() &&
+              parser.removed_spans()[1].end ==
+                  std::string("[[image:   ]]").size() +
+                      std::string("[[image: unclosed").size(),
+          "EOF did not bind the removed directive span after the earlier empty tag");
   }
   {
     // UTF-8 prose split inside a multibyte sequence plus English prompts.
@@ -9789,6 +10058,57 @@ void test_narrative_cancel_aborts_slots_and_tts() {
   engine.release(id);
 }
 
+
+// A truncated reserved directive is finalized as directive bytes at EOF, not
+// released into public prose or submitted as a native narration span.
+void test_narrative_unterminated_directive_never_reaches_tts() {
+  Harness h("narrativeunterminatedtts");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  const std::string id =
+      engine.submit(narrative_request(true, false, true, "auto", 1, true));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "unterminated narrative request did not reach VLM");
+  const std::string raw = "开场。\n[[image: unfinished black-hole diagram";
+  h.stream(vlm->request_id, "vlm", text_chunk(raw, false));
+  h.complete(vlm->request_id, "vlm", true, text_result(raw));
+  auto tts = h.next_submit(h.tts_recv);
+  check(tts.has_value(), "clean narration before EOF did not reach TTS");
+  if (tts) {
+    const StagePayload payload = StagePayload::from_value(tts->data);
+    check(payload.request.inputs.find("text")->as_str() == "开场。",
+          "an unterminated directive leaked into native TTS");
+    Value::Map extra;
+    extra["streamed"] = Value(true);
+    h.complete(tts->request_id, "tts", true,
+               artifact_result("audio", "audio/wav",
+                               audio::wav_from_pcm16("PCMM", 24000), extra));
+  }
+  check(h.no_submit(h.tts_recv), "EOF created a TTS leg for a partial directive");
+  auto fallback = h.next_submit(h.image_recv);
+  check(fallback.has_value(), "clean-prefix narrative fallback did not start");
+  if (fallback) {
+    h.complete(fallback->request_id, "image", true,
+               artifact_result("image", "image/png", "EOF"));
+  }
+  check(engine.wait(id, 5.0), "unterminated directive did not settle cleanly");
+  std::string public_text;
+  for (const UnifiedEvent& event : log.snapshot()) {
+    if (event.kind == UnifiedEvent::Kind::kVlmDelta) public_text += event.text;
+    check(event.text.find("[[image:") == std::string::npos,
+          "unterminated directive leaked into a public event");
+  }
+  const auto terminal = log.terminal_for(id);
+  check(public_text == "开场。\n" && terminal &&
+            terminal->kind == UnifiedEvent::Kind::kComplete &&
+            terminal->text == public_text,
+        "EOF did not preserve exactly the clean narration prefix");
+  engine.release(id);
+}
 
 // EOF release, no duplicate directive dispatch, and a clean terminal result.
 void test_narrative_eof_and_terminal_result() {
@@ -14429,7 +14749,10 @@ int main() {
   RUN(test_public_http_audio_speech());
   RUN(test_public_http_audio_speech_without_tts());
   RUN(test_cancel_for_session_rejects_foreign_session());
+  RUN(test_streamed_tts_long_stream_drains_past_aggregate_cap());
+  RUN(test_streamed_tts_active_bound_drains_all_sentences());
   RUN(test_streamed_tts_sentence_fanout());
+  RUN(test_streamed_tts_markdown_spans_and_cursors());
   RUN(test_streamed_tts_chunk_limit_aborts());
   RUN(test_simple_scheduler_batch_and_abort_tombstone());
   RUN(test_mixed_video_lifecycle_and_prompt_rules());
@@ -14444,6 +14767,7 @@ int main() {
   RUN(test_narrative_interleaved_slots_and_streaming_tts());
   RUN(test_narrative_max_slots_and_zero_marker_fallback());
   RUN(test_narrative_cancel_aborts_slots_and_tts());
+  RUN(test_narrative_unterminated_directive_never_reaches_tts());
   RUN(test_narrative_eof_and_terminal_result());
   RUN(test_narrative_vlm_failure_aborts_slots());
   RUN(test_public_http_narrative_validation());

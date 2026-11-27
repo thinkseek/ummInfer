@@ -140,6 +140,9 @@ write('export.md', buildSessionExportMarkdown(inputState));
 
 // Actual production newChat(), with only DOM/playback adapters mocked.
 let running = false;
+let turn = null;
+let inflight = new Map();
+let stopped = false;
 let history = [{role: 'user', content: inputState.turns[0].prompt},
                {role: 'assistant', content: inputState.turns[0].response}];
 let sessionTurns = [{}];
@@ -152,11 +155,13 @@ let ui = {
   emptyState,
   transcript: {replaceChildren(value) { assert(value === emptyState, 'wrong empty node'); }},
   session: {hidden: false},
+  prompt: {focus() {}},
   videoFramePolicy: {value: ''}, videoMotionThreshold: {value: ''},
   videoSceneThreshold: {value: ''}, videoFrameBudget: {value: ''},
 };
 let player = {stop() { playerStopCalls += 1; }};
 function stopRealtime() { stopRealtimeCalls += 1; }
+function clearComposerAndSessionResources() {}
 function syncEmptyState() {}
 function saveSettings() {}
 function syncVideoFrameControls() {}

@@ -873,6 +873,7 @@ std::vector<float> TtsEngine::synthesize_impl(
   };
 
   c0_trace.push_back(c0);
+  bool natural_eos = false;
   for (int step = 0; step < max_frames; ++step) {
     if (abort && abort()) {
       throw RequestAborted("aborted at frame " + std::to_string(step));
@@ -924,7 +925,10 @@ std::vector<float> TtsEngine::synthesize_impl(
     select_c0(allow_eos, step + 1, ban_id);
     fetch_c0();
     const int next = im.h_codes_pinned[0];
-    if (next == cfg.codec_eos_id) break;
+    if (next == cfg.codec_eos_id) {
+      natural_eos = true;
+      break;
+    }
     c0 = next;
     c0_trace.push_back(c0);
   }
@@ -947,6 +951,10 @@ std::vector<float> TtsEngine::synthesize_impl(
     throw std::runtime_error(
         "codec frames not divisible by the code group count");
   const int total_frames = static_cast<int>(frames.size() / groups);
+  if (timings != nullptr) {
+    timings->generated_frames = total_frames;
+    timings->natural_eos = natural_eos;
+  }
   if (!on_chunk) {
     samples = trim_trailing_noise(im.codec->decode(frames, total_frames, abort),
                                   kSampleRate);

@@ -301,3 +301,12 @@ and perceptual quality remain separate claims.
 - An initial remote build launcher used `sh` with unsupported `pipefail` and
   exited before compilation or model launch. The corrected `bash` build passed.
   No failed launcher or probe is counted as PCM evidence.
+
+## Task #81 follow-up boundary
+
+Task #81 did not rerun the two-GPU R4 under its GPU-7-only constraint. It preserves
+the accepted first-audio predicate and validates the long-stream lifecycle with the
+exact Chinese NS-01 case, paired digital NS-04 barge-in, the complete public
+29/29 + HTTP cancel/retry gate, the six-session network gate, and native CUDA
+determinism. No new TTFA improvement or full R4 claim is made. See
+[ns01-tts-lifecycle](ns01-tts-lifecycle.md).

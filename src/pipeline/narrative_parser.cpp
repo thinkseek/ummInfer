@@ -98,8 +98,7 @@ void parse_reference(NarrativeDirective& directive, std::string body) {
 
 // Match one tag at `cursor`. Returns 1 when a tag matched (cursor advances),
 // 0 when no tag can match, -1 when the buffer ends inside a possible tag.
-int match_tag(const std::string& buf, size_t& cursor, std::string& kind,
-              bool eof) {
+int match_tag(const std::string& buf, size_t& cursor, std::string& kind) {
   bool need_more = false;
   for (const std::string_view tag : kTags) {
     size_t i = 0;
@@ -117,7 +116,7 @@ int match_tag(const std::string& buf, size_t& cursor, std::string& kind,
       return 1;
     }
   }
-  return (need_more && !eof) ? -1 : 0;
+  return need_more ? -1 : 0;
 }
 
 }  // namespace
@@ -151,9 +150,17 @@ std::string NarrativeStreamParser::scan(bool eof,
     size_t cursor = open + 2;
     while (cursor < buf_.size() && is_space(buf_[cursor])) ++cursor;
     std::string kind;
-    const int tag = match_tag(buf_, cursor, kind, eof);
+    const int tag = match_tag(buf_, cursor, kind);
     if (tag < 0) {
-      pos = open;  // hold the undecidable suffix
+      if (eof) {
+        // A reserved directive prefix is not narration. Finalize its exact raw
+        // span instead of leaking a truncated tag into public prose or TTS.
+        removed_spans_.push_back(
+            NarrativeRemovedSpan{buf_raw_begin_ + open, buf_raw_begin_ + buf_.size()});
+        pos = buf_.size();
+      } else {
+        pos = open;  // hold the undecidable suffix
+      }
       break;
     }
     if (tag == 0) {
@@ -169,9 +176,10 @@ std::string NarrativeStreamParser::scan(bool eof,
         pos = open;
         break;
       }
-      ret.push_back('[');
-      pos = open + 1;
-      continue;
+      removed_spans_.push_back(
+          NarrativeRemovedSpan{buf_raw_begin_ + open, buf_raw_begin_ + buf_.size()});
+      pos = buf_.size();
+      break;
     }
     if (buf_[cursor] != ':') {
       ret.push_back('[');
@@ -185,8 +193,14 @@ std::string NarrativeStreamParser::scan(bool eof,
         pos = open;
         break;
       }
-      // End of input or an unbounded candidate: release it as prose rather
-      // than stall the narrative indefinitely.
+      if (eof) {
+        removed_spans_.push_back(
+            NarrativeRemovedSpan{buf_raw_begin_ + open, buf_raw_begin_ + buf_.size()});
+        pos = buf_.size();
+        break;
+      }
+      // An over-limit candidate is not allowed to stall the stream. This legacy
+      // non-EOF fallback is unchanged; a final reserved candidate is suppressed.
       ret.push_back('[');
       pos = open + 1;
       continue;

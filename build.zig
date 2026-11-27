@@ -218,6 +218,13 @@ pub fn build(b: *std.Build) void {
     const public_speech_pcm = b.addSystemCommand(&.{ "python3", "-I" });
     public_speech_pcm.addFileArg(b.path("tests/public_speech_pcm_test.py"));
     test_step.dependOn(&public_speech_pcm.step);
+
+    const ns04_replay = b.addSystemCommand(&.{ "python3", "-I" });
+    ns04_replay.addFileArg(b.path("tests/ns04_replay_lifecycle_test.py"));
+    test_step.dependOn(&ns04_replay.step);
+    const ns04_replay_test = b.step("ns04-replay-test", "Run replay-inclusive NS04 scorecard fixtures");
+    ns04_replay_test.dependOn(&ns04_replay.step);
+    test_step.dependOn(&ns04_replay.step);
     const public_speech_pcm_test = b.step("public-speech-pcm-test", "Run deterministic public/native PCM verifier tests");
     public_speech_pcm_test.dependOn(&public_speech_pcm.step);
 

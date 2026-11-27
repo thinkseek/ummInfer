@@ -1,0 +1,89 @@
+{
+  "format": "umminfer-ns01-ns04-tts-lifecycle-preregistration-v1",
+  "created_before_candidate_runtime_edit": true,
+  "created_before_new_measurement": true,
+  "official_base_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "objective": "Correct native streamed-TTS Markdown/EOF finalization and long-stream lifecycle without changing model decode, sampling, fair alternation, client controls, or video speed policy.",
+  "excluded_candidate": "Task #79 automatic TeaCache and every video-speed variant remain excluded; no teacache_thresh request field is present.",
+  "physical_gpu": 7,
+  "golden_case": {
+    "scenario": "ns01-chinese-markdown-long",
+    "route": "POST /v1/chat/completions",
+    "stream": true,
+    "user_text": "用通俗方式讲清黑洞吸积盘和引力透镜，配示意图和动态演示。请直接开始，先用三个内容充实的中文长段落展开背景，再使用 Markdown 标题分节；讲解中自然保留 accretion disk、gravitational lensing、event horizon、Eddington limit 等英文术语。不要省略开篇，不要把正文压缩成提纲。",
+    "max_tokens": 768,
+    "temperature": 0,
+    "seed": 42,
+    "autonomous_narrative": {
+      "enabled": true,
+      "visual_mode": "auto",
+      "max_slots": 2,
+      "allow_text_only": false,
+      "continuity_mode": "i2v_chain"
+    },
+    "audio": {
+      "voice": "vivian",
+      "stream": true,
+      "sample_rate": 24000,
+      "channels": 1,
+      "format": "pcm16"
+    },
+    "tts_max_frames_per_leg": 8192,
+    "minimum_clean_text_bytes": 1200,
+    "minimum_opening_paragraphs_before_first_heading": 3,
+    "minimum_opening_chinese_codepoints_before_first_heading": 240,
+    "required_mixed_terms_any": 2,
+    "required_markdown_heading_lines": 1,
+    "required_visual_slots": ["image:slot-0", "video:slot-1"]
+  },
+  "paired_execution": {
+    "arms": ["parent", "candidate"],
+    "process_separation": true,
+    "same_request_models_seed_and_gpu": true,
+    "candidate_clean_text_must_equal_parent": true,
+    "all_attempts_and_outliers_retained": true,
+    "parent_failure_policy": "Retain raw response/PCM/native frames and abort only the owned request at the existing harness boundary; never substitute a shorter or successful historical prompt."
+  },
+  "correctness_gates": {
+    "native_tts_submits_have_one_terminal": true,
+    "candidate_every_intended_leg_natural_eos": true,
+    "candidate_every_intended_leg_stream_terminal_pcm_exact": true,
+    "public_native_pcm_exact_per_leg": true,
+    "public_terminal_complete_exactly_once": true,
+    "public_done_exactly_once": true,
+    "public_text_and_cursor_lossless": true,
+    "tag_or_directive_leak_count": 0,
+    "markdown_presentation_tokens_not_sent_to_native_tts": true,
+    "markdown_only_span_submit_count": 0,
+    "streamed_pcm_over_60mib_control": "All chunks drain losslessly; existing 48 MiB per-chunk rejection and nonstreamed 60 MiB aggregate rejection remain unchanged.",
+    "cancel_retry": "Cancellation emits one cancelled terminal; immediate retry completes and matches the corresponding fresh deterministic PCM.",
+    "delayed_reader": "Existing 29/29 gate must complete with exact native/public PCM and final ACK; exactly 4096 native-minus-public audio events at release; zero reset.",
+    "barge_in": "Long-narration NS04 digital run retains exact accepted playback-ACK prefix, clears virtual playback at cancellation, emits no stale old-response event, and accepts following new speech immediately.",
+    "final_health_in_flight": 0
+  },
+  "hard_latency_thresholds_ms": {
+    "ttft_strictly_below": 800,
+    "ttfa_strictly_below": 800,
+    "first_image_strictly_below": 2000,
+    "first_i2v_strictly_below": 5000,
+    "barge_in_to_digital_silence_strictly_below": 300,
+    "new_response_first_audio_strictly_below": 800
+  },
+  "latency_rule": "Measure and report every available value and outlier. Any missing or failed hard threshold remains NOT_MET; correctness promotion does not imply NS-01 or NS-04 PASS.",
+  "deterministic_red_green": [
+    "Markdown heading, emphasis, horizontal-rule, mixed Chinese/English and whitespace-only span finalization",
+    "unterminated reserved narrative directive at EOF and literal non-directive brackets",
+    "streamed PCM larger than 60 MiB with exact hashes and bounded delivery; unchanged per-chunk and nonstreamed caps",
+    "cancel, exact playback cursor, stale-event suppression and immediate retry"
+  ],
+  "required_regression_gates": [
+    "umm-test-local",
+    "native TTS host and CUDA determinism CTest",
+    "public HTTP PCM cancellation/retry gate",
+    "29/29 delayed-reader public PCM gate",
+    "NS04 digital barge-in gate",
+    "realtime stress and network gates where compatible with the GPU-7-only constraint"
+  ],
+  "independent_verification": "A fresh process must decode raw public and native evidence without importing the producer, recompute every scorecard aggregate/hash/threshold, and verify a complete external SHA256SUMS that excludes only itself.",
+  "not_run_by_default": ["physical_microphone", "physical_speaker", "acoustic_evaluation", "perceptual_evaluation", "training", "optimizer", "resident_service", "deployment"]
+}

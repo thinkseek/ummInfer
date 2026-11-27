@@ -1,0 +1,127 @@
+{
+  "format": "umminfer-ns04-replay-lifecycle-preregistration-v1",
+  "created_before_candidate_runtime_edit": true,
+  "created_before_new_ns04_measurement": true,
+  "revision": 2,
+  "supersedes_preregistration_sha256": "bf36a94401da9b4854cf58aa42b265c29333b67807aac0f42d7228c6099c4d4b",
+  "revision_reason": "A failed pre-pair profile exposed a synthetic comma pause that split the Saturn interruption into two VAD turns. The same spoken words are re-rendered without that punctuation pause and padded only with trailing digital silence to the original 2.96 s / 94,720-byte PCM span. The failed raw tree is retained and no paired measurement existed at revision time.",
+  "accepted_parent_commit": "15f54b98389ffecf0f9d100b0c9b4855975fe90d",
+  "official_base_commit": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "objective": "Measure the complete two-interruption NS-04 journey from the first new-speech append through new public PCM, including paced recorded-input replay, reconnect/lifecycle controls, exact playback-ACK history and all server work. Promote only a focused lossless C++ serving/realtime/scheduler correction whose full path is strictly below 800 ms.",
+  "profile_before_candidate": "The accepted Task 81 raw candidate journal has first cancel at 3.756 ms, approximately 9.7 s of remaining 100 ms-paced input replay, 400 ms endpoint silence, approximately 111 ms replay-end-to-ASR-final work and 532.621 ms ASR-final-to-first-new-audio. The 10.761 s total must not be relabeled as synchronous history-store time.",
+  "candidate_selection_rule": "After profiling, change at most one measured C++ replay/lifecycle/scheduler defect. If no semantic-preserving runtime change can make the frozen full-path gate pass, run the after arm as a same-source diagnostic A/A, retain the failure and finish NOT_PROMOTED with zero candidate runtime code. Never shorten audio, accelerate pacing, suppress history, skip validation, extend deadlines, emit speculative partial-transcript speech, or move the anchor.",
+  "physical_gpu": 7,
+  "journey": {
+    "route": "public /v1/realtime with native ASR -> Qwen3.8 -> native streaming TTS",
+    "turns": [
+      {
+        "name": "solar",
+        "source_text_used_only_to_prerecord_audio": "详细介绍太阳系八大行星。",
+        "audio_file": "solar-16k.wav",
+        "audio_sha256": "205e8e77ae51f73e4597fbdec2460f3f81d135a1edaddac6c4d5c657f1a84a66",
+        "audio_bytes": 81998,
+        "pcm_bytes": 81920,
+        "duration_ms": 2560,
+        "required_transcript_fragments": ["太阳系", "八大行星"]
+      },
+      {
+        "name": "saturn",
+        "source_text_used_only_to_prerecord_audio": "停一下直接讲土星环。",
+        "audio_file": "saturn-v2-16k.wav",
+        "audio_sha256": "7dceb7dc683b6da0110acffa8da4df0429ba84436fdb4da468c006e8bd2cde53",
+        "audio_bytes": 94764,
+        "pcm_bytes": 94720,
+        "duration_ms": 2960,
+        "required_transcript_fragments": ["土星", "环"]
+      },
+      {
+        "name": "english",
+        "source_text_used_only_to_prerecord_audio": "换成英文讲。",
+        "audio_file": "english-16k.wav",
+        "audio_sha256": "4b3cfa72d4ebda93b79c5a57d8c6f21c6a7b1f47d238c633f926bd912cc9d218",
+        "audio_bytes": 38478,
+        "pcm_bytes": 38400,
+        "duration_ms": 1200,
+        "required_transcript_fragments": ["英文"]
+      }
+    ],
+    "audio_provenance": "Frozen PCM16 mono WAV rendered once by the unmodified native Qwen3-TTS CustomVoice executable and resampled to 16 kHz; every request still passes through the real native ASR model. No transcript is injected. Physical microphone and speaker remain NOT_RUN.",
+    "input_format": "PCM16 mono 16000 Hz",
+    "input_chunk_bytes": 3200,
+    "input_chunk_pacing_ms": 100,
+    "end_silence_bytes": 19200,
+    "end_silence_pacing_ms": 100,
+    "vad_silence_ms": 400,
+    "first_barge_after_virtual_played_audio_ms": 3000,
+    "second_barge_after_virtual_played_audio_ms": 2000,
+    "playback_ack": "ACK only after the corresponding PCM duration has been consumed at its sample clock; preserve the exact emitted PCM prefix and UTF-8 cursor.",
+    "max_new_tokens": 768,
+    "tts_max_frames": 8192,
+    "voice": "vivian",
+    "sampling": "unchanged native realtime defaults",
+    "final_response_requirements": ["one completed terminal", "nonempty PCM", "English-dominant text", "Saturn/ring topical fragment"]
+  },
+  "paired_execution": {
+    "arms": ["before", "after"],
+    "fresh_process_per_run": true,
+    "repetitions_per_arm": 3,
+    "order": ["before-r1", "after-r1", "before-r2", "after-r2", "before-r3", "after-r3"],
+    "same_audio_schedule_models_sampling_and_gpu": true,
+    "same_harness_and_preregistration_hash": true,
+    "all_attempts_outliers_and_failures_retained": true,
+    "exact_pairing_when_runtime_changes": ["transcripts", "response text", "VLM history messages", "ACK cursors", "public PCM"],
+    "quantiles": "linear interpolation at (n-1)*p; population statistics; report median/p95/max and Tukey outliers without deletion"
+  },
+  "timing_anchors": {
+    "barge_start": "client monotonic marker immediately before the first interruption input append; raw capture must place that append within 5 ms",
+    "cancel": "raw WebSocket response.cancelled arrival",
+    "digital_silence": "client clears every emitted-but-unplayed old-response PCM event immediately after raw cancel receipt",
+    "asr_final": "raw transcription.completed arrival for the new segment",
+    "new_audio": "first raw audio.delta arrival for the new response",
+    "replay_wait": "barge_start to new-segment speech_stopped, retained as a separate component and included in the primary total"
+  },
+  "hard_latency_thresholds_ms": {
+    "first_barge_to_cancel_max_strictly_below": 300,
+    "cancel_to_digital_silence_max_strictly_below": 300,
+    "asr_final_to_new_audio_max_strictly_below": 800,
+    "replay_inclusive_barge_to_new_audio_max_strictly_below": 800,
+    "second_barge_to_cancel_max_strictly_below": 300
+  },
+  "correctness_gates": {
+    "exact_history_truncation_at_each_accepted_playback_ack": true,
+    "next_vlm_prompt_matches_lossless_history_model": true,
+    "no_replayed_old_audio_after_cancel": true,
+    "no_stale_cross_session_or_duplicate_terminal_events": true,
+    "played_pcm_is_exact_raw_prefix": true,
+    "pending_old_pcm_cleared_without_becoming_audible": true,
+    "audit_replay_is_post_run_only_and_never_public_audio": true,
+    "existing_29_of_29_delayed_reader_lossless_gate": true,
+    "existing_cursor_10_ns04_control": true,
+    "existing_43_of_43_chinese_natural_eos_control": true,
+    "immediate_retry_reconnect_and_recovery_gate": true,
+    "final_health_in_flight": 0,
+    "final_gpu_7_memory_mib_max": 64,
+    "final_gpu_7_utilization_percent": 0,
+    "final_gpu_7_compute_processes": 0
+  },
+  "required_regression_gates": [
+    "deterministic replay-inclusive timing/analyzer red-green fixtures",
+    "umm-test-local",
+    "native TTS host and real CUDA determinism CTest",
+    "realtime/network/public PCM deterministic suites",
+    "Task 81 exact Chinese NS01 and cursor-10 NS04 controls",
+    "real public HTTP plus 29/29 delayed realtime gate",
+    "real six-session network/reconnect gate",
+    "fresh-process independent raw verifier and complete external self-excluded SHA256SUMS"
+  ],
+  "not_run_by_default": [
+    "physical_microphone",
+    "physical_speaker",
+    "acoustic_echo",
+    "perceptual_quality",
+    "training",
+    "optimizer",
+    "resident_service",
+    "deployment"
+  ]
+}

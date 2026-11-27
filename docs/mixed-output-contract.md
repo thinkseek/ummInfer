@@ -113,8 +113,12 @@ Leg worker inputs:
 - image leg: `{prompt, size, steps?, seed?, image?, output_format}`.
 - tts leg: `{text, voice, format, sample_rate, stream?, ref_audio?}`. With
   `audio.stream=false`, `text` is the aggregated `record.vlm_text`. With
-  `audio.stream=true`, each leg receives one clean-prose sentence or the final
-  clean tail as soon as it is available. `ref_audio` is decoded binary WAV bytes.
+  `audio.stream=true`, each leg receives one clean-prose sentence or bounded final
+  span as soon as it is available. Supported Markdown presentation delimiters are
+  removed only from native speech input; public prose and playback cursors retain
+  the original UTF-8 byte ranges. At most 32 native TTS children are active, and a
+  completed child releases capacity for the next lossless buffered span.
+  `ref_audio` is decoded binary WAV bytes.
 - video leg: `{prompt, size, seconds?, fps?, num_frames?, steps?, guidance_scale?, seed?, image?, output_format}` where
   `prompt` falls back to `record.vlm_text` when omitted. `image` remains the
   validated data URL and selects native I2V on `Wan2.2-TI2V-5B`.
@@ -152,7 +156,9 @@ The streaming parser recognizes `image`, `video`, and `visual` tags
 case-insensitively across arbitrary split UTF-8 chunks. It strips every
 directive from `vlm_delta`, aggregated VLM text, session history, and streaming
 TTS input. Empty prompts and directives beyond `max_slots` are dropped and
-stripped.
+stripped. At EOF, a recognized reserved prefix or unterminated directive is also
+removed as directive bytes rather than leaking into public prose, history, or TTS;
+literal non-directive bracket text remains unchanged.
 
 `visual_mode=image` and `video` force that kind. Under `auto`, the requested
 kind is used when enabled; otherwise the parser falls back to the other enabled
@@ -421,7 +427,11 @@ Frozen values, enforced at the HTTP boundary and mirrored by the C++ client:
 - one decoded image: at most 48 MiB;
 - one decoded audio: at most 48 MiB;
 - one decoded video: at most 48 MiB;
-- decoded artifact bytes per request aggregated: at most 60 MiB;
+- decoded terminal/aggregate artifact bytes per request: at most 60 MiB.
+  Independently consumed streamed `audio/pcm` chunks do not accumulate against this
+  terminal aggregation budget; each remains bounded by the 48 MiB audio limit and
+  by existing lossless transport backpressure. This is not permission to drop or
+  truncate a long narration;
 - one SSE frame on the wire: at most 3 MiB (the parser hard limit is 4 MiB);
 - the C++ client keeps its 64 MiB hard cap for text-only responses and uses a
   96 MiB wire/aggregated cap (`kMixedStreamWireBytes`) for mixed output, on both
@@ -443,3 +453,6 @@ Coordinator pump callback.
   `--log-requests` style logging, where present, records length and sha256 only.
 - Optional stages do not enter the `/ready` gate. A process with no optional
   worker registered is a healthy text server.
+
+Task #81's deterministic red/green and real SM90 Before/After evidence for these
+lifecycle boundaries is in [ns01-tts-lifecycle.md](ns01-tts-lifecycle.md).

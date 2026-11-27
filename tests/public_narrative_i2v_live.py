@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Real public VLM narrative image-slot -> explicit native-I2V gate on GPU 1.
+"""Real public VLM narrative image-slot -> explicit native-I2V gate.
 
 Offline check:
   python3 -I tests/public_narrative_i2v_live.py --self-check
 
-The opt-in live mode starts only task-owned processes on physical GPU 1. A
-serial Qwen3.8 VLM stays resident. FLUX.2, native streaming TTS, and native
-Wan2.2 run one at a time, in that order. Read-only ZMQ taps forward submits
-unchanged while retaining exact TTS text and Wan source-byte binding evidence.
+The opt-in live mode starts only task-owned processes on a caller-selected
+explicitly idle physical GPU. A serial Qwen3.8 VLM stays resident. FLUX.2,
+native streaming TTS, and native Wan2.2 run one at a time, in that order.
+Read-only ZMQ taps retain exact TTS text and Wan source-byte binding evidence.
+The default lantern scenario preserves Task #65; ns01-black-hole uses the
+rubric's natural user prompt without hand-authored visual directives.
 """
 import argparse
 import base64
@@ -19,6 +21,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -60,6 +63,16 @@ USER_TEXT = (
     " Then output one short standalone English prose sentence and exactly this "
     "standalone marker: " + VIDEO_DIRECTIVE +
     " Do not output any other marker or repeat these instructions.")
+NS01_USER_TEXT = (
+    "Use one labeled still and one short animation to explain black-hole "
+    "accretion disks and gravitational lensing simply, in plain prose without "
+    "headings or bullets.")
+NS01_CHINESE_USER_TEXT = (
+    "用通俗方式讲清黑洞吸积盘和引力透镜，配示意图和动态演示。"
+    "请直接开始，先用三个内容充实的中文长段落展开背景，再使用 Markdown 标题分节；"
+    "讲解中自然保留 accretion disk、gravitational lensing、event horizon、"
+    "Eddington limit 等英文术语。不要省略开篇，不要把正文压缩成提纲。")
+NS01_CHINESE_SCENARIO = "ns01-chinese-markdown-long"
 
 
 def require(condition, message):
@@ -94,9 +107,20 @@ def canonical(value):
 
 
 def spoken_text_projection(text):
-    # The engine deliberately trims each streamed sentence/clause at its span
-    # boundaries. Compare linguistic content without inventing spoken whitespace.
-    return " ".join(text.split())
+    # Compare linguistic content, not presentation delimiters or the deliberate
+    # trimming of streamed sentence/clause spans. This projection never changes
+    # the retained raw text used by the independent byte/hash checks.
+    text = re.sub(r"(?m)^ {0,3}(?:#+[ \t]+|>[ \t]?|[*+-][ \t]+)", "", text)
+    text = re.sub(r"(?m)^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", "", text)
+    text = text.replace("**", "").replace("__", "").replace("~~", "")
+    text = text.replace("`", "")
+    return "".join(text.split())
+
+
+def native_speech_has_presentation_tokens(text):
+    return bool(re.search(r"(?:\*\*|__|~~|`)", text) or
+                re.search(r"(?m)^ {0,3}#+[ \t]+", text) or
+                re.search(r"(?m)^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", text))
 
 
 def model_identity(root, model_id):
@@ -125,10 +149,12 @@ def runtime_identity():
     return versions
 
 
-def request_body(model):
-    return {
+def request_body(model, scenario="lantern"):
+    body = {
         "model": model, "stream": True,
-        "messages": [{"role": "user", "content": USER_TEXT}],
+        "messages": [{"role": "user", "content":
+                      NS01_CHINESE_USER_TEXT if scenario == NS01_CHINESE_SCENARIO else
+                      NS01_USER_TEXT if scenario == "ns01-black-hole" else USER_TEXT}],
         "modalities": ["text", "image", "audio", "video"],
         "image": {"size": SOURCE_SIZE, "steps": 4, "seed": SEED,
                   "output_format": "png"},
@@ -140,24 +166,31 @@ def request_body(model):
                       "allow_text_only": False, "continuity_mode": "i2v_chain"},
         "max_tokens": 224, "temperature": 0, "seed": SEED,
     }
+    if scenario == "ns01-black-hole":
+        body["session_id"] = "ns01-black-hole"
+        body["max_tokens"] = 384
+    elif scenario == NS01_CHINESE_SCENARIO:
+        body["session_id"] = NS01_CHINESE_SCENARIO
+        body["max_tokens"] = 768
+    return body
 
 
-def gpu1_memory(nvidia_smi):
+def gpu_memory(nvidia_smi, gpu):
     result = subprocess.run(
-        [nvidia_smi, "-i", "1", "--query-gpu=index,memory.used,utilization.gpu",
+        [nvidia_smi, "-i", str(gpu), "--query-gpu=index,memory.used,utilization.gpu",
          "--format=csv,noheader,nounits"], check=True, capture_output=True,
         text=True, timeout=20)
     fields = [int(value.strip()) for value in result.stdout.strip().split(",")]
-    require(len(fields) == 3 and fields[0] == 1,
-            f"unexpected physical GPU 1 response: {result.stdout!r}")
+    require(len(fields) == 3 and fields[0] == gpu,
+            f"unexpected physical GPU {gpu} response: {result.stdout!r}")
     return {"index": fields[0], "memory_used_mib": fields[1],
             "utilization_percent": fields[2]}
 
 
-def require_gpu1_idle(nvidia_smi):
-    observed = gpu1_memory(nvidia_smi)
-    require(observed["memory_used_mib"] <= 16,
-            f"physical GPU 1 is not idle: {observed}")
+def require_gpu_idle(nvidia_smi, gpu):
+    observed = gpu_memory(nvidia_smi, gpu)
+    require(observed["memory_used_mib"] <= 16 and observed["utilization_percent"] == 0,
+            f"physical GPU {gpu} is not idle: {observed}")
     return observed
 
 
@@ -460,19 +493,20 @@ class TapProxy:
 
 
 class GpuMonitor:
-    def __init__(self, nvidia_smi):
+    def __init__(self, nvidia_smi, gpu):
         self.nvidia_smi = nvidia_smi
+        self.gpu = gpu
         self.samples = []
         self.stop_requested = False
         self.error = None
-        self.thread = threading.Thread(target=self._run, name="gpu1-monitor", daemon=True)
+        self.thread = threading.Thread(target=self._run, name="gpu-monitor", daemon=True)
         self.thread.start()
 
     def _run(self):
         try:
             while not self.stop_requested:
                 self.samples.append({"observed_monotonic_ns": clock_ns(),
-                                     **gpu1_memory(self.nvidia_smi)})
+                                     **gpu_memory(self.nvidia_smi, self.gpu)})
                 time.sleep(0.05)
         except Exception as error:
             self.error = str(error)
@@ -597,7 +631,9 @@ def join_tts_pcm(submits, output_records, public_audio, evidence_dir):
 def live(args):
     require(os.environ.get("UMMINFER_LIVE_OPT_IN") == "1",
             "REAL_GENERATION: NOT_RUN (explicit UMMINFER_LIVE_OPT_IN=1 required)")
-    require(args.gpu == 1, "this gate permits only physical GPU 1")
+    require(args.gpu in (0, 1, 7), "only an explicitly selected idle GPU 0, 1, or 7 is allowed")
+    require(args.scenario in ("lantern", "ns01-black-hole", NS01_CHINESE_SCENARIO),
+            "unknown narrative scenario")
     require(len(args.base_commit) == 40 and len(args.execution_commit) == 40,
             "full base and execution commits are required")
     out = Path(args.out_dir)
@@ -625,10 +661,10 @@ def live(args):
         "tts": model_identity(args.tts_model, "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"),
         "wan22": model_identity(args.wan_model, "Wan-AI/Wan2.2-TI2V-5B-Diffusers"),
     }
-    body = request_body(args.model)
+    body = request_body(args.model, args.scenario)
     (out / "request.json").write_bytes(canonical(body) + b"\n")
-    gpu = {"before": require_gpu1_idle(args.nvidia_smi)}
-    monitor = GpuMonitor(args.nvidia_smi)
+    gpu = {"before": require_gpu_idle(args.nvidia_smi, args.gpu)}
+    monitor = GpuMonitor(args.nvidia_smi, args.gpu)
     port = args.port or free_port()
     require(port != 43301, "resident service port is forbidden")
     endpoints = {name: f"ipc://{run}/{name}" for name in
@@ -650,29 +686,29 @@ def live(args):
     manager_record = {"flux_to_tts": False, "tts_to_wan": False}
     stage_record = {}
     recorder = TrajectoryRecorder(out / "capture" / "trajectories.jsonl")
-    record = source_final = audio_streams = None
+    record = source_final = audio_streams = timings = None
     health_final = None
 
     def start_tts():
         nonlocal tts
         tts = ManagedProcess("tts", [
             args.tts_binary, "--kind", "tts", "--name", "tts", "--model", args.tts_model,
-            "--gpu", "1", "--recv-endpoint", endpoints["tts-in"],
+            "--gpu", str(args.gpu), "--recv-endpoint", endpoints["tts-in"],
             "--coordinator-endpoint", endpoints["tts-output-in"],
             "--abort-endpoint", endpoints["abort"]], out / "tts.log", env=env)
         tts.wait_log("native stage tts ready kind=tts", args.timeout)
-        gpu["tts_ready"] = gpu1_memory(args.nvidia_smi)
+        gpu["tts_ready"] = gpu_memory(args.nvidia_smi, args.gpu)
 
     def start_wan():
         nonlocal wan
         wan = ManagedProcess("video", [
             args.wan_binary, "--kind", "video", "--name", "video", "--video-backend", "cuda",
-            "--model", args.wan_model, "--gpu", "1", "--size", VIDEO_SIZE,
+            "--model", args.wan_model, "--gpu", str(args.gpu), "--size", VIDEO_SIZE,
             "--steps", str(STEPS), "--fps", str(FPS), "--recv-endpoint", endpoints["video-in"],
             "--coordinator-endpoint", endpoints["completion"],
             "--abort-endpoint", endpoints["abort"]], out / "video.log", env=env)
         wan.wait_log("native stage video ready kind=video", args.timeout)
-        gpu["wan_ready"] = gpu1_memory(args.nvidia_smi)
+        gpu["wan_ready"] = gpu_memory(args.nvidia_smi, args.gpu)
 
     def output_manager():
         try:
@@ -683,7 +719,7 @@ def live(args):
             stage_record["source_public_complete_ns"] = clock_ns()
             flux.stop(endpoints["image-in"])
             require(flux.returncode == 0, f"FLUX shutdown failed: {flux.returncode}")
-            gpu["after_flux_stop_vlm_resident"] = gpu1_memory(args.nvidia_smi)
+            gpu["after_flux_stop_vlm_resident"] = gpu_memory(args.nvidia_smi, args.gpu)
             stage_record["flux_stopped_ns"] = clock_ns()
             start_tts()
             manager_record["flux_to_tts"] = True
@@ -725,7 +761,7 @@ def live(args):
             require(tts.returncode == 0, f"TTS shutdown failed: {tts.returncode}")
             tts_tap.stop()
             tts_output_tap.stop()
-            gpu["after_tts_stop_vlm_resident"] = gpu1_memory(args.nvidia_smi)
+            gpu["after_tts_stop_vlm_resident"] = gpu_memory(args.nvidia_smi, args.gpu)
             stage_record["tts_stopped_ns"] = clock_ns()
             start_wan()
             manager_record["tts_to_wan"] = True
@@ -735,7 +771,7 @@ def live(args):
                 try:
                     http_json(port, "POST", "/abort", {
                         "request_id": record_request_id[0],
-                        "session_id": "public-narrative-i2v-65"}, timeout=30)
+                        "session_id": body.get("session_id", "public-narrative-i2v-65")}, timeout=30)
                 except Exception:
                     pass
             source_ready.set()
@@ -762,12 +798,13 @@ def live(args):
             out / "entry.log", env=env)
         vlm = ManagedProcess("vlm", [
             args.vlm_binary, "--kind", "qwen38", "--name", "vlm", "--model", args.vlm_model,
-            "--gpu", "1", "--batch-size", "1", "--max-new-tokens", "224",
+            "--gpu", str(args.gpu), "--batch-size", "1",
+            "--max-new-tokens", str(body["max_tokens"]),
             "--recv-endpoint", endpoints["vlm-in"],
             "--coordinator-endpoint", endpoints["completion"],
             "--abort-endpoint", endpoints["abort"]], out / "vlm.log", env=env)
         vlm.wait_log("native stage vlm ready kind=qwen38", args.timeout)
-        gpu["vlm_ready"] = gpu1_memory(args.nvidia_smi)
+        gpu["vlm_ready"] = gpu_memory(args.nvidia_smi, args.gpu)
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
             try:
@@ -784,16 +821,16 @@ def live(args):
         flux = ManagedProcess("image", [
             args.python, "-I", args.flux_stage, "--name", "image", "--backend", "diffusers",
             "--model", args.flux_model, "--model-id", "black-forest-labs/FLUX.2-klein-4B",
-            "--revision", "UNKNOWN", "--gpu", "1", "--default-size", SOURCE_SIZE,
+            "--revision", "UNKNOWN", "--gpu", str(args.gpu), "--default-size", SOURCE_SIZE,
             "--default-steps", "4", "--recv", endpoints["image-in"],
             "--coordinator", endpoints["completion"], "--abort", endpoints["abort"]],
             out / "image.log", env=env)
         flux.wait_log("ready kind=image name=image", args.timeout)
-        gpu["flux_ready"] = gpu1_memory(args.nvidia_smi)
+        gpu["flux_ready"] = gpu_memory(args.nvidia_smi, args.gpu)
         manager = threading.Thread(target=output_manager, name="output-manager", daemon=True)
         manager.start()
         try:
-            record, source_final, audio_streams = capture_public_with_id(
+            record, source_final, audio_streams, timings = capture_public_with_id(
                 port, body, recorder, source_ready, request_ready, record_request_id)
         finally:
             capture_done.set()
@@ -808,7 +845,7 @@ def live(args):
         health_status, health_final = http_json(port, "GET", "/health", timeout=30)
         require(health_status == 200 and health_final.get("in_flight") == 0,
                 f"public gateway retained in-flight work: {health_status} {health_final}")
-        gpu["after_complete_before_cleanup"] = gpu1_memory(args.nvidia_smi)
+        gpu["after_complete_before_cleanup"] = gpu_memory(args.nvidia_smi, args.gpu)
     finally:
         for process, endpoint in ((wan, endpoints["video-in"]),
                                   (tts, endpoints["tts-in"]),
@@ -823,10 +860,10 @@ def live(args):
             if tap is not None and tap.thread.is_alive():
                 tap.stop()
         monitor.stop()
-        gpu["after_cleanup"] = require_gpu1_idle(args.nvidia_smi)
+        gpu["after_cleanup"] = require_gpu_idle(args.nvidia_smi, args.gpu)
         stage_record["processes"] = [process.record() for process in
                                      (server, entry, vlm, flux, tts, wan) if process is not None]
-        (out / "gpu1-monitor.json").write_text(
+        (out / "gpu-monitor.json").write_text(
             json.dumps(monitor.samples, indent=2, sort_keys=True) + "\n")
         require(not manager_error, f"live run failed; raw evidence retained: {manager_error}")
 
@@ -882,19 +919,23 @@ def live(args):
     require(video_bind["image_sha256"] == image["sha256"]
             == video_bind["anchor_sha256"] == video["anchor_sha256"],
             "Wan submit/source/public anchor hashes differ")
-    tts_text = " ".join(item["text"] for item in tts_tap.records)
+    tts_text = "".join(item["text"] for item in tts_tap.records)
     require(spoken_text_projection(tts_text)
             == spoken_text_projection(record["clean_text"]),
             "TTS text differs from clean narrative prose beyond trimmed span whitespace")
     require("[[" not in tts_text and "source=" not in tts_text,
             "directive/source suffix leaked into TTS submits")
+    require(not any(native_speech_has_presentation_tokens(item["text"])
+                    for item in tts_tap.records),
+            "native TTS received Markdown presentation tokens")
     events = record["events"]
     event_counts = {}
     for event in events:
         event_counts[event["type"]] = event_counts.get(event["type"], 0) + 1
     report = {
-        "format": REPORT_FORMAT, "result": "CONTROLLED_LIVE_PASS", "physical_gpu": 1,
-        "base_commit": args.base_commit, "execution_commit": args.execution_commit,
+        "format": REPORT_FORMAT, "result": "CONTROLLED_LIVE_PASS", "physical_gpu": args.gpu,
+        "scenario": args.scenario, "base_commit": args.base_commit,
+        "execution_commit": args.execution_commit,
         "request_sha256": sha256_bytes(canonical(body)),
         "public_request_id": record["request_id"], "public_event_count": len(events),
         "public_event_counts": event_counts, "public_artifact_count": len(artifacts),
@@ -907,16 +948,17 @@ def live(args):
         "clean_text": record["clean_text"], "clean_text_sha256": record["clean_text_sha256"],
         "visual_slots": record["visual_slots"], "terminal_legs": record["terminal_legs"],
         "source_final": source_final, "audio_stream_indices": audio_streams,
+        "interactive_timings": timings,
         "video_submit": video_bind, "tts_submits": tts_tap.records,
         "tts_output": tts_output_tap.records, "tts_legs": tts_joins,
         "first_frame_mae": first_mae, "motion_mae": motion_mae,
         "first_frame_max_mae": FIRST_FRAME_MAX_MAE, "motion_min_mae": MOTION_MIN_MAE,
         "metric_version": METRIC_VERSION, "decoded_rgb": rgb,
         "video_stream": probe_video(args.ffprobe, video_path),
-        "provenance": provenance, "models": models, "gpu1": gpu,
+        "provenance": provenance, "models": models, "gpu": gpu,
         "stage_lifecycle": stage_record, "manager": manager_record,
         "health_final": health_final,
-        "trajectory": "capture/trajectories.jsonl", "gpu_monitor": "gpu1-monitor.json",
+        "trajectory": "capture/trajectories.jsonl", "gpu_monitor": "gpu-monitor.json",
         "native_video_log": "video.log", "native_tts_log": "tts.log",
         "server_trace": "server.trace.jsonl",
         "perceptual_quality": "NOT_RUN", "generalization": "NOT_COVERED",
@@ -955,6 +997,8 @@ def capture_public_with_id(port, body, recorder, source_ready, request_ready, id
     inspected = 0
     source_final = None
     audio_streams = set()
+    first_ticks = {"ttft_ns": None, "ttfa_ns": None, "first_image_ns": None,
+                   "video_first_public_chunk_ns": None, "video_public_complete_ns": None}
     request_id = None
     try:
         conn.request("POST", "/v1/chat/completions", body=json.dumps(body),
@@ -980,14 +1024,26 @@ def capture_public_with_id(port, body, recorder, source_ready, request_ready, id
                     id_out[0] = request_id
                     request_ready.set()
                 unified = frame.get("unified") or {}
+                tick = capture._frames[frame_index]["tick"]
+                if unified.get("kind") == "vlm_delta" and unified.get("text") \
+                        and first_ticks["ttft_ns"] is None:
+                    first_ticks["ttft_ns"] = tick
                 if unified.get("kind") == "artifact":
                     desc = unified["artifact"]
                     if desc.get("media_type") == "audio":
                         audio_streams.add(desc.get("stream_index"))
+                        if first_ticks["ttfa_ns"] is None:
+                            first_ticks["ttfa_ns"] = tick
+                    if desc.get("media_type") == "video":
+                        if first_ticks["video_first_public_chunk_ns"] is None:
+                            first_ticks["video_first_public_chunk_ns"] = tick
+                        if desc.get("index") + 1 == desc.get("total"):
+                            first_ticks["video_public_complete_ns"] = tick
                     if (desc.get("media_type") == "image" and desc.get("slot_id") == "slot-0"
                             and desc.get("index") + 1 == desc.get("total")):
+                        first_ticks["first_image_ns"] = tick
                         source_final = {"frame_index": frame_index,
-                                        "observed_monotonic_ns": capture._frames[frame_index]["tick"],
+                                        "observed_monotonic_ns": tick,
                                         "observed_absolute_monotonic_ns": clock_ns(),
                                         "seq": unified.get("seq"), "sha256": desc.get("sha256")}
                         source_ready.set()
@@ -998,11 +1054,15 @@ def capture_public_with_id(port, body, recorder, source_ready, request_ready, id
             io.BytesIO(capture.raw_bytes), artifact_dir=recorder.artifact_dir,
             details=details, capture=capture)
         record = recorder.record(
-            session_id="public-narrative-i2v-65", request_id=request_id,
-            endpoint="/v1/chat/completions", inputs=inputs, params=params,
-            events=events, terminal_state=state, error=error, output_text=output_text,
-            artifacts=details.get("artifacts", []), capture=capture)
-        return record, source_final, sorted(audio_streams)
+            session_id=body.get("session_id", "public-narrative-i2v-65"),
+            request_id=request_id, endpoint="/v1/chat/completions", inputs=inputs,
+            params=params, events=events, terminal_state=state, error=error,
+            output_text=output_text, artifacts=details.get("artifacts", []), capture=capture)
+        timings = {key: (None if value is None else value / 1e6)
+                   for key, value in first_ticks.items()}
+        timings["unit"] = "ms_from_capture_start"
+        timings["clock"] = "python.time.perf_counter_ns"
+        return record, source_final, sorted(audio_streams), timings
     finally:
         conn.close()
 
@@ -1067,6 +1127,22 @@ def self_check():
     require(FIRST_FRAME_MAX_MAE == 48.0 and MOTION_MIN_MAE == 1.0,
             "frozen thresholds changed")
     require(DEFAULT_LIBRARY_PATH == "", "portable loader default must be empty")
+    ns01 = request_body("qwen3-native", "ns01-black-hole")
+    require(ns01["messages"][0]["content"] == NS01_USER_TEXT
+            and IMAGE_DIRECTIVE not in NS01_USER_TEXT and "source=" not in NS01_USER_TEXT
+            and ns01["narrative"]["visual_mode"] == "auto",
+            "NS-01 prompt must remain natural and autonomous")
+    chinese = request_body("qwen3-native", NS01_CHINESE_SCENARIO)
+    require(chinese["messages"][0]["content"] == NS01_CHINESE_USER_TEXT
+            and chinese["max_tokens"] == 768
+            and chinese["messages"][0]["content"].startswith(
+                "用通俗方式讲清黑洞吸积盘和引力透镜，配示意图和动态演示")
+            and "Markdown" in chinese["messages"][0]["content"]
+            and "accretion disk" in chinese["messages"][0]["content"]
+            and "gravitational lensing" in chinese["messages"][0]["content"]
+            and chinese["narrative"]["visual_mode"] == "auto"
+            and "teacache_thresh" not in chinese["video"],
+            "Chinese NS-01 prompt or zero-manual-control defaults changed")
     require(free_port() != 43301, "unexpected resident port allocation")
     try:
         exercise_pcm_join()
@@ -1080,7 +1156,10 @@ def self_check():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-check", action="store_true")
-    parser.add_argument("--out-dir", default="/tmp/umminfer-public-narrative-65-evidence")
+    parser.add_argument("--out-dir", type=Path)
+    parser.add_argument("--scenario",
+                        choices=("lantern", "ns01-black-hole", NS01_CHINESE_SCENARIO),
+                        default="lantern")
     parser.add_argument("--server-binary", type=Path)
     parser.add_argument("--vlm-binary", type=Path)
     parser.add_argument("--tts-binary", type=Path)
@@ -1108,8 +1187,8 @@ def main():
     if args.self_check:
         self_check()
         return 0
-    for name in ("server_binary", "vlm_binary", "tts_binary", "wan_binary", "flux_stage",
-                 "vlm_model", "flux_model", "tts_model", "wan_model"):
+    for name in ("out_dir", "server_binary", "vlm_binary", "tts_binary", "wan_binary",
+                 "flux_stage", "vlm_model", "flux_model", "tts_model", "wan_model"):
         if getattr(args, name) is None:
             parser.error(f"live mode requires --{name.replace('_', '-')}")
     live(args)

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <exception>
+#include <limits>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -1482,6 +1483,36 @@ void UnifiedEngine::handle_complete(const RequestInfo& info) {
                 UnifiedEvent::Kind::kLegError, error.what());
           }
         }
+        // A terminal streamed child releases one bounded slot. Resume the exact
+        // pending text cursor, and only then allow the request to finish.
+        if (output_leg->stage_id == kTtsStageId && record.tts_stream &&
+            record.phase != Phase::kDone && !record.cancel_requested &&
+            !record.tts_failed) {
+          try {
+            if (record.vlm_done) {
+              flush_sentences_locked(unified_id, record);
+            } else {
+              drain_sentences_locked(unified_id, record);
+            }
+          } catch (const std::exception& error) {
+            record.tts_failed = true;
+            if (record.tts_error.empty()) record.tts_error = error.what();
+            record.sentence_buf.clear();
+            collect_tts_aborts_locked(record, "vlm_failure", deferred_aborts);
+            UnifiedEvent leg_error;
+            leg_error.request_id = unified_id;
+            leg_error.session_id = record.session_id;
+            leg_error.stage_id = kTtsStageId;
+            leg_error.kind = UnifiedEvent::Kind::kLegError;
+            leg_error.seq = record.next_seq++;
+            leg_error.error = record.tts_error;
+            dispatch_queue_.push_back(std::move(leg_error));
+          }
+        }
+        if (record.phase != Phase::kDone && record.vlm_done &&
+            record.legs_remaining == 0) {
+          on_legs_drained_locked(unified_id, record);
+        }
       } else if (info.state == "aborted") {
         record_primary_leg("aborted");
         collect_output_aborts_locked(record, "client", deferred_aborts);
@@ -1673,6 +1704,9 @@ void UnifiedEngine::start_tts_locked(const std::string& request_id,
                                      Record& record, std::string text,
                                      bool first, size_t text_begin,
                                      size_t text_end) {
+  text = speech_text_from_markdown(text, record.tts_single_star_open,
+                                   record.tts_single_underscore_open);
+  if (trim_ascii_ws(text).empty()) return;
   OutputLeg leg;
   leg.modality = UnifiedModality::kAudio;
   leg.enabled = true;
@@ -1703,6 +1737,7 @@ void UnifiedEngine::start_tts_locked(const std::string& request_id,
     throw;
   }
   record.tts_legs.push_back(std::move(leg));
+  ++record.tts_active;
   ++record.legs_remaining;
 }
 
@@ -1710,9 +1745,9 @@ void UnifiedEngine::drain_sentences_locked(const std::string& request_id,
                                            Record& record) {
   constexpr size_t kMaxSentenceCodepoints = 48;
   constexpr size_t kFirstClauseCodepoints = 8;
-  // Reserve the final slot for flush_sentences_locked so streamed TTS fan-out
-  // never exceeds kMaxStreamedTtsLegs child requests per unified request.
-  while (record.tts_legs.size() + 1 < kMaxStreamedTtsLegs) {
+  // Bound active native work without dropping later sentences. A completion
+  // releases one slot and handle_complete resumes this exact buffered cursor.
+  while (record.tts_active < kMaxStreamedTtsLegs) {
     size_t cut = sentence_cut(record.sentence_buf, kMaxSentenceCodepoints);
     if (cut == 0 && record.tts_legs.empty()) {
       cut = clause_cut(record.sentence_buf, kFirstClauseCodepoints);
@@ -1737,22 +1772,28 @@ void UnifiedEngine::flush_sentences_locked(const std::string& request_id,
     record.sentence_buf.clear();
     return;
   }
-  std::string tail = record.sentence_buf;
-  record.sentence_buf.clear();
-  size_t text_begin = record.tts_text_cursor;
-  record.tts_text_cursor += tail.size();
-  const size_t begin = tail.find_first_not_of(" \t\r\n");
-  if (begin == std::string::npos) {
-    if (!record.tts_legs.empty()) return;
-    tail = record.vlm_text;
-    text_begin = 0;
-    record.tts_text_cursor = tail.size();
-  } else {
-    tail = tail.substr(begin, tail.find_last_not_of(" \t\r\n") - begin + 1);
+  // Preserve the nonstreamed-stage fallback, then apply the same bounded cuts as
+  // a streaming VLM. If all 32 slots are occupied, later native completions call
+  // this again; no suffix is discarded or merged into an oversized tail.
+  if (record.sentence_buf.find_first_not_of(" \t\r\n") == std::string::npos &&
+      record.tts_legs.empty()) {
+    record.sentence_buf = record.vlm_text;
+    record.tts_text_cursor = 0;
   }
-  if (tail.empty()) return;
-  start_tts_locked(request_id, record, std::move(tail), record.tts_legs.empty(),
-                   text_begin, record.tts_text_cursor);
+  while (record.tts_active < kMaxStreamedTtsLegs &&
+         !record.sentence_buf.empty()) {
+    size_t cut = sentence_cut(record.sentence_buf, 48);
+    if (cut == 0) cut = record.sentence_buf.size();
+    std::string tail = record.sentence_buf.substr(0, cut);
+    record.sentence_buf.erase(0, cut);
+    const size_t text_begin = record.tts_text_cursor;
+    record.tts_text_cursor += cut;
+    const size_t begin = tail.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) continue;
+    tail = tail.substr(begin, tail.find_last_not_of(" \t\r\n") - begin + 1);
+    start_tts_locked(request_id, record, std::move(tail), record.tts_legs.empty(),
+                     text_begin, record.tts_text_cursor);
+  }
 }
 
 void UnifiedEngine::start_outputs_locked(const std::string& request_id,
@@ -1808,10 +1849,15 @@ void UnifiedEngine::emit_tts_chunk_locked(
   const Value* audio = chunk.find("audio");
   if (audio == nullptr || !audio->is_bin() || audio->as_bin().empty()) return;
   const size_t size = audio->as_bin().size();
+  // Each chunk is an independent, immediately consumed artifact under bounded
+  // transport backpressure. kMaxArtifactAggregateBytes belongs to terminal
+  // aggregate media, not the total duration of a lossless streamed narration.
   if (size > kMaxArtifactAudioBytes ||
-      record.tts_bytes + size > kMaxArtifactAggregateBytes) {
+      size > std::numeric_limits<size_t>::max() - record.tts_bytes) {
     record.tts_failed = true;
-    record.tts_error = "streamed audio exceeds the artifact limit";
+    record.tts_error = size > kMaxArtifactAudioBytes
+                           ? "streamed audio exceeds the artifact limit"
+                           : "streamed audio byte counter overflow";
     collect_tts_aborts_locked(record, "artifact_limit", deferred_aborts);
     return;
   }
@@ -1927,6 +1973,8 @@ void UnifiedEngine::settle_output_leg_locked(
   const bool aborted_for_limit =
       kind == UnifiedEvent::Kind::kCancelled && !record.cancel_requested &&
       record.tts_failed;
+  const bool releases_tts_slot =
+      leg.stage_id == kTtsStageId && leg.state == LegState::kRunning;
   leg.state = kind == UnifiedEvent::Kind::kComplete ? LegState::kCompleted
             : (kind == UnifiedEvent::Kind::kCancelled && !aborted_for_limit)
                 ? LegState::kAborted
@@ -1978,11 +2026,22 @@ void UnifiedEngine::settle_output_leg_locked(
           ? leg.rendered_image_data_url
           : std::string{};
   --record.legs_remaining;
+  if (releases_tts_slot) {
+    if (record.tts_active == 0) {
+      throw ProtocolError("streamed TTS active-child accounting underflow");
+    }
+    --record.tts_active;
+  }
   if (is_image_slot) {
     release_chained_slots_locked(request_id, record, settled_slot_index,
                                  anchor_image_url);
   }
-  if (record.vlm_done && record.legs_remaining == 0 &&
+  // A successful streamed-TTS completion may release capacity for buffered
+  // prose. handle_complete drains it before allowing the public terminal.
+  const bool resume_streamed_tts =
+      leg.stage_id == kTtsStageId && record.tts_stream &&
+      !record.cancel_requested && !record.tts_failed;
+  if (!resume_streamed_tts && record.vlm_done && record.legs_remaining == 0 &&
       record.phase != Phase::kDone) {
     on_legs_drained_locked(request_id, record);
   }

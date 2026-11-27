@@ -91,8 +91,9 @@ inline constexpr size_t kMaxArtifactAggregateBytes = 60u << 20;
 // both the 3 MiB wire ceiling and the 4 MiB SSE parser limit.
 inline constexpr size_t kArtifactChunkTargetBytes = 2u << 20;
 inline constexpr size_t kMaxSseFrameWireBytes = 3u << 20;
-// Hard cap on streamed TTS sentence legs per unified request. Once N-1 legs are
-// submitted, remaining text stays in sentence_buf for the single final tail leg.
+// Hard cap on submitted-but-not-terminal streamed TTS children per request.
+// Completed children release capacity; pending prose remains losslessly buffered
+// instead of being coalesced into one oversized final Talker request.
 inline constexpr size_t kMaxStreamedTtsLegs = 32;
 
 // One event of a unified request. The sequence number is gap-free per request
@@ -433,6 +434,13 @@ class UnifiedEngine {
     // Raw vlm_text byte offset consumed by the ordered TTS sentence fan-out.
     size_t tts_text_cursor = 0;
     size_t tts_bytes = 0;
+    // Number of submitted TTS children that have not reached a terminal. This
+    // is independent of legs_remaining, which also includes visual children.
+    size_t tts_active = 0;
+    // Single-delimiter Markdown emphasis may straddle a sentence cut. These
+    // flags affect only native speech input, never public prose or cursors.
+    bool tts_single_star_open = false;
+    bool tts_single_underscore_open = false;
     bool tts_failed = false;
     std::string tts_error;
     // The VLM leg reached its terminal. An output leg may finish earlier, so

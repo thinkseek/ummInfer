@@ -1,0 +1,97 @@
+{
+  "format": "umminfer-ns04-incremental-early-response-preregistration-v1",
+  "created_before_candidate_runtime_edit": true,
+  "created_before_new_ns04_measurement": true,
+  "accepted_parent_commit": "ec1b9235e4ecd69340571d595726ed503bc42b47",
+  "accepted_task82_execution_commit": "310a9dd46f0bd893421ad83c07c9cf4dcfc21f2a",
+  "official_main_at_preregistration": "91310b36184c86a1c147debb27db8643cc0cb3e4",
+  "objective": "Evaluate exactly one bounded incremental-response candidate: begin native VLM/streaming-TTS work only for a stable, semantically complete incremental-ASR command, cancel and suppress it on any later preview/final identity revision, and require every replay-inclusive first-barge-to-new-audio measurement to be strictly below 800 ms without incorrect or speculative audible speech.",
+  "physical_gpu": 7,
+  "existing_incremental_asr_evidence": {
+    "source": "accepted Task 82 before-r1 raw wire capture; diagnostic observation only, not a new After measurement",
+    "first_complete_saturn_preview_approx_ms": 1647.017176,
+    "second_identical_saturn_preview_approx_ms": 1848.03484,
+    "third_identical_saturn_preview_approx_ms": 2049.020838,
+    "incomplete_examples": ["停一下，直接。", "停一下，直接讲。", "停一下，直接讲土。", "停一下，直接讲土星。"],
+    "implication_frozen_before_measurement": "The complete Saturn command was not present in the sub-800 ms preview window. No eligibility relaxation is permitted after observing this or any later failure."
+  },
+  "eligibility_rule": {
+    "name": "stable_complete_short_command_v1",
+    "scope": "server-side realtime audio_output responses only; no client control",
+    "requirements": [
+      "At least three completed consecutive incremental previews for the same segment have byte-identical trimmed UTF-8 text; streaming deltas alone are not eligibility evidence.",
+      "The complete candidate is 4..96 Unicode codepoints after trimming and contains no line break.",
+      "Chinese text must contain only CJK letters, ASCII letters/digits/spaces, and the explicit command punctuation set; no replacement character or unresolved bracket.",
+      "Every non-punctuation codepoint sequence is exactly one of the frozen semantic command grammars below. There is no fuzzy, prefix, confidence-score, or substring-only match.",
+      "The final normalized text must end in sentence-final Chinese or ASCII punctuation; a bare command prefix is not eligible.",
+      "A command containing negation, contrast, correction, condition, language-switch conflict, or an open coordination marker is rejected rather than interpreted.",
+      "If any later preview or final differs by even one byte after the same trim, immediately abort all uncommitted work and suppress its queued audio/text/ACK/terminal events; never commit the superseded response.",
+      "If eligibility is absent or uncertain, retain the unchanged ASR-final path and mark the incremental threshold NOT_MET."
+    ],
+    "grammars": [
+      {
+        "name": "saturn_topic_command",
+        "normalized_pattern": "停一下[，,]?直接讲土星环[。！!？?]",
+        "meaning": "a complete request to stop the current narration and discuss Saturn's rings"
+      },
+      {
+        "name": "english_switch_command",
+        "normalized_pattern": "换成英文讲[。！!？?]",
+        "meaning": "a complete request to switch the existing answer to English"
+      }
+    ],
+    "why_not_low_confidence_partial": "Eligibility needs three independently completed ASR results with exact cumulative identity, a fully matched terminal command grammar, and terminal punctuation. Low-confidence/streaming text, shorter prefixes, incomplete clauses, unseen commands and negated/revised forms cannot qualify. No transcript text is injected and the rule never rewrites the VLM input."
+  },
+  "candidate": {
+    "name": "provisional_realtime_response_v1",
+    "single_candidate": true,
+    "behavior": [
+      "On eligibility, submit the exact eligible preview text through the existing UnifiedEngine ASR-free VLM -> native streaming TTS path with the unchanged history, playback-ACK and sampling parameters.",
+      "Keep its provisional identity and segment binding explicit. Normal UnifiedEvent delivery remains the sole source of public text/audio; no transcript injection or synthetic model output exists.",
+      "On every subsequent completed preview and ASR final, compare exact trimmed text. A mismatch aborts the provisional UnifiedEngine request and drops all queued provisional public events before any further emission.",
+      "On an exact final match, retain the same response and history lifecycle rather than submitting a duplicate. On final mismatch, the unchanged final path starts a new response only after cancellation and suppression complete.",
+      "A newer utterance or ordinary barge-in cancels both ASR and provisional response ownership; stale ids cannot acknowledge or mutate the next response."
+    ],
+    "unchanged": ["100 ms input pacing", "400 ms VAD silence", "timing anchors", "history model", "response validation", "sampling", "input WAV bytes and length", "models", "playback schedule", "TTS/native arithmetic", "public session fields and client controls"]
+  },
+  "paired_execution": {
+    "before": "exact accepted Task 82 runtime rebuilt from accepted parent, or hash-verified retained accepted binaries",
+    "after": "only provisional_realtime_response_v1",
+    "fresh_process_per_run": true,
+    "repetitions_per_arm": 3,
+    "order": ["before-r1", "after-r1", "before-r2", "after-r2", "before-r3", "after-r3"],
+    "inputs_and_schedule": "exact Task 82 preregistration v2 solar-system -> Saturn-rings -> English two-interruption WAVs, identical 3200-byte chunks, 100 ms pacing, six 100 ms end-silence chunks, playback schedule, replay, models and sampling",
+    "exact_pairing_when_candidate_activates": ["final transcripts", "final response text", "VLM history messages", "ACK cursors", "public PCM"],
+    "exact_pairing_false_is_failure": true,
+    "all_attempts_outliers_and_failures_retained": true,
+    "quantiles": "linear interpolation at (n-1)*p; population statistics; median/p95/max and Tukey outliers without deletion"
+  },
+  "required_measurements": [
+    "before/after barge-to-cancel and cancel-to-digital-silence",
+    "every incremental completed-preview identity, timestamp, consecutive-stability count and eligibility decision",
+    "eligible timestamp, VLM submit/start, TTS submit/start, ASR-final-to-audio",
+    "full replay-inclusive barge-to-new-audio median/p95/max for both interruptions",
+    "exact played PCM prefixes, final English response, playback-ACK history and two truncated turns",
+    "zero stale/cross-session/duplicate/decreasing-cursor events, final in_flight=0 and immediate retry"
+  ],
+  "promotion_gates": {
+    "every_accepted_full_path_measurement_strictly_below_ms": 800,
+    "barge_to_cancel_strictly_below_ms": 300,
+    "cancel_to_digital_silence_strictly_below_ms": 300,
+    "incorrect_early_audible_response": "hard failure",
+    "speculative_or_incomplete_command_emission": "hard failure",
+    "semantic_or_history_regression": "hard failure",
+    "uncertain_eligibility": "wait for ASR final and report NOT_MET",
+    "controls": ["umm-test-local", "native TTS host and real CUDA determinism", "realtime/network/public PCM deterministic and real controls", "Task 81 exact Chinese 43/43 natural-EOS and cursor-10 NS04", "29/29 delayed reader with exact public PCM", "fresh-process independent verifier", "complete external self-excluded manifest"]
+  },
+  "adversarial_fixtures": [
+    "prefix revision after an apparently stable command",
+    "negation and correction",
+    "language switch versus conflicting language instruction",
+    "incomplete clause/open coordination",
+    "false eligibility from punctuation, unstable identity, short/long text, unseen command or replacement characters",
+    "late preview/final after cancellation, stale audio/events/ACK, immediate retry and cross-session isolation"
+  ],
+  "failure_boundary": "If any accepted full-path measurement is >=800 ms, or any semantic/audible/history/exact-pairing gate fails, remove the candidate from final runtime and report NOT_PROMOTED. Do not loosen the rule, add a second candidate, or claim physical/acoustic/perceptual NS-04 from digital loopback.",
+  "not_run_by_default": ["physical_microphone", "physical_speaker", "acoustic_echo", "perceptual_quality", "training", "optimizer", "resident_service", "deployment"]
+}

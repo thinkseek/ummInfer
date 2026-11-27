@@ -1009,12 +1009,16 @@ class RealtimeApi::Impl {
       // libwebsockets otherwise applies its connection-validity hangup even
       // while intentional delayed reads/backpressure leave application work
       // active. Keep transport idle expiry separate from request progress: this
-      // never touches response_deadline or request_timeout_s. A completed
-      // response is held only while its already emitted output remains queued;
-      // once ownership is released the ordinary idle policy resumes.
+      // never creates or extends a no-output response_deadline. A completed
+      // ACK-mode response is covered only until its existing final-ACK deadline;
+      // once that passes or ownership is released, ordinary idle policy resumes.
+      const bool playback_ack_pending =
+          session->playback_ack && session->response_generation_complete &&
+          !session->response_request_id.empty() && now < session->response_deadline;
       const bool active_response =
           !session->response_request_id.empty() &&
-          (!session->response_generation_complete || !session->outbound.empty());
+          (!session->response_generation_complete || !session->outbound.empty() ||
+           playback_ack_pending);
       if (!session->close_after_write &&
           (!session->request_id.empty() || active_response)) {
         lws_validity_confirmed(wsi);
@@ -1184,10 +1188,10 @@ class RealtimeApi::Impl {
       std::lock_guard<std::mutex> lock(unified_mu_);
       batch.swap(unified_queue_);
     }
-    unified_cv_.notify_all();
     const auto timeout_span = std::chrono::duration_cast<Clock::duration>(
         std::chrono::duration<double>(config_.request_timeout_s));
-    for (const UnifiedEvent& event : batch) {
+    for (size_t batch_index = 0; batch_index < batch.size(); ++batch_index) {
+      const UnifiedEvent& event = batch[batch_index];
       const bool terminal = event.kind == UnifiedEvent::Kind::kComplete ||
                             event.kind == UnifiedEvent::Kind::kError ||
                             event.kind == UnifiedEvent::Kind::kCancelled;
@@ -1207,6 +1211,46 @@ class RealtimeApi::Impl {
             reset_response_tracking(session);
           }
           break;
+        }
+        // Do not turn slow-reader backpressure into a reset. Keep the exact
+        // suffix ordered in unified_queue_ and retry after the socket drains.
+        // Completion reserves audio.done + response.completed together.
+        size_t required_outbound = terminal ? 2 : 1;
+        if (event.kind == UnifiedEvent::Kind::kArtifact &&
+            event.artifact_bytes != nullptr) {
+          int64_t channels = 1;
+          if (event.artifact.is_map()) {
+            if (const Value* ch = event.artifact.find("channels");
+                ch != nullptr && ch->is_int() && ch->as_int() > 0 &&
+                ch->as_int() <= 32) {
+              channels = ch->as_int();
+            }
+          }
+          const size_t frame_bytes = static_cast<size_t>(channels) * 2u;
+          const size_t max_chunk =
+              std::max(frame_bytes,
+                       (kMaxRealtimeAudioDeltaPcmBytes / frame_bytes) * frame_bytes);
+          size_t payload_bytes = event.artifact_length;
+          const std::string_view full_bytes(*event.artifact_bytes);
+          if (full_bytes.size() >= 12 && full_bytes.substr(0, 4) == "RIFF" &&
+              full_bytes.substr(8, 4) == "WAVE") {
+            payload_bytes = full_bytes.size();
+          }
+          required_outbound = std::max(
+              required_outbound,
+              payload_bytes == 0 ? size_t{0}
+                                 : (payload_bytes + max_chunk - 1) / max_chunk);
+        }
+        if (required_outbound > kMaxOutboundFrames ||
+            session->outbound.size() > kMaxOutboundFrames - required_outbound) {
+          // No socket progress means no deadline refresh: a deliberately stalled
+          // reader still reaches the unchanged application response deadline.
+          // Actual event/socket progress refreshes it in the ordinary paths.
+          std::lock_guard<std::mutex> lock(unified_mu_);
+          for (size_t index = batch.size(); index-- > batch_index;) {
+            unified_queue_.push_front(std::move(batch[index]));
+          }
+          return;
         }
         const int64_t segment = session->response_segment;
         switch (event.kind) {
@@ -1370,6 +1414,14 @@ class RealtimeApi::Impl {
               send(wsi, session, audio_done);
               send(wsi, session, completed);
             }
+            // Confirm once when generation completes in ACK mode so the normal
+            // idle window covers the client's final playback acknowledgement.
+            // This is not a per-poll refresh and does not extend an abandoned
+            // playback session indefinitely or change response_deadline.
+            if (session->playback_ack) {
+              session->response_deadline = Clock::now() + timeout_span;
+              lws_validity_confirmed(wsi);
+            }
             // Ack mode retains the terminal record while the already emitted
             // PCM is still playing. Its history is committed only by the final
             // playback ack or by barge-in at the last acknowledged prefix.
@@ -1416,6 +1468,9 @@ class RealtimeApi::Impl {
         disown_unified_response(event.request_id);
       }
     }
+    // Only a completely consumed batch releases producers. A requeued suffix
+    // intentionally keeps the unified-queue bound closed until socket progress.
+    unified_cv_.notify_all();
   }
 
   void forward_event(const UnifiedEvent& event) {

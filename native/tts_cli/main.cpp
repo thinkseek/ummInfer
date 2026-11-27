@@ -109,7 +109,9 @@ int main(int argc, char** argv) {
     f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 
     const WavStats st = pcm_stats(wav, 24000);
-    std::cout << "samples=" << st.samples << " duration_s=" << st.duration_s
+    std::cout << "codec_frames=" << timings.generated_frames
+              << " natural_eos=" << (timings.natural_eos ? 1 : 0)
+              << " samples=" << st.samples << " duration_s=" << st.duration_s
               << " rms=" << st.rms << " peak=" << st.peak
               << " non_silence=" << st.non_silence_ratio << "\n";
     return 0;

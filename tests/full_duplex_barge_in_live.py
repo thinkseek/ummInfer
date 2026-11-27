@@ -14,6 +14,7 @@ contract suite; this live run validates the same wire contract with real models.
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,16 @@ STALE_TYPES = {
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    size = 0
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1 << 20), b""):
+            digest.update(block)
+            size += len(block)
+    return {"sha256": digest.hexdigest(), "bytes": size}
 
 
 def epoch_ms():
@@ -154,11 +165,12 @@ def wait_in_flight_zero(port, timeout_s=5):
 
 
 def preflight_gpus(gpus):
-    require(len(set(gpus)) == len(gpus), "ASR, VLM and TTS GPUs must be distinct")
     require(all(gpu in (0, 1, 7) for gpu in gpus),
-            "only independently assigned idle GPUs 0, 1 or 7 are allowed")
+            "only explicitly assigned idle GPUs 0, 1 or 7 are allowed")
     evidence = {}
-    for gpu in gpus:
+    # The established default uses three distinct devices. A single-device test
+    # may intentionally share serial stages on one authorized idle H20.
+    for gpu in sorted(set(gpus)):
         rows = subprocess.check_output([
             "nvidia-smi", "-i", str(gpu),
             "--query-gpu=index,memory.used,utilization.gpu",
@@ -178,6 +190,18 @@ def preflight_gpus(gpus):
             "compute_processes": 0,
         }
     return evidence
+
+
+def postflight_gpus(gpus, timeout_s=30.0):
+    deadline = time.monotonic() + timeout_s
+    latest = None
+    while time.monotonic() < deadline:
+        try:
+            return preflight_gpus(gpus)
+        except (AssertionError, subprocess.CalledProcessError) as error:
+            latest = str(error)
+            time.sleep(0.5)
+    raise AssertionError(f"assigned GPUs did not return to idle: {latest}")
 
 
 def pcm_from_wav(path):
@@ -244,14 +268,39 @@ def stop_stack(procs):
         proc.log.wait()
 
 
+ACTIVE_RECORDER = None
+
+
 class Recorder:
-    def __init__(self, ws):
+    def __init__(self, ws, raw_path):
         self.ws = ws
         self.events = queue.Queue()
         self.observed = []
         self.closed = False
         self.stop = threading.Event()
-        threading.Thread(target=self.run, daemon=True).start()
+        self.cancel_observed = threading.Event()
+        self.raw = Path(raw_path).open("xb")
+        self.raw_lock = threading.Lock()
+        self.raw_records = 0
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def record_raw(self, direction, raw):
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        record = {"direction": direction,
+                  "observed_wall_ns": time.time_ns(),
+                  "observed_monotonic_ns": time.monotonic_ns(),
+                  "raw_sha256": hashlib.sha256(raw).hexdigest(),
+                  "raw_message": raw.decode("utf-8")}
+        with self.raw_lock:
+            self.raw.write((json.dumps(record, sort_keys=True) + "\n").encode())
+            self.raw.flush()
+            self.raw_records += 1
+
+    def marker(self, kind, response_id):
+        self.record_raw("marker", json.dumps({"type": kind, "response_id": response_id},
+                                             sort_keys=True))
 
     def run(self):
         while not self.stop.is_set():
@@ -262,9 +311,19 @@ class Recorder:
             except Exception:
                 self.closed = True
                 return
+            raw = message.encode("utf-8") if isinstance(message, str) else bytes(message)
+            self.record_raw("rx", raw)
             item = (time.time(), json.loads(message))
             self.observed.append(item)
             self.events.put(item)
+            if item[1].get("type") == "response.cancelled":
+                self.cancel_observed.set()
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(5)
+        require(not self.thread.is_alive(), "raw realtime recorder did not stop")
+        self.raw.close()
 
     def wait_for(self, predicate, timeout_s, description):
         deadline = time.monotonic() + timeout_s
@@ -288,15 +347,24 @@ class Recorder:
         raise AssertionError(f"timed out waiting for {description}; recent={recent}")
 
 
+def record_outgoing(raw):
+    if ACTIVE_RECORDER is not None:
+        ACTIVE_RECORDER.record_raw("tx", raw)
+
+
 def append(ws, pcm):
-    ws.send(json.dumps({"type": "input_audio_buffer.append",
-                        "audio": base64.b64encode(pcm).decode()}))
+    message = json.dumps({"type": "input_audio_buffer.append",
+                          "audio": base64.b64encode(pcm).decode()})
+    ws.send(message)
+    record_outgoing(message)
 
 
-def send_speech(ws, speech, start=0, pace=True):
+def send_speech(ws, speech, start=0, pace=True, stop_event=None):
     chunk = 3200  # 100 ms, PCM16 mono 16 kHz
     offset = start
     while offset < len(speech):
+        if stop_event is not None and stop_event.is_set():
+            break
         append(ws, speech[offset:offset + chunk])
         offset += chunk
         if pace:
@@ -329,28 +397,34 @@ def consume_and_ack(ws, audio_event):
     ack = {"type": "output_audio_buffer.playback_ack",
            "response_id": audio_event["response_id"],
            "text_cursor": int(audio_event["text_cursor"])}
-    ws.send(json.dumps(ack))
+    message = json.dumps(ack)
+    ws.send(message)
+    record_outgoing(message)
     return duration_s
 
 
 def run_live(args, http_port, ws_port, speech, evidence):
+    global ACTIVE_RECORDER
     url = (f"ws://127.0.0.1:{ws_port}/v1/realtime?"
            "intent=transcription&model=qwen3-unified")
     with connect(url, compression=None, open_timeout=10, close_timeout=10,
                  ping_interval=None, max_size=1 << 22) as ws:
-        rec = Recorder(ws)
-        ws.send(json.dumps({"type": "session.update", "session": {
+        rec = Recorder(ws, args.out / "raw-events.jsonl")
+        ACTIVE_RECORDER = rec
+        session_update = json.dumps({"type": "session.update", "session": {
             "input_audio_format": "pcm16",
             "turn_detection": {"type": "server_vad", "silence_ms": 400},
-            "max_new_tokens": 128,
-            "audio_output": {"voice": "vivian", "playback_ack": True}}}))
+            "max_new_tokens": args.vlm_max_tokens,
+            "audio_output": {"voice": "vivian", "playback_ack": True}}})
+        ws.send(session_update)
+        record_outgoing(session_update)
         updated, _ = rec.wait_for(
             lambda e: e.get("type") == "transcription_session.updated", 20,
             "session update")
         require(updated[1]["session"]["audio_output"].get("playback_ack") is True,
                 "playback acknowledgement was not negotiated")
 
-        speech = speech[:32000 * 2]
+        speech = speech[:int(32000 * args.speech_seconds)]
         require(len(speech) >= 3200, "audio contains no usable speech prefix")
         send_speech(ws, speech)
         send_silence(ws)
@@ -361,6 +435,8 @@ def run_live(args, http_port, ws_port, speech, evidence):
         first_id = None
         first_text = ""
         playback_seconds = 0.0
+        played_pcm = bytearray()
+        played_audio_events = 0
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             item, _ = rec.wait_for(
@@ -377,6 +453,8 @@ def run_live(args, http_port, ws_port, speech, evidence):
             if event["type"] == "response.text.delta":
                 first_text += event["text"]
                 continue
+            played_pcm.extend(base64.b64decode(event["audio"], validate=True))
+            played_audio_events += 1
             playback_seconds += consume_and_ack(ws, event)
             if int(event.get("text_cursor", 0)) > 0:
                 acknowledged_cursor = int(event["text_cursor"])
@@ -386,11 +464,29 @@ def run_live(args, http_port, ws_port, speech, evidence):
         require(acknowledged_cursor <= len(first_text.encode("utf-8")),
                 "audio cursor exceeds emitted response text")
 
+        rec.cancel_observed.clear()
+        rec.marker("client_barge_start", first_id)
         barge_started = time.time()
-        next_offset = send_speech(ws, speech)
+        next_offset = send_speech(ws, speech, stop_event=rec.cancel_observed)
         cancelled, _ = rec.wait_for(
             lambda e: e.get("type") == "response.cancelled" and
             e.get("response_id") == first_id, 1.0, "first response.cancelled")
+        cancel_received_monotonic_ns = time.monotonic_ns()
+        old_audio = [event for at, event in rec.observed
+                     if at <= cancelled[0] and event.get("response_id") == first_id
+                     and event.get("type") == "audio.delta"]
+        require(played_audio_events <= len(old_audio),
+                "played PCM count exceeds raw old-response audio")
+        pending_playback = old_audio[played_audio_events:]
+        pending_playback_bytes = sum(
+            len(base64.b64decode(event["audio"], validate=True))
+            for event in pending_playback)
+        require(pending_playback and pending_playback_bytes > 0,
+                "long-narration barge-in had no emitted-but-unplayed PCM to silence")
+        pending_playback.clear()  # the digital playback queue is now silent
+        rec.marker("digital_silence", first_id)
+        cancel_to_digital_silence_ms = (
+            time.monotonic_ns() - cancel_received_monotonic_ns) / 1e6
         interrupt_ms = (cancelled[0] - barge_started) * 1000.0
         require(interrupt_ms <= 1000.0,
                 f"old output did not stop within one second: {interrupt_ms:.1f} ms")
@@ -416,14 +512,18 @@ def run_live(args, http_port, ws_port, speech, evidence):
             lambda e: e.get("type") == "transcription.completed", 120,
             "post-barge-in transcription")
         second_response, _ = rec.wait_for(
-            lambda e: e.get("type") in ("response.text.delta", "audio.delta") and
-            e.get("response_id") != first_id, 120, "post-barge-in VLM response")
+            lambda e: e.get("type") == "audio.delta" and
+            e.get("response_id") != first_id, 120, "post-barge-in first audio")
         second_id = second_response[1]["response_id"]
+        post_barge_ttfa_ms = (second_response[0] - second_transcript[0]) * 1000.0
+        barge_to_new_audio_ms = (second_response[0] - barge_started) * 1000.0
 
         # A second new utterance proves repeated cancellation does not duplicate
         # history or wedge either the ASR or unified response path.
+        rec.cancel_observed.clear()
+        rec.marker("client_barge_start", second_id)
         second_barge = time.time()
-        send_speech(ws, speech)
+        send_speech(ws, speech, stop_event=rec.cancel_observed)
         second_cancel, _ = rec.wait_for(
             lambda e: e.get("type") == "response.cancelled" and
             e.get("response_id") == second_id, 1.0, "second response.cancelled")
@@ -433,8 +533,12 @@ def run_live(args, http_port, ws_port, speech, evidence):
         final_health = wait_in_flight_zero(http_port)
         stale += response_events_since(rec, second_cancel[0], second_id)
         require(not stale, f"stale output survived repeated cancellation: {stale}")
-        rec.stop.set()
+        rec.close()
+        ACTIVE_RECORDER = None
         evidence.update({
+            "raw_events": file_sha256(args.out / "raw-events.jsonl"),
+            "raw_event_count": len(rec.observed),
+            "raw_record_count": rec.raw_records,
             "first_response_id": first_id,
             "first_transcript": first_transcript[1].get("text"),
             "post_barge_in_transcript": second_transcript[1].get("text"),
@@ -442,8 +546,17 @@ def run_live(args, http_port, ws_port, speech, evidence):
             "acknowledged_text": acknowledged_text,
             "acknowledged_cursor": acknowledged_cursor,
             "virtual_playback_seconds": round(playback_seconds, 3),
+            "played_pcm_sha256": hashlib.sha256(played_pcm).hexdigest(),
+            "played_pcm_bytes": len(played_pcm),
+            "played_audio_events": played_audio_events,
+            "cancel_pending_audio_events": len(old_audio) - played_audio_events,
+            "cancel_pending_pcm_bytes": pending_playback_bytes,
+            "cancel_to_digital_silence_ms": cancel_to_digital_silence_ms,
+            "cancel_received_wall_ns": int(cancelled[0] * 1e9),
             "first_interrupt_ms": round(interrupt_ms, 1),
             "second_response_id": second_id,
+            "post_barge_ttfa_from_asr_final_ms": post_barge_ttfa_ms,
+            "barge_to_new_audio_ms": barge_to_new_audio_ms,
             "second_interrupt_ms": round(second_interrupt_ms, 1),
             "stale_output_events": stale,
             "final_health": final_health,
@@ -465,15 +578,26 @@ def main():
     parser.add_argument("--gpu-tts", type=int, default=7)
     parser.add_argument("--vlm-max-tokens", type=int, default=192)
     parser.add_argument("--tts-max-frames", type=int, default=512)
+    parser.add_argument("--speech-seconds", type=float, default=2.0)
     args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
-    args.log_dir.mkdir(parents=True, exist_ok=True)
+    require(0.2 <= args.speech_seconds <= 30.0,
+            "speech-seconds must be within 0.2..30")
+    args.out.mkdir(parents=True, exist_ok=False)
+    args.log_dir.mkdir(parents=True, exist_ok=False)
     gpus = [args.gpu_asr, args.gpu_vlm, args.gpu_tts]
     evidence = {
         "schema": "umminfer-full-duplex-barge-in/v1",
         "status": "FAIL",
         "gpus": {"asr": args.gpu_asr, "vlm": args.gpu_vlm, "tts": args.gpu_tts},
         "vlm_kind": args.vlm_kind,
+        "vlm_max_tokens": args.vlm_max_tokens,
+        "tts_max_frames": args.tts_max_frames,
+        "speech_seconds": args.speech_seconds,
+        "input_audio": file_sha256(args.audio),
+        "harness": file_sha256(Path(__file__)),
+        "binaries": {name: file_sha256(args.bin_dir / name) for name in
+                     ("umm-infer", "umm-native-stage-asr", "umm-native-stage-qwen38",
+                      "umm-native-stage-tts")},
         "playback": "timed virtual PCM consumption; no audio device",
     }
     procs = {}
@@ -495,6 +619,7 @@ def main():
     finally:
         if procs:
             stop_stack(procs)
+            evidence["gpu_postflight"] = postflight_gpus(gpus)
         (args.out / "full-duplex-barge-in-evidence.json").write_text(
             json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     return 0

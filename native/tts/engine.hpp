@@ -31,6 +31,9 @@ class TtsEngine {
     double first_frame_ms = -1;
     double first_audio_ms = -1;
     double total_ms = -1;
+    // Observability only: these fields never change decode or public schemas.
+    int generated_frames = 0;
+    bool natural_eos = false;
   };
 
   // Receives the newly decoded samples at a codec-frame boundary. first_frame

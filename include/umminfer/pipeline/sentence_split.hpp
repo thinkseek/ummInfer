@@ -183,4 +183,119 @@ inline size_t clause_cut(const std::string& text, size_t min_codepoints) {
   return cut;
 }
 
+// Converts one already-cut public Markdown span to the text intended for
+// speech. Public prose and playback cursors remain in the original byte space.
+// The two bools carry single-delimiter emphasis state across adjacent spans.
+// Presentation-only emphasis/code delimiters, heading/list/quote prefixes, and
+// horizontal rules are not Talker input. Ordinary star arithmetic and intraword
+// underscores are preserved rather than silently dropped.
+inline std::string speech_text_from_markdown(const std::string& text,
+                                             bool& single_star_open,
+                                             bool& single_underscore_open) {
+  const auto ascii_space = [](char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+  };
+  const auto ascii_alnum = [](char c) {
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+           (c >= 'a' && c <= 'z');
+  };
+  // A horizontal rule is a complete markup-only span, not narration.
+  char rule = 0;
+  size_t rule_count = 0;
+  bool horizontal_rule = true;
+  for (char c : text) {
+    if (ascii_space(c)) continue;
+    if (c != '-' && c != '*' && c != '_') {
+      horizontal_rule = false;
+      break;
+    }
+    if (rule == 0) rule = c;
+    if (c != rule) {
+      horizontal_rule = false;
+      break;
+    }
+    ++rule_count;
+  }
+  if (horizontal_rule && rule_count >= 3) return {};
+
+  std::string out;
+  out.reserve(text.size());
+  bool line_start = true;
+  size_t i = 0;
+  while (i < text.size()) {
+    if (line_start) {
+      // Up to three spaces of Markdown indentation precede a block marker.
+      size_t marker = i;
+      size_t indentation = 0;
+      while (marker < text.size() && text[marker] == ' ' && indentation < 3) {
+        ++marker;
+        ++indentation;
+      }
+      size_t end = marker;
+      if (end < text.size() && text[end] == '#') {
+        while (end < text.size() && text[end] == '#') ++end;
+        if (end < text.size() && (text[end] == ' ' || text[end] == '\t')) {
+          i = end + 1;
+          continue;
+        }
+      }
+      if (end < text.size() && text[end] == '>') {
+        i = end + 1;
+        if (i < text.size() && (text[i] == ' ' || text[i] == '\t')) ++i;
+        continue;
+      }
+      if (end < text.size() && (text[end] == '*' || text[end] == '-' ||
+                                text[end] == '+') &&
+          end + 1 < text.size() &&
+          (text[end + 1] == ' ' || text[end + 1] == '\t')) {
+        i = end + 2;
+        while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) ++i;
+        continue;
+      }
+      line_start = false;
+    }
+    if (text[i] == '\n') {
+      out.push_back(text[i++]);
+      line_start = true;
+      continue;
+    }
+    if (text[i] == '*' || text[i] == '_' || text[i] == '~' || text[i] == '`') {
+      const char marker = text[i];
+      size_t end = i + 1;
+      while (end < text.size() && text[end] == marker) ++end;
+      const size_t count = end - i;
+      bool remove = marker == '`' || (marker == '~' && count >= 2) ||
+                    ((marker == '*' || marker == '_') && count >= 2);
+      const bool left_alnum = i > 0 && ascii_alnum(text[i - 1]);
+      const bool right_alnum = end < text.size() && ascii_alnum(text[end]);
+      if (marker == '_' && count >= 2) {
+        remove = !(left_alnum && right_alnum);
+      }
+      if ((marker == '*' || marker == '_') && count == 1) {
+        const bool left_space = i == 0 || ascii_space(text[i - 1]);
+        const bool right_space = end == text.size() || ascii_space(text[end]);
+        const bool digit_arithmetic =
+            i > 0 && end < text.size() && text[i - 1] >= '0' && text[i - 1] <= '9' &&
+            text[end] >= '0' && text[end] <= '9';
+        const bool intraword_underscore = marker == '_' && left_alnum && right_alnum;
+        bool& open = marker == '*' ? single_star_open : single_underscore_open;
+        const bool can_open = !right_space && !digit_arithmetic && !intraword_underscore;
+        const bool can_close = !left_space || (i == 0 && open);
+        if (!digit_arithmetic && !intraword_underscore &&
+            ((open && can_close) || (!open && can_open))) {
+          open = !open;
+          remove = true;
+        } else {
+          remove = false;
+        }
+      }
+      if (!remove) out.append(text, i, count);
+      i = end;
+      continue;
+    }
+    out.push_back(text[i++]);
+  }
+  return out;
+}
+
 }  // namespace umminfer

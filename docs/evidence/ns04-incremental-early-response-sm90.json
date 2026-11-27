@@ -1,0 +1,2766 @@
+{
+  "arms": {
+    "after": {
+      "incremental_metrics": {
+        "first_barge": {
+          "barge_to_eligible_ms": {
+            "iqr_ms": 0.1862624999998843,
+            "mad_ms": 0.10297900000023219,
+            "max_ms": 2055.109801,
+            "mean_ms": 2054.895777333333,
+            "median_ms": 2054.840255,
+            "min_ms": 2054.737276,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 2055.0828464,
+            "population_cv": 7.643623202966733e-05,
+            "samples_ms": [
+              2054.737276,
+              2054.840255,
+              2055.109801
+            ],
+            "tukey_lower_fence_ms": 2054.5093717500004,
+            "tukey_upper_fence_ms": 2055.25442175
+          },
+          "barge_to_tts_start_ms": {
+            "iqr_ms": 0.7619074999997792,
+            "mad_ms": 0.5932929999999033,
+            "max_ms": 2520.258783,
+            "mean_ms": 2519.440670666667,
+            "median_ms": 2519.328261,
+            "min_ms": 2518.734968,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 2520.1657308000003,
+            "population_cv": 0.0002489252060008598,
+            "samples_ms": [
+              2518.734968,
+              2519.328261,
+              2520.258783
+            ],
+            "tukey_lower_fence_ms": 2517.8887532500003,
+            "tukey_upper_fence_ms": 2520.9363832499994
+          },
+          "barge_to_vlm_start_ms": {
+            "iqr_ms": 0.19896950000020297,
+            "mad_ms": 0.09115199999996548,
+            "max_ms": 2055.377396,
+            "mean_ms": 2055.142487333333,
+            "median_ms": 2055.070609,
+            "min_ms": 2054.979457,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 2055.3467173,
+            "population_cv": 8.282776543080775e-05,
+            "samples_ms": [
+              2054.979457,
+              2055.070609,
+              2055.377396
+            ],
+            "tukey_lower_fence_ms": 2054.7265787499996,
+            "tukey_upper_fence_ms": 2055.5224567500004
+          },
+          "eligible_to_tts_start_ms": {
+            "iqr_ms": 0.627134500000011,
+            "mad_ms": 0.5579970000000003,
+            "max_ms": 465.148982,
+            "mean_ms": 464.5448933333334,
+            "median_ms": 464.590985,
+            "min_ms": 463.894713,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 465.09318229999997,
+            "population_cv": 0.001104498943729951,
+            "samples_ms": [
+              463.894713,
+              464.590985,
+              465.148982
+            ],
+            "tukey_lower_fence_ms": 463.30214724999996,
+            "tukey_upper_fence_ms": 465.81068525
+          },
+          "eligible_to_vlm_start_ms": {
+            "iqr_ms": 0.018620499999999984,
+            "mad_ms": 0.011827000000000004,
+            "max_ms": 0.267595,
+            "mean_ms": 0.24671,
+            "median_ms": 0.242181,
+            "min_ms": 0.230354,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 0.2650536,
+            "population_cv": 0.06297758721371695,
+            "samples_ms": [
+              0.230354,
+              0.242181,
+              0.267595
+            ],
+            "tukey_lower_fence_ms": 0.20833675000000004,
+            "tukey_upper_fence_ms": 0.28281875
+          }
+        },
+        "second_barge": {
+          "barge_to_eligible_ms": {
+            "iqr_ms": 0.8016304999998738,
+            "mad_ms": 0.05930100000000493,
+            "max_ms": 1445.846998,
+            "mean_ms": 1445.2928106666666,
+            "median_ms": 1445.787697,
+            "min_ms": 1444.243737,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 1445.8410678999999,
+            "population_cv": 0.0005135305751253461,
+            "samples_ms": [
+              1444.243737,
+              1445.787697,
+              1445.846998
+            ],
+            "tukey_lower_fence_ms": 1443.81327125,
+            "tukey_upper_fence_ms": 1447.0197932499996
+          },
+          "barge_to_tts_start_ms": {
+            "iqr_ms": 1.2620059999999285,
+            "mad_ms": 1.0483099999999013,
+            "max_ms": 1831.217549,
+            "mean_ms": 1830.026775,
+            "median_ms": 1830.169239,
+            "min_ms": 1828.693537,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 1831.1127179999999,
+            "population_cv": 0.0005657491325943013,
+            "samples_ms": [
+              1828.693537,
+              1830.169239,
+              1831.217549
+            ],
+            "tukey_lower_fence_ms": 1827.538379,
+            "tukey_upper_fence_ms": 1832.5864029999998
+          },
+          "barge_to_vlm_start_ms": {
+            "iqr_ms": 0.8079060000000027,
+            "mad_ms": 0.004912999999987733,
+            "max_ms": 1446.080759,
+            "mean_ms": 1445.5405173333331,
+            "median_ms": 1446.075846,
+            "min_ms": 1444.464947,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 1446.0802677,
+            "population_cv": 0.0005261324134413631,
+            "samples_ms": [
+              1444.464947,
+              1446.075846,
+              1446.080759
+            ],
+            "tukey_lower_fence_ms": 1444.0585375,
+            "tukey_upper_fence_ms": 1447.2901615
+          },
+          "eligible_to_tts_start_ms": {
+            "iqr_ms": 0.5538055000000099,
+            "mad_ms": 0.12755899999996245,
+            "max_ms": 385.429852,
+            "mean_ms": 384.7339643333333,
+            "median_ms": 384.4498,
+            "min_ms": 384.322241,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 385.3318468,
+            "population_cv": 0.0012861220093941294,
+            "samples_ms": [
+              384.322241,
+              384.4498,
+              385.429852
+            ],
+            "tukey_lower_fence_ms": 383.55531224999993,
+            "tukey_upper_fence_ms": 385.77053424999997
+          },
+          "eligible_to_vlm_start_ms": {
+            "iqr_ms": 0.035926000000000013,
+            "mad_ms": 0.007638000000000006,
+            "max_ms": 0.293062,
+            "mean_ms": 0.24770666666666666,
+            "median_ms": 0.228848,
+            "min_ms": 0.22121,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 0.28664059999999997,
+            "population_cv": 0.13008247047209556,
+            "samples_ms": [
+              0.22121,
+              0.228848,
+              0.293062
+            ],
+            "tukey_lower_fence_ms": 0.17113999999999996,
+            "tukey_upper_fence_ms": 0.314844
+          }
+        }
+      },
+      "metrics": {
+        "asr_final_to_new_audio": {
+          "iqr_ms": 4.931498000000033,
+          "mad_ms": 0.013519000000030701,
+          "max_ms": 421.517888,
+          "mean_ms": 418.22571633333337,
+          "median_ms": 421.504369,
+          "min_ms": 411.654892,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 421.5165361,
+          "population_cv": 0.011109497911258478,
+          "samples_ms": [
+            411.654892,
+            421.504369,
+            421.517888
+          ],
+          "tukey_lower_fence_ms": 409.18238349999996,
+          "tukey_upper_fence_ms": 428.9083755000001
+        },
+        "barge_to_cancel": {
+          "iqr_ms": 0.15529449999999922,
+          "mad_ms": 0.10058799999999923,
+          "max_ms": 4.695511,
+          "mean_ms": 4.521981,
+          "median_ms": 4.48551,
+          "min_ms": 4.384922,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 4.6745109,
+          "population_cv": 0.02861431985920606,
+          "samples_ms": [
+            4.384922,
+            4.48551,
+            4.695511
+          ],
+          "tukey_lower_fence_ms": 4.202274250000002,
+          "tukey_upper_fence_ms": 4.823452249999999
+        },
+        "barge_to_speech_stopped_replay": {
+          "iqr_ms": 0.7207345000001624,
+          "mad_ms": 0.6178249999998116,
+          "max_ms": 2210.709211,
+          "mean_ms": 2209.954173333333,
+          "median_ms": 2209.885567,
+          "min_ms": 2209.267742,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 2210.6268465999997,
+          "population_cv": 0.00026718809660010326,
+          "samples_ms": [
+            2209.267742,
+            2209.885567,
+            2210.709211
+          ],
+          "tukey_lower_fence_ms": 2208.4955527499997,
+          "tukey_upper_fence_ms": 2211.3784907500003
+        },
+        "cancel_to_digital_silence": {
+          "iqr_ms": 0.030769500000000116,
+          "mad_ms": 0.02446400000000004,
+          "max_ms": 1.500847,
+          "mean_ms": 1.4721793333333333,
+          "median_ms": 1.476383,
+          "min_ms": 1.439308,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 1.4984006,
+          "population_cv": 0.01718433448749238,
+          "samples_ms": [
+            1.439308,
+            1.476383,
+            1.500847
+          ],
+          "tukey_lower_fence_ms": 1.4116912499999996,
+          "tukey_upper_fence_ms": 1.53476925
+        },
+        "replay_inclusive_barge_to_new_audio": {
+          "iqr_ms": 0.17004850000012084,
+          "mad_ms": 0.05424300000004223,
+          "max_ms": 2718.131605,
+          "mean_ms": 2717.9229546666666,
+          "median_ms": 2717.845751,
+          "min_ms": 2717.791508,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 2718.1030196,
+          "population_cv": 5.489143783673303e-05,
+          "samples_ms": [
+            2717.791508,
+            2717.845751,
+            2718.131605
+          ],
+          "tukey_lower_fence_ms": 2717.5635567499994,
+          "tukey_upper_fence_ms": 2718.24375075
+        },
+        "speech_stopped_to_asr_final": {
+          "iqr_ms": 4.376749000000004,
+          "mad_ms": 0.2912469999999985,
+          "max_ms": 95.481648,
+          "mean_ms": 89.743065,
+          "median_ms": 87.019397,
+          "min_ms": 86.72815,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 94.63542290000001,
+          "population_cv": 0.04523505627314722,
+          "samples_ms": [
+            86.72815,
+            87.019397,
+            95.481648
+          ],
+          "tukey_lower_fence_ms": 80.30865,
+          "tukey_upper_fence_ms": 97.81564600000002
+        }
+      },
+      "runs": [
+        {
+          "independent_report_sha256": "9d99b0fac9b1aff328675db7b96dd4ae8abad18657c98b9db3c5e15b470d1065",
+          "raw_frames_sha256": "df23a397513124b65dd455acbc16c00b05e3668913df7260ef09e31297b4f7da",
+          "repetition": 1
+        },
+        {
+          "independent_report_sha256": "c61c7f220a1bfbeef2ed9c30088063f4de9046e42362340de1a25ee8923ff1b2",
+          "raw_frames_sha256": "b5eafb15669b855e1812dd35dd6a980d13c7c21e157088d2f89c821cb602f130",
+          "repetition": 2
+        },
+        {
+          "independent_report_sha256": "df26725d53df3d97b48f8a9a6bcaf75d754413d0a127a3e417d0cbfd12a64067",
+          "raw_frames_sha256": "3df777433429a09799f2ac330127a2e151f1b768a9ab3b459f38425535acc28b",
+          "repetition": 3
+        }
+      ],
+      "second_barge_to_cancel": {
+        "iqr_ms": 0.06865750000000004,
+        "mad_ms": 0.05865100000000001,
+        "max_ms": 1.902234,
+        "mean_ms": 1.830241,
+        "median_ms": 1.82357,
+        "min_ms": 1.764919,
+        "n": 3,
+        "outliers_ms": [],
+        "p95_ms": 1.8943676,
+        "population_cv": 0.030737332913061334,
+        "samples_ms": [
+          1.764919,
+          1.82357,
+          1.902234
+        ],
+        "tukey_lower_fence_ms": 1.69125825,
+        "tukey_upper_fence_ms": 1.9658882500000001
+      },
+      "second_replay_inclusive_barge_to_new_audio_diagnostic": {
+        "iqr_ms": 5.691268500000206,
+        "mad_ms": 1.5254299999999148,
+        "max_ms": 2028.616078,
+        "mean_ms": 2021.5361966666667,
+        "median_ms": 2018.758971,
+        "min_ms": 2017.233541,
+        "n": 3,
+        "outliers_ms": [],
+        "p95_ms": 2027.6303673,
+        "population_cv": 0.002495536518784377,
+        "samples_ms": [
+          2017.233541,
+          2018.758971,
+          2028.616078
+        ],
+        "tukey_lower_fence_ms": 2009.4593532499996,
+        "tukey_upper_fence_ms": 2032.2244272500004
+      },
+      "thresholds": {
+        "asr_final_to_new_audio_max_strictly_below_800": {
+          "observed_max_ms": 421.517888,
+          "observed_median_ms": 421.504369,
+          "observed_p95_ms": 421.5165361,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 800 ms"
+        },
+        "barge_to_cancel_max_strictly_below_300": {
+          "observed_max_ms": 4.695511,
+          "observed_median_ms": 4.48551,
+          "observed_p95_ms": 4.6745109,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        },
+        "cancel_to_digital_silence_max_strictly_below_300": {
+          "observed_max_ms": 1.500847,
+          "observed_median_ms": 1.476383,
+          "observed_p95_ms": 1.4984006,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        },
+        "replay_inclusive_barge_to_new_audio_max_strictly_below_800": {
+          "observed_max_ms": 2718.131605,
+          "observed_median_ms": 2717.845751,
+          "observed_p95_ms": 2718.1030196,
+          "outliers_ms": [],
+          "pass": false,
+          "rule": "max < 800 ms"
+        },
+        "second_barge_to_cancel_max_strictly_below_300": {
+          "observed_max_ms": 1.902234,
+          "observed_median_ms": 1.82357,
+          "observed_p95_ms": 1.8943676,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        }
+      }
+    },
+    "before": {
+      "incremental_metrics": {
+        "first_barge": {
+          "barge_to_eligible_ms": null,
+          "barge_to_tts_start_ms": {
+            "iqr_ms": 0.38474700000006123,
+            "mad_ms": 0.12676199999987148,
+            "max_ms": 2680.679908,
+            "mean_ms": 2680.381156,
+            "median_ms": 2680.553146,
+            "min_ms": 2679.910414,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 2680.6672318,
+            "population_cv": 0.00012567751617506234,
+            "samples_ms": [
+              2679.910414,
+              2680.553146,
+              2680.679908
+            ],
+            "tukey_lower_fence_ms": 2679.6546595,
+            "tukey_upper_fence_ms": 2681.1936475
+          },
+          "barge_to_vlm_start_ms": {
+            "iqr_ms": 0.17442699999992328,
+            "mad_ms": 0.04094799999984389,
+            "max_ms": 2256.122281,
+            "mean_ms": 2255.992347,
+            "median_ms": 2256.081333,
+            "min_ms": 2255.773427,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 2256.1181862,
+            "population_cv": 6.90161198994834e-05,
+            "samples_ms": [
+              2255.773427,
+              2256.081333,
+              2256.122281
+            ],
+            "tukey_lower_fence_ms": 2255.6657395,
+            "tukey_upper_fence_ms": 2256.3634475
+          },
+          "eligible_to_tts_start_ms": null,
+          "eligible_to_vlm_start_ms": null
+        },
+        "second_barge": {
+          "barge_to_eligible_ms": null,
+          "barge_to_tts_start_ms": {
+            "iqr_ms": 0.5366894999999658,
+            "mad_ms": 0.43482700000004115,
+            "max_ms": 1900.895591,
+            "mean_ms": 1900.3928556666667,
+            "median_ms": 1900.460764,
+            "min_ms": 1899.822212,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 1900.8521083,
+            "population_cv": 0.0002319668882966031,
+            "samples_ms": [
+              1899.822212,
+              1900.460764,
+              1900.895591
+            ],
+            "tukey_lower_fence_ms": 1899.3364537500001,
+            "tukey_upper_fence_ms": 1901.48321175
+          },
+          "barge_to_vlm_start_ms": {
+            "iqr_ms": 0.41175699999985227,
+            "mad_ms": 0.24753500000019812,
+            "max_ms": 1545.807886,
+            "mean_ms": 1545.3413883333333,
+            "median_ms": 1545.231907,
+            "min_ms": 1544.984372,
+            "n": 3,
+            "outliers_ms": [],
+            "p95_ms": 1545.7502881,
+            "population_cv": 0.00022324910753669362,
+            "samples_ms": [
+              1544.984372,
+              1545.231907,
+              1545.807886
+            ],
+            "tukey_lower_fence_ms": 1544.4905040000003,
+            "tukey_upper_fence_ms": 1546.1375319999997
+          },
+          "eligible_to_tts_start_ms": null,
+          "eligible_to_vlm_start_ms": null
+        }
+      },
+      "metrics": {
+        "asr_final_to_new_audio": {
+          "iqr_ms": 0.3299334999999246,
+          "mad_ms": 0.04226399999993191,
+          "max_ms": 623.061246,
+          "mean_ms": 622.6354226666666,
+          "median_ms": 622.443643,
+          "min_ms": 622.401379,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 622.9994856999999,
+          "population_cv": 0.00048438703117256087,
+          "samples_ms": [
+            622.401379,
+            622.443643,
+            623.061246
+          ],
+          "tukey_lower_fence_ms": 621.9276107500001,
+          "tukey_upper_fence_ms": 623.2473447499998
+        },
+        "barge_to_cancel": {
+          "iqr_ms": 0.08397099999999913,
+          "mad_ms": 0.0386179999999996,
+          "max_ms": 4.574214,
+          "mean_ms": 4.475125333333334,
+          "median_ms": 4.44489,
+          "min_ms": 4.406272,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 4.561281599999999,
+          "population_cv": 0.016048289147048207,
+          "samples_ms": [
+            4.406272,
+            4.44489,
+            4.574214
+          ],
+          "tukey_lower_fence_ms": 4.299624500000002,
+          "tukey_upper_fence_ms": 4.6355084999999985
+        },
+        "barge_to_speech_stopped_replay": {
+          "iqr_ms": 0.2387719999996989,
+          "mad_ms": 0.11646500000006199,
+          "max_ms": 2210.142215,
+          "mean_ms": 2209.862674,
+          "median_ms": 2209.781136,
+          "min_ms": 2209.664671,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 2210.1061071,
+          "population_cv": 9.199820041021488e-05,
+          "samples_ms": [
+            2209.664671,
+            2209.781136,
+            2210.142215
+          ],
+          "tukey_lower_fence_ms": 2209.3647455000005,
+          "tukey_upper_fence_ms": 2210.3198334999993
+        },
+        "cancel_to_digital_silence": {
+          "iqr_ms": 0.02689000000000008,
+          "mad_ms": 0.024198000000000164,
+          "max_ms": 1.535292,
+          "mean_ms": 1.5092993333333335,
+          "median_ms": 1.511094,
+          "min_ms": 1.481512,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 1.5328722000000001,
+          "population_cv": 0.014571156527148505,
+          "samples_ms": [
+            1.481512,
+            1.511094,
+            1.535292
+          ],
+          "tukey_lower_fence_ms": 1.455968,
+          "tukey_upper_fence_ms": 1.5635280000000003
+        },
+        "replay_inclusive_barge_to_new_audio": {
+          "iqr_ms": 0.05908449999969889,
+          "mad_ms": 0.00029700000004595495,
+          "max_ms": 2878.763245,
+          "mean_ms": 2878.6845646666666,
+          "median_ms": 2878.645373,
+          "min_ms": 2878.645076,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 2878.7514578,
+          "population_cv": 1.9326719590083278e-05,
+          "samples_ms": [
+            2878.645076,
+            2878.645373,
+            2878.763245
+          ],
+          "tukey_lower_fence_ms": 2878.5565977500005,
+          "tukey_upper_fence_ms": 2878.7929357499993
+        },
+        "speech_stopped_to_asr_final": {
+          "iqr_ms": 0.21276499999999743,
+          "mad_ms": 0.021889999999999077,
+          "max_ms": 46.462858,
+          "mean_ms": 46.186468,
+          "median_ms": 46.059218,
+          "min_ms": 46.037328,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 46.422494,
+          "population_cv": 0.004235904179404893,
+          "samples_ms": [
+            46.037328,
+            46.059218,
+            46.462858
+          ],
+          "tukey_lower_fence_ms": 45.72912550000001,
+          "tukey_upper_fence_ms": 46.5801855
+        }
+      },
+      "runs": [
+        {
+          "independent_report_sha256": "a5c1006bcfc3853e884613a162525e8db3740d6594a5e7de357f5e8389c192e6",
+          "raw_frames_sha256": "c593dfee615e294c99868fa84907d4d0b1f210b024804c83b3db1b249b5869f3",
+          "repetition": 1
+        },
+        {
+          "independent_report_sha256": "84f5bf6ed6732e258ddc4ee783b8f4a45450b34e3dcef137a2c0da668d1d7d38",
+          "raw_frames_sha256": "a9e4f3fe469a49768ba799a06c8cd7b3da3360c3dd791b744d49aad8356e5eb3",
+          "repetition": 2
+        },
+        {
+          "independent_report_sha256": "4918f1504ea5b8930b2abf394b1fa25d3d7fdf5ee7aba105420552319e03b104",
+          "raw_frames_sha256": "b2d69d467551fba090c186c272b17f86b1b55bcebc4957e2ea139e06d41ecab9",
+          "repetition": 3
+        }
+      ],
+      "second_barge_to_cancel": {
+        "iqr_ms": 0.11398999999999981,
+        "mad_ms": 0.04967900000000003,
+        "max_ms": 1.910012,
+        "mean_ms": 1.774585,
+        "median_ms": 1.731711,
+        "min_ms": 1.682032,
+        "n": 3,
+        "outliers_ms": [],
+        "p95_ms": 1.8921819,
+        "population_cv": 0.05515965386423892,
+        "samples_ms": [
+          1.682032,
+          1.731711,
+          1.910012
+        ],
+        "tukey_lower_fence_ms": 1.5358865000000004,
+        "tukey_upper_fence_ms": 1.9918464999999996
+      },
+      "second_replay_inclusive_barge_to_new_audio_diagnostic": {
+        "iqr_ms": 0.420721500000127,
+        "mad_ms": 0.12255800000002637,
+        "max_ms": 2098.337339,
+        "mean_ms": 2097.8172296666667,
+        "median_ms": 2097.618454,
+        "min_ms": 2097.495896,
+        "n": 3,
+        "outliers_ms": [],
+        "p95_ms": 2098.2654505,
+        "population_cv": 0.00017692709403400764,
+        "samples_ms": [
+          2097.495896,
+          2097.618454,
+          2098.337339
+        ],
+        "tukey_lower_fence_ms": 2096.92609275,
+        "tukey_upper_fence_ms": 2098.6089787500005
+      },
+      "thresholds": {
+        "asr_final_to_new_audio_max_strictly_below_800": {
+          "observed_max_ms": 623.061246,
+          "observed_median_ms": 622.443643,
+          "observed_p95_ms": 622.9994856999999,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 800 ms"
+        },
+        "barge_to_cancel_max_strictly_below_300": {
+          "observed_max_ms": 4.574214,
+          "observed_median_ms": 4.44489,
+          "observed_p95_ms": 4.561281599999999,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        },
+        "cancel_to_digital_silence_max_strictly_below_300": {
+          "observed_max_ms": 1.535292,
+          "observed_median_ms": 1.511094,
+          "observed_p95_ms": 1.5328722000000001,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        },
+        "replay_inclusive_barge_to_new_audio_max_strictly_below_800": {
+          "observed_max_ms": 2878.763245,
+          "observed_median_ms": 2878.645373,
+          "observed_p95_ms": 2878.7514578,
+          "outliers_ms": [],
+          "pass": false,
+          "rule": "max < 800 ms"
+        },
+        "second_barge_to_cancel_max_strictly_below_300": {
+          "observed_max_ms": 1.910012,
+          "observed_median_ms": 1.731711,
+          "observed_p95_ms": 1.8921819,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        }
+      }
+    }
+  },
+  "boundaries": {
+    "acoustic_echo": "NOT_RUN",
+    "audit_replay": "post-run independent raw decode only; never public audio",
+    "deployment": "NOT_RUN",
+    "optimizer": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "physical_microphone": "NOT_RUN",
+    "physical_speaker": "NOT_RUN",
+    "resident_service": "NOT_RUN",
+    "training": "NOT_RUN"
+  },
+  "candidate_preregistration_sha256": "8883a36ade108db8c6bac14a1acb78584356531fa7c019cd8f4e7711cec8b9a9",
+  "controls": {
+    "additional_local_evidence": {
+      "feature_map": {
+        "log_sha256": "6f91e2e6ada2f103bd7f4c4440ebedd4cfee6a7306420b8210933ea8dbf85585",
+        "references": 1170,
+        "rows": 229,
+        "status": "PASS"
+      },
+      "markdown_links": {
+        "anchors": 67,
+        "files": 64,
+        "local_targets": 277,
+        "log_sha256": "5654b1f93b89db04bc9f29a995128a5c37338cc24206471ed7c11b192b1a33a8",
+        "status": "PASS"
+      },
+      "tts_host_ctest": {
+        "log_sha256": "bd075de467f2f469268d98e0e7a9524a8daf9cb750d232b482514d97d76d8e1f",
+        "status": "PASS",
+        "tests": "2/2"
+      }
+    },
+    "final_reverted_journey": {
+      "candidate_absent": true,
+      "execution_commit": "d63f67c725f71aa5e59338219e8f27d4abc74702",
+      "gateway_sha256": "1bcc15f1842d7aa02fb44206631c5142b204a0e6f40113a9ba0710997db79721",
+      "raw_frames_sha256": "0cbb7f502ef347305c5e96a04c6ec24c75e0209eec0f05d0ce7cb2463ead7948",
+      "replay_inclusive_barge_to_new_audio_ms": 2878.692547,
+      "status": "PASS_CORRECTNESS",
+      "verification_sha256": "0e2159012b910eb079b2e663de14c3281ccb2355b4a462f8a13ab7ae04ed142e"
+    },
+    "native_tts_cuda": {
+      "log_sha256": "801284fbeefbe308f2e7c027fd587a007a83ad19a92574f55acefdcf7cc15fe7",
+      "status": "PASS",
+      "tests": "3/3"
+    },
+    "network_reconnect": {
+      "connection_scoped_response_identities": 41,
+      "connections": 15,
+      "cross_session_leaks": 0,
+      "decreasing_accepted_cursors": 0,
+      "double_terminal_callbacks": 0,
+      "final_in_flight": 0,
+      "nested_manifest_sha256": "5c2918aad79c694293a7d7ce7d9317d2c8ca069db439128878dc06eb0af1ed5e",
+      "perceptual_quality": "NOT_COVERED",
+      "physical_microphone_speaker": "NOT_COVERED",
+      "rounds": 3,
+      "run_sha256": "b053c94bf4de615e11f97dc3f41a3ee655775eec75411af883f2815909918162",
+      "sessions": 6,
+      "stale_events": 0,
+      "status": "PASS",
+      "terminal_callbacks": 27,
+      "verification_sha256": "b5d60657fad795455524297945e3166b0706bcfdaed4241b642d9bdcf4f7334f",
+      "verified_next_turn_prompts": 30
+    },
+    "public_pcm_29_29": {
+      "cancel_retry": {
+        "cancel_prefix_chunks": 1,
+        "cancel_terminal": "cancelled",
+        "retry_matches_fresh_repeat": true
+      },
+      "capture_manifest_sha256": "e8a1650836fb5fadd80b3aa4fa7132734657311a1d3fa240460ab130a2820ab7",
+      "cleanup": {
+        "final_in_flight": 0,
+        "gpu_postflight": {
+          "7": {
+            "compute_processes": [],
+            "index": 7,
+            "memory_used_mib": 3,
+            "utilization_percent": 0
+          }
+        },
+        "owned_processes_exited": true
+      },
+      "counts": {
+        "cancelled_public_http_responses": 1,
+        "public_http_pcm_bytes": 10698240,
+        "public_http_pcm_chunks": 184,
+        "public_http_pcm_legs": 44,
+        "public_http_responses": 25,
+        "realtime_pcm_bytes": 115034880,
+        "realtime_pcm_chunks": 4176,
+        "realtime_pcm_legs": 493,
+        "realtime_responses": 29,
+        "successful_public_http_responses": 24
+      },
+      "delayed_read": {
+        "all_pcm_and_cursors_drained_exact": true,
+        "bounded_lossless_queue_boundary": 4096,
+        "native_audio_events_during_pause": 4096,
+        "paused_readers": 29,
+        "pending_native_minus_public": 4096,
+        "public_audio_events_during_pause": 0
+      },
+      "final_playback_ack_count": 29,
+      "nested_manifest_sha256": "0d4af98071e6406f022131fe649b0fd81b85447790e6fe464d22d453e858595f",
+      "perceptual_quality": "NOT_RUN",
+      "physical_playback": "NOT_RUN",
+      "source_commit": "ec1b9235e4ecd69340571d595726ed503bc42b47",
+      "status": "PASS",
+      "verification_sha256": "9640cdd5009670a5b09b9385fd399c0bd3086b7fafc04373796c3021b52ffbf4"
+    },
+    "runtime_identity": {
+      "accepted_control_gateway_sha256": "0f1850cb894896af2c5ded6678d559356eab9ae4a6353d4c454d36244d4e4562",
+      "candidate_absent_from_final_runtime": true,
+      "final_fresh_gateway_sha256": "1bcc15f1842d7aa02fb44206631c5142b204a0e6f40113a9ba0710997db79721",
+      "final_reverted_source_equals_accepted_task82": true
+    },
+    "task81_ns01_43_43": {
+      "clean_text_sha256": "883802d889885bd032b18a3dc21c8f7e1ce77773f020ab0ee3e69a816ac8b572",
+      "full_ns01_ideal_single_stream_correctness": false,
+      "hard_latency": {
+        "first_image_ms": "NOT_MET",
+        "i2v_complete_ms": "NOT_RUN",
+        "ttfa_ms": "NOT_MET",
+        "ttft_ms": "PASS"
+      },
+      "native_public_exact_leg_count": 43,
+      "native_stream_terminal_exact_count": 43,
+      "native_terminal_success_count": 43,
+      "natural_eos_count": 43,
+      "public_pcm_bytes": 14987520,
+      "public_pcm_sha256": "2ce2c53454349fd70edceab97e6afe6d93cf8ffc22e7bcdf497c303222d94f78",
+      "report_sha256": "29c6c362a00cb53b9eb49dc56451a32298fe05f3f510b5ad356bd8182c468930",
+      "retained_generic_postprocessor_failure": {
+        "launcher_log_sha256": "436fd3f0cfae423683589b4e39cb40a20b32b2b2e496237f73b36160fe7e3fdc",
+        "reason": "generic narrative postprocessor required a video although the frozen response intentionally had none; NS-01-specific raw verification passed",
+        "status": "NOT_COUNTED"
+      },
+      "retained_postflight_failures": [
+        {
+          "attempt": "ns01-chinese",
+          "launcher_log_sha256": "3f57178ffc4d8e51c2a00ea5b717309ee0fa8412bc12f033104d2123595f7e46",
+          "reason": "immediate post-cleanup sample was 3 MiB / 1%; later stable check was 3 MiB / 0% with zero compute processes"
+        },
+        {
+          "attempt": "ns01-chinese-r2",
+          "launcher_log_sha256": "3f57178ffc4d8e51c2a00ea5b717309ee0fa8412bc12f033104d2123595f7e46",
+          "reason": "immediate post-cleanup sample was 3 MiB / 1%; later stable check was 3 MiB / 0% with zero compute processes"
+        }
+      ],
+      "scope": "exact Chinese native/public PCM and 43/43 natural EOS only",
+      "status": "PASS",
+      "tts_leg_count": 43,
+      "verification_sha256": "1083b6ff29f7a300b20e462a7b703a65b2669ed0da1a9de394f27e29937f7718"
+    },
+    "task81_ns04_cursor10": {
+      "acknowledged_cursor": 10,
+      "engineering_pass": true,
+      "evidence_sha256": "61fecb78f4640a44308d21dca5c35b729d08616d736b622b88866949ef164547",
+      "final_in_flight": 0,
+      "first_transcript": "Repeat the following sentence sixteen times with no introduction or numbering. The small lantern glows beside the quiet river.",
+      "hard_thresholds": {
+        "barge_to_new_audio_ms": "NOT_MET",
+        "cancel_to_digital_silence_ms": "PASS",
+        "first_interrupt_ms": "PASS",
+        "post_barge_ttfa_from_asr_final_ms": "PASS",
+        "second_interrupt_ms": "PASS"
+      },
+      "pending_audio_events": 1,
+      "pending_pcm_bytes": 11520,
+      "perceptual_quality": "NOT_RUN",
+      "physical_microphone_speaker": "NOT_RUN",
+      "played_pcm_bytes": 53760,
+      "played_pcm_sha256": "ccda9cf40688346b658929d145f0fc03ff050b4f4ce7eda3201f94b90a37b003",
+      "post_barge_transcript": "Repeat the following sentence sixteen times with no introduction or numbering. The small lantern glows beside the quiet river.",
+      "raw_events": {
+        "bytes": 1083021,
+        "sha256": "8844077b8a5b4efc04878383d48488db28f50df9fbee2d0eb8a14b7e5025a674"
+      },
+      "raw_records": 383,
+      "stale_output_events": 0,
+      "status": "PASS",
+      "timings_ms": {
+        "barge_to_new_audio_ms": 10759.827761,
+        "cancel_to_digital_silence_ms": 96.73537,
+        "first_interrupt_ms": 3.585193,
+        "post_barge_ttfa_from_asr_final_ms": 532.57114,
+        "second_interrupt_ms": 1.384026
+      },
+      "verification_sha256": "167c42a8b46997a7a0409903ce8fc3369f94083228117a08f69c2f6c5d59dac3"
+    },
+    "umm_test_local": {
+      "exit_code": 0,
+      "log_file": "umm-test-local-final.log",
+      "log_sha256": "e603338d158302724339b73d22fe82a5f88ea6ef16771d5e8a8f95de3a9f8f9a",
+      "status": "PASS"
+    }
+  },
+  "evidence_policy": "Raw PCM, wire events, logs and media stay in the caller-selected external bundle; tracked scorecard contains compact hashes/results only.",
+  "exact_pairing": {
+    "pairs": [
+      {
+        "checks": [
+          {
+            "field": "transcripts",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_response_text_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_pcm_sha256",
+            "pass": false
+          },
+          {
+            "field": "second_barge.pending_pcm_sha256",
+            "pass": false
+          },
+          {
+            "field": "second_barge.old_response_text_sha256",
+            "pass": false
+          },
+          {
+            "field": "final_response.text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "history.accepted_cursors",
+            "pass": true
+          },
+          {
+            "field": "history.vlm_prompts_sha256",
+            "pass": true
+          }
+        ],
+        "pass": false
+      },
+      {
+        "checks": [
+          {
+            "field": "transcripts",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_response_text_sha256",
+            "pass": false
+          },
+          {
+            "field": "second_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_pcm_sha256",
+            "pass": false
+          },
+          {
+            "field": "second_barge.pending_pcm_sha256",
+            "pass": false
+          },
+          {
+            "field": "second_barge.old_response_text_sha256",
+            "pass": false
+          },
+          {
+            "field": "final_response.text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "history.accepted_cursors",
+            "pass": true
+          },
+          {
+            "field": "history.vlm_prompts_sha256",
+            "pass": true
+          }
+        ],
+        "pass": false
+      },
+      {
+        "checks": [
+          {
+            "field": "transcripts",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_response_text_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_pcm_sha256",
+            "pass": false
+          },
+          {
+            "field": "second_barge.pending_pcm_sha256",
+            "pass": false
+          },
+          {
+            "field": "second_barge.old_response_text_sha256",
+            "pass": false
+          },
+          {
+            "field": "final_response.text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "history.accepted_cursors",
+            "pass": true
+          },
+          {
+            "field": "history.vlm_prompts_sha256",
+            "pass": true
+          }
+        ],
+        "pass": false
+      }
+    ],
+    "pass": false
+  },
+  "external_evidence": {
+    "bundled_source_input_verifications": "6/6 byte-identical to original independent reports",
+    "external_scorecard_sha256_before_this_manifest_projection": "8fa2ab6fffac26ae4aa441d1d27c87745a57013731c775651af22afdb4a89269",
+    "fresh_manifest_verifications": 2,
+    "manifest_file_count": 5174,
+    "manifest_self_exclusion": "SHA256SUMS only; unsafe, duplicate, missing, extra, symlink and changed files rejected",
+    "manifest_sha256": "b0c16a1ab2dca1dff47320a01e81268de21f80bb3a42b7462a7fcdaa5984ddb8"
+  },
+  "failures": [
+    "exact_pairing",
+    "replay_inclusive_barge_to_new_audio_max_strictly_below_800"
+  ],
+  "incremental_by_run": [
+    {
+      "arm": "after",
+      "first_barge": {
+        "barge_to_eligible_ms": 2054.737276,
+        "barge_to_tts_start_ms": 2519.328261,
+        "barge_to_vlm_start_ms": 2054.979457,
+        "eligible_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "eligible_to_tts_start_ms": 464.590985,
+        "eligible_to_vlm_start_ms": 0.242181,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 44.514897,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5c7a9f97adb5bed9d4c6aca666dffd0e37fda970ebcfc2c8c0060523a483e295"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 225.42754,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d6fbedca5408f7e52f0fca00f5492d61cbe637ebc852577efb74f9a30b8f7f96"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 436.43188,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5d7ab04dbddd57657cb7443315acd4758ae616344e0f20057748152a3cd232c6"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 637.50918,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "b4b3bd2e2e14f27e4b157385df13c495e9c3b871fa6f66d78dd883e8386e12f4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 838.517898,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d95bb105bc0e1c48043765e2b6ad750a5b58562456eefb06323020b39c414827"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1039.49635,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "e8b4a4affb135d2728b20197990c9cdb3a57cee6060ffc0d5a784cf3d9f3ac60"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1250.58275,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "09c5ab1ea3bcd1e4f3ea8482a0b6022fb58a1eed19c79f8758cf5390f4d3ad9f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1451.656158,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "7839f3a67e5c09067eba87ef31bfcd148016b51f9d92345388c80c2c899acd6f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1652.739103,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1853.67847,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 2054.854344,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          }
+        ],
+        "repetition": 1
+      },
+      "repetition": 1,
+      "second_barge": {
+        "barge_to_eligible_ms": 1444.243737,
+        "barge_to_tts_start_ms": 1828.693537,
+        "barge_to_vlm_start_ms": 1444.464947,
+        "eligible_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "eligible_to_tts_start_ms": 384.4498,
+        "eligible_to_vlm_start_ms": 0.22121,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 57.029057,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6f7dc1b09e1037d9a7a4e058ea6ea6b489a832214825775418cd382fb3ce90eb"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 237.94531,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "9584269ead1e4f89e8f731504fba2ad6fb9f7f378b13ab48e4a2d58cc31f9643"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 438.977651,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6504915ac051f73c9d9cb8ebd4241ef9344fa310b0cd4a14b58af83af01b84d4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 640.019105,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0e514327fe83dd8a32f1654fbbc56d07cdfe1b203523c52bb66fc087b533e53c"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 841.062667,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0a39c2eafbb5102b2dcb98afeba46a1105d2f9e3986267b4e66c20c6020e4db4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1042.21772,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1243.245131,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 1444.343551,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          }
+        ],
+        "repetition": 1
+      }
+    },
+    {
+      "arm": "after",
+      "first_barge": {
+        "barge_to_eligible_ms": 2055.109801,
+        "barge_to_tts_start_ms": 2520.258783,
+        "barge_to_vlm_start_ms": 2055.377396,
+        "eligible_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "eligible_to_tts_start_ms": 465.148982,
+        "eligible_to_vlm_start_ms": 0.267595,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 44.588014,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5c7a9f97adb5bed9d4c6aca666dffd0e37fda970ebcfc2c8c0060523a483e295"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 225.647136,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d6fbedca5408f7e52f0fca00f5492d61cbe637ebc852577efb74f9a30b8f7f96"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 436.749132,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5d7ab04dbddd57657cb7443315acd4758ae616344e0f20057748152a3cd232c6"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 637.780647,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "b4b3bd2e2e14f27e4b157385df13c495e9c3b871fa6f66d78dd883e8386e12f4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 838.847591,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d95bb105bc0e1c48043765e2b6ad750a5b58562456eefb06323020b39c414827"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1039.943909,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "e8b4a4affb135d2728b20197990c9cdb3a57cee6060ffc0d5a784cf3d9f3ac60"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1250.918266,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "09c5ab1ea3bcd1e4f3ea8482a0b6022fb58a1eed19c79f8758cf5390f4d3ad9f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1451.966949,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "7839f3a67e5c09067eba87ef31bfcd148016b51f9d92345388c80c2c899acd6f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1653.029463,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1854.060482,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 2055.237758,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          }
+        ],
+        "repetition": 2
+      },
+      "repetition": 2,
+      "second_barge": {
+        "barge_to_eligible_ms": 1445.787697,
+        "barge_to_tts_start_ms": 1831.217549,
+        "barge_to_vlm_start_ms": 1446.080759,
+        "eligible_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "eligible_to_tts_start_ms": 385.429852,
+        "eligible_to_vlm_start_ms": 0.293062,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 78.674461,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6f7dc1b09e1037d9a7a4e058ea6ea6b489a832214825775418cd382fb3ce90eb"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 229.323491,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "9584269ead1e4f89e8f731504fba2ad6fb9f7f378b13ab48e4a2d58cc31f9643"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 430.423559,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6504915ac051f73c9d9cb8ebd4241ef9344fa310b0cd4a14b58af83af01b84d4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 641.53586,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0e514327fe83dd8a32f1654fbbc56d07cdfe1b203523c52bb66fc087b533e53c"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 842.612633,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0a39c2eafbb5102b2dcb98afeba46a1105d2f9e3986267b4e66c20c6020e4db4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1043.677352,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1244.74854,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 1445.911936,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          }
+        ],
+        "repetition": 2
+      }
+    },
+    {
+      "arm": "after",
+      "first_barge": {
+        "barge_to_eligible_ms": 2054.840255,
+        "barge_to_tts_start_ms": 2518.734968,
+        "barge_to_vlm_start_ms": 2055.070609,
+        "eligible_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "eligible_to_tts_start_ms": 463.894713,
+        "eligible_to_vlm_start_ms": 0.230354,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 44.484219,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5c7a9f97adb5bed9d4c6aca666dffd0e37fda970ebcfc2c8c0060523a483e295"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 225.399915,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d6fbedca5408f7e52f0fca00f5492d61cbe637ebc852577efb74f9a30b8f7f96"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 436.505015,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5d7ab04dbddd57657cb7443315acd4758ae616344e0f20057748152a3cd232c6"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 637.599647,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "b4b3bd2e2e14f27e4b157385df13c495e9c3b871fa6f66d78dd883e8386e12f4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 838.628274,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d95bb105bc0e1c48043765e2b6ad750a5b58562456eefb06323020b39c414827"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1039.644759,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "e8b4a4affb135d2728b20197990c9cdb3a57cee6060ffc0d5a784cf3d9f3ac60"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1250.811434,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "09c5ab1ea3bcd1e4f3ea8482a0b6022fb58a1eed19c79f8758cf5390f4d3ad9f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1451.831788,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "7839f3a67e5c09067eba87ef31bfcd148016b51f9d92345388c80c2c899acd6f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1652.835561,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1853.893732,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 2054.955483,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          }
+        ],
+        "repetition": 3
+      },
+      "repetition": 3,
+      "second_barge": {
+        "barge_to_eligible_ms": 1445.846998,
+        "barge_to_tts_start_ms": 1830.169239,
+        "barge_to_vlm_start_ms": 1446.075846,
+        "eligible_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "eligible_to_tts_start_ms": 384.322241,
+        "eligible_to_vlm_start_ms": 0.228848,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 68.815381,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6f7dc1b09e1037d9a7a4e058ea6ea6b489a832214825775418cd382fb3ce90eb"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 229.680506,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "9584269ead1e4f89e8f731504fba2ad6fb9f7f378b13ab48e4a2d58cc31f9643"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 440.761424,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6504915ac051f73c9d9cb8ebd4241ef9344fa310b0cd4a14b58af83af01b84d4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 641.789428,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0e514327fe83dd8a32f1654fbbc56d07cdfe1b203523c52bb66fc087b533e53c"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 842.787635,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0a39c2eafbb5102b2dcb98afeba46a1105d2f9e3986267b4e66c20c6020e4db4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1043.782712,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1244.847994,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 1445.954425,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          }
+        ],
+        "repetition": 3
+      }
+    },
+    {
+      "arm": "before",
+      "first_barge": {
+        "barge_to_eligible_ms": null,
+        "barge_to_tts_start_ms": 2680.553146,
+        "barge_to_vlm_start_ms": 2256.081333,
+        "eligible_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "eligible_to_tts_start_ms": null,
+        "eligible_to_vlm_start_ms": null,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 44.469803,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5c7a9f97adb5bed9d4c6aca666dffd0e37fda970ebcfc2c8c0060523a483e295"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 225.469545,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d6fbedca5408f7e52f0fca00f5492d61cbe637ebc852577efb74f9a30b8f7f96"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 436.586514,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5d7ab04dbddd57657cb7443315acd4758ae616344e0f20057748152a3cd232c6"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 637.575882,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "b4b3bd2e2e14f27e4b157385df13c495e9c3b871fa6f66d78dd883e8386e12f4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 838.706254,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d95bb105bc0e1c48043765e2b6ad750a5b58562456eefb06323020b39c414827"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1039.877676,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "e8b4a4affb135d2728b20197990c9cdb3a57cee6060ffc0d5a784cf3d9f3ac60"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1250.881003,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "09c5ab1ea3bcd1e4f3ea8482a0b6022fb58a1eed19c79f8758cf5390f4d3ad9f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1451.826771,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "7839f3a67e5c09067eba87ef31bfcd148016b51f9d92345388c80c2c899acd6f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1652.831331,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1853.862931,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 2054.853885,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          }
+        ],
+        "repetition": 1
+      },
+      "repetition": 1,
+      "second_barge": {
+        "barge_to_eligible_ms": null,
+        "barge_to_tts_start_ms": 1899.822212,
+        "barge_to_vlm_start_ms": 1544.984372,
+        "eligible_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "eligible_to_tts_start_ms": null,
+        "eligible_to_vlm_start_ms": null,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 57.516573,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6f7dc1b09e1037d9a7a4e058ea6ea6b489a832214825775418cd382fb3ce90eb"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 228.353105,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "9584269ead1e4f89e8f731504fba2ad6fb9f7f378b13ab48e4a2d58cc31f9643"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 439.379108,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6504915ac051f73c9d9cb8ebd4241ef9344fa310b0cd4a14b58af83af01b84d4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 640.400736,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0e514327fe83dd8a32f1654fbbc56d07cdfe1b203523c52bb66fc087b533e53c"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 841.406968,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0a39c2eafbb5102b2dcb98afeba46a1105d2f9e3986267b4e66c20c6020e4db4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1042.296151,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1243.25334,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 1444.195765,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          }
+        ],
+        "repetition": 1
+      }
+    },
+    {
+      "arm": "before",
+      "first_barge": {
+        "barge_to_eligible_ms": null,
+        "barge_to_tts_start_ms": 2680.679908,
+        "barge_to_vlm_start_ms": 2256.122281,
+        "eligible_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "eligible_to_tts_start_ms": null,
+        "eligible_to_vlm_start_ms": null,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 34.543124,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5c7a9f97adb5bed9d4c6aca666dffd0e37fda970ebcfc2c8c0060523a483e295"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 225.486232,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d6fbedca5408f7e52f0fca00f5492d61cbe637ebc852577efb74f9a30b8f7f96"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 436.523856,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5d7ab04dbddd57657cb7443315acd4758ae616344e0f20057748152a3cd232c6"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 637.572609,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "b4b3bd2e2e14f27e4b157385df13c495e9c3b871fa6f66d78dd883e8386e12f4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 838.709689,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d95bb105bc0e1c48043765e2b6ad750a5b58562456eefb06323020b39c414827"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1039.648708,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "e8b4a4affb135d2728b20197990c9cdb3a57cee6060ffc0d5a784cf3d9f3ac60"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1250.734635,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "09c5ab1ea3bcd1e4f3ea8482a0b6022fb58a1eed19c79f8758cf5390f4d3ad9f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1451.797653,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "7839f3a67e5c09067eba87ef31bfcd148016b51f9d92345388c80c2c899acd6f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1652.837593,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1853.914935,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 2054.944851,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          }
+        ],
+        "repetition": 2
+      },
+      "repetition": 2,
+      "second_barge": {
+        "barge_to_eligible_ms": null,
+        "barge_to_tts_start_ms": 1900.895591,
+        "barge_to_vlm_start_ms": 1545.807886,
+        "eligible_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "eligible_to_tts_start_ms": null,
+        "eligible_to_vlm_start_ms": null,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 48.108717,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6f7dc1b09e1037d9a7a4e058ea6ea6b489a832214825775418cd382fb3ce90eb"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 229.002251,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "9584269ead1e4f89e8f731504fba2ad6fb9f7f378b13ab48e4a2d58cc31f9643"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 440.09105,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6504915ac051f73c9d9cb8ebd4241ef9344fa310b0cd4a14b58af83af01b84d4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 641.076389,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0e514327fe83dd8a32f1654fbbc56d07cdfe1b203523c52bb66fc087b533e53c"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 842.104367,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0a39c2eafbb5102b2dcb98afeba46a1105d2f9e3986267b4e66c20c6020e4db4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1043.111669,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1244.149413,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 1445.126822,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          }
+        ],
+        "repetition": 2
+      }
+    },
+    {
+      "arm": "before",
+      "first_barge": {
+        "barge_to_eligible_ms": null,
+        "barge_to_tts_start_ms": 2679.910414,
+        "barge_to_vlm_start_ms": 2255.773427,
+        "eligible_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "eligible_to_tts_start_ms": null,
+        "eligible_to_vlm_start_ms": null,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 34.389168,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5c7a9f97adb5bed9d4c6aca666dffd0e37fda970ebcfc2c8c0060523a483e295"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 225.303006,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d6fbedca5408f7e52f0fca00f5492d61cbe637ebc852577efb74f9a30b8f7f96"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 436.393136,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "5d7ab04dbddd57657cb7443315acd4758ae616344e0f20057748152a3cd232c6"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 637.379727,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "b4b3bd2e2e14f27e4b157385df13c495e9c3b871fa6f66d78dd883e8386e12f4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 838.352969,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "d95bb105bc0e1c48043765e2b6ad750a5b58562456eefb06323020b39c414827"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1039.42104,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "e8b4a4affb135d2728b20197990c9cdb3a57cee6060ffc0d5a784cf3d9f3ac60"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1250.464019,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "09c5ab1ea3bcd1e4f3ea8482a0b6022fb58a1eed19c79f8758cf5390f4d3ad9f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1451.423456,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "7839f3a67e5c09067eba87ef31bfcd148016b51f9d92345388c80c2c899acd6f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1652.428821,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1853.46094,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 2054.496519,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0"
+          }
+        ],
+        "repetition": 3
+      },
+      "repetition": 3,
+      "second_barge": {
+        "barge_to_eligible_ms": null,
+        "barge_to_tts_start_ms": 1900.460764,
+        "barge_to_vlm_start_ms": 1545.231907,
+        "eligible_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "eligible_to_tts_start_ms": null,
+        "eligible_to_vlm_start_ms": null,
+        "final_matches_eligible": true,
+        "incorrect_early_audible_response": false,
+        "preview_revision_count": 0,
+        "previews": [
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 47.750092,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6f7dc1b09e1037d9a7a4e058ea6ea6b489a832214825775418cd382fb3ce90eb"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 238.710433,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "9584269ead1e4f89e8f731504fba2ad6fb9f7f378b13ab48e4a2d58cc31f9643"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 439.727555,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6504915ac051f73c9d9cb8ebd4241ef9344fa310b0cd4a14b58af83af01b84d4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 640.641449,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0e514327fe83dd8a32f1654fbbc56d07cdfe1b203523c52bb66fc087b533e53c"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 841.629347,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "0a39c2eafbb5102b2dcb98afeba46a1105d2f9e3986267b4e66c20c6020e4db4"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1042.632924,
+            "eligible": false,
+            "stable_count": 1,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "wait",
+            "barge_to_preview_ms": 1243.577175,
+            "eligible": false,
+            "stable_count": 2,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          },
+          {
+            "action": "start",
+            "barge_to_preview_ms": 1444.484749,
+            "eligible": true,
+            "stable_count": 3,
+            "text_sha256": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f"
+          }
+        ],
+        "repetition": 3
+      }
+    }
+  ],
+  "lifecycle_by_run": [
+    {
+      "arm": "after",
+      "cleanup": {
+        "final_in_flight": 0,
+        "owned_processes_exited": true,
+        "selected_gpu_idle": true
+      },
+      "final_response": {
+        "ascii_letters": 2238,
+        "cjk_codepoints": 0,
+        "pcm_bytes": 16251840,
+        "pcm_sha256": "660363ddb78f3e0d7274e3c86e1a1a7f25759b832c0b5410f1aaf1a849d818e5",
+        "text": "### Saturn's Rings: A Detailed Overview\n\nSaturn\u2019s rings are the most prominent and complex ring system in the Solar System. They are composed of countless particles of ice and rock, ranging in size from tiny grains of dust to chunks as large as houses.\n\n#### 1. Composition and Structure\n*   **Material**: The rings are primarily made of **water ice** (over 99%), with small amounts of rocky material and dust.\n*   **Size**: The main rings extend from about 7,000 km to 80,000 km from Saturn\u2019s center. However, they are incredibly thin\u2014most are only about **10 meters to 1 kilometer thick**.\n*   **Main Divisions**: The rings are divided into several distinct bands, labeled with Greek letters. The most visible ones are:\n    *   **D Ring**: The innermost and faintest ring, close to Saturn\u2019s atmosphere.\n    *   **C Ring**: A darker, semi-transparent ring.\n    *   **B Ring**: The brightest and densest ring.\n    *   **A Ring**: The outermost major ring, containing the famous **Cassini Division** (a gap between the A and B rings) and the **Encke Gap**.\n    *   **F, G, and E Rings**: Fainter, more diffuse rings extending further out. The E ring is particularly vast and may be fed by material from Saturn\u2019s moon Enceladus.\n\n#### 2. How the Rings Formed\nThe origin of Saturn\u2019s rings is still debated, but two main theories exist:\n*   **Disrupted Moon**: A moon (or comet) that ventured too close to Saturn was torn apart by tidal forces, forming the rings.\n*   **Leftover Debris**: The rings are remnants from the original material that formed Saturn, which never coalesced into a moon due to gravitational perturbations.\n\nRecent studies suggest the rings may be **geologically young** (only a few hundred million years old), which would mean they are a temporary feature in Saturn\u2019s history.\n\n#### 3. Dynamics and Maintenance\n*   **Orbital Motion**: Each particle orbits Saturn independently, following Kepler\u2019s laws. Particles closer to Saturn orbit faster than those farther out.\n*   **Shepherding Moons**: Small moons like **Pan** and **Daphnis** help maintain the sharp edges of gaps (like the Encke Gap) by clearing debris through gravitational interactions.\n*   **Gravitational Resonances**: Interactions with larger moons (like Mimas) create density waves and gaps in the rings.\n\n#### 4. Observations and Exploration\n*   **Galileo Galilei** first observed the rings in 1610 but couldn\u2019t explain their nature.\n*   **Christiaan Huygens** correctly described them as a flat ring in 1655.\n*   **Cassini Division** was discovered by Giovanni Cassini in 1675.\n*   **Voyager 1 and 2** (1980s) provided the first close-up images.\n*   **Cassini-Huygens Mission** (2004\u20132017) made detailed observations, revealing the rings\u2019 complex structure, composition, and dynamic behavior.\n\n#### 5. Fun Facts\n*   The rings are so thin that if you could flatten them, they would be less than a millimeter thick across their entire width.\n*   The rings are constantly changing\u2014particles collide, evaporate, and are pulled into Saturn\u2019s atmosphere.\n*   Saturn\u2019s rings are not unique; Jupiter",
+        "text_sha256": "8d5895fb62d924f07fc3541628120ea3db070c4fee729cc3c44a4c543542f12f",
+        "text_utf8_bytes": 3106
+      },
+      "first_barge": {
+        "new_response_id": "req-2",
+        "old_pcm_sha256": "0bb9161bcba6dbb04edaa3d37652726d9289839c2b3a78c4f9d79456a6b64a49",
+        "old_response_id": "req-1",
+        "old_response_text_sha256": "37a96fa63f15ea5c845224da4824b3d3a1e2dc5a041a35f5cf6907677847e7c5",
+        "pending_pcm_sha256": "7b621b4bc38c99c61560492c89ac5df5c632b1022f18b78be7bdce71d4af1417",
+        "played": {
+          "acknowledged_cursor": 30,
+          "acknowledged_text": "\u592a\u9633\u7cfb\u5171\u6709\u516b\u5927\u884c\u661f\uff0c",
+          "played_audio_events": 7,
+          "played_pcm_bytes": 149760,
+          "played_pcm_sha256": "a840b218f479f71d0117acbcb828e538d0cf31ff9c92a5b373051dade7b93c1a"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 411.654892,
+          "barge_to_cancel": 4.384922,
+          "barge_to_speech_stopped_replay": 2210.709211,
+          "cancel_to_digital_silence": 1.500847,
+          "replay_inclusive_barge_to_new_audio": 2717.845751,
+          "speech_stopped_to_asr_final": 95.481648
+        }
+      },
+      "history": {
+        "accepted_cursors": {
+          "req-1": 30,
+          "req-2": 0
+        },
+        "cross_session_leaks": 0,
+        "duplicate_terminal_callbacks": 0,
+        "final_history_turns": 2,
+        "late_final_events": 0,
+        "stale_events": 0,
+        "terminal_callbacks": {
+          "req-1": [
+            "response.cancelled"
+          ],
+          "req-2": [
+            "response.cancelled"
+          ],
+          "req-3": [
+            "response.completed"
+          ]
+        },
+        "verified_prompts": 3,
+        "vlm_prompts_sha256": "0744a952eba855dddd4e8f069761e2f200131553d51ba733bad0e6ffc24abfc3"
+      },
+      "repetition": 1,
+      "second_barge": {
+        "new_response_id": "req-3",
+        "old_pcm_sha256": "04f9980ef04e4002581223b8fc8069cc22b68bcf6126f603fadfb35ea3af41ab",
+        "old_response_id": "req-2",
+        "old_response_text_sha256": "70a5c9895f29fe4c6f8d0f664774a3ee9b0ee5f428c369807e932f457687836a",
+        "pending_pcm_sha256": "1a0e825c60a2dc3312973e371d9b1b1c61ee93e6034755947adade5c23dd52ec",
+        "played": {
+          "acknowledged_cursor": 0,
+          "acknowledged_text": "",
+          "played_audio_events": 5,
+          "played_pcm_bytes": 111360,
+          "played_pcm_sha256": "b4012c5607227f6b40c01ea94241d3ab429ea060b3641538fa482232a707b702"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 442.151076,
+          "barge_to_cancel": 1.82357,
+          "barge_to_speech_stopped_replay": 1506.743192,
+          "cancel_to_digital_silence": 1.61199,
+          "replay_inclusive_barge_to_new_audio": 2017.233541,
+          "speech_stopped_to_asr_final": 68.339273
+        }
+      },
+      "transcript_sha256": {
+        "english": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "saturn": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "solar": "9d96494cd2dd4312c24fc43d4e66e0f912c2d74302fbfb00e42667e134c227c9"
+      }
+    },
+    {
+      "arm": "after",
+      "cleanup": {
+        "final_in_flight": 0,
+        "owned_processes_exited": true,
+        "selected_gpu_idle": true
+      },
+      "final_response": {
+        "ascii_letters": 2238,
+        "cjk_codepoints": 0,
+        "pcm_bytes": 16251840,
+        "pcm_sha256": "660363ddb78f3e0d7274e3c86e1a1a7f25759b832c0b5410f1aaf1a849d818e5",
+        "text": "### Saturn's Rings: A Detailed Overview\n\nSaturn\u2019s rings are the most prominent and complex ring system in the Solar System. They are composed of countless particles of ice and rock, ranging in size from tiny grains of dust to chunks as large as houses.\n\n#### 1. Composition and Structure\n*   **Material**: The rings are primarily made of **water ice** (over 99%), with small amounts of rocky material and dust.\n*   **Size**: The main rings extend from about 7,000 km to 80,000 km from Saturn\u2019s center. However, they are incredibly thin\u2014most are only about **10 meters to 1 kilometer thick**.\n*   **Main Divisions**: The rings are divided into several distinct bands, labeled with Greek letters. The most visible ones are:\n    *   **D Ring**: The innermost and faintest ring, close to Saturn\u2019s atmosphere.\n    *   **C Ring**: A darker, semi-transparent ring.\n    *   **B Ring**: The brightest and densest ring.\n    *   **A Ring**: The outermost major ring, containing the famous **Cassini Division** (a gap between the A and B rings) and the **Encke Gap**.\n    *   **F, G, and E Rings**: Fainter, more diffuse rings extending further out. The E ring is particularly vast and may be fed by material from Saturn\u2019s moon Enceladus.\n\n#### 2. How the Rings Formed\nThe origin of Saturn\u2019s rings is still debated, but two main theories exist:\n*   **Disrupted Moon**: A moon (or comet) that ventured too close to Saturn was torn apart by tidal forces, forming the rings.\n*   **Leftover Debris**: The rings are remnants from the original material that formed Saturn, which never coalesced into a moon due to gravitational perturbations.\n\nRecent studies suggest the rings may be **geologically young** (only a few hundred million years old), which would mean they are a temporary feature in Saturn\u2019s history.\n\n#### 3. Dynamics and Maintenance\n*   **Orbital Motion**: Each particle orbits Saturn independently, following Kepler\u2019s laws. Particles closer to Saturn orbit faster than those farther out.\n*   **Shepherding Moons**: Small moons like **Pan** and **Daphnis** help maintain the sharp edges of gaps (like the Encke Gap) by clearing debris through gravitational interactions.\n*   **Gravitational Resonances**: Interactions with larger moons (like Mimas) create density waves and gaps in the rings.\n\n#### 4. Observations and Exploration\n*   **Galileo Galilei** first observed the rings in 1610 but couldn\u2019t explain their nature.\n*   **Christiaan Huygens** correctly described them as a flat ring in 1655.\n*   **Cassini Division** was discovered by Giovanni Cassini in 1675.\n*   **Voyager 1 and 2** (1980s) provided the first close-up images.\n*   **Cassini-Huygens Mission** (2004\u20132017) made detailed observations, revealing the rings\u2019 complex structure, composition, and dynamic behavior.\n\n#### 5. Fun Facts\n*   The rings are so thin that if you could flatten them, they would be less than a millimeter thick across their entire width.\n*   The rings are constantly changing\u2014particles collide, evaporate, and are pulled into Saturn\u2019s atmosphere.\n*   Saturn\u2019s rings are not unique; Jupiter",
+        "text_sha256": "8d5895fb62d924f07fc3541628120ea3db070c4fee729cc3c44a4c543542f12f",
+        "text_utf8_bytes": 3106
+      },
+      "first_barge": {
+        "new_response_id": "req-2",
+        "old_pcm_sha256": "0bb9161bcba6dbb04edaa3d37652726d9289839c2b3a78c4f9d79456a6b64a49",
+        "old_response_id": "req-1",
+        "old_response_text_sha256": "37a96fa63f15ea5c845224da4824b3d3a1e2dc5a041a35f5cf6907677847e7c5",
+        "pending_pcm_sha256": "7b621b4bc38c99c61560492c89ac5df5c632b1022f18b78be7bdce71d4af1417",
+        "played": {
+          "acknowledged_cursor": 30,
+          "acknowledged_text": "\u592a\u9633\u7cfb\u5171\u6709\u516b\u5927\u884c\u661f\uff0c",
+          "played_audio_events": 7,
+          "played_pcm_bytes": 149760,
+          "played_pcm_sha256": "a840b218f479f71d0117acbcb828e538d0cf31ff9c92a5b373051dade7b93c1a"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 421.517888,
+          "barge_to_cancel": 4.695511,
+          "barge_to_speech_stopped_replay": 2209.885567,
+          "cancel_to_digital_silence": 1.476383,
+          "replay_inclusive_barge_to_new_audio": 2718.131605,
+          "speech_stopped_to_asr_final": 86.72815
+        }
+      },
+      "history": {
+        "accepted_cursors": {
+          "req-1": 30,
+          "req-2": 0
+        },
+        "cross_session_leaks": 0,
+        "duplicate_terminal_callbacks": 0,
+        "final_history_turns": 2,
+        "late_final_events": 0,
+        "stale_events": 0,
+        "terminal_callbacks": {
+          "req-1": [
+            "response.cancelled"
+          ],
+          "req-2": [
+            "response.cancelled"
+          ],
+          "req-3": [
+            "response.completed"
+          ]
+        },
+        "verified_prompts": 3,
+        "vlm_prompts_sha256": "0744a952eba855dddd4e8f069761e2f200131553d51ba733bad0e6ffc24abfc3"
+      },
+      "repetition": 2,
+      "second_barge": {
+        "new_response_id": "req-3",
+        "old_pcm_sha256": "04f9980ef04e4002581223b8fc8069cc22b68bcf6126f603fadfb35ea3af41ab",
+        "old_response_id": "req-2",
+        "old_response_text_sha256": "70a5c9895f29fe4c6f8d0f664774a3ee9b0ee5f428c369807e932f457687836a",
+        "pending_pcm_sha256": "1a0e825c60a2dc3312973e371d9b1b1c61ee93e6034755947adade5c23dd52ec",
+        "played": {
+          "acknowledged_cursor": 0,
+          "acknowledged_text": "",
+          "played_audio_events": 5,
+          "played_pcm_bytes": 111360,
+          "played_pcm_sha256": "b4012c5607227f6b40c01ea94241d3ab429ea060b3641538fa482232a707b702"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 452.074771,
+          "barge_to_cancel": 1.902234,
+          "barge_to_speech_stopped_replay": 1507.195227,
+          "cancel_to_digital_silence": 1.486945,
+          "replay_inclusive_barge_to_new_audio": 2028.616078,
+          "speech_stopped_to_asr_final": 69.34608
+        }
+      },
+      "transcript_sha256": {
+        "english": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "saturn": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "solar": "9d96494cd2dd4312c24fc43d4e66e0f912c2d74302fbfb00e42667e134c227c9"
+      }
+    },
+    {
+      "arm": "after",
+      "cleanup": {
+        "final_in_flight": 0,
+        "owned_processes_exited": true,
+        "selected_gpu_idle": true
+      },
+      "final_response": {
+        "ascii_letters": 2238,
+        "cjk_codepoints": 0,
+        "pcm_bytes": 16251840,
+        "pcm_sha256": "660363ddb78f3e0d7274e3c86e1a1a7f25759b832c0b5410f1aaf1a849d818e5",
+        "text": "### Saturn's Rings: A Detailed Overview\n\nSaturn\u2019s rings are the most prominent and complex ring system in the Solar System. They are composed of countless particles of ice and rock, ranging in size from tiny grains of dust to chunks as large as houses.\n\n#### 1. Composition and Structure\n*   **Material**: The rings are primarily made of **water ice** (over 99%), with small amounts of rocky material and dust.\n*   **Size**: The main rings extend from about 7,000 km to 80,000 km from Saturn\u2019s center. However, they are incredibly thin\u2014most are only about **10 meters to 1 kilometer thick**.\n*   **Main Divisions**: The rings are divided into several distinct bands, labeled with Greek letters. The most visible ones are:\n    *   **D Ring**: The innermost and faintest ring, close to Saturn\u2019s atmosphere.\n    *   **C Ring**: A darker, semi-transparent ring.\n    *   **B Ring**: The brightest and densest ring.\n    *   **A Ring**: The outermost major ring, containing the famous **Cassini Division** (a gap between the A and B rings) and the **Encke Gap**.\n    *   **F, G, and E Rings**: Fainter, more diffuse rings extending further out. The E ring is particularly vast and may be fed by material from Saturn\u2019s moon Enceladus.\n\n#### 2. How the Rings Formed\nThe origin of Saturn\u2019s rings is still debated, but two main theories exist:\n*   **Disrupted Moon**: A moon (or comet) that ventured too close to Saturn was torn apart by tidal forces, forming the rings.\n*   **Leftover Debris**: The rings are remnants from the original material that formed Saturn, which never coalesced into a moon due to gravitational perturbations.\n\nRecent studies suggest the rings may be **geologically young** (only a few hundred million years old), which would mean they are a temporary feature in Saturn\u2019s history.\n\n#### 3. Dynamics and Maintenance\n*   **Orbital Motion**: Each particle orbits Saturn independently, following Kepler\u2019s laws. Particles closer to Saturn orbit faster than those farther out.\n*   **Shepherding Moons**: Small moons like **Pan** and **Daphnis** help maintain the sharp edges of gaps (like the Encke Gap) by clearing debris through gravitational interactions.\n*   **Gravitational Resonances**: Interactions with larger moons (like Mimas) create density waves and gaps in the rings.\n\n#### 4. Observations and Exploration\n*   **Galileo Galilei** first observed the rings in 1610 but couldn\u2019t explain their nature.\n*   **Christiaan Huygens** correctly described them as a flat ring in 1655.\n*   **Cassini Division** was discovered by Giovanni Cassini in 1675.\n*   **Voyager 1 and 2** (1980s) provided the first close-up images.\n*   **Cassini-Huygens Mission** (2004\u20132017) made detailed observations, revealing the rings\u2019 complex structure, composition, and dynamic behavior.\n\n#### 5. Fun Facts\n*   The rings are so thin that if you could flatten them, they would be less than a millimeter thick across their entire width.\n*   The rings are constantly changing\u2014particles collide, evaporate, and are pulled into Saturn\u2019s atmosphere.\n*   Saturn\u2019s rings are not unique; Jupiter",
+        "text_sha256": "8d5895fb62d924f07fc3541628120ea3db070c4fee729cc3c44a4c543542f12f",
+        "text_utf8_bytes": 3106
+      },
+      "first_barge": {
+        "new_response_id": "req-2",
+        "old_pcm_sha256": "0bb9161bcba6dbb04edaa3d37652726d9289839c2b3a78c4f9d79456a6b64a49",
+        "old_response_id": "req-1",
+        "old_response_text_sha256": "db1e922f6bc3c47d284d74fa26da09019c41ffb60064ff4899b6b9ea88473e7a",
+        "pending_pcm_sha256": "7b621b4bc38c99c61560492c89ac5df5c632b1022f18b78be7bdce71d4af1417",
+        "played": {
+          "acknowledged_cursor": 30,
+          "acknowledged_text": "\u592a\u9633\u7cfb\u5171\u6709\u516b\u5927\u884c\u661f\uff0c",
+          "played_audio_events": 7,
+          "played_pcm_bytes": 149760,
+          "played_pcm_sha256": "a840b218f479f71d0117acbcb828e538d0cf31ff9c92a5b373051dade7b93c1a"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 421.504369,
+          "barge_to_cancel": 4.48551,
+          "barge_to_speech_stopped_replay": 2209.267742,
+          "cancel_to_digital_silence": 1.439308,
+          "replay_inclusive_barge_to_new_audio": 2717.791508,
+          "speech_stopped_to_asr_final": 87.019397
+        }
+      },
+      "history": {
+        "accepted_cursors": {
+          "req-1": 30,
+          "req-2": 0
+        },
+        "cross_session_leaks": 0,
+        "duplicate_terminal_callbacks": 0,
+        "final_history_turns": 2,
+        "late_final_events": 0,
+        "stale_events": 0,
+        "terminal_callbacks": {
+          "req-1": [
+            "response.cancelled"
+          ],
+          "req-2": [
+            "response.cancelled"
+          ],
+          "req-3": [
+            "response.completed"
+          ]
+        },
+        "verified_prompts": 3,
+        "vlm_prompts_sha256": "0744a952eba855dddd4e8f069761e2f200131553d51ba733bad0e6ffc24abfc3"
+      },
+      "repetition": 3,
+      "second_barge": {
+        "new_response_id": "req-3",
+        "old_pcm_sha256": "04f9980ef04e4002581223b8fc8069cc22b68bcf6126f603fadfb35ea3af41ab",
+        "old_response_id": "req-2",
+        "old_response_text_sha256": "ba5310c01ace5aec65cd665da39321b72d49d5e6a6003568eface3b6d3a6a8ca",
+        "pending_pcm_sha256": "1a0e825c60a2dc3312973e371d9b1b1c61ee93e6034755947adade5c23dd52ec",
+        "played": {
+          "acknowledged_cursor": 0,
+          "acknowledged_text": "",
+          "played_audio_events": 5,
+          "played_pcm_bytes": 111360,
+          "played_pcm_sha256": "b4012c5607227f6b40c01ea94241d3ab429ea060b3641538fa482232a707b702"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 442.087284,
+          "barge_to_cancel": 1.764919,
+          "barge_to_speech_stopped_replay": 1507.402283,
+          "cancel_to_digital_silence": 1.50718,
+          "replay_inclusive_barge_to_new_audio": 2018.758971,
+          "speech_stopped_to_asr_final": 69.269404
+        }
+      },
+      "transcript_sha256": {
+        "english": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "saturn": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "solar": "9d96494cd2dd4312c24fc43d4e66e0f912c2d74302fbfb00e42667e134c227c9"
+      }
+    },
+    {
+      "arm": "before",
+      "cleanup": {
+        "final_in_flight": 0,
+        "owned_processes_exited": true,
+        "selected_gpu_idle": true
+      },
+      "final_response": {
+        "ascii_letters": 2238,
+        "cjk_codepoints": 0,
+        "pcm_bytes": 16251840,
+        "pcm_sha256": "660363ddb78f3e0d7274e3c86e1a1a7f25759b832c0b5410f1aaf1a849d818e5",
+        "text": "### Saturn's Rings: A Detailed Overview\n\nSaturn\u2019s rings are the most prominent and complex ring system in the Solar System. They are composed of countless particles of ice and rock, ranging in size from tiny grains of dust to chunks as large as houses.\n\n#### 1. Composition and Structure\n*   **Material**: The rings are primarily made of **water ice** (over 99%), with small amounts of rocky material and dust.\n*   **Size**: The main rings extend from about 7,000 km to 80,000 km from Saturn\u2019s center. However, they are incredibly thin\u2014most are only about **10 meters to 1 kilometer thick**.\n*   **Main Divisions**: The rings are divided into several distinct bands, labeled with Greek letters. The most visible ones are:\n    *   **D Ring**: The innermost and faintest ring, close to Saturn\u2019s atmosphere.\n    *   **C Ring**: A darker, semi-transparent ring.\n    *   **B Ring**: The brightest and densest ring.\n    *   **A Ring**: The outermost major ring, containing the famous **Cassini Division** (a gap between the A and B rings) and the **Encke Gap**.\n    *   **F, G, and E Rings**: Fainter, more diffuse rings extending further out. The E ring is particularly vast and may be fed by material from Saturn\u2019s moon Enceladus.\n\n#### 2. How the Rings Formed\nThe origin of Saturn\u2019s rings is still debated, but two main theories exist:\n*   **Disrupted Moon**: A moon (or comet) that ventured too close to Saturn was torn apart by tidal forces, forming the rings.\n*   **Leftover Debris**: The rings are remnants from the original material that formed Saturn, which never coalesced into a moon due to gravitational perturbations.\n\nRecent studies suggest the rings may be **geologically young** (only a few hundred million years old), which would mean they are a temporary feature in Saturn\u2019s history.\n\n#### 3. Dynamics and Maintenance\n*   **Orbital Motion**: Each particle orbits Saturn independently, following Kepler\u2019s laws. Particles closer to Saturn orbit faster than those farther out.\n*   **Shepherding Moons**: Small moons like **Pan** and **Daphnis** help maintain the sharp edges of gaps (like the Encke Gap) by clearing debris through gravitational interactions.\n*   **Gravitational Resonances**: Interactions with larger moons (like Mimas) create density waves and gaps in the rings.\n\n#### 4. Observations and Exploration\n*   **Galileo Galilei** first observed the rings in 1610 but couldn\u2019t explain their nature.\n*   **Christiaan Huygens** correctly described them as a flat ring in 1655.\n*   **Cassini Division** was discovered by Giovanni Cassini in 1675.\n*   **Voyager 1 and 2** (1980s) provided the first close-up images.\n*   **Cassini-Huygens Mission** (2004\u20132017) made detailed observations, revealing the rings\u2019 complex structure, composition, and dynamic behavior.\n\n#### 5. Fun Facts\n*   The rings are so thin that if you could flatten them, they would be less than a millimeter thick across their entire width.\n*   The rings are constantly changing\u2014particles collide, evaporate, and are pulled into Saturn\u2019s atmosphere.\n*   Saturn\u2019s rings are not unique; Jupiter",
+        "text_sha256": "8d5895fb62d924f07fc3541628120ea3db070c4fee729cc3c44a4c543542f12f",
+        "text_utf8_bytes": 3106
+      },
+      "first_barge": {
+        "new_response_id": "req-2",
+        "old_pcm_sha256": "0bb9161bcba6dbb04edaa3d37652726d9289839c2b3a78c4f9d79456a6b64a49",
+        "old_response_id": "req-1",
+        "old_response_text_sha256": "37a96fa63f15ea5c845224da4824b3d3a1e2dc5a041a35f5cf6907677847e7c5",
+        "pending_pcm_sha256": "7b621b4bc38c99c61560492c89ac5df5c632b1022f18b78be7bdce71d4af1417",
+        "played": {
+          "acknowledged_cursor": 30,
+          "acknowledged_text": "\u592a\u9633\u7cfb\u5171\u6709\u516b\u5927\u884c\u661f\uff0c",
+          "played_audio_events": 7,
+          "played_pcm_bytes": 149760,
+          "played_pcm_sha256": "a840b218f479f71d0117acbcb828e538d0cf31ff9c92a5b373051dade7b93c1a"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 622.443643,
+          "barge_to_cancel": 4.406272,
+          "barge_to_speech_stopped_replay": 2210.142215,
+          "cancel_to_digital_silence": 1.481512,
+          "replay_inclusive_barge_to_new_audio": 2878.645076,
+          "speech_stopped_to_asr_final": 46.059218
+        }
+      },
+      "history": {
+        "accepted_cursors": {
+          "req-1": 30,
+          "req-2": 0
+        },
+        "cross_session_leaks": 0,
+        "duplicate_terminal_callbacks": 0,
+        "final_history_turns": 2,
+        "late_final_events": 0,
+        "stale_events": 0,
+        "terminal_callbacks": {
+          "req-1": [
+            "response.cancelled"
+          ],
+          "req-2": [
+            "response.cancelled"
+          ],
+          "req-3": [
+            "response.completed"
+          ]
+        },
+        "verified_prompts": 3,
+        "vlm_prompts_sha256": "0744a952eba855dddd4e8f069761e2f200131553d51ba733bad0e6ffc24abfc3"
+      },
+      "repetition": 1,
+      "second_barge": {
+        "new_response_id": "req-3",
+        "old_pcm_sha256": "73021b1bf70fe230f0abdb825b2ff9af9d29a6a5197a5d81caff5efaa6ec487a",
+        "old_response_id": "req-2",
+        "old_response_text_sha256": "145a119af8d4d9509731e00c248f7740069d99b0a12f5b88e91314dff64794fe",
+        "pending_pcm_sha256": "d3799c162165e8700ab1999d8fec179986c95c3d2f8871a3b27b42197e4cb654",
+        "played": {
+          "acknowledged_cursor": 0,
+          "acknowledged_text": "",
+          "played_audio_events": 5,
+          "played_pcm_bytes": 111360,
+          "played_pcm_sha256": "b4012c5607227f6b40c01ea94241d3ab429ea060b3641538fa482232a707b702"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 552.56546,
+          "barge_to_cancel": 1.731711,
+          "barge_to_speech_stopped_replay": 1506.957869,
+          "cancel_to_digital_silence": 1.392028,
+          "replay_inclusive_barge_to_new_audio": 2097.495896,
+          "speech_stopped_to_asr_final": 37.972567
+        }
+      },
+      "transcript_sha256": {
+        "english": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "saturn": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "solar": "9d96494cd2dd4312c24fc43d4e66e0f912c2d74302fbfb00e42667e134c227c9"
+      }
+    },
+    {
+      "arm": "before",
+      "cleanup": {
+        "final_in_flight": 0,
+        "owned_processes_exited": true,
+        "selected_gpu_idle": true
+      },
+      "final_response": {
+        "ascii_letters": 2238,
+        "cjk_codepoints": 0,
+        "pcm_bytes": 16251840,
+        "pcm_sha256": "660363ddb78f3e0d7274e3c86e1a1a7f25759b832c0b5410f1aaf1a849d818e5",
+        "text": "### Saturn's Rings: A Detailed Overview\n\nSaturn\u2019s rings are the most prominent and complex ring system in the Solar System. They are composed of countless particles of ice and rock, ranging in size from tiny grains of dust to chunks as large as houses.\n\n#### 1. Composition and Structure\n*   **Material**: The rings are primarily made of **water ice** (over 99%), with small amounts of rocky material and dust.\n*   **Size**: The main rings extend from about 7,000 km to 80,000 km from Saturn\u2019s center. However, they are incredibly thin\u2014most are only about **10 meters to 1 kilometer thick**.\n*   **Main Divisions**: The rings are divided into several distinct bands, labeled with Greek letters. The most visible ones are:\n    *   **D Ring**: The innermost and faintest ring, close to Saturn\u2019s atmosphere.\n    *   **C Ring**: A darker, semi-transparent ring.\n    *   **B Ring**: The brightest and densest ring.\n    *   **A Ring**: The outermost major ring, containing the famous **Cassini Division** (a gap between the A and B rings) and the **Encke Gap**.\n    *   **F, G, and E Rings**: Fainter, more diffuse rings extending further out. The E ring is particularly vast and may be fed by material from Saturn\u2019s moon Enceladus.\n\n#### 2. How the Rings Formed\nThe origin of Saturn\u2019s rings is still debated, but two main theories exist:\n*   **Disrupted Moon**: A moon (or comet) that ventured too close to Saturn was torn apart by tidal forces, forming the rings.\n*   **Leftover Debris**: The rings are remnants from the original material that formed Saturn, which never coalesced into a moon due to gravitational perturbations.\n\nRecent studies suggest the rings may be **geologically young** (only a few hundred million years old), which would mean they are a temporary feature in Saturn\u2019s history.\n\n#### 3. Dynamics and Maintenance\n*   **Orbital Motion**: Each particle orbits Saturn independently, following Kepler\u2019s laws. Particles closer to Saturn orbit faster than those farther out.\n*   **Shepherding Moons**: Small moons like **Pan** and **Daphnis** help maintain the sharp edges of gaps (like the Encke Gap) by clearing debris through gravitational interactions.\n*   **Gravitational Resonances**: Interactions with larger moons (like Mimas) create density waves and gaps in the rings.\n\n#### 4. Observations and Exploration\n*   **Galileo Galilei** first observed the rings in 1610 but couldn\u2019t explain their nature.\n*   **Christiaan Huygens** correctly described them as a flat ring in 1655.\n*   **Cassini Division** was discovered by Giovanni Cassini in 1675.\n*   **Voyager 1 and 2** (1980s) provided the first close-up images.\n*   **Cassini-Huygens Mission** (2004\u20132017) made detailed observations, revealing the rings\u2019 complex structure, composition, and dynamic behavior.\n\n#### 5. Fun Facts\n*   The rings are so thin that if you could flatten them, they would be less than a millimeter thick across their entire width.\n*   The rings are constantly changing\u2014particles collide, evaporate, and are pulled into Saturn\u2019s atmosphere.\n*   Saturn\u2019s rings are not unique; Jupiter",
+        "text_sha256": "8d5895fb62d924f07fc3541628120ea3db070c4fee729cc3c44a4c543542f12f",
+        "text_utf8_bytes": 3106
+      },
+      "first_barge": {
+        "new_response_id": "req-2",
+        "old_pcm_sha256": "0bb9161bcba6dbb04edaa3d37652726d9289839c2b3a78c4f9d79456a6b64a49",
+        "old_response_id": "req-1",
+        "old_response_text_sha256": "db1e922f6bc3c47d284d74fa26da09019c41ffb60064ff4899b6b9ea88473e7a",
+        "pending_pcm_sha256": "7b621b4bc38c99c61560492c89ac5df5c632b1022f18b78be7bdce71d4af1417",
+        "played": {
+          "acknowledged_cursor": 30,
+          "acknowledged_text": "\u592a\u9633\u7cfb\u5171\u6709\u516b\u5927\u884c\u661f\uff0c",
+          "played_audio_events": 7,
+          "played_pcm_bytes": 149760,
+          "played_pcm_sha256": "a840b218f479f71d0117acbcb828e538d0cf31ff9c92a5b373051dade7b93c1a"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 622.401379,
+          "barge_to_cancel": 4.574214,
+          "barge_to_speech_stopped_replay": 2209.781136,
+          "cancel_to_digital_silence": 1.511094,
+          "replay_inclusive_barge_to_new_audio": 2878.645373,
+          "speech_stopped_to_asr_final": 46.462858
+        }
+      },
+      "history": {
+        "accepted_cursors": {
+          "req-1": 30,
+          "req-2": 0
+        },
+        "cross_session_leaks": 0,
+        "duplicate_terminal_callbacks": 0,
+        "final_history_turns": 2,
+        "late_final_events": 0,
+        "stale_events": 0,
+        "terminal_callbacks": {
+          "req-1": [
+            "response.cancelled"
+          ],
+          "req-2": [
+            "response.cancelled"
+          ],
+          "req-3": [
+            "response.completed"
+          ]
+        },
+        "verified_prompts": 3,
+        "vlm_prompts_sha256": "0744a952eba855dddd4e8f069761e2f200131553d51ba733bad0e6ffc24abfc3"
+      },
+      "repetition": 2,
+      "second_barge": {
+        "new_response_id": "req-3",
+        "old_pcm_sha256": "73021b1bf70fe230f0abdb825b2ff9af9d29a6a5197a5d81caff5efaa6ec487a",
+        "old_response_id": "req-2",
+        "old_response_text_sha256": "145a119af8d4d9509731e00c248f7740069d99b0a12f5b88e91314dff64794fe",
+        "pending_pcm_sha256": "d3799c162165e8700ab1999d8fec179986c95c3d2f8871a3b27b42197e4cb654",
+        "played": {
+          "acknowledged_cursor": 0,
+          "acknowledged_text": "",
+          "played_audio_events": 5,
+          "played_pcm_bytes": 111360,
+          "played_pcm_sha256": "b4012c5607227f6b40c01ea94241d3ab429ea060b3641538fa482232a707b702"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 552.595522,
+          "barge_to_cancel": 1.910012,
+          "barge_to_speech_stopped_replay": 1506.842457,
+          "cancel_to_digital_silence": 1.346698,
+          "replay_inclusive_barge_to_new_audio": 2098.337339,
+          "speech_stopped_to_asr_final": 38.89936
+        }
+      },
+      "transcript_sha256": {
+        "english": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "saturn": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "solar": "9d96494cd2dd4312c24fc43d4e66e0f912c2d74302fbfb00e42667e134c227c9"
+      }
+    },
+    {
+      "arm": "before",
+      "cleanup": {
+        "final_in_flight": 0,
+        "owned_processes_exited": true,
+        "selected_gpu_idle": true
+      },
+      "final_response": {
+        "ascii_letters": 2238,
+        "cjk_codepoints": 0,
+        "pcm_bytes": 16251840,
+        "pcm_sha256": "660363ddb78f3e0d7274e3c86e1a1a7f25759b832c0b5410f1aaf1a849d818e5",
+        "text": "### Saturn's Rings: A Detailed Overview\n\nSaturn\u2019s rings are the most prominent and complex ring system in the Solar System. They are composed of countless particles of ice and rock, ranging in size from tiny grains of dust to chunks as large as houses.\n\n#### 1. Composition and Structure\n*   **Material**: The rings are primarily made of **water ice** (over 99%), with small amounts of rocky material and dust.\n*   **Size**: The main rings extend from about 7,000 km to 80,000 km from Saturn\u2019s center. However, they are incredibly thin\u2014most are only about **10 meters to 1 kilometer thick**.\n*   **Main Divisions**: The rings are divided into several distinct bands, labeled with Greek letters. The most visible ones are:\n    *   **D Ring**: The innermost and faintest ring, close to Saturn\u2019s atmosphere.\n    *   **C Ring**: A darker, semi-transparent ring.\n    *   **B Ring**: The brightest and densest ring.\n    *   **A Ring**: The outermost major ring, containing the famous **Cassini Division** (a gap between the A and B rings) and the **Encke Gap**.\n    *   **F, G, and E Rings**: Fainter, more diffuse rings extending further out. The E ring is particularly vast and may be fed by material from Saturn\u2019s moon Enceladus.\n\n#### 2. How the Rings Formed\nThe origin of Saturn\u2019s rings is still debated, but two main theories exist:\n*   **Disrupted Moon**: A moon (or comet) that ventured too close to Saturn was torn apart by tidal forces, forming the rings.\n*   **Leftover Debris**: The rings are remnants from the original material that formed Saturn, which never coalesced into a moon due to gravitational perturbations.\n\nRecent studies suggest the rings may be **geologically young** (only a few hundred million years old), which would mean they are a temporary feature in Saturn\u2019s history.\n\n#### 3. Dynamics and Maintenance\n*   **Orbital Motion**: Each particle orbits Saturn independently, following Kepler\u2019s laws. Particles closer to Saturn orbit faster than those farther out.\n*   **Shepherding Moons**: Small moons like **Pan** and **Daphnis** help maintain the sharp edges of gaps (like the Encke Gap) by clearing debris through gravitational interactions.\n*   **Gravitational Resonances**: Interactions with larger moons (like Mimas) create density waves and gaps in the rings.\n\n#### 4. Observations and Exploration\n*   **Galileo Galilei** first observed the rings in 1610 but couldn\u2019t explain their nature.\n*   **Christiaan Huygens** correctly described them as a flat ring in 1655.\n*   **Cassini Division** was discovered by Giovanni Cassini in 1675.\n*   **Voyager 1 and 2** (1980s) provided the first close-up images.\n*   **Cassini-Huygens Mission** (2004\u20132017) made detailed observations, revealing the rings\u2019 complex structure, composition, and dynamic behavior.\n\n#### 5. Fun Facts\n*   The rings are so thin that if you could flatten them, they would be less than a millimeter thick across their entire width.\n*   The rings are constantly changing\u2014particles collide, evaporate, and are pulled into Saturn\u2019s atmosphere.\n*   Saturn\u2019s rings are not unique; Jupiter",
+        "text_sha256": "8d5895fb62d924f07fc3541628120ea3db070c4fee729cc3c44a4c543542f12f",
+        "text_utf8_bytes": 3106
+      },
+      "first_barge": {
+        "new_response_id": "req-2",
+        "old_pcm_sha256": "0bb9161bcba6dbb04edaa3d37652726d9289839c2b3a78c4f9d79456a6b64a49",
+        "old_response_id": "req-1",
+        "old_response_text_sha256": "db1e922f6bc3c47d284d74fa26da09019c41ffb60064ff4899b6b9ea88473e7a",
+        "pending_pcm_sha256": "7b621b4bc38c99c61560492c89ac5df5c632b1022f18b78be7bdce71d4af1417",
+        "played": {
+          "acknowledged_cursor": 30,
+          "acknowledged_text": "\u592a\u9633\u7cfb\u5171\u6709\u516b\u5927\u884c\u661f\uff0c",
+          "played_audio_events": 7,
+          "played_pcm_bytes": 149760,
+          "played_pcm_sha256": "a840b218f479f71d0117acbcb828e538d0cf31ff9c92a5b373051dade7b93c1a"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 623.061246,
+          "barge_to_cancel": 4.44489,
+          "barge_to_speech_stopped_replay": 2209.664671,
+          "cancel_to_digital_silence": 1.535292,
+          "replay_inclusive_barge_to_new_audio": 2878.763245,
+          "speech_stopped_to_asr_final": 46.037328
+        }
+      },
+      "history": {
+        "accepted_cursors": {
+          "req-1": 30,
+          "req-2": 0
+        },
+        "cross_session_leaks": 0,
+        "duplicate_terminal_callbacks": 0,
+        "final_history_turns": 2,
+        "late_final_events": 0,
+        "stale_events": 0,
+        "terminal_callbacks": {
+          "req-1": [
+            "response.cancelled"
+          ],
+          "req-2": [
+            "response.cancelled"
+          ],
+          "req-3": [
+            "response.completed"
+          ]
+        },
+        "verified_prompts": 3,
+        "vlm_prompts_sha256": "0744a952eba855dddd4e8f069761e2f200131553d51ba733bad0e6ffc24abfc3"
+      },
+      "repetition": 3,
+      "second_barge": {
+        "new_response_id": "req-3",
+        "old_pcm_sha256": "73021b1bf70fe230f0abdb825b2ff9af9d29a6a5197a5d81caff5efaa6ec487a",
+        "old_response_id": "req-2",
+        "old_response_text_sha256": "145a119af8d4d9509731e00c248f7740069d99b0a12f5b88e91314dff64794fe",
+        "pending_pcm_sha256": "d3799c162165e8700ab1999d8fec179986c95c3d2f8871a3b27b42197e4cb654",
+        "played": {
+          "acknowledged_cursor": 0,
+          "acknowledged_text": "",
+          "played_audio_events": 5,
+          "played_pcm_bytes": 111360,
+          "played_pcm_sha256": "b4012c5607227f6b40c01ea94241d3ab429ea060b3641538fa482232a707b702"
+        },
+        "stale_events": 0,
+        "timings_ms": {
+          "asr_final_to_new_audio": 552.318649,
+          "barge_to_cancel": 1.682032,
+          "barge_to_speech_stopped_replay": 1507.20077,
+          "cancel_to_digital_silence": 1.431112,
+          "replay_inclusive_barge_to_new_audio": 2097.618454,
+          "speech_stopped_to_asr_final": 38.099035
+        }
+      },
+      "transcript_sha256": {
+        "english": "6aca4ab2637d30ac00d651114f2a69a09a1b9127e6c62d750958e270a2d8e18f",
+        "saturn": "51cc302834f710c2764a9ab361e4929fadcdaaa7e1aa112c201aa8cf863df0b0",
+        "solar": "9d96494cd2dd4312c24fc43d4e66e0f912c2d74302fbfb00e42667e134c227c9"
+      }
+    }
+  ],
+  "preregistration_sha256": "caa4d56171ece814b298fd9764ec3dadd5aa1f860cdf6d947582ac811b298f80",
+  "promotion_status": "NOT_PROMOTED",
+  "schema": "umminfer-ns04-replay-lifecycle-scorecard/v1",
+  "source_identity": {
+    "accepted_parent_commit": "15f54b98389ffecf0f9d100b0c9b4855975fe90d",
+    "binaries_by_arm": {
+      "after": {
+        "umm-infer": {
+          "bytes": 55015984,
+          "sha256": "db7a6e37d65a6daf70de9f501681b93dcf7a6ed1e008ccb5c1c750ba7fca034c"
+        },
+        "umm-native-stage-asr": {
+          "bytes": 3247560,
+          "sha256": "c28062aaace956e8a926fcf41fa86a4ea6c040fa543558bccc0776afbb62e834"
+        },
+        "umm-native-stage-qwen38": {
+          "bytes": 3639520,
+          "sha256": "a3930bd382487c32315e3c869f1ab31e87c0c1a61515ab938cad85f15678f33b"
+        },
+        "umm-native-stage-tts": {
+          "bytes": 3222312,
+          "sha256": "90fa74a114e96c621a7f36885a596f8f5b3442ddf1ea79098317c737f65cc86f"
+        }
+      },
+      "before": {
+        "umm-infer": {
+          "bytes": 54919480,
+          "sha256": "0f1850cb894896af2c5ded6678d559356eab9ae4a6353d4c454d36244d4e4562"
+        },
+        "umm-native-stage-asr": {
+          "bytes": 3247560,
+          "sha256": "c28062aaace956e8a926fcf41fa86a4ea6c040fa543558bccc0776afbb62e834"
+        },
+        "umm-native-stage-qwen38": {
+          "bytes": 3639520,
+          "sha256": "a3930bd382487c32315e3c869f1ab31e87c0c1a61515ab938cad85f15678f33b"
+        },
+        "umm-native-stage-tts": {
+          "bytes": 3222312,
+          "sha256": "90fa74a114e96c621a7f36885a596f8f5b3442ddf1ea79098317c737f65cc86f"
+        }
+      }
+    },
+    "candidate_runtime_changed": true,
+    "execution_commit_by_arm": {
+      "after": "6263fb9593a98e9a9f6a5c3b0badb27fc912ad29",
+      "before": "ec1b9235e4ecd69340571d595726ed503bc42b47"
+    },
+    "harness": {
+      "bytes": 23829,
+      "sha256": "aad0658492d3d471b6cc07d2f31288400adbd1e48c070defcef853af2a87c181"
+    },
+    "model_manifest_sha256": {
+      "asr": "a16807fc65e05f36687484bdfb8cb9f103c3fb59f6787d1f904f3ffebf8a3005",
+      "tts": "92db72616c9578462add19ed81720b7abf1c1e9c3f4d225877a1cd6104d2fb27",
+      "vlm": "fb2a8751df1dfbcdf556988acd8e2ac7c6f7180c609797d5e9b3a8e3e40a1c7e"
+    },
+    "verifier_sha256": "3f2fe32abc153c95d2c286135c6f291511fbc126728210ac0aabc33b61349cbf"
+  }
+}

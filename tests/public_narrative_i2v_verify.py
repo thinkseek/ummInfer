@@ -14,6 +14,7 @@ import io
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import wave
@@ -92,7 +93,17 @@ def mae(first, second):
 
 
 def spoken_projection(text):
-    return " ".join(text.split())
+    text = re.sub(r"(?m)^ {0,3}(?:#+[ \t]+|>[ \t]?|[*+-][ \t]+)", "", text)
+    text = re.sub(r"(?m)^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", "", text)
+    text = text.replace("**", "").replace("__", "").replace("~~", "")
+    text = text.replace("`", "")
+    return "".join(text.split())
+
+
+def has_native_presentation_tokens(text):
+    return bool(re.search(r"(?:\*\*|__|~~|`)", text) or
+                re.search(r"(?m)^ {0,3}#+[ \t]+", text) or
+                re.search(r"(?m)^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", text))
 
 
 def verify_model(identity):
@@ -119,7 +130,35 @@ def main():
     report = json.loads((root / "report.json").read_text(encoding="utf-8"))
     require(report["format"] == "umminfer-public-narrative-i2v-v1", "unknown report format")
     require(report["result"] == "CONTROLLED_LIVE_PASS", "live gate did not pass")
-    require(report["physical_gpu"] == 1, "wrong physical GPU")
+    physical_gpu = report["physical_gpu"]
+    require(physical_gpu in (0, 1, 7), "wrong physical GPU")
+    scenario = report.get("scenario", "lantern")
+    request = json.loads((root / "request.json").read_text(encoding="utf-8"))
+    require(sha(canonical(request)) == report["request_sha256"], "request digest mismatch")
+    if scenario == "ns01-black-hole":
+        require(request["messages"] == [{"role": "user", "content":
+                "Use one labeled still and one short animation to explain black-hole "
+                "accretion disks and gravitational lensing simply, in plain prose without "
+                "headings or bullets."}]
+                and "[[" not in request["messages"][0]["content"]
+                and request["narrative"]["visual_mode"] == "auto"
+                and request["narrative"]["continuity_mode"] == "i2v_chain",
+                "NS-01 did not use the frozen natural autonomous prompt")
+    elif scenario == "ns01-chinese-markdown-long":
+        require(request["messages"][0]["content"].startswith(
+                "用通俗方式讲清黑洞吸积盘和引力透镜，配示意图和动态演示。")
+                and "三个内容充实的中文长段落" in request["messages"][0]["content"]
+                and "Markdown" in request["messages"][0]["content"]
+                and all(term in request["messages"][0]["content"] for term in
+                        ("accretion disk", "gravitational lensing", "event horizon",
+                         "Eddington limit"))
+                and request["max_tokens"] == 768
+                and request["narrative"]["visual_mode"] == "auto"
+                and request["narrative"]["continuity_mode"] == "i2v_chain"
+                and "teacache_thresh" not in request["video"],
+                "Chinese NS-01 did not use the frozen long autonomous prompt")
+    else:
+        require(scenario == "lantern", "unknown narrative scenario")
     records = [json.loads(line) for line in
                (root / report["trajectory"]).read_text(encoding="utf-8").splitlines()
                if line.strip()]
@@ -192,6 +231,36 @@ def main():
             "explicit video slot metadata mismatch")
     require("source=" not in video_slot["prompt"] and "[[" not in video_slot["prompt"],
             "source suffix leaked into video render prompt")
+    first_ticks = {"ttft_ns": None, "ttfa_ns": None, "first_image_ns": None,
+                   "video_first_public_chunk_ns": None, "video_public_complete_ns": None}
+    for event, (_frame_index, raw_event) in zip(record["events"], events):
+        tick = event["source_event_tick"]
+        if raw_event["kind"] == "vlm_delta" and raw_event.get("text") \
+                and first_ticks["ttft_ns"] is None:
+            first_ticks["ttft_ns"] = tick
+        if raw_event["kind"] != "artifact":
+            continue
+        desc = raw_event["artifact"]
+        if desc.get("media_type") == "audio" and first_ticks["ttfa_ns"] is None:
+            first_ticks["ttfa_ns"] = tick
+        if desc.get("media_type") == "video":
+            if first_ticks["video_first_public_chunk_ns"] is None:
+                first_ticks["video_first_public_chunk_ns"] = tick
+            if desc["index"] + 1 == desc["total"]:
+                first_ticks["video_public_complete_ns"] = tick
+        if desc.get("media_type") == "image" and desc.get("slot_id") == "slot-0" \
+                and desc["index"] + 1 == desc["total"]:
+            first_ticks["first_image_ns"] = tick
+    expected_timings = {key: (None if tick is None else tick / 1e6)
+                        for key, tick in first_ticks.items()}
+    expected_timings.update(unit="ms_from_capture_start", clock="python.time.perf_counter_ns")
+    if "interactive_timings" in report:
+        require(report["interactive_timings"] == expected_timings,
+                "interactive arrival timings differ from raw SSE ticks")
+        require(all(first_ticks[key] is not None for key in first_ticks),
+                "NS-01 is missing text/audio/image/video arrival evidence")
+    else:
+        require(scenario == "lantern", "new NS-01 evidence lacks arrival timings")
     grouped = {}
     for frame_index, event in events:
         if event["kind"] != "artifact":
@@ -295,10 +364,12 @@ def main():
         require(text == submit["text"] and sha(text.encode()) == submit["text_sha256"],
                 "TTS text submit identity mismatch")
         tts_text_parts.append(text)
-    tts_text = " ".join(tts_text_parts)
+    tts_text = "".join(tts_text_parts)
     require(spoken_projection(tts_text) == spoken_projection(clean)
             and "[[" not in tts_text and "source=" not in tts_text,
             "TTS input differs beyond trimmed span whitespace or leaks a directive")
+    require(not any(has_native_presentation_tokens(text) for text in tts_text_parts),
+            "projection comparison hid Markdown tokens in actual native TTS input")
 
     public_cursor = 0
     verified_tts_legs = []
@@ -401,12 +472,14 @@ def main():
             "native streaming TTS byte-identity checks failed")
     require(report["health_final"].get("in_flight") == 0,
             "public gateway retained in-flight work")
-    require(report["gpu1"]["after_cleanup"]["memory_used_mib"] <= 16,
-            "GPU 1 was not cleaned")
+    gpu = report.get("gpu", report.get("gpu1"))
+    require(gpu["after_cleanup"]["memory_used_mib"] <= 16,
+            f"GPU {physical_gpu} was not cleaned")
     monitor = json.loads((root / report["gpu_monitor"]).read_text(encoding="utf-8"))
     ticks = [sample["observed_monotonic_ns"] for sample in monitor]
-    require(ticks == sorted(ticks) and all(sample["index"] == 1 for sample in monitor),
-            "GPU 1 monitor is nonmonotonic or observed another GPU")
+    require(ticks == sorted(ticks)
+            and all(sample["index"] == physical_gpu for sample in monitor),
+            f"GPU {physical_gpu} monitor is nonmonotonic or observed another GPU")
 
     decoded = {}
     for label, path, selector, evaluation in (

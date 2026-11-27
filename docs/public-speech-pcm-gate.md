@@ -267,3 +267,19 @@ capture-local and remains unmodified; Task #73's actual R4 result is recorded
 separately in [realtime-r4-post-determinism](realtime-r4-post-determinism.md),
 along with network/reconnect evidence, exact hashes, and unchanged physical /
 perceptual limitations.
+
+## Task #81 reviewed lifecycle regression on GPU 7: PASS
+
+The exact reviewed Task #81 runtime reran this complete public gate on explicitly
+idle physical GPU 7. It preserved all 25 HTTP responses (24 complete + one
+cancellation), exact retry/direct continuation controls, and **29/29** delayed
+realtime responses with final ACKs. Counts remain 493 native/public PCM legs,
+4,176 chunks and 115,034,880 bytes; release remains exactly 4,125−29=4,096 with all
+readers paused and zero public reads during the pause. Verification is
+`13332021b24ee298c1955e2cf24c9ab26d3cc7ff7afc7cca18513b0acc0576a7`,
+self-excluded manifest
+`7a52825b36846e937b3b7383343dfe294017107e9b04b746dc28863d69973cb3`.
+The six-session network/reconnect gate and native CUDA determinism also pass.
+This is a correctness/non-regression result, not a latency or physical-playback
+claim. Exact Before/After Chinese NS-01 and paired NS-04 evidence is in
+[ns01-tts-lifecycle](ns01-tts-lifecycle.md).

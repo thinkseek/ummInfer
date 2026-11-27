@@ -125,6 +125,20 @@ contract, all per-arm results, retained negative cases, and raw evidence hashes.
 This is digital-loopback evidence, not physical playback, listening quality,
 generalized performance, or deployment acceptance.
 
+Task #81 adds no Talker/kernel arithmetic change. Unified streamed narration now
+normalizes supported Markdown presentation spans while retaining original public
+UTF-8 cursors, bounds active native children at 32 without coalescing the tail, and
+keeps independently consumed PCM chunks outside the terminal 60 MiB aggregate.
+Unterminated reserved narrative directives are removed at EOF. Native logs expose
+`codec_frames` and `natural_eos` only for evidence. On the exact frozen Chinese
+NS-01 case, the parent cancelled with 31 completed legs and one nonterminal giant
+tail; the reviewed candidate completed 43/43 legs at natural EOS with exact
+native/public PCM and one complete terminal. TTFA/visual/I2V thresholds remain
+unmet. The same runtime passed native host + real CUDA determinism 3/3, public
+29/29 delayed-reader PCM/final-ACK, and six-session network/reconnect gates. See
+[NS-01/NS-04 lifecycle](../docs/ns01-tts-lifecycle.md) for raw hashes, retained
+negative attempts, and unchanged physical/perceptual limits.
+
 ## Build and test
 
 The current host suite covers prompt/tokenizer, WAV, decode helpers, config,

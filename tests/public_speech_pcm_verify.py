@@ -780,9 +780,11 @@ def main():
     manifest = read_json(root / "capture-manifest.json")
     require(manifest["schema"] == "umminfer-public-speech-pcm-capture/v1" and
             manifest["status"] == "CAPTURED", "capture is incomplete")
+    gpu_key = str(manifest.get("physical_gpu", 0))
     require(manifest["final_health"].get("in_flight") == 0 and
-            manifest["gpu_postflight"]["0"]["memory_used_mib"] <= 64 and
-            not manifest["gpu_postflight"]["0"]["compute_processes"],
+            set(manifest["gpu_postflight"]) == {gpu_key} and
+            manifest["gpu_postflight"][gpu_key]["memory_used_mib"] <= 64 and
+            not manifest["gpu_postflight"][gpu_key]["compute_processes"],
             "cleanup gate failed")
     submits, streams, finals, all_completion = native_records(root)
     http_reports = [verify_http_case(root, case, submits, streams, finals)

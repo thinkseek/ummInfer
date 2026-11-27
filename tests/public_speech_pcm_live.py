@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Real public HTTP speech/native-PCM gate on physical GPU 0 only.
+"""Real public HTTP speech/native-PCM gate on one explicitly selected idle GPU.
 
+The default remains physical GPU 0; an authorized caller may select GPU 1 or 7.
 The driver owns one loopback gateway and serial native ASR/VLM/TTS stages. HTTP
 coverage is text-only VLM -> TTS. The small realtime block exists only for the
 server playback-ACK and delayed-reader lossless-queue contracts; it is not the
@@ -51,6 +52,7 @@ def load_base():
 base = load_base()
 require = base.require
 
+PHYSICAL_GPU = 0
 BACKPRESSURE_LOCK = threading.Lock()
 BACKPRESSURE_RELEASE = threading.Event()
 BACKPRESSURE = {"enabled": False, "native": 0, "public": 0, "paused": 0,
@@ -303,10 +305,10 @@ def http_case(port, out, spec):
 
 
 def gpu_preflight():
-    row = base.gpu_state(0)
+    row = base.gpu_state(PHYSICAL_GPU)
     require(row["memory_used_mib"] <= 64 and row["utilization_percent"] == 0 and
-            not row["compute_processes"], f"GPU 0 is not idle: {row}")
-    return {"0": row}
+            not row["compute_processes"], f"GPU {PHYSICAL_GPU} is not idle: {row}")
+    return {str(PHYSICAL_GPU): row}
 
 
 def gpu_postflight(timeout=45):
@@ -318,7 +320,7 @@ def gpu_postflight(timeout=45):
         except (AssertionError, subprocess.CalledProcessError) as error:
             latest = str(error)
             time.sleep(0.5)
-    raise AssertionError(f"GPU 0 did not return to idle: {latest}")
+    raise AssertionError(f"GPU {PHYSICAL_GPU} did not return to idle: {latest}")
 
 
 def start_stack(args, out, logs):
@@ -335,7 +337,9 @@ def start_stack(args, out, logs):
     procs = {}
     old_cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
     old_prefix = os.environ.get("UMM_QWEN38_PREFIX_CACHE")
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    # Native stage --gpu is a physical ordinal. Do not simultaneously remap the
+    # selected device to logical zero through CUDA_VISIBLE_DEVICES.
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
     os.environ["UMM_QWEN38_PREFIX_CACHE"] = "0"
     try:
         for channel, name in (("asr-submit", "asr"), ("vlm-submit", "vlm"),
@@ -344,17 +348,17 @@ def start_stack(args, out, logs):
                 channel, public[name], native[name], out / "observers" / f"{channel}.jsonl")
         procs["asr"] = base.OwnedProc("asr", [
             args.bin_dir / "umm-native-stage-asr", "--kind", "asr", "--name", "asr",
-            "--model", args.asr_model, "--gpu", 0, "--recv-endpoint", native["asr"],
+            "--model", args.asr_model, "--gpu", PHYSICAL_GPU, "--recv-endpoint", native["asr"],
             "--coordinator-endpoint", public["completion"], "--abort-endpoint", abort],
             logs / "asr.log")
         procs["vlm"] = base.OwnedProc("vlm", [
             args.bin_dir / "umm-native-stage-qwen38", "--kind", "qwen38", "--name", "vlm",
-            "--model", args.vlm_model, "--gpu", 0, "--recv-endpoint", native["vlm"],
+            "--model", args.vlm_model, "--gpu", PHYSICAL_GPU, "--recv-endpoint", native["vlm"],
             "--coordinator-endpoint", public["completion"], "--abort-endpoint", abort,
             "--max-new-tokens", 512, "--batch-size", 1], logs / "vlm.log")
         procs["tts"] = base.OwnedProc("tts", [
             args.bin_dir / "umm-native-stage-tts", "--kind", "tts", "--name", "tts",
-            "--model", args.tts_model, "--gpu", 0, "--recv-endpoint", native["tts"],
+            "--model", args.tts_model, "--gpu", PHYSICAL_GPU, "--recv-endpoint", native["tts"],
             "--coordinator-endpoint", public["completion"], "--abort-endpoint", abort,
             "--max-frames", 192], logs / "tts.log")
         procs["server"] = base.OwnedProc("server", [
@@ -408,7 +412,7 @@ def start_stack(args, out, logs):
 def start_tts_process(args, stack, logs, name):
     return base.OwnedProc("tts", [
         args.bin_dir / "umm-native-stage-tts", "--kind", "tts", "--name", "tts",
-        "--model", args.tts_model, "--gpu", 0,
+        "--model", args.tts_model, "--gpu", PHYSICAL_GPU,
         "--recv-endpoint", stack["native_endpoints"]["tts"],
         "--coordinator-endpoint", stack["public_endpoints"]["completion"],
         "--abort-endpoint", stack["abort_endpoint"], "--max-frames", 192], logs / name)
@@ -619,8 +623,11 @@ def realtime_block(args, out, logs, ports, audio, stack):
 
 
 def main():
+    global PHYSICAL_GPU
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, required=True)
+    parser.add_argument("--gpu", type=int, choices=(0, 1, 7), default=0,
+                        help="explicitly idle physical GPU; default preserves GPU 0")
     parser.add_argument("--asr-model", type=Path, required=True)
     parser.add_argument("--vlm-model", type=Path, required=True)
     parser.add_argument("--tts-model", type=Path, required=True)
@@ -633,6 +640,7 @@ def main():
     parser.add_argument("--tts-restart-delay-s", type=float, default=120.0)
     parser.add_argument("--skip-realtime", action="store_true")
     args = parser.parse_args()
+    PHYSICAL_GPU = args.gpu
     require(1 <= args.realtime_sessions <= 64, "realtime sessions must be within existing server capacity")
     require(args.tts_restart_delay_s >= 0, "TTS restart delay must be nonnegative")
     args.out.mkdir(parents=True, exist_ok=False)
@@ -647,6 +655,7 @@ def main():
     manifest = {
         "schema": "umminfer-public-speech-pcm-capture/v1",
         "source_commit": args.source_commit, "seed": SEED,
+        "physical_gpu": PHYSICAL_GPU,
         "prompts": {"opening": OPENING, "continuation": CONTINUATION},
         "limits": {"full_asr_two_gpu_r4": "NOT_RUN",
                    "physical_playback": "NOT_RUN",

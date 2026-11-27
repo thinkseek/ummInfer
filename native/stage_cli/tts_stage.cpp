@@ -192,6 +192,8 @@ CancellableComputeFn make_compute(const StageOptions& options) {
     std::cerr << "tts request request_id=" << req_id
               << " voice=" << voice
               << " language=" << (language == native::kLangChinese ? "chinese" : "english")
+              << " codec_frames=" << timings.generated_frames
+              << " natural_eos=" << (timings.natural_eos ? 1 : 0)
               << " samples=" << stats.samples << " duration_s=" << stats.duration_s
               << " rms=" << stats.rms << " peak=" << stats.peak
               << " non_silence=" << stats.non_silence_ratio

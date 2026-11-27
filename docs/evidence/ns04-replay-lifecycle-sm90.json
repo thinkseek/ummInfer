@@ -1,0 +1,893 @@
+{
+  "arms": {
+    "after": {
+      "metrics": {
+        "asr_final_to_new_audio": {
+          "iqr_ms": 0.07168750000005275,
+          "mad_ms": 0.020523000000025604,
+          "max_ms": 622.40007,
+          "mean_ms": 622.3454373333334,
+          "median_ms": 622.379547,
+          "min_ms": 622.256695,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 622.3980177,
+          "population_cv": 0.00010172354786218902,
+          "samples_ms": [
+            622.256695,
+            622.379547,
+            622.40007
+          ],
+          "tukey_lower_fence_ms": 622.2105897499999,
+          "tukey_upper_fence_ms": 622.4973397500002
+        },
+        "barge_to_cancel": {
+          "iqr_ms": 0.016415999999999542,
+          "mad_ms": 0.0011309999999999931,
+          "max_ms": 4.406942,
+          "mean_ms": 4.385431,
+          "median_ms": 4.375241,
+          "min_ms": 4.37411,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 4.4037719,
+          "population_cv": 0.0034700307507481987,
+          "samples_ms": [
+            4.37411,
+            4.375241,
+            4.406942
+          ],
+          "tukey_lower_fence_ms": 4.350051500000001,
+          "tukey_upper_fence_ms": 4.415715499999999
+        },
+        "barge_to_speech_stopped_replay": {
+          "iqr_ms": 0.315653999999995,
+          "mad_ms": 0.061925999999857595,
+          "max_ms": 2210.401306,
+          "mean_ms": 2210.001076,
+          "median_ms": 2209.831924,
+          "min_ms": 2209.769998,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 2210.3443678000003,
+          "population_cv": 0.00012856658961870565,
+          "samples_ms": [
+            2209.769998,
+            2209.831924,
+            2210.401306
+          ],
+          "tukey_lower_fence_ms": 2209.32748,
+          "tukey_upper_fence_ms": 2210.590096
+        },
+        "cancel_to_digital_silence": {
+          "iqr_ms": 0.045812500000000034,
+          "mad_ms": 0.02699499999999988,
+          "max_ms": 1.514668,
+          "mean_ms": 1.475128,
+          "median_ms": 1.487673,
+          "min_ms": 1.423043,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 1.5119684999999998,
+          "population_cv": 0.026060915981042758,
+          "samples_ms": [
+            1.423043,
+            1.487673,
+            1.514668
+          ],
+          "tukey_lower_fence_ms": 1.38663925,
+          "tukey_upper_fence_ms": 1.5698892500000001
+        },
+        "replay_inclusive_barge_to_new_audio": {
+          "iqr_ms": 0.16498000000001412,
+          "mad_ms": 0.07533100000000559,
+          "max_ms": 2878.645905,
+          "mean_ms": 2878.451042,
+          "median_ms": 2878.391276,
+          "min_ms": 2878.315945,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 2878.6204420999998,
+          "population_cv": 4.904696059831052e-05,
+          "samples_ms": [
+            2878.315945,
+            2878.391276,
+            2878.645905
+          ],
+          "tukey_lower_fence_ms": 2878.1061405,
+          "tukey_upper_fence_ms": 2878.7660605
+        },
+        "speech_stopped_to_asr_final": {
+          "iqr_ms": 0.42226699999999795,
+          "mad_ms": 0.14518200000000547,
+          "max_ms": 46.434434,
+          "mean_ms": 46.10452866666666,
+          "median_ms": 46.289252,
+          "min_ms": 45.5899,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 46.419915800000005,
+          "population_cv": 0.007996886697661175,
+          "samples_ms": [
+            45.5899,
+            46.289252,
+            46.434434
+          ],
+          "tukey_lower_fence_ms": 45.30617550000001,
+          "tukey_upper_fence_ms": 46.9952435
+        }
+      },
+      "runs": [
+        {
+          "independent_report_sha256": "e3bbeeb696d075176fc4f3e6af8bdf30aacf9a8eeedccc33f2b5db2e32e6de7f",
+          "raw_frames_sha256": "77aab29c24c15ea80f9821e99d3c4617c3e37527f5ad0d3e4b1f4c9e5e89fec9",
+          "repetition": 1
+        },
+        {
+          "independent_report_sha256": "35bfc633e011c3450e7f5f61d41103c2a3831e091debdf82354fcf28c16a89d1",
+          "raw_frames_sha256": "a42cbcdb643ef3a4d8102b27c190f88be60e00873ee56cd95d050f9168395868",
+          "repetition": 2
+        },
+        {
+          "independent_report_sha256": "eb7962e10d1068a58376fb14824d5deae0de93e9b8c4307a117ca2db0948da0b",
+          "raw_frames_sha256": "363bfd5f3660c7722aab156a5c35ba6878b69ca8c6873bd8811f7c826cbd281c",
+          "repetition": 3
+        }
+      ],
+      "second_barge_to_cancel": {
+        "iqr_ms": 0.015484000000000053,
+        "mad_ms": 0.0019759999999999778,
+        "max_ms": 1.717223,
+        "mean_ms": 1.7062416666666664,
+        "median_ms": 1.715247,
+        "min_ms": 1.686255,
+        "n": 3,
+        "outliers_ms": [],
+        "p95_ms": 1.7170254,
+        "population_cv": 0.008296428560251031,
+        "samples_ms": [
+          1.686255,
+          1.715247,
+          1.717223
+        ],
+        "tukey_lower_fence_ms": 1.6775249999999997,
+        "tukey_upper_fence_ms": 1.739461
+      },
+      "second_replay_inclusive_barge_to_new_audio_diagnostic": {
+        "iqr_ms": 0.5934054999997898,
+        "mad_ms": 0.24946200000022145,
+        "max_ms": 2098.037589,
+        "mean_ms": 2097.5588313333333,
+        "median_ms": 2097.788127,
+        "min_ms": 2096.850778,
+        "n": 3,
+        "outliers_ms": [],
+        "p95_ms": 2098.0126428,
+        "population_cv": 0.00024357950667972295,
+        "samples_ms": [
+          2096.850778,
+          2097.788127,
+          2098.037589
+        ],
+        "tukey_lower_fence_ms": 2096.42934425,
+        "tukey_upper_fence_ms": 2098.8029662499994
+      },
+      "thresholds": {
+        "asr_final_to_new_audio_max_strictly_below_800": {
+          "observed_max_ms": 622.40007,
+          "observed_median_ms": 622.379547,
+          "observed_p95_ms": 622.3980177,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 800 ms"
+        },
+        "barge_to_cancel_max_strictly_below_300": {
+          "observed_max_ms": 4.406942,
+          "observed_median_ms": 4.375241,
+          "observed_p95_ms": 4.4037719,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        },
+        "cancel_to_digital_silence_max_strictly_below_300": {
+          "observed_max_ms": 1.514668,
+          "observed_median_ms": 1.487673,
+          "observed_p95_ms": 1.5119684999999998,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        },
+        "replay_inclusive_barge_to_new_audio_max_strictly_below_800": {
+          "observed_max_ms": 2878.645905,
+          "observed_median_ms": 2878.391276,
+          "observed_p95_ms": 2878.6204420999998,
+          "outliers_ms": [],
+          "pass": false,
+          "rule": "max < 800 ms"
+        },
+        "second_barge_to_cancel_max_strictly_below_300": {
+          "observed_max_ms": 1.717223,
+          "observed_median_ms": 1.715247,
+          "observed_p95_ms": 1.7170254,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        }
+      }
+    },
+    "before": {
+      "metrics": {
+        "asr_final_to_new_audio": {
+          "iqr_ms": 0.061833499999920605,
+          "mad_ms": 0.02697000000000571,
+          "max_ms": 622.351051,
+          "mean_ms": 622.3008386666667,
+          "median_ms": 622.324081,
+          "min_ms": 622.227384,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 622.348354,
+          "population_cv": 8.531963994827897e-05,
+          "samples_ms": [
+            622.227384,
+            622.324081,
+            622.351051
+          ],
+          "tukey_lower_fence_ms": 622.1829822500001,
+          "tukey_upper_fence_ms": 622.4303162499998
+        },
+        "barge_to_cancel": {
+          "iqr_ms": 0.05549250000000061,
+          "mad_ms": 0.015845999999999805,
+          "max_ms": 4.408596,
+          "mean_ms": 4.366319,
+          "median_ms": 4.39275,
+          "min_ms": 4.297611,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 4.4070114,
+          "population_cv": 0.011225174202166432,
+          "samples_ms": [
+            4.297611,
+            4.39275,
+            4.408596
+          ],
+          "tukey_lower_fence_ms": 4.261941749999998,
+          "tukey_upper_fence_ms": 4.483911750000001
+        },
+        "barge_to_speech_stopped_replay": {
+          "iqr_ms": 0.14627599999994345,
+          "mad_ms": 0.08044299999983195,
+          "max_ms": 2210.094142,
+          "mean_ms": 2209.9259216666665,
+          "median_ms": 2209.882033,
+          "min_ms": 2209.80159,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 2210.0729311,
+          "population_cv": 5.583896290474702e-05,
+          "samples_ms": [
+            2209.80159,
+            2209.882033,
+            2210.094142
+          ],
+          "tukey_lower_fence_ms": 2209.6223975000003,
+          "tukey_upper_fence_ms": 2210.2075015
+        },
+        "cancel_to_digital_silence": {
+          "iqr_ms": 0.005751000000000062,
+          "mad_ms": 0.004523000000000055,
+          "max_ms": 1.500077,
+          "mean_ms": 1.4947353333333335,
+          "median_ms": 1.495554,
+          "min_ms": 1.488575,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 1.4996247,
+          "population_cv": 0.0031652559317836395,
+          "samples_ms": [
+            1.488575,
+            1.495554,
+            1.500077
+          ],
+          "tukey_lower_fence_ms": 1.483438,
+          "tukey_upper_fence_ms": 1.5064420000000003
+        },
+        "replay_inclusive_barge_to_new_audio": {
+          "iqr_ms": 0.07864300000028379,
+          "mad_ms": 0.07024200000023484,
+          "max_ms": 2878.517877,
+          "mean_ms": 2878.442034333333,
+          "median_ms": 2878.447635,
+          "min_ms": 2878.360591,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 2878.5108528,
+          "population_cv": 2.2350198147181718e-05,
+          "samples_ms": [
+            2878.360591,
+            2878.447635,
+            2878.517877
+          ],
+          "tukey_lower_fence_ms": 2878.2861484999994,
+          "tukey_upper_fence_ms": 2878.6007205000005
+        },
+        "speech_stopped_to_asr_final": {
+          "iqr_ms": 0.07934199999999691,
+          "mad_ms": 0.04987299999999806,
+          "max_ms": 46.284793,
+          "mean_ms": 46.215274,
+          "median_ms": 46.23492,
+          "min_ms": 46.126109,
+          "n": 3,
+          "outliers_ms": [],
+          "p95_ms": 46.2798057,
+          "population_cv": 0.0014336212372484621,
+          "samples_ms": [
+            46.126109,
+            46.23492,
+            46.284793
+          ],
+          "tukey_lower_fence_ms": 46.061501500000006,
+          "tukey_upper_fence_ms": 46.37886949999999
+        }
+      },
+      "runs": [
+        {
+          "independent_report_sha256": "869642ab25a9536e07328a3036eee1f1d99ffd8b49d2f91ed5c0c64637c17b25",
+          "raw_frames_sha256": "2cd129327b1eff1e4c368ca9ba9eaa168470d463e2f4fb63bfa46dc9602b4cba",
+          "repetition": 1
+        },
+        {
+          "independent_report_sha256": "48b176000c93b20b05c8c7e4bf799a0a51438f15c39959a05f5c9f4aede9030b",
+          "raw_frames_sha256": "a88c95036d70b1336010111dcfda124002b0afb8264dbd3486e84913a8a562d6",
+          "repetition": 2
+        },
+        {
+          "independent_report_sha256": "442e8f605e2ed0c488361875252235a7171b2c0928fb5c95a78e16f5eb2012b3",
+          "raw_frames_sha256": "8e57343dadfba8ab226feebe54bfbf5d487aefe2ce5627caf1f5386e75489807",
+          "repetition": 3
+        }
+      ],
+      "second_barge_to_cancel": {
+        "iqr_ms": 0.015549499999999883,
+        "mad_ms": 0.0019089999999999385,
+        "max_ms": 1.682396,
+        "mean_ms": 1.6622996666666667,
+        "median_ms": 1.653206,
+        "min_ms": 1.651297,
+        "n": 3,
+        "outliers_ms": [],
+        "p95_ms": 1.6794769999999999,
+        "population_cv": 0.008561397809274106,
+        "samples_ms": [
+          1.651297,
+          1.653206,
+          1.682396
+        ],
+        "tukey_lower_fence_ms": 1.6289272500000003,
+        "tukey_upper_fence_ms": 1.6911252499999998
+      },
+      "second_replay_inclusive_barge_to_new_audio_diagnostic": {
+        "iqr_ms": 0.4618544999993901,
+        "mad_ms": 0.2482390000000123,
+        "max_ms": 2097.96865,
+        "mean_ms": 2097.5780006666664,
+        "median_ms": 2097.720411,
+        "min_ms": 2097.044941,
+        "n": 3,
+        "outliers_ms": [],
+        "p95_ms": 2097.9438260999996,
+        "population_cv": 0.00018607946974601386,
+        "samples_ms": [
+          2097.044941,
+          2097.720411,
+          2097.96865
+        ],
+        "tukey_lower_fence_ms": 2096.689894250001,
+        "tukey_upper_fence_ms": 2098.5373122499986
+      },
+      "thresholds": {
+        "asr_final_to_new_audio_max_strictly_below_800": {
+          "observed_max_ms": 622.351051,
+          "observed_median_ms": 622.324081,
+          "observed_p95_ms": 622.348354,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 800 ms"
+        },
+        "barge_to_cancel_max_strictly_below_300": {
+          "observed_max_ms": 4.408596,
+          "observed_median_ms": 4.39275,
+          "observed_p95_ms": 4.4070114,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        },
+        "cancel_to_digital_silence_max_strictly_below_300": {
+          "observed_max_ms": 1.500077,
+          "observed_median_ms": 1.495554,
+          "observed_p95_ms": 1.4996247,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        },
+        "replay_inclusive_barge_to_new_audio_max_strictly_below_800": {
+          "observed_max_ms": 2878.517877,
+          "observed_median_ms": 2878.447635,
+          "observed_p95_ms": 2878.5108528,
+          "outliers_ms": [],
+          "pass": false,
+          "rule": "max < 800 ms"
+        },
+        "second_barge_to_cancel_max_strictly_below_300": {
+          "observed_max_ms": 1.682396,
+          "observed_median_ms": 1.653206,
+          "observed_p95_ms": 1.6794769999999999,
+          "outliers_ms": [],
+          "pass": true,
+          "rule": "max < 300 ms"
+        }
+      }
+    }
+  },
+  "boundaries": {
+    "acoustic_echo": "NOT_RUN",
+    "audit_replay": "post-run independent raw decode only; never public audio",
+    "deployment": "NOT_RUN",
+    "optimizer": "NOT_RUN",
+    "perceptual_quality": "NOT_RUN",
+    "physical_microphone": "NOT_RUN",
+    "physical_speaker": "NOT_RUN",
+    "resident_service": "NOT_RUN",
+    "training": "NOT_RUN"
+  },
+  "controls": {
+    "additional_local_evidence": {
+      "feature_map": {
+        "log_sha256": "0ee1ab16195f1e771b6489f3b7e29ea1239d16cdee8e9ae58a742bac8beae9fc",
+        "status": "PASS"
+      },
+      "tts_host_ctest": {
+        "log_sha256": "59748e18c7026ee8fc4e0b09cdf789bd056f4733945d85cbc8afe4c3f6add11f",
+        "status": "PASS",
+        "tests": "2/2"
+      }
+    },
+    "native_tts_cuda": {
+      "log_sha256": "c61e82ca52386887ad1c0703556686852415ac9fe9e12311fbd9a13ee2b63ec2",
+      "status": "PASS",
+      "tests": "3/3"
+    },
+    "network_reconnect": {
+      "connection_scoped_response_identities": 41,
+      "connections": 15,
+      "cross_session_leaks": 0,
+      "decreasing_accepted_cursors": 0,
+      "double_terminal_callbacks": 0,
+      "final_in_flight": 0,
+      "historical_task81_terminal_callbacks": 32,
+      "nested_manifest_sha256": "be2773cc5e395500446912c3b582ccab232fcd2a8dce827b44bfa14f09ff8e51",
+      "perceptual_quality": "NOT_COVERED",
+      "physical_microphone_speaker": "NOT_COVERED",
+      "rounds": 3,
+      "run_sha256": "3f68632e8d12e14da795965b626b9ce6aaca70198cb7a13ea076a6e1a3b312a6",
+      "sessions": 6,
+      "stale_events": 0,
+      "status": "PASS",
+      "terminal_callbacks": 27,
+      "terminal_count_policy": "Retain observed raw count; no retry-to-preferred-count or count-based bypass",
+      "verification_sha256": "f1c2737d7a7dcc79358f7c72127a74b119c2b020ed2b7ef9f73385c7f975e94f",
+      "verified_next_turn_prompts": 30
+    },
+    "public_pcm_29_29": {
+      "cancel_retry": {
+        "cancel_prefix_chunks": 1,
+        "cancel_terminal": "cancelled",
+        "retry_matches_fresh_repeat": true
+      },
+      "capture_manifest_sha256": "6595e82fcacebd302870d319986d632ba80e5c2a8a1e330e2ea6a01985be36df",
+      "cleanup": {
+        "final_in_flight": 0,
+        "gpu_postflight": {
+          "7": {
+            "compute_processes": [],
+            "index": 7,
+            "memory_used_mib": 3,
+            "utilization_percent": 0
+          }
+        },
+        "owned_processes_exited": true
+      },
+      "counts": {
+        "cancelled_public_http_responses": 1,
+        "public_http_pcm_bytes": 10698240,
+        "public_http_pcm_chunks": 184,
+        "public_http_pcm_legs": 44,
+        "public_http_responses": 25,
+        "realtime_pcm_bytes": 115034880,
+        "realtime_pcm_chunks": 4176,
+        "realtime_pcm_legs": 493,
+        "realtime_responses": 29,
+        "successful_public_http_responses": 24
+      },
+      "delayed_read": {
+        "all_pcm_and_cursors_drained_exact": true,
+        "bounded_lossless_queue_boundary": 4096,
+        "native_audio_events_during_pause": 4096,
+        "paused_readers": 29,
+        "pending_native_minus_public": 4096,
+        "public_audio_events_during_pause": 0
+      },
+      "final_playback_ack_count": 29,
+      "nested_manifest_sha256": "cc6954981f02062c92bba0566faa2f813ddf1f7df4a1109412e4b8eab0ca88e5",
+      "perceptual_quality": "NOT_RUN",
+      "physical_playback": "NOT_RUN",
+      "source_commit": "15f54b98389ffecf0f9d100b0c9b4855975fe90d",
+      "status": "PASS",
+      "verification_sha256": "4214b202e21252db3adb8ba72173bc067056b9242392b8a68fc4646abe7bd2e4"
+    },
+    "task81_ns01_43_43": {
+      "clean_text_sha256": "883802d889885bd032b18a3dc21c8f7e1ce77773f020ab0ee3e69a816ac8b572",
+      "full_ns01_ideal_single_stream_correctness": false,
+      "hard_latency": {
+        "first_image_ms": "NOT_MET",
+        "i2v_complete_ms": "NOT_RUN",
+        "ttfa_ms": "NOT_MET",
+        "ttft_ms": "PASS"
+      },
+      "native_public_exact_leg_count": 43,
+      "native_stream_terminal_exact_count": 43,
+      "native_terminal_success_count": 43,
+      "natural_eos_count": 43,
+      "nested_manifest": "covered by the final outer self-excluded SHA256SUMS",
+      "public_pcm_bytes": 14987520,
+      "public_pcm_sha256": "2ce2c53454349fd70edceab97e6afe6d93cf8ffc22e7bcdf497c303222d94f78",
+      "report_sha256": "4cc56b6ce7ea58f821fc48d8165d7281daf7f96d2c015cf18f720b01d10c63fe",
+      "retained_environment_failure": {
+        "image_log_sha256": "adc6acce96926b05136aa2600c374a77dfa390a089d8d41edd1afd13d3fff89a",
+        "reason": "system-Python CUDA unavailable before FLUX readiness/public request",
+        "status": "NOT_COUNTED"
+      },
+      "retained_generic_postprocessor_failure": {
+        "launcher_log_sha256": "40ca608107f9d6f886a8cd68bec8b9cd09017b1ecd683ad7db7472e74c53aa25",
+        "reason": "generic narrative postprocessor required a video although the frozen response intentionally had none",
+        "status": "NOT_COUNTED"
+      },
+      "scope": "exact Chinese native/public PCM and 43/43 natural EOS only",
+      "status": "PASS",
+      "tts_leg_count": 43,
+      "verification_sha256": "810e107f253ae4ffefa6bfbf339f4a6821aa67ddcb50e544769e14a145aaa36d"
+    },
+    "task81_ns04_cursor10": {
+      "acknowledged_cursor": 10,
+      "engineering_pass": true,
+      "evidence_sha256": "2a2352dc9fae4803b7ac01a1b1aa56d4ea237d19ff0d2945f6c929bf62883b32",
+      "final_in_flight": 0,
+      "first_transcript": "Repeat the following sentence sixteen times with no introduction or numbering. The small lantern glows beside the quiet river.",
+      "hard_thresholds": {
+        "barge_to_new_audio_ms": "NOT_MET",
+        "cancel_to_digital_silence_ms": "PASS",
+        "first_interrupt_ms": "PASS",
+        "post_barge_ttfa_from_asr_final_ms": "PASS",
+        "second_interrupt_ms": "PASS"
+      },
+      "pending_audio_events": 1,
+      "pending_pcm_bytes": 11520,
+      "perceptual_quality": "NOT_RUN",
+      "physical_microphone_speaker": "NOT_RUN",
+      "played_pcm_bytes": 53760,
+      "played_pcm_sha256": "ccda9cf40688346b658929d145f0fc03ff050b4f4ce7eda3201f94b90a37b003",
+      "post_barge_transcript": "Repeat the following sentence sixteen times with no introduction or numbering. The small lantern glows beside the quiet river.",
+      "raw_events": {
+        "bytes": 1083021,
+        "sha256": "dbf394558bc34125f1be0ffae52d701cb0c42f069601a75bd1cc5fc22155a05c"
+      },
+      "raw_records": 383,
+      "stale_output_events": 0,
+      "status": "PASS",
+      "timings_ms": {
+        "barge_to_new_audio_ms": 10751.01164,
+        "cancel_to_digital_silence_ms": 96.710281,
+        "first_interrupt_ms": 3.619304,
+        "post_barge_ttfa_from_asr_final_ms": 532.56765,
+        "second_interrupt_ms": 1.321447
+      },
+      "verification_sha256": "8b26a265d310cc01c1d6c2cf457e500771d409a23e2c86373dd7717de0c4bcbb"
+    },
+    "umm_test_local": {
+      "exit_code": 0,
+      "log_sha256": "9991f0498ff2ab43c175880b59cf677cff12ba7c1a783130dda3ecc686843992",
+      "status": "PASS"
+    }
+  },
+  "evidence_policy": "Raw PCM, wire events, logs and media stay in the caller-selected external bundle; tracked scorecard contains compact hashes/results only.",
+  "exact_pairing": {
+    "pairs": [
+      {
+        "checks": [
+          {
+            "field": "transcripts",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_response_text_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_response_text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "history.accepted_cursors",
+            "pass": true
+          },
+          {
+            "field": "history.vlm_prompts_sha256",
+            "pass": true
+          }
+        ],
+        "pass": true
+      },
+      {
+        "checks": [
+          {
+            "field": "transcripts",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_response_text_sha256",
+            "pass": false
+          },
+          {
+            "field": "second_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_response_text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "history.accepted_cursors",
+            "pass": true
+          },
+          {
+            "field": "history.vlm_prompts_sha256",
+            "pass": true
+          }
+        ],
+        "pass": false
+      },
+      {
+        "checks": [
+          {
+            "field": "transcripts",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "first_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "first_barge.old_response_text_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_cursor",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.acknowledged_text",
+            "pass": true
+          },
+          {
+            "field": "second_barge.played.played_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.pending_pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "second_barge.old_response_text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.text_sha256",
+            "pass": true
+          },
+          {
+            "field": "final_response.pcm_sha256",
+            "pass": true
+          },
+          {
+            "field": "history.accepted_cursors",
+            "pass": true
+          },
+          {
+            "field": "history.vlm_prompts_sha256",
+            "pass": true
+          }
+        ],
+        "pass": true
+      }
+    ],
+    "pass": false
+  },
+  "failures": [
+    "exact_pairing",
+    "replay_inclusive_barge_to_new_audio_max_strictly_below_800",
+    "same_source_diagnostic_A/A"
+  ],
+  "preregistration_sha256": "caa4d56171ece814b298fd9764ec3dadd5aa1f860cdf6d947582ac811b298f80",
+  "promotion_status": "NOT_PROMOTED",
+  "schema": "umminfer-ns04-replay-lifecycle-scorecard/v1",
+  "source_identity": {
+    "accepted_parent_commit": "15f54b98389ffecf0f9d100b0c9b4855975fe90d",
+    "binaries_by_arm": {
+      "after": {
+        "umm-infer": {
+          "bytes": 54919480,
+          "sha256": "0f1850cb894896af2c5ded6678d559356eab9ae4a6353d4c454d36244d4e4562"
+        },
+        "umm-native-stage-asr": {
+          "bytes": 3247560,
+          "sha256": "c28062aaace956e8a926fcf41fa86a4ea6c040fa543558bccc0776afbb62e834"
+        },
+        "umm-native-stage-qwen38": {
+          "bytes": 3639520,
+          "sha256": "a3930bd382487c32315e3c869f1ab31e87c0c1a61515ab938cad85f15678f33b"
+        },
+        "umm-native-stage-tts": {
+          "bytes": 3222312,
+          "sha256": "90fa74a114e96c621a7f36885a596f8f5b3442ddf1ea79098317c737f65cc86f"
+        }
+      },
+      "before": {
+        "umm-infer": {
+          "bytes": 54919480,
+          "sha256": "0f1850cb894896af2c5ded6678d559356eab9ae4a6353d4c454d36244d4e4562"
+        },
+        "umm-native-stage-asr": {
+          "bytes": 3247560,
+          "sha256": "c28062aaace956e8a926fcf41fa86a4ea6c040fa543558bccc0776afbb62e834"
+        },
+        "umm-native-stage-qwen38": {
+          "bytes": 3639520,
+          "sha256": "a3930bd382487c32315e3c869f1ab31e87c0c1a61515ab938cad85f15678f33b"
+        },
+        "umm-native-stage-tts": {
+          "bytes": 3222312,
+          "sha256": "90fa74a114e96c621a7f36885a596f8f5b3442ddf1ea79098317c737f65cc86f"
+        }
+      }
+    },
+    "candidate_runtime_changed": false,
+    "execution_commit_by_arm": {
+      "after": "310a9dd46f0bd893421ad83c07c9cf4dcfc21f2a",
+      "before": "310a9dd46f0bd893421ad83c07c9cf4dcfc21f2a"
+    },
+    "harness": {
+      "bytes": 23369,
+      "sha256": "2dcdfeb6db1866b93a95f2f02b532554cd6995688d176218e64405e5df5e0d94"
+    },
+    "model_manifest_sha256": {
+      "asr": "a16807fc65e05f36687484bdfb8cb9f103c3fb59f6787d1f904f3ffebf8a3005",
+      "tts": "92db72616c9578462add19ed81720b7abf1c1e9c3f4d225877a1cd6104d2fb27",
+      "vlm": "fb2a8751df1dfbcdf556988acd8e2ac7c6f7180c609797d5e9b3a8e3e40a1c7e"
+    },
+    "verifier_sha256": "bf124a45c8369bd694f4d5a9ce42845881711d9fcce83b7522a8949186c8cdc1"
+  }
+}

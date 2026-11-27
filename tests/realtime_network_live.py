@@ -43,6 +43,9 @@ echo = load_module("umminfer_full_duplex_echo_helpers", ROOT / "tests/full_duple
 
 FRAME_BYTES = 320
 CHUNK_BYTES = 3200
+ASR_GPU = 0
+VLM_GPU = 1
+TTS_GPU = 1
 SILENCE_MS = 400
 END_SILENCE = bytes(16000 * 2 * 6 // 10)
 CUTIN_TYPES = {
@@ -118,7 +121,7 @@ def gpu_state(gpu):
 
 
 def preflight():
-    rows = {str(gpu): gpu_state(gpu) for gpu in (0, 1)}
+    rows = {str(gpu): gpu_state(gpu) for gpu in sorted({ASR_GPU, VLM_GPU, TTS_GPU})}
     for gpu, row in rows.items():
         require(row["memory_used_mib"] <= 64 and row["utilization_percent"] == 0 and
                 not row["compute_processes"], f"assigned GPU {gpu} is not idle: {row}")
@@ -226,8 +229,10 @@ def normalize_vlm_messages(messages):
 
 class VlmObserver:
     """Byte-preserving PUSH/PULL forwarding; no model result is synthesized."""
-    def __init__(self, public_endpoint, native_endpoint, output_path):
+    def __init__(self, public_endpoint, native_endpoint, output_path, capture_all=False):
         import zmq
+        self.capture_all = capture_all
+        self.auxiliary = []
         self.context = zmq.Context()
         self.public = self.context.socket(zmq.PULL)
         self.public.bind(public_endpoint)
@@ -259,14 +264,16 @@ class VlmObserver:
                     request = data.get("request", {})
                     inputs = request.get("inputs", {})
                     messages = inputs.get("messages")
-                    if not isinstance(messages, list):
+                    if not isinstance(messages, list) and not self.capture_all:
                         continue
-                    normalized = normalize_vlm_messages(messages)
                     row = {"observed_monotonic_ns": time.monotonic_ns(),
                            "request_id": message.get("request_id"),
-                           "messages": normalized,
                            "raw_sha256": sha(frames[0]),
                            "raw_base64": base64.b64encode(frames[0]).decode()}
+                    if isinstance(messages, list):
+                        row["messages"] = normalize_vlm_messages(messages)
+                    if self.capture_all and isinstance(inputs.get("text"), str):
+                        row["text_sha256"] = sha(inputs["text"].encode())
                     output.write((json.dumps(row, sort_keys=True) + "\n").encode())
                     self.rows += 1
         except Exception as error:
@@ -280,6 +287,8 @@ class VlmObserver:
         self.context.term()
         if self.error:
             raise self.error
+        for auxiliary in self.auxiliary:
+            auxiliary.close()
 
 
 def start_stack(args, ports, out, logs):
@@ -291,23 +300,30 @@ def start_stack(args, ports, out, logs):
     paths = {name: f"ipc://{ipc}/{name}" for name in
              ("asr", "vlm-native", "vlm-public", "tts", "completion", "abort")}
     observer = VlmObserver(paths["vlm-public"], paths["vlm-native"], out / "vlm-prompts.jsonl")
+    tts_receive_endpoint = paths["tts"]
+    if getattr(args, "capture_tts_submits", False):
+        paths["tts-native"] = f"ipc://{ipc}/tts-native"
+        observer.auxiliary.append(VlmObserver(
+            paths["tts"], paths["tts-native"], out / "tts-submits.jsonl",
+            capture_all=True))
+        tts_receive_endpoint = paths["tts-native"]
     procs = {}
     try:
         procs["asr"] = OwnedProc("asr", [
             args.bin_dir / "umm-native-stage-asr", "--kind", "asr", "--name", "asr",
-            "--model", args.asr_model, "--gpu", 0,
+            "--model", args.asr_model, "--gpu", ASR_GPU,
             "--recv-endpoint", paths["asr"], "--coordinator-endpoint", paths["completion"],
             "--abort-endpoint", paths["abort"]], logs / "asr.log")
         procs["vlm"] = OwnedProc("vlm", [
             args.bin_dir / "umm-native-stage-qwen38", "--kind", "qwen38", "--name", "vlm",
-            "--model", args.vlm_model, "--gpu", 1,
+            "--model", args.vlm_model, "--gpu", VLM_GPU,
             "--recv-endpoint", paths["vlm-native"], "--coordinator-endpoint", paths["completion"],
             "--abort-endpoint", paths["abort"], "--max-new-tokens", args.vlm_max_tokens],
             logs / "vlm.log")
         procs["tts"] = OwnedProc("tts", [
             args.bin_dir / "umm-native-stage-tts", "--kind", "tts", "--name", "tts",
-            "--model", args.tts_model, "--gpu", 1,
-            "--recv-endpoint", paths["tts"], "--coordinator-endpoint", paths["completion"],
+            "--model", args.tts_model, "--gpu", TTS_GPU,
+            "--recv-endpoint", tts_receive_endpoint, "--coordinator-endpoint", paths["completion"],
             "--abort-endpoint", paths["abort"], "--max-frames", args.tts_max_frames],
             logs / "tts.log")
         procs["server"] = OwnedProc("server", [
@@ -822,6 +838,7 @@ def echo_and_double_talk(client, user, out):
 
 
 def main():
+    global ASR_GPU, VLM_GPU, TTS_GPU
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, required=True)
     parser.add_argument("--asr-model", type=Path, required=True)
@@ -835,7 +852,11 @@ def main():
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--vlm-max-tokens", type=int, default=96)
     parser.add_argument("--tts-max-frames", type=int, default=192)
+    parser.add_argument("--gpu", type=int, choices=(0, 1, 7),
+                        help="use one explicitly idle physical GPU for all three serial stages")
     args = parser.parse_args()
+    if args.gpu is not None:
+        ASR_GPU = VLM_GPU = TTS_GPU = args.gpu
     require(args.rounds >= 2, "at least two rounds are required")
     require(args.bin_dir.is_absolute() and args.out.is_absolute() and args.log_dir.is_absolute(),
             "binary/output/log paths must be absolute")
@@ -854,7 +875,7 @@ def main():
         "validation_class": "REAL_DIGITAL_LOOPBACK_NETWORK_AND_NATIVE_MODELS",
         "physical_microphone_speaker": "NOT_COVERED",
         "perceptual_listening_quality": "NOT_COVERED",
-        "gpus": {"asr": 0, "vlm": 1, "tts": 1},
+        "gpus": {"asr": ASR_GPU, "vlm": VLM_GPU, "tts": TTS_GPU},
         "gpu_preflight": preflight(),
         "ports": {},
         "queue_contract": {"outbound_frames": 1024, "partial_events": 4096,
