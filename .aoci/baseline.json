@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-27T00:34:01Z",
+  "updated_at": "2026-11-27T00:36:59Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "ee785e39f690a15df7ad5a7d393add956d94e734ced088bf426bbebf0e0bf175",
-      "size": 318718,
-      "normalized_sha256": "ee785e39f690a15df7ad5a7d393add956d94e734ced088bf426bbebf0e0bf175"
+      "sha256": "e29bd3a4d6108a2ca51afb7e5a164becd4aa91f2823e8005b5258471ad26f56b",
+      "size": 319758,
+      "normalized_sha256": "e29bd3a4d6108a2ca51afb7e5a164becd4aa91f2823e8005b5258471ad26f56b"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -881,9 +881,9 @@
     },
     "build.zig": {
       "role": "index",
-      "sha256": "9ae3a1ae19fe36a996c23871adbdcfc49feaeda6a3f66d8f4a85d39f6bf3e370",
-      "size": 10385,
-      "normalized_sha256": "9ae3a1ae19fe36a996c23871adbdcfc49feaeda6a3f66d8f4a85d39f6bf3e370"
+      "sha256": "76558d4bae22691fd3455fc7a5a128ccb0e8d6540073eb49a9ac94c424c16461",
+      "size": 10770,
+      "normalized_sha256": "76558d4bae22691fd3455fc7a5a128ccb0e8d6540073eb49a9ac94c424c16461"
     },
     "clients/ummmlx/.gitignore": {
       "role": "index",
@@ -1157,9 +1157,9 @@
     },
     "docs/architecture.md": {
       "role": "index",
-      "sha256": "e45da7f1d7b9655df063bb3bb7cb6166a0e50d891bc497f41dcf1bb842411ebb",
-      "size": 44609,
-      "normalized_sha256": "e45da7f1d7b9655df063bb3bb7cb6166a0e50d891bc497f41dcf1bb842411ebb"
+      "sha256": "379ce06e4786cd27dcb394c8fdfa0b95e11456104d49df172280853b74fe2a09",
+      "size": 46265,
+      "normalized_sha256": "379ce06e4786cd27dcb394c8fdfa0b95e11456104d49df172280853b74fe2a09"
     },
     "docs/batching.md": {
       "role": "index",
@@ -1335,6 +1335,12 @@
       "size": 50032,
       "normalized_sha256": "36ff468c7d18c89949126795a6548334856c287c043bd897bd7bf8dc7242c0a9"
     },
+    "docs/evidence/public-speech-pcm-gate.json": {
+      "role": "index",
+      "sha256": "58df1aed1fa5d45c6197760a1266b4d560edd88fcf80260762464b7df53dcea2",
+      "size": 3159,
+      "normalized_sha256": "58df1aed1fa5d45c6197760a1266b4d560edd88fcf80260762464b7df53dcea2"
+    },
     "docs/evidence/realtime-first-audio-r4-diagnostic.json": {
       "role": "index",
       "sha256": "885c03e01bf04872c9a063415ab1844405cd38d4eccdacc3853792cf37369902",
@@ -1391,9 +1397,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "94728240f713b4ee6a766f4d21103f9bbb32c047f588f459baf85fe571249b3f",
-      "size": 165584,
-      "normalized_sha256": "94728240f713b4ee6a766f4d21103f9bbb32c047f588f459baf85fe571249b3f"
+      "sha256": "1e337367f25ffb22dd029ec32d9244c76da8741c41d11c01317d708b37e12681",
+      "size": 166641,
+      "normalized_sha256": "1e337367f25ffb22dd029ec32d9244c76da8741c41d11c01317d708b37e12681"
     },
     "docs/flux2-i2v-continuity.md": {
       "role": "index",
@@ -1539,11 +1545,17 @@
       "size": 17399,
       "normalized_sha256": "ed40f33eea13c90f34225fde84981a458ffc4407f011e9797d028b41aa204ee1"
     },
+    "docs/public-speech-pcm-gate.md": {
+      "role": "index",
+      "sha256": "fdeefdf79910e141d5a4ca9e92b0af6d4255a01052704c25bf35d3dd5acd9944",
+      "size": 10633,
+      "normalized_sha256": "fdeefdf79910e141d5a4ca9e92b0af6d4255a01052704c25bf35d3dd5acd9944"
+    },
     "docs/realtime-first-audio.md": {
       "role": "index",
-      "sha256": "3d7eba68fe1934f893c7a79e44bfabd325ff8743c3e704494db1014a92f27ea7",
-      "size": 28150,
-      "normalized_sha256": "3d7eba68fe1934f893c7a79e44bfabd325ff8743c3e704494db1014a92f27ea7"
+      "sha256": "cc744036638e6f939aeead7b363dd7d11d75a95a86a8fa484039a540f34f2b34",
+      "size": 29369,
+      "normalized_sha256": "cc744036638e6f939aeead7b363dd7d11d75a95a86a8fa484039a540f34f2b34"
     },
     "docs/realtime-latency-audit.md": {
       "role": "index",
@@ -1571,9 +1583,9 @@
     },
     "docs/roadmap.md": {
       "role": "index",
-      "sha256": "1ce792f78c6159bf2ea4ce5849382a40a0365c2266e3a2de65203cf318d628a8",
-      "size": 41348,
-      "normalized_sha256": "1ce792f78c6159bf2ea4ce5849382a40a0365c2266e3a2de65203cf318d628a8"
+      "sha256": "0442836d28527281852f19424d2b5fe8df92e5d5ab42a7353b873356faac005e",
+      "size": 42513,
+      "normalized_sha256": "0442836d28527281852f19424d2b5fe8df92e5d5ab42a7353b873356faac005e"
     },
     "docs/showcase.md": {
       "role": "index",
@@ -1793,9 +1805,9 @@
     },
     "native/TTS_NATIVE.md": {
       "role": "index",
-      "sha256": "6814443965b6a05713c7686420176e50fcda349b682710283da1f37844887c0b",
-      "size": 9516,
-      "normalized_sha256": "6814443965b6a05713c7686420176e50fcda349b682710283da1f37844887c0b"
+      "sha256": "8d281cf5238932a80eacb317272c7191f1441602905311eabaa32b18371f3d6b",
+      "size": 10535,
+      "normalized_sha256": "8d281cf5238932a80eacb317272c7191f1441602905311eabaa32b18371f3d6b"
     },
     "native/cli/main.cpp": {
       "role": "index",
@@ -3972,6 +3984,24 @@
       "sha256": "8296665afc393d2ebcd29d8416808080ca92233e48e65716c133c7b289e15e5a",
       "size": 26506,
       "normalized_sha256": "8296665afc393d2ebcd29d8416808080ca92233e48e65716c133c7b289e15e5a"
+    },
+    "tests/public_speech_pcm_live.py": {
+      "role": "observe",
+      "sha256": "529a04517aad6a93a1e6aba51c56786b56429e38613ff68802d64eb3815a542f",
+      "size": 39999,
+      "normalized_sha256": "529a04517aad6a93a1e6aba51c56786b56429e38613ff68802d64eb3815a542f"
+    },
+    "tests/public_speech_pcm_test.py": {
+      "role": "observe",
+      "sha256": "eb3585d3469a348594ae5620756e4fcb493f49f9ba1b395c3ae1e6c290f3afe9",
+      "size": 16077,
+      "normalized_sha256": "eb3585d3469a348594ae5620756e4fcb493f49f9ba1b395c3ae1e6c290f3afe9"
+    },
+    "tests/public_speech_pcm_verify.py": {
+      "role": "observe",
+      "sha256": "f0778a4a1929a6937dc4c06312aefb1a023c89a93a98be368b88738260e30cd6",
+      "size": 43442,
+      "normalized_sha256": "f0778a4a1929a6937dc4c06312aefb1a023c89a93a98be368b88738260e30cd6"
     },
     "tests/realtime_client_contract_e2e.py": {
       "role": "observe",
