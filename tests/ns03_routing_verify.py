@@ -436,6 +436,12 @@ def aggregate(results, population, kind=None):
             "followup_accuracy": sum(r.get("followup_correct") is True for r in followups) / len(followups) if followups else None}
 
 
+def compare_case_hashes(produced, current_record):
+    for field in ("raw_response_sha256", "clean_text_sha256", "request_sha256"):
+        require(produced.get(field) == current_record.get(field),
+                f"scorecard {field} differs from reconstructed raw evidence")
+
+
 def followup_history_gate(before, after):
     def history(results):
         correct = sum(result.get("followup_correct") is True for result in results)
@@ -447,6 +453,18 @@ def followup_history_gate(before, after):
     return {"before": before_history, "after": after_history, "target": 0.8,
             "before_to_after_gain": gain, "target_met": after_history["accuracy"] >= 0.8,
             "verifiable_gain": gain > 0}
+
+
+def require_historical_capture_order(run_times, evaluation_frozen):
+    """Enforce the frozen order for an already-frozen historical candidate."""
+    ordered = ("development/before", "development/after", "heldout/before", "heldout/after")
+    require(set(run_times) == set(ordered), "historical reevaluation requires exactly four arms")
+    for key in ordered:
+        require(run_times[key][0] >= evaluation_frozen,
+                f"{key} started before historical reevaluation freeze")
+    for previous, current in zip(ordered, ordered[1:]):
+        require(run_times[previous][1] <= run_times[current][0],
+                f"frozen arm order violated: {previous} did not finish before {current}")
 
 
 def verify(root, ffmpeg):
@@ -475,6 +493,14 @@ def verify(root, ffmpeg):
     require(candidate["suite_canonical_sha256"] == sha_bytes(canonical(suite)) and
             candidate["frozen_before_heldout"] is True and
             candidate.get("evaluation_frozen_at_utc"), "candidate freeze evidence is incomplete")
+    historical = candidate.get("historical_candidate")
+    if historical is not None:
+        require(isinstance(historical, dict) and
+                historical.get("prompt_path") == "src/pipeline/narrative_prompt.cpp" and
+                len(historical.get("execution_commit", "")) == 40 and
+                historical.get("prompt_sha256") ==
+                candidate["source_sha256"]["src/pipeline/narrative_prompt.cpp"],
+                "After prompt bytes do not match the historical candidate binding")
     evaluation_frozen = datetime.fromisoformat(candidate["evaluation_frozen_at_utc"])
     reused_before = candidate.get("comparator_before_reused", False)
     require(isinstance(reused_before, bool), "comparator_before_reused must be boolean")
@@ -531,6 +557,7 @@ def verify(root, ffmpeg):
         expected_sources = BASELINE_SOURCES if key.endswith("/before") else candidate["source_sha256"]
         expected_base = OFFICIAL_BEFORE if key.endswith("/before") else candidate["base_commit"]
         baseline_binding = identity.get("baseline_manifest")
+        baseline = None
         if focused_followup and key.endswith("/before"):
             require(baseline_binding is not None,
                     f"{key}: focused Before requires a Task83 baseline manifest")
@@ -613,8 +640,11 @@ def verify(root, ffmpeg):
                 f"{key}: case-class identity mismatch")
         require(case_class == ("followup" if focused_followup else "all"),
                 f"{key}: wrong case class for scorecard format")
-        initial_history = arm == "after" and candidate.get("first_turn_history") is True
-        require(identity.get("initial_history", initial_history) == initial_history,
+        binding = baseline if arm == "before" and baseline is not None else candidate
+        initial_history = binding.get(
+            "initial_history", arm == "after" and candidate.get("first_turn_history") is True)
+        require(isinstance(initial_history, bool) and
+                identity.get("initial_history", initial_history) == initial_history,
                 f"{key}: initial-history identity mismatch")
         observer_marked = identity.get("vlm_observer", False)
         require(isinstance(observer_marked, bool), f"{key}: vlm_observer must be boolean")
@@ -679,6 +709,13 @@ def verify(root, ffmpeg):
         for key in ("development/after", "heldout/after"):
             require(run_times[key][0] >= evaluation_frozen,
                     f"{key} started before final candidate freeze")
+    elif historical is not None:
+        # The historical candidate was frozen before this justified reevaluation;
+        # every fresh paired capture follows the reevaluation freeze, with no
+        # observation-driven prompt change.
+        require(candidate.get("initial_history") is True,
+                "historical reevaluation must preserve first-turn history in both arms")
+        require_historical_capture_order(run_times, evaluation_frozen)
     elif not reused_before:
         require(run_times["development/before"][1] <= evaluation_frozen,
                 "development Before did not finish before final candidate freeze")
@@ -691,6 +728,7 @@ def verify(root, ffmpeg):
             produced = producer_cases[result["case_id"]]
             current_record = result["_record"]
             setup = result["_setup"]
+            compare_case_hashes(produced, current_record)
             require(produced["public_leg_errors"] == current_record["leg_errors"] and
                     produced["all_output_legs_completed"] == (not current_record["leg_errors"]) and
                     produced["media_errors"] == current_record["media_errors"],

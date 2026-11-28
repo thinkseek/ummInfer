@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -113,6 +114,76 @@ class NS03RoutingTest(unittest.TestCase):
         self.assertEqual(text, verify.expected_request(self.cases["dev-text-01"], "legacy", False))
         self.assertEqual(setup, verify.expected_request(self.cases["dev-followup-01"], "legacy", True))
         self.assertEqual(answer, verify.expected_request(self.cases["dev-followup-01"], "legacy", False))
+
+    def test_reevaluation_after_bytes_match_historical_candidate(self):
+        path = ROOT / "benchmarks/ns03-routing/reevaluation-candidate.json"
+        candidate = ns03.load_json(path)
+        historical = candidate["historical_candidate"]
+        self.assertEqual(historical["execution_commit"],
+                         "806b2e2033b3f63993f4c803a67334917eab03d9")
+        self.assertEqual(historical["corrected_final_commit"],
+                         "a7021f2b55b4dce077971df86e6a17961b831125")
+        prompt_path = historical["prompt_path"]
+        self.assertEqual(prompt_path, "src/pipeline/narrative_prompt.cpp")
+        self.assertEqual(historical["prompt_sha256"],
+                         "ecad59055b103f47f9cb09d7d87519936adb70c93f9bba50e51f692173fbd77a")
+        self.assertEqual(candidate["source_sha256"][prompt_path], historical["prompt_sha256"])
+        def has_commit(rev):
+            return subprocess.run(
+                ["git", "cat-file", "-e", f"{rev}^{{commit}}"],
+                cwd=ROOT, capture_output=True).returncode == 0
+
+        if has_commit(historical["execution_commit"]):
+            historical_bytes = subprocess.run(
+                ["git", "show", f"{historical['execution_commit']}:{prompt_path}"],
+                cwd=ROOT, check=True, capture_output=True).stdout
+            self.assertEqual(ns03.sha256_bytes(historical_bytes), historical["prompt_sha256"])
+        # Resolve both declared execution commits to bytes when present in local object store.
+        if has_commit(candidate["execution_commit"]) and has_commit(candidate["base_commit"]):
+            for source_path, digest in candidate["source_sha256"].items():
+                execution_bytes = subprocess.run(
+                    ["git", "show", f"{candidate['execution_commit']}:{source_path}"],
+                    cwd=ROOT, check=True, capture_output=True).stdout
+                self.assertEqual(ns03.sha256_bytes(execution_bytes), digest, source_path)
+                baseline_bytes = subprocess.run(
+                    ["git", "show", f"{candidate['base_commit']}:{source_path}"],
+                    cwd=ROOT, check=True, capture_output=True).stdout
+                baseline_digest = (live.BASELINE_SOURCES[prompt_path] if source_path == prompt_path
+                                   else digest)
+                self.assertEqual(ns03.sha256_bytes(baseline_bytes), baseline_digest, source_path)
+        # The test remains valid after a NOT_PROMOTED decision removes the candidate.
+        self.assertIn(ns03.sha256_file(ROOT / prompt_path), {
+            live.BASELINE_SOURCES[prompt_path], historical["prompt_sha256"]})
+
+    def test_reevaluation_compact_evidence_is_sealed_and_nonpromoted(self):
+        path = ROOT / "docs/evidence/ns03-frozen-prompt-reevaluation-sm90.json"
+        evidence = ns03.load_json(path)
+        self.assertEqual(ns03.sha256_file(path),
+                         "31865ceddc2f9d28d1d05058d975737e64194f2d1968ab19a2239a301912ac9e")
+        self.assertEqual(evidence["decision"], "NOT_PROMOTED")
+        self.assertEqual(evidence["before_after_pooled"]["before"]["routing_correct"], 32)
+        self.assertEqual(evidence["before_after_pooled"]["after"]["routing_correct"], 33)
+        self.assertEqual(evidence["before_after_pooled"]["before"]["cases"], 40)
+        self.assertEqual(evidence["before_after_pooled"]["after"]["cases"], 40)
+        self.assertEqual(evidence["before_after_pooled"]["after"]["followup_correct"], 10)
+        self.assertEqual(evidence["before_after_pooled"]["after"]["empty_prose_cases"], 6)
+        self.assertEqual(evidence["before_after_pooled"]["after"]["voice_missing_cases"], 6)
+        self.assertEqual(evidence["paired"]["all"]["improved_cases"], [
+            "dev-dynamic-02", "dev-static-05", "hold-dynamic-02", "hold-dynamic-03"])
+        self.assertEqual(evidence["paired"]["all"]["worsened_cases"], [
+            "dev-static-02", "hold-static-02", "hold-static-04"])
+        self.assertEqual(evidence["raw_verification"]["independent_result"]["result"], "PASS")
+        self.assertEqual(evidence["raw_verification"]["manifest_file_count"], 512)
+
+    def test_reevaluation_binds_history_fix_independently_from_prompt_arm(self):
+        baseline = {"initial_history": True}
+        candidate = {"initial_history": True}
+        self.assertTrue(live.arm_initial_history("before", baseline, candidate))
+        self.assertTrue(live.arm_initial_history("after", baseline, candidate))
+        self.assertFalse(live.arm_initial_history("before", {"initial_history": False}, candidate))
+        self.assertTrue(live.arm_initial_history("after", None, {}))
+        with self.assertRaises(AssertionError):
+            live.arm_initial_history("before", {"initial_history": "true"}, candidate)
 
     def test_first_turn_history_after_request_matches_independent_shape(self):
         for case, setup, followup in ((self.cases["dev-text-01"], False, False),
@@ -375,6 +446,32 @@ class NS03RoutingTest(unittest.TestCase):
         runs["development/before"]["case_class"] = "all"
         with self.assertRaises(ValueError):
             ns03.make_followup_scorecard(self.suite, self.prereg, runs, {}, candidate)
+
+    def test_independent_scorecard_answer_and_request_hashes_are_bound(self):
+        produced = {"raw_response_sha256": "a" * 64,
+                    "clean_text_sha256": "b" * 64, "request_sha256": "c" * 64}
+        verify.compare_case_hashes(produced, dict(produced))
+        for field in produced:
+            changed = dict(produced)
+            changed[field] = "d" * 64
+            with self.assertRaises(AssertionError):
+                verify.compare_case_hashes(produced, changed)
+
+    def test_historical_reevaluation_requires_exact_arm_order(self):
+        freeze = verify.datetime.fromisoformat("2026-11-28T00:00:00+00:00")
+        times = {}
+        for index, key in enumerate(("development/before", "development/after",
+                                     "heldout/before", "heldout/after")):
+            start = freeze.replace(hour=index + 1)
+            times[key] = (start, start.replace(minute=30))
+        verify.require_historical_capture_order(times, freeze)
+        times["heldout/before"] = (times["development/after"][0],
+                                   times["development/after"][1])
+        with self.assertRaises(AssertionError):
+            verify.require_historical_capture_order(times, freeze)
+        with self.assertRaises(AssertionError):
+            verify.require_historical_capture_order({"development/before": times["development/before"]},
+                                                    freeze)
 
     def test_exact_paired_sign_test(self):
         before = [record() for _ in range(3)]

@@ -291,3 +291,93 @@ Human/perceptual review, macOS execution, new/restarted-server history restorati
 and resident deployment remain `NOT_RUN`/`NOT_CLAIMED`. All final task-owned model
 processes stopped and physical GPU 1 returned to 3 MiB/0%; the resident service and
 all other GPUs were untouched.
+
+<a id="task-91-ns03-reevaluation"></a>
+## Task #91 — one frozen-prompt reevaluation after the history fix: NOT_PROMOTED
+
+Task #91 performed the single justified reevaluation of the unchanged Task #78
+candidate on top of the accepted Task #84 behavior. The accepted baseline is
+`0218977537f5d3ffb465ef5a1657474ba51d6eb8`; the paired-history protocol is
+`e520edd696ec835073425d25ff8997e17ce6de1b`, and the candidate execution is
+`0ea66e5cacffbfa57f2af1b442b93c8715420378`. The candidate's sole runtime change is
+the historical `narrative_prompt.cpp` from execution
+`806b2e2033b3f63993f4c803a67334917eab03d9`, SHA-256
+`ecad59055b103f47f9cb09d7d87519936adb70c93f9bba50e51f692173fbd77a`; corrected Task
+#78 final `a7021f2b55b4dce077971df86e6a17961b831125` remains the historical record.
+Commit `48659babb567bd259de01ca5f8d22f529030af6a` removes the candidate after the observed regression. The final
+default prompt is again SHA-256 `0c495a88…dc7b`.
+
+Both fresh arms sent `session_history=true` from the first turn. Suite bytes,
+preregistration, public request shape, omitted seeds, histories, model trees, and
+scoring formulas were not changed; verification added only identity/order bindings.
+The four arms ran in frozen
+order on physical GPU 1: development Before/After, then held-out Before/After. The
+100 public streams comprise 80 primary streams and 20 real setup streams. Raw SSE,
+all media and terminal records, public PCM, exact post-prepend VLM MessagePack
+messages, and process/GPU records remain in the external bundle. No model request
+was retried. Two preflight launch attempts stopped before any model request, one
+because the reused model-manifest path was absent; they are not in any denominator.
+
+### Real paired results
+
+| Population | Before routing | After routing | Before redundant image/video | After redundant image/video | Before/After follow-up context | Before/After empty prose | Before/After missing voice |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Development | 15/20 = 75% | 16/20 = 80% | 1/0 | 0/0 | 5/5 → 5/5 | 0 → 3 | 0 → 3 |
+| Held-out | 17/20 = 85% | 17/20 = 85% | 0/0 | 0/0 | 5/5 → 5/5 | 0 → 3 | 0 → 3 |
+| **All** | **32/40 = 80%** | **33/40 = 82.5%** | **1/0** | **0/0** | **10/10 → 10/10** | **0 → 6** | **0 → 6** |
+
+End-to-end accuracy equals routing accuracy in every arm. All four arms have zero
+media decode failures, zero terminal errors, zero ambiguous/cross-session streams,
+and zero public leg errors. The six empty-prose/visual-only responses are
+`dev-static-02`, `dev-static-04`, `dev-dynamic-03`, `hold-static-02`,
+`hold-static-04`, and `hold-static-05`; their voice is correspondingly absent. These
+are retained failures, not successful visual-only substitutions.
+
+Exact paired routing changes are:
+
+| Population | Improved cases | Worsened cases | Exact McNemar p |
+| --- | --- | --- | ---: |
+| Development | `dev-dynamic-02`, `dev-static-05` | `dev-static-02` | 1.0 |
+| Held-out | `hold-dynamic-02`, `hold-dynamic-03` | `hold-static-02`, `hold-static-04` | 1.0 |
+| **All** | `dev-dynamic-02`, `dev-static-05`, `hold-dynamic-02`, `hold-dynamic-03` | `dev-static-02`, `hold-static-02`, `hold-static-04` | **1.0** |
+
+The fresh Before exactly reproduced all 40 accepted Task #84 answer-text hashes and
+routes. Relative to Task #78 After, all 30 non-follow-up answer hashes/routes and all
+10 setup answer hashes also matched; only the follow-up answers changed under the
+now-fixed real history. Thus the context improvement is preserved, but the original
+candidate's aggregate gain remains one case and is not statistically robust.
+
+The owner's separate minimum passes: After/all and After/held-out routing exceed 80%,
+redundant visuals are below 5%, the paired gain is positive, and held-out routing is
+non-regressing. The frozen owner-only formula therefore says `PROMOTION_ELIGIBLE`.
+Task #91's required decision is nevertheless **NOT_PROMOTED**: 82.5%/85% miss the 90%
+hard ideal, the one-case gain has `p=1.0`, and empty prose/missing voice increase by
+six. The score remains unchanged and the default runtime stays on Task #84.
+
+### Independent verification, controls, and cleanup
+
+The [compact scorecard](evidence/ns03-frozen-prompt-reevaluation-sm90.json) contains
+exact source/binary/model/run identities, every per-case route and hash, all failures,
+population/class aggregates, pair IDs, promotion conditions, and raw hashes. It has
+SHA-256 `31865ceddc2f9d28d1d05058d975737e64194f2d1968ab19a2239a301912ac9e`.
+The complete external self-excluded manifest covers **512 files** with SHA-256
+`297353dadba070bb37b9e57d297c73c0e68c3d3eda64ca371e36c233f89a6b51`; the raw paired
+scorecard is `61ae4659b71976ce9c630cb9fe889d6986f4a4ebc05741e96378eceb724f3d81`.
+Two independent fresh processes returned `PASS`, reconstructed all 80 primary and 20
+setup streams, decoded all media, rebound exact requests and answer/request/response
+hashes, rehashed four model trees, reproduced all scores/statistics/misses, and found
+no task-owned process left. The identical
+[independent report](../benchmarks/ns03-routing/reevaluation-independent-verification.json)
+has SHA-256 `a7ddfcbb8e25679c98bd69804abf8e4a1fbb66a09af68a371ebb148ac45117b9`.
+
+The final default tree passed `umm-test-local` with full observer dependencies,
+ReleaseFast contracts, 23/23 NS-03 deterministic tests, 13/13 NS-08 verifier tests,
+native history-prompt replay, narrative/SSE replay, Web/storyboard/PCM controls, and
+export → clear → import → reconnect lossless lifecycle fixtures. Explicit stateless
+requests, cross-session isolation, and cancelled-turn exclusion remain covered.
+Task #84's accepted NS-08 real evidence is unchanged; no new macOS, human,
+perceptual, physical-playback, production, or restarted-server claim is made.
+
+Each accepted arm ended at `in_flight=0` and GPU 1 at 3 MiB/0% with three consecutive
+idle samples. Only task-owned processes were stopped. GPUs 0/2–7 and the resident
+service were not used or restarted.

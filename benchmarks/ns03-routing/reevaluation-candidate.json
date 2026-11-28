@@ -1,0 +1,34 @@
+{
+  "format": "umminfer-ns03-routing-candidate-v1",
+  "candidate_id": "auto-director-four-route-r1",
+  "reevaluation_id": "ns03-frozen-prompt-after-first-turn-history-r1",
+  "base_commit": "e520edd696ec835073425d25ff8997e17ce6de1b",
+  "benchmark_freeze_commit": "cdb18b834b7dbd6a8a7ca6f68544d26a99227fa7",
+  "harness_fix_commit": "e520edd696ec835073425d25ff8997e17ce6de1b",
+  "execution_commit": "0ea66e5cacffbfa57f2af1b442b93c8715420378",
+  "code_frozen_at_utc": "2026-11-28T07:29:22Z",
+  "evaluation_frozen_at_utc": "2026-11-28T07:29:22Z",
+  "suite_canonical_sha256": "35769692293fb99828ad23f40f1eaf3dd154b4c3c7e9b66b21d71ee27f61b097",
+  "frozen_before_heldout": true,
+  "initial_history": true,
+  "comparator_before_reused": false,
+  "bounded_change": "Re-evaluate only the byte-identical Task #78 default auto director prompt on top of the accepted Task #84 first-turn history fix. Both arms retain initial_history=true. No parser, public schema, client, frame, model, backend, training, or prompt-byte change.",
+  "historical_candidate": {
+    "execution_commit": "806b2e2033b3f63993f4c803a67334917eab03d9",
+    "corrected_final_commit": "a7021f2b55b4dce077971df86e6a17961b831125",
+    "prompt_path": "src/pipeline/narrative_prompt.cpp",
+    "prompt_sha256": "ecad59055b103f47f9cb09d7d87519936adb70c93f9bba50e51f692173fbd77a"
+  },
+  "source_sha256": {
+    "src/pipeline/narrative_prompt.cpp": "ecad59055b103f47f9cb09d7d87519936adb70c93f9bba50e51f692173fbd77a",
+    "src/pipeline/narrative_parser.cpp": "99ae7bbe5056cb26c57b686b6355cc42c2972714b79f80d4393fd00d219cee01",
+    "src/pipeline/narrative_parser.hpp": "36b6c1b80d1c020f28dc11c8b7e4302f16d0760b8dee512022508e90d2d92324",
+    "src/pipeline/unified.cpp": "a0fe78b8d5a0400bab75bbe1c3b6daf7ba33f4f4dddba11de0b7496c2da97601",
+    "src/pipeline/unified_schema.cpp": "c62ce75b576f68669ff15c34d0f1ab605fc7dc36bd4034bbdae769e3ce6efe9a"
+  },
+  "deterministic_red_green": {
+    "historical_test": "test_narrative_director_routing_prompt",
+    "red": "Historical candidate test with unmodified director: 9 focused assertions FAIL; other unified steps pass.",
+    "green": "Historical candidate commit: unified-test PASS. Task #91 adds only historical byte identity and paired-history binding checks."
+  }
+}

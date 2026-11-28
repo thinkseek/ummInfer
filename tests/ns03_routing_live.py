@@ -770,6 +770,16 @@ def capture_request(stack, request, session_id, case_dir, timeout=REQUEST_TIMEOU
     return record
 
 
+def arm_initial_history(arm, baseline=None, candidate=None):
+    """Bind first-turn history independently from the prompt-routing arm."""
+    binding = baseline if arm == "before" else candidate
+    if binding is not None and "initial_history" in binding:
+        require(isinstance(binding["initial_history"], bool),
+                "initial_history binding must be boolean")
+        return binding["initial_history"]
+    return arm == "after"
+
+
 def selected_cases(suite, population, case_class):
     cases = [case for case in suite["cases"] if case["population"] == population and
              (case_class == "all" or case["class"] == case_class)]
@@ -823,15 +833,18 @@ def live(args):
     require(args.arm == "before" or not args.baseline_manifest,
             "--baseline-manifest is valid only for Before")
     baseline = None
+    candidate = None
     if args.baseline_manifest:
         baseline = json.loads(Path(args.baseline_manifest).read_text())
         require(args.execution_commit == args.base_commit,
                 "baseline-manifest Before must execute its base commit")
+    if args.candidate_manifest:
+        candidate = json.loads(Path(args.candidate_manifest).read_text())
     if args.arm == "before" and baseline is None:
         require(args.execution_commit == "91310b36184c86a1c147debb27db8643cc0cb3e4",
                 "Before must execute the unmodified official main commit")
     else:
-        require(args.arm == "before" or args.candidate_manifest,
+        require(args.arm == "before" or candidate is not None,
                 "After requires the frozen candidate manifest")
     out = Path(args.out_dir)
     started_at_utc = datetime.now(timezone.utc).isoformat()
@@ -840,7 +853,7 @@ def live(args):
     (out / "responses").mkdir()
     suite = load_suite(args.suite)
     cases = selected_cases(suite, args.population, args.case_class)
-    initial_history = args.arm == "after"
+    initial_history = arm_initial_history(args.arm, baseline, candidate)
     source_hashes = {name: sha256_file(ROOT / name) for name in BASELINE_SOURCES}
     for name in (*BASELINE_SOURCES, "tests/ns03_routing.py", "tests/ns03_routing_live.py"):
         destination = out / "source" / name
@@ -854,7 +867,6 @@ def live(args):
             require(baseline.get("source_sha256") == source_hashes,
                     "Before source differs from baseline manifest")
     else:
-        candidate = json.loads(Path(args.candidate_manifest).read_text())
         require(candidate["execution_commit"] == args.execution_commit, "candidate commit mismatch")
         require(candidate["source_sha256"] == source_hashes, "candidate source hash mismatch")
     gpu = {"before": gpu_idle(args.nvidia_smi, args.gpu, idle=True)}
