@@ -73,6 +73,37 @@ class PreregistrationTests(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(AssertionError):
                 verify.verify_ns02_preregistration(changed, document["profile_report_sha256"])
 
+    def test_boundary2_protocol_is_distinct_and_all_geometry_gates_stay_frozen(self):
+        path = (Path(__file__).resolve().parent.parent / "benchmarks" /
+                "ns02-fidelity-speedup" / "preregistration.json")
+        document = json.loads(path.read_text())
+        profile = document["profile_report_sha256"]
+        self.assertEqual(live.validate_ns02_preregistration(document, profile), document)
+        verify.verify_ns02_preregistration(document, profile)
+        self.assertEqual(document["candidate_policy"]["protected_step_indices"],
+                         [0, 1, 18, 19])
+        self.assertEqual(document["candidate_policy"]["maximum_hits_per_arm"], 32)
+        self.assertEqual(document["candidate_policy"]["cacheable_step_indices"],
+                         list(range(2, 18)))
+        self.assertNotEqual(document["candidate_id"], "automatic-i2v-teacache-0.25")
+        for mutate in (
+                lambda item: item["candidate_policy"].update(
+                    protected_step_indices=[0, 2, 18, 19]),
+                lambda item: item["candidate_policy"].update(
+                    maximum_hits_per_arm=34),
+                lambda item: item["settings"].update(candidate_effective_teacache=0.2),
+                lambda item: item["regression_gates"].update(minimum_ssim_all=0.5),
+                lambda item: item["regression_gates"].update(
+                    exact_paired_first_frame_rgb=False),
+                lambda item: item.update(created_before_final_candidate_measurement=False)):
+            changed = json.loads(json.dumps(document))
+            mutate(changed)
+            with self.subTest(mutate=mutate):
+                with self.assertRaises(AssertionError):
+                    live.validate_ns02_preregistration(changed, profile)
+                with self.assertRaises(AssertionError):
+                    verify.verify_ns02_preregistration(changed, profile)
+
 
 class MediaMetricTests(unittest.TestCase):
     def test_ffmpeg_ssim_all_layout_is_parsed_by_producer_and_verifier(self):

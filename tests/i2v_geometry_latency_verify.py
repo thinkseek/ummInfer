@@ -36,6 +36,20 @@ NS02_VIDEO_LIMIT_MS = 5000.0
 NS02_CANCEL_LIMIT_MS = 500.0
 NS02_MIN_SSIM = 0.90
 NS02_MIN_PSNR_DB = 24.0
+NS02_BOUNDARY2_FORMAT = "umminfer-ns02-interactive-preview-preregistration-v2"
+NS02_BOUNDARY2_ID = "automatic-i2v-boundary2-teacache-0.25"
+NS02_BOUNDARY2_COMMIT = "b4c92ac1e967aa3b661d42059cff281060c73398"
+NS02_BOUNDARY2_BASE = "b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4"
+NS02_BOUNDARY2_POLICY = {
+    "schedule": "boundary2",
+    "automatic_default": True,
+    "applies_to": "i2v_only",
+    "protected_step_indices": [0, 1, 18, 19],
+    "cacheable_step_indices": list(range(2, 18)),
+    "maximum_hits_per_arm": 32,
+    "expected_total_calls_per_arm": 40,
+    "explicit_request_and_stage_values_override": True,
+}
 FIRST_FRAME_MAX_MAE = 48.0
 MOTION_MIN_MAE = 1.0
 
@@ -380,13 +394,26 @@ def verify_preregistration(document, profile_sha):
 
 
 def verify_ns02_preregistration(document, profile_sha):
-    require(document.get("format") == "umminfer-ns02-interactive-preview-preregistration-v1"
-            and document.get("profile_report_sha256") == profile_sha
-            and document.get("candidate_id") == "automatic-i2v-teacache-0.25"
-            and document.get("candidate_commit") == "3f98fe1645d4d82877372056ba8ad2544aa399c5"
+    historical = (document.get("format")
+                  == "umminfer-ns02-interactive-preview-preregistration-v1")
+    boundary2 = document.get("format") == NS02_BOUNDARY2_FORMAT
+    require(historical or boundary2, "NS-02 preregistration format mismatch")
+    require(document.get("profile_report_sha256") == profile_sha
             and document.get("repetitions") == NS02_REPETITIONS
             and document.get("interleaving_seed") == NS02_INTERLEAVING_SEED,
             "NS-02 preregistration identity/population mismatch")
+    if historical:
+        require(document.get("candidate_id") == "automatic-i2v-teacache-0.25"
+                and document.get("candidate_commit")
+                == "3f98fe1645d4d82877372056ba8ad2544aa399c5",
+                "historical NS-02 candidate identity changed")
+    else:
+        require(document.get("official_base_commit") == NS02_BOUNDARY2_BASE
+                and document.get("candidate_id") == NS02_BOUNDARY2_ID
+                and document.get("candidate_commit") == NS02_BOUNDARY2_COMMIT
+                and document.get("candidate_policy") == NS02_BOUNDARY2_POLICY
+                and document.get("created_before_final_candidate_measurement") is True,
+                "boundary2 NS-02 base, candidate, or frozen schedule changed")
     require(document.get("settings") == {
         "frames": 29, "steps": 20, "fps": 16, "guidance": 5.0, "seed": 42,
         "request_teacache_field": "omitted", "baseline_effective_teacache": 0.0,
@@ -577,6 +604,16 @@ def verify_ns02_candidate(root, args, report, measured, baseline_report, baselin
         and all(value < 0.0 for value in shape_deltas.values())
     video_pass = statistics.median(after) < NS02_VIDEO_LIMIT_MS \
         and quantile(after, 0.95) < NS02_VIDEO_LIMIT_MS
+    per_shape_values = {shape: [item["candidate_ms"] for item in paired
+                                if item["shape"] == shape]
+                        for shape in EXPECTED_CASES}
+    per_shape_video_pass = None
+    if prereg.get("candidate_policy") is not None:
+        per_shape_video_pass = {shape: bool(values)
+                                and max(values) < NS02_VIDEO_LIMIT_MS
+                                for shape, values in per_shape_values.items()}
+        video_pass = max(after) < NS02_VIDEO_LIMIT_MS \
+            and all(per_shape_video_pass.values())
     cancellations = verify_ns02_cancellations(root, report)
     candidate_cancel = cancellations["candidate"]
     cancel_pass = all((candidate_cancel["disconnect_to_native_terminal_ms"] < NS02_CANCEL_LIMIT_MS,
@@ -598,11 +635,23 @@ def verify_ns02_candidate(root, args, report, measured, baseline_report, baselin
             and analysis["cancellation_hard_threshold_pass"] == cancel_pass
             and analysis["cancellations"] == report["cancellations"]
             and analysis["promotion_decision"] == decision
-            and analysis["candidate_id"] == "automatic-i2v-teacache-0.25"
-            and analysis["candidate_commit"] == "3f98fe1645d4d82877372056ba8ad2544aa399c5"
+            and analysis["candidate_id"] == prereg["candidate_id"]
+            and analysis["candidate_commit"] == prereg["candidate_commit"]
+            and analysis.get("candidate_policy") == prereg.get("candidate_policy")
             and analysis["all_observations_retained"] is True
             and analysis["perceptual_quality"] == analysis["human_review"] == "NOT_RUN",
             "NS-02 scorecard or promotion decision mismatch")
+    if prereg.get("candidate_policy") is not None:
+        expected_per_shape = {
+            shape: {**expected_summary(values), "min_ms": min(values),
+                    "max_ms": max(values)}
+            for shape, values in per_shape_values.items()}
+        require(analysis["max_public_complete_artifact_ms"] == max(after)
+                and analysis["per_shape_public_complete_artifact"]
+                == expected_per_shape
+                and analysis["per_shape_video_hard_threshold_pass"]
+                == per_shape_video_pass,
+                "boundary2 per-shape/max latency reporting mismatch")
     return {"latency_verdict": analysis["latency_verdict"],
             "promotion_decision": decision, "median_paired_candidate_minus_baseline_ms": median_delta,
             "median_paired_change_percent": analysis["median_paired_change_percent"],
@@ -682,6 +731,9 @@ def verify_bundle(root, args, nested=False, allow_nested_ns02=False):
                     f"public FLUX response binding mismatch: {shape}")
         sources[shape] = (raw, expected_eval)
 
+    ns02_prereg = None
+    if report["mode"] == "ns02":
+        ns02_prereg = json.loads((root / "preregistration.json").read_text())
     request_ids = set()
     successful = {shape: [] for shape in EXPECTED_CASES}
     measured = []
@@ -777,12 +829,22 @@ def verify_bundle(root, args, nested=False, allow_nested_ns02=False):
                 and phase["source_size"] == size_text(case["source"]),
                 f"native phase/stale geometry mismatch: {run['run_id']}")
         if report["mode"] == "ns02":
-            expected_threshold = 0.25 if run["arm"] == "candidate" else 0.0
+            expected_threshold = (ns02_prereg["settings"]["candidate_effective_teacache"]
+                                  if run["arm"] == "candidate"
+                                  else ns02_prereg["settings"]["baseline_effective_teacache"])
             require(float(phase["teacache_thresh"]) == expected_threshold,
                     f"effective TeaCache threshold mismatch: {run['run_id']}")
             if run["arm"] == "candidate":
                 hits, total = (int(value) for value in phase["teacache_hits"].split("/"))
-                require(0 < hits < total, f"candidate did not use bounded caching: {run['run_id']}")
+                policy = ns02_prereg.get("candidate_policy")
+                if policy is None:
+                    require(0 < hits < total,
+                            f"candidate did not use bounded caching: {run['run_id']}")
+                else:
+                    require(phase.get("teacache_boundary2") == "1"
+                            and 0 < hits <= policy["maximum_hits_per_arm"]
+                            and total == policy["expected_total_calls_per_arm"],
+                            f"boundary2 schedule/cache telemetry mismatch: {run['run_id']}")
         first = ffmpeg_rgb(args.ffmpeg, media_path, *target, frame=0)
         last = ffmpeg_rgb(args.ffmpeg, media_path, *target, frame=28)
         eval_size = [target[0] // 8, target[1] // 8]

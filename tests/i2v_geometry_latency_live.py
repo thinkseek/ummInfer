@@ -54,6 +54,20 @@ NS02_VIDEO_LIMIT_MS = 5000.0
 NS02_CANCEL_LIMIT_MS = 500.0
 NS02_MIN_SSIM = 0.90
 NS02_MIN_PSNR_DB = 24.0
+NS02_BOUNDARY2_FORMAT = "umminfer-ns02-interactive-preview-preregistration-v2"
+NS02_BOUNDARY2_ID = "automatic-i2v-boundary2-teacache-0.25"
+NS02_BOUNDARY2_COMMIT = "b4c92ac1e967aa3b661d42059cff281060c73398"
+NS02_BOUNDARY2_BASE = "b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4"
+NS02_BOUNDARY2_POLICY = {
+    "schedule": "boundary2",
+    "automatic_default": True,
+    "applies_to": "i2v_only",
+    "protected_step_indices": [0, 1, 18, 19],
+    "cacheable_step_indices": list(range(2, 18)),
+    "maximum_hits_per_arm": 32,
+    "expected_total_calls_per_arm": 40,
+    "explicit_request_and_stage_values_override": True,
+}
 PRIMARY_METRIC = "median_paired_public_complete_artifact_ms"
 CASES = {
     "wide": {"source": (704, 480), "target": (704, 480)},
@@ -518,14 +532,26 @@ def validate_preregistration(document):
 
 
 def validate_ns02_preregistration(document, profile_sha256):
-    require(document.get("format") == "umminfer-ns02-interactive-preview-preregistration-v1",
-            "unknown NS-02 preregistration format")
+    historical = (document.get("format")
+                  == "umminfer-ns02-interactive-preview-preregistration-v1")
+    boundary2 = document.get("format") == NS02_BOUNDARY2_FORMAT
+    require(historical or boundary2, "unknown NS-02 preregistration format")
     require(document.get("profile_report_sha256") == profile_sha256
-            and document.get("candidate_id") == "automatic-i2v-teacache-0.25"
-            and document.get("candidate_commit") == "3f98fe1645d4d82877372056ba8ad2544aa399c5"
             and document.get("repetitions") == NS02_REPETITIONS
             and document.get("interleaving_seed") == NS02_INTERLEAVING_SEED,
-            "NS-02 profile, candidate, population, or seed identity changed")
+            "NS-02 profile, population, or seed identity changed")
+    if historical:
+        require(document.get("candidate_id") == "automatic-i2v-teacache-0.25"
+                and document.get("candidate_commit")
+                == "3f98fe1645d4d82877372056ba8ad2544aa399c5",
+                "historical NS-02 candidate identity changed")
+    else:
+        require(document.get("official_base_commit") == NS02_BOUNDARY2_BASE
+                and document.get("candidate_id") == NS02_BOUNDARY2_ID
+                and document.get("candidate_commit") == NS02_BOUNDARY2_COMMIT
+                and document.get("candidate_policy") == NS02_BOUNDARY2_POLICY
+                and document.get("created_before_final_candidate_measurement") is True,
+                "boundary2 NS-02 base, candidate, or frozen schedule changed")
     require(document.get("settings") == {
         "frames": FRAMES, "steps": STEPS, "fps": FPS, "guidance": GUIDANCE,
         "seed": SEED, "request_teacache_field": "omitted",
@@ -790,12 +816,23 @@ def run_live(args):
                 and record["native_phase"]["source_size"] == sources[shape]["source_size"],
                 f"stale native geometry metadata for {run_id}")
         if ns02_mode:
-            expected_teacache = 0.25 if current_arm == "candidate" else 0.0
+            expected_teacache = (prereg["settings"]["candidate_effective_teacache"]
+                                 if current_arm == "candidate"
+                                 else prereg["settings"]["baseline_effective_teacache"])
             require(float(record["native_phase"]["teacache_thresh"]) == expected_teacache,
                     f"effective TeaCache policy drifted for {run_id}")
             if current_arm == "candidate":
-                hits, total = record["native_phase"]["teacache_hits"].split("/")
-                require(0 < int(hits) < int(total), f"candidate did not use bounded cache: {run_id}")
+                hits, total = (int(value) for value in
+                               record["native_phase"]["teacache_hits"].split("/"))
+                policy = prereg.get("candidate_policy")
+                if policy is None:
+                    require(0 < hits < total,
+                            f"candidate did not use bounded cache: {run_id}")
+                else:
+                    require(record["native_phase"].get("teacache_boundary2") == "1"
+                            and 0 < hits <= policy["maximum_hits_per_arm"]
+                            and total == policy["expected_total_calls_per_arm"],
+                            f"boundary2 schedule or cache telemetry drifted for {run_id}")
         eval_size = (target[0] // 8, target[1] // 8)
         first = ffmpeg_rgb(args.ffmpeg, media_path, *target, frame=0)
         last = ffmpeg_rgb(args.ffmpeg, media_path, *target, frame=FRAMES - 1)
@@ -1211,14 +1248,32 @@ def run_live(args):
                     candidate_cancel["disconnect_to_client_settled_ms"] < NS02_CANCEL_LIMIT_MS,
                     candidate_cancel["late_native_records_after_terminal"] == 0,
                     candidate_cancel["health"].get("in_flight") == 0))
+                per_shape_values = {shape: [
+                    item["public_complete_artifact_ms"] for item in runs
+                    if item["arm"] == "candidate" and item["role"] == "measured"
+                    and item["shape"] == shape] for shape in CASES}
                 video_threshold_pass = (statistics.median(candidate_values) < NS02_VIDEO_LIMIT_MS
                                         and quantile(candidate_values, 0.95) < NS02_VIDEO_LIMIT_MS)
+                per_shape_video_pass = None
+                if prereg.get("candidate_policy") is not None:
+                    per_shape_video_pass = {
+                        shape: bool(values) and max(values) < NS02_VIDEO_LIMIT_MS
+                        for shape, values in per_shape_values.items()}
+                    video_threshold_pass = (max(candidate_values) < NS02_VIDEO_LIMIT_MS
+                                            and all(per_shape_video_pass.values()))
                 speed_pass = (median_delta <= -NS02_MIN_SPEEDUP_MS
                               and all(delta < 0.0 for delta in deltas)
                               and all(value < 0.0 for value in shape_deltas.values()))
                 candidate_analysis.update({
-                    "candidate_id": "automatic-i2v-teacache-0.25",
-                    "candidate_commit": "3f98fe1645d4d82877372056ba8ad2544aa399c5",
+                    "candidate_id": prereg["candidate_id"],
+                    "candidate_commit": prereg["candidate_commit"],
+                    "candidate_policy": prereg.get("candidate_policy"),
+                    "max_public_complete_artifact_ms": max(candidate_values),
+                    "per_shape_public_complete_artifact": {
+                        shape: {**summarize(values), "min_ms": min(values),
+                                "max_ms": max(values)}
+                        for shape, values in per_shape_values.items()},
+                    "per_shape_video_hard_threshold_pass": per_shape_video_pass,
                     "shape_median_paired_delta_ms": shape_deltas,
                     "quality_gate_pass": quality_pass, "speed_gate_pass": speed_pass,
                     "video_hard_threshold_pass": video_threshold_pass,
@@ -1370,6 +1425,27 @@ def self_check():
             "immediate_retry_exact_own_arm_hash": True}}
     require(validate_ns02_preregistration(ns02_prereg, "0" * 64) == ns02_prereg,
             "NS-02 preregistration self-check failed")
+    boundary2_prereg = json.loads(json.dumps(ns02_prereg))
+    boundary2_prereg.update({
+        "format": NS02_BOUNDARY2_FORMAT,
+        "official_base_commit": NS02_BOUNDARY2_BASE,
+        "candidate_id": NS02_BOUNDARY2_ID,
+        "candidate_commit": NS02_BOUNDARY2_COMMIT,
+        "candidate_policy": NS02_BOUNDARY2_POLICY,
+        "created_before_final_candidate_measurement": True,
+    })
+    require(validate_ns02_preregistration(boundary2_prereg, "0" * 64)
+            == boundary2_prereg,
+            "boundary2 NS-02 preregistration self-check failed")
+    for bad_step in ([0, 2, 18, 19], [0, 1, 17, 19], [0, 1, 18]):
+        changed = json.loads(json.dumps(boundary2_prereg))
+        changed["candidate_policy"]["protected_step_indices"] = bad_step
+        try:
+            validate_ns02_preregistration(changed, "0" * 64)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("boundary2 accepted an unfrozen cache schedule")
     weakened = dict(ns02_prereg)
     weakened["settings"] = dict(ns02_prereg["settings"], steps=STEPS - 1)
     try:
