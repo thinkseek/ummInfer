@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-18T16:35:17Z",
-  "updated_at": "2026-11-28T11:29:41Z",
+  "updated_at": "2026-11-28T14:53:13Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -41,9 +41,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "9d42c22caa1b134190cbca1fb01629e32ae3edc1368e40ff5948f3cb86f5d057",
-      "size": 370806,
-      "normalized_sha256": "9d42c22caa1b134190cbca1fb01629e32ae3edc1368e40ff5948f3cb86f5d057"
+      "sha256": "ce84aa0ba79f30b158b663e0c366b9fb51907cd8f0106dbdbce9939d27bddae6",
+      "size": 372209,
+      "normalized_sha256": "ce84aa0ba79f30b158b663e0c366b9fb51907cd8f0106dbdbce9939d27bddae6"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -290,6 +290,18 @@
       "sha256": "ccea4d085a743f8f1e412b43c9cdd22c1b1c3f64e6bb51d7fc66355fbfc20f8e",
       "size": 6798,
       "normalized_sha256": "ccea4d085a743f8f1e412b43c9cdd22c1b1c3f64e6bb51d7fc66355fbfc20f8e"
+    },
+    "benchmarks/ns03-routing/reevaluation-candidate.json": {
+      "role": "index",
+      "sha256": "668448c98d264d887f91c3b7ab5814cd34cee341a6fc07553578683455735a5b",
+      "size": 2258,
+      "normalized_sha256": "668448c98d264d887f91c3b7ab5814cd34cee341a6fc07553578683455735a5b"
+    },
+    "benchmarks/ns03-routing/reevaluation-independent-verification.json": {
+      "role": "index",
+      "sha256": "a7ddfcbb8e25679c98bd69804abf8e4a1fbb66a09af68a371ebb148ac45117b9",
+      "size": 374,
+      "normalized_sha256": "a7ddfcbb8e25679c98bd69804abf8e4a1fbb66a09af68a371ebb148ac45117b9"
     },
     "benchmarks/ns03-routing/scorecard.json": {
       "role": "index",
@@ -1611,6 +1623,12 @@
       "size": 19210,
       "normalized_sha256": "a299516c6380a9e549a1d6f3b1e330c002f11abcadb6e1fd487571ebb2c9b6b4"
     },
+    "docs/evidence/ns03-frozen-prompt-reevaluation-sm90.json": {
+      "role": "index",
+      "sha256": "31865ceddc2f9d28d1d05058d975737e64194f2d1968ab19a2239a301912ac9e",
+      "size": 269271,
+      "normalized_sha256": "31865ceddc2f9d28d1d05058d975737e64194f2d1968ab19a2239a301912ac9e"
+    },
     "docs/evidence/ns04-incremental-early-response-sm90.json": {
       "role": "index",
       "sha256": "e0c709abe3ce9b8597e557adb7b9786a36d5983e1954f9f745182e2791ed4b76",
@@ -1871,9 +1889,9 @@
     },
     "docs/feature-map.md": {
       "role": "index",
-      "sha256": "c11de527a0d7e6878d614b8ac6044ab7601e7c40b87de276c14840dcf70097b3",
-      "size": 186388,
-      "normalized_sha256": "c11de527a0d7e6878d614b8ac6044ab7601e7c40b87de276c14840dcf70097b3"
+      "sha256": "67b570ae0d4bedd52af090f2d4c17728f8cdfca3c5be2190b8bc4979c0e41dcf",
+      "size": 187197,
+      "normalized_sha256": "67b570ae0d4bedd52af090f2d4c17728f8cdfca3c5be2190b8bc4979c0e41dcf"
     },
     "docs/flux2-i2v-continuity.md": {
       "role": "index",
@@ -2009,9 +2027,9 @@
     },
     "docs/ns03-autonomous-routing.md": {
       "role": "index",
-      "sha256": "a38281a15a60c1e6e235eef470225d133635717d6484b95c63f5be1667fde93b",
-      "size": 16933,
-      "normalized_sha256": "a38281a15a60c1e6e235eef470225d133635717d6484b95c63f5be1667fde93b"
+      "sha256": "fe59a2666077ddd4a36401593d71dac7d19da5445426d61308059fced7bf282b",
+      "size": 22931,
+      "normalized_sha256": "fe59a2666077ddd4a36401593d71dac7d19da5445426d61308059fced7bf282b"
     },
     "docs/ns04-incremental-early-response.md": {
       "role": "index",
@@ -4627,21 +4645,21 @@
     },
     "tests/ns03_routing_live.py": {
       "role": "observe",
-      "sha256": "ceaf10a79133e1a38bfc7ff2976d440018f6828e08589c2102f598f012ba6559",
-      "size": 48643,
-      "normalized_sha256": "ceaf10a79133e1a38bfc7ff2976d440018f6828e08589c2102f598f012ba6559"
+      "sha256": "523b036a50223e5d714f7dc2505cdaa27022dab9b0d0758dbd7e263ecaddffc1",
+      "size": 49172,
+      "normalized_sha256": "523b036a50223e5d714f7dc2505cdaa27022dab9b0d0758dbd7e263ecaddffc1"
     },
     "tests/ns03_routing_test.py": {
       "role": "observe",
-      "sha256": "7769a57768f77177888c608ed88ff614b13285aa3ec999501e17968090f9c0f3",
-      "size": 24822,
-      "normalized_sha256": "7769a57768f77177888c608ed88ff614b13285aa3ec999501e17968090f9c0f3"
+      "sha256": "c702a1bebd482c6bd95018d946803300ed8159404636b2ca2a8b4e247ac3c346",
+      "size": 31057,
+      "normalized_sha256": "c702a1bebd482c6bd95018d946803300ed8159404636b2ca2a8b4e247ac3c346"
     },
     "tests/ns03_routing_verify.py": {
       "role": "observe",
-      "sha256": "2ab9b473d20e3c1c05f3181720341510e835b5d843d50efcd76328c89a7ec2bd",
-      "size": 49511,
-      "normalized_sha256": "2ab9b473d20e3c1c05f3181720341510e835b5d843d50efcd76328c89a7ec2bd"
+      "sha256": "e93002dd014d0f54fc92dbb274037360617b6458546c4d3670d4189ee0f52f25",
+      "size": 51724,
+      "normalized_sha256": "e93002dd014d0f54fc92dbb274037360617b6458546c4d3670d4189ee0f52f25"
     },
     "tests/ns04_replay_lifecycle_live.py": {
       "role": "observe",
