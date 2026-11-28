@@ -1,0 +1,707 @@
+{
+  "after": {
+    "directives": [
+      {
+        "anchor_explicit": false,
+        "anchor_slot_index": null,
+        "media_type": "image",
+        "slot_id": "slot-0"
+      },
+      {
+        "anchor_explicit": true,
+        "anchor_slot_index": 0,
+        "media_type": "video",
+        "slot_id": "slot-1"
+      }
+    ],
+    "final_in_flight": 0,
+    "first_frame_mae": 3.3563802083333334,
+    "image": {
+      "bytes": 412366,
+      "sha256": "0e2f53e1c26422fba627722b382b5899d7822d6a920b4e2a6bdefdc2100b8686",
+      "slot_id": "slot-0"
+    },
+    "image_decoded_dimensions": [
+      512,
+      512
+    ],
+    "motion_mae": 23.595182291666667,
+    "native_pcm_joins": {
+      "cyberpunk-retry": [
+        {
+          "chunk_count": 2,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 34560,
+          "pcm_sha256": "7538f7d08be72eb8db33af52868aee0de09aa276d604defa9fa6988d3225f8dc",
+          "request_id": "http-4:tts:0",
+          "terminal_wav_sha256": "64da8d0601bc3cc166ad9a1fa3e23be4209fc7504ff22fb13a02561de8ff13dc"
+        },
+        {
+          "chunk_count": 6,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 153600,
+          "pcm_sha256": "7fbd64def4d43a623e1fc702ba1a7e0fb836d705d3a33d9eaefe6b0787b9069d",
+          "request_id": "http-4:tts:1",
+          "terminal_wav_sha256": "12fb7f4952b559d9de02ef2d0cb462c4b788a0e7b93f32c693d965ad5ea14331"
+        },
+        {
+          "chunk_count": 6,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 134400,
+          "pcm_sha256": "4ace543b9119d5b28d1a30938b4fa2b83f20c7645a6d96a2cc473a9dd5118822",
+          "request_id": "http-4:tts:2",
+          "terminal_wav_sha256": "aa54ae349e8b83320d61add45dbaa15e91f52ae831a610d61a86f40e0a68abbf"
+        },
+        {
+          "chunk_count": 2,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 46080,
+          "pcm_sha256": "cce95f0a3252d5685caa0689cb604c122e9cc2eabf47f87068a0923e51c8a0a5",
+          "request_id": "http-4:tts:3",
+          "terminal_wav_sha256": "3421f7a2f0ae604a12d415c0587217dc63e522076ec8582dc76b2f96ed5d74c7"
+        },
+        {
+          "chunk_count": 11,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 295680,
+          "pcm_sha256": "f57e7afbac89b4dab1db7e53c780ca34feb189aca2a7b4a21222ac2100cd9a5a",
+          "request_id": "http-4:tts:4",
+          "terminal_wav_sha256": "4dd3ca9d46018c7e26f015adf98b9f08eb863e32ce73495711f961c62b11a40d"
+        },
+        {
+          "chunk_count": 6,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 161280,
+          "pcm_sha256": "290a8cc12e0afe62614ba69ad617f1448fa981431c8f415be57f0854f3608b75",
+          "request_id": "http-4:tts:5",
+          "terminal_wav_sha256": "b6b0b066dd116890884b7c39e7b8810f1a850bef394f3b28822e40e3ea81a91b"
+        },
+        {
+          "chunk_count": 15,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 426240,
+          "pcm_sha256": "84301a08e4ec4b9dffe019b3035a9373f0404d297d89c390403d9877bd0edf1f",
+          "request_id": "http-4:tts:6",
+          "terminal_wav_sha256": "78f331b1c255e0b03df2e5152c53d00228215cdd70bc37720930fe998adfb34c"
+        },
+        {
+          "chunk_count": 6,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 149760,
+          "pcm_sha256": "73716d952823cac306492a3c1ee5d6e73425d13e0d440ec1fff1ff6f99f77ae2",
+          "request_id": "http-4:tts:7",
+          "terminal_wav_sha256": "0f8a68b23ff2a87e529df0b6bc6b777c5e861232b1315c6909136f55378cbb43"
+        },
+        {
+          "chunk_count": 8,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 191040,
+          "pcm_sha256": "6542000b5db4091d4c840da7142581e4feaf1f12e06b02589f8d82baaed9f07f",
+          "request_id": "http-4:tts:8",
+          "terminal_wav_sha256": "b7ebfbd5fa7d0476934a4ffb1eb97d0047a58fe59a26e8e0b7558fd824010e94"
+        },
+        {
+          "chunk_count": 8,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 203520,
+          "pcm_sha256": "ad27d66adea0311915128b517b0898620409676c156311a229270928a2deb1a8",
+          "request_id": "http-4:tts:9",
+          "terminal_wav_sha256": "a7f466e7827b56cd89948919eca82bb5672d155f94d43613eb93613bf501ed98"
+        },
+        {
+          "chunk_count": 2,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 49920,
+          "pcm_sha256": "423f63de3b20552952460e22e8ee53ddc592dbffb1288edd13a32376b84fde25",
+          "request_id": "http-4:tts:10",
+          "terminal_wav_sha256": "beb6b754586675626efe87b8dab35b793e6da7d24688b2b5035322ae5caf4164"
+        }
+      ],
+      "phone": [
+        {
+          "chunk_count": 4,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 99840,
+          "pcm_sha256": "543b7bae11846e2c3d9e2c0a75d84beb0108b40df25ddb1a7f6d62c9c5f057cf",
+          "request_id": "http-1:tts:0",
+          "terminal_wav_sha256": "f469f512358d0488bfb0ee1f488de2e7b9bfbe77d3f9e974422206194f5a5683"
+        },
+        {
+          "chunk_count": 5,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 122880,
+          "pcm_sha256": "3fbf9de3442ad5544759b7673448f1184a8ac3c367938335bcfacad745d3cdba",
+          "request_id": "http-1:tts:1",
+          "terminal_wav_sha256": "1051ba71d2c3e63b4fe7d37eaf10617f0fcde7b250eccb0bef9416e4a06d579e"
+        }
+      ]
+    },
+    "native_wan_source_exact": true,
+    "native_wan_submit": {
+      "anchor_crop": "center_cover",
+      "anchor_explicit": true,
+      "anchor_sha256": "0e2f53e1c26422fba627722b382b5899d7822d6a920b4e2a6bdefdc2100b8686",
+      "anchor_slot_index": 0,
+      "image_bytes": 412366,
+      "image_sha256": "0e2f53e1c26422fba627722b382b5899d7822d6a920b4e2a6bdefdc2100b8686",
+      "packed_bytes": 413409,
+      "packed_sha256": "fd1e5b2cf8dec2c19cb9932973606b8e585286648d8e55926ee598350e2924ff",
+      "request_id": "http-4:slot:1"
+    },
+    "native_wan_submits": 1,
+    "outcome": "REAL_FLUX_THEN_NATIVE_I2V_COMPLETE",
+    "public": {
+      "cyberpunk-initial": {
+        "asr_transcripts": [
+          "Stop. Turn that driver scene into a cyberpunk night animation and narrate it."
+        ],
+        "public_pcm": "CANCELLED_PREFIX_RETAINED_EXTERNALLY",
+        "raw_sse_sha256": "2ebbb1de2996c46527f2f329cb5621d87d3bc46259ae53acb33a9312a92e99ef",
+        "request_id": "http-3",
+        "request_sha256": "621ab4b4ad0129fe0a04ff97249d301840e972bc3552b59608bbfcefb08b2938",
+        "terminal": "cancelled",
+        "text_bytes": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "cyberpunk-retry": {
+        "asr_transcripts": [
+          "Stop. Turn that driver scene into a cyberpunk night animation and narrate it."
+        ],
+        "public_pcm": {
+          "bytes": 1846080,
+          "chunks": 72,
+          "sha256": "78ac7036c6d80e466a849b30f36832ec6e9a7c7165a3a54477dc1d9c55bb3d8c"
+        },
+        "raw_sse_sha256": "071cc7d70bf72b865cd999a30ef0f9ee0b8ec4b75fdc2b5c50458217092e2537",
+        "request_id": "http-4",
+        "request_sha256": "621ab4b4ad0129fe0a04ff97249d301840e972bc3552b59608bbfcefb08b2938",
+        "terminal": "complete",
+        "text_bytes": 358,
+        "text_sha256": "48a812995758ea1c310b07d60ef7cd111e6cf4b472e34049613f3b11ac21a49e"
+      },
+      "phone": {
+        "asr_transcripts": [
+          "What does the man driving in the opening shot do with his phone? Answer in one short sentence."
+        ],
+        "public_pcm": {
+          "bytes": 222720,
+          "chunks": 9,
+          "sha256": "1e710727e96c254d920a41d0ed0e475fe51accaf38906966ee73b0a9e30ed997"
+        },
+        "raw_sse_sha256": "569076539ca3a8078a35cea2feac79fb63eb2416245cd9c098fec593524010b3",
+        "request_id": "http-1",
+        "request_sha256": "5a761351547061093d3cd3db0a2bd1cba773bd999c85586169d8dd5dd073d3b0",
+        "terminal": "complete",
+        "text_bytes": 41,
+        "text_sha256": "bf190900e8a6bd5489c8f33a6a9e527e6e133b5a305bf56481551f9f76e1ca9a"
+      },
+      "scene": {
+        "asr_transcripts": [
+          "How does the driver change between the opening shot and the final shot? Answer in one short sentence."
+        ],
+        "public_pcm": "CANCELLED_PREFIX_RETAINED_EXTERNALLY",
+        "raw_sse_sha256": "b7107b8585e884df693e17d30c389ce22f9a1d43e074adbe0295a4b79adeb92b",
+        "request_id": "http-2",
+        "request_sha256": "da889a0c2c3ea9c76b70d995e8326e7214ea1bee2ed272adfabbb6a541dc8552",
+        "terminal": "cancelled",
+        "text_bytes": 49,
+        "text_sha256": "f77bc351b98a51263de5656ed679eaf59390d083877bac455f11ffb7834c4587"
+      }
+    },
+    "raw_verification": {
+      "asr_transcripts": {
+        "cyberpunk-initial": [
+          "Stop. Turn that driver scene into a cyberpunk night animation and narrate it."
+        ],
+        "cyberpunk-retry": [
+          "Stop. Turn that driver scene into a cyberpunk night animation and narrate it."
+        ],
+        "phone": [
+          "What does the man driving in the opening shot do with his phone? Answer in one short sentence."
+        ],
+        "scene": [
+          "How does the driver change between the opening shot and the final shot? Answer in one short sentence."
+        ]
+      },
+      "cancel_retry_exact": true,
+      "final_in_flight": 0,
+      "first_frame_mae": 3.3563802083333334,
+      "image_sha256": "0e2f53e1c26422fba627722b382b5899d7822d6a920b4e2a6bdefdc2100b8686",
+      "motion_mae": 23.595182291666667,
+      "native_wan_source_exact": true,
+      "pcm_joins": {
+        "cyberpunk-retry": [
+          {
+            "chunk_count": 2,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 34560,
+            "pcm_sha256": "7538f7d08be72eb8db33af52868aee0de09aa276d604defa9fa6988d3225f8dc",
+            "request_id": "http-4:tts:0",
+            "terminal_wav_sha256": "64da8d0601bc3cc166ad9a1fa3e23be4209fc7504ff22fb13a02561de8ff13dc"
+          },
+          {
+            "chunk_count": 6,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 153600,
+            "pcm_sha256": "7fbd64def4d43a623e1fc702ba1a7e0fb836d705d3a33d9eaefe6b0787b9069d",
+            "request_id": "http-4:tts:1",
+            "terminal_wav_sha256": "12fb7f4952b559d9de02ef2d0cb462c4b788a0e7b93f32c693d965ad5ea14331"
+          },
+          {
+            "chunk_count": 6,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 134400,
+            "pcm_sha256": "4ace543b9119d5b28d1a30938b4fa2b83f20c7645a6d96a2cc473a9dd5118822",
+            "request_id": "http-4:tts:2",
+            "terminal_wav_sha256": "aa54ae349e8b83320d61add45dbaa15e91f52ae831a610d61a86f40e0a68abbf"
+          },
+          {
+            "chunk_count": 2,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 46080,
+            "pcm_sha256": "cce95f0a3252d5685caa0689cb604c122e9cc2eabf47f87068a0923e51c8a0a5",
+            "request_id": "http-4:tts:3",
+            "terminal_wav_sha256": "3421f7a2f0ae604a12d415c0587217dc63e522076ec8582dc76b2f96ed5d74c7"
+          },
+          {
+            "chunk_count": 11,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 295680,
+            "pcm_sha256": "f57e7afbac89b4dab1db7e53c780ca34feb189aca2a7b4a21222ac2100cd9a5a",
+            "request_id": "http-4:tts:4",
+            "terminal_wav_sha256": "4dd3ca9d46018c7e26f015adf98b9f08eb863e32ce73495711f961c62b11a40d"
+          },
+          {
+            "chunk_count": 6,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 161280,
+            "pcm_sha256": "290a8cc12e0afe62614ba69ad617f1448fa981431c8f415be57f0854f3608b75",
+            "request_id": "http-4:tts:5",
+            "terminal_wav_sha256": "b6b0b066dd116890884b7c39e7b8810f1a850bef394f3b28822e40e3ea81a91b"
+          },
+          {
+            "chunk_count": 15,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 426240,
+            "pcm_sha256": "84301a08e4ec4b9dffe019b3035a9373f0404d297d89c390403d9877bd0edf1f",
+            "request_id": "http-4:tts:6",
+            "terminal_wav_sha256": "78f331b1c255e0b03df2e5152c53d00228215cdd70bc37720930fe998adfb34c"
+          },
+          {
+            "chunk_count": 6,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 149760,
+            "pcm_sha256": "73716d952823cac306492a3c1ee5d6e73425d13e0d440ec1fff1ff6f99f77ae2",
+            "request_id": "http-4:tts:7",
+            "terminal_wav_sha256": "0f8a68b23ff2a87e529df0b6bc6b777c5e861232b1315c6909136f55378cbb43"
+          },
+          {
+            "chunk_count": 8,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 191040,
+            "pcm_sha256": "6542000b5db4091d4c840da7142581e4feaf1f12e06b02589f8d82baaed9f07f",
+            "request_id": "http-4:tts:8",
+            "terminal_wav_sha256": "b7ebfbd5fa7d0476934a4ffb1eb97d0047a58fe59a26e8e0b7558fd824010e94"
+          },
+          {
+            "chunk_count": 8,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 203520,
+            "pcm_sha256": "ad27d66adea0311915128b517b0898620409676c156311a229270928a2deb1a8",
+            "request_id": "http-4:tts:9",
+            "terminal_wav_sha256": "a7f466e7827b56cd89948919eca82bb5672d155f94d43613eb93613bf501ed98"
+          },
+          {
+            "chunk_count": 2,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 49920,
+            "pcm_sha256": "423f63de3b20552952460e22e8ee53ddc592dbffb1288edd13a32376b84fde25",
+            "request_id": "http-4:tts:10",
+            "terminal_wav_sha256": "beb6b754586675626efe87b8dab35b793e6da7d24688b2b5035322ae5caf4164"
+          }
+        ],
+        "phone": [
+          {
+            "chunk_count": 4,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 99840,
+            "pcm_sha256": "543b7bae11846e2c3d9e2c0a75d84beb0108b40df25ddb1a7f6d62c9c5f057cf",
+            "request_id": "http-1:tts:0",
+            "terminal_wav_sha256": "f469f512358d0488bfb0ee1f488de2e7b9bfbe77d3f9e974422206194f5a5683"
+          },
+          {
+            "chunk_count": 5,
+            "exact_native_public_wav_join": true,
+            "pcm_bytes": 122880,
+            "pcm_sha256": "3fbf9de3442ad5544759b7673448f1184a8ac3c367938335bcfacad745d3cdba",
+            "request_id": "http-1:tts:1",
+            "terminal_wav_sha256": "1051ba71d2c3e63b4fe7d37eaf10617f0fcde7b250eccb0bef9416e4a06d579e"
+          }
+        ]
+      },
+      "physical_acoustic_and_perceptual": "NOT_RUN",
+      "response_ids": {
+        "cyberpunk-initial": "http-3",
+        "cyberpunk-retry": "http-4",
+        "phone": "http-1",
+        "scene": "http-2"
+      },
+      "stale_or_cross_session_events": 0,
+      "status": "PASS",
+      "video_sha256": "a7283fa962ba77c41cfc38acc83d9945c622ea1ec6156b049a870333832d4d78"
+    },
+    "timing_ms": {
+      "barge_to_initial_terminal": 4549.311552,
+      "barge_to_scene_terminal": 84.093189,
+      "full_barge_to_retry_first_audio": 9875.232186,
+      "phone_first_audio": 2729.582398,
+      "phone_first_text": 2498.156741,
+      "retry_first_audio": 4986.97997,
+      "retry_first_text": 4569.309705
+    },
+    "video": {
+      "anchor_sha256": "0e2f53e1c26422fba627722b382b5899d7822d6a920b4e2a6bdefdc2100b8686",
+      "anchor_slot_index": 0,
+      "bytes": 285195,
+      "sha256": "a7283fa962ba77c41cfc38acc83d9945c622ea1ec6156b049a870333832d4d78",
+      "slot_id": "slot-1"
+    },
+    "video_decoded": {
+      "codec": "h264",
+      "dimensions": [
+        704,
+        480
+      ],
+      "frame_rate": "16/1",
+      "frames": 29,
+      "pixel_format": "yuv420p"
+    }
+  },
+  "base_commit": "0645ec8ccf6dce668aedc4a214bf7da5e7567d32",
+  "before": {
+    "directives": [
+      {
+        "anchor_explicit": true,
+        "media_type": "video",
+        "slot_id": "slot-0"
+      }
+    ],
+    "final_in_flight": 0,
+    "image_artifacts": 0,
+    "native_pcm_joins": {
+      "cyberpunk-retry": [
+        {
+          "chunk_count": 2,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 53760,
+          "pcm_sha256": "6e11a091df34c7402d84bf035a0f8602d11c8d1e0556490834a6d542fdaccb53",
+          "request_id": "http-4:tts:0",
+          "terminal_wav_sha256": "ede668d4b8c2e81e0ee72dd3f1ee1de795362e51032b4c0f19dd665bc60c4283"
+        },
+        {
+          "chunk_count": 8,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 215040,
+          "pcm_sha256": "5c5574227d8f913d2bea4cd487680e8b01be1d67537800a9d3fd39bbcfeb3bc3",
+          "request_id": "http-4:tts:1",
+          "terminal_wav_sha256": "88d7e145922c7e2896b3a6c504709bd49e1dbc8b664cb9c13e8ca6db0f21faa1"
+        },
+        {
+          "chunk_count": 4,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 76800,
+          "pcm_sha256": "015f8e67cd378121d6e64890a5481c95bb6b918197b5b038552709433d59ef9b",
+          "request_id": "http-4:tts:2",
+          "terminal_wav_sha256": "69ecad2ac0d19e14d80402bf5c0e5f8549f2fddd34e0335764a32a395ec9d071"
+        }
+      ],
+      "phone": [
+        {
+          "chunk_count": 4,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 99840,
+          "pcm_sha256": "543b7bae11846e2c3d9e2c0a75d84beb0108b40df25ddb1a7f6d62c9c5f057cf",
+          "request_id": "http-1:tts:0",
+          "terminal_wav_sha256": "f469f512358d0488bfb0ee1f488de2e7b9bfbe77d3f9e974422206194f5a5683"
+        },
+        {
+          "chunk_count": 5,
+          "exact_native_public_wav_join": true,
+          "pcm_bytes": 122880,
+          "pcm_sha256": "3fbf9de3442ad5544759b7673448f1184a8ac3c367938335bcfacad745d3cdba",
+          "request_id": "http-1:tts:1",
+          "terminal_wav_sha256": "1051ba71d2c3e63b4fe7d37eaf10617f0fcde7b250eccb0bef9416e4a06d579e"
+        }
+      ]
+    },
+    "native_wan_submits": 0,
+    "outcome": "EXPECTED_SELF_REFERENCE_FAIL_CLOSED",
+    "public": {
+      "cyberpunk-initial": {
+        "asr_transcripts": [
+          "Stop. Turn that driver scene into a cyberpunk night animation and narrate it."
+        ],
+        "public_pcm": "CANCELLED_PREFIX_RETAINED_EXTERNALLY",
+        "raw_sse_sha256": "0f994d8e687e83bcd10d1f3130cc2a1ceb3752e35697442853fa513092d5557e",
+        "request_id": "http-3",
+        "request_sha256": "621ab4b4ad0129fe0a04ff97249d301840e972bc3552b59608bbfcefb08b2938",
+        "terminal": "cancelled",
+        "text_bytes": 0,
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "cyberpunk-retry": {
+        "asr_transcripts": [
+          "Stop. Turn that driver scene into a cyberpunk night animation and narrate it."
+        ],
+        "public_pcm": {
+          "bytes": 345600,
+          "chunks": 14,
+          "sha256": "61ee204fd69d839dbfafb3935b98196c7f8acf0e3090d01d3e79bf54ea2e9162"
+        },
+        "raw_sse_sha256": "3a7ee884876ff82fc3eaa5260d77328043bd9ccae6288d3b6fc15667d1247c36",
+        "request_id": "http-4",
+        "request_sha256": "621ab4b4ad0129fe0a04ff97249d301840e972bc3552b59608bbfcefb08b2938",
+        "terminal": "complete",
+        "text_bytes": 84,
+        "text_sha256": "a1ca31898fdf1001a4770afedd29cd4ec32b87cf1d9879c2f135233d2e23a743"
+      },
+      "phone": {
+        "asr_transcripts": [
+          "What does the man driving in the opening shot do with his phone? Answer in one short sentence."
+        ],
+        "public_pcm": {
+          "bytes": 222720,
+          "chunks": 9,
+          "sha256": "1e710727e96c254d920a41d0ed0e475fe51accaf38906966ee73b0a9e30ed997"
+        },
+        "raw_sse_sha256": "f48aabed88741bd2166e3226447bca8c6a09e21fb8052d48da58fda0197bfc01",
+        "request_id": "http-1",
+        "request_sha256": "5a761351547061093d3cd3db0a2bd1cba773bd999c85586169d8dd5dd073d3b0",
+        "terminal": "complete",
+        "text_bytes": 41,
+        "text_sha256": "bf190900e8a6bd5489c8f33a6a9e527e6e133b5a305bf56481551f9f76e1ca9a"
+      },
+      "scene": {
+        "asr_transcripts": [
+          "How does the driver change between the opening shot and the final shot? Answer in one short sentence."
+        ],
+        "public_pcm": "CANCELLED_PREFIX_RETAINED_EXTERNALLY",
+        "raw_sse_sha256": "80f5e2bec6f08890dd4eebdfc78a0d6472b90e62d8c0c11849c170173465dca1",
+        "request_id": "http-2",
+        "request_sha256": "da889a0c2c3ea9c76b70d995e8326e7214ea1bee2ed272adfabbb6a541dc8552",
+        "terminal": "cancelled",
+        "text_bytes": 49,
+        "text_sha256": "5a95aca70a34af3573eb73c796293cf40364ae117ef9cf245e3cda24c8188c21"
+      }
+    },
+    "terminal_video_error": "source slot slot-0 is not an earlier slot in this request",
+    "timing_ms": {
+      "barge_to_initial_terminal": 4697.470503,
+      "barge_to_scene_terminal": 85.350633,
+      "full_barge_to_retry_first_audio": 10018.257028,
+      "phone_first_audio": 2633.735323,
+      "phone_first_text": 2401.778051,
+      "retry_first_audio": 4981.212695,
+      "retry_first_text": 4711.578245
+    },
+    "video_artifacts": 0
+  },
+  "boundaries": {
+    "full_production": "NOT_RUN",
+    "human_perceptual": "NOT_RUN",
+    "physical_acoustic": "NOT_RUN",
+    "resident_service": "NOT_CONTACTED",
+    "training_optimizer_video_speed": "NOT_RUN"
+  },
+  "comparison": {
+    "cancel_and_immediate_exact_retry": true,
+    "first_text_and_voice_below_3000_ms_both_arms": true,
+    "native_i2v_artifacts": {
+      "after": 1,
+      "before": 0
+    },
+    "native_wan_submits": {
+      "after": 1,
+      "before": 0
+    },
+    "ns04_full_path_800ms_gate": "NOT_MET",
+    "promotion": true,
+    "real_flux_images": {
+      "after": 1,
+      "before": 0
+    },
+    "request_and_asr_identity_preserved": true,
+    "stale_or_cross_session_events": 0,
+    "terminal_identity_preserved": true
+  },
+  "decision": "PROMOTED_CORRECTNESS",
+  "execution_commit": "2263bc64569abb61265f52e2fa4c4bb6c828d20e",
+  "execution_identity": {
+    "binaries": {
+      "asr": {
+        "bytes": 3252784,
+        "sha256": "e936045361d1f37ffe22717974dab9705afbb7c1e11023c44b003267afa42f86"
+      },
+      "gateway_after": {
+        "bytes": 54907872,
+        "sha256": "a8ccc4d6e5e2650504ce26ddcf7d147969fe4207ccf38fbf703af5aa6342ea8b"
+      },
+      "gateway_before": {
+        "bytes": 54903160,
+        "sha256": "3c13bb1e3dd4bffcacdc1861e330d2b4b24c8ac80a9b4b415a223afa32398634"
+      },
+      "tts": {
+        "bytes": 3214096,
+        "sha256": "92fd8e24ddfb3cf7a21748ade17db719c33b2d4633c4e1b580a94b7f5b500c91"
+      },
+      "vlm": {
+        "bytes": 3641152,
+        "sha256": "686ff04d28c41eb7f34ffe3b80bffa73941f9776a9412df002a5b6a6bcef7500"
+      },
+      "wan": {
+        "bytes": 3178168,
+        "sha256": "21bfd59101e609345f6128cf9eaad918890376c5e16f44843a61c504e1ffa3f0"
+      }
+    },
+    "model_revision": "UNKNOWN",
+    "models": {
+      "asr": {
+        "bytes": 4703115105,
+        "files": 13,
+        "model_id": "Qwen/Qwen3-ASR-1.7B",
+        "tree_sha256": "2b634d66b56817e11496d76402b9c282fb59235ff1a5df22a4e5e261f8bf1d06"
+      },
+      "flux": {
+        "bytes": 15988902919,
+        "files": 25,
+        "model_id": "black-forest-labs/FLUX.2-klein-4B",
+        "tree_sha256": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997"
+      },
+      "tts": {
+        "bytes": 4520219726,
+        "files": 14,
+        "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "tree_sha256": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d"
+      },
+      "vlm": {
+        "bytes": 55586028845,
+        "files": 29,
+        "model_id": "Qwen/Qwen3.8-27B",
+        "tree_sha256": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304"
+      },
+      "wan": {
+        "bytes": 34203022185,
+        "files": 30,
+        "model_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "tree_sha256": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+      }
+    },
+    "physical_gpu": 7,
+    "python_runtime": {
+      "diffusers": "0.43.0",
+      "msgpack": "1.2.4",
+      "pyzmq": "27.3.0",
+      "torch": "2.6.0",
+      "transformers": "5.6.0"
+    },
+    "sources": {
+      "baseline_prompt": {
+        "bytes": 2615,
+        "sha256": "0c495a8800bdf2ca351b8862299eae3c3c5adbe45d8adfb2e213650e2892dc7b"
+      },
+      "candidate_prompt": {
+        "bytes": 3361,
+        "sha256": "dfdb8182cbeaff64739c49cd4ee60dba299a69c023471781fb81bb7253b099ea"
+      },
+      "flux_stage": {
+        "bytes": 34525,
+        "sha256": "ab88ae88f3a9207151d4774e4bb000fd385353724e22e7720cf94345a922ef74"
+      },
+      "live_harness": {
+        "bytes": 26476,
+        "sha256": "d4a2ae66d24155e5f8d7010f7c619a1e0e0dc285eeaa461db4f938f463a23dd6"
+      },
+      "live_helpers": {
+        "bytes": 60111,
+        "sha256": "6a882cd11fe49992d85d71b4d951a9e90934407aad815f7ad7428dbb21fb8d71"
+      },
+      "negative_verifier": {
+        "bytes": 5787,
+        "sha256": "a746e1556b19eca175d1d1a256e8c0f1453e4c6e2826d2f252d4d75b400aec7d"
+      },
+      "paired_verifier": {
+        "bytes": 15359,
+        "sha256": "4759e11bb1250378f7d6f1d7c94e761a2dbb350829ad1eaeae250a1d31627973"
+      },
+      "raw_verifier": {
+        "bytes": 16708,
+        "sha256": "cd64d724ded0a86582d53a277a3526a254fa92c69950c511dac8d44536ce336c"
+      }
+    }
+  },
+  "experiment": "umminfer_ns05_first_video_self_reference_v1",
+  "frozen_inputs": {
+    "audio": {
+      "format": "wav",
+      "stream": true,
+      "voice": "vivian"
+    },
+    "client_directives": "NONE",
+    "frame_selection": "ABSENT",
+    "image": {
+      "output_format": "png",
+      "seed": 510075,
+      "size": "512x512",
+      "steps": 4
+    },
+    "modalities": [
+      "text",
+      "audio",
+      "image",
+      "video"
+    ],
+    "narrative": {
+      "allow_text_only": true,
+      "continuity_mode": "i2v_chain",
+      "enabled": true,
+      "max_slots": 2,
+      "visual_mode": "auto"
+    },
+    "preregistration_sha256": "429ec9df230af9677c395df64d567bad63a99be37e21698b57b72aaa35e8488e",
+    "sampling": {
+      "max_tokens": 384,
+      "seed": 510075,
+      "temperature": 0.0,
+      "top_p": 1.0
+    },
+    "source_video": {
+      "bytes": 19821335,
+      "derivative_sha256": "ffef335edc161a2f6dead512e0fde96cf48fb997ae6b6491067e36c76eec58d0",
+      "duration_seconds": 120.0,
+      "frames": 3600,
+      "height": 432,
+      "identity_from_task75": true,
+      "license": "CC-BY-4.0",
+      "license_sha256": "e7edaaaeb0cd6da6a3dd97c54f3e8443ef027be685253fab64bf6eed2419ee7e",
+      "upstream_sha256": "fd24e652c92a5759127aa9c7f23fea63d73aebb4bcea72763abe72ef06a20cf0",
+      "width": 768
+    },
+    "video": {
+      "fps": 16,
+      "guidance_scale": 5.0,
+      "num_frames": 29,
+      "output_format": "mp4",
+      "seed": 510075,
+      "size": "704x480",
+      "steps": 20
+    },
+    "voice_wav_sha256": {
+      "cyberpunk": "f42b91a373bda81965c4759b63947ac6240de75ee02ae36af2f92ef28327c20d",
+      "phone": "ade900f915247d1bf6334f8dd72b021b7470b872c07f10c4b6907ae41b91ee5d",
+      "scene": "3ce35b3522c1c965bb45db743a99da6ee4957ceddcfb4b264309617ac611b0df"
+    }
+  },
+  "physical_gpu": 7,
+  "schema_version": 1,
+  "status": "PASS"
+}

@@ -41,7 +41,15 @@ def main(argv=None):
     browser_path = root / "browser-result.json"
     manifest_path = root / "SHA256SUMS"
     arm = json.loads(arm_path.read_text(encoding="utf-8"))
-    browser = json.loads(browser_path.read_text(encoding="utf-8"))
+    browser_present = browser_path.is_file()
+    static_voice_controls = arm.get("metrics", {}).get("visible_voice_routing_control_count", 0)
+    browser = json.loads(browser_path.read_text(encoding="utf-8")) if browser_present else {
+        "status": "NOT_RUN",
+        "visible_controls": ["realtimeEchoSuppression", "voiceToggle"] if static_voice_controls == 2 else [],
+        "visible_counts": {**{metric: 0 for metric in GROUPS},
+                           "visible_voice_routing_control_count": static_voice_controls},
+        "checks": [], "checks_failed": 0,
+    }
     require(arm.get("case_id") == "NS-08" and
             arm.get("schema") == "umminfer-ns08-zero-control-arm/v1", "wrong arm identity")
     require(arm.get("full_gate_status") == "NOT_RUN" and
@@ -61,8 +69,35 @@ def main(argv=None):
     failed = [row for row in browser.get("checks", []) if not row.get("ok")]
     require(browser.get("checks_failed") == len(failed) == arm["metrics"]["browser_checks_failed"],
             "browser failure count mismatch")
-    require(arm["raw_evidence"].get("browser_result_sha256") == sha(browser_path),
-            "browser result digest is not bound")
+    require(arm["raw_evidence"].get("browser_result_sha256") ==
+            (sha(browser_path) if browser_present else None), "browser result digest is not bound")
+    if not browser_present:
+        require(arm.get("engineering_status") == "NOT_RUN" and
+                arm.get("coverage", {}).get("chromium_default_dom") == "NOT_RUN",
+                "static arm unexpectedly claims browser coverage")
+        require(static_voice_controls in (0, 2) and
+                all(arm["metrics"][metric] == 0 for metric in GROUPS
+                    if metric != "visible_voice_routing_control_count") and
+                arm["hard_gates"]["zero_default_developer_controls"] ==
+                (static_voice_controls == 0),
+                "static arm visibility or zero-control hard-gate projection mismatch")
+        for suite in arm.get("raw_evidence", {}).get("contract_logs", []):
+            log_name = "web-contract.log" if suite.get("driver") == "tests/web_ui_contract_test.py" \
+                else "macos-static.log"
+            if suite.get("status") == "NOT_COVERED":
+                require(suite.get("driver") == "tests/macos_zero_control_test.py" and
+                        suite.get("log_sha256") is None and
+                        arm.get("coverage", {}).get("macos_static") == "NOT_COVERED",
+                        "unexpected static NOT_COVERED projection")
+            else:
+                require(suite.get("status") == "PASS" and suite.get("exit_code") == 0 and
+                        sha(root / log_name) == suite.get("log_sha256"),
+                        f"static contract log mismatch: {suite.get('driver')}")
+        require(arm["metrics"]["contract_checks_failed"] == 0 and
+                all(arm["metrics"][name] == 1 for name in
+                    ("export_import_exact", "reconnect_exact", "source_bound_revision",
+                     "cancellation_retry_exact")),
+                "static arm dropped an accepted export/reconnect/lifecycle behavior")
     if arm.get("engineering_status") == "CONTRACT_PASS":
         require(browser.get("status") == "PASS" and not visible and not failed,
                 "engineering PASS lacks a zero-control browser PASS")
@@ -72,7 +107,7 @@ def main(argv=None):
                     ("export_import_exact", "reconnect_exact", "source_bound_revision",
                      "cancellation_retry_exact")),
                 "engineering PASS dropped an accepted Task #77 behavior")
-    else:
+    elif browser_present:
         require(arm.get("engineering_status") == "FAIL", "unexpected arm engineering state")
     listed = {}
     for line in manifest_path.read_text(encoding="utf-8").splitlines():

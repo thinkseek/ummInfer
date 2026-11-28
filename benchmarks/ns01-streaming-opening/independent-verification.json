@@ -1,0 +1,68 @@
+{
+  "all_required_controls_pass": false,
+  "arms": {
+    "chinese-r1-after": {
+      "artifacts": 545,
+      "clean_text_bytes": 3665,
+      "events": 1315,
+      "pcm_bytes": 15168000,
+      "tts_legs": 43
+    },
+    "chinese-r1-before": {
+      "artifacts": 538,
+      "clean_text_bytes": 3611,
+      "events": 1308,
+      "pcm_bytes": 14987520,
+      "tts_legs": 43
+    },
+    "chinese-r2-after": {
+      "artifacts": 545,
+      "clean_text_bytes": 3665,
+      "events": 1315,
+      "pcm_bytes": 15168000,
+      "tts_legs": 43
+    },
+    "chinese-r2-before": {
+      "artifacts": 538,
+      "clean_text_bytes": 3611,
+      "events": 1308,
+      "pcm_bytes": 14987520,
+      "tts_legs": 43
+    },
+    "english-r1-after": {
+      "artifacts": 1657,
+      "clean_text_bytes": 3372,
+      "events": 2331,
+      "pcm_bytes": 47746080,
+      "tts_legs": 89
+    },
+    "english-r1-before": {
+      "artifacts": 867,
+      "clean_text_bytes": 3796,
+      "events": 1637,
+      "pcm_bytes": 23063040,
+      "tts_legs": 97
+    },
+    "english-r2-after": {
+      "artifacts": 1657,
+      "clean_text_bytes": 3372,
+      "events": 2331,
+      "pcm_bytes": 47746080,
+      "tts_legs": 89
+    },
+    "english-r2-before": {
+      "artifacts": 867,
+      "clean_text_bytes": 3796,
+      "events": 1637,
+      "pcm_bytes": 23063040,
+      "tts_legs": 97
+    }
+  },
+  "format": "umminfer-ns01-streaming-opening-independent-verification-v1",
+  "human_perceptual_evaluation": "NOT_RUN",
+  "manifest_files": 16059,
+  "manifest_sha256": "ff7a6173516af1bd6a9568d11198a87e5aab4f56573e0794f790b9246ec67044",
+  "promotion_decision": "NOT_PROMOTED",
+  "result": "PASS",
+  "scorecard_sha256": "5d75972949a3a6f3a967176d3fedb8a7e21bb5e0df98a0870cb16001e8e90e9f"
+}

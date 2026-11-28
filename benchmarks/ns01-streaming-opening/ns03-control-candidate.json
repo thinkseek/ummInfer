@@ -1,0 +1,26 @@
+{
+  "format": "umminfer-ns03-routing-candidate-v1",
+  "candidate_id": "ns01-opening-r1-ns03-control",
+  "base_commit": "9c02225451252001c11021b389a7792caf03d503",
+  "benchmark_freeze_commit": "cdb18b834b7dbd6a8a7ca6f68544d26a99227fa7",
+  "execution_commit": "dd7cabe0a5319478dec723be304ad4d9ea9c2dae",
+  "code_frozen_at_utc": "2026-11-28T01:45:00+00:00",
+  "evaluation_frozen_at_utc": "2026-11-28T01:59:46+00:00",
+  "suite_canonical_sha256": "35769692293fb99828ad23f40f1eaf3dd154b4c3c7e9b66b21d71ee27f61b097",
+  "frozen_before_heldout": true,
+  "physical_gpu": 7,
+  "control_scope": "After-only 40-case capture against the accepted frozen baseline metrics; no model request retry and no held-out prompt tuning.",
+  "bounded_change": "Only the accepted NS-01 default auto-director opening candidate; identical server and native binaries to the frozen NS-01 After arms.",
+  "source_sha256": {
+    "src/pipeline/narrative_prompt.cpp": "357d35997a4e674edd2d280ebf8343777b82e4e8fd8309c90a32db6970e8304b",
+    "src/pipeline/narrative_parser.cpp": "99ae7bbe5056cb26c57b686b6355cc42c2972714b79f80d4393fd00d219cee01",
+    "src/pipeline/narrative_parser.hpp": "36b6c1b80d1c020f28dc11c8b7e4302f16d0760b8dee512022508e90d2d92324",
+    "src/pipeline/unified.cpp": "a0fe78b8d5a0400bab75bbe1c3b6daf7ba33f4f4dddba11de0b7496c2da97601",
+    "src/pipeline/unified_schema.cpp": "c62ce75b576f68669ff15c34d0f1ab605fc7dc36bd4034bbdae769e3ce6efe9a"
+  },
+  "deterministic_red_green": {
+    "test": "test_narrative_streaming_opening_director_prompt",
+    "red": "five focused opening assertions FAIL on the unmodified director",
+    "green": "candidate unified contract and full umm-test-local PASS"
+  }
+}

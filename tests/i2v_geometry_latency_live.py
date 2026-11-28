@@ -68,6 +68,21 @@ NS02_BOUNDARY2_POLICY = {
     "expected_total_calls_per_arm": 40,
     "explicit_request_and_stage_values_override": True,
 }
+NS02_EXACT_CUDA_FORMAT = "umminfer-ns02-exact-cuda-speedup-preregistration-v1"
+NS02_EXACT_CUDA_ID = "wan-dit-cublaslt-fixed-algorithms"
+NS02_EXACT_CUDA_COMMIT = "b64f022a3555c925982a9d88274d98c82edddd9f"
+NS02_EXACT_CUDA_BASE = "e084d8404b1d96bee5cd6f83d8299c2498a3af65"
+NS02_EXACT_CUDA_POLICY = {
+    "kind": "cublaslt_fixed_heuristic_indices",
+    "default_index": 2,
+    "ff2_index": 5,
+    "fallback_index": 0,
+    "compute_type": "FP32",
+    "input_output_type": "BF16",
+    "expected_total_calls_per_arm": 40,
+    "expected_teacache_hits_per_arm": 0,
+    "exact_media_parity_required": True,
+}
 PRIMARY_METRIC = "median_paired_public_complete_artifact_ms"
 CASES = {
     "wide": {"source": (704, 480), "target": (704, 480)},
@@ -535,7 +550,9 @@ def validate_ns02_preregistration(document, profile_sha256):
     historical = (document.get("format")
                   == "umminfer-ns02-interactive-preview-preregistration-v1")
     boundary2 = document.get("format") == NS02_BOUNDARY2_FORMAT
-    require(historical or boundary2, "unknown NS-02 preregistration format")
+    exact_cuda = document.get("format") == NS02_EXACT_CUDA_FORMAT
+    require(historical or boundary2 or exact_cuda,
+            "unknown NS-02 preregistration format")
     require(document.get("profile_report_sha256") == profile_sha256
             and document.get("repetitions") == NS02_REPETITIONS
             and document.get("interleaving_seed") == NS02_INTERLEAVING_SEED,
@@ -545,20 +562,28 @@ def validate_ns02_preregistration(document, profile_sha256):
                 and document.get("candidate_commit")
                 == "3f98fe1645d4d82877372056ba8ad2544aa399c5",
                 "historical NS-02 candidate identity changed")
-    else:
+    elif boundary2:
         require(document.get("official_base_commit") == NS02_BOUNDARY2_BASE
                 and document.get("candidate_id") == NS02_BOUNDARY2_ID
                 and document.get("candidate_commit") == NS02_BOUNDARY2_COMMIT
                 and document.get("candidate_policy") == NS02_BOUNDARY2_POLICY
                 and document.get("created_before_final_candidate_measurement") is True,
                 "boundary2 NS-02 base, candidate, or frozen schedule changed")
+    else:
+        require(document.get("official_base_commit") == NS02_EXACT_CUDA_BASE
+                and document.get("candidate_id") == NS02_EXACT_CUDA_ID
+                and document.get("candidate_commit") == NS02_EXACT_CUDA_COMMIT
+                and document.get("candidate_policy") == NS02_EXACT_CUDA_POLICY
+                and document.get("created_before_final_candidate_measurement") is True,
+                "exact-CUDA NS-02 base, candidate, or frozen policy changed")
+    expected_candidate_threshold = 0.0 if exact_cuda else 0.25
     require(document.get("settings") == {
         "frames": FRAMES, "steps": STEPS, "fps": FPS, "guidance": GUIDANCE,
         "seed": SEED, "request_teacache_field": "omitted",
-        "baseline_effective_teacache": 0.0, "candidate_effective_teacache": 0.25},
+        "baseline_effective_teacache": 0.0,
+        "candidate_effective_teacache": expected_candidate_threshold},
         "NS-02 sampler, fidelity, frame, or TeaCache protocol changed")
-    gates = document.get("regression_gates") or {}
-    require(gates == {
+    expected_gates = {
         "exact_paired_first_frame_rgb": True, "minimum_ssim_all": NS02_MIN_SSIM,
         "minimum_all_frame_psnr_db": NS02_MIN_PSNR_DB,
         "temporal_motion_ratio_range": [0.5, 1.5],
@@ -568,8 +593,12 @@ def validate_ns02_preregistration(document, profile_sha256):
         "cancel_native_terminal_and_client_settle_ms_below": NS02_CANCEL_LIMIT_MS,
         "cancel_threshold_arm": "candidate_only_before_is_reported_independently",
         "zero_late_native_media_and_final_in_flight_zero": True,
-        "immediate_retry_exact_own_arm_hash": True},
-        "NS-02 quality, latency, cancellation, or recovery gates changed")
+        "immediate_retry_exact_own_arm_hash": True}
+    if exact_cuda:
+        expected_gates["exact_paired_mp4_media"] = True
+        expected_gates["baseline_matches_frozen_profile_mp4"] = True
+    require(document.get("regression_gates") == expected_gates,
+            "NS-02 quality, exact-media, latency, cancellation, or recovery gates changed")
     return document
 
 
@@ -828,6 +857,10 @@ def run_live(args):
                 if policy is None:
                     require(0 < hits < total,
                             f"candidate did not use bounded cache: {run_id}")
+                elif policy.get("kind") == "cublaslt_fixed_heuristic_indices":
+                    require(hits == policy["expected_teacache_hits_per_arm"]
+                            and total == policy["expected_total_calls_per_arm"],
+                            f"exact-CUDA candidate unexpectedly used TeaCache: {run_id}")
                 else:
                     require(record["native_phase"].get("teacache_boundary2") == "1"
                             and 0 < hits <= policy["maximum_hits_per_arm"]
@@ -1217,6 +1250,14 @@ def run_live(args):
                                 - baseline["public_complete_artifact_ms"])}
                     if ns02_mode:
                         item["quality"] = paired_video_quality(args.ffmpeg, out, baseline, candidate)
+                        if prereg["format"] == NS02_EXACT_CUDA_FORMAT:
+                            exact_pair = baseline["media_sha256"] == candidate["media_sha256"]
+                            exact_profile = baseline["media_sha256"] == profile_run["media_sha256"]
+                            item["quality"]["exact_mp4_media"] = exact_pair
+                            item["quality"]["baseline_profile_mp4_exact"] = exact_profile
+                            item["quality"]["quality_gate_pass"] = bool(
+                                item["quality"]["quality_gate_pass"]
+                                and exact_pair and exact_profile)
                     else:
                         item.pop("baseline_sha256")
                         item.pop("candidate_sha256")
@@ -1276,6 +1317,11 @@ def run_live(args):
                     "per_shape_video_hard_threshold_pass": per_shape_video_pass,
                     "shape_median_paired_delta_ms": shape_deltas,
                     "quality_gate_pass": quality_pass, "speed_gate_pass": speed_pass,
+                    "exact_media_gate_pass": (all(
+                        item["quality"].get("exact_mp4_media") is True
+                        and item["quality"].get("baseline_profile_mp4_exact") is True
+                        for item in paired)
+                        if prereg["format"] == NS02_EXACT_CUDA_FORMAT else None),
                     "video_hard_threshold_pass": video_threshold_pass,
                     "cancellation_hard_threshold_pass": cancel_pass,
                     "cancellations": cancellations,
@@ -1437,6 +1483,29 @@ def self_check():
     require(validate_ns02_preregistration(boundary2_prereg, "0" * 64)
             == boundary2_prereg,
             "boundary2 NS-02 preregistration self-check failed")
+    exact_path = (Path(__file__).resolve().parent.parent /
+                  "benchmarks/ns02-exact-cuda-speedup/preregistration.json")
+    exact_prereg = json.loads(exact_path.read_text())
+    exact_prereg["profile_report_sha256"] = "0" * 64
+    require(validate_ns02_preregistration(exact_prereg, "0" * 64) == exact_prereg,
+            "exact-CUDA NS-02 preregistration self-check failed")
+    for field in ("exact_paired_mp4_media", "baseline_matches_frozen_profile_mp4"):
+        changed = json.loads(json.dumps(exact_prereg))
+        changed["regression_gates"][field] = False
+        try:
+            validate_ns02_preregistration(changed, "0" * 64)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("exact-CUDA accepted a weakened media gate")
+    changed = json.loads(json.dumps(exact_prereg))
+    changed["settings"]["candidate_effective_teacache"] = 0.25
+    try:
+        validate_ns02_preregistration(changed, "0" * 64)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("exact-CUDA accepted an approximate cache threshold")
     for bad_step in ([0, 2, 18, 19], [0, 1, 17, 19], [0, 1, 18]):
         changed = json.loads(json.dumps(boundary2_prereg))
         changed["candidate_policy"]["protected_step_indices"] = bad_step

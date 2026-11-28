@@ -1,0 +1,24 @@
+{
+  "format": "umminfer-ns03-routing-candidate-v1",
+  "candidate_id": "auto-i2v-first-dynamic-establish-then-animate",
+  "base_commit": "0645ec8ccf6dce668aedc4a214bf7da5e7567d32",
+  "benchmark_freeze_commit": "0645ec8ccf6dce668aedc4a214bf7da5e7567d32",
+  "execution_commit": "2263bc64569abb61265f52e2fa4c4bb6c828d20e",
+  "code_frozen_at_utc": "2026-11-28T06:19:41+00:00",
+  "evaluation_frozen_at_utc": "2026-11-28T06:19:41+00:00",
+  "suite_canonical_sha256": "35769692293fb99828ad23f40f1eaf3dd154b4c3c7e9b66b21d71ee27f61b097",
+  "frozen_before_heldout": true,
+  "bounded_change": "Bind the already frozen NS-05 single director correction for NS-03 non-regression. NS-03 requests omit continuity_mode, so their auto/off director bytes are unchanged. This file authorizes no additional runtime or prompt change.",
+  "source_sha256": {
+    "src/pipeline/narrative_prompt.cpp": "dfdb8182cbeaff64739c49cd4ee60dba299a69c023471781fb81bb7253b099ea",
+    "src/pipeline/narrative_parser.cpp": "99ae7bbe5056cb26c57b686b6355cc42c2972714b79f80d4393fd00d219cee01",
+    "src/pipeline/narrative_parser.hpp": "36b6c1b80d1c020f28dc11c8b7e4302f16d0760b8dee512022508e90d2d92324",
+    "src/pipeline/unified.cpp": "a0fe78b8d5a0400bab75bbe1c3b6daf7ba33f4f4dddba11de0b7496c2da97601",
+    "src/pipeline/unified_schema.cpp": "c62ce75b576f68669ff15c34d0f1ab605fc7dc36bd4034bbdae769e3ce6efe9a"
+  },
+  "deterministic_red_green": {
+    "test": "test_first_dynamic_director_contract",
+    "red": "two focused director assertions fail on the accepted baseline; all first-video self-reference and malformed/failed-source controls pass unchanged",
+    "green": "candidate unified contract suite PASS"
+  }
+}

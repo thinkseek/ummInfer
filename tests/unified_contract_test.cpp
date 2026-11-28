@@ -49,6 +49,7 @@
 #include "umminfer/obs/metrics.hpp"
 #include "umminfer/obs/request_telemetry.hpp"
 #include "pipeline/narrative_parser.hpp"
+#include "pipeline/unified_schema.hpp"
 #include "serve/echo_robust_vad.hpp"
 #include "serve/energy_vad.hpp"
 #include "serve/online_attestation.hpp"
@@ -9687,6 +9688,127 @@ void test_narrative_parser_unit() {
   }
 }
 
+void test_narrative_streaming_opening_director_prompt() {
+  const std::string prompt =
+      unified_detail::narrative_director_prompt("auto", 2, "i2v_chain");
+  check(prompt.find("explicitly requests both a still image/diagram") ==
+                std::string::npos &&
+            prompt.find("one concise opening sentence") == std::string::npos &&
+            prompt.find("Do not shorten or outline the remaining answer") ==
+                std::string::npos,
+        "the NOT_PROMOTED Task #87 opening candidate remains in default runtime");
+  check(prompt.find("pure math, code, logic proofs") != std::string::npos &&
+            prompt.find("Only emit visual markers when a visual genuinely") !=
+                std::string::npos &&
+            prompt.find("source=slot-N") != std::string::npos,
+        "restoring the director removed accepted routing or source guardrails");
+}
+
+// A concise opening reaches TTS before fragmented visual directives close. The
+// image admits immediately; the explicit I2V slot remains pending until exact
+// source bytes settle, without leaking either directive into prose or speech.
+void test_narrative_streaming_opening_slots_and_tts() {
+  Harness h("narrativeopening");
+  UnifiedEngine engine(h.coordinator, h.mixed_config());
+  h.start_pump();
+  EventLog log;
+  engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+  engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+
+  StagePayload request = narrative_request(true, true, true, "auto", 2, true);
+  request.request.inputs["narrative"]["continuity_mode"] = Value("i2v_chain");
+  const std::string id = engine.submit(std::move(request));
+  auto vlm = h.next_submit(h.vlm_recv);
+  check(vlm.has_value(), "opening request did not reach the VLM");
+  if (!vlm) return;
+
+  h.stream(vlm->request_id, "vlm", text_chunk("Opening sentence.", false));
+  auto tts = h.next_submit(h.tts_recv);
+  check(tts.has_value(), "the concise opening was not submitted immediately to TTS");
+  if (tts) {
+    StagePayload payload = StagePayload::from_value(tts->data);
+    check(payload.request.inputs.find("text")->as_str() == "Opening sentence.",
+          "the first TTS leg is not exactly the concise opening");
+  }
+
+  h.stream(vlm->request_id, "vlm", text_chunk("\n[[im", false));
+  check(count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 0,
+        "a split image prefix admitted a false visual slot");
+  h.stream(vlm->request_id, "vlm",
+           text_chunk("age: labeled accretion disk structure]]", false));
+  wait_until([&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 1; },
+             "the opening image did not admit mid-stream");
+  auto image = h.next_submit(h.image_recv);
+  check(image.has_value() && image->request_id == id + ":slot:0",
+        "the opening image slot was not submitted immediately");
+
+  h.stream(vlm->request_id, "vlm",
+           text_chunk("\n[[video: animate accretion flow | source=slot-0]]\n", false));
+  wait_until([&] { return count_kind(log, UnifiedEvent::Kind::kVisualSlot) == 2; },
+             "the anchored dynamic slot did not admit mid-stream");
+  check(h.no_submit(h.video_recv),
+        "I2V started before its exact source image completed");
+
+  bool opening_before_slots = false;
+  bool clean = true;
+  int64_t opening_seq = -1;
+  int64_t image_seq = -1;
+  int64_t video_seq = -1;
+  for (const UnifiedEvent& event : log.snapshot()) {
+    if (event.kind == UnifiedEvent::Kind::kVlmDelta) {
+      if (event.text.find("Opening sentence.") != std::string::npos) {
+        opening_seq = event.seq;
+      }
+      clean = clean && event.text.find("[[") == std::string::npos &&
+              event.text.find("source=slot") == std::string::npos;
+    } else if (event.kind == UnifiedEvent::Kind::kVisualSlot) {
+      if (event.slot_id == "slot-0") image_seq = event.seq;
+      if (event.slot_id == "slot-1") {
+        video_seq = event.seq;
+        clean = clean && event.anchor_slot_index == 0 && event.anchor_explicit;
+      }
+    }
+  }
+  opening_before_slots = opening_seq >= 0 && opening_seq < image_seq &&
+                         image_seq < video_seq;
+  check(opening_before_slots && clean,
+        "opening/slot ordering, anchor metadata, or clean text regressed");
+
+  const std::string png = "exact-source-png";
+  h.complete(id + ":slot:0", "image", true,
+             artifact_result("image", "image/png", png));
+  auto video = h.next_submit(h.video_recv);
+  check(video.has_value() && video->request_id == id + ":slot:1",
+        "the deferred I2V slot did not start after its source completed");
+  if (video) {
+    StagePayload payload = StagePayload::from_value(video->data);
+    check(payload.request.inputs.find("image")->as_bin() == png &&
+              payload.request.inputs.find("anchor_explicit")->as_bool() &&
+              payload.request.inputs.find("anchor_slot_index")->as_int() == 0 &&
+              payload.request.inputs.find("anchor_sha256")->as_str() ==
+                  util::sha256_hex(png),
+          "I2V did not bind the exact slot-0 bytes and digest");
+  }
+
+  h.complete(vlm->request_id, "vlm", true, text_result("Opening sentence."));
+  h.complete(id + ":slot:1", "video", true,
+             artifact_result("video", "video/mp4", "VIDBYTES"));
+  if (tts) {
+    Value::Map extra;
+    extra["sample_rate"] = Value(int64_t{24000});
+    extra["channels"] = Value(int64_t{1});
+    extra["streamed"] = Value(true);
+    h.complete(tts->request_id, "tts", true,
+               artifact_result("audio", "audio/wav", std::string(8, '\x02'), extra));
+  }
+  check(engine.wait(id, 5.0), "the streaming opening request did not complete");
+  const auto terminal = log.terminal_for(id);
+  check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+            log.terminal_count(id) == 1,
+        "streaming opening produced a false or duplicate terminal");
+  engine.release(id);
+}
+
 // Interleaved narrative with one image and one video slot, plus global
 // streaming TTS. Prose stays clean; slots dispatch mid-stream.
 void test_narrative_interleaved_slots_and_streaming_tts() {
@@ -12540,6 +12662,40 @@ void test_explicit_image_reference_chain() {
 
 void test_explicit_anchor_failure_cancel_and_validation() {
   {
+    Harness h("explicitanchorfirstself");
+    UnifiedEngine engine(h.coordinator, h.mixed_config());
+    h.start_pump();
+    EventLog log;
+    engine.on_event = [&](const UnifiedEvent& e) { log.add(e); };
+    engine.on_terminal = [&](const UnifiedEvent& e) { log.finish(e); };
+    const std::string id = engine.submit(explicit_anchor_request(2));
+    auto vlm = h.next_submit(h.vlm_recv);
+    if (!vlm) return;
+    h.stream(vlm->request_id, "vlm",
+             text_chunk("[[video: first dynamic | source=slot-0]]", false));
+    h.complete(vlm->request_id, "vlm", true, text_result("clean"));
+    check(engine.wait(id, 5.0), "first-video self-reference did not settle");
+    check(h.no_submit(h.video_recv) && h.no_submit(h.image_recv),
+          "first-video self-reference was rewritten into generation");
+    const auto terminal = log.terminal_for(id);
+    check(terminal && terminal->kind == UnifiedEvent::Kind::kComplete &&
+              log.terminal_count(id) == 1 &&
+              count_kind(log, UnifiedEvent::Kind::kArtifact) == 0 &&
+              count_kind(log, UnifiedEvent::Kind::kLegError) == 1,
+          "first-video self-reference did not fail closed with one public terminal");
+    bool exact_failure = false;
+    if (terminal && terminal->legs.is_array() &&
+        terminal->legs.as_array().size() == 1) {
+      const Value& leg = terminal->legs.as_array().front();
+      exact_failure = leg.find("slot_id")->as_str() == "slot-0" &&
+                      leg.find("state")->as_str() == "failed" &&
+                      leg.find("error")->as_str() ==
+                          "source slot slot-0 is not an earlier slot in this request";
+    }
+    check(exact_failure, "first-video self-reference lost its exact slot/error identity");
+    engine.release(id);
+  }
+  {
     Harness h("explicitanchorfailure");
     UnifiedEngine engine(h.coordinator, h.mixed_config());
     h.start_pump();
@@ -14764,6 +14920,8 @@ int main() {
   RUN(test_direct_engine_video_input_modality_rejected_even_with_video_stage());
   RUN(test_mixed_artifact_aggregate_60mib_boundary());
   RUN(test_narrative_parser_unit());
+  RUN(test_narrative_streaming_opening_director_prompt());
+  RUN(test_narrative_streaming_opening_slots_and_tts());
   RUN(test_narrative_interleaved_slots_and_streaming_tts());
   RUN(test_narrative_max_slots_and_zero_marker_fallback());
   RUN(test_narrative_cancel_aborts_slots_and_tts());

@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import statistics
@@ -704,9 +705,12 @@ def verify(root, output):
     records = report["records"]
     if len(records) != 320 or not report["gate_pass"] or report["gate_reasons"]:
         raise ValueError("producer natural technical gate did not pass 320 requests")
+    expected_gpu = os.environ.get("UMM_NATURAL_PHYSICAL_GPU", "1")
+    if expected_gpu not in ("0", "1"):
+        raise ValueError("UMM_NATURAL_PHYSICAL_GPU must be 0 or 1")
     for mode in MODES:
         mode_report = json.loads((root / mode / "mode-result.json").read_bytes())
-        if mode_report["provenance"]["physical_gpu"] != 1 \
+        if mode_report["provenance"]["physical_gpu"] != int(expected_gpu) \
                 or mode_report["provenance"]["batch_size"] != (1 if mode == "serial" else 4) \
                 or mode_report["provenance"]["qwen38_prefix_cache"] != "disabled" \
                 or mode_report["stale_errors"] \

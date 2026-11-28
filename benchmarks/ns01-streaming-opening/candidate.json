@@ -1,0 +1,34 @@
+{
+  "format": "umminfer-ns01-streaming-opening-candidate-v1",
+  "candidate_id": "auto-director-explicit-still-animation-opening-r1",
+  "frozen_before_first_after_and_english_run": true,
+  "official_base_commit": "9c02225451252001c11021b389a7792caf03d503",
+  "execution_commit": "dd7cabe0a5319478dec723be304ad4d9ea9c2dae",
+  "runtime_change": {
+    "kind": "default_auto_director_prompt_only",
+    "path": "src/pipeline/narrative_prompt.cpp",
+    "sha256": "357d35997a4e674edd2d280ebf8343777b82e4e8fd8309c90a32db6970e8304b",
+    "scope": "Only auto narrative with at least two slots and an explicit user request for both a still/diagram and animation/video. All other routing classes retain the original guardrails.",
+    "parser_changes": false,
+    "orchestration_changes": false,
+    "public_schema_changes": false,
+    "native_arithmetic_changes": false,
+    "client_control_changes": false
+  },
+  "deterministic_red_green": {
+    "red_log_sha256": "ba1de8c6843e52f0717370f08570f4e362a6c8a94a9fee20f1eaf46469d79216",
+    "red_expected_failed_assertions": 5,
+    "green_log_sha256": "0753a21bde4b733138c1127d69ebf8f90ed9a0dc0e1ba9472c46fdb46aa3435b",
+    "green_result": "PASS",
+    "contract_test_sha256": "883afb0153b2db14324b597a3fde67697abac0693a70f21077bf4887cd528108"
+  },
+  "promotion_rule": {
+    "minimum_chinese_median_ttfa_reduction_fraction": 0.25,
+    "minimum_chinese_median_first_image_reduction_fraction": 0.50,
+    "every_frozen_pair_ttfa_and_first_image_must_improve": true,
+    "all_after_arms_require_complete_long_form_image_i2v_natural_stop_natural_eos_exact_pcm_and_clean_lifecycle": true,
+    "all_required_ns03_ns06_ns08_public_native_and_replay_controls_must_pass": true,
+    "hard_ttfa_first_image_and_i2v_misses_remain_not_met_even_when_promoted": true,
+    "human_perceptual_evaluation_remains_not_run": true
+  }
+}

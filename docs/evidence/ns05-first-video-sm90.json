@@ -1,0 +1,250 @@
+{
+  "schema_version": 1,
+  "experiment": "umminfer_ns05_first_video_self_reference_v1",
+  "decision": "NOT_PROMOTED",
+  "final_default_runtime_candidate": "REMOVED",
+  "base_commit": "0645ec8ccf6dce668aedc4a214bf7da5e7567d32",
+  "candidate_execution_commit": "2263bc64569abb61265f52e2fa4c4bb6c828d20e",
+  "candidate_removal_commit": "79219f6400aa21a81be4df918846ebb9ca35886b",
+  "final_director_sha256": "0c495a8800bdf2ca351b8862299eae3c3c5adbe45d8adfb2e213650e2892dc7b",
+  "final_src_include_diff_from_accepted_baseline": false,
+  "paired_target": {
+    "status": "PASS_BUT_NOT_PROMOTED",
+    "scorecard": "ns05-first-video-pair.json",
+    "scorecard_sha256": "4701d990ee7d0aa4f74f345bfae4a7a4a557a8329d6f463ec7da1884b2b2e171",
+    "fresh_process_scorecard_repeat": "BYTE_IDENTICAL",
+    "request_and_asr_identity_preserved": true,
+    "before": {
+      "directive": "video slot-0 source=slot-0",
+      "error": "source slot slot-0 is not an earlier slot in this request",
+      "image_artifacts": 0,
+      "native_i2v_artifacts": 0,
+      "native_wan_submits": 0,
+      "clean_text_sha256": "a1ca31898fdf1001a4770afedd29cd4ec32b87cf1d9879c2f135233d2e23a743",
+      "public_pcm_sha256": "61ee204fd69d839dbfafb3935b98196c7f8acf0e3090d01d3e79bf54ea2e9162"
+    },
+    "after": {
+      "directives": [
+        "image slot-0",
+        "video slot-1 source=slot-0"
+      ],
+      "image": {
+        "dimensions": [512, 512],
+        "bytes": 412366,
+        "sha256": "0e2f53e1c26422fba627722b382b5899d7822d6a920b4e2a6bdefdc2100b8686"
+      },
+      "video": {
+        "codec": "h264",
+        "pixel_format": "yuv420p",
+        "dimensions": [704, 480],
+        "frames": 29,
+        "frame_rate": "16/1",
+        "bytes": 285195,
+        "sha256": "a7283fa962ba77c41cfc38acc83d9945c622ea1ec6156b049a870333832d4d78",
+        "anchor_slot_index": 0,
+        "anchor_sha256": "0e2f53e1c26422fba627722b382b5899d7822d6a920b4e2a6bdefdc2100b8686"
+      },
+      "native_wan_submit": {
+        "request_id": "http-4:slot:1",
+        "packed_bytes": 413409,
+        "packed_sha256": "fd1e5b2cf8dec2c19cb9932973606b8e585286648d8e55926ee598350e2924ff",
+        "anchor_crop": "center_cover",
+        "exact_immutable_source_bytes": true
+      },
+      "first_frame_mae": 3.3563802083333334,
+      "motion_mae": 23.595182291666667,
+      "clean_text_sha256": "48a812995758ea1c310b07d60ef7cd111e6cf4b472e34049613f3b11ac21a49e",
+      "public_pcm": {
+        "chunks": 72,
+        "bytes": 1846080,
+        "sha256": "78ac7036c6d80e466a849b30f36832ec6e9a7c7165a3a54477dc1d9c55bb3d8c"
+      },
+      "repeat_text_and_media": "BYTE_IDENTICAL"
+    },
+    "timing_ms": {
+      "before": {
+        "phone_first_text": 2401.778051,
+        "phone_first_audio": 2633.735323,
+        "retry_first_text": 4711.578245,
+        "retry_first_audio": 4981.212695,
+        "barge_to_scene_terminal": 85.350633,
+        "barge_to_initial_terminal": 4697.470503,
+        "full_barge_to_retry_first_audio": 10018.257028
+      },
+      "after": {
+        "phone_first_text": 2498.156741,
+        "phone_first_audio": 2729.582398,
+        "retry_first_text": 4569.309705,
+        "retry_first_audio": 4986.97997,
+        "barge_to_scene_terminal": 84.093189,
+        "barge_to_initial_terminal": 4549.311552,
+        "full_barge_to_retry_first_audio": 9875.232186
+      },
+      "initial_text_and_voice_below_3000_ms_both_arms": true,
+      "ns04_full_path_800ms_gate": "NOT_MET"
+    },
+    "stale_or_cross_session_events": 0,
+    "final_in_flight": 0,
+    "after_raw_verification_sha256": "485bb865f96bccd2b5446bea779d34ab3b6cafc48b5e28c526e407997c212774"
+  },
+  "blocking_regression": {
+    "control": "Task 81 frozen Chinese long-form lifecycle",
+    "candidate": {
+      "status": "FAIL",
+      "clean_text_sha256": "9ff5a2a4d303ef184727bacf004fe35677e644356dee6d3089b5b86eff173aad",
+      "expected_clean_text_sha256": "883802d889885bd032b18a3dc21c8f7e1ce77773f020ab0ee3e69a816ac8b572",
+      "native_tts_legs": 24,
+      "expected_native_tts_legs": 43,
+      "natural_eos": "24/24",
+      "exact_verifier": "FAIL: frozen Chinese clean text",
+      "raw_report_sha256": "5d6bed11ba6585310595f81845c2ea9bf7ced7d2b83ee5d983cc0fd251ad5bb3",
+      "independent_media_pcm_verification_sha256": "a4f6e6093dbcbc302846cad9ca8d7269f7560ffa4c3efa7dee95c54a1afef995"
+    },
+    "restored_baseline": {
+      "status": "PASS",
+      "natural_eos": "43/43",
+      "clean_text_sha256": "883802d889885bd032b18a3dc21c8f7e1ce77773f020ab0ee3e69a816ac8b572",
+      "aggregate_pcm_sha256": "2ce2c53454349fd70edceab97e6afe6d93cf8ffc22e7bcdf497c303222d94f78",
+      "public_pcm_chunks": 537,
+      "public_pcm_bytes": 14987520,
+      "two_fresh_verifications": "BYTE_IDENTICAL",
+      "verification_sha256": "fe8f1c03a5aa614bf68a5152ee99d8201d8d940b44b0228c1be51b906fb9de4b",
+      "generic_no_video_postprocessor": "StopIteration retained; Task81-specific raw verifier used"
+    },
+    "promotion_rule": "The NS-01 semantic regression blocks promotion despite the valid NS-05 target chain. No second prompt variant was attempted."
+  },
+  "controls": {
+    "ns03_development": {
+      "status": "PASS",
+      "cases_per_arm": 20,
+      "before": {
+        "routing_correct": 15,
+        "redundant_visual_cases": 1,
+        "empty_prose_cases": 0,
+        "voice_missing_cases": 0,
+        "public_leg_error_count": 0,
+        "followup_correct": 2,
+        "independent_sha256": "450534ced872bcde936655f71d86d6e2fcd090b99c5e7cd79c954d4feb3b90f3"
+      },
+      "after": {
+        "routing_correct": 15,
+        "redundant_visual_cases": 1,
+        "empty_prose_cases": 0,
+        "voice_missing_cases": 0,
+        "public_leg_error_count": 0,
+        "followup_correct": 2,
+        "independent_sha256": "a5f94368c2be4565524d693f0226c5ded8e85153417c4d322ed96fd52a63b429"
+      }
+    },
+    "ns03_heldout": {
+      "status": "PARTIAL_NOT_SCORED",
+      "completed_raw_streams_before_owned_stop": 8,
+      "remaining_arms": "NOT_RUN_AFTER_REJECTION_AND_RESTART",
+      "harness_stop": "SIGINT to recorded owned harness PID; finally stopped owned stages",
+      "log_sha256": "07f9af04474d9159e50417378274ed0effec36330588b53632ac73a5101ef598",
+      "gpu_cleanup": "3 MiB / 0%, zero compute processes"
+    },
+    "ns06_accepted_raw_reverification": {
+      "status": "PASS_PAIRED_TECHNICAL",
+      "keyframes": 3,
+      "i2v_previews": 3,
+      "exact_image_edit_links": 2,
+      "exact_i2v_links": 3,
+      "clean_prose_asr_pcm_equal": true,
+      "verification_sha256": "c2685c4b0f727fa47fcfee297292bf16d7c3de9d4cb954f80afdae559182549e",
+      "new_generation": "NOT_DUPLICATED_AFTER_REJECTION"
+    },
+    "public_pcm_accepted_raw_reverification": {
+      "status": "PASS",
+      "http_responses": 25,
+      "http_complete": 24,
+      "http_cancelled": 1,
+      "realtime_responses": 29,
+      "exact_pcm_legs": 493,
+      "pcm_chunks": 4176,
+      "pcm_bytes": 115034880,
+      "pending_queue_release": "4125 native audio - 29 public = 4096; all 29 readers paused",
+      "verification_sha256": "389104a350b56757ef0dec2d66c172d2474bd8021d3a506f3e59b23120fdc4e8"
+    },
+    "realtime_network_accepted_raw_reverification": {
+      "status": "PASS",
+      "sessions": 6,
+      "rounds": 3,
+      "responses": 41,
+      "verified_next_turn_prompts": 30,
+      "terminal_callbacks": 32,
+      "stale_or_cross_session_events": 0,
+      "final_in_flight": 0,
+      "verification_log_sha256": "79f70e82db39ac8fcbdf82f3f869b5352a32703fa81a055a6eab4c502e251cf0"
+    },
+    "public_narrative_accepted_raw_reverification": {
+      "status": "PASS",
+      "events": 69,
+      "artifacts": 32,
+      "pcm_chunks": 30,
+      "source_png_sha256": "01af1c29f95aa2362b57067bd6592a032617b8c46d91509e7b946d7b0d4e150b",
+      "video_mp4_sha256": "49c6ae4e5460a17a387fb5e31f821a0739cf5e789a21419fc125a63194110b60",
+      "first_frame_mae": 2.259115,
+      "motion_mae": 5.124479,
+      "verification_sha256": "1847b98e08581f198010ce568950af7b4e6b6e7a4e8a6606731d7a762e268dd9"
+    },
+    "final_umm_test_local": {
+      "status": "PASS",
+      "debug_log_sha256": "c3840c15e03a43975724449043bbc16c158c45ae1cacf6c22515fedcc57e4802",
+      "releasefast_log_sha256": "68ad59a97a43cce2d40dcd6010487e0961cf1fdbede538ac4acc12e097069eb8"
+    },
+    "native_host_and_contracts": {
+      "status": "PASS",
+      "stage_host": "11/11",
+      "qwen_host_and_video_input": "3/3",
+      "flux_contract": "16/16, zero skips",
+      "native_video_contract": "completed/cancelled/failed/recovery; in_flight=0; contract stub not real Wan",
+      "stage_log_sha256": "d5fe28d0bca7211f348e5d597d048a77b276ba83ad9e9bae6d33defb41f35e39",
+      "qwen_log_sha256": "b7b57eb5eee4c2f5861cb037bab4380308c816682f32bee319c4fb6f57aeb2d2",
+      "flux_log_sha256": "7d0d5998af2ffef2706ef4946ed1c0a174d8ef8615f98f2a87527250b2ededf8",
+      "video_contract_log_sha256": "5885e9062c9f887535d4f5d51a269a113495ca99883c13781c92744ce6163bd6"
+    },
+    "deterministic_red_green": {
+      "director_red": "Exactly two new director assertions failed on baseline; first-video self-reference and all existing reference controls passed unchanged",
+      "candidate_green": "PASS",
+      "red_log_sha256": "2400660a70ce08450613022fa05b42bfc22de188cf27f6735a47a861187ec565",
+      "green_log_sha256": "a94f3d369d5055d037302b6ce7006d143cb95e808b7e6bbad2c3a9b543740057",
+      "final_first_video_self_reference_control": "PASS; no generation and exact slot error"
+    }
+  },
+  "retained_failures": [
+    "Two initial local-test attempts used the non-WebSocket system libcurl and were not counted; the WebSocket-enabled build produced the focused red/green results.",
+    "Before-r1/r2 used a CUDA-13 Torch environment against the CUDA-12.2 driver; r1 also saw transient 3 MiB / 1% NVML cleanup. They are infrastructure attempts, not accepted model arms.",
+    "Before-r3 and After-r1 had null initial response IDs in barge.json. Raw evidence was not patched; an observation-only wait fixed journaling for accepted Before-r4/After-r2.",
+    "Baseline and candidate both failed the stale Task-81 native unclosed-marker assertion. Only the test expectation was corrected to the accepted fail-closed contract; native production code is unchanged.",
+    "The held-out NS-03 arm was interrupted during recovery after 8 raw streams; it is not scored as complete."
+  ],
+  "boundaries": {
+    "human_perceptual": "NOT_RUN",
+    "physical_acoustic": "NOT_RUN",
+    "full_production": "NOT_RUN",
+    "resident_service": "NOT_CONTACTED",
+    "training_optimizer_video_speed": "NOT_RUN",
+    "full_two_gpu_r4": "NOT_RUN",
+    "ns04_replay_inclusive_800ms_gate": "NOT_MET",
+    "heldout_ns03_remaining_after_rejection_and_restart": "NOT_RUN",
+    "new_ns06_public_pcm_network_generation_after_rejection": "NOT_DUPLICATED; accepted raw evidence independently reverified"
+  },
+  "external_verification": {
+    "files": 3562,
+    "bytes": 3302872470,
+    "manifest_self_exclusion": "SHA256SUMS",
+    "sha256sums_sha256": "1f2d3442008c7963c3d1cbd252568a1e34d9cc90b766ab14c372410becf8b772",
+    "two_fresh_manifest_checks": "BYTE_IDENTICAL",
+    "verification_sha256": "910a4004c0c85a78582fd175e2ba62b3da327b179e4127d8da47b73fd1afd318"
+  },
+  "cleanup": {
+    "physical_gpu": 7,
+    "memory_used_mib": 3,
+    "utilization_percent": 0,
+    "compute_processes": 0,
+    "owned_processes": 0,
+    "other_gpus_used": false,
+    "resident_service_touched": false
+  }
+}

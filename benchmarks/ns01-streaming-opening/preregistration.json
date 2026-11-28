@@ -1,0 +1,121 @@
+{
+  "format": "umminfer-ns01-streaming-opening-preregistration-v1",
+  "created_before_candidate_runtime_edit": true,
+  "created_before_new_measurement": true,
+  "official_base_commit": "9c02225451252001c11021b389a7792caf03d503",
+  "objective": "Front-load one concise spoken opening and autonomous still/anchored-dynamic visual admission for explicit still-plus-animation explanations, while preserving the complete requested long-form Markdown narration and exact public/native lifecycle integrity.",
+  "candidate_scope": "One bounded default auto-director prompt change only. No parser, scheduler, queue cap, public schema, client control, sampling default, native model arithmetic, TeaCache, training, optimizer, or video-kernel change is permitted.",
+  "profile_hypothesis": "The accepted serial harness already streams parser prose and sentence cuts immediately. The late first visual is director output order; TTFA additionally includes the existing FLUX-to-TTS stage handoff and native TTS cold readiness. I2V playable timing includes the existing drain-TTS-before-Wan handoff. Measure each separately rather than attributing all latency to model decode.",
+  "physical_gpu": 7,
+  "forbidden_devices": [0, 1, 2, 3, 4, 5, 6],
+  "resident_service": "NOT_CONTACTED",
+  "golden_cases": {
+    "chinese": {
+      "population": "frozen_development_pair",
+      "scenario": "ns01-chinese-streaming-opening",
+      "user_text": "用通俗方式讲清黑洞吸积盘和引力透镜，配示意图和动态演示。请直接开始，先用三个内容充实的中文长段落展开背景，再使用 Markdown 标题分节；讲解中自然保留 accretion disk、gravitational lensing、event horizon、Eddington limit 等英文术语。不要省略开篇，不要把正文压缩成提纲。",
+      "minimum_clean_text_bytes": 2400,
+      "minimum_opening_paragraphs_before_first_heading": 3,
+      "minimum_opening_chinese_codepoints_before_first_heading": 240,
+      "minimum_markdown_heading_lines": 1,
+      "required_terms": ["accretion disk", "gravitational lensing", "event horizon", "Eddington limit"],
+      "minimum_required_terms": 2
+    },
+    "english": {
+      "population": "frozen_heldout_pair",
+      "scenario": "ns01-english-streaming-opening",
+      "user_text": "Explain black-hole accretion disks and gravitational lensing in an accessible way, with a structural diagram and a dynamic demonstration. Start directly with three substantial multi-paragraph background passages before using Markdown headings for the later sections. Naturally retain the mixed technical terms accretion disk, gravitational lensing, event horizon, and Eddington limit. Do not omit the opening, compress the answer into an outline, or drop the requested animation.",
+      "minimum_clean_text_bytes": 2400,
+      "minimum_opening_paragraphs_before_first_heading": 3,
+      "minimum_opening_english_words_before_first_heading": 240,
+      "minimum_markdown_heading_lines": 1,
+      "required_terms": ["accretion disk", "gravitational lensing", "event horizon", "Eddington limit"],
+      "minimum_required_terms": 2
+    }
+  },
+  "request": {
+    "route": "POST /v1/chat/completions",
+    "stream": true,
+    "max_tokens": 768,
+    "temperature": 0,
+    "seed": 42,
+    "modalities": ["text", "image", "audio", "video"],
+    "narrative": {
+      "enabled": true,
+      "visual_mode": "auto",
+      "max_slots": 2,
+      "allow_text_only": false,
+      "continuity_mode": "i2v_chain"
+    },
+    "image": {"size": "512x512", "steps": 4, "seed": 42, "output_format": "png"},
+    "audio": {"voice": "vivian", "format": "wav", "stream": true, "expected_sample_rate": 24000, "expected_channels": 1, "expected_pcm_format": "pcm16", "max_native_frames_per_leg": 8192},
+    "video": {"size": "704x480", "num_frames": 29, "steps": 20, "fps": 16, "guidance_scale": 5.0, "seed": 42, "output_format": "mp4"},
+    "manual_visual_directives_in_user_text": false,
+    "manual_modality_controls": false,
+    "teacache_thresh_present": false
+  },
+  "paired_execution": {
+    "arms": ["before", "after"],
+    "repetitions_per_case": 2,
+    "process_separation": true,
+    "same_native_binaries_models_seed_request_and_gpu_within_each_pair": true,
+    "only_server_binary_and_server_source_may_differ": true,
+    "order": [
+      "chinese-r1-before", "chinese-r1-after",
+      "chinese-r2-after", "chinese-r2-before",
+      "english-r1-before", "english-r1-after",
+      "english-r2-after", "english-r2-before"
+    ],
+    "candidate_freeze_required_before_first_after_and_any_english_run": true,
+    "prompt_tuning_on_golden_outputs_forbidden": true,
+    "all_attempts_failures_and_outliers_retained": true,
+    "no_model_request_retry": true
+  },
+  "required_measurements": [
+    "TTFT and final VLM text timing; ASR is NOT_APPLICABLE for these text-only inputs",
+    "first native TTS submit and first public PCM artifact (TTFA)",
+    "visual slot admission and first complete public image",
+    "I2V visual slot, explicit slot-0 anchor, native submit, first public chunk, and complete playable artifact timing",
+    "clean text bytes/hash, opening-before-heading structure, long-form paragraphs/headings/terms, and tag/directive leaks",
+    "per-leg native codec frames, natural EOS, terminal state, native/public/terminal-WAV exact PCM joins, and aggregate PCM hash",
+    "public event/artifact/slot/terminal/DONE ordering and final in_flight",
+    "all native stage handoff/readiness intervals needed to attribute remaining latency"
+  ],
+  "content_and_lifecycle_gates": {
+    "immediate_concise_opening_before_first_heading_and_visuals": true,
+    "opening_max_words_or_chinese_codepoints": 48,
+    "image_slot": "slot-0",
+    "video_slot": "slot-1",
+    "video_anchor": "explicit source=slot-0 with exact source bytes and SHA-256",
+    "complete_requested_long_form_after_early_visual_admission": true,
+    "do_not_shorten_or_drop_video_for_latency": true,
+    "tag_or_directive_leak_count": 0,
+    "native_tts_markdown_presentation_leak_count": 0,
+    "every_intended_native_tts_leg_has_one_terminal_and_natural_eos": true,
+    "native_stream_terminal_wav_and_public_pcm_exact_per_leg": true,
+    "public_terminal_complete_exactly_once": true,
+    "public_done_exactly_once": true,
+    "accepted_before_chinese_43_of_43_natural_eos_control_preserved": true,
+    "final_health_in_flight": 0
+  },
+  "hard_latency_thresholds_ms": {
+    "ttft_strictly_below": 800,
+    "ttfa_strictly_below": 800,
+    "first_image_strictly_below": 2000,
+    "i2v_playable_strictly_below": 5000
+  },
+  "latency_rule": "Retain every value and outlier. Missing media or timing is NOT_MET, never omitted or replaced by a placeholder. A substantial repeatable TTFA/first-image gain does not imply full NS-01 PASS.",
+  "required_controls": [
+    "deterministic red/green director opening, fragmented parser buffering, immediate slot admission, anchored deferred I2V, clean TTS, and no-routing-regression tests",
+    "umm-test-local",
+    "native TTS host and real CUDA determinism",
+    "public narrative/PCM/replay tests",
+    "frozen NS-03 40-case suite with no redundant-visual or routing regression",
+    "NS-06 cross-slot reference controls",
+    "NS-08 lossless export/import/reconnect controls",
+    "independent fresh-process verification over a complete external self-excluded manifest"
+  ],
+  "promotion": "PROMOTE only a substantial repeatable non-regressing TTFA/first-image engineering gain with exact text/media/lifecycle integrity. Otherwise remove the runtime candidate and report NOT_PROMOTED. Always report remaining hard NOT_MET thresholds and keep human/perceptual evaluation NOT_RUN.",
+  "evidence": "Compact tracked scorecard plus external raw SSE, native MessagePack, logs, CAS media, exact binary/model/config hashes, and a self-excluded SHA256SUMS. No tracked large media, per-event blobs, absolute output defaults, host addresses, credentials, or task-specific paths.",
+  "not_run_by_default": ["physical_microphone", "physical_speaker", "acoustic_evaluation", "human_perceptual_evaluation", "training", "optimizer", "resident_service", "deployment"]
+}

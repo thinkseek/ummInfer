@@ -56,17 +56,17 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def gpu1_once(nvidia_smi):
+def gpu_once(nvidia_smi, gpu):
     result = subprocess.run(
-        [nvidia_smi, "-i", "1", "--query-gpu=index,memory.used,utilization.gpu",
+        [nvidia_smi, "-i", str(gpu), "--query-gpu=index,memory.used,utilization.gpu",
          "--format=csv,noheader,nounits"], check=True, capture_output=True, text=True, timeout=20)
     fields = [int(value.strip()) for value in result.stdout.strip().split(",")]
-    require(len(fields) == 3 and fields[0] == 1, "nvidia-smi did not address physical GPU 1")
-    return {"index": 1, "memory_used_mib": fields[1], "utilization_percent": fields[2]}
+    require(len(fields) == 3 and fields[0] == gpu, f"nvidia-smi did not address physical GPU {gpu}")
+    return {"index": fields[0], "memory_used_mib": fields[1], "utilization_percent": fields[2]}
 
 
-def gpu1(nvidia_smi, idle=False):
-    observed = gpu1_once(nvidia_smi)
+def gpu_idle(nvidia_smi, gpu, idle=False):
+    observed = gpu_once(nvidia_smi, gpu)
     if not idle:
         return observed
     # NVML utilization can briefly remain nonzero after the last CUDA context
@@ -76,9 +76,9 @@ def gpu1(nvidia_smi, idle=False):
     deadline = time.monotonic() + 30
     while stable < 3 and time.monotonic() < deadline:
         time.sleep(0.5)
-        observed = gpu1_once(nvidia_smi)
+        observed = gpu_once(nvidia_smi, gpu)
         stable = stable + 1 if observed["memory_used_mib"] <= 16 and observed["utilization_percent"] == 0 else 0
-    require(stable == 3, f"physical GPU 1 is not stably idle: {observed}")
+    require(stable == 3, f"physical GPU {gpu} is not stably idle: {observed}")
     observed["stable_idle_samples"] = 3
     return observed
 
@@ -374,7 +374,7 @@ class Stack:
             self.out / "entry.log", self.env, self.record_process_event)
         self.vlm = ManagedProcess("vlm", [
             a.vlm_binary, "--kind", "qwen38", "--name", "vlm", "--model", a.vlm_model,
-            "--gpu", "1", "--batch-size", "1", "--max-new-tokens", "256",
+            "--gpu", str(a.gpu), "--batch-size", "1", "--max-new-tokens", "256",
             "--recv-endpoint", self.endpoints["vlm-in"], "--coordinator-endpoint", self.endpoints["completion"],
             "--abort-endpoint", self.endpoints["abort"]], self.out / "vlm.log", self.env, self.record_process_event)
         self.vlm.wait_log("native stage vlm ready kind=qwen38", a.timeout)
@@ -398,14 +398,14 @@ class Stack:
         self.flux = ManagedProcess("image", [
             a.python, "-I", a.flux_stage, "--name", "image", "--backend", "diffusers",
             "--model", a.flux_model, "--model-id", "black-forest-labs/FLUX.2-klein-4B",
-            "--revision", "UNKNOWN", "--gpu", "1", "--default-size", "512x512",
+            "--revision", "UNKNOWN", "--gpu", str(a.gpu), "--default-size", "512x512",
             "--default-steps", "4", "--recv", self.endpoints["image-in"],
             "--coordinator", self.endpoints["completion"], "--abort", self.endpoints["abort"]],
             self.out / "image.log", self.env, self.record_process_event)
         self.flux.wait_log("ready kind=image name=image", a.timeout)
         self.tts = ManagedProcess("tts", [
             a.tts_binary, "--kind", "tts", "--name", "tts", "--model", a.tts_model,
-            "--gpu", "1", "--recv-endpoint", self.endpoints["tts-in"],
+            "--gpu", str(a.gpu), "--recv-endpoint", self.endpoints["tts-in"],
             "--coordinator-endpoint", self.endpoints["completion"],
             "--abort-endpoint", self.endpoints["abort"]], self.out / "tts.log", self.env, self.record_process_event)
         self.tts.wait_log("native stage tts ready kind=tts", a.timeout)
@@ -433,7 +433,7 @@ class Stack:
         a = self.args
         self.wan = ManagedProcess("video", [
             a.wan_binary, "--kind", "video", "--name", "video", "--video-backend", "cuda",
-            "--model", a.wan_model, "--gpu", "1", "--size", "704x480", "--steps", "25",
+            "--model", a.wan_model, "--gpu", str(a.gpu), "--size", "704x480", "--steps", "25",
             "--fps", "16", "--recv-endpoint", self.endpoints["video-in"],
             "--coordinator-endpoint", self.endpoints["completion"],
             "--abort-endpoint", self.endpoints["abort"]], self.out / "video.log", self.env, self.record_process_event)
@@ -808,6 +808,8 @@ def parse_args(argv=None):
     p.add_argument("--model", default="qwen3-native")
     p.add_argument("--ffmpeg", default="ffmpeg")
     p.add_argument("--nvidia-smi", default="nvidia-smi")
+    p.add_argument("--gpu", type=int, default=1, choices=(1, 7),
+                   help="explicitly idle physical GPU; default preserves the frozen GPU-1 gate")
     p.add_argument("--library-path")
     p.add_argument("--port", type=int)
     p.add_argument("--timeout", type=int, default=900)
@@ -855,7 +857,7 @@ def live(args):
         candidate = json.loads(Path(args.candidate_manifest).read_text())
         require(candidate["execution_commit"] == args.execution_commit, "candidate commit mismatch")
         require(candidate["source_sha256"] == source_hashes, "candidate source hash mismatch")
-    gpu = {"before": gpu1(args.nvidia_smi, idle=True)}
+    gpu = {"before": gpu_idle(args.nvidia_smi, args.gpu, idle=True)}
     if args.model_manifest:
         models = json.loads(Path(args.model_manifest).read_text())
     else:
@@ -869,7 +871,7 @@ def live(args):
     identities = {
         "base_commit": args.base_commit, "execution_commit": args.execution_commit,
         "population": args.population, "arm": args.arm, "case_class": args.case_class,
-        "initial_history": initial_history, "vlm_observer": True, "physical_gpu": 1,
+        "initial_history": initial_history, "vlm_observer": True, "physical_gpu": args.gpu,
         "started_at_utc": started_at_utc,
         "source_sha256": source_hashes, "suite_sha256": sha256_file(args.suite),
         "binaries": {name: {"path": str(Path(path).resolve()), "sha256": sha256_file(path),
@@ -927,13 +929,13 @@ def live(args):
             try:
                 stack.observer.close()
             finally:
-                gpu["after_cleanup"] = gpu1(args.nvidia_smi, idle=True)
+                gpu["after_cleanup"] = gpu_idle(args.nvidia_smi, args.gpu, idle=True)
                 # Only task-owned ephemeral IPC sockets are removed after every process exits.
                 shutil.rmtree(stack.run)
     report = {"format": "umminfer-ns03-routing-run-v1", "population": args.population,
               "arm": args.arm, "case_class": args.case_class,
               "identity_file": "run-identity.json", "cases": results,
-              "processes": stack.processes(), "gpu1": gpu, "health_final": health,
+              "processes": stack.processes(), "gpu": gpu, "gpu1": gpu, "health_final": health,
               "started_at_utc": started_at_utc,
               "finished_at_utc": datetime.now(timezone.utc).isoformat(),
               "physical_perceptual_quality": "NOT_RUN"}

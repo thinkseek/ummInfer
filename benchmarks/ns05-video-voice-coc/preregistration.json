@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "experiment": "umminfer_ns05_duration_budget_voice_cocreation_v1",
+  "preregistered_on": "2026-11-28",
+  "target_case": "NS-05",
+  "base": {
+    "accepted_task85": "fe63040302e7ae2b1af77923131f3bbf7e4849e2",
+    "official_main_at_start": "e084d8404b1d96bee5cd6f83d8299c2498a3af65",
+    "candidate_parent": "e084d8404b1d96bee5cd6f83d8299c2498a3af65"
+  },
+  "single_candidate": {
+    "name": "automatic_duration_aware_default_uniform_16",
+    "rule": "If and only if video_url.frame_selection.max_frames is omitted and the engine-observed source duration is at least 60.0 seconds with at least 16 declared source frames, resolve the default uniform budget to 16 instead of the historical 8. Explicit max_frames 4, 8, and 16 are unchanged. Short/unknown-duration sources remain 8.",
+    "forbidden_changes": [
+      "client frame or modality controls",
+      "motion/scene selector thresholds or selection policy",
+      "prompt/question/answer/scoring changes after observations",
+      "model weights, training, optimizer, sampling or public schema changes",
+      "synthetic geometry or additional optimization candidates"
+    ],
+    "preserved_contracts": [
+      "source RGB and presentation timestamps",
+      "first and last source anchors",
+      "temporal-2 packing and mRoPE",
+      "serial/batch parity and cold-prefix accounting",
+      "32 MiB input, bounded decoder allocations, cancellation and public schema"
+    ]
+  },
+  "source": {
+    "identity_from_task75": true,
+    "derivative_sha256": "ffef335edc161a2f6dead512e0fde96cf48fb997ae6b6491067e36c76eec58d0",
+    "upstream_sha256": "fd24e652c92a5759127aa9c7f23fea63d73aebb4bcea72763abe72ef06a20cf0",
+    "license_sha256": "e7edaaaeb0cd6da6a3dd97c54f3e8443ef027be685253fab64bf6eed2419ee7e",
+    "duration_seconds": 120.0,
+    "frames": 3600,
+    "width": 768,
+    "height": 432,
+    "bytes": 19821335,
+    "license": "CC-BY-4.0"
+  },
+  "frozen_comprehension_cases": [
+    {
+      "id": "phone-action",
+      "question": "What does the man driving in the opening shot do with his phone? Answer in one short sentence.",
+      "expect_all": ["phone"],
+      "expect_any": ["ear", "call", "talk"],
+      "canonical_answer": "He holds the phone to his ear to make a call."
+    },
+    {
+      "id": "driver-scene-change",
+      "question": "How does the driver change between the opening shot and the final shot? Answer in one short sentence.",
+      "expect_all": ["man", "woman"],
+      "expect_any": [],
+      "canonical_answer": "A woman replaces a man as the driver in the final shot."
+    }
+  ],
+  "paired_protocol": {
+    "order": ["baseline-A", "candidate-B", "candidate-C", "baseline-D"],
+    "fresh_stack_per_block": true,
+    "physical_gpu": 0,
+    "seed": 510075,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 64,
+    "prefix_reused": 0,
+    "frame_selection": "ABSENT",
+    "warmup_repetitions_per_stack_case": 1,
+    "measured_repetitions_per_stack_case": 8,
+    "requests_per_stack": 18,
+    "measured_answers_per_arm_case": 16,
+    "voice_envelope": "modalities=[text,audio], audio={voice:vivian,format:wav,stream:true}",
+    "answer_scoring": "Task #75 casefolded expect_all plus expect_any; no aliases",
+    "quality_promotion": "At least one frozen family improves from 0/16 without reducing the other family's hits; raw answers and misses retained.",
+    "latency_promotion": "Every measured arm/case first-public-text and first-public-voice nearest-rank p95 is below 3000 ms. No median or p95 regression over 1 percent is hidden; a hard latency failure makes the candidate NOT_PROMOTED even if comprehension improves.",
+    "historical_performance_gate": "Task #75's public-total/latency-improvement requirement is historical and is not reused as a reason to reject a comprehension improvement that passes this task's explicit latency and correctness gates."
+  },
+  "voice_cocreation_journey": {
+    "input_contract": "Real PCM16 mono 16 kHz WAV generated once by unmodified native TTS at 24 kHz, resampled once with FFmpeg to 16 kHz, then actually transcribed by native Qwen3-ASR through public HTTP audio input; no transcript injection. The same frozen video bytes accompany every turn so no client-side text-only video-summary substitution is possible.",
+    "input_audio_sha256": {
+      "phone": "ade900f915247d1bf6334f8dd72b021b7470b872c07f10c4b6907ae41b91ee5d",
+      "scene": "3ce35b3522c1c965bb45db743a99da6ee4957ceddcfb4b264309617ac611b0df",
+      "cyberpunk": "f42b91a373bda81965c4759b63947ac6240de75ee02ae36af2f92ef28327c20d"
+    },
+    "native_tts_24khz_sha256": {
+      "phone": "14887f6e315f2a27f84e973989231b18280d308225dea10162af805672b2ca40",
+      "scene": "53bdb9eda7c21f4308a8248e9d241c84d0ed4d233fcf6e201a9d95a6d073a9d4",
+      "cyberpunk": "23a8401d13e68535161c23e7cf64623a6df433b7f30a6348b93f4fa3ed8ef1de"
+    },
+    "questions": [
+      "What does the man driving in the opening shot do with his phone? Answer in one short sentence.",
+      "How does the driver change between the opening shot and the final shot? Answer in one short sentence."
+    ],
+    "barge_request": "Stop. Turn that driver scene into a cyberpunk night animation and narrate it.",
+    "default_session": {
+      "session_id": "ns05-video-voice-coc-v1",
+      "session_history": true,
+      "narrative": {"enabled": true, "visual_mode": "auto", "max_slots": 2, "allow_text_only": true, "continuity_mode": "i2v_chain"},
+      "modalities": ["text", "audio", "image", "video"],
+      "sampling": {"seed": 510075, "temperature": 0.0, "top_p": 1.0},
+      "client_directives": "NONE; no hand-authored [[image]]/[[video]] marker, source slot, frame_selection, per-turn modality switch or retry-specific prompt"
+    },
+    "schedule": "Ask the phone question, then the shot-change question. Start the co-creation request, cancel once after its response is active, and immediately retry the identical frozen voice request and body in the same session. The successful retry must autonomously emit a FLUX styled image followed by native Wan I2V anchored to that exact image and clean streaming narration.",
+    "required_evidence": [
+      "exact input WAV/source/reference/output hashes and ASR transcripts",
+      "source geometry and center-cover first-frame RGB continuity proxy",
+      "native/public/terminal PCM joins and no directive leakage",
+      "cancel and immediate retry with zero stale or cross-session events",
+      "one terminal per public/native request and final in_flight=0"
+    ],
+    "hard_gate": "The completed retry has at least one completed image and one completed source-bound I2V, exact reference hashes, decodable geometry, nonempty clean narration and PCM, and all lifecycle invariants. Failure is retained, not replaced by a direct visual endpoint or synthetic artifact."
+  },
+  "controls": {
+    "deterministic": "Red/green native host tests prove the 60-second default-only rule, explicit-budget preservation, exact anchors/PTS/RGB and bounded behavior.",
+    "required_live": [
+      "native Qwen video serial and batch CUDA controls",
+      "unchanged Task #72 natural-video gate",
+      "public narrative/PCM and realtime network controls",
+      "unchanged Task #81 Chinese 43/43 natural EOS control"
+    ],
+    "independent": "Fresh-process verification over complete external self-excluded manifests; no producer scoring import for raw answer verification.",
+    "not_run": ["human perceptual review", "physical acoustic playback", "full production gate"]
+  },
+  "promotion": "PROMOTE only the single duration-budget candidate if paired quality improves without the other family regressing, every first-response p95 passes, co-creation/lifecycle gates pass and required controls do not regress. Otherwise remove it from final runtime and report NOT_PROMOTED with raw evidence."
+}

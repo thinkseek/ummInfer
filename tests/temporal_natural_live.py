@@ -38,6 +38,13 @@ ANALYSIS_SOURCES = (
 )
 
 
+def expected_physical_gpu():
+    value = os.environ.get("UMM_NATURAL_PHYSICAL_GPU", "1")
+    if value not in ("0", "1"):
+        raise ValueError("UMM_NATURAL_PHYSICAL_GPU must be 0 or 1")
+    return int(value)
+
+
 def write_json(path, value):
     fixture.write_json(path, value)
 
@@ -240,8 +247,8 @@ def run_mode(args):
     provenance_path = Path(args.provenance).resolve()
     provenance = long_live.validate_provenance(
         provenance_path, mode=args.mode, run_id=args.run_id, source_root=args.source_root)
-    if provenance["physical_gpu"] != 1:
-        raise ValueError("Task72 permits only physical GPU 1")
+    if provenance["physical_gpu"] != expected_physical_gpu():
+        raise ValueError("natural-video physical GPU does not match the frozen execution environment")
     url = long_live.loopback_url(args.url)
     long_live.health_probe(url)
     pre, _, _ = long_live.exclusive_check(
@@ -329,7 +336,7 @@ def technical_gate(records, parity, modes):
         if not result["post_stop_cleanup"] or not result["post_stop_cleanup"].get("passed"):
             reasons.append(f"{mode}: post-stop cleanup is missing or failed")
         provenance = result["provenance"]
-        if provenance["physical_gpu"] != 1 \
+        if provenance["physical_gpu"] != expected_physical_gpu() \
                 or provenance["batch_size"] != (1 if mode == "serial" else 4) \
                 or provenance["qwen38_prefix_cache"] != "disabled":
             reasons.append(f"{mode}: GPU/batch/prefix provenance failed")

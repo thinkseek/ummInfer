@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "experiment": "umminfer_ns05_first_video_self_reference_v1",
+  "preregistered_on": "2026-11-28",
+  "target_case": "NS-05",
+  "base": {
+    "accepted_task88": "0645ec8ccf6dce668aedc4a214bf7da5e7567d32"
+  },
+  "single_candidate": {
+    "name": "auto_i2v_first_dynamic_establish_then_animate",
+    "scope": "Only narrative_director_prompt for visual_mode=auto, continuity_mode=i2v_chain, and max_slots>=2.",
+    "rule": "When the first desired visual is dynamic and no earlier image marker exists, the director must request an image establishment marker followed by a video marker whose source is that exact earlier image slot. A video slot must never reference itself.",
+    "forbidden_changes": [
+      "parser or orchestration rewriting of self/malformed/forward/missing/cross-session references",
+      "unconditioned T2V substitution for an invalid explicit source",
+      "request text, voice bytes, retry body, cancellation timing, video/frame controls, sampling, model weights, public schema, training or optimizer changes",
+      "additional prompt variants after observing model output"
+    ]
+  },
+  "frozen_pair": {
+    "harness": "tests/ns05_voice_cocreation_live.py",
+    "source_and_protocol": "benchmarks/ns05-video-voice-coc/preregistration.json",
+    "physical_gpu": 7,
+    "before": "Unmodified accepted baseline gateway with the same native stages and frozen inputs on GPU 7.",
+    "after": "The single director-only candidate gateway with byte-identical native stages and frozen inputs on GPU 7.",
+    "before_expected": "video slot-0 source=slot-0 fails closed with zero image and zero Wan I2V submissions.",
+    "after_required": "At least one completed real FLUX image followed by native Wan I2V bound to its exact bytes, with clean text/PCM, cancellation/retry and final in_flight=0.",
+    "first_response_gate": "The initial real-video question retains first public text and first public voice below 3000 ms in both arms; all full barge/retry timings and NS-04 misses remain visible."
+  },
+  "deterministic_controls": {
+    "director": "Red before the candidate and green after: the scoped director contains the ordered establish-then-animate rule; unrelated director modes remain byte-identical.",
+    "orchestration": "The existing valid immediate/delayed source completion tests plus new first-video self-reference and all malformed, missing, forward, duplicate, wrong-modality, failed-source, cancelled-source, stale and cross-session controls remain fail-closed.",
+    "compatibility": "Text-only, ordinary explicit source=slot-N, explicit multi-slot edit/I2V chains, native arithmetic, queue bounds and public schema remain unchanged."
+  },
+  "required_non_regression": [
+    "umm-test-local",
+    "narrative and SSE replay tests",
+    "public PCM and realtime network controls",
+    "native image/video tests",
+    "frozen NS-03 routing cases without increased redundant visuals or empty prose/voice",
+    "Task 81 Chinese 43/43 natural EOS",
+    "Task 76/77 NS-06 three-shot exact image-edit/I2V chains",
+    "Task 73 fair-alternation implementation unchanged"
+  ],
+  "verification": "Independent fresh-process raw SSE/CAS/MessagePack/media/PCM verification and a complete external self-excluded manifest; compact tracked scorecard only, no large media or per-event blobs.",
+  "not_run": [
+    "human perceptual review",
+    "physical acoustic playback",
+    "full production gate"
+  ],
+  "promotion": "PROMOTE only a verifiable non-regressing real NS-05 image-to-I2V completion gain. If this single candidate fails or regresses semantics, remove it and report NOT_PROMOTED without further prompt variants."
+}

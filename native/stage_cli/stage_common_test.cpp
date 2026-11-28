@@ -422,8 +422,8 @@ void test_behavior_alignment_and_tokenizer_identity() {
   const std::vector<std::string> unclosed = {"prose [[image: x"};
   auto unclosed_mask = narrative_behavior_masks(
       {0}, [&unclosed](int) { return unclosed[0]; });
-  check(unclosed_mask && (*unclosed_mask)[0] == 1,
-        "an unclosed marker remains exact clean prose");
+  check(!unclosed_mask,
+        "an unclosed reserved directive fails closed at EOF");
 }
 
 }  // namespace

@@ -162,7 +162,7 @@ def main(argv=None):
     ]
     browser = {"status": "NOT_RUN", "checks_failed": 0, "checks_passed": 0,
                "visible_controls": static_visible, "visible_counts": static_counts,
-               "checks": []}
+               "checks": [], "network_requests": []}
     if args.browser:
         browser = browser_check(source, evidence, args.chromium, args.playwright_core)
         dump(evidence / "browser-result.json", browser)

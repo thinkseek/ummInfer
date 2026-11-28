@@ -73,6 +73,20 @@ class FrozenNaturalPopulationTests(unittest.TestCase):
             self.assertTrue(all(row["answer_anchor_present"]
                                 for row in case["anchor_audit"].values()))
 
+    def test_ffprobe_flag_padding_is_normalized_without_weakening_packet_order(self):
+        old = {"packet_count": 1, "decode_order_pts": [0],
+               "decode_order_dts": [-2], "decode_order_pts_nonmonotonic": False,
+               "decode_order_dts_strictly_increasing": True,
+               "packets": [{"pts": 0, "dts": -2, "flags": "K_"}]}
+        new = copy.deepcopy(old)
+        new["packets"][0]["flags"] = "K__"
+        self.assertEqual(fixture.canonical_packet_evidence(old),
+                         fixture.canonical_packet_evidence(new))
+        changed = copy.deepcopy(new)
+        changed["packets"][0]["dts"] = -1
+        self.assertNotEqual(fixture.canonical_packet_evidence(old),
+                            fixture.canonical_packet_evidence(changed))
+
     def test_uniform_eight_retains_repeated_source_candidates_and_nominal_pts(self):
         video = self.manifest["videos"]["natural-01"]
         selected = video["expected_uniform"]["8"]

@@ -1,0 +1,852 @@
+{
+  "baseline_execution_commit": "e084d8404b1d96bee5cd6f83d8299c2498a3af65",
+  "candidate_execution_commit": "feb8e9721d35ee9b44eb4d768e6fb2898a6d5988",
+  "candidate_removal_commit": "038842b443cf5fdb3014d7a29a8478456ea84a82",
+  "controls": {
+    "human_perceptual_physical_acoustic_full_production": "NOT_RUN",
+    "native_qwen_sm90": {
+      "architecture": "SM90",
+      "cuda": "12.4.131",
+      "duration_candidate_red_green": "3 red checks before; all green on feb8e97; final runtime reverted",
+      "status": "PASS",
+      "tests": "2/2 qwen38 host/video-input CTest"
+    },
+    "public_narrative_i2v": {
+      "first_frame_mae": 2.259115,
+      "manifest_sha256": "69540babcf1a9b5c0540f6500c06782504abe8345824dc92aad2d2491d9145e2",
+      "motion_mae": 5.124479,
+      "report_sha256": "9bfd7032a740c108df31d6a6c93b1a285b755a0365a2c76f0006a8fa2dd9f319",
+      "source_geometry": "512x512 PNG to 704x480 H264 29 frames at 16 fps",
+      "source_png_sha256": "01af1c29f95aa2362b57067bd6592a032617b8c46d91509e7b946d7b0d4e150b",
+      "status": "CONTROLLED_LIVE_PASS",
+      "verification_sha256": "c5326b329108e2995a67bbc1c35edb4e550a1dfa56dd20e7fcdf486c24b1024a",
+      "video_mp4_sha256": "49c6ae4e5460a17a387fb5e31f821a0739cf5e789a21419fc125a63194110b60"
+    },
+    "public_pcm": {
+      "delayed_release": "4125 native audio events - 29 public frames = 4096 pending; all 29 readers paused",
+      "evidence_sha256": "7810763fecddac3aaef2fc5313a25ef7f82cb5a2a620a58967c63273b13a6f57",
+      "exact_pcm_legs": 493,
+      "final_acks": 29,
+      "http_complete": 24,
+      "http_exact_cancel": 1,
+      "http_responses": 25,
+      "negative_fixture_attempt": "406 native events; timeouts retained and not counted as product regression",
+      "pcm_bytes": 115034880,
+      "pcm_chunks": 4176,
+      "realtime_responses": 29,
+      "status": "PASS",
+      "verification_sha256": "389104a350b56757ef0dec2d66c172d2474bd8021d3a506f3e59b23120fdc4e8"
+    },
+    "realtime_network": {
+      "connection_scoped_identities": 41,
+      "connections": 15,
+      "final_in_flight": 0,
+      "manifest_sha256": "e06748b5cab490b9badc9d8d14cd2be09bd0a5929b27b2dc6e9911aac77439bc",
+      "rounds": 3,
+      "sessions": 6,
+      "stale_or_cross_session_events": 0,
+      "status": "PASS",
+      "terminal_callbacks": 32,
+      "verification_sha256": "2becfebbe0416382438d050af349107bcad0becc0b9d546132ec2e07e99ce4b8",
+      "verified_next_turn_prompts": 30
+    },
+    "task72_natural_video": {
+      "baseline_answer_and_24_native_parity_field_identity": "320/320",
+      "historical_misses": 18,
+      "latency_outliers": 0,
+      "manifest_sha256": "caf96b1afb79e2dd56c28d166775636e1cc58059722cb6057e6eaf5bca492d04",
+      "parity": 304,
+      "quality": {
+        "default-8": "42/48",
+        "temporal-4": "48/48",
+        "temporal-8": "42/48",
+        "uniform-4": "48/48",
+        "uniform-8": "42/48"
+      },
+      "report_sha256": "cd74523c59d9c1d17f1fa10e34e27830a2d007bc57fba7ded095d811cb685d0e",
+      "requests": 320,
+      "source_frames_independently_decoded": 165,
+      "status": "PASS"
+    },
+    "task81_chinese_lifecycle": {
+      "aggregate_pcm_sha256": "2ce2c53454349fd70edceab97e6afe6d93cf8ffc22e7bcdf497c303222d94f78",
+      "clean_text_sha256": "883802d889885bd032b18a3dc21c8f7e1ce77773f020ab0ee3e69a816ac8b572",
+      "exact_pcm_chunks": 537,
+      "generic_no_video_postprocessor": "StopIteration retained; Task81-specific raw verifier used",
+      "manifest_sha256": "0aa13b91d0060e602a35c9097b1a485da656e4ff87b522a0003030b42558af69",
+      "native_terminals": 43,
+      "natural_eos": "43/43",
+      "pcm_bytes": 14987520,
+      "status": "PASS",
+      "verification_sha256": "fe8f1c03a5aa614bf68a5152ee99d8201d8d940b44b0228c1be51b906fb9de4b"
+    },
+    "umm_test_local": {
+      "candidate_and_final_runtime": true,
+      "final_log_sha256": "6cbde95cb564a2ba1915ac9da2abb57d329150ba9ca7770e4682a42c198808fb",
+      "status": "PASS"
+    }
+  },
+  "decision": "NOT_PROMOTED",
+  "experiment": "umminfer_ns05_duration_budget_voice_cocreation_v1",
+  "final_default_runtime_candidate": "REMOVED",
+  "human_perceptual_physical_acoustic_full_production": "NOT_RUN",
+  "identities": {
+    "baseline-A": {
+      "binary": {
+        "asr_sha256": "e936045361d1f37ffe22717974dab9705afbb7c1e11023c44b003267afa42f86",
+        "gateway_sha256": "275fc42ef78e0dde9ce928d2092c76d2f28c62ed1d566a8b883425e04ac3a698",
+        "tts_sha256": "92fd8e24ddfb3cf7a21748ade17db719c33b2d4633c4e1b580a94b7f5b500c91",
+        "vlm_sha256": "686ff04d28c41eb7f34ffe3b80bffa73941f9776a9412df002a5b6a6bcef7500"
+      },
+      "model_config": {
+        "asr": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f",
+        "tts": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9",
+        "vlm": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+      },
+      "source_commit": "e084d8404b1d96bee5cd6f83d8299c2498a3af65",
+      "source_tree_sha256": "ab501c6009221709473ee91c1334caaa54fc7f8f2cffab31f3d8f105bae5bba6"
+    },
+    "candidate-B": {
+      "binary": {
+        "asr_sha256": "e936045361d1f37ffe22717974dab9705afbb7c1e11023c44b003267afa42f86",
+        "gateway_sha256": "275fc42ef78e0dde9ce928d2092c76d2f28c62ed1d566a8b883425e04ac3a698",
+        "tts_sha256": "92fd8e24ddfb3cf7a21748ade17db719c33b2d4633c4e1b580a94b7f5b500c91",
+        "vlm_sha256": "31fb30f216e3c900b49d1ca54121600688aa1404e0d17fba45b6121592e5612c"
+      },
+      "model_config": {
+        "asr": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f",
+        "tts": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9",
+        "vlm": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+      },
+      "source_commit": "feb8e9721d35ee9b44eb4d768e6fb2898a6d5988",
+      "source_tree_sha256": "661ea1559c64397829961db54919284428335630ab6e2e7031ff32df58fdeddd"
+    }
+  },
+  "paired": {
+    "analysis_sha256": "f3d0d3d02d44c40d2ea425928578aeb20ce61fcd4eb6f3d5f9bf6e718c4cffab",
+    "candidate_promotion": false,
+    "distributions": {
+      "baseline/driver-scene-change": {
+        "decode_prefill": {
+          "count": 16,
+          "cv": 0.030396027577646912,
+          "iqr_ms": 14.037500000000136,
+          "mad_ms": 6.161000000000058,
+          "max_ms": 1368.859,
+          "mean_ms": 1255.5845,
+          "median_ms": 1239.935,
+          "min_ms": 1231.607,
+          "p95_ms": 1368.859
+        },
+        "first_text": {
+          "count": 16,
+          "cv": 0.023180611309032893,
+          "iqr_ms": 77.87169073708355,
+          "mad_ms": 24.993466679006815,
+          "max_ms": 1969.0498169511557,
+          "mean_ms": 1878.8052526069805,
+          "median_ms": 1890.6591194681823,
+          "min_ms": 1813.520752824843,
+          "p95_ms": 1969.0498169511557
+        },
+        "first_voice": {
+          "count": 16,
+          "cv": 0.022460333436467323,
+          "iqr_ms": 79.81923036277294,
+          "mad_ms": 29.79229623451829,
+          "max_ms": 2210.6624227017164,
+          "mean_ms": 2100.7045903243124,
+          "median_ms": 2109.798106364906,
+          "min_ms": 2033.33181142807,
+          "p95_ms": 2210.6624227017164
+        },
+        "public_total": {
+          "count": 16,
+          "cv": 0.03833152983738269,
+          "iqr_ms": 104.00302335619926,
+          "mad_ms": 59.85626019537449,
+          "max_ms": 3981.2404345721006,
+          "mean_ms": 3547.579172765836,
+          "median_ms": 3518.867722246796,
+          "min_ms": 3429.091620258987,
+          "p95_ms": 3981.2404345721006
+        }
+      },
+      "baseline/phone-action": {
+        "decode_prefill": {
+          "count": 16,
+          "cv": 0.032468037840598825,
+          "iqr_ms": 38.757500000000164,
+          "mad_ms": 14.152000000000044,
+          "max_ms": 1369.893,
+          "mean_ms": 1268.5186875,
+          "median_ms": 1250.9595,
+          "min_ms": 1230.309,
+          "p95_ms": 1369.893
+        },
+        "first_text": {
+          "count": 16,
+          "cv": 0.026163985535749827,
+          "iqr_ms": 89.4936304539442,
+          "mad_ms": 42.39078192040324,
+          "max_ms": 1975.9068172425032,
+          "mean_ms": 1887.7188492333516,
+          "median_ms": 1897.3109745420516,
+          "min_ms": 1819.935536943376,
+          "p95_ms": 1975.9068172425032
+        },
+        "first_voice": {
+          "count": 16,
+          "cv": 0.025728908945041915,
+          "iqr_ms": 93.51516515016556,
+          "mad_ms": 44.43246265873313,
+          "max_ms": 2214.3443869426847,
+          "mean_ms": 2112.0306437951513,
+          "median_ms": 2117.4079114571214,
+          "min_ms": 2039.6189615130424,
+          "p95_ms": 2214.3443869426847
+        },
+        "public_total": {
+          "count": 16,
+          "cv": 0.03853688319538168,
+          "iqr_ms": 172.72417270578444,
+          "mad_ms": 78.33893457427621,
+          "max_ms": 3143.63088645041,
+          "mean_ms": 2910.338715533726,
+          "median_ms": 2875.7669595070183,
+          "min_ms": 2786.8662122637033,
+          "p95_ms": 3143.63088645041
+        }
+      },
+      "candidate/driver-scene-change": {
+        "decode_prefill": {
+          "count": 16,
+          "cv": 0.027703489038885542,
+          "iqr_ms": 126.80175000000008,
+          "mad_ms": 33.74100000000021,
+          "max_ms": 2277.002,
+          "mean_ms": 2206.8688125,
+          "median_ms": 2236.098,
+          "min_ms": 2122.262,
+          "p95_ms": 2277.002
+        },
+        "first_text": {
+          "count": 16,
+          "cv": 0.023885007038617515,
+          "iqr_ms": 77.15309783816338,
+          "mad_ms": 42.666877154260874,
+          "max_ms": 2941.039053723216,
+          "mean_ms": 2828.769723593723,
+          "median_ms": 2820.2828587964177,
+          "min_ms": 2713.1704315543175,
+          "p95_ms": 2941.039053723216
+        },
+        "first_voice": {
+          "count": 16,
+          "cv": 0.0239921180632452,
+          "iqr_ms": 91.18639677762985,
+          "mad_ms": 45.01997912302613,
+          "max_ms": 3178.5736018791795,
+          "mean_ms": 3062.2896080021746,
+          "median_ms": 3063.102627173066,
+          "min_ms": 2937.202571891248,
+          "p95_ms": 3178.5736018791795
+        },
+        "public_total": {
+          "count": 16,
+          "cv": 0.03720891801633866,
+          "iqr_ms": 236.61452205851674,
+          "mad_ms": 128.47622716799378,
+          "max_ms": 3999.3059290573,
+          "mean_ms": 3791.459694970399,
+          "median_ms": 3774.433100130409,
+          "min_ms": 3590.3287641704082,
+          "p95_ms": 3999.3059290573
+        }
+      },
+      "candidate/phone-action": {
+        "decode_prefill": {
+          "count": 16,
+          "cv": 0.0281148460921533,
+          "iqr_ms": 110.30124999999998,
+          "mad_ms": 55.48299999999972,
+          "max_ms": 2314.994,
+          "mean_ms": 2203.363,
+          "median_ms": 2230.8085,
+          "min_ms": 2116.508,
+          "p95_ms": 2314.994
+        },
+        "first_text": {
+          "count": 16,
+          "cv": 0.025975345585502366,
+          "iqr_ms": 116.52528145350516,
+          "mad_ms": 55.895859841257334,
+          "max_ms": 2973.6096216365695,
+          "mean_ms": 2824.7617465094663,
+          "median_ms": 2839.0818582847714,
+          "min_ms": 2712.1561374515295,
+          "p95_ms": 2973.6096216365695
+        },
+        "first_voice": {
+          "count": 16,
+          "cv": 0.025023650806374767,
+          "iqr_ms": 103.83191588334739,
+          "mad_ms": 55.82580156624317,
+          "max_ms": 3214.376882649958,
+          "mean_ms": 3059.0209689107724,
+          "median_ms": 3073.483822401613,
+          "min_ms": 2936.115129850805,
+          "p95_ms": 3214.376882649958
+        },
+        "public_total": {
+          "count": 16,
+          "cv": 0.038866903600421394,
+          "iqr_ms": 270.79178974963725,
+          "mad_ms": 129.70480043441057,
+          "max_ms": 4366.521752439439,
+          "mean_ms": 4111.8170787231065,
+          "median_ms": 4169.1864724271,
+          "min_ms": 3870.749583467841,
+          "p95_ms": 4366.521752439439
+        }
+      }
+    },
+    "first_response_thresholds": [
+      {
+        "cell": "baseline/driver-scene-change",
+        "metric": "first_text",
+        "p95_ms": 1969.0498169511557,
+        "passed": true,
+        "threshold_ms": 3000
+      },
+      {
+        "cell": "baseline/driver-scene-change",
+        "metric": "first_voice",
+        "p95_ms": 2210.6624227017164,
+        "passed": true,
+        "threshold_ms": 3000
+      },
+      {
+        "cell": "baseline/phone-action",
+        "metric": "first_text",
+        "p95_ms": 1975.9068172425032,
+        "passed": true,
+        "threshold_ms": 3000
+      },
+      {
+        "cell": "baseline/phone-action",
+        "metric": "first_voice",
+        "p95_ms": 2214.3443869426847,
+        "passed": true,
+        "threshold_ms": 3000
+      },
+      {
+        "cell": "candidate/driver-scene-change",
+        "metric": "first_text",
+        "p95_ms": 2941.039053723216,
+        "passed": true,
+        "threshold_ms": 3000
+      },
+      {
+        "cell": "candidate/driver-scene-change",
+        "metric": "first_voice",
+        "p95_ms": 3178.5736018791795,
+        "passed": false,
+        "threshold_ms": 3000
+      },
+      {
+        "cell": "candidate/phone-action",
+        "metric": "first_text",
+        "p95_ms": 2973.6096216365695,
+        "passed": true,
+        "threshold_ms": 3000
+      },
+      {
+        "cell": "candidate/phone-action",
+        "metric": "first_voice",
+        "p95_ms": 3214.376882649958,
+        "passed": false,
+        "threshold_ms": 3000
+      }
+    ],
+    "independent_verification_sha256": "e6d2d14894cfc1d83d6c2fe95718eaec3bf3b3da287561a878e36d057b6d2b08",
+    "manifest_sha256": "9fa3ce05c9bda987929cb9a0d3eea71be8608df3b390a6cb56192bca47e7fb66",
+    "quality": {
+      "baseline/driver-scene-change": {
+        "hits": 0,
+        "misses": 16,
+        "total": 16,
+        "unique_raw_answers": [
+          {
+            "answer_sha256": "acbd7dd00bc0f3021fc88d7892267d374f4ce11b860c9505e8d02a02374baa6a",
+            "count": 16,
+            "expected_hit": false,
+            "pcm_bytes": 326400,
+            "pcm_sha256": "fca47ea02993411fd74257c2354cc490303147854c52825edb17c5f37330ce74",
+            "text": "The driver stops talking on the phone and looks at the camera."
+          }
+        ]
+      },
+      "baseline/phone-action": {
+        "hits": 0,
+        "misses": 16,
+        "total": 16,
+        "unique_raw_answers": [
+          {
+            "answer_sha256": "f1940ad294c0c2727965ccd323732257960e1251ed4170d2709133070a613291",
+            "count": 16,
+            "expected_hit": false,
+            "pcm_bytes": 192000,
+            "pcm_sha256": "bc358fc468ec28c655d5136d64a703b3a41442f2be56658cec32c0de9828e144",
+            "text": "He holds it to his ear to talk."
+          }
+        ]
+      },
+      "candidate/driver-scene-change": {
+        "hits": 16,
+        "misses": 0,
+        "total": 16,
+        "unique_raw_answers": [
+          {
+            "answer_sha256": "e768939a1ca4089f4d6d92689888fff5857ddf2c13fd57bc894b0818da42f5cf",
+            "count": 16,
+            "expected_hit": true,
+            "pcm_bytes": 149760,
+            "pcm_sha256": "5186bbba3364fa8b510cbac430e82abc8c5a8ff65def9a51c129e04bb9977098",
+            "text": "The driver changes from a man to a woman."
+          }
+        ]
+      },
+      "candidate/phone-action": {
+        "hits": 0,
+        "misses": 16,
+        "total": 16,
+        "unique_raw_answers": [
+          {
+            "answer_sha256": "bf190900e8a6bd5489c8f33a6a9e527e6e133b5a305bf56481551f9f76e1ca9a",
+            "count": 16,
+            "expected_hit": false,
+            "pcm_bytes": 222720,
+            "pcm_sha256": "1e710727e96c254d920a41d0ed0e475fe51accaf38906966ee73b0a9e30ed997",
+            "text": "He holds it up to his ear to make a call."
+          }
+        ]
+      }
+    },
+    "quality_outcomes": {
+      "driver-scene-change": {
+        "baseline_hits": 0,
+        "candidate_hits": 16,
+        "delta_hits": 16,
+        "improved": true,
+        "regressed": false
+      },
+      "phone-action": {
+        "baseline_hits": 0,
+        "candidate_hits": 0,
+        "delta_hits": 0,
+        "improved": false,
+        "regressed": false
+      }
+    },
+    "quality_pass": true,
+    "regressions_over_1_percent_diagnostic": [
+      {
+        "case_id": "phone-action",
+        "metric": "decode_prefill",
+        "relative_change": 0.7832779558410965,
+        "statistic": "median_ms"
+      },
+      {
+        "case_id": "phone-action",
+        "metric": "decode_prefill",
+        "relative_change": 0.6899086279001354,
+        "statistic": "p95_ms"
+      },
+      {
+        "case_id": "phone-action",
+        "metric": "first_text",
+        "relative_change": 0.4963713889706627,
+        "statistic": "median_ms"
+      },
+      {
+        "case_id": "phone-action",
+        "metric": "first_text",
+        "relative_change": 0.5049341374237579,
+        "statistic": "p95_ms"
+      },
+      {
+        "case_id": "phone-action",
+        "metric": "first_voice",
+        "relative_change": 0.45153128302357004,
+        "statistic": "median_ms"
+      },
+      {
+        "case_id": "phone-action",
+        "metric": "first_voice",
+        "relative_change": 0.45161561209907597,
+        "statistic": "p95_ms"
+      },
+      {
+        "case_id": "phone-action",
+        "metric": "public_total",
+        "relative_change": 0.4497650648096352,
+        "statistic": "median_ms"
+      },
+      {
+        "case_id": "phone-action",
+        "metric": "public_total",
+        "relative_change": 0.38900586937859005,
+        "statistic": "p95_ms"
+      },
+      {
+        "case_id": "driver-scene-change",
+        "metric": "decode_prefill",
+        "relative_change": 0.8033993717412606,
+        "statistic": "median_ms"
+      },
+      {
+        "case_id": "driver-scene-change",
+        "metric": "decode_prefill",
+        "relative_change": 0.6634306382176689,
+        "statistic": "p95_ms"
+      },
+      {
+        "case_id": "driver-scene-change",
+        "metric": "first_text",
+        "relative_change": 0.49169293912153056,
+        "statistic": "median_ms"
+      },
+      {
+        "case_id": "driver-scene-change",
+        "metric": "first_text",
+        "relative_change": 0.49363364420970957,
+        "statistic": "p95_ms"
+      },
+      {
+        "case_id": "driver-scene-change",
+        "metric": "first_voice",
+        "relative_change": 0.4518463249787745,
+        "statistic": "median_ms"
+      },
+      {
+        "case_id": "driver-scene-change",
+        "metric": "first_voice",
+        "relative_change": 0.437837622441942,
+        "statistic": "p95_ms"
+      },
+      {
+        "case_id": "driver-scene-change",
+        "metric": "public_total",
+        "relative_change": 0.07262716250113388,
+        "statistic": "median_ms"
+      }
+    ],
+    "requests": 72,
+    "same_arm_repeat_identity": "36/36 exact answer/native/PCM pairs",
+    "threshold_failures": [
+      {
+        "cell": "candidate/phone-action",
+        "metric": "first_voice",
+        "p95_ms": 3214.376882649958
+      },
+      {
+        "cell": "candidate/driver-scene-change",
+        "metric": "first_voice",
+        "p95_ms": 3178.5736018791795
+      }
+    ]
+  },
+  "physical_gpu": 0,
+  "raw_media_and_per_event_blobs": "EXTERNAL_ONLY",
+  "schema": "umminfer-ns05-duration-budget-voice-cocreation-v1",
+  "source": {
+    "bytes": 19821335,
+    "derivative_sha256": "ffef335edc161a2f6dead512e0fde96cf48fb997ae6b6491067e36c76eec58d0",
+    "duration_seconds": 120.0,
+    "frames": 3600,
+    "height": 432,
+    "identity_from_task75": true,
+    "license": "CC-BY-4.0",
+    "license_sha256": "e7edaaaeb0cd6da6a3dd97c54f3e8443ef027be685253fab64bf6eed2419ee7e",
+    "upstream_sha256": "fd24e652c92a5759127aa9c7f23fea63d73aebb4bcea72763abe72ef06a20cf0",
+    "width": 768
+  },
+  "voice_cocreation": {
+    "arms": {
+      "after": {
+        "cancel_retry_exact": true,
+        "failure": "MODEL_EMITTED_VIDEO_SLOT0_SOURCE_SLOT0_SELF_REFERENCE",
+        "final_in_flight": 0,
+        "full_barge_to_retry_first_audio_ms": 11698.035397,
+        "image_artifacts": 0,
+        "initial_cocreation_terminal": "cancelled",
+        "native_pcm_joins": {
+          "cyberpunk-retry": [
+            {
+              "chunk_count": 2,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 42240,
+              "pcm_sha256": "680bc2287d05c44cc6687ae68263759eeee7c0e558dadb55a0dd28034800da9c",
+              "request_id": "http-4:tts:0",
+              "terminal_wav_sha256": "85e028ea23328116d7be1afbc25e56a49223450b83b7f533f740c568e34f5ff9"
+            },
+            {
+              "chunk_count": 7,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 176640,
+              "pcm_sha256": "33d58f0f7547cb7e52fa56f4d2536b1a4ee6217f32d4ead83545fa07e0761285",
+              "request_id": "http-4:tts:1",
+              "terminal_wav_sha256": "f15e4142ae19c9d2ca88dd1a5ce0da4f047e1425dcece0ed9e5d10b636f58a01"
+            },
+            {
+              "chunk_count": 4,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 92160,
+              "pcm_sha256": "433d3ff64b966fdffa46d6a20778d356ba038a1a5997b6569506e1ddae603d91",
+              "request_id": "http-4:tts:2",
+              "terminal_wav_sha256": "e87ddd3f8553ba4630d638474792324c7c79966b279f7bc2f5280cefb0e9b5d3"
+            },
+            {
+              "chunk_count": 9,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 238080,
+              "pcm_sha256": "a22baf844080df10d8f79738d1603bca43498cba0f3554e406b444f3467c13ed",
+              "request_id": "http-4:tts:3",
+              "terminal_wav_sha256": "01063ee18f92b04640e8ffc1600d544e48dca49508c6f5424266c8a307c6f323"
+            },
+            {
+              "chunk_count": 8,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 215040,
+              "pcm_sha256": "61ce3f0482523e220f3a8479e5aa0a748babb59db5a25c5e8fc31fdfa50bed24",
+              "request_id": "http-4:tts:4",
+              "terminal_wav_sha256": "9c0fdcb533b4f21205eca78bd4ad5eb2daa0b6c8865b1e8a4c623fa52ede2f4c"
+            },
+            {
+              "chunk_count": 7,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 188160,
+              "pcm_sha256": "10e8322fe87cbaa03e982d85c226ec936a7c24bce829a4248d6e841f6660da5a",
+              "request_id": "http-4:tts:5",
+              "terminal_wav_sha256": "7bae29605343af299c2833d887cd62fc373e90510f6a50be48dec833e299cf64"
+            },
+            {
+              "chunk_count": 7,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 184320,
+              "pcm_sha256": "f4145eace23074b53505de5a244ba008a9c05142e2a073860ad29a6a1e64e619",
+              "request_id": "http-4:tts:6",
+              "terminal_wav_sha256": "d453bc91862130dcbdb54fd9e30e1ff12b9f746e51cf88ba113e6ac3d4ca2eca"
+            },
+            {
+              "chunk_count": 9,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 226560,
+              "pcm_sha256": "fc40acd4e845c69fb1da0691bd668e587c9a4c6b7f771afc9780ad1dfaa9f44a",
+              "request_id": "http-4:tts:7",
+              "terminal_wav_sha256": "4c57c7ccdbc7d8c1058fe0635889fd7180a2641e7e00ac6d2ae572438061f678"
+            },
+            {
+              "chunk_count": 8,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 218880,
+              "pcm_sha256": "d1d459fff379a0633b2b9ffa71d6e7da3496a1dbc3f6d3e0e36f2c1192ff0332",
+              "request_id": "http-4:tts:8",
+              "terminal_wav_sha256": "3fb8bcc54efb034c287332ad529e62c3e71e103cb94b23842c307f0a51201a5d"
+            },
+            {
+              "chunk_count": 11,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 307200,
+              "pcm_sha256": "a500e19b17284e11804f2c0a27ff6c21d250b6c7ac682aa2175ed00d5e8ea747",
+              "request_id": "http-4:tts:9",
+              "terminal_wav_sha256": "1185bc144f75103b513e927fe20629821c4b71207cc09b114ff33acda6fb3ff0"
+            },
+            {
+              "chunk_count": 4,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 92160,
+              "pcm_sha256": "81067b3d3b161662c308b105bf50494b7605234e37a55212e3eef4d767fd6d77",
+              "request_id": "http-4:tts:10",
+              "terminal_wav_sha256": "7656e9c3558100e3b6d4ef47553220f6c1b51747c09c3c0851a9f194c95c1982"
+            },
+            {
+              "chunk_count": 7,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 184320,
+              "pcm_sha256": "d490980033a773c4eb329802a2227995437c4b1fbc3fd262f4be2218ff187ba9",
+              "request_id": "http-4:tts:11",
+              "terminal_wav_sha256": "74be615843f403e5c156eb2123773b74d83270d53779b9424120f5a987f33b80"
+            },
+            {
+              "chunk_count": 5,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 130560,
+              "pcm_sha256": "a2f02c08fc459bf560a71087d37c61583a360872cdc100a17e8733c9d0b270cf",
+              "request_id": "http-4:tts:12",
+              "terminal_wav_sha256": "0de1b700a03e168cca90370e32e8ec0d5b0ca9049a174dc508d13446ffd6745f"
+            },
+            {
+              "chunk_count": 8,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 218880,
+              "pcm_sha256": "cd9b81c7ed73d1df7b20f32c1dbf69099237d469e72535b8a423d07a4f72aa5b",
+              "request_id": "http-4:tts:13",
+              "terminal_wav_sha256": "3d798f0b3ba44baa5f31e3644aee55d3b499234dbb1e4d2a1b2fe8bb6eef67c9"
+            },
+            {
+              "chunk_count": 7,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 188160,
+              "pcm_sha256": "d6885776dc8d01ec64b784e05b2b422275aabd69bf5057bf02032c47aae2a73e",
+              "request_id": "http-4:tts:14",
+              "terminal_wav_sha256": "7b055590d68a1f88e35fe33bcf294599860c0d53bf201bcf8ce23883ec269d97"
+            },
+            {
+              "chunk_count": 9,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 226560,
+              "pcm_sha256": "796f9f2f4e13d3e587ccbd0e9f69f0e279385ece7067daf782c7e8f4da8dfe7b",
+              "request_id": "http-4:tts:15",
+              "terminal_wav_sha256": "27fed5a2cdca52ea50b831b35470d528a4670ea474cf298b09bb426228f11e66"
+            },
+            {
+              "chunk_count": 8,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 222720,
+              "pcm_sha256": "4cbde2c1905f66d22cc75b5fb28daad9622d6b038068c2ea37d37711cc623a54",
+              "request_id": "http-4:tts:16",
+              "terminal_wav_sha256": "5c284889169cdb8ce45bd95c50d504d67c0d27fd0f2ef26e95acd48a91560651"
+            },
+            {
+              "chunk_count": 11,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 295680,
+              "pcm_sha256": "b1a5e7738c0b957db962d9ee2420b575dfeee789ca17cea6ca089c536700bcb9",
+              "request_id": "http-4:tts:17",
+              "terminal_wav_sha256": "9766a9247665b73ac4c665822320cd07b413619be2bf3378aef5e83f1f902a1a"
+            },
+            {
+              "chunk_count": 2,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 53760,
+              "pcm_sha256": "ac5a58444d4dd8e01e8fda7501209b7b9856511522c11678ad487cdc18487f7b",
+              "request_id": "http-4:tts:18",
+              "terminal_wav_sha256": "690682c45c47ee21d64877db86bfaa1a4cdeceeb67070db709f3f875eb649b12"
+            },
+            {
+              "chunk_count": 7,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 165120,
+              "pcm_sha256": "7116ddb083a8651a7e20a8d325a6f53db617579ac928c85fab9d8fc6db1a4238",
+              "request_id": "http-4:tts:19",
+              "terminal_wav_sha256": "d00b5e229f51266ebf9cff35779cfc0c89e6027abae6da24f9ff0a8532b48a8c"
+            }
+          ],
+          "phone": [
+            {
+              "chunk_count": 4,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 99840,
+              "pcm_sha256": "543b7bae11846e2c3d9e2c0a75d84beb0108b40df25ddb1a7f6d62c9c5f057cf",
+              "request_id": "http-1:tts:0",
+              "terminal_wav_sha256": "f469f512358d0488bfb0ee1f488de2e7b9bfbe77d3f9e974422206194f5a5683"
+            },
+            {
+              "chunk_count": 5,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 122880,
+              "pcm_sha256": "3fbf9de3442ad5544759b7673448f1184a8ac3c367938335bcfacad745d3cdba",
+              "request_id": "http-1:tts:1",
+              "terminal_wav_sha256": "1051ba71d2c3e63b4fe7d37eaf10617f0fcde7b250eccb0bef9416e4a06d579e"
+            }
+          ]
+        },
+        "native_wan_submits": 0,
+        "phone_first_public_voice_ms": 3496.251411,
+        "retry_asr_transcripts": [
+          "Stop. Turn that driver scene into a cyberpunk night animation and narrate it."
+        ],
+        "retry_first_public_voice_ms": 5816.668803,
+        "retry_terminal": "complete",
+        "retry_text_sha256": "ef36a013a1d95cc1c98bcc97efca53ee435b56d78a1fe104362de5ce0e919c55",
+        "scene_terminal": "cancelled",
+        "self_reference_fail_closed": true,
+        "stale_or_cross_session_events": 0,
+        "status": "NOT_MET",
+        "video_artifacts": 0
+      },
+      "before": {
+        "cancel_retry_exact": true,
+        "failure": "MODEL_EMITTED_VIDEO_SLOT0_SOURCE_SLOT0_SELF_REFERENCE",
+        "final_in_flight": 0,
+        "full_barge_to_retry_first_audio_ms": 9972.693776,
+        "image_artifacts": 0,
+        "initial_cocreation_terminal": "cancelled",
+        "native_pcm_joins": {
+          "cyberpunk-retry": [
+            {
+              "chunk_count": 2,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 53760,
+              "pcm_sha256": "6e11a091df34c7402d84bf035a0f8602d11c8d1e0556490834a6d542fdaccb53",
+              "request_id": "http-4:tts:0",
+              "terminal_wav_sha256": "ede668d4b8c2e81e0ee72dd3f1ee1de795362e51032b4c0f19dd665bc60c4283"
+            },
+            {
+              "chunk_count": 8,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 215040,
+              "pcm_sha256": "5c5574227d8f913d2bea4cd487680e8b01be1d67537800a9d3fd39bbcfeb3bc3",
+              "request_id": "http-4:tts:1",
+              "terminal_wav_sha256": "88d7e145922c7e2896b3a6c504709bd49e1dbc8b664cb9c13e8ca6db0f21faa1"
+            },
+            {
+              "chunk_count": 4,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 76800,
+              "pcm_sha256": "015f8e67cd378121d6e64890a5481c95bb6b918197b5b038552709433d59ef9b",
+              "request_id": "http-4:tts:2",
+              "terminal_wav_sha256": "69ecad2ac0d19e14d80402bf5c0e5f8549f2fddd34e0335764a32a395ec9d071"
+            }
+          ],
+          "phone": [
+            {
+              "chunk_count": 4,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 99840,
+              "pcm_sha256": "543b7bae11846e2c3d9e2c0a75d84beb0108b40df25ddb1a7f6d62c9c5f057cf",
+              "request_id": "http-1:tts:0",
+              "terminal_wav_sha256": "f469f512358d0488bfb0ee1f488de2e7b9bfbe77d3f9e974422206194f5a5683"
+            },
+            {
+              "chunk_count": 5,
+              "exact_native_public_wav_join": true,
+              "pcm_bytes": 122880,
+              "pcm_sha256": "3fbf9de3442ad5544759b7673448f1184a8ac3c367938335bcfacad745d3cdba",
+              "request_id": "http-1:tts:1",
+              "terminal_wav_sha256": "1051ba71d2c3e63b4fe7d37eaf10617f0fcde7b250eccb0bef9416e4a06d579e"
+            }
+          ]
+        },
+        "native_wan_submits": 0,
+        "phone_first_public_voice_ms": 2647.390845,
+        "retry_asr_transcripts": [
+          "Stop. Turn that driver scene into a cyberpunk night animation and narrate it."
+        ],
+        "retry_first_public_voice_ms": 4967.337562,
+        "retry_terminal": "complete",
+        "retry_text_sha256": "a1ca31898fdf1001a4770afedd29cd4ec32b87cf1d9879c2f135233d2e23a743",
+        "scene_terminal": "cancelled",
+        "self_reference_fail_closed": true,
+        "stale_or_cross_session_events": 0,
+        "status": "NOT_MET",
+        "video_artifacts": 0
+      }
+    },
+    "independent_verification_sha256": "f440870444fd5712f153cca8a654e9477af6cca20bb6dc54c5f1b955c3e2e5bd",
+    "manifest_sha256": "4e1ccbe5c9485e5219400c4c8c7544d1b91df8747664b1f2d250dd19e2b2ec48",
+    "status": "NOT_MET_IN_BOTH_ARMS"
+  }
+}

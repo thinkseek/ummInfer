@@ -93,6 +93,42 @@ def fixture(root, *, fail=False):
     write_json(root / "verification.json", verification)
 
 
+def exact_fixture(root, *, fail=False):
+    fixture(root, fail=fail)
+    report_path = root / "report.json"
+    report = json.loads(report_path.read_text())
+    report["physical_gpu"] = 0
+    analysis = report["candidate_analysis"]
+    analysis["candidate_id"] = scorecard.EXPECTED_EXACT_CUDA_CANDIDATE
+    analysis["candidate_policy"] = {
+        "kind": "cublaslt_fixed_heuristic_indices",
+        "exact_media_parity_required": True,
+    }
+    for pair in analysis["paired"]:
+        exact = not (fail and pair["shape"] == "tall" and pair["repetition"] == 0)
+        pair["quality"]["exact_mp4_media"] = exact
+        pair["quality"]["baseline_profile_mp4_exact"] = True
+        pair["quality"]["quality_gate_pass"] &= exact
+        if exact:
+            pair["candidate_sha256"] = pair["baseline_sha256"]
+    for run in report["runs"]:
+        if run["arm"] == "candidate":
+            pair = next(item for item in analysis["paired"]
+                        if item["shape"] == run["shape"]
+                        and item["repetition"] == run["repetition"])
+            run["media_sha256"] = pair["candidate_sha256"]
+        run["native_phase"] = {key: 1.0 for key in (
+            "umt5_ms", "vae_encode_ms", "dit_ms", "vae_decode_ms",
+            "denoise_ms", "encode_ms")}
+        run["native_complete_to_public_first_output_ms"] = 1.0
+    write_json(report_path, report)
+    write_json(root / "preregistration.json", {"format": scorecard.EXACT_CUDA_FORMAT})
+    verification = {"status": "PASS", "mode": "ns02",
+                    "report_sha256": scorecard.sha_file(report_path),
+                    "manifest_sha256": scorecard.sha_file(root / "SHA256SUMS")}
+    write_json(root / "verification.json", verification)
+
+
 class ScorecardTests(unittest.TestCase):
     def test_summary_retains_outlier_and_extrema(self):
         result = scorecard.summary([1.0, 2.0, 3.0, 100.0])
@@ -117,6 +153,20 @@ class ScorecardTests(unittest.TestCase):
             self.assertIn("EXACT_FIRST_FRAME_RGB", codes)
             self.assertIn("SSIM_BELOW_0.90", codes)
             self.assertIn("MEASURED_ARTIFACT_AT_OR_ABOVE_5000_MS", codes)
+
+    def test_exact_cuda_media_gate_and_phase_summary(self):
+        with tempfile.TemporaryDirectory(prefix="umm-ns02-exact-scorecard-") as directory:
+            root = Path(directory)
+            exact_fixture(root)
+            result = scorecard.build_scorecard(root, root / "verification.json")
+            self.assertEqual(result["physical_gpu"], 0)
+            self.assertTrue(result["gates"]["exact_paired_and_frozen_profile_mp4"])
+            self.assertEqual(result["native_phase_medians_ms"]["candidate"]["dit_ms"], 1.0)
+            exact_fixture(root, fail=True)
+            result = scorecard.build_scorecard(root, root / "verification.json")
+            self.assertEqual(result["promotion_decision"], "NOT_PROMOTED")
+            self.assertFalse(result["gates"]["exact_paired_and_frozen_profile_mp4"])
+            self.assertIn("EXACT_MP4_MEDIA", {item["code"] for item in result["failures"]})
 
     def test_verification_hash_binding_fails_closed(self):
         with tempfile.TemporaryDirectory(prefix="umm-ns02-scorecard-") as directory:

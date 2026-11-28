@@ -56,16 +56,16 @@ def sha256_bytes(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def query_gpu():
+def query_gpu(gpu=1):
     memory = subprocess.run([
-        "nvidia-smi", "-i", "1", "--query-gpu=index,memory.used,utilization.gpu",
+        "nvidia-smi", "-i", str(gpu), "--query-gpu=index,memory.used,utilization.gpu",
         "--format=csv,noheader,nounits"], check=True, capture_output=True, text=True,
         timeout=10).stdout.strip()
     parts = [part.strip() for part in memory.split(",")]
-    if len(parts) != 3 or int(parts[0]) != 1:
-        raise ValueError("GPU 1 memory query returned an invalid record")
+    if len(parts) != 3 or int(parts[0]) != gpu:
+        raise ValueError(f"GPU {gpu} memory query returned an invalid record")
     apps_text = subprocess.run([
-        "nvidia-smi", "-i", "1", "--query-compute-apps=pid,used_memory",
+        "nvidia-smi", "-i", str(gpu), "--query-compute-apps=pid,used_memory",
         "--format=csv,noheader,nounits"], check=True, capture_output=True, text=True,
         timeout=10).stdout
     apps = []
@@ -73,7 +73,7 @@ def query_gpu():
         if line.strip():
             pid, used = [part.strip() for part in line.split(",")]
             apps.append({"pid": int(pid), "used_mib": int(used)})
-    return {"physical_gpu": 1, "memory_used_mib": int(parts[1]),
+    return {"physical_gpu": gpu, "memory_used_mib": int(parts[1]),
             "utilization_percent": int(parts[2]), "compute_apps": apps}
 
 
@@ -198,7 +198,8 @@ def parse_execution(path):
 
 
 class ResourceMonitor:
-    def __init__(self):
+    def __init__(self, gpu=1):
+        self.gpu = gpu
         self.samples = []
         self.error = None
         self.stop_event = threading.Event()
@@ -207,7 +208,7 @@ class ResourceMonitor:
     def poll(self):
         while not self.stop_event.is_set():
             try:
-                self.samples.append(query_gpu()["memory_used_mib"])
+                self.samples.append(query_gpu(self.gpu)["memory_used_mib"])
             except Exception as error:  # fail closed below
                 self.error = str(error)
                 return
@@ -218,7 +219,7 @@ class ResourceMonitor:
         self.thread.join(timeout=5)
         if self.error or not self.samples:
             raise ValueError(f"GPU resource monitor failed: {self.error}")
-        return {"scope": "whole-device-used-memory", "physical_gpu": 1,
+        return {"scope": "whole-device-used-memory", "physical_gpu": self.gpu,
                 "sample_count": len(self.samples), "baseline_mib": self.samples[0],
                 "peak_mib": max(self.samples), "final_mib": self.samples[-1],
                 "samples_mib": self.samples}

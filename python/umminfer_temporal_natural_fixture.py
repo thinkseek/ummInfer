@@ -460,6 +460,17 @@ def generate_bundle(output, source, preregistration, *, ffmpeg="ffmpeg", ffprobe
     return validate_bundle(output, deep=True, ffmpeg=ffmpeg, ffprobe=ffprobe)
 
 
+def canonical_packet_evidence(value):
+    """Normalize only FFprobe's version-dependent trailing flag padding."""
+    packets = []
+    for packet in value["packets"]:
+        row = dict(packet)
+        if isinstance(row.get("flags"), str):
+            row["flags"] = row["flags"].rstrip("_")
+        packets.append(row)
+    return {**value, "packets": packets}
+
+
 def validate_bundle(bundle, *, deep=True, ffmpeg="ffmpeg", ffprobe="ffprobe"):
     bundle = Path(bundle)
     if validate_sums(bundle) < 1:
@@ -490,7 +501,8 @@ def validate_bundle(bundle, *, deep=True, ffmpeg="ffmpeg", ffprobe="ffprobe"):
         rows = [json.loads(line) for line in
                 (bundle / video["content_frames"]).read_text().splitlines()]
         if rows != oracle["content"] \
-                or json.loads((bundle / video["packets"]).read_bytes()) != oracle["packets"] \
+                or (canonical_packet_evidence(json.loads((bundle / video["packets"]).read_bytes())) !=
+                    canonical_packet_evidence(oracle["packets"])) \
                 or video["candidate_scores_motion_scene"] != oracle["scores"] \
                 or video["expected_temporal"] != oracle["temporal"] \
                 or video["expected_uniform"] != oracle["uniform"] \

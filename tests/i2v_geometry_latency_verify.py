@@ -50,6 +50,21 @@ NS02_BOUNDARY2_POLICY = {
     "expected_total_calls_per_arm": 40,
     "explicit_request_and_stage_values_override": True,
 }
+NS02_EXACT_CUDA_FORMAT = "umminfer-ns02-exact-cuda-speedup-preregistration-v1"
+NS02_EXACT_CUDA_ID = "wan-dit-cublaslt-fixed-algorithms"
+NS02_EXACT_CUDA_COMMIT = "b64f022a3555c925982a9d88274d98c82edddd9f"
+NS02_EXACT_CUDA_BASE = "e084d8404b1d96bee5cd6f83d8299c2498a3af65"
+NS02_EXACT_CUDA_POLICY = {
+    "kind": "cublaslt_fixed_heuristic_indices",
+    "default_index": 2,
+    "ff2_index": 5,
+    "fallback_index": 0,
+    "compute_type": "FP32",
+    "input_output_type": "BF16",
+    "expected_total_calls_per_arm": 40,
+    "expected_teacache_hits_per_arm": 0,
+    "exact_media_parity_required": True,
+}
 FIRST_FRAME_MAX_MAE = 48.0
 MOTION_MIN_MAE = 1.0
 
@@ -397,7 +412,9 @@ def verify_ns02_preregistration(document, profile_sha):
     historical = (document.get("format")
                   == "umminfer-ns02-interactive-preview-preregistration-v1")
     boundary2 = document.get("format") == NS02_BOUNDARY2_FORMAT
-    require(historical or boundary2, "NS-02 preregistration format mismatch")
+    exact_cuda = document.get("format") == NS02_EXACT_CUDA_FORMAT
+    require(historical or boundary2 or exact_cuda,
+            "NS-02 preregistration format mismatch")
     require(document.get("profile_report_sha256") == profile_sha
             and document.get("repetitions") == NS02_REPETITIONS
             and document.get("interleaving_seed") == NS02_INTERLEAVING_SEED,
@@ -407,18 +424,26 @@ def verify_ns02_preregistration(document, profile_sha):
                 and document.get("candidate_commit")
                 == "3f98fe1645d4d82877372056ba8ad2544aa399c5",
                 "historical NS-02 candidate identity changed")
-    else:
+    elif boundary2:
         require(document.get("official_base_commit") == NS02_BOUNDARY2_BASE
                 and document.get("candidate_id") == NS02_BOUNDARY2_ID
                 and document.get("candidate_commit") == NS02_BOUNDARY2_COMMIT
                 and document.get("candidate_policy") == NS02_BOUNDARY2_POLICY
                 and document.get("created_before_final_candidate_measurement") is True,
                 "boundary2 NS-02 base, candidate, or frozen schedule changed")
+    else:
+        require(document.get("official_base_commit") == NS02_EXACT_CUDA_BASE
+                and document.get("candidate_id") == NS02_EXACT_CUDA_ID
+                and document.get("candidate_commit") == NS02_EXACT_CUDA_COMMIT
+                and document.get("candidate_policy") == NS02_EXACT_CUDA_POLICY
+                and document.get("created_before_final_candidate_measurement") is True,
+                "exact-CUDA NS-02 base, candidate, or frozen policy changed")
     require(document.get("settings") == {
         "frames": 29, "steps": 20, "fps": 16, "guidance": 5.0, "seed": 42,
         "request_teacache_field": "omitted", "baseline_effective_teacache": 0.0,
-        "candidate_effective_teacache": 0.25}, "NS-02 frozen settings changed")
-    require(document.get("regression_gates") == {
+        "candidate_effective_teacache": 0.0 if exact_cuda else 0.25},
+        "NS-02 frozen settings changed")
+    expected_gates = {
         "exact_paired_first_frame_rgb": True, "minimum_ssim_all": NS02_MIN_SSIM,
         "minimum_all_frame_psnr_db": NS02_MIN_PSNR_DB,
         "temporal_motion_ratio_range": [0.5, 1.5],
@@ -428,7 +453,12 @@ def verify_ns02_preregistration(document, profile_sha):
         "cancel_native_terminal_and_client_settle_ms_below": NS02_CANCEL_LIMIT_MS,
         "cancel_threshold_arm": "candidate_only_before_is_reported_independently",
         "zero_late_native_media_and_final_in_flight_zero": True,
-        "immediate_retry_exact_own_arm_hash": True}, "NS-02 gates changed")
+        "immediate_retry_exact_own_arm_hash": True}
+    if exact_cuda:
+        expected_gates["exact_paired_mp4_media"] = True
+        expected_gates["baseline_matches_frozen_profile_mp4"] = True
+    require(document.get("regression_gates") == expected_gates,
+            "NS-02 quality, exact-media, latency, cancellation, or recovery gates changed")
 
 
 def ns02_all_rgb(ffmpeg, path, target):
@@ -565,6 +595,23 @@ def verify_ns02_candidate(root, args, report, measured, baseline_report, baselin
             candidate = next(run for run in measured if run["arm"] == "candidate"
                              and run["repetition"] == repetition and run["shape"] == shape)
             quality = ns02_quality(root, args, baseline, candidate)
+            if prereg["format"] == NS02_EXACT_CUDA_FORMAT:
+                profile_run = next(run for run in baseline_report["runs"]
+                                   if run["shape"] == shape and run["role"] == "measured"
+                                   and run["repetition"] == 0)
+                profile_media = (root / "baseline-reference" /
+                                 profile_run["media_file"]).read_bytes()
+                baseline_media = (root / baseline["media_file"]).read_bytes()
+                candidate_media = (root / candidate["media_file"]).read_bytes()
+                exact_pair = (baseline_media == candidate_media
+                              and baseline["media_sha256"] == candidate["media_sha256"])
+                exact_profile = (baseline_media == profile_media
+                                 and baseline["media_sha256"]
+                                 == profile_run["media_sha256"])
+                quality["exact_mp4_media"] = exact_pair
+                quality["baseline_profile_mp4_exact"] = exact_profile
+                quality["quality_gate_pass"] = bool(
+                    quality["quality_gate_pass"] and exact_pair and exact_profile)
             reported = next(item for item in analysis["paired"]
                             if item["repetition"] == repetition and item["shape"] == shape)
             # FFmpeg logs contain process-volatile pointer/thread text. Numeric SSIM
@@ -630,6 +677,11 @@ def verify_ns02_candidate(root, args, report, measured, baseline_report, baselin
                           [item["disconnect_to_client_settled_ms"]], f"ns02.{arm}.cancel_client")
     require(analysis["shape_median_paired_delta_ms"] == shape_deltas
             and analysis["quality_gate_pass"] == quality_pass
+            and analysis.get("exact_media_gate_pass") == (all(
+                item["quality"].get("exact_mp4_media") is True
+                and item["quality"].get("baseline_profile_mp4_exact") is True
+                for item in paired)
+                if prereg["format"] == NS02_EXACT_CUDA_FORMAT else None)
             and analysis["speed_gate_pass"] == speed_pass
             and analysis["video_hard_threshold_pass"] == video_pass
             and analysis["cancellation_hard_threshold_pass"] == cancel_pass
@@ -840,6 +892,10 @@ def verify_bundle(root, args, nested=False, allow_nested_ns02=False):
                 if policy is None:
                     require(0 < hits < total,
                             f"candidate did not use bounded caching: {run['run_id']}")
+                elif policy.get("kind") == "cublaslt_fixed_heuristic_indices":
+                    require(hits == policy["expected_teacache_hits_per_arm"]
+                            and total == policy["expected_total_calls_per_arm"],
+                            f"exact-CUDA candidate unexpectedly used TeaCache: {run['run_id']}")
                 else:
                     require(phase.get("teacache_boundary2") == "1"
                             and 0 < hits <= policy["maximum_hits_per_arm"]

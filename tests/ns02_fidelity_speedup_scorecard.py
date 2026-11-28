@@ -14,6 +14,8 @@ import statistics
 
 FORMAT = "umminfer-ns02-fidelity-speedup-scorecard-v1"
 EXPECTED_CANDIDATE = "automatic-i2v-boundary2-teacache-0.25"
+EXACT_CUDA_FORMAT = "umminfer-ns02-exact-cuda-speedup-preregistration-v1"
+EXPECTED_EXACT_CUDA_CANDIDATE = "wan-dit-cublaslt-fixed-algorithms"
 EXPECTED_CASES = {
     "wide": {"source": [704, 480], "target": [704, 480]},
     "tall": {"source": [480, 704], "target": [480, 704]},
@@ -78,13 +80,23 @@ def build_scorecard(evidence, verification_path):
     report_sha = sha_file(report_path)
     manifest_sha = sha_file(manifest_path)
     verification_sha = sha_file(verification_path)
-    require(report["mode"] == "ns02" and report["physical_gpu"] == 7,
+    prereg = json.loads((evidence / "preregistration.json").read_text(encoding="utf-8"))
+    exact_cuda = prereg.get("format") == EXACT_CUDA_FORMAT
+    require(report["mode"] == "ns02"
+            and report["physical_gpu"] == (0 if exact_cuda else 7),
             "wrong NS-02 execution scope")
     analysis = report["candidate_analysis"]
-    require(analysis["candidate_id"] == EXPECTED_CANDIDATE
-            and analysis["candidate_policy"]["protected_step_indices"] == [0, 1, 18, 19]
-            and analysis["candidate_policy"]["cacheable_step_indices"] == list(range(2, 18)),
-            "candidate or frozen boundary2 schedule mismatch")
+    if exact_cuda:
+        require(analysis["candidate_id"] == EXPECTED_EXACT_CUDA_CANDIDATE
+                and analysis["candidate_policy"]["kind"]
+                == "cublaslt_fixed_heuristic_indices"
+                and analysis["candidate_policy"]["exact_media_parity_required"] is True,
+                "exact-CUDA candidate or frozen algorithm policy mismatch")
+    else:
+        require(analysis["candidate_id"] == EXPECTED_CANDIDATE
+                and analysis["candidate_policy"]["protected_step_indices"] == [0, 1, 18, 19]
+                and analysis["candidate_policy"]["cacheable_step_indices"] == list(range(2, 18)),
+                "candidate or frozen boundary2 schedule mismatch")
     require(verification["status"] == "PASS"
             and verification["mode"] == "ns02"
             and verification["report_sha256"] == report_sha
@@ -122,6 +134,16 @@ def build_scorecard(evidence, verification_path):
                 f"{shape} decoded MP4 semantics mismatch")
         for item in shape_pairs:
             quality = item["quality"]
+            if exact_cuda:
+                pair_media_exact = item["baseline_sha256"] == item["candidate_sha256"]
+                require(quality.get("exact_mp4_media") is pair_media_exact,
+                        "exact-CUDA MP4 flag and raw media hashes disagree")
+                if quality.get("exact_mp4_media") is not True:
+                    failures.append({"code": "EXACT_MP4_MEDIA", "shape": shape,
+                                     "repetition": item["repetition"]})
+                if quality.get("baseline_profile_mp4_exact") is not True:
+                    failures.append({"code": "FROZEN_PROFILE_MP4", "shape": shape,
+                                     "repetition": item["repetition"]})
             if not quality["first_frame_rgb_exact"]:
                 failures.append({"code": "EXACT_FIRST_FRAME_RGB", "shape": shape,
                                  "repetition": item["repetition"]})
@@ -173,6 +195,11 @@ def build_scorecard(evidence, verification_path):
                 "quality_gate_pass": item["quality"]["quality_gate_pass"],
             } for item in shape_pairs],
         }
+        if exact_cuda:
+            for pair_output, item in zip(shapes[shape]["pairs"], shape_pairs):
+                pair_output["exact_mp4_media"] = item["quality"]["exact_mp4_media"]
+                pair_output["baseline_profile_mp4_exact"] = (
+                    item["quality"]["baseline_profile_mp4_exact"])
 
     cancellations = {}
     cancellation_pass = True
@@ -218,7 +245,7 @@ def build_scorecard(evidence, verification_path):
 
     baseline_report = evidence / "baseline-reference" / "report.json"
     baseline_manifest = evidence / "baseline-reference" / "SHA256SUMS"
-    return {
+    result = {
         "format": FORMAT,
         "status": "CONTROLLED_LIVE",
         "official_base_commit": report["base_commit"],
@@ -226,7 +253,7 @@ def build_scorecard(evidence, verification_path):
         "candidate_commit": analysis["candidate_commit"],
         "candidate_id": analysis["candidate_id"],
         "candidate_policy": analysis["candidate_policy"],
-        "physical_gpu": 7,
+        "physical_gpu": report["physical_gpu"],
         "promotion_decision": decision,
         "gates": {"paired_speedup": speed_pass, "fidelity": quality_pass,
                   "every_measured_geometry_below_5000_ms": latency_pass,
@@ -266,6 +293,26 @@ def build_scorecard(evidence, verification_path):
         },
         "evidence_policy": "caller-selected external raw bundle with complete recursive self-excluded SHA256SUMS",
     }
+    if exact_cuda:
+        result["gates"]["exact_paired_and_frozen_profile_mp4"] = all(
+            item["quality"].get("exact_mp4_media") is True
+            and item["quality"].get("baseline_profile_mp4_exact") is True
+            for item in pairs)
+        result["native_phase_medians_ms"] = {
+            arm: {
+                phase: statistics.median([
+                    run["native_phase"][phase] for run in measured if run["arm"] == arm])
+                for phase in ("umt5_ms", "vae_encode_ms", "dit_ms", "vae_decode_ms",
+                              "denoise_ms", "encode_ms")
+            } for arm in ("baseline", "candidate")
+        }
+        result["native_complete_to_public_first_output_ms_median"] = {
+            arm: statistics.median([
+                run["native_complete_to_public_first_output_ms"]
+                for run in measured if run["arm"] == arm])
+            for arm in ("baseline", "candidate")
+        }
+    return result
 
 
 def main(argv=None):
