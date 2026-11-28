@@ -234,6 +234,18 @@ pub fn build(b: *std.Build) void {
     const ns03_routing_test = b.step("ns03-routing-test", "Run frozen NS-03 routing and scoring contracts");
     ns03_routing_test.dependOn(&ns03_routing.step);
 
+    const storyboard_replay = b.addSystemCommand(&.{ "python3", "-I" });
+    storyboard_replay.addFileArg(b.path("tests/storyboard_replay_verify_test.py"));
+    test_step.dependOn(&storyboard_replay.step);
+    const storyboard_replay_test = b.step("storyboard-replay-test", "Run lossless storyboard replay verifier contracts");
+    storyboard_replay_test.dependOn(&storyboard_replay.step);
+
+    const ns08_history = b.addSystemCommand(&.{ "python3", "-I" });
+    ns08_history.addFileArg(b.path("tests/ns08_first_turn_history_verify_test.py"));
+    test_step.dependOn(&ns08_history.step);
+    const ns08_history_test = b.step("ns08-history-test", "Run paired NS08 raw history and lifecycle verifier contracts");
+    ns08_history_test.dependOn(&ns08_history.step);
+
     const bench_step = b.step("cuda-bench", "Measure SHM and CUDA IPC relay latency");
     if (cuda) {
         const bench_exe = b.addExecutable(.{

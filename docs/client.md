@@ -73,6 +73,23 @@ the request when the caller omits them. A field with the wrong JSON type returns
 It never adds `stream_options`, and it never drops a caller field and retries: an
 unsupported field is reported as an error.
 
+### Default UI session history
+
+When the server is started with `--session-history`, the default Web UI and macOS
+`ummmlx` conversations send `session_history: true` **from their first request**.
+The first completed exchange is therefore available to a later same-session
+follow-up. This is existing protocol reuse, not a new user-facing setting or a
+change to native prompt rendering.
+
+The API remains explicit and isolated: a direct caller that omits
+`session_history`, or sends `session_history: false`, neither reads nor writes
+retained history. Session ids partition every retained turn; failed and cancelled
+turns stay excluded. If a legacy server rejects the field, the existing fallback
+still works, but it does not imply restored history. An imported archive followed
+by a same-process reconnect can use the server's retained turns; importing into a
+new or restarted server cannot reconstruct its empty process-local store without
+an explicit multi-message replay path.
+
 ### Native video input
 
 `--video-input PATH` attaches a local MP4, WebM, or QuickTime video to a unified

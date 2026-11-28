@@ -85,6 +85,10 @@ target_link_libraries(qwen38_video_decode_profile PRIVATE qwen38_host)
 add_executable(qwen38_prompt_position_audit qwen38_tests/prompt_position_audit.cpp)
 target_link_libraries(qwen38_prompt_position_audit PRIVATE qwen38_host)
 
+# Host-only exact replay of observed multi-turn VLM messages for NS-03 evidence.
+add_executable(qwen38_history_prompt_replay qwen38_tests/history_prompt_replay.cpp)
+target_link_libraries(qwen38_history_prompt_replay PRIVATE qwen38_host)
+
 if(UMM_QWEN38_CUDA)
   include(CheckLanguage)
   check_language(CUDA)

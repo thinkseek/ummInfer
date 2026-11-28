@@ -3,6 +3,7 @@
 """Deterministic frozen-suite, request-shape, and routing-score tests."""
 import base64
 import copy
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -13,9 +14,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import ns03_routing as ns03  # noqa: E402
 import ns03_routing_live as live  # noqa: E402
+import ns03_routing_verify as verify  # noqa: E402
 
 SUITE_PATH = ROOT / "benchmarks/ns03-routing/suite.json"
 PREREG_PATH = ROOT / "benchmarks/ns03-routing/preregistration.json"
+HAS_OBSERVER_DEPS = all(importlib.util.find_spec(name) is not None for name in ("msgpack", "zmq"))
 
 
 def record(images=0, videos=0, *, terminal="complete", errors=None, voice=True, decoded=True):
@@ -32,6 +35,22 @@ def record(images=0, videos=0, *, terminal="complete", errors=None, voice=True, 
             "request_sha256": "d" * 64, "clean_text": "ordinary answer",
             "audio": {"artifact_count": 1 if voice else 0, "bytes": 20 if voice else 0,
                       "pcm16_valid": voice}, "parse_ambiguous": False}
+
+
+def write_vlm_capture(case_dir, messages, native_request_id="public:vlm"):
+    import msgpack
+    case_dir.mkdir(parents=True)
+    raw = msgpack.packb({"type": "submit", "request_id": native_request_id,
+                         "data": {"request": {"inputs": {"messages": messages}}}},
+                        use_bin_type=True)
+    row = {"observed_monotonic_ns": 1, "request_id": native_request_id,
+           "raw_sha256": ns03.sha256_bytes(raw), "raw_base64": base64.b64encode(raw).decode(),
+           "messages": verify.normalize_vlm_messages(messages)}
+    path = case_dir / "vlm-prompts.jsonl"
+    path.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+    metadata = {"path": path.name, "rows": 1, "sha256": ns03.sha256_file(path),
+                "native_request_id": native_request_id}
+    return row, {"vlm_capture": metadata}
 
 
 class NS03RoutingTest(unittest.TestCase):
@@ -66,6 +85,7 @@ class NS03RoutingTest(unittest.TestCase):
         self.assertEqual(body, {
             "model": "qwen3-native", "messages": [{"role": "user", "content": case["prompt"]}],
             "max_tokens": 256, "temperature": 0, "stream": True, "session_id": "frozen-session",
+            "session_history": True,
             "image": {"size": "512x512", "output_format": "png"},
             "video": {"size": "704x480", "output_format": "mp4", "seconds": 2,
                       "num_frames": 29, "steps": 25, "guidance_scale": 5.0},
@@ -79,6 +99,37 @@ class NS03RoutingTest(unittest.TestCase):
         self.assertTrue(followup["session_history"])
         self.assertNotIn("frame_selection", followup)
         self.assertNotIn("seed", followup)
+
+    def test_legacy_initial_history_false_preserves_task78_shape(self):
+        text = ns03.default_request(self.cases["dev-text-01"], session_id="legacy",
+                                    initial_history=False)
+        setup = ns03.default_request(self.cases["dev-followup-01"], session_id="legacy",
+                                     initial_history=False)
+        answer = ns03.default_request(self.cases["dev-followup-01"], session_id="legacy",
+                                      followup=True, initial_history=False)
+        self.assertNotIn("session_history", text)
+        self.assertNotIn("session_history", setup)
+        self.assertIs(answer["session_history"], True)
+        self.assertEqual(text, verify.expected_request(self.cases["dev-text-01"], "legacy", False))
+        self.assertEqual(setup, verify.expected_request(self.cases["dev-followup-01"], "legacy", True))
+        self.assertEqual(answer, verify.expected_request(self.cases["dev-followup-01"], "legacy", False))
+
+    def test_first_turn_history_after_request_matches_independent_shape(self):
+        for case, setup, followup in ((self.cases["dev-text-01"], False, False),
+                                      (self.cases["dev-followup-01"], True, False),
+                                      (self.cases["dev-followup-01"], False, True)):
+            actual = ns03.default_request(case, session_id="after", followup=followup,
+                                          initial_history=True)
+            expected = verify.expected_request(case, "after", setup, initial_history=True)
+            self.assertEqual(actual, expected)
+            self.assertIs(actual["session_history"], True)
+
+    def test_followup_only_selection_is_complete_and_ordered(self):
+        for population in ns03.POPULATIONS:
+            selected = live.selected_cases(self.suite, population, "followup")
+            self.assertEqual([case["id"] for case in selected],
+                             [f"{'dev' if population == 'development' else 'hold'}-followup-{index:02d}"
+                              for index in range(1, 6)])
 
     def test_four_class_golden_decisions(self):
         expectations = {"dev-text-01": (0, 0), "dev-static-01": (1, 0),
@@ -211,6 +262,119 @@ class NS03RoutingTest(unittest.TestCase):
             process.stop()
         self.assertEqual([event for event, _ in events], ["start", "stop"])
         self.assertIsNotNone(events[-1][1]["stop_monotonic_ns"])
+
+    @unittest.skipUnless(HAS_OBSERVER_DEPS, "pyzmq and msgpack required for VLM observer tests")
+    def test_vlm_observer_preserves_raw_msgpack_and_binds_request(self):
+        import msgpack
+        import zmq
+        with tempfile.TemporaryDirectory(prefix="ns03-vlm-observer-") as tmp:
+            root = Path(tmp)
+            public_endpoint = f"ipc://{root / 'public'}"
+            native_endpoint = f"ipc://{root / 'native'}"
+            context = zmq.Context()
+            native = context.socket(zmq.PULL)
+            native.setsockopt(zmq.RCVTIMEO, 2000)
+            native.bind(native_endpoint)
+            observer = live.VlmObserver(public_endpoint, native_endpoint)
+            sender = context.socket(zmq.PUSH)
+            sender.connect(public_endpoint)
+            raw = msgpack.packb({"type": "submit", "request_id": "public:vlm",
+                                 "data": {"request": {"inputs": {"messages": [
+                                     {"role": "system", "content": "director"},
+                                     {"role": "user", "content": [{"type": "text", "text": "question"}]},
+                                 ]}}}}, use_bin_type=True)
+            try:
+                case_dir = root / "case"
+                case_dir.mkdir()
+                observer.begin(case_dir)
+                sender.send(raw)
+                self.assertEqual(native.recv_multipart(), [raw])
+                metadata = observer.finish("public")
+                row = json.loads((case_dir / "vlm-prompts.jsonl").read_text().strip())
+                self.assertEqual(ns03.sha256_file(case_dir / "vlm-prompts.jsonl"),
+                                 metadata["sha256"])
+                self.assertEqual(row["raw_base64"], base64.b64encode(raw).decode())
+                self.assertEqual(row["messages"], [
+                    {"role": "system", "content": "director"},
+                    {"role": "user", "content": "question"},
+                ])
+            finally:
+                sender.close(0)
+                native.close(0)
+                context.term()
+                observer.close()
+
+    @unittest.skipUnless(HAS_OBSERVER_DEPS, "pyzmq and msgpack required for VLM capture tests")
+    def test_independent_vlm_capture_checks_legacy_and_first_turn_history(self):
+        case = self.cases["dev-followup-01"]
+        setup = {"clean_text": "exact setup assistant response"}
+        current = {"role": "user", "content": case["prompt"]}
+        setup_user = {"role": "user", "content": case["setup"]["prompt"]}
+        assistant = {"role": "assistant", "content": setup["clean_text"]}
+        system = {"role": "system", "content": "director"}
+        with tempfile.TemporaryDirectory(prefix="ns03-vlm-verify-") as tmp:
+            root = Path(tmp)
+            bindings = {}
+            for name, messages, expected in (
+                    ("setup", [system, setup_user],
+                     verify.expected_vlm_messages(case, "setup", None, True)),
+                    ("before", [system, current],
+                     verify.expected_vlm_messages(case, "answer", setup, False)),
+                    ("after", [system, setup_user, assistant, current],
+                     verify.expected_vlm_messages(case, "answer", setup, True))):
+                case_dir = root / name
+                _, reported = write_vlm_capture(case_dir, messages, name + ":vlm")
+                metadata = verify.verify_vlm_capture(case_dir, reported, name, expected, bindings)
+                self.assertEqual(metadata["native_request_id"], name + ":vlm")
+            self.assertEqual(len(bindings), 3)
+
+            bad_dir = root / "bad"
+            _, reported = write_vlm_capture(bad_dir, [system, current], "bad:vlm")
+            with self.assertRaises(AssertionError):
+                verify.verify_vlm_capture(bad_dir, reported, "bad", [setup_user, assistant, current], bindings)
+
+    def test_focused_followup_scorecard_and_independent_history_gate(self):
+        runs = {}
+        candidate = {"first_turn_history": True}
+        for population in ns03.POPULATIONS:
+            cases = [case for case in self.suite["cases"]
+                     if case["population"] == population and case["class"] == "followup"]
+            for arm in ("before", "after"):
+                reports = []
+                for index, case in enumerate(cases):
+                    answer = record()
+                    setup = record()
+                    answer["setup"] = setup
+                    answer["session_history"] = True
+                    answer["same_session_as_setup"] = True
+                    answer["clean_text"] = (" ".join(group[0] for group in case["context_any"])
+                                            if arm == "after" or index == 0 else "unrelated response")
+                    answer["case_id"] = case["id"]
+                    reports.append(answer)
+                runs[f"{population}/{arm}"] = {"case_class": "followup", "cases": reports}
+        scorecard = ns03.make_followup_scorecard(
+            self.suite, self.prereg, runs, {"runs": "focused-test"}, candidate)
+        self.assertEqual(scorecard["format"], ns03.FOLLOWUP_FORMAT)
+        self.assertEqual(scorecard["promotion"], "COMPARATOR_REQUIRED")
+        self.assertNotIn("thresholds", scorecard)
+        self.assertEqual(scorecard["history_gate"], {
+            "before": {"cases": 10, "correct": 2, "accuracy": 0.2},
+            "after": {"cases": 10, "correct": 10, "accuracy": 1.0},
+            "target": 0.8, "before_to_after_gain": 0.8,
+            "target_met": True, "verifiable_gain": True,
+        })
+        self.assertEqual(len(scorecard["misses"]), 8)
+        self.assertEqual(scorecard["paired"]["all"]["discordant"], 0)
+        before = scorecard["arms"]["development/before"]["cases"] + \
+            scorecard["arms"]["heldout/before"]["cases"]
+        after = scorecard["arms"]["development/after"]["cases"] + \
+            scorecard["arms"]["heldout/after"]["cases"]
+        self.assertEqual(verify.followup_history_gate(before, after), scorecard["history_gate"])
+        with self.assertRaises(ValueError):
+            ns03.make_followup_scorecard(self.suite, self.prereg, runs, {}, {})
+        runs["development/before"]["case_class"] = "all"
+        with self.assertRaises(ValueError):
+            ns03.make_followup_scorecard(self.suite, self.prereg, runs, {}, candidate)
 
     def test_exact_paired_sign_test(self):
         before = [record() for _ in range(3)]

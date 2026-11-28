@@ -72,12 +72,20 @@ private final class ScriptedSSE: URLProtocol {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var behaviors: [String: Behavior] = [:]
     nonisolated(unsafe) private static var stoppedHosts: [String] = []
+    nonisolated(unsafe) private static var requestBodies: [Data] = []
 
     static func reset() {
         lock.lock()
         behaviors = [:]
         stoppedHosts = []
+        requestBodies = []
         lock.unlock()
+    }
+
+    static func bodies() -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestBodies
     }
 
     static func set(_ host: String, _ behavior: Behavior) {
@@ -104,7 +112,25 @@ private final class ScriptedSSE: URLProtocol {
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    private static func readBody(from request: URLRequest) -> Data {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count > 0 { data.append(buffer, count: count) } else { break }
+        }
+        return data
+    }
+
     override func startLoading() {
+        let captured = Self.readBody(from: request)
+        Self.lock.lock()
+        Self.requestBodies.append(captured)
+        Self.lock.unlock()
         guard let url = request.url, let host = url.host,
               let behavior = Self.behavior(host) else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
@@ -217,6 +243,23 @@ final class ChatModelRecoveryTests: XCTestCase {
         for _ in 0..<ticks where model.isRunning {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
+    }
+
+    func testFirstDefaultTurnOptsIntoServerHistory() async throws {
+        ScriptedSSE.set("10.9.9.50", .complete(
+            deltaLine(seq: 0, "ok") + completeLine(seq: 1, "ok") + doneLine))
+        let model = makeModel()
+        model.endpoint = "http://10.9.9.50/v1"
+        model.model = "m"
+        model.prompt = "first turn"
+        model.send()
+        await waitIdle(model)
+
+        XCTAssertEqual(model.status, "Completed · stop")
+        let data = try XCTUnwrap(ScriptedSSE.bodies().first)
+        let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(body["session_history"] as? Bool, true)
+        XCTAssertFalse((body["session_id"] as? String ?? "").isEmpty)
     }
 
     // 1. Cancel while streamed PCM audio is playing.

@@ -149,8 +149,10 @@ def check_hooks(script):
     require(re.search(r"if \(!path\) path = '/v1'", script),
             "an empty base path must default to /v1")
     require("method: 'POST'" in script, "the chat request must be a POST")
-    require("session_id: sessionID" in script,
-            "the request body must carry session_id")
+    require("session_id: sessionID,\n    session_history: true," in script,
+            "the default stateful session must opt in from its first request")
+    require("if (history.length > 0) body.session_history = true;" not in script,
+            "initial history retention must not depend on an earlier completed turn")
     require("unified.session_id" in script,
             "the page must adopt the session_id the stream returns")
 

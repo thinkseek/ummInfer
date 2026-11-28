@@ -15,6 +15,7 @@ import re
 import sys
 
 FORMAT = "umminfer-ns03-routing-scorecard-v1"
+FOLLOWUP_FORMAT = "umminfer-ns03-followup-history-scorecard-v1"
 CLASSES = ("text", "static", "dynamic", "followup")
 POPULATIONS = ("development", "heldout")
 DIRECTIVE = re.compile(r"\[\[\s*(?:image|video|visual)\s*:", re.IGNORECASE)
@@ -70,9 +71,12 @@ def load_suite(path):
     return suite
 
 
-def default_request(case, *, model="qwen3-native", session_id, followup=False):
-    """Byte-shape equivalent to the default fresh Web client's send() path."""
+def default_request(case, *, model="qwen3-native", session_id, followup=False,
+                    initial_history=True):
+    """Default public request; legacy capture may omit first-turn history."""
     prompt = case["setup"]["prompt"] if case["class"] == "followup" and not followup else case["prompt"]
+    if followup and case["class"] != "followup":
+        raise ValueError("follow-up requests require a frozen follow-up case")
     body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -88,9 +92,7 @@ def default_request(case, *, model="qwen3-native", session_id, followup=False):
         "audio": {"voice": "vivian", "format": "wav", "stream": True},
         "modalities": ["text", "image", "video", "audio"],
     }
-    if followup:
-        if case["class"] != "followup":
-            raise ValueError("session_history is reserved for actual follow-ups")
+    if initial_history or followup:
         body["session_history"] = True
     return body
 
@@ -357,6 +359,77 @@ def make_scorecard(suite, preregistration, runs, identities, candidate):
     return scorecard
 
 
+def make_followup_scorecard(suite, preregistration, runs, identities, candidate):
+    """Focused real-history evidence; full routing promotion remains separate."""
+    if candidate.get("first_turn_history") is not True:
+        raise ValueError("focused follow-up After requires candidate first_turn_history=true")
+    expected_keys = {"development/before", "development/after", "heldout/before", "heldout/after"}
+    if set(runs) != expected_keys:
+        raise ValueError("follow-up scorecard requires exactly four paired population/arm reports")
+    run_results = {}
+    for key in sorted(expected_keys):
+        report = runs[key]
+        population = key.split("/", 1)[0]
+        if report.get("case_class") != "followup":
+            raise ValueError(f"{key} is not a followup-only report")
+        expected_ids = [c["id"] for c in suite["cases"]
+                        if c["population"] == population and c["class"] == "followup"]
+        by_id = {r["case_id"]: r for r in report["cases"]}
+        if len(by_id) != 5 or set(by_id) != set(expected_ids):
+            raise ValueError(f"{key} does not contain exactly its five frozen follow-up cases")
+        run_results[key] = [evaluate_record(case, by_id[case["id"]], by_id[case["id"]].get("setup"))
+                            for case in suite["cases"]
+                            if case["population"] == population and case["class"] == "followup"]
+    all_before = run_results["development/before"] + run_results["heldout/before"]
+    all_after = run_results["development/after"] + run_results["heldout/after"]
+
+    def history(results):
+        correct = sum(result["followup_correct"] is True for result in results)
+        return {"cases": len(results), "correct": correct, "accuracy": correct / len(results)}
+
+    before_history = history(all_before)
+    after_history = history(all_after)
+    gain = after_history["accuracy"] - before_history["accuracy"]
+    misses = []
+    for arm, results in run_results.items():
+        for result in results:
+            if (not result["end_to_end_correct"] or result["errors"] or
+                    result["public_leg_errors"] or result["media_errors"] or
+                    result["redundant_visual_case"] or not result["followup_correct"]):
+                misses.append({"arm": arm, "case_id": result["case_id"],
+                               "routing_correct": result["routing_correct"],
+                               "end_to_end_correct": result["end_to_end_correct"],
+                               "redundant_visual_case": result["redundant_visual_case"],
+                               "missing_visual_slots": result["missing_visual_slots"],
+                               "wrong_modality": result["wrong_modality"],
+                               "errors": result["errors"],
+                               "public_leg_errors": result["public_leg_errors"],
+                               "media_errors": result["media_errors"],
+                               "followup_correct": result["followup_correct"]})
+    return {
+        "format": FOLLOWUP_FORMAT,
+        "suite_sha256": sha256_bytes(canonical(suite)),
+        "preregistration_sha256": sha256_bytes(canonical(preregistration)),
+        "identities": identities, "candidate": candidate,
+        "arms": {key: {"aggregate": build_aggregates(results), "cases": results}
+                 for key, results in run_results.items()},
+        "paired": {
+            "development": exact_mcnemar(run_results["development/before"], run_results["development/after"]),
+            "heldout": exact_mcnemar(run_results["heldout/before"], run_results["heldout/after"]),
+            "all": exact_mcnemar(all_before, all_after),
+        },
+        "history_gate": {
+            "before": before_history, "after": after_history, "target": 0.8,
+            "before_to_after_gain": gain,
+            "target_met": after_history["accuracy"] >= 0.8,
+            "verifiable_gain": gain > 0,
+        },
+        "promotion": "COMPARATOR_REQUIRED",
+        "misses": misses,
+        "physical_perceptual_quality": "NOT_RUN",
+    }
+
+
 def freeze(paths):
     suite_path, prereg_path = paths
     suite = load_suite(suite_path)
@@ -383,6 +456,13 @@ def main(argv=None):
     score.add_argument("--identities", required=True)
     score.add_argument("--candidate", required=True)
     score.add_argument("--out", required=True)
+    followup_score = sub.add_parser("followup-scorecard")
+    followup_score.add_argument("--suite", required=True)
+    followup_score.add_argument("--preregistration", required=True)
+    followup_score.add_argument("--run", action="append", nargs=2, metavar=("KEY", "REPORT"), required=True)
+    followup_score.add_argument("--identities", required=True)
+    followup_score.add_argument("--candidate", required=True)
+    followup_score.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     if args.command == "freeze":
         freeze((args.suite, args.preregistration))
@@ -394,10 +474,17 @@ def main(argv=None):
     runs = {key: load_json(path) for key, path in args.run}
     if set(runs) != {"development/before", "development/after", "heldout/before", "heldout/after"}:
         raise ValueError("scorecard requires exactly four paired population/arm reports")
-    result = make_scorecard(suite, preregistration, runs, load_json(args.identities), load_json(args.candidate))
-    Path(args.out).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(json.dumps({"promotion": result["promotion"], "thresholds": result["thresholds"],
-                      "paired": result["paired"]}, sort_keys=True))
+    if args.command == "scorecard":
+        result = make_scorecard(suite, preregistration, runs, load_json(args.identities), load_json(args.candidate))
+        Path(args.out).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(json.dumps({"promotion": result["promotion"], "thresholds": result["thresholds"],
+                          "paired": result["paired"]}, sort_keys=True))
+    else:
+        result = make_followup_scorecard(
+            suite, preregistration, runs, load_json(args.identities), load_json(args.candidate))
+        Path(args.out).write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(json.dumps({"promotion": result["promotion"], "history_gate": result["history_gate"],
+                          "paired": result["paired"]}, sort_keys=True))
 
 
 if __name__ == "__main__":

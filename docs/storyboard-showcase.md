@@ -251,3 +251,61 @@ exact, self-excluded external evidence coverage.
   resident-service validation, and any resident upgrade.
 - Browser media decode, event ordering, exact bytes, terminal states, and digital
   audio scheduling are verified; visual or acoustic quality is not claimed.
+
+## Task #84 — first-turn retention through export/import/reconnect
+
+The accepted Task #83 parent is `84f82ee879efe384f1eea6a7ee2544d9d3b7b274`;
+the executed integration candidate is `3ec56a24796a89e99f03c1cb9365b8f9140e264b`,
+which merges official main `9c02225451252001c11021b389a7792caf03d503` before
+final verification. Before uses that integration's server/native binaries with the
+official legacy Web client; After uses the same runtime with the fixed client.
+The focused Web change is to send the existing `session_history: true` field from
+the first default stateful turn, rather than waiting until local history already
+contains a completed exchange. The server, prompt, native model, and public schema
+are unchanged. Direct API omission or explicit `session_history: false` remains
+stateless.
+
+A paired real Qwen3.8/TTS Chromium journey used zero manual modality, frame, or
+seed controls on isolated physical GPU 1. Both arms completed **Replay JSON export
+→ Alt+N clear → verified import → local raw replay → HTTP reload/reconnect →
+natural follow-up**. The re-import after reload uses the retained archive against
+the same still-running server; this is not a claim that a new or restarted server
+can recover its empty process-local store.
+
+| Metric | Before | After |
+| --- | --- | --- |
+| Setup retained by server | false | true |
+| Follow-up history messages after leading system | 1 (current user only) | 3 (setup user + exact setup assistant + current user) |
+| Follow-up context terms `solar` / `water` | false / true | true / true |
+| Raw PCM preserved in setup archive | 32,770,560 B / 1,079 artifacts | identical |
+| Whole original → import → re-export file | byte-identical | byte-identical |
+| Explicit stateless read/write isolation | PASS | PASS |
+| Cross-session and cancelled-turn exclusion | PASS | PASS |
+| Native prompt replay | 6/6 PASS | 6/6 PASS |
+
+Before/After whole-file SHA-256 are respectively
+`cbb21d03e72b0a01076ee89bde4e0a88240e25d3b8205773510cde48b5740b2a` and
+`c56a4ef8a7023718a5786e84a652612ab86fdb1cfb5170e932ad0ba7a378e4ad`;
+each immediate re-export has the identical digest. The complete self-excluded
+26-file arm manifests have SHA-256
+`407aedfb2a3fe297a2a25e1d8aa3109459168ea40f69ab0c0304edebd8ec7664` and
+`8266065eab290759d990be6d7cbf91cd4ff8cfcaa95fb9772b91f74890a4c466`.
+The fresh paired independent report is `PASS`, with SHA-256
+`f617e335c928a2407e1bb486c8632e1c9c497b1aeaaa11e970c7c7fe4427fd94`.
+The independent verifier also passes 13/13 deterministic tests, including a
+transport-only cancellation with zero public bytes and no fabricated request id.
+
+Accepted Task #77 story/cancellation/WAV archives were separately re-verified with
+its complete external manifest: 137 events + 63 artifacts + 1,470,720 PCM bytes,
+17 cancelled events, and 602,924 WAV bytes. Its historical whole-file roundtrip
+differed only in `exported_at`; the new live comparison fixes the browser clock and
+compares complete bytes, not just raw SSE. Exact current answers, native prompts,
+metrics, and hashes are in the
+[Task #84 scorecard](evidence/ns08-first-turn-history-scorecard.json).
+
+This is a **paired engineering improvement**, not full NS-08 PASS. macOS execution,
+human walkthrough, physical microphone/speaker, active-audio barge-in, perceptual
+quality, new/restarted-server restoration, realtime WebSocket ACK capture, and
+resident deployment remain `NOT_RUN`/`NOT_CLAIMED` as applicable. All failed
+external-driver attempts were excluded from measured arms and retained externally;
+no model output or historical scorecard was edited to remove a failure.

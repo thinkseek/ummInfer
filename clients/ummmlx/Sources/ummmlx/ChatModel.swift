@@ -785,6 +785,7 @@ final class ChatModel: ObservableObject {
         var options = ChatStreamOptions()
         if requestSessionID.isEmpty { requestSessionID = Self.newSessionID() }
         options.sessionID = requestSessionID
+        options.serverHistory = (history.count == 1)
         options.videoFrameSelection = videoFrameSelection
         options.nativeAllocatorTelemetry = nativeAllocatorTelemetry
         options.behaviorLogprobs = behaviorLogprobs

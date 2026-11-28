@@ -1,0 +1,449 @@
+{
+  "schema": "umminfer-ns08-first-turn-history-scorecard-v1",
+  "source": {
+    "accepted_parent": "84f82ee879efe384f1eea6a7ee2544d9d3b7b274",
+    "candidate": "3ec56a24796a89e99f03c1cb9365b8f9140e264b",
+    "verifier_commit": "ff0dc50c4758911dd12637be77ce4b5a623fdb84",
+    "dependency_commit": "e2fe5b6fe61c675703e84f4d6cdef4ef9cdb8052",
+    "integration_commit": "3ec56a24796a89e99f03c1cb9365b8f9140e264b",
+    "official_main": "9c02225451252001c11021b389a7792caf03d503"
+  },
+  "identities": {
+    "web_sha256": {
+      "before": "963434a7e0f737860ddb3d02d559474d29385ee93cc8e096b3c88ca4d7abd43b",
+      "after": "ac8c463e2743369db3e516d987ab0c058c6f0cc4f6f278afcc0332638470fbac"
+    },
+    "browser_driver_sha256": "fbae2cb89ee387789e6da9c9e5ae39ce01dd4f8c5f121ffa181c782c99e4fccb",
+    "native_prompt_replay_binary_sha256": "5e214c55cb2471bc095bab10f6c45c364ea3e0a78ef7f8d3514b161a3b341f45",
+    "model_tree_sha256": {
+      "flux2": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997",
+      "tts": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d",
+      "vlm": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304",
+      "wan22": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+    },
+    "native_binary_sha256": {
+      "server": "d5d386ed1222af2216456cef694e3c821f6f423ef7ad611dc4f716c8e8c3d447",
+      "tts": "71775931a6f5e1b0aae0d03f50d5cb2ba1ff8c1d05b9214d1755cbe2743b28df",
+      "vlm": "9d38722a1ddb9b1c1ea3b68c6563852e9f32f21364b688c62f452eef568c0f10",
+      "wan": "4c48da440d5e80c58938b5fb2b018c6ac5892d17b52939da269a86f8d46f6283"
+    },
+    "remote_merged_prompt_replay_sha256": "3e47b8474d40e55bbe044113b49b9e1806c328ca87e1192d054092d727891a49"
+  },
+  "before": {
+    "arm": "before",
+    "binaries": {
+      "server": {
+        "bytes": 55067384,
+        "sha256": "d5d386ed1222af2216456cef694e3c821f6f423ef7ad611dc4f716c8e8c3d447"
+      },
+      "tts": {
+        "bytes": 3222312,
+        "sha256": "71775931a6f5e1b0aae0d03f50d5cb2ba1ff8c1d05b9214d1755cbe2743b28df"
+      },
+      "vlm": {
+        "bytes": 3644064,
+        "sha256": "9d38722a1ddb9b1c1ea3b68c6563852e9f32f21364b688c62f452eef568c0f10"
+      },
+      "wan": {
+        "bytes": 3176352,
+        "sha256": "4c48da440d5e80c58938b5fb2b018c6ac5892d17b52939da269a86f8d46f6283"
+      }
+    },
+    "cancelled_sha256": "c3f9e3b24e41a051c1e549b87f97271e64f6bfa93c62a1b3bced34d986147a89",
+    "execution_commit": "3ec56a24796a89e99f03c1cb9365b8f9140e264b",
+    "macos": "NOT_RUN",
+    "manifest": {
+      "files": 26,
+      "sha256": "407aedfb2a3fe297a2a25e1d8aa3109459168ea40f69ab0c0304edebd8ec7664"
+    },
+    "metrics": {
+      "browser_requests": 4,
+      "cancelled_pcm_bytes": 0,
+      "cancelled_prompt_response_excluded": true,
+      "cross_session_isolated": true,
+      "direct_requests": 2,
+      "explicit_stateless_read_write_isolated": true,
+      "followup_answer_reported_verbatim": true,
+      "followup_completion_retained": true,
+      "followup_context_terms": {
+        "solar": false,
+        "water": true
+      },
+      "followup_history_exact": true,
+      "history_message_counts": {
+        "browser-01": 1,
+        "browser-02": 1,
+        "browser-03": 3,
+        "browser-04": 3,
+        "cross-session": 1,
+        "explicit-stateless": 1
+      },
+      "original_pcm_artifacts": 1079,
+      "original_pcm_bytes": 32770560,
+      "public_requests": 6,
+      "setup_retained": false,
+      "transport_only_cancelled": true,
+      "unique_native_request_ids": 6,
+      "unique_public_request_ids": 5,
+      "whole_original_reexport_byte_exact": true
+    },
+    "models": {
+      "flux2": {
+        "model_id": "black-forest-labs/FLUX.2-klein-4B",
+        "file_count": 25,
+        "tree_sha256": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997"
+      },
+      "tts": {
+        "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "file_count": 14,
+        "tree_sha256": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d"
+      },
+      "vlm": {
+        "model_id": "Qwen/Qwen3.8-27B",
+        "file_count": 29,
+        "tree_sha256": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304"
+      },
+      "wan22": {
+        "model_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "file_count": 30,
+        "tree_sha256": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+      }
+    },
+    "native_rendered_prompts": {
+      "requests": 6,
+      "status": "PASS"
+    },
+    "original_sha256": "cbb21d03e72b0a01076ee89bde4e0a88240e25d3b8205773510cde48b5740b2a",
+    "perceptual_quality": "NOT_RUN",
+    "physical_microphone": "NOT_RUN",
+    "physical_speaker": "NOT_RUN",
+    "reexported_sha256": "cbb21d03e72b0a01076ee89bde4e0a88240e25d3b8205773510cde48b5740b2a",
+    "stack_report_sha256": "67b836bcd1634b45b42d218bd2dd1805a1d0fc1d42e51f8b8deb7ba9a41045e9",
+    "status": "PASS"
+  },
+  "after": {
+    "arm": "after",
+    "binaries": {
+      "server": {
+        "bytes": 55067384,
+        "sha256": "d5d386ed1222af2216456cef694e3c821f6f423ef7ad611dc4f716c8e8c3d447"
+      },
+      "tts": {
+        "bytes": 3222312,
+        "sha256": "71775931a6f5e1b0aae0d03f50d5cb2ba1ff8c1d05b9214d1755cbe2743b28df"
+      },
+      "vlm": {
+        "bytes": 3644064,
+        "sha256": "9d38722a1ddb9b1c1ea3b68c6563852e9f32f21364b688c62f452eef568c0f10"
+      },
+      "wan": {
+        "bytes": 3176352,
+        "sha256": "4c48da440d5e80c58938b5fb2b018c6ac5892d17b52939da269a86f8d46f6283"
+      }
+    },
+    "cancelled_sha256": "29edf2a2df0de377a2c6ef2891f72838b6cf9cf7762e0d07ae3c31adbdc3b1a1",
+    "execution_commit": "3ec56a24796a89e99f03c1cb9365b8f9140e264b",
+    "macos": "NOT_RUN",
+    "manifest": {
+      "files": 26,
+      "sha256": "8266065eab290759d990be6d7cbf91cd4ff8cfcaa95fb9772b91f74890a4c466"
+    },
+    "metrics": {
+      "browser_requests": 4,
+      "cancelled_pcm_bytes": 0,
+      "cancelled_prompt_response_excluded": true,
+      "cross_session_isolated": true,
+      "direct_requests": 2,
+      "explicit_stateless_read_write_isolated": true,
+      "followup_answer_reported_verbatim": true,
+      "followup_completion_retained": true,
+      "followup_context_terms": {
+        "solar": true,
+        "water": true
+      },
+      "followup_history_exact": true,
+      "history_message_counts": {
+        "browser-01": 1,
+        "browser-02": 3,
+        "browser-03": 5,
+        "browser-04": 5,
+        "cross-session": 1,
+        "explicit-stateless": 1
+      },
+      "original_pcm_artifacts": 1079,
+      "original_pcm_bytes": 32770560,
+      "public_requests": 6,
+      "setup_retained": true,
+      "transport_only_cancelled": false,
+      "unique_native_request_ids": 6,
+      "unique_public_request_ids": 6,
+      "whole_original_reexport_byte_exact": true
+    },
+    "models": {
+      "flux2": {
+        "model_id": "black-forest-labs/FLUX.2-klein-4B",
+        "file_count": 25,
+        "tree_sha256": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997"
+      },
+      "tts": {
+        "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "file_count": 14,
+        "tree_sha256": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d"
+      },
+      "vlm": {
+        "model_id": "Qwen/Qwen3.8-27B",
+        "file_count": 29,
+        "tree_sha256": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304"
+      },
+      "wan22": {
+        "model_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "file_count": 30,
+        "tree_sha256": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+      }
+    },
+    "native_rendered_prompts": {
+      "requests": 6,
+      "status": "PASS"
+    },
+    "original_sha256": "c56a4ef8a7023718a5786e84a652612ab86fdb1cfb5170e932ad0ba7a378e4ad",
+    "perceptual_quality": "NOT_RUN",
+    "physical_microphone": "NOT_RUN",
+    "physical_speaker": "NOT_RUN",
+    "reexported_sha256": "c56a4ef8a7023718a5786e84a652612ab86fdb1cfb5170e932ad0ba7a378e4ad",
+    "stack_report_sha256": "be7d117a67a682c8d9617c99c8240b1b82dd418510f4876a9f1b47faa052f816",
+    "status": "PASS"
+  },
+  "raw_answers": {
+    "before": [
+      {
+        "label": "setup",
+        "text": "1. Select a sheltered, sun-facing location to maximize passive heat retention for the greenhouse structure.\n2. Deploy a solar still to harvest atmospheric moisture and condense it into liquid water for irrigation.\n3. Regularly check seedling growth and adjust environmental controls to ensure optimal development."
+      },
+      {
+        "label": "followup",
+        "text": "The second step involves establishing a closed-loop life support system that recycles water, oxygen, and nutrients. This is critical on Mars because the planet’s thin atmosphere and lack of a magnetic field make it inhospitable to human life, and transporting all necessary resources from Earth is prohibitively expensive and logistically impossible. By creating a self-sustaining ecosystem, astronauts can reduce their dependence on Earth resupply, ensuring long-term survival and enabling the establishment of a permanent human presence."
+      },
+      {
+        "label": "cancelled",
+        "text": ""
+      },
+      {
+        "label": "post-cancel-stateless-check",
+        "text": "The second step in the original Mars greenhouse setup is the construction of a pressurized, transparent habitat structure. This involves erecting a greenhouse with a double-layered, radiation-shielding dome or walls, likely made of a transparent, impact-resistant material like polycarbonate or a specialized glass, to create a controlled internal environment. This step is crucial because it provides the necessary physical barrier against the harsh Martian atmosphere, extreme cold, and radiation, while simultaneously allowing sunlight to enter for photosynthesis, thereby creating the foundational enclosed space where the subsequent steps of soil preparation and plant cultivation can occur."
+      }
+    ],
+    "after": [
+      {
+        "label": "setup",
+        "text": "1. Select a sheltered, sun-facing location to maximize passive heat retention for the greenhouse structure.\n2. Deploy a solar still to harvest atmospheric moisture and condense it into liquid water for irrigation.\n3. Regularly check seedling growth and adjust environmental controls to ensure optimal development."
+      },
+      {
+        "label": "followup",
+        "text": "A solar still captures water by trapping solar heat to evaporate moisture from the surrounding air or regolith, which then condenses on a cool surface and drips into a collection basin. On Mars, this method is critical because liquid water is scarce and often locked in ice or bound in soil; it provides a reliable, low-energy way to extract the essential resource needed for plant survival without relying on complex, fuel-intensive extraction machinery."
+      },
+      {
+        "label": "cancelled",
+        "text": ""
+      },
+      {
+        "label": "post-cancel-stateless-check",
+        "text": "Collect water with a solar still."
+      }
+    ]
+  },
+  "exact_native_followup_prompts": {
+    "before": {
+      "id": "http-2",
+      "messages": [
+        {
+          "content": "You are a multimodal assistant that chooses between pure text and interleaved visuals. Write coherent, well-structured prose in the user's language. Only emit visual markers when a visual genuinely clarifies a scene, diagram, or motion; for pure math, code, logic proofs, short factual questions, or text-only requests, emit zero markers and respond in clean prose only. When visuals genuinely help, insert up to 3 standalone markers on their own lines (use [[image: ...]] for still scenes or diagrams, and [[video: ...]] for motion or dynamics); a generated visual replaces each marker, so never describe or mention the marker itself.\n[[image: <vivid concrete visual scene description in English>]]\n[[video: <vivid concrete motion and camera description in English>]]\nTo animate a specific earlier generated image, use [[video: <motion and camera description> | source=slot-N]] where slot numbers are 0-based (the first visual tag is slot-0, the second is slot-1, etc.). Use source only for I2V continuity; never invent, duplicate, or forward-reference a slot. Without this explicit suffix the engine's ordinary i2v_chain anchor selection applies.\nDo not use any other bracket syntax.",
+          "role": "system"
+        },
+        {
+          "content": "Without restating the setup, explain the second step and why it matters on Mars. Use concise prose only; no image or video.",
+          "role": "user"
+        }
+      ],
+      "rendered_prompt": "<|im_start|>system\nYou are a multimodal assistant that chooses between pure text and interleaved visuals. Write coherent, well-structured prose in the user's language. Only emit visual markers when a visual genuinely clarifies a scene, diagram, or motion; for pure math, code, logic proofs, short factual questions, or text-only requests, emit zero markers and respond in clean prose only. When visuals genuinely help, insert up to 3 standalone markers on their own lines (use [[image: ...]] for still scenes or diagrams, and [[video: ...]] for motion or dynamics); a generated visual replaces each marker, so never describe or mention the marker itself.\n[[image: <vivid concrete visual scene description in English>]]\n[[video: <vivid concrete motion and camera description in English>]]\nTo animate a specific earlier generated image, use [[video: <motion and camera description> | source=slot-N]] where slot numbers are 0-based (the first visual tag is slot-0, the second is slot-1, etc.). Use source only for I2V continuity; never invent, duplicate, or forward-reference a slot. Without this explicit suffix the engine's ordinary i2v_chain anchor selection applies.\nDo not use any other bracket syntax.<|im_end|>\n<|im_start|>user\nWithout restating the setup, explain the second step and why it matters on Mars. Use concise prose only; no image or video.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    },
+    "after": {
+      "id": "http-2",
+      "messages": [
+        {
+          "content": "You are a multimodal assistant that chooses between pure text and interleaved visuals. Write coherent, well-structured prose in the user's language. Only emit visual markers when a visual genuinely clarifies a scene, diagram, or motion; for pure math, code, logic proofs, short factual questions, or text-only requests, emit zero markers and respond in clean prose only. When visuals genuinely help, insert up to 3 standalone markers on their own lines (use [[image: ...]] for still scenes or diagrams, and [[video: ...]] for motion or dynamics); a generated visual replaces each marker, so never describe or mention the marker itself.\n[[image: <vivid concrete visual scene description in English>]]\n[[video: <vivid concrete motion and camera description in English>]]\nTo animate a specific earlier generated image, use [[video: <motion and camera description> | source=slot-N]] where slot numbers are 0-based (the first visual tag is slot-0, the second is slot-1, etc.). Use source only for I2V continuity; never invent, duplicate, or forward-reference a slot. Without this explicit suffix the engine's ordinary i2v_chain anchor selection applies.\nDo not use any other bracket syntax.",
+          "role": "system"
+        },
+        {
+          "content": "For a small Mars greenhouse, give exactly three short steps: choose a warm site, collect water with a solar still, then monitor seedlings. Use concise prose only; do not create an image or video.",
+          "role": "user"
+        },
+        {
+          "content": "1. Select a sheltered, sun-facing location to maximize passive heat retention for the greenhouse structure.\n2. Deploy a solar still to harvest atmospheric moisture and condense it into liquid water for irrigation.\n3. Regularly check seedling growth and adjust environmental controls to ensure optimal development.",
+          "role": "assistant"
+        },
+        {
+          "content": "Without restating the setup, explain the second step and why it matters on Mars. Use concise prose only; no image or video.",
+          "role": "user"
+        }
+      ],
+      "rendered_prompt": "<|im_start|>system\nYou are a multimodal assistant that chooses between pure text and interleaved visuals. Write coherent, well-structured prose in the user's language. Only emit visual markers when a visual genuinely clarifies a scene, diagram, or motion; for pure math, code, logic proofs, short factual questions, or text-only requests, emit zero markers and respond in clean prose only. When visuals genuinely help, insert up to 3 standalone markers on their own lines (use [[image: ...]] for still scenes or diagrams, and [[video: ...]] for motion or dynamics); a generated visual replaces each marker, so never describe or mention the marker itself.\n[[image: <vivid concrete visual scene description in English>]]\n[[video: <vivid concrete motion and camera description in English>]]\nTo animate a specific earlier generated image, use [[video: <motion and camera description> | source=slot-N]] where slot numbers are 0-based (the first visual tag is slot-0, the second is slot-1, etc.). Use source only for I2V continuity; never invent, duplicate, or forward-reference a slot. Without this explicit suffix the engine's ordinary i2v_chain anchor selection applies.\nDo not use any other bracket syntax.<|im_end|>\n<|im_start|>user\nFor a small Mars greenhouse, give exactly three short steps: choose a warm site, collect water with a solar still, then monitor seedlings. Use concise prose only; do not create an image or video.<|im_end|>\n<|im_start|>assistant\n1. Select a sheltered, sun-facing location to maximize passive heat retention for the greenhouse structure.\n2. Deploy a solar still to harvest atmospheric moisture and condense it into liquid water for irrigation.\n3. Regularly check seedling growth and adjust environmental controls to ensure optimal development.<|im_end|>\n<|im_start|>user\nWithout restating the setup, explain the second step and why it matters on Mars. Use concise prose only; no image or video.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    }
+  },
+  "accepted_task77_preservation": {
+    "raw_archives": {
+      "story": {
+        "archive_sha256": "ebc9c915d920ff8d8ba39429d7bc62cfc98a85471f55de8fc239ece01438297d",
+        "verification": {
+          "archive_sha256": "ebc9c915d920ff8d8ba39429d7bc62cfc98a85471f55de8fc239ece01438297d",
+          "manifest": {
+            "files": 109,
+            "manifest_sha256": "a28b2c01122df3c671113f008c0692d80ec008a905564d5e10f56bec5f05e0bb"
+          },
+          "schema": "umminfer-storyboard-replay-verification/v1",
+          "status": "PASS",
+          "totals": {
+            "artifacts": 63,
+            "direct_renders": 0,
+            "events": 137,
+            "pcm_bytes": 1470720,
+            "turns": 2,
+            "wav_bytes": 0
+          },
+          "turns": [
+            {
+              "artifacts": 32,
+              "direct_renders": 0,
+              "events": 69,
+              "outcome": "completed",
+              "pcm_bytes": 748800,
+              "raw_sse_sha256": "c780486f1c27003310044bc1bf491b4c11ee73ecc28bfad9f8c46a05be028a58",
+              "wav_bytes": 0
+            },
+            {
+              "artifacts": 31,
+              "direct_renders": 0,
+              "events": 68,
+              "outcome": "completed",
+              "pcm_bytes": 721920,
+              "raw_sse_sha256": "ca95fe2f6e62562188ebf084fc5982afe84b5c0915f65b52c472742c9ceb1a26",
+              "wav_bytes": 0
+            }
+          ]
+        },
+        "verification_sha256": "b7b3ae6b2a26b6bd0fa371e81097b5f9a354f56c9db69a5cff6bec40ce8879ab"
+      },
+      "cancelled": {
+        "archive_sha256": "cf9ce7a9b558dd1e6466ba87e1fa131c1001e4060139195fb983933131f662f1",
+        "verification": {
+          "archive_sha256": "cf9ce7a9b558dd1e6466ba87e1fa131c1001e4060139195fb983933131f662f1",
+          "manifest": {
+            "files": 109,
+            "manifest_sha256": "a28b2c01122df3c671113f008c0692d80ec008a905564d5e10f56bec5f05e0bb"
+          },
+          "schema": "umminfer-storyboard-replay-verification/v1",
+          "status": "PASS",
+          "totals": {
+            "artifacts": 0,
+            "direct_renders": 0,
+            "events": 17,
+            "pcm_bytes": 0,
+            "turns": 1,
+            "wav_bytes": 0
+          },
+          "turns": [
+            {
+              "artifacts": 0,
+              "direct_renders": 0,
+              "events": 17,
+              "outcome": "cancelled",
+              "pcm_bytes": 0,
+              "raw_sse_sha256": "f74898bd7e4f05ea54a11183974b1d23eab44ac593e54fa578a7f3634e317f99",
+              "wav_bytes": 0
+            }
+          ]
+        },
+        "verification_sha256": "735d4f2545e11b9c1d1c59b6af23b8a6444596cb2a91243e766d6e69c0cab197"
+      },
+      "wav": {
+        "archive_sha256": "7b002ac58c0812d023d0c1b94c5d67f18683caac504563b1e4c683236deb47f0",
+        "verification": {
+          "archive_sha256": "7b002ac58c0812d023d0c1b94c5d67f18683caac504563b1e4c683236deb47f0",
+          "manifest": {
+            "files": 109,
+            "manifest_sha256": "a28b2c01122df3c671113f008c0692d80ec008a905564d5e10f56bec5f05e0bb"
+          },
+          "schema": "umminfer-storyboard-replay-verification/v1",
+          "status": "PASS",
+          "totals": {
+            "artifacts": 2,
+            "direct_renders": 0,
+            "events": 31,
+            "pcm_bytes": 0,
+            "turns": 1,
+            "wav_bytes": 602924
+          },
+          "turns": [
+            {
+              "artifacts": 2,
+              "direct_renders": 0,
+              "events": 31,
+              "outcome": "completed",
+              "pcm_bytes": 0,
+              "raw_sse_sha256": "92714dfc1e639690a6aa97bd118a13d58f23eb77346a4cdc6b4fb3dc62cf71eb",
+              "wav_bytes": 602924
+            }
+          ]
+        },
+        "verification_sha256": "443b4fc2520999a9ba25ac434cf54620987d1deb546bd0c0b9a320c1658fa7e1"
+      }
+    },
+    "source_binding": {
+      "exact": true,
+      "original_sha256": "9f6273e4bbe97df4f0a685d81d518e28ce93703a567d3170539ff8e287e826f5",
+      "requests": [
+        {
+          "image_edit_sha256": "9f6273e4bbe97df4f0a685d81d518e28ce93703a567d3170539ff8e287e826f5",
+          "image_input_sha256": "9f6273e4bbe97df4f0a685d81d518e28ce93703a567d3170539ff8e287e826f5"
+        }
+      ]
+    },
+    "export": {
+      "direct_renders": 3,
+      "schema": "umminfer-web-session-replay-v1",
+      "sha256": "1baa2f66c7f9adc9a8ce9f8c0a5254a3203133569f367df3583c4ba65985cc50",
+      "turn_count": 4
+    },
+    "historical_roundtrip": {
+      "original_sha256": "2102732bbc1a1867dc8cd9d8c82458111502936f2cb20a443532feb1565f23b7",
+      "reexported_sha256": "00ae5fc2b1d9a99edcd7b45d0258488132e68553fee5f4aad1e996eb9a86100a",
+      "difference": "exported_at only; all other JSON fields exactly equal",
+      "whole_file_byte_exact": false
+    }
+  },
+  "paired": {
+    "first_turn_history_fix_verified": true,
+    "same_model_identities": true,
+    "same_native_vlm_tts_wan_identities": true
+  },
+  "engineering_gates": {
+    "independent_raw_verification": "PASS",
+    "first_turn_setup_retained": true,
+    "exact_followup_history": true,
+    "stateless_isolation": true,
+    "cross_session_isolation": true,
+    "cancelled_excluded": true,
+    "whole_file_reexport_byte_exact": true,
+    "same_native_and_model_identities": true
+  },
+  "failures": [],
+  "promotion_decision": "PROMOTED_ENGINEERING_FIX",
+  "full_case_pass": false,
+  "macos": "NOT_RUN",
+  "human_walkthrough": "NOT_RUN",
+  "physical_microphone_speaker": "NOT_RUN",
+  "perceptual_quality": "NOT_RUN",
+  "new_or_restarted_server_import_restore": "NOT_RUN",
+  "resident_deployment": "NOT_CLAIMED",
+  "independent_report_sha256": "f617e335c928a2407e1bb486c8632e1c9c497b1aeaaa11e970c7c7fe4427fd94",
+  "premerge_independent_report_sha256": "0ea29c5305186a00dcda78b113c74f8e7206cf8b23cd7d3e05365e6a239aff9d"
+}

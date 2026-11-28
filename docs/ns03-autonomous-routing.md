@@ -228,3 +228,66 @@ statistic, threshold and miss, and found no task-owned process left. Every accep
 arm finished with `in_flight=0`; final GPU 1 samples were 3 MiB/0%, with three
 consecutive idle samples on the two held-out arms. The resident service and GPUs
 0/2–7 were not used or restarted. Perceptual/physical quality remains `NOT_RUN`.
+
+## Task #84 — first-turn history correction, promoted with routing non-regression
+
+Task #84 retained the frozen 40 cases, prompts, scoring, seeds, accepted Before raw
+results, and the rejected prompt candidate's `NOT_PROMOTED` history. The accepted
+parent is `84f82ee879efe384f1eea6a7ee2544d9d3b7b274`. Final execution used
+`3ec56a24796a89e99f03c1cb9365b8f9140e264b`, which merges official main
+`9c02225451252001c11021b389a7792caf03d503` before verification. The focused change
+is client-side: default stateful Web/macOS sessions send the existing
+`session_history: true` from turn one. Explicit omission/`false`, server history
+storage, native model semantics, and the narrative prompt are unchanged.
+
+The deterministic regression was red on the unfixed Task #83/Task #77 clients and
+green after the fix. The final merged source passed 18/18 NS-03 tests with real
+msgpack/ZeroMQ, 13/13 NS-08 independent-verifier tests, 24/24 Web checks, and both
+native prompt-replay tests. The native replay utility renders the exact observed
+post-prepend MessagePack messages through the existing Qwen renderer without CUDA.
+
+| Frozen metric | Before | After |
+| --- | --- | --- |
+| Follow-up setup/detail context | **4/10** | **10/10** |
+| Development context | 2/5 | 5/5 |
+| Held-out context | 2/5 | 5/5 |
+| Routing accuracy, all | 32/40 = 80% | 32/40 = 80% |
+| Development / held-out routing | 15/20 / 17/20 | 15/20 / 17/20 |
+| Redundant visual cases, all | 1/40 = 2.5% | 1/40 = 2.5% |
+| Empty prose / missing voice | 0 / 0 | 0 / 0 |
+| New visual/media/terminal failure category | — | **0** |
+
+Every raw setup/detail answer, exact native message list, exact rendered prompt,
+request/response digest, and failure is retained in the compact
+[first-turn history scorecard](../benchmarks/ns03-routing/first-turn-history-scorecard.json).
+It contains no raw media, per-event SSE blobs, or machine-specific paths.
+
+### Independent raw evidence
+
+- Focused pair: 20/20 streams, 238-file self-excluded manifest
+  `62389c36b3b48bb1e7a3d1c618a7feb211bf0ea72e5bcad8c776edcb8c49f552`,
+  scorecard `5b2f97ac3d5f7746671c3778eefa9deba4d13d2c77231983ce1a50be45217c8f`,
+  fresh report `5bfcfed1c606a27b1842aa5c048047066e42fdfb2e71aaa0a5bbf2673b08df29`.
+- Full accepted-Before comparator plus merged After: 80/80 primary streams and
+  20/20 setup streams, 456-file manifest
+  `e837547e4db1255427f269efaaef3e781697144ecb264b215b33908faaaae1fc`,
+  scorecard `325e5c05a04135beafa85f2f20927042172507805442b165e45a5887586cd50e`,
+  fresh report `dbff19130bb5cf60f54bb9ecfb4aaf3c37f3efc50a07991beef141b5ed79ef05`.
+- The original Task #78 bundle independently re-verified `PASS`: 408 files,
+  80 primary + 20 setup streams, and four model trees, without changing its bytes.
+- Compact paired scorecard SHA-256:
+  `95e360308d2e7d66eada7d0b9b3f366ac176784bdd7390879b17c76da94f992a`.
+
+The frozen full-routing promoter itself remains `NOT_PROMOTED`: paired routing gain
+is zero, so its `positive_paired_gain` rule is not met. Task #84's separate decision
+is **PROMOTED_HISTORY_FIX_ONLY**, because the context target and every
+routing/media/voice non-regression passed. This is not a full NS-03 quality or
+90% ideal PASS, and it does not revive the rejected prompt candidate.
+
+NS-08 independently passed same-process export → clear → import → reconnect →
+natural follow-up, stateless/cross-session/cancellation isolation, and byte-exact
+re-export; see [the lifecycle record](storyboard-showcase.md#task-84--first-turn-retention-through-exportimportreconnect).
+Human/perceptual review, macOS execution, new/restarted-server history restoration,
+and resident deployment remain `NOT_RUN`/`NOT_CLAIMED`. All final task-owned model
+processes stopped and physical GPU 1 returned to 3 MiB/0%; the resident service and
+all other GPUs were untouched.

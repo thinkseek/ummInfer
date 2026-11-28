@@ -17,6 +17,8 @@ import re
 import subprocess
 
 MANIFEST_FORMAT = "umminfer-ns03-routing-external-manifest-v1"
+FULL_SCORECARD_FORMAT = "umminfer-ns03-routing-scorecard-v1"
+FOLLOWUP_SCORECARD_FORMAT = "umminfer-ns03-followup-history-scorecard-v1"
 CLASSES = ("text", "static", "dynamic", "followup")
 DIRECTIVE = re.compile(r"\[\[\s*(?:image|video|visual)\s*:", re.IGNORECASE)
 OFFICIAL_BEFORE = "91310b36184c86a1c147debb27db8643cc0cb3e4"
@@ -55,7 +57,7 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def expected_request(case, session_id, setup):
+def expected_request(case, session_id, setup, initial_history=False):
     prompt = case["setup"]["prompt"] if setup else case["prompt"]
     body = {
         "model": "qwen3-native",
@@ -70,9 +72,69 @@ def expected_request(case, session_id, setup):
         "audio": {"voice": "vivian", "format": "wav", "stream": True},
         "modalities": ["text", "image", "video", "audio"],
     }
-    if case["class"] == "followup" and not setup:
+    if initial_history or (case["class"] == "followup" and not setup):
         body["session_history"] = True
     return body
+
+
+def normalize_vlm_messages(messages):
+    normalized = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            require(len(content) == 1 and content[0].get("type") == "text" and
+                    isinstance(content[0].get("text"), str),
+                    "VLM capture expected one text content part")
+            content = content[0]["text"]
+        require(isinstance(content, str), "VLM capture expected text content")
+        normalized.append({"role": message.get("role"), "content": content})
+    return normalized
+
+
+def expected_vlm_messages(case, answer_name, setup_record, initial_history):
+    if answer_name == "setup":
+        return [{"role": "user", "content": case["setup"]["prompt"]}]
+    messages = []
+    if case["class"] == "followup" and initial_history:
+        require(setup_record is not None, "follow-up capture lacks its real setup")
+        messages.extend([
+            {"role": "user", "content": case["setup"]["prompt"]},
+            {"role": "assistant", "content": setup_record["clean_text"]},
+        ])
+    messages.append({"role": "user", "content": case["prompt"]})
+    return messages
+
+
+def verify_vlm_capture(case_dir, reported, public_request_id, expected_messages,
+                       native_request_bindings):
+    import msgpack
+    path = Path(case_dir) / "vlm-prompts.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    require(len(rows) == 1, f"{path}: expected exactly one VLM submit")
+    row = rows[0]
+    raw = base64.b64decode(row["raw_base64"], validate=True)
+    require(sha_bytes(raw) == row["raw_sha256"], f"{path}: raw msgpack hash mismatch")
+    message = msgpack.unpackb(raw, raw=False, strict_map_key=False)
+    require(message.get("type") == "submit" and message.get("request_id") == row["request_id"],
+            f"{path}: invalid submit identity")
+    inputs = message.get("data", {}).get("request", {}).get("inputs", {})
+    messages = inputs.get("messages")
+    require(isinstance(messages, list) and normalize_vlm_messages(messages) == row["messages"],
+            f"{path}: normalized messages differ from raw msgpack")
+    native_id = row["request_id"]
+    require(native_id in (public_request_id, public_request_id + ":vlm"),
+            f"{path}: native/public request mismatch")
+    require(native_id not in native_request_bindings, f"{path}: native request id was reused")
+    native_request_bindings[native_id] = public_request_id
+    while row["messages"] and row["messages"][0].get("role") == "system":
+        row["messages"].pop(0)
+    require(row["messages"] == expected_messages,
+            f"{path}: post-prepend VLM history mismatch: {row['messages']} != {expected_messages}")
+    metadata = {"path": path.name, "rows": 1, "sha256": sha_file(path),
+                "native_request_id": native_id}
+    require(reported.get("vlm_capture") == metadata,
+            f"{path}: compact producer capture metadata mismatch")
+    return metadata
 
 
 def write_manifest(root):
@@ -150,11 +212,14 @@ def require_no_owned_processes(identity):
                     f"task-owned process {pid} remains in {cwd}")
 
 
-def raw_case(case, run_dir, answer_name, ffmpeg):
+def raw_case(case, run_dir, answer_name, ffmpeg, *, initial_history=False,
+             require_capture=False, setup_record=None, reported_record=None,
+             native_request_bindings=None):
     case_dir = run_dir / "responses" / case["id"] / answer_name
     raw = (case_dir / "raw.sse").read_bytes()
     request = read_json(case_dir / "request.json")
-    require(request == expected_request(case, request.get("session_id"), answer_name == "setup"),
+    require(request == expected_request(case, request.get("session_id"), answer_name == "setup",
+                                        initial_history=initial_history),
             f"{case['id']}/{answer_name}: request differs from frozen prompt/client contract")
     errors = []
     media_errors = []
@@ -257,21 +322,30 @@ def raw_case(case, run_dir, answer_name, ffmpeg):
     leg_errors = [{"stage": e.get("stage"), "slot_id": e.get("slot_id"),
                    "slot_index": e.get("slot_index"), "error": e.get("error", "")}
                   for e in events if e.get("kind") == "leg_error"]
-    return {"status": "captured", "case_id": case["id"], "errors": errors,
-            "leg_errors": leg_errors, "media_errors": media_errors,
-            "request_sha256": sha_bytes(canonical(request)), "raw_response_sha256": sha_bytes(raw),
-            "clean_text_sha256": sha_bytes(text.encode()), "clean_text": text,
-            "slots": slots, "artifacts": artifacts, "terminal_kind": "complete",
-            "terminal_count": 1, "done_count": 1,
-            "audio": {"artifact_count": audio_count, "bytes": audio_bytes, "pcm16_valid": True},
-            "session_history": request.get("session_history", False), "session_id": request["session_id"],
-            "parse_ambiguous": False}
+    result = {"status": "captured", "case_id": case["id"], "errors": errors,
+              "leg_errors": leg_errors, "media_errors": media_errors,
+              "request_sha256": sha_bytes(canonical(request)), "raw_response_sha256": sha_bytes(raw),
+              "clean_text_sha256": sha_bytes(text.encode()), "clean_text": text,
+              "slots": slots, "artifacts": artifacts, "terminal_kind": "complete",
+              "terminal_count": 1, "done_count": 1, "request_id": request_id,
+              "audio": {"artifact_count": audio_count, "bytes": audio_bytes, "pcm16_valid": True},
+              "session_history": request.get("session_history", False), "session_id": request["session_id"],
+              "parse_ambiguous": False}
+    capture_path = case_dir / "vlm-prompts.jsonl"
+    if require_capture or capture_path.exists():
+        require(reported_record is not None, f"{case['id']}/{answer_name}: missing producer capture record")
+        if native_request_bindings is None:
+            native_request_bindings = {}
+        expected_messages = expected_vlm_messages(case, answer_name, setup_record, initial_history)
+        result["vlm_capture"] = verify_vlm_capture(
+            case_dir, reported_record, request_id, expected_messages, native_request_bindings)
+    return result
 
 
 def compare_public_record(independent, reported, label):
     keys = ("errors", "leg_errors", "media_errors", "request_sha256", "raw_response_sha256", "clean_text_sha256",
             "slots", "artifacts", "terminal_kind", "terminal_count", "done_count", "audio",
-            "session_history", "session_id", "parse_ambiguous")
+            "request_id", "vlm_capture", "session_history", "session_id", "parse_ambiguous")
     for key in keys:
         require(independent.get(key) == reported.get(key), f"{label}: producer/raw mismatch in {key}")
 
@@ -362,6 +436,19 @@ def aggregate(results, population, kind=None):
             "followup_accuracy": sum(r.get("followup_correct") is True for r in followups) / len(followups) if followups else None}
 
 
+def followup_history_gate(before, after):
+    def history(results):
+        correct = sum(result.get("followup_correct") is True for result in results)
+        return {"cases": len(results), "correct": correct, "accuracy": correct / len(results)}
+
+    before_history = history(before)
+    after_history = history(after)
+    gain = after_history["accuracy"] - before_history["accuracy"]
+    return {"before": before_history, "after": after_history, "target": 0.8,
+            "before_to_after_gain": gain, "target_met": after_history["accuracy"] >= 0.8,
+            "verifiable_gain": gain > 0}
+
+
 def verify(root, ffmpeg):
     root = Path(root).resolve()
     manifest = read_json(root / "manifest.json")
@@ -378,10 +465,50 @@ def verify(root, ffmpeg):
     scorecard = read_json(root / manifest["scorecard"])
     identities = read_json(root / manifest["identities"])
     candidate = read_json(root / manifest["candidate"])
+    scorecard_format = scorecard.get("format")
+    require(scorecard_format in (FULL_SCORECARD_FORMAT, FOLLOWUP_SCORECARD_FORMAT),
+            "unknown NS-03 scorecard format")
+    focused_followup = scorecard_format == FOLLOWUP_SCORECARD_FORMAT
+    if focused_followup:
+        require(candidate.get("first_turn_history") is True,
+                "focused follow-up scorecard requires candidate first_turn_history=true")
     require(candidate["suite_canonical_sha256"] == sha_bytes(canonical(suite)) and
             candidate["frozen_before_heldout"] is True and
             candidate.get("evaluation_frozen_at_utc"), "candidate freeze evidence is incomplete")
     evaluation_frozen = datetime.fromisoformat(candidate["evaluation_frozen_at_utc"])
+    reused_before = candidate.get("comparator_before_reused", False)
+    require(isinstance(reused_before, bool), "comparator_before_reused must be boolean")
+    integrated_merge = candidate.get("official_main_merge")
+    require(integrated_merge is None or isinstance(integrated_merge, dict),
+            "official_main_merge must be an object when present")
+    if integrated_merge is not None:
+        require(integrated_merge.get("merge_commit") == candidate.get("execution_commit") and
+                integrated_merge.get("accepted_parent") == candidate.get("base_commit") and
+                isinstance(integrated_merge.get("official_main_commit"), str),
+                "official main merge identity mismatch")
+    require(not focused_followup or not reused_before,
+            "focused follow-up bundles cannot reuse comparator Before")
+    accepted_before = None
+    if reused_before:
+        binding = candidate.get("comparator_before") or {}
+        accepted_path = Path(binding["scorecard_path"])
+        if not accepted_path.is_absolute():
+            accepted_path = root / accepted_path
+        require(accepted_path.is_file() and
+                sha_file(accepted_path) == binding["scorecard_sha256"],
+                "accepted Before scorecard path/hash mismatch")
+        accepted_before = read_json(accepted_path)
+        require(accepted_before.get("suite_sha256") == scorecard["suite_sha256"] and
+                accepted_before.get("preregistration_sha256") == scorecard["preregistration_sha256"],
+                "accepted Before scorecard is not bound to this suite/preregistration")
+        require(isinstance(candidate.get("after_runtime"), dict),
+                "reused Before requires exact candidate after_runtime")
+        for before_key in ("development/before", "heldout/before"):
+            require(scorecard["arms"][before_key]["cases"] ==
+                    accepted_before["arms"][before_key]["cases"] and
+                    scorecard["arms"][before_key]["aggregate"] ==
+                    accepted_before["arms"][before_key]["aggregate"],
+                    f"{before_key}: accepted Before cases/aggregates differ")
     require(scorecard["suite_sha256"] == prereq["suite_sha256"] == sha_bytes(canonical(suite)),
             "suite changed after freeze")
     require(scorecard["preregistration_sha256"] == sha_bytes(canonical(prereq)),
@@ -391,7 +518,9 @@ def verify(root, ffmpeg):
     model_cache = {}
     all_results = {}
     run_times = {}
-    reference_runtime = None
+    runtime_by_arm = {}
+    nonnative_reference = None
+    reference_flux = None
     server_by_arm = {}
     setup_streams_verified = 0
     for key, relative in manifest["runs"].items():
@@ -400,7 +529,21 @@ def verify(root, ffmpeg):
         identity = read_json(run_dir / "run-identity.json")
         expected_execution = OFFICIAL_BEFORE if key.endswith("/before") else candidate["execution_commit"]
         expected_sources = BASELINE_SOURCES if key.endswith("/before") else candidate["source_sha256"]
-        require(identity["base_commit"] == OFFICIAL_BEFORE and
+        expected_base = OFFICIAL_BEFORE if key.endswith("/before") else candidate["base_commit"]
+        baseline_binding = identity.get("baseline_manifest")
+        if focused_followup and key.endswith("/before"):
+            require(baseline_binding is not None,
+                    f"{key}: focused Before requires a Task83 baseline manifest")
+        if baseline_binding is not None:
+            require(key.endswith("/before"), f"{key}: baseline manifest is valid only for Before")
+            baseline_path = Path(baseline_binding["path"])
+            require(baseline_path.is_file() and sha_file(baseline_path) == baseline_binding["sha256"],
+                    f"{key}: baseline manifest path/hash mismatch")
+            baseline = read_json(baseline_path)
+            expected_base = baseline["base_commit"]
+            expected_execution = expected_base
+            expected_sources = baseline["source_sha256"]
+        require(identity["base_commit"] == expected_base and
                 identity["execution_commit"] == expected_execution and
                 identity["source_sha256"] == expected_sources and identity["physical_gpu"] == 1,
                 f"{key}: execution/source does not match its frozen arm")
@@ -434,16 +577,51 @@ def verify(root, ffmpeg):
             "models": identity["models"], "python_runtime": identity["python_runtime"],
             "flux_stage_sha256": identity["flux_stage"]["sha256"],
         }
-        if reference_runtime is None:
-            reference_runtime = runtime_signature
+        if arm in runtime_by_arm:
+            require(runtime_signature == runtime_by_arm[arm], f"{key}: native/model/runtime drift within {arm}")
         else:
-            require(runtime_signature == reference_runtime, f"{key}: native/model/runtime identity drift")
+            runtime_by_arm[arm] = runtime_signature
+        nonnative_signature = {name: runtime_signature[name] for name in
+                               ("models", "python_runtime")}
+        if nonnative_reference is None:
+            nonnative_reference = nonnative_signature
+        else:
+            require(nonnative_signature == nonnative_reference,
+                    f"{key}: model/Python identity drift across arms")
+        if reference_flux is None:
+            reference_flux = runtime_signature["flux_stage_sha256"]
+        elif integrated_merge is None:
+            require(runtime_signature["flux_stage_sha256"] == reference_flux,
+                    f"{key}: FLUX identity drift across arms")
+        if (reused_before or integrated_merge is not None) and arm == "after":
+            require(runtime_signature == candidate["after_runtime"],
+                    f"{key}: After runtime differs from candidate after_runtime")
+        elif integrated_merge is not None and focused_followup and arm == "before":
+            require(runtime_signature == candidate["before_runtime"],
+                    f"{key}: Before runtime differs from accepted-parent before_runtime")
+        elif not reused_before and integrated_merge is None and runtime_by_arm.get("before") is not None:
+            require(runtime_signature == runtime_by_arm["before"],
+                    f"{key}: native/model/runtime identity drift")
         server_hash = identity["binaries"]["server"]["sha256"]
         if arm in server_by_arm:
             require(server_by_arm[arm] == server_hash, f"{key}: server binary drift within {arm}")
         else:
             server_by_arm[arm] = server_hash
         population, arm = key.split("/")
+        case_class = identity.get("case_class", "all")
+        require(case_class in ("all", *CLASSES) and report.get("case_class", "all") == case_class,
+                f"{key}: case-class identity mismatch")
+        require(case_class == ("followup" if focused_followup else "all"),
+                f"{key}: wrong case class for scorecard format")
+        initial_history = arm == "after" and candidate.get("first_turn_history") is True
+        require(identity.get("initial_history", initial_history) == initial_history,
+                f"{key}: initial-history identity mismatch")
+        observer_marked = identity.get("vlm_observer", False)
+        require(isinstance(observer_marked, bool), f"{key}: vlm_observer must be boolean")
+        if focused_followup:
+            require("initial_history" in identity and observer_marked is True,
+                    f"{key}: focused runs require explicit history and VLM observer identity")
+        require_capture = observer_marked or initial_history
         require(report["population"] == population and report["arm"] == arm and
                 identity["population"] == population and identity["arm"] == arm,
                 f"{key}: population/arm mismatch")
@@ -455,22 +633,35 @@ def verify(root, ffmpeg):
                 f"{key}: GPU/health cleanup failed")
         require_no_owned_processes(identity)
         reports = {r["case_id"]: r for r in report["cases"]}
+        selected = [case for case in suite["cases"] if case["population"] == population and
+                    (case_class == "all" or case["class"] == case_class)]
+        require(len(selected) == (20 if case_class == "all" else 5) and
+                set(reports) == {case["id"] for case in selected},
+                f"{key}: report does not contain exactly its selected frozen cases")
+        # Native ids are process-local; each independent stack may restart at
+        # http-1. Require uniqueness within this run, never across fresh stacks.
+        native_request_bindings = {}
         results = []
-        for case in suite["cases"]:
-            if case["population"] != population:
-                continue
+        for case in selected:
             case = dict(case)
             golden = suite["classes"][case["class"]]
             case["_expected"] = [golden["images"], golden["videos"]]
-            answer = raw_case(case, run_dir, "answer", ffmpeg)
+            setup = None
+            if case["class"] == "followup":
+                setup = raw_case(case, run_dir, "setup", ffmpeg,
+                                 initial_history=initial_history, require_capture=require_capture,
+                                 reported_record=reports[case["id"]]["setup"],
+                                 native_request_bindings=native_request_bindings)
+                setup_streams_verified += 1
+                compare_public_record(setup, reports[case["id"]]["setup"], f"{key}/{case['id']}/setup")
+            answer = raw_case(case, run_dir, "answer", ffmpeg,
+                              initial_history=initial_history, require_capture=require_capture,
+                              setup_record=setup, reported_record=reports[case["id"]],
+                              native_request_bindings=native_request_bindings)
             require(answer["session_id"] == f"ns03-{arm}-{case['id']}",
                     f"{key}/{case['id']}: unexpected frozen session identity")
             compare_public_record(answer, reports[case["id"]], f"{key}/{case['id']}")
-            setup = None
             if case["class"] == "followup":
-                setup = raw_case(case, run_dir, "setup", ffmpeg)
-                setup_streams_verified += 1
-                compare_public_record(setup, reports[case["id"]]["setup"], f"{key}/{case['id']}/setup")
                 derived_same_session = answer["session_id"] == setup["session_id"]
                 require(answer["session_history"] is True and derived_same_session and
                         reports[case["id"]]["same_session_as_setup"] is True,
@@ -481,11 +672,19 @@ def verify(root, ffmpeg):
             result["_setup"] = setup
             results.append(result)
         all_results[key] = results
-    require(run_times["development/before"][1] <= evaluation_frozen,
-            "development Before did not finish before final candidate freeze")
-    for key in ("development/after", "heldout/before", "heldout/after"):
-        require(run_times[key][0] >= evaluation_frozen,
-                f"{key} started before final candidate freeze")
+    if focused_followup:
+        for key in ("development/before", "heldout/before"):
+            require(run_times[key][1] <= evaluation_frozen,
+                    f"{key} did not finish before final candidate freeze")
+        for key in ("development/after", "heldout/after"):
+            require(run_times[key][0] >= evaluation_frozen,
+                    f"{key} started before final candidate freeze")
+    elif not reused_before:
+        require(run_times["development/before"][1] <= evaluation_frozen,
+                "development Before did not finish before final candidate freeze")
+        for key in ("development/after", "heldout/before", "heldout/after"):
+            require(run_times[key][0] >= evaluation_frozen,
+                    f"{key} started before final candidate freeze")
     for key, results in all_results.items():
         producer_cases = {r["case_id"]: r for r in scorecard["arms"][key]["cases"]}
         for result in results:
@@ -535,34 +734,41 @@ def verify(root, ffmpeg):
         require(scorecard["paired"][population] == expected, f"paired statistic mismatch: {population}")
     before_all_results = all_results["development/before"] + all_results["heldout/before"]
     after_all_results = all_results["development/after"] + all_results["heldout/after"]
-    before_all = aggregate(before_all_results, "all")
-    after_all = aggregate(after_all_results, "all")
-    before_heldout = aggregate(all_results["heldout/before"], "heldout")
-    after_heldout = aggregate(all_results["heldout/after"], "heldout")
-    gain = scorecard["paired"]["all"]["accuracy_delta_percentage_points"] > 0
-    no_heldout_regression = after_heldout["routing_accuracy"] >= before_heldout["routing_accuracy"]
-    owner_all = after_all["routing_accuracy"] >= 0.80 and after_all["redundant_visual_rate"] < 0.05
-    owner_heldout = after_heldout["routing_accuracy"] >= 0.80 and after_heldout["redundant_visual_rate"] < 0.05
-    expected_thresholds = {
-        "owner": {"routing_accuracy_min": 0.80, "redundant_visual_rate_max_exclusive": 0.05,
-                  "after_all_met": owner_all, "after_heldout_met": owner_heldout,
-                  "positive_paired_gain": gain, "heldout_non_regression": no_heldout_regression,
-                  "all_met": owner_all and owner_heldout and gain and no_heldout_regression},
-        "rubric_hard_ideal": {"routing_accuracy_min": 0.90,
-                              "after_all_met": after_all["routing_accuracy"] >= 0.90,
-                              "after_heldout_met": after_heldout["routing_accuracy"] >= 0.90},
-        "before_all": {"routing_accuracy": before_all["routing_accuracy"],
-                       "redundant_visual_rate": before_all["redundant_visual_rate"]},
-        "after_all": {"routing_accuracy": after_all["routing_accuracy"],
-                      "redundant_visual_rate": after_all["redundant_visual_rate"]},
-        "before_heldout": {"routing_accuracy": before_heldout["routing_accuracy"],
-                           "redundant_visual_rate": before_heldout["redundant_visual_rate"]},
-        "after_heldout": {"routing_accuracy": after_heldout["routing_accuracy"],
-                          "redundant_visual_rate": after_heldout["redundant_visual_rate"]},
-    }
-    require(scorecard["thresholds"] == expected_thresholds, "promotion thresholds were not reproduced")
-    expected_promotion = "PROMOTION_ELIGIBLE" if expected_thresholds["owner"]["all_met"] else "NOT_PROMOTED"
-    require(scorecard["promotion"] == expected_promotion, "promotion verdict was not independently reproduced")
+    if focused_followup:
+        expected_history = followup_history_gate(before_all_results, after_all_results)
+        require(scorecard["history_gate"] == expected_history,
+                "focused follow-up history gate was not independently reproduced")
+        require("thresholds" not in scorecard and scorecard["promotion"] == "COMPARATOR_REQUIRED",
+                "focused follow-up scorecard must defer full routing promotion")
+    else:
+        before_all = aggregate(before_all_results, "all")
+        after_all = aggregate(after_all_results, "all")
+        before_heldout = aggregate(all_results["heldout/before"], "heldout")
+        after_heldout = aggregate(all_results["heldout/after"], "heldout")
+        gain = scorecard["paired"]["all"]["accuracy_delta_percentage_points"] > 0
+        no_heldout_regression = after_heldout["routing_accuracy"] >= before_heldout["routing_accuracy"]
+        owner_all = after_all["routing_accuracy"] >= 0.80 and after_all["redundant_visual_rate"] < 0.05
+        owner_heldout = after_heldout["routing_accuracy"] >= 0.80 and after_heldout["redundant_visual_rate"] < 0.05
+        expected_thresholds = {
+            "owner": {"routing_accuracy_min": 0.80, "redundant_visual_rate_max_exclusive": 0.05,
+                      "after_all_met": owner_all, "after_heldout_met": owner_heldout,
+                      "positive_paired_gain": gain, "heldout_non_regression": no_heldout_regression,
+                      "all_met": owner_all and owner_heldout and gain and no_heldout_regression},
+            "rubric_hard_ideal": {"routing_accuracy_min": 0.90,
+                                  "after_all_met": after_all["routing_accuracy"] >= 0.90,
+                                  "after_heldout_met": after_heldout["routing_accuracy"] >= 0.90},
+            "before_all": {"routing_accuracy": before_all["routing_accuracy"],
+                           "redundant_visual_rate": before_all["redundant_visual_rate"]},
+            "after_all": {"routing_accuracy": after_all["routing_accuracy"],
+                          "redundant_visual_rate": after_all["redundant_visual_rate"]},
+            "before_heldout": {"routing_accuracy": before_heldout["routing_accuracy"],
+                               "redundant_visual_rate": before_heldout["redundant_visual_rate"]},
+            "after_heldout": {"routing_accuracy": after_heldout["routing_accuracy"],
+                              "redundant_visual_rate": after_heldout["redundant_visual_rate"]},
+        }
+        require(scorecard["thresholds"] == expected_thresholds, "promotion thresholds were not reproduced")
+        expected_promotion = "PROMOTION_ELIGIBLE" if expected_thresholds["owner"]["all_met"] else "NOT_PROMOTED"
+        require(scorecard["promotion"] == expected_promotion, "promotion verdict was not independently reproduced")
     expected_misses = []
     for key, results in all_results.items():
         for result in results:

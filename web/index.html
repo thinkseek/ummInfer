@@ -3920,8 +3920,8 @@ async function send() {
     temperature: Number.isFinite(tempVal) && tempVal >= 0 ? tempVal : 0,
     stream: true,
     session_id: sessionID,
+    session_history: true,
   };
-  if (history.length > 0) body.session_history = true;
   if (ui.topP.value.trim() !== '') {
     const topPVal = Number(ui.topP.value);
     if (Number.isFinite(topPVal) && topPVal > 0 && topPVal <= 1) body.top_p = topPVal;

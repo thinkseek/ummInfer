@@ -105,6 +105,115 @@ def runtime_identity():
     return result
 
 
+def normalize_vlm_messages(messages):
+    normalized = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            require(len(content) == 1 and content[0].get("type") == "text" and
+                    isinstance(content[0].get("text"), str),
+                    "VLM observer expected one text content part")
+            content = content[0]["text"]
+        require(isinstance(content, str), "VLM observer expected text content")
+        normalized.append({"role": message.get("role"), "content": content})
+    return normalized
+
+
+class VlmObserver:
+    """Byte-preserving PUSH/PULL proxy with one capture per public request."""
+
+    def __init__(self, public_endpoint, native_endpoint):
+        import zmq
+        self.context = zmq.Context()
+        self.public = self.context.socket(zmq.PULL)
+        self.native = self.context.socket(zmq.PUSH)
+        self.public.bind(public_endpoint)
+        self.native.connect(native_endpoint)
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        self.case_dir = None
+        self.rows = 0
+        self.native_request_id = None
+        self.error = None
+        self.thread = threading.Thread(target=self.run, name="ns03-vlm-observer", daemon=True)
+        self.thread.start()
+
+    def begin(self, case_dir):
+        with self.lock:
+            require(self.error is None, f"VLM observer failed: {self.error}")
+            require(self.case_dir is None, "VLM observer capture is already active")
+            path = Path(case_dir) / "vlm-prompts.jsonl"
+            with path.open("xb"):
+                pass
+            self.case_dir = Path(case_dir)
+            self.rows = 0
+            self.native_request_id = None
+
+    def run(self):
+        import msgpack
+        try:
+            while not self.stop_event.is_set():
+                if not self.public.poll(100):
+                    continue
+                frames = self.public.recv_multipart()
+                self.native.send_multipart(frames)
+                if len(frames) != 1:
+                    continue
+                message = msgpack.unpackb(frames[0], raw=False, strict_map_key=False)
+                if message.get("type") != "submit":
+                    continue
+                data = message.get("data", {})
+                inputs = data.get("request", {}).get("inputs", {})
+                messages = inputs.get("messages")
+                require(isinstance(messages, list), "VLM submit has no normalized messages")
+                row = {"observed_monotonic_ns": time.monotonic_ns(),
+                       "request_id": message.get("request_id"),
+                       "raw_sha256": sha256_bytes(frames[0]),
+                       "raw_base64": base64.b64encode(frames[0]).decode(),
+                       "messages": normalize_vlm_messages(messages)}
+                with self.lock:
+                    require(self.case_dir is not None, "VLM submit arrived outside a public capture")
+                    with (self.case_dir / "vlm-prompts.jsonl").open("ab", buffering=0) as output:
+                        output.write((json.dumps(row, sort_keys=True) + "\n").encode())
+                    self.rows += 1
+                    self.native_request_id = row["request_id"]
+        except Exception as error:
+            self.error = error
+
+    def finish(self, public_request_id):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with self.lock:
+                if self.error is not None or self.rows:
+                    break
+            time.sleep(0.01)
+        with self.lock:
+            try:
+                require(self.error is None, f"VLM observer failed: {self.error}")
+                require(self.rows == 1, f"expected one VLM submit, observed {self.rows}")
+                require(isinstance(public_request_id, str) and public_request_id,
+                        "public request identity is unavailable for VLM binding")
+                require(self.native_request_id in (public_request_id, public_request_id + ":vlm"),
+                        f"VLM/public request mismatch: {self.native_request_id} != {public_request_id}")
+                path = self.case_dir / "vlm-prompts.jsonl"
+                return {"path": path.name, "rows": 1, "sha256": sha256_file(path),
+                        "native_request_id": self.native_request_id}
+            finally:
+                self.case_dir = None
+
+    def close(self):
+        self.stop_event.set()
+        self.thread.join(10)
+        require(not self.thread.is_alive(), "VLM observer did not stop")
+        self.public.close(0)
+        self.native.close(0)
+        self.context.term()
+        with self.lock:
+            require(self.case_dir is None, "VLM observer closed during an active capture")
+            if self.error is not None:
+                raise self.error
+
+
 def http_json(port, method, path, body=None, timeout=30):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
@@ -229,7 +338,8 @@ class Stack:
         self.port = args.port or free_port()
         require(self.port != 43301, "resident service port is forbidden")
         self.endpoints = {name: f"ipc://{self.run}/{name}" for name in
-                          ("completion", "abort", "entry-in", "vlm-in", "image-in", "tts-in", "video-in")}
+                          ("completion", "abort", "entry-in", "vlm-public", "vlm-in",
+                           "image-in", "tts-in", "video-in")}
         self.event_log = self.out / "processes.jsonl"
         self.env = dict(os.environ)
         self.env.pop("CUDA_VISIBLE_DEVICES", None)
@@ -239,6 +349,7 @@ class Stack:
         self.server = self.entry = self.vlm = self.flux = self.tts = self.wan = None
         self.wan_used = False
         self.retired = []
+        self.observer = VlmObserver(self.endpoints["vlm-public"], self.endpoints["vlm-in"])
 
     def record_process_event(self, process, event):
         with self.event_log.open("a", encoding="utf-8") as handle:
@@ -251,7 +362,7 @@ class Stack:
         self.server = ManagedProcess("server", [
             a.server_binary, "serve", "--host", "127.0.0.1", "--port", str(self.port),
             "--model", a.model, "--entry", "entry", "--entry-endpoint", self.endpoints["entry-in"],
-            "--vlm-entry", "vlm", "--vlm-entry-endpoint", self.endpoints["vlm-in"],
+            "--vlm-entry", "vlm", "--vlm-entry-endpoint", self.endpoints["vlm-public"],
             "--image-entry", "image", "--image-entry-endpoint", self.endpoints["image-in"],
             "--tts-entry", "tts", "--tts-entry-endpoint", self.endpoints["tts-in"],
             "--video-entry", "video", "--video-entry-endpoint", self.endpoints["video-in"],
@@ -270,6 +381,7 @@ class Stack:
         self.start_flux_tts()
         deadline = time.monotonic() + a.timeout
         while time.monotonic() < deadline:
+            require(self.observer.error is None, f"VLM observer failed: {self.observer.error}")
             try:
                 status, _ = http_json(self.port, "GET", "/ready", timeout=5)
                 if status == 200:
@@ -554,6 +666,7 @@ def analyze_stream(raw, request, session_id, case_dir, ffmpeg):
 def capture_request(stack, request, session_id, case_dir, timeout=REQUEST_TIMEOUT_S):
     require(timeout == REQUEST_TIMEOUT_S, "frozen overall request deadline must be 1200 seconds")
     case_dir.mkdir(parents=True, exist_ok=True)
+    stack.observer.begin(case_dir)
     deadline = time.monotonic() + REQUEST_TIMEOUT_S
     observed_request_id = None
     video_seen = threading.Event()
@@ -650,20 +763,36 @@ def capture_request(stack, request, session_id, case_dir, timeout=REQUEST_TIMEOU
     (case_dir / "raw.sse").write_bytes(bytes(raw))
     (case_dir / "request.json").write_bytes(canonical(request) + b"\n")
     (case_dir / "clean.txt").write_text(record.get("clean_text", ""), encoding="utf-8")
+    record["vlm_capture"] = stack.observer.finish(record.get("request_id") or observed_request_id)
     stack.restore_after_wan()
     if manager_error or any(error.startswith("abort/cleanup failure:") for error in record["errors"]):
         raise RuntimeError(f"unsafe NS-03 process state after {case_dir.name}: {record['errors']}")
     return record
 
 
+def selected_cases(suite, population, case_class):
+    cases = [case for case in suite["cases"] if case["population"] == population and
+             (case_class == "all" or case["class"] == case_class)]
+    require(len(cases) == (20 if case_class == "all" else 5),
+            f"incomplete {population}/{case_class} case selection")
+    if case_class == "followup":
+        require([case["id"] for case in cases] ==
+                [case["id"] for case in suite["cases"]
+                 if case["population"] == population and case["class"] == "followup"],
+                "follow-up-only capture must retain all five cases in suite order")
+    return cases
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--suite", default=str(ROOT / "benchmarks/ns03-routing/suite.json"))
     p.add_argument("--population", choices=("development", "heldout"), required=True)
+    p.add_argument("--case-class", choices=("all", "text", "static", "dynamic", "followup"), default="all")
     p.add_argument("--arm", choices=("before", "after"), required=True)
     p.add_argument("--base-commit", required=True)
     p.add_argument("--execution-commit", required=True)
     p.add_argument("--candidate-manifest")
+    p.add_argument("--baseline-manifest")
     p.add_argument("--server-binary", required=True)
     p.add_argument("--vlm-binary", required=True)
     p.add_argument("--tts-binary", required=True)
@@ -689,24 +818,39 @@ def live(args):
     require(os.environ.get("UMMINFER_LIVE_OPT_IN") == "1", "REAL_GENERATION: NOT_RUN; explicit opt-in required")
     require(len(args.base_commit) == 40 and len(args.execution_commit) == 40, "full commit ids required")
     require(args.model == "qwen3-native", "frozen public model identity must be qwen3-native")
-    if args.arm == "before":
+    require(args.arm == "before" or not args.baseline_manifest,
+            "--baseline-manifest is valid only for Before")
+    baseline = None
+    if args.baseline_manifest:
+        baseline = json.loads(Path(args.baseline_manifest).read_text())
+        require(args.execution_commit == args.base_commit,
+                "baseline-manifest Before must execute its base commit")
+    if args.arm == "before" and baseline is None:
         require(args.execution_commit == "91310b36184c86a1c147debb27db8643cc0cb3e4",
                 "Before must execute the unmodified official main commit")
     else:
-        require(args.candidate_manifest, "After requires the frozen candidate manifest")
+        require(args.arm == "before" or args.candidate_manifest,
+                "After requires the frozen candidate manifest")
     out = Path(args.out_dir)
     started_at_utc = datetime.now(timezone.utc).isoformat()
     require(not out.exists(), f"evidence directory already exists: {out}")
     out.mkdir(parents=True)
     (out / "responses").mkdir()
     suite = load_suite(args.suite)
+    cases = selected_cases(suite, args.population, args.case_class)
+    initial_history = args.arm == "after"
     source_hashes = {name: sha256_file(ROOT / name) for name in BASELINE_SOURCES}
     for name in (*BASELINE_SOURCES, "tests/ns03_routing.py", "tests/ns03_routing_live.py"):
         destination = out / "source" / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / name, destination)
     if args.arm == "before":
-        require(source_hashes == BASELINE_SOURCES, f"Before source differs from official main: {source_hashes}")
+        if baseline is None:
+            require(source_hashes == BASELINE_SOURCES,
+                    f"Before source differs from official main: {source_hashes}")
+        else:
+            require(baseline.get("source_sha256") == source_hashes,
+                    "Before source differs from baseline manifest")
     else:
         candidate = json.loads(Path(args.candidate_manifest).read_text())
         require(candidate["execution_commit"] == args.execution_commit, "candidate commit mismatch")
@@ -724,7 +868,8 @@ def live(args):
         (out / "model-manifest.json").write_text(json.dumps(models, indent=2, sort_keys=True) + "\n")
     identities = {
         "base_commit": args.base_commit, "execution_commit": args.execution_commit,
-        "population": args.population, "arm": args.arm, "physical_gpu": 1,
+        "population": args.population, "arm": args.arm, "case_class": args.case_class,
+        "initial_history": initial_history, "vlm_observer": True, "physical_gpu": 1,
         "started_at_utc": started_at_utc,
         "source_sha256": source_hashes, "suite_sha256": sha256_file(args.suite),
         "binaries": {name: {"path": str(Path(path).resolve()), "sha256": sha256_file(path),
@@ -735,19 +880,23 @@ def live(args):
         "harness_sha256": sha256_file(__file__),
         "models": models, "python_runtime": runtime_identity(),
     }
+    if baseline is not None:
+        identities["baseline_manifest"] = {
+            "path": str(Path(args.baseline_manifest).resolve()),
+            "sha256": sha256_file(args.baseline_manifest),
+        }
     (out / "run-identity.json").write_text(json.dumps(identities, indent=2, sort_keys=True) + "\n")
     stack = Stack(args, out)
     results = []
     health = None
     try:
         stack.start_base()
-        for case in suite["cases"]:
-            if case["population"] != args.population:
-                continue
+        for case in cases:
             session = f"ns03-{args.arm}-{case['id']}"
             setup_record = None
             if case["class"] == "followup":
-                setup_request = default_request(case, model=args.model, session_id=session, followup=False)
+                setup_request = default_request(case, model=args.model, session_id=session, followup=False,
+                                                initial_history=initial_history)
                 setup_record = capture_request(stack, setup_request, session,
                                                out / "responses" / case["id"] / "setup", REQUEST_TIMEOUT_S)
                 setup_status, setup_health = http_json(stack.port, "GET", "/health", timeout=30)
@@ -755,7 +904,8 @@ def live(args):
                         f"setup left in-flight work before {case['id']}: {setup_health}")
                 setup_record["same_session_as_setup"] = True
             request = default_request(case, model=args.model, session_id=session,
-                                      followup=case["class"] == "followup")
+                                      followup=case["class"] == "followup",
+                                      initial_history=initial_history)
             record = capture_request(stack, request, session, out / "responses" / case["id"] / "answer",
                                      REQUEST_TIMEOUT_S)
             record["case_id"] = case["id"]
@@ -771,12 +921,18 @@ def live(args):
         status, health = http_json(stack.port, "GET", "/health", timeout=30)
         require(status == 200 and health.get("in_flight") == 0, f"final in_flight is not zero: {health}")
     finally:
-        stack.stop_all()
-        gpu["after_cleanup"] = gpu1(args.nvidia_smi, idle=True)
-        # Only task-owned ephemeral IPC sockets are removed after every process exits.
-        shutil.rmtree(stack.run)
+        try:
+            stack.stop_all()
+        finally:
+            try:
+                stack.observer.close()
+            finally:
+                gpu["after_cleanup"] = gpu1(args.nvidia_smi, idle=True)
+                # Only task-owned ephemeral IPC sockets are removed after every process exits.
+                shutil.rmtree(stack.run)
     report = {"format": "umminfer-ns03-routing-run-v1", "population": args.population,
-              "arm": args.arm, "identity_file": "run-identity.json", "cases": results,
+              "arm": args.arm, "case_class": args.case_class,
+              "identity_file": "run-identity.json", "cases": results,
               "processes": stack.processes(), "gpu1": gpu, "health_final": health,
               "started_at_utc": started_at_utc,
               "finished_at_utc": datetime.now(timezone.utc).isoformat(),
