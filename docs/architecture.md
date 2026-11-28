@@ -391,7 +391,7 @@ ACK-anchored cancel→silence 是数字虚拟播放队列清空时间，不是�
 - **跨槽位引用（Task #76）**：`UnifiedEngine` 将 `source=slot-N` 从显式 I2V 扩展到 FLUX.2 图像编辑（`slot-0` 静图 → `slot-1` 编辑图 → `slot-2` Wan2.2 I2V），基于不可变 CAS 字节与 SHA-256 绑定，失败源递归结算传递依赖，取消/主失败同时终结 `pending/running` 槽位；详见 [cross-slot-visual-continuity](cross-slot-visual-continuity.md)。
 - **零手工控制 Web 交互分镜与无损回放（Task #77）**：Web UI 默认折叠高级控件，支持源字节绑定 Revise、取消/重试终态精确落地以及默认 raw-SSE/media 无损 JSON 导出与导入重建；详见 [storyboard-showcase](storyboard-showcase.md)。
 - **原生 TTS Markdown 过滤与 32-active 长流无损背压（Task #81）**：`sentence_split.hpp` 在送入 native Talker 前剥离所支持的 Markdown 表现分隔符并保留公开文本/UTF-8 游标不变，EOF 抑制未闭合保留指令，32 活跃 TTS 子请求按终态释放且独立流式 PCM 不计入 60 MiB 终态聚合上限，`realtime_api.cpp` 在既有 1,024/4,096 边界下保序重排队；详见 [ns01-tts-lifecycle](ns01-tts-lifecycle.md)。
-- **统一 NS-01…NS-08 自动化评测与诊断基线（Tasks #75, #78, #79, #80, #82, #83）**：落地统一注册与机器计分板 `tools/umminfer_ns_scorecard.py`、`VideoDecodeProfile` 分项计时以及 NS-01…NS-08 冻结配对实测套件；未达硬门槛的候选（T75 二次缩放、T78 prompt 路由、T79 TeaCache 0.25、T80 端侧默认折叠、T82/T83 全路径打断）全部严格 `NOT_PROMOTED` 并从默认运行时移除，仅保留可复现评测与紧凑证据。
+- **统一 NS-01…NS-08 自动化评测与诊断基线（Tasks #75, #78, #79, #80, #82, #83, #86）**：落地统一注册与机器计分板 `tools/umminfer_ns_scorecard.py`、`VideoDecodeProfile` 分项计时以及 NS-01…NS-08 冻结配对实测套件；未达硬门槛的候选（T75 二次缩放、T78 prompt 路由、T79 TeaCache 0.25、T80 端侧默认折叠、T82/T83 全路径打断、T86 boundary2 TeaCache）全部严格 `NOT_PROMOTED` 并从默认运行时移除，仅保留可复现评测与紧凑证据。T86 三几何逐次 `<5 s`、取消/恢复全过，但 15/15 首帧 RGB 不精确且竖屏 SSIM `0.896092<0.90`，详见 [ns02-fidelity-speedup](ns02-fidelity-speedup.md)。
 
 ---
 
