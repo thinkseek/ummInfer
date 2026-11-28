@@ -1,3 +1,162 @@
+# Task #85 NS-07/NS-08 defect correction and zero-control promotion gate
+
+## Outcome: PROMOTED_ISOLATED_ENGINEERING_ONLY
+
+Both retained Task #80 defects and the additional native-outbox race exposed by
+Task #85 are fixed. The complete corrected six-way Before and After arms pass
+all isolated hard gates, and the zero-control Web/macOS defaults are promoted.
+The unified scorecard's `scoreboard_update_allowed=false` is preserved because
+other real hardware/human gates are not all complete; North-Star scores are
+unchanged. **Resident five-GPU production NS-07 and full real-macOS/human NS-08
+are NOT_RUN.**
+
+## Full frozen six-way Before / After
+
+Both arms used the same physical GPU 0, native binary/model/config identities,
+seed `70080`, frozen media, warmups/exclusions, six persistent lanes, real fault
+injection, and corrected harness `bcba9754…4f8dd65`. Every measured lane ran
+for the full 1,800 seconds. Raw evidence includes every attempt and expected
+fault; no request, timeout, or outlier was dropped.
+
+| Metric | Before: parent | After: candidate | After − Before |
+| --- | ---: | ---: | ---: |
+| New-work window (s) | 1800.000750020 | 1800.000702545 | −0.000047475 |
+| Measured requests (3 warmups excluded) | 1998 | 1999 | +1 |
+| Completed | 1627 | 1628 | +1 |
+| Cancelled | 307 | 307 | 0 |
+| Expected fault records (including cancellations) | 371 | 371 | 0 |
+| Unexpected errors / terminal-free timeouts | **0 / 0** | **0 / 0** | 0 |
+| Process crashes | 0 | 0 | 0 |
+| Cross-session / stale / duplicate terminals | 0 / 0 / 0 | 0 / 0 / 0 | 0 |
+| PCM mismatches / timed ACK mismatches | 0 / 0 | 0 / 0 | 0 |
+| Recovery successes / attempts | **371/371** | **371/371** | 0 |
+| Final `in_flight` | 0 | 0 | 0 |
+| Same-residency device growth (MiB) | 0 | 0 | 0 |
+| Same-process RSS growth (MiB) | 48.8046875 | 46.55078125 | −2.25390625 |
+| Nearest-rank p95 latency (ms) | 5714.449327 | 5704.470684 | −9.978643 (−0.174621%) |
+| Output-stage overlap / lease violations | 0 / 0 | 0 / 0 | 0 |
+| Native-drain events / nonempty waits | 34 / 2 | 33 / 3 | — |
+
+Every normalized hard gate is true in both arms, including complete lane and
+modality coverage, delayed reads, exact native/public PCM, timed playback after
+virtual consumption, isolated ports, exact provenance, owned-process exit, GPU
+exclusivity, bounded memory, and complete manifests. Raw failures arrays are
+empty in both accepted arms; the 371 expected faults per arm remain in raw
+records and are not reclassified as unexpected successes.
+
+Raw self-excluded manifests:
+
+- Before: 6,868 entries, SHA-256
+  `a21b27c7a62650423c6b708e46bc99859b1e9d43edc239baa6f445a80fdd79a9`;
+  final verification SHA-256
+  `4e7813b270854d872144c489522ebf410786fe71e81a0894cf6a2a5e6d0a263d`.
+- After: 6,862 entries, SHA-256
+  `43fbcbe28bc90236f3f28712e526d66cef5f03c2ba5e8a82c09233df9ab87371`;
+  final verification SHA-256
+  `8b14b2172d70cf30a071671fbbc8ebbfd79f8f69a9ac6d005f2531021c6444c9`.
+
+These are isolated-candidate results, not the untouched resident production
+service and not evidence of physical playback or perceptual quality.
+
+## Paired real Chromium NS-08 and zero-control defaults
+
+The default rendered DOM was measured without presets or Advanced interaction:
+
+| Measure | Before `b23f6fd1` | After `9e2e5f6` |
+| --- | ---: | ---: |
+| Default-visible developer controls | 2 | **0** |
+| Chromium checks passed / failed | 9 / 1 | **10 / 0** |
+| Contract failures | 0 | 0 |
+| Export/import, reconnect, source revision, cancellation/retry | 1/1/1/1 | 1/1/1/1 |
+
+Before/After browser-arm manifests have 5/6 entries and SHA-256
+`596774448bfd3aaf88eed1981836e9ac37eca253b416eb082be7c64b72d12fcf` /
+`2254cbb86113d6fb00ff24c350b1eb42e4da64bc27ec618d166186f0d54b9016`.
+Their fresh-process verification reports both PASS with SHA-256
+`c53b533b1b019eff05c53f986b41fd18b28380589064b75ac7a1ae2fcb2ea07f` /
+`4f2cd7f8618328f775c37ece11cbc5130d3c998ccd13e060a284611642acbbff`.
+Task #76/#77 exact references, media, lossless replay, and lifecycle contracts
+remain intact. Web and macOS developer controls stay available only behind
+collapsed Advanced UI; no default journey requires them.
+
+**Real Swift compilation/XCTest, real macOS execution, physical acoustics,
+perceptual quality, and human walkthrough are NOT_RUN.** Linux source tests are
+not a full NS-08 PASS.
+
+## Unified evidence and safe-upgrade boundary
+
+- [Paired eight-case scorecard](evidence/ns07-ns08-scorecard.json), SHA-256
+  `0e3d85c8cf6b03a20fcac4c224dd10522aab949017ae4daf3a6177a6c54791ac`.
+- [Independent scorecard verification](evidence/ns07-ns08-scorecard-verification.json),
+  SHA-256 `ac736d62e24ccdc1f94d869af954c420331bd44d15da8593616571a7e5e5d32c`.
+- Scorecard manifest: 16 files, SHA-256
+  `4e789e76fd0f824c1f70da1343b432137f788edf2b89276f9ea1036a6eee266f`;
+  independent verifier SHA-256
+  `23a90ffc522502f5fb9256e617b98abe84328892a59dd5a84ca3869f1a93223b`.
+- [Root-cause record](evidence/ns07-task85-root-cause.json), SHA-256
+  `271811cbdcc7f4fb0c3886f16376fa292760cbd88622b40cf78343fd6a19b6e8`.
+
+The [candidate manifest](../benchmarks/north-star/ns07-upgrade-candidate.json)
+has SHA-256 `c0ce785707e8c35d7f2c810f6ba2890c744bddfec81999055686f27855619de4`.
+Its [offline preflight](evidence/ns07-upgrade-preflight.json) is **PASS** with
+zero failed checks, SHA-256
+`279436ed8afa46d4976fc42167270eb77afe1083bc6cec16d81f346f143736a7`, and zero
+network/process actions. Rollback is bound to exact parent `b23f6fd1`; resident
+upgrade and rollback remain NOT_RUN and require explicit owner authorization.
+No deploy file, owner script, resident process, or resident port was touched.
+
+## Verification and cleanup
+
+`umm-test-local`; remote NS-07 18/18 including MessagePack; Web, storyboard,
+SSE replay, public PCM, realtime, client media/CLI, narrative/I2V, Showcase,
+scorecard, and fail-closed upgrade tests pass. Feature-map validation covers
+235 rows / 1,219 references and relative documentation links pass. AOCI is
+hand-maintained with stable tracked files only; no unavailable CLI is claimed.
+
+All task-owned engine, stage, tap, browser, and verifier processes stopped.
+Final GPU 0 postflight is **3 MiB, 0%, zero compute processes**. No training or
+optimizer work occurred.
+
+The evaluated lineage starts at official main
+`b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4`. Candidate client defaults and the
+first soak corrections are in `fdf8557e74311334f9510199411300a945033395`;
+the final native-terminal drain correction is
+`9e2e5f66dde8814e3ae8e286c57c358956326aab`. The unified scorecard executes at
+`480f97b47d5fcf351c22fd9d4d30365d186823f1`, which changes only the stale NS-08
+parent-test identity and does not alter either evaluated arm.
+
+## Retained-defect isolation
+
+The [compact root-cause record](evidence/ns07-task85-root-cause.json) binds the
+following conclusions to retained raw SSE, native MessagePack taps, process
+lifetimes, WebSocket frames, and exact monotonic timestamps:
+
+1. **Output-stage starvation and trace rotation are harness behavior.** A voice
+   lane could repeatedly reacquire TTS ahead of a waiting narrative Wan switch,
+   and the TTS handoff watcher could lose its `outputs_started` row at the
+   64-KiB UMM_TRACE rotation boundary. FIFO acquisition and rotation-persistent
+   expected-leg tracking fix those paths without changing the 600-second
+   serving deadline.
+2. **A second full arm exposed a distinct native-outbox shutdown race.** Both
+   retained requests had image, video, and every PCM chunk, but the harness
+   stopped TTS 101.230533 ms / 79.676031 ms after the final forwarded PCM chunk
+   and before the native success terminal. The only retained terminal for each
+   final child was the later abort. A stage switch now waits for every accepted
+   native TTS id to have a forwarded complete terminal, and fails closed if that
+   drain does not occur within the existing request-timeout bound.
+3. **The playback-ACK mismatch is a verifier clock-order defect.** The server
+   accepted the retained ACK 165,456 ns after timed playback, but the client
+   logged TX 55,446 ns after that acceptance because logging follows
+   `socket.sendall()`. Exact ACK identity/finality is now ordered against the
+   producer pre-send boundary, not the later TX log. PCM, issued-cursor, full
+   digital-duration, monotonic-cursor, and delayed-read checks are unchanged.
+
+No serving C++/CUDA runtime or public/client protocol schema change was needed.
+Every deterministic regression failed before its fix and passed afterward,
+including negative controls for missing native terminals and acceptance before
+the real send boundary. The failed environment and full-duration attempts are
+retained in [the negative-attempt registry](evidence/ns07-six-way-negative-attempts.json).
+
 # Task #80 NS-07/NS-08 production-resilience and zero-control readiness
 
 ## Outcome: NOT_PROMOTED

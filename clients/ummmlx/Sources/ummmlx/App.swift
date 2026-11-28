@@ -118,7 +118,7 @@ struct RootView: View {
     @State private var automatedAppearance: String?
     @State private var automation: Automation?
     @State private var preview: GeneratedArtifact?
-    @State private var showOptions = false
+    @State private var showAdvanced = false
     @FocusState private var promptFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
     private let isAutomation = ProcessInfo.processInfo.arguments.contains("--automation")
@@ -192,12 +192,6 @@ struct RootView: View {
                     .accessibilityIdentifier("session")
                     .help("Full session id: \(model.sessionID)")
             }
-            Toggle(isOn: $model.audioOutput) {
-                Text("Voice").font(.system(size: theme.captionSize))
-            }
-            .toggleStyle(.checkbox)
-            .help("Stream spoken audio while text and visual legs render")
-            .accessibilityIdentifier("audio-output")
             Button {
                 model.isLiveVoiceActive ? model.stopLiveVoice() : model.startLiveVoice()
             } label: {
@@ -215,13 +209,6 @@ struct RootView: View {
             .disabled(model.isRunning || model.isListening)
             .help("Opt-in full-duplex WebSocket voice session with server VAD, playback ack, and barge-in")
             .accessibilityIdentifier("live-voice")
-            Toggle(isOn: liveVoiceEchoSuppressionBinding) {
-                Text("Echo suppression").font(.system(size: theme.captionSize))
-            }
-            .toggleStyle(.checkbox)
-            .disabled(model.isRunning || model.isListening)
-            .help("Server-side echo suppression for Full-Duplex Live Voice (works before connecting and live mid-response)")
-            .accessibilityIdentifier("live-voice-echo-suppression")
             if model.isStreamingAudioPlaying {
                 HStack(spacing: 5) {
                     Image(systemName: "waveform")
@@ -292,6 +279,7 @@ struct RootView: View {
                         .accessibilityIdentifier("endpoint")
                 }
                 .frame(maxWidth: .infinity)
+                .disabled(model.isRunning || model.isLiveVoiceActive)
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Model")
                         .font(.system(size: theme.captionSize))
@@ -303,28 +291,35 @@ struct RootView: View {
                         .accessibilityIdentifier("model")
                 }
                 .frame(width: 210)
-                HStack(spacing: 10) {
-                    Toggle("Image", isOn: $model.imageOutput)
-                        .toggleStyle(.checkbox)
-                        .accessibilityIdentifier("image-output")
-                    Toggle("Video", isOn: $model.videoOutput)
-                        .toggleStyle(.checkbox)
-                        .accessibilityIdentifier("video-output")
-                    Toggle("Fast Video", isOn: $model.fastVideoMode)
-                        .toggleStyle(.checkbox)
-                        .help("Enable Wan2.2 TeaCache (0.05) for sub-10s video generation")
-                        .accessibilityIdentifier("fastVideo")
-                }
-                .padding(.bottom, 4)
-                Button(showOptions ? "Hide Options" : "Options") {
-                    showOptions.toggle()
+                .disabled(model.isRunning || model.isLiveVoiceActive)
+                Button(showAdvanced ? "Hide Advanced" : "Advanced") {
+                    showAdvanced.toggle()
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .padding(.bottom, 2)
+                .accessibilityIdentifier("advanced-options")
             }
-            if showOptions {
+            if showAdvanced {
                 VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        Toggle("Image", isOn: $model.imageOutput)
+                            .toggleStyle(.checkbox)
+                            .accessibilityIdentifier("image-output")
+                        Toggle("Video", isOn: $model.videoOutput)
+                            .toggleStyle(.checkbox)
+                            .accessibilityIdentifier("video-output")
+                        Toggle("Fast Video", isOn: $model.fastVideoMode)
+                            .toggleStyle(.checkbox)
+                            .help("Enable Wan2.2 TeaCache (0.05) for sub-10s video generation")
+                            .accessibilityIdentifier("fastVideo")
+                        Toggle(isOn: $model.audioOutput) {
+                            Text("Voice").font(.system(size: theme.captionSize))
+                        }
+                        .toggleStyle(.checkbox)
+                        .help("Stream spoken audio while text and visual legs render")
+                        .accessibilityIdentifier("audio-output")
+                    }
                     HStack(spacing: 10) {
                         labeledField("Max tok", text: $model.maxTokensText, width: 62)
                         labeledField("Temp", text: $model.temperatureText, width: 48)
@@ -446,10 +441,17 @@ struct RootView: View {
                             .accessibilityIdentifier("behaviorLogprobs")
                     }
                 }
+                .disabled(model.isRunning || model.isLiveVoiceActive)
                 .padding(.top, 4)
+                Toggle(isOn: liveVoiceEchoSuppressionBinding) {
+                    Text("Echo suppression").font(.system(size: theme.captionSize))
+                }
+                .toggleStyle(.checkbox)
+                .disabled(model.isRunning || model.isListening)
+                .help("Server-side echo suppression for Full-Duplex Live Voice (works before connecting and live mid-response)")
+                .accessibilityIdentifier("live-voice-echo-suppression")
             }
         }
-        .disabled(model.isRunning || model.isLiveVoiceActive)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(theme.surface)
@@ -627,7 +629,7 @@ struct RootView: View {
                 Button {
                     model.applyShowcasePreset(preset)
                     if preset.videoFramePolicy == .temporal {
-                        showOptions = true
+                        showAdvanced = true
                     }
                     promptFocused = true
                 } label: {

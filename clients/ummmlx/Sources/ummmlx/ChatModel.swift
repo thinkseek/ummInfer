@@ -395,18 +395,18 @@ final class ChatModel: ObservableObject {
     @Published private(set) var error: String?
     /// Server-echoed session id. The UI shows its first eight characters.
     @Published private(set) var sessionID = ""
-    @Published var imageOutput = false
+    @Published var imageOutput = true
     /// Global voice: streams TTS concurrently with text and visual legs.
-    @Published var audioOutput = false
-    @Published var videoOutput = false
+    @Published var audioOutput = true
+    @Published var videoOutput = true
     @Published var narrativeMode = true
     /// "auto", "image" or "video".
     @Published var narrativeVisualMode = "auto"
     @Published var narrativeMaxSlots = 3
     @Published var narrativeAllowTextOnly = true
-    @Published var narrativeContinuityMode: NarrativeContinuityMode = .off
+    @Published var narrativeContinuityMode: NarrativeContinuityMode = .i2vChain
     @Published var narrativeStyleAnchor = ""
-    @Published var maxTokensText = "256"
+    @Published var maxTokensText = "512"
     @Published var temperatureText = "0"
     @Published var topPText = ""
     @Published var seedText = ""

@@ -1,7 +1,9 @@
 # Unified North-Star scorecard and evidence boundary
 
-Task #80's measured full-pair result, negative attempts, and non-promotion are
-recorded in [ns07-ns08-readiness.md](ns07-ns08-readiness.md).
+Task #85's corrected full-pair result, retained-defect root causes, negative
+attempts, and isolated-engineering-only promotion are recorded in
+[ns07-ns08-readiness.md](ns07-ns08-readiness.md). Task #80's historical failed
+arms remain preserved there and in the negative-attempt registry.
 
 `tools/umminfer_ns_scorecard.py` is the single NS-01…NS-08 aggregation entry
 point. Its frozen case registry is

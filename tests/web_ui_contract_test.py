@@ -75,9 +75,9 @@ def check_markup(html):
                     'maxSlots', 'allowTextOnly', 'narrativeContinuity', 'styleAnchor', 'fastVideo'):
         require(re.search(rf'<label[^>]*class="[^"]*developer-control[^"]*"[^>]*>.*id="{control}"', html)
                 is not None, f"{control} must remain nonessential behind Advanced")
-    require('#settings label.developer-control { display: none; }' in html and
-            '#settings:has(#advanced[open]) label.developer-control { display: flex; }' in html,
-            "developer modality/routing controls must be hidden until Advanced opens")
+    require(re.search(r'<details id="advanced"(?:\s[^>]*)?>', html) is not None
+            and not re.search(r'<details id="advanced"[^>]*\sopen(?:\s|=|>)', html),
+            "developer modality/routing controls must be enclosed by collapsed Advanced markup")
     require('<option value="prompt_anchor">Prompt anchor</option>' in html
             and re.search(r'<option value="i2v_chain"(?: selected)?>I2V chain</option>', html),
             "narrativeContinuity must expose prompt_anchor and i2v_chain options")
@@ -94,6 +94,34 @@ def check_markup(html):
     for control in ('videoMotionThreshold', 'videoSceneThreshold'):
         require(re.search(rf'id="{control}"[^>]*\bdisabled\b', html) is not None,
                 f"{control} must be disabled in default Uniform mode")
+    advanced = re.search(r'<details id="advanced"([^>]*)>(.*?)</details>', html, re.S)
+    require(advanced is not None, "developer controls need one Advanced disclosure")
+    require("open" not in advanced.group(1).split(),
+            "Advanced must be collapsed in the default UI")
+    require("<summary>Advanced</summary>" in advanced.group(2),
+            "the collapsed disclosure must be named Advanced")
+    advanced_body = advanced.group(2)
+    for control in (
+            "image", "audio", "video", "voiceToggle", "voice", "narrative",
+            "visualMode", "maxSlots", "allowTextOnly", "narrativeContinuity",
+            "styleAnchor", "fastVideo", "maxTokens", "temperature", "topP",
+            "seed", "imageSize", "imageSteps", "imageFile", "refAudio",
+            "videoSize", "videoSeconds", "videoFrames", "videoSteps",
+            "videoGuidance", "videoFramePolicy", "videoFrameBudget",
+            "videoMotionThreshold", "videoSceneThreshold",
+            "realtimeEchoSuppression", "nativeAllocatorTelemetry",
+            "behaviorLogprobs"):
+        require(advanced_body.count(f'id="{control}"') == 1,
+                f"developer control {control} must exist only inside Advanced")
+    require('id="voiceToggle"' not in html[:advanced.start()],
+            "global voice-output routing must not be exposed in the default voice bar")
+    require('id="realtimeEchoSuppression"' not in html[:advanced.start()],
+            "echo tuning must not be exposed in the default voice bar")
+    require('id="realtimeToggle"' in html[:advanced.start()],
+            "natural voice input must remain available without opening Advanced")
+    require('id="prompt"' in html and 'id="send"' in html,
+            "natural text input must remain available without opening Advanced")
+
     used = set(re.findall(r"\$\('([^']+)'\)", html))
     declared = set(re.findall(r'id="([^"]+)"', html))
     missing = sorted(used - declared)

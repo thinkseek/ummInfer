@@ -908,6 +908,47 @@ final class ChatClientUnifiedTests: XCTestCase {
     }
 
     @MainActor
+    func testNaturalDefaultChatModelSendWithoutPresetCapturesAutomaticNarrative() async throws {
+        UnifiedSSEProtocol.resetBodies()
+        let model = ChatModel(client: makeClient(), audioStream: NoOpAudioStreamPlayer())
+        model.endpoint = "http://10.1.2.1/v1"
+        model.model = "m"
+        model.prompt = "Tell a natural three-beat story"
+        model.send()
+
+        for _ in 0..<200 where model.isRunning {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(model.status, "Completed · stop")
+        XCTAssertEqual(UnifiedSSEProtocol.bodies().count, 1)
+        let data = try XCTUnwrap(UnifiedSSEProtocol.bodies().first)
+        let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(body["max_tokens"] as? Int, 512)
+        XCTAssertEqual(body["temperature"] as? Double, 0)
+        XCTAssertEqual(body["modalities"] as? [String], ["text", "image", "audio", "video"])
+        XCTAssertNil(body["top_p"])
+        XCTAssertNil(body["seed"])
+        let audio = try XCTUnwrap(body["audio"] as? [String: Any])
+        XCTAssertEqual(audio.count, 3)
+        XCTAssertEqual(audio["voice"] as? String, "vivian")
+        XCTAssertEqual(audio["format"] as? String, "wav")
+        XCTAssertEqual(audio["stream"] as? Bool, true)
+        let narrative = try XCTUnwrap(body["narrative"] as? [String: Any])
+        XCTAssertEqual(narrative.count, 5)
+        XCTAssertEqual(narrative["enabled"] as? Bool, true)
+        XCTAssertEqual(narrative["visual_mode"] as? String, "auto")
+        XCTAssertEqual(narrative["max_slots"] as? Int, 3)
+        XCTAssertEqual(narrative["allow_text_only"] as? Bool, true)
+        XCTAssertEqual(narrative["continuity_mode"] as? String, "i2v_chain")
+        XCTAssertNil(narrative["style_anchor"])
+        let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0]["role"] as? String, "user")
+        XCTAssertEqual(messages[0]["content"] as? String, "Tell a natural three-beat story")
+    }
+
+    @MainActor
     func testRequestBodyEncodesNarrativeWithGlobalStreamingVoice() {
         var options = ChatStreamOptions()
         options.image = ImageOptions()

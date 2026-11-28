@@ -110,6 +110,24 @@
       "manifest_file_count": 8323,
       "manifest_sha256": "4819cdafe347988631279f3a0af119407f85b02ec933c455ca90abcf8ca73f18",
       "verification_sha256": "cb4750651c31e98446310bc0aa0acb0ad73a8259fc59eef7d0ea3ceead912da8"
+    },
+    {
+      "id": "task85-before-full-r1",
+      "status": "FAIL_EARLY_ENVIRONMENT",
+      "elapsed_s": 3.210772187,
+      "failures": "The system Python Torch build required a newer CUDA driver, so FLUX exited before readiness; five other lanes retained their raw work, the schedule stopped fail-closed, and no full-gate claim was made. GPU 0 returned to 3 MiB with zero compute processes.",
+      "manifest_file_count": 142,
+      "manifest_sha256": "d4ca36d4ebc600ac4ab6e5d15dc645844291616c39f423cac2da0e1e9880ee14",
+      "verification_sha256": "0d781b8db9671c30f510a9a019ca018b52d3277b3694fa1c08d28c1e868aa187"
+    },
+    {
+      "id": "task85-before-full-r2",
+      "status": "FAIL_FULL_DURATION_NATIVE_OUTBOX_DRAIN",
+      "elapsed_s": 1800.000755557,
+      "failures": "Two narrative requests emitted image, video, and all PCM but timed out after TTS shutdown raced the final native success terminal. Both final children had only an abort terminal 600 seconds later; native taps bound each stop to 80-100 ms after the final PCM chunk. Every other hard gate passed. GPU 0 returned to 3 MiB.",
+      "manifest_file_count": 7027,
+      "manifest_sha256": "be5be114d88ed8b749fc1048e7dcce2f9f0051bec45bea9b9a587b1f40db3270",
+      "verification_sha256": "0586da07b0edf508a5b5ac65b108c0511e2e8ca52052e0ff1c0ba86f309aca0d"
     }
   ],
   "raw_rule": "All raw events, media, logs, process records, and resource samples remain in caller-selected external evidence roots. Null hashes mean no final sealed verification exists; nothing is inferred from a missing report."

@@ -18,7 +18,7 @@
     "vlm": "3284e636cc6e672354e3b358e7b2a3f3055b7a6ed5116412308cae2f2dc0f9a2",
     "wan": "041f5fc80c17f26584bd10dadf290402e4b316b93ea897699221515ad27ac615"
   },
-  "candidate_status": "NOT_PROMOTED",
+  "candidate_status": "PROMOTED_ISOLATED_ENGINEERING_ONLY",
   "configuration": {
     "asr": {
       "config.json": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f"
@@ -77,21 +77,21 @@
   ],
   "resident_contact": "FORBIDDEN",
   "rollback": {
-    "candidate_source_reverted_in_final_tree": true,
+    "candidate_source_reverted_in_final_tree": false,
     "execution": "NOT_RUN",
     "resident_gateway_or_stages": "NOT_TOUCHED",
     "rule": "If a future owner authorizes rollout, stop at the first abort condition and restore the exact owner-selected prior artifacts; this file does not authorize that action.",
-    "source_commit": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7"
+    "source_commit": "b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4"
   },
   "schema": "umminfer-ns07-upgrade-candidate/v1",
   "source": {
-    "after_commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
-    "before_commit": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7",
+    "after_commit": "9e2e5f66dde8814e3ae8e286c57c358956326aab",
+    "before_commit": "b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4",
     "client_app_swift_sha256": "60c62007f18320694c2a811c41ce9d7514f76589e400fd32bc549529c604d89d",
     "client_chat_model_sha256": "788b8482cfe197240c4be3f31417f72af764dc77f6302fd9044433b4c919c74b",
     "client_web_sha256": "4f3939e2e80f9e980529e308737a117a0c5fc5bce1fd9e8da668593a8666032b",
-    "harness_sha256": "568ecdc8370b629f42a6f781e3214d2834ba2cdc90a961d0895c3784452c128e",
+    "harness_sha256": "bcba9754da1f0a7b97d952c2223cbb7d35534da1ab5b34859bf290b6f4f8dd65",
     "preregistration_sha256": "71bacf0ed2a0c3cfe77a056d7c9878c48761eb0633e40a15e1f0d4ae798be621",
-    "source_tree_sha256": "d92d0f9d04c9fda59a4a7371b8ee24020ecfcd34"
+    "source_tree_sha256": "4a41b0e511166d32ff59603b8b72128493520e8c"
   }
 }

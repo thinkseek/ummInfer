@@ -23,9 +23,13 @@ No third-party runtime dependencies.
 - Multi-turn history: the client replays complete exchanges. When a unified
   server rejects replayed text ("at most one text part"), it retries once with
   the last user message plus `session_history: true`.
-- Native video input uses bounded Uniform sampling by default. Options > Input
+- Native video input uses bounded Uniform sampling by default. Advanced > Input
   frames > Temporal opts into motion/scene keyframe selection with validated
   thresholds, independently of generated-video Fast Video.
+- Fresh chats automatically route narrative output across text, image, audio,
+  and video with streaming voice, three slots, 512 tokens, and I2V continuity.
+  No modality, sampling, frame-budget, voice-output, or echo tuning is required;
+  those developer controls live only behind the collapsed **Advanced** UI.
 - Light, dark, and system appearance.
 
 ## Native video input

@@ -41,6 +41,15 @@ final class Automation {
         if let servedModel = option("model") { model.model = servedModel }
         if let size = option("image-size") { model.imageSize = size }
         if let voice = option("voice") { model.audioVoice = voice }
+        // Pin the pre-natural-default request shape. Individual automation flags
+        // below opt into media; ordinary prompt, audio-only, and multimodal gates
+        // must not silently inherit the app's automatic image/video journey.
+        model.imageOutput = false
+        model.videoOutput = false
+        model.audioOutput = false
+        model.narrativeMode = true
+        model.narrativeContinuityMode = .off
+        model.maxTokensText = "256"
         appearance.wrappedValue = option("theme") ?? "light"
         await settle()
 

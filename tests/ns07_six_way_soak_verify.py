@@ -671,11 +671,16 @@ class Verify:
             if not tx:
                 self.fail("no raw playback ACK TX followed virtual consumption")
                 continue
+            # RawWebSocket records TX only after socket.sendall returns. A fast
+            # server ACK can therefore reach the reader thread before that TX log
+            # timestamp even though it followed the actual send. Order acceptance
+            # against the producer's pre-send timestamp; still require the exact
+            # raw TX after playback and the exact raw acceptance identity/finality.
             accepted = [row for row in frames if row["direction"] == "rx"
                         and row.get("event", {}).get("type") == "response.playback_ack"
                         and row["event"].get("response_id") == response_id
                         and row["event"].get("text_cursor") == ack["text_cursor"]
-                        and row["monotonic_ns"] >= tx[0]["monotonic_ns"]]
+                        and row["monotonic_ns"] >= ack["sent_monotonic_ns"]]
             if not accepted or ack["accepted_monotonic_ns"] != accepted[0]["monotonic_ns"] \
                     or bool(accepted[0]["event"].get("final", False)) != bool(ack["final"]):
                 self.fail("server playback ACK acceptance differs from raw capture")

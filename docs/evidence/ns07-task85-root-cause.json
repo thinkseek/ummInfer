@@ -1,0 +1,171 @@
+{
+  "schema": "umminfer-ns07-task85-root-cause/v1",
+  "task": 85,
+  "source_task": 80,
+  "candidate_commit": "9e2e5f66dde8814e3ae8e286c57c358956326aab",
+  "terminal_free_timeouts": {
+    "classification": "HARNESS_OUTPUT_STAGE_HANDOFF_STARVATION",
+    "serving_runtime_change_required": false,
+    "client_protocol_change_required": false,
+    "deadline_changed": false,
+    "request_dropped_or_reclassified": false,
+    "evidence": {
+      "before": {
+        "request_key": "interleaved_visual-0000427",
+        "request_id": "http-403",
+        "latency_ms": 623848.540616,
+        "terminal_count": 0,
+        "done_count": 1,
+        "raw_sse_sha256": "01943ef45736c5fd64fda0a9940517014d5d22702a0ee95dc36d083972c7229f",
+        "request_sha256": "b4c3b9f68da6b4634ebe6c930d8f359b947410115b014b7d6cb68a5a8ae10507",
+        "raw_manifest_file_count": 8032,
+        "raw_manifest_sha256": "adc929802d555bfe7b60ccdff55c113f2e7178293b54397fc8edaf4fc06278cb"
+      },
+      "after": {
+        "request_key": "interleaved_visual-0000300",
+        "request_id": "http-279",
+        "latency_ms": 623372.675239,
+        "terminal_count": 0,
+        "done_count": 1,
+        "raw_sse_sha256": "8d75cb90253981658003fdef68d430eb6039bdf271ac7504501015443220077e",
+        "request_sha256": "b4c3b9f68da6b4634ebe6c930d8f359b947410115b014b7d6cb68a5a8ae10507",
+        "raw_manifest_file_count": 8323,
+        "raw_manifest_sha256": "4819cdafe347988631279f3a0af119407f85b02ec933c455ca90abcf8ca73f18"
+      }
+    },
+    "root_cause": [
+      "The narrative lane must lease FLUX, then TTS, then Wan while the full-duplex lane repeatedly leases TTS. OutputStageManager allowed a later TTS acquisition to leapfrog an already waiting Wan switch whenever the final active TTS lease was released, so continuous voice work could keep TTS resident until the narrative HTTP request reached the unchanged 600-second stall deadline.",
+      "The TTS-to-Wan watcher also recomputed its expected post-VLM leg set solely from the current 64-KiB-rotated UMM_TRACE file. If outputs_started rotated away before the final leg_settled row, the watcher never released its narrative TTS lease even though every retained native TTS leg had completed."
+    ],
+    "fix": [
+      "Serialize acquisition order with a waiter queue while retaining concurrent leases for one resident stage; a queued stage switch cannot be leapfrogged by later same-stage work.",
+      "Remember the expected post-VLM TTS leg count across polls and read the retained trace rotation before the current file. The complete-leg and VLM-terminal predicates remain unchanged."
+    ],
+    "deterministic_red_green": [
+      "test_waiting_stage_switch_prevents_same_stage_starvation",
+      "test_tts_handoff_remembers_expected_legs_across_trace_rotation"
+    ]
+  },
+  "followup_full_arm_native_outbox_race": {
+    "classification": "HARNESS_PREMATURE_NATIVE_STAGE_SHUTDOWN",
+    "serving_runtime_change_required": false,
+    "attempt_id": "task85-before-full-r2",
+    "elapsed_s": 1800.000755557,
+    "unexpected_error_count": 2,
+    "raw_manifest_file_count": 7027,
+    "raw_manifest_sha256": "be5be114d88ed8b749fc1048e7dcce2f9f0051bec45bea9b9a587b1f40db3270",
+    "verification_sha256": "0586da07b0edf508a5b5ac65b108c0511e2e8ca52052e0ff1c0ba86f309aca0d",
+    "requests": [
+      {
+        "request_key": "interleaved_visual-0000567",
+        "request_id": "http-529",
+        "final_tts_child": "http-529:tts:4",
+        "raw_sse_sha256": "5dc9a2d802ffd1e2d23df171cde82147c21bce320e612b35b7112d7793524770",
+        "terminal_count": 0,
+        "image_video_and_all_pcm_retained": true,
+        "last_native_pcm_forwarded_monotonic_ns": 6184520031212139,
+        "tts_process_stop_monotonic_ns": 6184520132442672,
+        "stop_after_last_pcm_ns": 101230533,
+        "successful_native_terminal_retained": false,
+        "only_native_terminal": "complete(success=false) after request abort"
+      },
+      {
+        "request_key": "interleaved_visual-0001721",
+        "request_id": "http-1553",
+        "final_tts_child": "http-1553:tts:4",
+        "raw_sse_sha256": "c8705253b2b7c6f35807897ebf6ae2f81dc2cd92074d30230236a55cf664117f",
+        "terminal_count": 0,
+        "image_video_and_all_pcm_retained": true,
+        "last_native_pcm_forwarded_monotonic_ns": 6185415509758780,
+        "tts_process_stop_monotonic_ns": 6185415589434811,
+        "stop_after_last_pcm_ns": 79676031,
+        "successful_native_terminal_retained": false,
+        "only_native_terminal": "complete(success=false) after request abort"
+      }
+    ],
+    "root_cause": "Narrative TTS can execute while the same native stage is resident for the voice lane. The harness lease count can reach zero while an accepted native request's final success terminal remains in its outbox. RawTap records a terminal only after forwarding it to the Coordinator, and both failed requests show process shutdown 80-100 ms after the last forwarded PCM chunk but before that terminal.",
+    "fix": "Before every live TTS-to-other-stage process switch, wait until every submitted native TTS request id has a forwarded complete terminal. The barrier uses the existing request timeout only as a fail-closed harness limit and records compact drain counts; it never changes public or client deadlines.",
+    "deterministic_red_green": [
+      "test_tts_switch_waits_for_forwarded_native_terminal",
+      "test_tts_switch_fails_closed_when_native_terminal_never_arrives"
+    ]
+  },
+  "corrected_before_arm": {
+    "attempt_id": "task85-before-full-r3",
+    "status": "ISOLATED_PASS",
+    "elapsed_s": 1800.00075002,
+    "request_count": 1998,
+    "completed_count": 1627,
+    "cancelled_count": 307,
+    "expected_fault_count": 371,
+    "unexpected_error_count": 0,
+    "terminal_free_timeouts": 0,
+    "playback_ack_mismatches": 0,
+    "recovery_success_count": 371,
+    "latency_p95_ms": 5714.449327,
+    "device_growth_mib": 0.0,
+    "rss_growth_mib": 48.8046875,
+    "raw_manifest_file_count": 6868,
+    "raw_manifest_sha256": "a21b27c7a62650423c6b708e46bc99859b1e9d43edc239baa6f445a80fdd79a9",
+    "verification_sha256": "4e7813b270854d872144c489522ebf410786fe71e81a0894cf6a2a5e6d0a263d",
+    "native_tts_drain": {
+      "events": 34,
+      "nonempty_waits": 2,
+      "max_initial_outstanding": 1
+    }
+  },
+  "corrected_after_arm": {
+    "attempt_id": "task85-after-full-r1",
+    "status": "ISOLATED_PASS",
+    "elapsed_s": 1800.000702545,
+    "request_count": 1999,
+    "completed_count": 1628,
+    "cancelled_count": 307,
+    "expected_fault_count": 371,
+    "unexpected_error_count": 0,
+    "terminal_free_timeouts": 0,
+    "playback_ack_mismatches": 0,
+    "recovery_success_count": 371,
+    "latency_p95_ms": 5704.470684,
+    "device_growth_mib": 0.0,
+    "rss_growth_mib": 46.55078125,
+    "raw_manifest_file_count": 6862,
+    "raw_manifest_sha256": "43fbcbe28bc90236f3f28712e526d66cef5f03c2ba5e8a82c09233df9ab87371",
+    "verification_sha256": "8b14b2172d70cf30a071671fbbc8ebbfd79f8f69a9ac6d005f2531021c6444c9",
+    "native_tts_drain": {
+      "events": 33,
+      "nonempty_waits": 3,
+      "max_initial_outstanding": 1
+    }
+  },
+  "timed_playback_ack_mismatch": {
+    "classification": "HARNESS_VERIFIER_POST_SENDALL_TX_LOGGING_ORDER_ERROR",
+    "serving_runtime_change_required": false,
+    "client_protocol_change_required": false,
+    "ack_predicate_weakened": false,
+    "response_id": "req-45",
+    "text_cursor": 9,
+    "consumption_ended_monotonic_ns": 6161529659994593,
+    "pre_send_monotonic_ns": 6161529659994593,
+    "raw_accepted_monotonic_ns": 6161529660160049,
+    "raw_tx_log_monotonic_ns": 6161529660215495,
+    "acceptance_after_timed_playback_ns": 165456,
+    "tx_log_after_acceptance_ns": 55446,
+    "raw_capture_sha256": "b15944292d6e31bfc9dcfe5f1ee57f9087413babf542c113562b4dd7d0fc8026",
+    "playback_acks_sha256": "3ba18fb8fd4b0aa9f9fa06914c9890bfaf319314b032d36621728923b5cbcef0",
+    "root_cause": "RawWebSocket.send_frame records TX only after socket.sendall returns. The server response reached the reader before that user-space TX record, but after timed playback and the real pre-send boundary. The verifier incorrectly required acceptance to follow the later TX log timestamp.",
+    "fix": "Require the exact raw TX after virtual consumption and match exact response/cursor/finality/acceptance identity against the producer pre-send timestamp. PCM identity, minimum full digital duration, issued-cursor, monotonic-cursor, and delayed-read checks are unchanged.",
+    "deterministic_red_green": [
+      "test_timed_ack_acceptance_can_precede_post_sendall_tx_logging",
+      "negative_control_acceptance_before_pre_send_remains_rejected"
+    ],
+    "retained_after_arm_recheck": {
+      "verification_sha256": "bd627b6ebba4bed7007043ef6ab1431347a9dfd75001b6657bcac5b2932fedb7",
+      "playback_ack_after_virtual_consumption": true,
+      "remaining_failures": [
+        "interleaved_visual-0000300: producer retained an unexpected error",
+        "hard gate unexpected_error_count_zero failed"
+      ]
+    }
+  }
+}

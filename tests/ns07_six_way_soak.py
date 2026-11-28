@@ -262,7 +262,9 @@ class OutputStageManager:
         self.active = 0
         self.serial = 0
         self.history = []
+        self.drain_history = []
         self.leases = []
+        self.waiters = []
         self.closed = False
 
     def _record_process(self, process, stage, expected_stop):
@@ -271,6 +273,45 @@ class OutputStageManager:
                        "command": list(process.command),
                        "recorded_monotonic_ns": time.monotonic_ns()})
         self.history.append(record)
+
+    def _tts_outstanding(self):
+        taps = getattr(self, "taps", None)
+        if not taps or len(taps) != 2 or taps[0] is None or taps[1] is None:
+            return set()
+        submitted = {row.get("request_id") for row in taps[0].records
+                     if row.get("message_type") == "submit" and row.get("request_id")}
+        terminal = {row.get("request_id") for row in taps[1].records
+                    if row.get("message_type") == "complete" and row.get("request_id")}
+        return submitted - terminal
+
+    def _wait_tts_drained(self):
+        """Do not kill a stage between its final PCM chunk and native terminal.
+
+        RawTap appends output records only after the frame is forwarded to the
+        Coordinator. A zero lease count therefore cannot prove process drain:
+        narrative work may share a stage resident for another lane, and its last
+        success terminal can still be in the native outbox.
+        """
+        taps = getattr(self, "taps", None)
+        if not taps or len(taps) != 2 or taps[0] is None or taps[1] is None:
+            return
+        started_ns = time.monotonic_ns()
+        deadline = time.monotonic() + self.args.request_timeout_s
+        initial = self._tts_outstanding()
+        outstanding = initial
+        while outstanding:
+            if time.monotonic() >= deadline:
+                raise AssertionError("native TTS terminal drain exceeded the existing request timeout: "
+                                     + ",".join(sorted(outstanding)))
+            time.sleep(0.005)
+            outstanding = self._tts_outstanding()
+        self.drain_history.append({
+            "started_monotonic_ns": started_ns,
+            "ended_monotonic_ns": time.monotonic_ns(),
+            "initial_outstanding_count": len(initial),
+            "submitted_count": len({row.get("request_id") for row in taps[0].records
+                                    if row.get("message_type") == "submit" and row.get("request_id")}),
+        })
 
     def _command(self, stage):
         args = self.args
@@ -312,38 +353,57 @@ class OutputStageManager:
 
     def acquire(self, stage, owner):
         require(stage in OUTPUT_STAGES and not self.closed, f"invalid/closed output lease: {stage}")
+        waiter = {"stage": stage, "owner": owner}
         with self.condition:
-            while self.switching or (self.current_name is not None and self.current_name != stage
-                                     and self.active > 0):
-                self.condition.wait(0.2)
-                require(not self.closed, "output manager closed while waiting for lease")
-            if self.current_name == stage and self.current_process.process.poll() is not None:
-                self.current_process.stop(None)
-                self._record_process(self.current_process, stage, False)
-                self.current_name = self.current_process = None
-            if self.current_name is not None and self.current_name != stage:
-                # A different model may replace the resident stage only when no
-                # lease remains. Mark the entire stop/start interval as a transition
-                # so resource samples never mix retiring and ready topologies.
-                require(self.active == 0, "output stage switch attempted with active leases")
-                self.switching = True
-                process, previous = self.current_process, self.current_name
-                was_alive = process.process.poll() is None
-                process.stop(self._command(previous)[2])
-                self._record_process(process, previous, was_alive)
-                self.current_name = self.current_process = None
-            if self.current_name is None:
-                self.switching = True
-            else:
-                self.active += 1
-                token = {"id": len(self.leases), "stage": stage, "owner": owner,
-                         "start_monotonic_ns": time.monotonic_ns(), "end_monotonic_ns": None}
-                self.leases.append(token)
-                return token
+            # Strict acquisition order still permits concurrent leases for one
+            # resident stage, but a later same-stage request cannot leapfrog an
+            # earlier switch. Without this queue the voice lane can reacquire TTS
+            # forever and starve narrative Wan until the public request timeout.
+            self.waiters.append(waiter)
+            try:
+                while True:
+                    require(not self.closed, "output manager closed while waiting for lease")
+                    first = self.waiters and self.waiters[0] is waiter
+                    if first and not self.switching and (
+                            self.current_name == stage or self.active == 0):
+                        break
+                    self.condition.wait(0.2)
+                if self.current_name == stage and self.current_process.process.poll() is not None:
+                    self.current_process.stop(None)
+                    self._record_process(self.current_process, stage, False)
+                    self.current_name = self.current_process = None
+                if self.current_name is not None and self.current_name != stage:
+                    # A different model may replace the resident stage only when no
+                    # lease remains. Mark the entire stop/start interval as a transition
+                    # so resource samples never mix retiring and ready topologies.
+                    require(self.active == 0, "output stage switch attempted with active leases")
+                    self.switching = True
+                    process, previous = self.current_process, self.current_name
+                    was_alive = process.process.poll() is None
+                    if previous == "tts" and was_alive:
+                        self._wait_tts_drained()
+                    process.stop(self._command(previous)[2])
+                    self._record_process(process, previous, was_alive)
+                    self.current_name = self.current_process = None
+                if self.current_name is None:
+                    self.switching = True
+                else:
+                    self.active += 1
+                    token = {"id": len(self.leases), "stage": stage, "owner": owner,
+                             "start_monotonic_ns": time.monotonic_ns(), "end_monotonic_ns": None}
+                    self.leases.append(token)
+                    self.waiters.remove(waiter)
+                    self.condition.notify_all()
+                    return token
+            except BaseException:
+                self.waiters.remove(waiter)
+                self.condition.notify_all()
+                raise
         try:
             self._start(stage)
         except Exception:
             with self.condition:
+                self.waiters.remove(waiter)
                 self.switching = False
                 self.condition.notify_all()
             raise
@@ -353,6 +413,7 @@ class OutputStageManager:
             token = {"id": len(self.leases), "stage": stage, "owner": owner,
                      "start_monotonic_ns": time.monotonic_ns(), "end_monotonic_ns": None}
             self.leases.append(token)
+            self.waiters.remove(waiter)
             self.condition.notify_all()
             return token
 
@@ -891,23 +952,34 @@ class Soak:
             self.stop.wait(rng.random() * 0.05)
 
     def _trace_tts_complete(self, request_id):
-        """Wait for the complete post-VLM TTS leg set, not an early subset."""
+        """Wait for the complete post-VLM TTS leg set, not an early subset.
+
+        UMM_TRACE rotates at 64 KiB, much faster than a slow native TTS leg set.
+        Remember the expected count across polls and read the one retained
+        rotation before the current file so handoff never depends on both the
+        outputs_started and final leg_settled rows remaining in one file.
+        """
+        states = getattr(self, "_tts_trace_states", None)
+        if states is None:
+            states = self._tts_trace_states = {}
+        state = states.setdefault(request_id, {"expected": 0, "latest": []})
         path = self.out / "server.trace.jsonl"
-        if not path.exists():
-            return False
-        snapshots = []
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
+        for candidate in (Path(str(path) + ".1"), path):
+            if not candidate.exists():
                 continue
-            if row.get("event") == "legs_snapshot" and row.get("request_id") == request_id:
-                snapshots.append(row)
-        started = next((row for row in snapshots if row.get("phase") == "outputs_started"), None)
-        if started is None:
-            return False
-        expected = sum(leg.get("stage") == "tts" for leg in started.get("legs", []))
-        latest = snapshots[-1].get("legs", [])
+            for line in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("event") != "legs_snapshot" or row.get("request_id") != request_id:
+                    continue
+                if row.get("phase") == "outputs_started":
+                    state["expected"] = sum(
+                        leg.get("stage") == "tts" for leg in row.get("legs", []))
+                state["latest"] = row.get("legs", [])
+        expected = state["expected"]
+        latest = state["latest"]
         current = [leg for leg in latest if leg.get("stage") == "tts"]
         vlm = [leg for leg in latest if leg.get("stage") == "vlm"]
         return (expected > 0 and len(current) == expected and
@@ -1287,6 +1359,7 @@ class Soak:
             "lane_errors": errors, "processes": self.process_history + (self.stages.history if self.stages else []),
             "leases": self.stages.leases if self.stages else [],
             "output_stage_history": self.stages.history if self.stages else [],
+            "output_stage_drain_history": self.stages.drain_history if self.stages else [],
             "taps": {"tts": self.tts_tap.records if self.tts_tap else [],
                      "tts_output": self.tts_output_tap.records if self.tts_output_tap else [],
                      "errors": [tap.error for tap in (self.tts_tap, self.tts_output_tap)

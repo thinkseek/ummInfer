@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ns08_zero_control", ROOT / "tests/ns08_zero_control.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
-PARENT = "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7"
+PARENT = "b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4"
 
 
 class ZeroControlTests(unittest.TestCase):
@@ -23,10 +23,10 @@ class ZeroControlTests(unittest.TestCase):
         (root / "web" / "index.html").write_text(page, encoding="utf-8")
         return root
 
-    def test_current_restored_baseline_is_measured_not_assumed(self):
+    def test_current_candidate_has_zero_default_controls(self):
         counts, visible = MODULE.static_controls(ROOT)
-        self.assertEqual(visible, ["realtimeEchoSuppression", "voiceToggle"])
-        self.assertEqual(sum(counts.values()), 2)
+        self.assertEqual(visible, [])
+        self.assertEqual(sum(counts.values()), 0)
 
     def test_collapsed_candidate_fixture_has_zero_default_controls(self):
         body = "".join(f'<input id="{control}">' for control in MODULE.ALL_CONTROLS)

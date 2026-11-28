@@ -1,5 +1,5 @@
 {
-  "candidate_promotion": "NOT_PROMOTED",
+  "candidate_promotion": "PROMOTED_ISOLATED_ENGINEERING_ONLY",
   "case_order": [
     "NS-01",
     "NS-02",
@@ -34,7 +34,7 @@
           "log": {
             "bytes": 2217,
             "file": "contracts/NS-01/tests_narrative_live_e2e.py.log",
-            "sha256": "53d09605f418fac7a3d007fabd976ab41d9daa91367cc4ec8789bf7f503bba45"
+            "sha256": "614caf57200cab18dfda57301a801520eac6a779bbc0c0bc565f5d52417734c7"
           },
           "status": "PASS"
         }
@@ -73,12 +73,12 @@
         {
           "args": [],
           "driver": "tests/i2v_geometry_latency_test.py",
-          "driver_sha256": "2a218eb60a65daecd16fac000b9621e344094cd1f37e67971e3aedaa7db32868",
+          "driver_sha256": "7e3a196365682a13fb634e1ab32473381784a8dc5565a17362a358ae422f2ac0",
           "exit_code": 0,
           "log": {
-            "bytes": 106,
+            "bytes": 111,
             "file": "contracts/NS-02/tests_i2v_geometry_latency_test.py.log",
-            "sha256": "60bb849356ffbc091f601e17fc6ae0b2eb5e26d734d433da020c6e775efbf97f"
+            "sha256": "84d8772355e571485804666521d02c4d9d3dc524b3389ba7950c37dc4c70d799"
           },
           "status": "PASS"
         },
@@ -177,7 +177,7 @@
           "log": {
             "bytes": 120,
             "file": "contracts/NS-04/tests_public_speech_pcm_test.py.log",
-            "sha256": "d36364a9815f4dce4c5147229e55f354b472ce6b6433c593bb5c2f11a51ec45b"
+            "sha256": "dcb83cc51a6618fe0749cdf6f08671d0c8971b6cd3db85e83b72318dbe51d0c6"
           },
           "status": "PASS"
         },
@@ -189,7 +189,7 @@
           "log": {
             "bytes": 1530,
             "file": "contracts/NS-04/tests_realtime_network_test.py.log",
-            "sha256": "da7d6b12fb707746fd3ff74ec1aad6906e9e3919a304714fec909dc61e9e7d55"
+            "sha256": "134486787419d347e592c55206202cc2025831ce9334a65460ee3fbd3fb543a2"
           },
           "status": "PASS"
         }
@@ -233,7 +233,7 @@
           "log": {
             "bytes": 2680,
             "file": "contracts/NS-05/tests_temporal_natural_test.py.log",
-            "sha256": "662462c11d7722f373568c86f35bfb1de40e061de26cb2e7fa487c4362ebc93e"
+            "sha256": "13a2c62e66731d6828cfb5d54be1ce03ee9fc5aaf2e1bc533ab03cc4659b49ef"
           },
           "status": "PASS"
         }
@@ -275,7 +275,7 @@
           "log": {
             "bytes": 109,
             "file": "contracts/NS-06/tests_storyboard_replay_verify_test.py.log",
-            "sha256": "55fa698d97f0a791f43c7198f7f8d937a35875b19bc39d0a29b6d77a07a7c444"
+            "sha256": "8e58acf5241e640766d986b592bbcd84af60a37fd6e739d205a6a6dcba113201"
           },
           "status": "PASS"
         }
@@ -335,184 +335,8 @@
           "malformed_audio": true,
           "malformed_dimensions": true,
           "native_pcm_join_counts": {
-            "http": 15,
-            "realtime": 305
-          },
-          "native_public_pcm_exact": true,
-          "natural_video_input": true,
-          "output_stage_overlap_count": 0,
-          "owned_processes_exited": true,
-          "perceptual_quality": "NOT_RUN",
-          "physical_playback": "NOT_RUN",
-          "playback_ack_after_virtual_consumption": false,
-          "production": "NOT_RUN",
-          "provenance_rehash": "EXACT",
-          "server_max_in_flight": 8,
-          "text_code": true
-        },
-        "declared_full_gate_status": "NOT_RUN",
-        "deployment_scope": "TASK_OWNED_LOOPBACK_PHYSICAL_GPU0_ONLY",
-        "failures": [
-          "interleaved_visual-0000300: producer retained an unexpected error",
-          "server playback ACK acceptance differs from raw capture",
-          "hard gate unexpected_error_count_zero failed",
-          "hard gate playback_ack_after_virtual_consumption failed"
-        ],
-        "hard_gates": {
-          "all_fault_families_covered": true,
-          "all_modalities_covered": true,
-          "all_six_lanes_active": true,
-          "client_count_exact": true,
-          "cross_session_event_count_zero": true,
-          "delayed_read_observed": true,
-          "device_growth_bounded": true,
-          "driver_completed": true,
-          "duplicate_terminal_count_zero": true,
-          "elapsed_at_least_1800": true,
-          "final_in_flight_zero": true,
-          "gpu0_exclusive_samples": true,
-          "gpu0_idle_after_cleanup": true,
-          "lease_violation_zero": true,
-          "native_public_pcm_exact": true,
-          "output_stage_overlap_zero": true,
-          "owned_processes_exited": true,
-          "pcm_mismatch_count_zero": true,
-          "playback_ack_after_virtual_consumption": false,
-          "ports_isolated": true,
-          "process_crash_count_zero": true,
-          "provenance_exact": true,
-          "recovery_complete": true,
-          "requests_present": true,
-          "rss_growth_bounded": true,
-          "server_admission_parallel": true,
-          "stale_event_count_zero": true,
-          "unexpected_error_count_zero": false
-        },
-        "limitations": [
-          "five-GPU resident production NOT_RUN",
-          "physical acoustics NOT_RUN",
-          "perceptual quality NOT_RUN",
-          "deployment NOT_RUN"
-        ],
-        "metrics": {
-          "cancelled_count": 336,
-          "client_count": 6,
-          "completed_count": 1945,
-          "cross_session_event_count": 0,
-          "device_growth_mib": 0.0,
-          "duplicate_terminal_count": 0,
-          "elapsed_s": 1800.000769254,
-          "expected_fault_count": 344,
-          "final_in_flight": 0,
-          "latency_p95_ms": 5483.147751,
-          "pcm_mismatch_count": 0,
-          "process_crash_count": 0,
-          "recovery_attempt_count": 344,
-          "recovery_success_count": 344,
-          "request_count": 2290,
-          "rss_growth_mib": 46.7421875,
-          "stale_event_count": 0,
-          "unexpected_error_count": 1
-        },
-        "model_identities": {
-          "asr": {
-            "file_count": 13,
-            "model_id": "Qwen/Qwen3-ASR-1.7B",
-            "tree_sha256": "2b634d66b56817e11496d76402b9c282fb59235ff1a5df22a4e5e261f8bf1d06"
-          },
-          "flux": {
-            "file_count": 25,
-            "model_id": "black-forest-labs/FLUX.2-klein-4B",
-            "tree_sha256": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997"
-          },
-          "tts": {
-            "file_count": 14,
-            "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-            "tree_sha256": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d"
-          },
-          "vlm": {
-            "file_count": 29,
-            "model_id": "Qwen/Qwen3.8-27B",
-            "tree_sha256": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304"
-          },
-          "wan": {
-            "file_count": 30,
-            "model_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-            "tree_sha256": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
-          }
-        },
-        "production_status": "NOT_RUN",
-        "raw_evidence": {
-          "arm_manifest": {
-            "file_count": 7,
-            "self_excluded": true,
-            "sha256": "1309f732fb03860c4b9db245366001cac0e8263de9b1717d6f3ab4f235b7217f"
-          },
-          "input_sha256": {
-            "barge_in_wav": "64fbd9f7ecafc160ba457595570f4a8b338f10e16acc0933be30aedc7eedf86d",
-            "natural_video": "22df061c95db2546973d2c4a7a9a74728b0dd1df05ba7c57bab6e2aefa8d7dd7",
-            "voice_wav": "9fe58914522a29ac7afde36af931f83b028f6540f23b29bb06d48ae1f98a1d4a"
-          },
-          "manifest": "SHA256SUMS",
-          "manifest_file_count": 8323,
-          "manifest_self_excluded": true,
-          "run_sha256": "bd2bf6d9a70d29cd13e0eecc657ed21659df7cad5be0789ac0ab1667e8ae41e7",
-          "verification_sha256": "52b0a731f6e5bd6368e71cb761e249ddbd2ce832699bf8c2c6bb323aa786cd7c"
-        },
-        "result_sha256": "f00fc0de3313323308f12e460903c4d70cddb60c630f62acf02c8b8a254961b2",
-        "source_identity": {
-          "commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
-          "execution_commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
-          "hardware": {
-            "accelerator": "NVIDIA H20",
-            "physical_gpu": 0
-          },
-          "harness_sha256": "568ecdc8370b629f42a6f781e3214d2834ba2cdc90a961d0895c3784452c128e",
-          "preregistration_sha256": "71bacf0ed2a0c3cfe77a056d7c9878c48761eb0633e40a15e1f0d4ae798be621",
-          "source_tree_sha256": "d92d0f9d04c9fda59a4a7371b8ee24020ecfcd34"
-        },
-        "status": "FAIL"
-      },
-      "before": {
-        "binary_identities": {
-          "asr": "bcfa08a7e391d556b1b2adc74149796711a9da1ae374f7e4d4fc5d3c4a5bb246",
-          "server": "50922358d0295355ae070512c6f1f3fa4054bdab001e70740ab9a8762822a45c",
-          "tts": "0c3746d5629d362b8c8312b8635c87d97bad1011a103a129c0651dd8f1874656",
-          "vlm": "3284e636cc6e672354e3b358e7b2a3f3055b7a6ed5116412308cae2f2dc0f9a2",
-          "wan": "041f5fc80c17f26584bd10dadf290402e4b316b93ea897699221515ad27ac615"
-        },
-        "config_identity": {
-          "asr": {
-            "config.json": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f"
-          },
-          "flux": {
-            "model_index.json": "51a76cb1cf3ed37423a1128c79c22faee8e6fbe7f5aaeb737f0a258930dbaac0"
-          },
-          "tts": {
-            "config.json": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
-          },
-          "vlm": {
-            "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
-          },
-          "wan": {
-            "model_index.json": "6a72faeb564b0e894aea8fc4ef27241106eb739e8584e869b61589a65473add7"
-          }
-        },
-        "coverage": {
-          "abort_retry": true,
-          "all_six_lanes_active": true,
-          "delayed_read_observed": true,
-          "foreign_gpu_process_count": 91,
-          "full_duplex_barge_in": true,
-          "gpu0_idle_after_cleanup": true,
-          "gpu_pid_namespaces_compared_directly": false,
-          "interleaved_visual": true,
-          "lease_violation_count": 0,
-          "malformed_audio": true,
-          "malformed_dimensions": true,
-          "native_pcm_join_counts": {
-            "http": 15,
-            "realtime": 23
+            "http": 85,
+            "realtime": 61
           },
           "native_public_pcm_exact": true,
           "natural_video_input": true,
@@ -528,12 +352,7 @@
         },
         "declared_full_gate_status": "NOT_RUN",
         "deployment_scope": "TASK_OWNED_LOOPBACK_PHYSICAL_GPU0_ONLY",
-        "failures": [
-          "excess GPU 0 compute process appeared in retained resource samples",
-          "hard gate elapsed_at_least_1800 failed",
-          "hard gate gpu0_exclusive_samples failed",
-          "hard gate driver_completed failed"
-        ],
+        "failures": [],
         "hard_gates": {
           "all_fault_families_covered": true,
           "all_modalities_covered": true,
@@ -542,11 +361,11 @@
           "cross_session_event_count_zero": true,
           "delayed_read_observed": true,
           "device_growth_bounded": true,
-          "driver_completed": false,
+          "driver_completed": true,
           "duplicate_terminal_count_zero": true,
-          "elapsed_at_least_1800": false,
+          "elapsed_at_least_1800": true,
           "final_in_flight_zero": true,
-          "gpu0_exclusive_samples": false,
+          "gpu0_exclusive_samples": true,
           "gpu0_idle_after_cleanup": true,
           "lease_violation_zero": true,
           "native_public_pcm_exact": true,
@@ -571,22 +390,22 @@
           "deployment NOT_RUN"
         ],
         "metrics": {
-          "cancelled_count": 91,
+          "cancelled_count": 307,
           "client_count": 6,
-          "completed_count": 449,
+          "completed_count": 1628,
           "cross_session_event_count": 0,
           "device_growth_mib": 0.0,
           "duplicate_terminal_count": 0,
-          "elapsed_s": 475.581969447,
-          "expected_fault_count": 97,
+          "elapsed_s": 1800.000702545,
+          "expected_fault_count": 371,
           "final_in_flight": 0,
-          "latency_p95_ms": 5421.070175,
+          "latency_p95_ms": 5704.470684,
           "pcm_mismatch_count": 0,
           "process_crash_count": 0,
-          "recovery_attempt_count": 97,
-          "recovery_success_count": 97,
-          "request_count": 546,
-          "rss_growth_mib": 47.6796875,
+          "recovery_attempt_count": 371,
+          "recovery_success_count": 371,
+          "request_count": 1999,
+          "rss_growth_mib": 46.55078125,
           "stale_event_count": 0,
           "unexpected_error_count": 0
         },
@@ -620,46 +439,229 @@
         "production_status": "NOT_RUN",
         "raw_evidence": {
           "arm_manifest": {
-            "file_count": 7,
+            "file_count": 6862,
             "self_excluded": true,
-            "sha256": "d9dd1b649f3ab7de57ba76b90bebc909105a9e2193f15513bd83413470ac4fc5"
+            "sha256": "43fbcbe28bc90236f3f28712e526d66cef5f03c2ba5e8a82c09233df9ab87371"
           },
+          "final_verification_sha256": "8b14b2172d70cf30a071671fbbc8ebbfd79f8f69a9ac6d005f2531021c6444c9",
           "input_sha256": {
             "barge_in_wav": "64fbd9f7ecafc160ba457595570f4a8b338f10e16acc0933be30aedc7eedf86d",
             "natural_video": "22df061c95db2546973d2c4a7a9a74728b0dd1df05ba7c57bab6e2aefa8d7dd7",
             "voice_wav": "9fe58914522a29ac7afde36af931f83b028f6540f23b29bb06d48ae1f98a1d4a"
           },
           "manifest": "SHA256SUMS",
-          "manifest_file_count": 2095,
+          "manifest_file_count": 6862,
           "manifest_self_excluded": true,
-          "run_sha256": "f020a6cadc210e52eeca75f910fa211cf31dbf93fab0a01fe2360a00b36ca9cb",
-          "verification_sha256": "2cd398e2914f1b75f76f55c1867d992ef9230d0bc7de85042ee5b39bfe9702a3"
+          "native_tts_drain": {
+            "events": 33,
+            "max_initial_outstanding": 1,
+            "nonempty_waits": 3
+          },
+          "run_sha256": "2944b2284af7d5c42d31a394e15be7eb2fbed2c9946779f0124d8c9aaeccc430",
+          "verification_sha256": "d95dbed5f4f206b8a4aff0b78b911d2e014bc8facc73c3eeb9a12bba00e825b0"
         },
-        "result_sha256": "27bc1c2a933be263f3914a8ad3ad638bac8f69f786059e54fab33bc78011a75c",
+        "result_sha256": "de87799c22691afd09c798bd65520eda4b4773970018d0345f27f06ecc5a62ee",
         "source_identity": {
-          "commit": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7",
-          "execution_commit": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7",
+          "commit": "9e2e5f66dde8814e3ae8e286c57c358956326aab",
+          "execution_commit": "9e2e5f66dde8814e3ae8e286c57c358956326aab",
           "hardware": {
             "accelerator": "NVIDIA H20",
             "physical_gpu": 0
           },
-          "harness_sha256": "2085d4e10768f35f27fe97cadf8ac293ca45b6bdf651906d83def229c1736942",
-          "preregistration_sha256": "3a64718ced0a389aece8f7a532a2888f9103c84a6805eba0dd4ec71574e94687",
-          "source_tree_sha256": "0fb8b6f4f9fd57771ffb571f39326472703bcb62"
+          "harness_sha256": "bcba9754da1f0a7b97d952c2223cbb7d35534da1ab5b34859bf290b6f4f8dd65",
+          "preregistration_sha256": "71bacf0ed2a0c3cfe77a056d7c9878c48761eb0633e40a15e1f0d4ae798be621",
+          "source_tree_sha256": "4a41b0e511166d32ff59603b8b72128493520e8c"
         },
-        "status": "FAIL"
+        "status": "ISOLATED_PASS"
+      },
+      "before": {
+        "binary_identities": {
+          "asr": "bcfa08a7e391d556b1b2adc74149796711a9da1ae374f7e4d4fc5d3c4a5bb246",
+          "server": "50922358d0295355ae070512c6f1f3fa4054bdab001e70740ab9a8762822a45c",
+          "tts": "0c3746d5629d362b8c8312b8635c87d97bad1011a103a129c0651dd8f1874656",
+          "vlm": "3284e636cc6e672354e3b358e7b2a3f3055b7a6ed5116412308cae2f2dc0f9a2",
+          "wan": "041f5fc80c17f26584bd10dadf290402e4b316b93ea897699221515ad27ac615"
+        },
+        "config_identity": {
+          "asr": {
+            "config.json": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f"
+          },
+          "flux": {
+            "model_index.json": "51a76cb1cf3ed37423a1128c79c22faee8e6fbe7f5aaeb737f0a258930dbaac0"
+          },
+          "tts": {
+            "config.json": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
+          },
+          "vlm": {
+            "config.json": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+          },
+          "wan": {
+            "model_index.json": "6a72faeb564b0e894aea8fc4ef27241106eb739e8584e869b61589a65473add7"
+          }
+        },
+        "coverage": {
+          "abort_retry": true,
+          "all_six_lanes_active": true,
+          "delayed_read_observed": true,
+          "foreign_gpu_process_count": 0,
+          "full_duplex_barge_in": true,
+          "gpu0_idle_after_cleanup": true,
+          "gpu_pid_namespaces_compared_directly": false,
+          "interleaved_visual": true,
+          "lease_violation_count": 0,
+          "malformed_audio": true,
+          "malformed_dimensions": true,
+          "native_pcm_join_counts": {
+            "http": 85,
+            "realtime": 61
+          },
+          "native_public_pcm_exact": true,
+          "natural_video_input": true,
+          "output_stage_overlap_count": 0,
+          "owned_processes_exited": true,
+          "perceptual_quality": "NOT_RUN",
+          "physical_playback": "NOT_RUN",
+          "playback_ack_after_virtual_consumption": true,
+          "production": "NOT_RUN",
+          "provenance_rehash": "EXACT",
+          "server_max_in_flight": 8,
+          "text_code": true
+        },
+        "declared_full_gate_status": "NOT_RUN",
+        "deployment_scope": "TASK_OWNED_LOOPBACK_PHYSICAL_GPU0_ONLY",
+        "failures": [],
+        "hard_gates": {
+          "all_fault_families_covered": true,
+          "all_modalities_covered": true,
+          "all_six_lanes_active": true,
+          "client_count_exact": true,
+          "cross_session_event_count_zero": true,
+          "delayed_read_observed": true,
+          "device_growth_bounded": true,
+          "driver_completed": true,
+          "duplicate_terminal_count_zero": true,
+          "elapsed_at_least_1800": true,
+          "final_in_flight_zero": true,
+          "gpu0_exclusive_samples": true,
+          "gpu0_idle_after_cleanup": true,
+          "lease_violation_zero": true,
+          "native_public_pcm_exact": true,
+          "output_stage_overlap_zero": true,
+          "owned_processes_exited": true,
+          "pcm_mismatch_count_zero": true,
+          "playback_ack_after_virtual_consumption": true,
+          "ports_isolated": true,
+          "process_crash_count_zero": true,
+          "provenance_exact": true,
+          "recovery_complete": true,
+          "requests_present": true,
+          "rss_growth_bounded": true,
+          "server_admission_parallel": true,
+          "stale_event_count_zero": true,
+          "unexpected_error_count_zero": true
+        },
+        "limitations": [
+          "five-GPU resident production NOT_RUN",
+          "physical acoustics NOT_RUN",
+          "perceptual quality NOT_RUN",
+          "deployment NOT_RUN"
+        ],
+        "metrics": {
+          "cancelled_count": 307,
+          "client_count": 6,
+          "completed_count": 1627,
+          "cross_session_event_count": 0,
+          "device_growth_mib": 0.0,
+          "duplicate_terminal_count": 0,
+          "elapsed_s": 1800.00075002,
+          "expected_fault_count": 371,
+          "final_in_flight": 0,
+          "latency_p95_ms": 5714.449327,
+          "pcm_mismatch_count": 0,
+          "process_crash_count": 0,
+          "recovery_attempt_count": 371,
+          "recovery_success_count": 371,
+          "request_count": 1998,
+          "rss_growth_mib": 48.8046875,
+          "stale_event_count": 0,
+          "unexpected_error_count": 0
+        },
+        "model_identities": {
+          "asr": {
+            "file_count": 13,
+            "model_id": "Qwen/Qwen3-ASR-1.7B",
+            "tree_sha256": "2b634d66b56817e11496d76402b9c282fb59235ff1a5df22a4e5e261f8bf1d06"
+          },
+          "flux": {
+            "file_count": 25,
+            "model_id": "black-forest-labs/FLUX.2-klein-4B",
+            "tree_sha256": "10c1b2d7096cd6c2798fa9d2b9aecfab5163117cbf3d66de6f32f9a2e8f17997"
+          },
+          "tts": {
+            "file_count": 14,
+            "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            "tree_sha256": "69c90c52d9d88390f4b4f540b09acf40f5ead7080650585ff20d2e144aa5e69d"
+          },
+          "vlm": {
+            "file_count": 29,
+            "model_id": "Qwen/Qwen3.8-27B",
+            "tree_sha256": "22e638404d0e413007064c47d5c98ad1696a26a0e980eb2fce83cbbfcca0a304"
+          },
+          "wan": {
+            "file_count": 30,
+            "model_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "tree_sha256": "b118ac07b533cf7d68a4806ec70bdf39041515673e44535afeda5cfefe761616"
+          }
+        },
+        "production_status": "NOT_RUN",
+        "raw_evidence": {
+          "arm_manifest": {
+            "file_count": 6868,
+            "self_excluded": true,
+            "sha256": "a21b27c7a62650423c6b708e46bc99859b1e9d43edc239baa6f445a80fdd79a9"
+          },
+          "final_verification_sha256": "4e7813b270854d872144c489522ebf410786fe71e81a0894cf6a2a5e6d0a263d",
+          "input_sha256": {
+            "barge_in_wav": "64fbd9f7ecafc160ba457595570f4a8b338f10e16acc0933be30aedc7eedf86d",
+            "natural_video": "22df061c95db2546973d2c4a7a9a74728b0dd1df05ba7c57bab6e2aefa8d7dd7",
+            "voice_wav": "9fe58914522a29ac7afde36af931f83b028f6540f23b29bb06d48ae1f98a1d4a"
+          },
+          "manifest": "SHA256SUMS",
+          "manifest_file_count": 6868,
+          "manifest_self_excluded": true,
+          "native_tts_drain": {
+            "events": 34,
+            "max_initial_outstanding": 1,
+            "nonempty_waits": 2
+          },
+          "run_sha256": "3f67961e9dd0a240da96cfd19ed3795130adedc790508cc6cdda703e703f6a26",
+          "verification_sha256": "0fcfe1f0097bf743b06e4a7cbf093db9e4c1e2fddb8a9fccea5988f068224eb5"
+        },
+        "result_sha256": "6991ea0dfb947d1551e64504cc6d2cc06909166475f4e6b462e46229f38e4581",
+        "source_identity": {
+          "commit": "b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4",
+          "execution_commit": "b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4",
+          "hardware": {
+            "accelerator": "NVIDIA H20",
+            "physical_gpu": 0
+          },
+          "harness_sha256": "bcba9754da1f0a7b97d952c2223cbb7d35534da1ab5b34859bf290b6f4f8dd65",
+          "preregistration_sha256": "71bacf0ed2a0c3cfe77a056d7c9878c48761eb0633e40a15e1f0d4ae798be621",
+          "source_tree_sha256": "855b92cac086c7d2ceaf2648863fad96241cd5d8"
+        },
+        "status": "ISOLATED_PASS"
       },
       "case_id": "NS-07",
       "contract_drivers": [
         {
           "args": [],
           "driver": "tests/ns07_six_way_soak_test.py",
-          "driver_sha256": "3aa149d9bdbf220819019fe8e2fdb8993998e31720948c585641b2a078d51589",
+          "driver_sha256": "5594c16d84513035f0af590ffd22a12fa19684bd876a424b4d1e74e9061f188b",
           "exit_code": 0,
           "log": {
-            "bytes": 1874,
+            "bytes": 2630,
             "file": "contracts/NS-07/tests_ns07_six_way_soak_test.py.log",
-            "sha256": "d8a228ffa77a4e72ae90753fef814670fc59ca35c46fb10834c75d5b2c5feaeb"
+            "sha256": "eb77823d938a78ec3db0fa8b6ad6ceecd2470ce4e0db2fd23b0544ed76d79bef"
           },
           "status": "PASS"
         }
@@ -681,37 +683,31 @@
         "1800 seconds",
         "real text, visual, voice, and natural-video stages"
       ],
-      "north_star_hard_gate": "FAIL",
+      "north_star_hard_gate": "NOT_RUN",
       "paired": {
         "after_minus_before": {
-          "cancelled_count": 245,
+          "cancelled_count": 0,
           "client_count": 0,
-          "completed_count": 1496,
+          "completed_count": 1,
           "cross_session_event_count": 0,
           "device_growth_mib": 0.0,
           "duplicate_terminal_count": 0,
-          "elapsed_s": 1324.4187998070001,
-          "expected_fault_count": 247,
+          "elapsed_s": -4.747499997392879e-05,
+          "expected_fault_count": 0,
           "final_in_flight": 0,
-          "latency_p95_ms": 62.07757600000059,
+          "latency_p95_ms": -9.978643000000375,
           "pcm_mismatch_count": 0,
           "process_crash_count": 0,
-          "recovery_attempt_count": 247,
-          "recovery_success_count": 247,
-          "request_count": 1744,
-          "rss_growth_mib": -0.9375,
+          "recovery_attempt_count": 0,
+          "recovery_success_count": 0,
+          "request_count": 1,
+          "rss_growth_mib": -2.25390625,
           "stale_event_count": 0,
-          "unexpected_error_count": 1
+          "unexpected_error_count": 0
         },
-        "failures": [
-          "Before did not execute the full six-client 1800-second schedule",
-          "Before/After harness_sha256 differs",
-          "Before/After preregistration_sha256 differs",
-          "After isolated engineering gate is not ISOLATED_PASS",
-          "After unexpected_error_count is nonzero"
-        ],
-        "no_regression": false,
-        "status": "NOT_PROMOTED"
+        "failures": [],
+        "no_regression": true,
+        "status": "PAIRED_NON_REGRESSION"
       },
       "title": "Six-way mixed-modality resilience and fault recovery"
     },
@@ -767,9 +763,9 @@
         "production_status": "NOT_RUN",
         "raw_evidence": {
           "arm_manifest": {
-            "file_count": 7,
+            "file_count": 6,
             "self_excluded": true,
-            "sha256": "1309f732fb03860c4b9db245366001cac0e8263de9b1717d6f3ab4f235b7217f"
+            "sha256": "2254cbb86113d6fb00ff24c350b1eb42e4da64bc27ec618d166186f0d54b9016"
           },
           "browser_result_sha256": "87fb979e51ec9c72eb4a2042f271335bcea0cf5681cd6cfa2e91f5873d53f6a2",
           "contract_logs": [
@@ -788,14 +784,14 @@
               "status": "PASS"
             }
           ],
-          "default_screenshot_sha256": "bfe15e9113eee96d0bb087c8c7b445b23432d9ec2269579d1aa574efa3b6a66d"
+          "default_screenshot_sha256": "77c5bd6562350de26fbf9e87eccf83ff66752a17a7cbd9f1ace2027e35c3a124"
         },
-        "result_sha256": "9cdcdc00e1b67e17711ea9119e890ba85769fe51109011dd352c7597f18d42fc",
+        "result_sha256": "8ba0652b908344c87916b9bb191ad16b0c5d0980ac1cee5a989bff96bc37d29c",
         "source_identity": {
           "adapter_sha256": "cb0b0205c72a6ec45603e4e6f275eb61496d94e929dd0c81ed558c4ba60165bf",
           "app_swift_sha256": "60c62007f18320694c2a811c41ce9d7514f76589e400fd32bc549529c604d89d",
           "chat_model_sha256": "788b8482cfe197240c4be3f31417f72af764dc77f6302fd9044433b4c919c74b",
-          "commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
+          "commit": "9e2e5f66dde8814e3ae8e286c57c358956326aab",
           "web_sha256": "4f3939e2e80f9e980529e308737a117a0c5fc5bce1fd9e8da668593a8666032b"
         },
         "status": "CONTRACT_PASS"
@@ -853,9 +849,9 @@
         "production_status": "NOT_RUN",
         "raw_evidence": {
           "arm_manifest": {
-            "file_count": 7,
+            "file_count": 5,
             "self_excluded": true,
-            "sha256": "d9dd1b649f3ab7de57ba76b90bebc909105a9e2193f15513bd83413470ac4fc5"
+            "sha256": "596774448bfd3aaf88eed1981836e9ac37eca253b416eb082be7c64b72d12fcf"
           },
           "browser_result_sha256": "7d65cbb532f6ed0d10f08e1670b73876c229cb13cb419ecf736b4799a05fec0e",
           "contract_logs": [
@@ -873,14 +869,14 @@
               "status": "NOT_COVERED"
             }
           ],
-          "default_screenshot_sha256": "9760ede66561baba30b3edccaff1f4aef60d3b80332a0c114cff4e58efa73c0c"
+          "default_screenshot_sha256": "9821813c279bed82e86af318e14228c733c4b30ef0dbda5f6492cb2b64b86bd7"
         },
-        "result_sha256": "17cbb7c057c0d4c95aa42d7ac23a167fc9e794b61a94449895a89d9c6e934483",
+        "result_sha256": "b63e056541b79dbedf3e835bd72e965329fa8018fcf0f951100c0a39f7b3c045",
         "source_identity": {
           "adapter_sha256": "cb0b0205c72a6ec45603e4e6f275eb61496d94e929dd0c81ed558c4ba60165bf",
           "app_swift_sha256": "a0dfbd057967811903b9f27913a38703d14d429163fb7f6c47bd347474bd9c45",
           "chat_model_sha256": "044aefbd39185b3dd0890935ba631dd093e814bd8f18de755ddc3c472188f3bd",
-          "commit": "b4dca5b0e3f4fb18ecd857847cf2205c660cb8a7",
+          "commit": "b23f6fd1f2b3c50165ddcc5cac86dc5aa7723dc4",
           "web_sha256": "963434a7e0f737860ddb3d02d559474d29385ee93cc8e096b3c88ca4d7abd43b"
         },
         "status": "FAIL"
@@ -902,12 +898,12 @@
         {
           "args": [],
           "driver": "tests/ns08_zero_control_test.py",
-          "driver_sha256": "691af1c7011eb9212c311519022a9a06fe6ac6b0ceb4893eaa6105747a91c766",
+          "driver_sha256": "38d57f09fb3b5d8646508bec8d4739bd1e88576e323cf2007951d14f74902017",
           "exit_code": 0,
           "log": {
-            "bytes": 104,
+            "bytes": 105,
             "file": "contracts/NS-08/tests_ns08_zero_control_test.py.log",
-            "sha256": "bfbc056a35d4f8e02168daee35a768fb736497f3a5ffd2892af4bf0955385137"
+            "sha256": "0203feade1c2afcf81acf17c90a2ac869b0e9dc9c9f81f880ccd3e41f6b32c77"
           },
           "status": "PASS"
         }
@@ -958,11 +954,11 @@
   },
   "macos_and_human_ns08": "NOT_RUN",
   "registry_sha256": "c8913c5729d73401b114475fda5819d0987a56d5902639b792420afdd7def464",
-  "resident_production_ns07": "FAIL",
+  "resident_production_ns07": "NOT_RUN",
   "schema": "umminfer-ns-scorecard/v1",
   "scoreboard_update_allowed": false,
   "source_identity": {
-    "commit": "0c8fac8c1d3040fcbf62fe886a5a3686adaf16bf",
+    "commit": "480f97b47d5fcf351c22fd9d4d30365d186823f1",
     "harness_sha256": "743df02b948aded6b24f2c10f2716aea0fd35416aa8a89945a26190beb662614",
     "registry_sha256": "c8913c5729d73401b114475fda5819d0987a56d5902639b792420afdd7def464",
     "tracked_runtime_dirty": false
@@ -970,34 +966,28 @@
   "target_outcomes": {
     "NS-07": {
       "after_minus_before": {
-        "cancelled_count": 245,
+        "cancelled_count": 0,
         "client_count": 0,
-        "completed_count": 1496,
+        "completed_count": 1,
         "cross_session_event_count": 0,
         "device_growth_mib": 0.0,
         "duplicate_terminal_count": 0,
-        "elapsed_s": 1324.4187998070001,
-        "expected_fault_count": 247,
+        "elapsed_s": -4.747499997392879e-05,
+        "expected_fault_count": 0,
         "final_in_flight": 0,
-        "latency_p95_ms": 62.07757600000059,
+        "latency_p95_ms": -9.978643000000375,
         "pcm_mismatch_count": 0,
         "process_crash_count": 0,
-        "recovery_attempt_count": 247,
-        "recovery_success_count": 247,
-        "request_count": 1744,
-        "rss_growth_mib": -0.9375,
+        "recovery_attempt_count": 0,
+        "recovery_success_count": 0,
+        "request_count": 1,
+        "rss_growth_mib": -2.25390625,
         "stale_event_count": 0,
-        "unexpected_error_count": 1
+        "unexpected_error_count": 0
       },
-      "failures": [
-        "Before did not execute the full six-client 1800-second schedule",
-        "Before/After harness_sha256 differs",
-        "Before/After preregistration_sha256 differs",
-        "After isolated engineering gate is not ISOLATED_PASS",
-        "After unexpected_error_count is nonzero"
-      ],
-      "no_regression": false,
-      "status": "NOT_PROMOTED"
+      "failures": [],
+      "no_regression": true,
+      "status": "PAIRED_NON_REGRESSION"
     },
     "NS-08": {
       "after_minus_before": {

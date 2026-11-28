@@ -157,6 +157,27 @@ class ContractTests(unittest.TestCase):
                 output.write(json.dumps(latest) + "\n")
             self.assertFalse(instance._trace_tts_complete("http-1"))
 
+    def test_tts_handoff_remembers_expected_legs_across_trace_rotation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = object.__new__(soak.Soak)
+            instance.out = Path(tmp)
+            trace = instance.out / "server.trace.jsonl"
+            started = {"event": "legs_snapshot", "phase": "outputs_started",
+                       "request_id": "http-rotate", "legs": [
+                           {"stage": "vlm", "state": "completed"},
+                           {"stage": "tts", "state": "running"}]}
+            trace.write_text(json.dumps(started) + "\n")
+            self.assertFalse(instance._trace_tts_complete("http-rotate"))
+            # Metrics rotates the 64 KiB trace while slow native TTS is active.
+            # The expected post-VLM leg count must survive loss of both old files.
+            trace.unlink()
+            settled = {"event": "legs_snapshot", "phase": "leg_settled",
+                       "request_id": "http-rotate", "legs": [
+                           {"stage": "vlm", "state": "completed"},
+                           {"stage": "tts", "state": "completed"}]}
+            trace.write_text(json.dumps(settled) + "\n")
+            self.assertTrue(instance._trace_tts_complete("http-rotate"))
+
     def test_http_realtime_model_and_render_wire_stay_consistent(self):
         source = (ROOT / "tests/ns07_six_way_soak.py").read_text()
         self.assertNotIn("qwen3-native", source)
@@ -211,6 +232,109 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(rows[-1]["index"], 999)
             self.assertFalse(Path(str(path) + ".1").exists())
 
+    def test_tts_switch_waits_for_forwarded_native_terminal(self):
+        manager = soak.OutputStageManager.__new__(soak.OutputStageManager)
+        manager.condition = threading.Condition()
+        manager.current_name = "tts"
+        process = FakeProcess()
+        manager.current_process = process
+        manager.switching = False
+        manager.active = 0
+        manager.serial = 0
+        manager.history = []
+        manager.leases = []
+        manager.waiters = []
+        manager.drain_history = []
+        manager.closed = False
+        manager.args = type("Args", (), {"request_timeout_s": 1.0})()
+        manager.taps = (
+            type("Tap", (), {"records": [{"request_id": "http-1:tts:4",
+                                          "message_type": "submit"}]})(),
+            type("Tap", (), {"records": []})(),
+        )
+
+        def fake_start(stage):
+            manager.current_name = stage
+            manager.current_process = FakeProcess()
+
+        manager._start = fake_start
+        manager._command = lambda stage: (None, None, None)
+        acquired = []
+        thread = threading.Thread(target=lambda: acquired.append(manager.acquire("wan", "wan")),
+                                  daemon=True)
+        thread.start()
+        time.sleep(0.05)
+        # A lease count of zero is not enough: the final PCM chunk can already be
+        # public while the native success terminal is still in the stage outbox.
+        self.assertFalse(acquired)
+        self.assertEqual(process.stop_calls, 0)
+        manager.taps[1].records.append({"request_id": "http-1:tts:4",
+                                        "message_type": "complete", "success": True})
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(acquired), 1)
+        self.assertEqual(process.stop_calls, 1)
+        self.assertEqual(manager.drain_history[-1]["initial_outstanding_count"], 1)
+        manager.release(acquired[0])
+
+    def test_tts_switch_fails_closed_when_native_terminal_never_arrives(self):
+        manager = soak.OutputStageManager.__new__(soak.OutputStageManager)
+        manager.args = type("Args", (), {"request_timeout_s": 0.02})()
+        manager.taps = (
+            type("Tap", (), {"records": [{"request_id": "stuck:tts:0",
+                                          "message_type": "submit"}]})(),
+            type("Tap", (), {"records": []})(),
+        )
+        manager.drain_history = []
+        with self.assertRaisesRegex(AssertionError, "native TTS terminal drain"):
+            manager._wait_tts_drained()
+
+    def test_waiting_stage_switch_prevents_same_stage_starvation(self):
+        manager = soak.OutputStageManager.__new__(soak.OutputStageManager)
+        manager.condition = threading.Condition()
+        manager.current_name = "tts"
+        manager.current_process = FakeProcess()
+        manager.switching = False
+        manager.active = 0
+        manager.serial = 0
+        manager.history = []
+        manager.leases = []
+        manager.waiters = []
+        manager.closed = False
+        def fake_start(stage):
+            manager.current_name = stage
+            manager.current_process = FakeProcess()
+
+        manager._start = fake_start
+        manager._command = lambda stage: (None, None, None)
+        voice = manager.acquire("tts", "voice-current")
+        wan_acquired = []
+        later_voice_acquired = []
+        wan = threading.Thread(target=lambda: wan_acquired.append(manager.acquire("wan", "narrative")),
+                               daemon=True)
+        wan.start()
+        time.sleep(0.05)
+        later_voice = threading.Thread(
+            target=lambda: later_voice_acquired.append(manager.acquire("tts", "voice-later")),
+            daemon=True)
+        later_voice.start()
+        time.sleep(0.05)
+        # Once narrative Wan is queued, a new voice turn cannot repeatedly leapfrog
+        # it and keep the old TTS stage resident until the narrative HTTP timeout.
+        self.assertFalse(later_voice_acquired)
+        manager.release(voice)
+        wan.join(1)
+        later_voice.join(1)
+        self.assertFalse(wan.is_alive())
+        self.assertEqual(len(wan_acquired), 1)
+        self.assertEqual(wan_acquired[0]["stage"], "wan")
+        self.assertFalse(later_voice_acquired)
+        manager.release(wan_acquired[0])
+        later_voice.join(1)
+        self.assertFalse(later_voice.is_alive())
+        self.assertEqual(later_voice_acquired[0]["stage"], "tts")
+        manager.release(later_voice_acquired[0])
+
     def test_central_lease_blocks_switch_until_all_leases_release(self):
         manager = soak.OutputStageManager.__new__(soak.OutputStageManager)
         manager.condition = threading.Condition()
@@ -221,6 +345,7 @@ class ContractTests(unittest.TestCase):
         manager.serial = 0
         manager.history = []
         manager.leases = []
+        manager.waiters = []
         manager.closed = False
         first = manager.acquire("flux", "first")
         second = manager.acquire("flux", "second")
@@ -288,6 +413,51 @@ class ContractTests(unittest.TestCase):
             bad = verify.Verify(root, allow_synthetic=True).run_verification()
             self.assertGreater(bad["metrics"]["duplicate_terminal_count"], 0)
             self.assertNotEqual(bad["engineering_status"], "ISOLATED_PASS")
+
+    def test_timed_ack_acceptance_can_precede_post_sendall_tx_logging(self):
+        with tempfile.TemporaryDirectory(prefix="umm-ns07-ack-clock-") as tmp:
+            root = Path(tmp)
+            pcm = b"\x01\x00"
+            capture = root / "frames.jsonl"
+            rows = [
+                {"index": 0, "monotonic_ns": 1, "direction": "rx",
+                 "raw_base64": base64.b64encode(ws_frame({"type": "audio.delta",
+                     "response_id": "r", "audio": base64.b64encode(pcm).decode(),
+                     "text_cursor": 9})).decode()},
+                # The server response can reach the reader before the sender's
+                # user-space TX record, because RawWebSocket.send_frame logs only
+                # after socket.sendall returns. Both are after virtual playback.
+                {"index": 1, "monotonic_ns": 25, "direction": "rx",
+                 "raw_base64": base64.b64encode(ws_frame({"type": "response.playback_ack",
+                     "response_id": "r", "text_cursor": 9, "final": True})).decode()},
+                {"index": 2, "monotonic_ns": 30, "direction": "tx",
+                 "raw_base64": base64.b64encode(ws_frame({"type":
+                     "output_audio_buffer.playback_ack", "response_id": "r",
+                     "text_cursor": 9}, "tx")).decode()},
+            ]
+            capture.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            ack = {"capture_file": "frames.jsonl", "response_id": "r",
+                   "text_cursor": 9, "final": True, "audio_capture_indices": [0],
+                   "pcm_bytes": len(pcm), "pcm_sha256": sha(pcm),
+                   "consumption_started_monotonic_ns": 10,
+                   "consumption_ended_monotonic_ns": 20, "sent_monotonic_ns": 20,
+                   "accepted_monotonic_ns": 25, "minimum_consumption_ns": 10}
+            (root / "playback-acks.jsonl").write_text(json.dumps(ack) + "\n")
+            checker = verify.Verify(root, allow_synthetic=True)
+            checker.captures = {"frames.jsonl": verify.decode_capture(capture)}
+            checker.verify_playback()
+            self.assertFalse(checker.failures, checker.failures)
+
+            # Moving acceptance before the pre-send timestamp remains a hard error;
+            # the correction does not weaken playback-duration or ACK validation.
+            ack["sent_monotonic_ns"] = 26
+            ack["consumption_ended_monotonic_ns"] = 26
+            (root / "playback-acks.jsonl").write_text(json.dumps(ack) + "\n")
+            negative = verify.Verify(root, allow_synthetic=True)
+            negative.captures = dict(checker.captures)
+            negative.verify_playback()
+            self.assertIn("server playback ACK acceptance differs from raw capture",
+                          negative.failures)
 
     def test_realtime_raw_websocket_decode_and_tamper(self):
         with tempfile.TemporaryDirectory(prefix="umm-ns07-ws-") as tmp:

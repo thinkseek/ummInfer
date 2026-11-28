@@ -10,7 +10,7 @@ the chat request itself.
 Open `web/index.html` in a browser, set **Base URL** and **Model**, press
 **Send**. Settings persist in `localStorage`. For full-duplex voice, enable
 **Realtime**; when the server uses a separate `--realtime-port`, set **Realtime
-URL** under Options to that listener's HTTP base (for example `/v1` on its own
+URL** under Advanced to that listener's HTTP base (for example `/v1` on its own
 origin).
 
 The browser sends one `POST <base>/chat/completions` with `stream: true`,
@@ -38,12 +38,14 @@ server, serve the page from the same origin instead of opening the file.
 | Verified replay | Optional **Replay JSON** preserves exact raw SSE transport chunks, narrative events, content-addressed image/video/PCM/WAV artifacts, visual references, terminal legs, and cancellation outcomes |
 | Keyboard shortcuts | Pure client-side global shortcuts: `Cmd/Ctrl+E` (Export JSON), `Cmd/Ctrl+Shift+E` (Export Markdown), `Cmd/Ctrl+O` (Import JSON), `Alt+N` / `Cmd/Ctrl+Shift+K` (New chat, avoiding browser `Cmd/Ctrl+N`), `Esc` (Stop active generation), plus `Cmd/Ctrl+Enter` in the prompt composer to Send |
 
-Settings: base URL and model remain visible. Existing modality, routing,
-voice-selection, and sampling controls are nonessential and appear only when
-**Advanced** is open; the natural default is narrative auto with three slots and
-I2V continuity. Image size is fixed at `512x512`, PNG. Theme follows
-`prefers-color-scheme` and can be overridden with the System / Light / Dark
-selector.
+Settings: base URL and model remain visible. Existing modality, narrative
+routing, voice-output routing, voice selection, echo tuning, sampling, and frame
+controls are nonessential and are enclosed by the collapsed **Advanced**
+disclosure. The natural default is narrative auto with three slots, streaming
+voice, and I2V continuity. Natural text, media attachment, realtime voice input,
+barge-in, export/import, and keyboard actions never require opening Advanced.
+Image size is fixed at `512x512`, PNG. Theme follows `prefers-color-scheme` and
+can be overridden with the System / Light / Dark selector.
 
 ## Native video input frames
 
